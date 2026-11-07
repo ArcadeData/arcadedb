@@ -54,7 +54,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Issue #7741: five low-severity audit items. Four of them are covered here; the fifth is a javadoc whose stated
- * reason was not true, pinned in {@code Issue7741LineProtocolWriteStaysInThreadTest} in the engine module, where
+ * reason was not true, pinned in {@code LineProtocolParserTest} in the engine module, where
  * the fact it asserts lives.
  * <ol>
  * <li>{@code arcadedb.ha.proxyConnectTimeout} had no effect on an SSL cluster: the HTTPS peer client used a

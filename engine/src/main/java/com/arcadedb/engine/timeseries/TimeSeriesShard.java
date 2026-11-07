@@ -362,7 +362,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * {@code commit1stPhase}/{@code commit2ndPhase} on it, then pops it. Nothing merges its changes into the
    * transaction underneath. So the mutable-bucket pages are published here and now, not by the caller's
    * commit; they are visible to every other reader as soon as this method returns; and the caller's
-   * {@code rollback()} does not take them back. {@code Issue7410AppendTransactionScopeTest} pins it, and
+   * {@code rollback()} does not take them back. {@code TimeSeriesEngineTest} pins it, and
    * {@code Issue7370GrpcTimeSeriesInTransactionIT} pins the same contract over the wire.
    * <p>
    * <b>Decision (#7657): it stays this way, and the reason is {@link #appendLock} rather than a preference.</b>
@@ -375,7 +375,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * arbitrary user transaction ends without making one client's open transaction block every other writer of
    * that shard. Both would then stage the same page, and one would lose its <i>whole</i> transaction to a
    * {@link ConcurrentModificationException} that is not the shard's to retry - the loop below retries a commit
-   * this method owns. {@code Issue7657AppendStaysSelfCommittingTest} measures it. What it means for users is
+   * this method owns. {@code TimeSeriesEngineTest} measures it. What it means for users is
    * documented where they meet it: the {@code /api/v1/ts/{database}/write} and
    * {@code /api/v1/command/{database}} entries of the OpenAPI document, and {@code TimeSeriesWriteSummary} in
    * the gRPC proto.
@@ -1127,7 +1127,7 @@ public class TimeSeriesShard implements AutoCloseable {
       // asking for the remainder returns too few late arrivals and pads the answer with sealed rows that do
       // not belong in it. And the remainder is 0 exactly when the sealed layer is full, which this API reads
       // as UNLIMITED - so the "optimization" is unbounded in the one case it was meant to help.
-      // Pinned by Issue7336AscendingLimitTest.ascendingScanAsksTheMutableLayerForTheWholeLimitNotTheRemainder.
+      // Pinned by TimeSeriesAscendingDescendingLimitTest.AscendingLimit.ascendingScanAsksTheMutableLayerForTheWholeLimitNotTheRemainder.
       final List<Object[]> mutableRows = mutableBucket.scanRangeAscending(fromTs, mutableToTs, columnIndices,
           tagFilter, limit, metrics);
       if (mutableRows.isEmpty())
@@ -1972,7 +1972,7 @@ public class TimeSeriesShard implements AutoCloseable {
             // immediately before the commit. On a REPLICATED database (db.isReplicated() above)
             // this is also after the compaction lock was released, which is where a real
             // compaction race would land per this method's own javadoc. A test that exercises
-            // this hook against a plain, non-replicated database (as Issue6406CompactionRaceIntegrityTest
+            // this hook against a plain, non-replicated database (as TimeSeriesCompactionRaceIntegrityTest
             // does) fires it while that lock is STILL held - the hook forces the same
             // ConcurrentModificationException the catch block below has to handle either way, so
             // that difference does not matter to what is being tested, but do not read this

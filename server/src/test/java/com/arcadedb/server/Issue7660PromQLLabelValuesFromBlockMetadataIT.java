@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The endpoint is the reason the change exists - a Grafana datasource calls it on every dashboard load and every
  * variable refresh - so the behaviour is pinned HERE, through HTTP, and not only at the engine API that
- * {@code Issue7660DistinctTagValuesFromBlockMetadataTest} covers. Each test compares the response against the scan
+ * {@code TagFilterTest} covers. Each test compares the response against the scan
  * the handler used to run, over the same one-column projection, in the same JVM on the same data: the issue
  * accepted this optimisation only on condition that the answer stay EXACT, because Prometheus documents the
  * endpoint as returning the values a label actually carries and a stale extra one is visible in a picker.

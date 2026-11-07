@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The fix walks the samples through {@link com.arcadedb.engine.timeseries.TimeSeriesEngine#forEachRow}, which
  * folds each row into the chunk as it is produced (bounded by one block) instead of collecting them first. This
  * test does not - and given the size that would take, should not - prove the heap bound directly; that is
- * {@code Issue7354BoundedTagScanTest}'s job for {@code forEachRow} itself. What it pins is the observable
+ * {@code TagFilterTest}'s job for {@code forEachRow} itself. What it pins is the observable
  * consequence of switching to a shard-by-shard walk: the export still produces more than one {@code "ts"} chunk
  * once the samples cross the chunk size, and every sample - across every shard, across every chunk - survives
  * the round trip with its value and its timestamp intact, even though the samples are no longer merged into

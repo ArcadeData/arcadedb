@@ -32,6 +32,10 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.StringLiteral;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -301,5 +305,145 @@ class PromQLParserTest {
     assertThat(ms.selector().metricName()).isEqualTo("http_requests");
     assertThat(ms.selector().matchers()).hasSize(1);
     assertThat(ms.rangeMs()).isEqualTo(300_000);
+  }
+
+  // #6807: the query_range step-count guard was computed in signed 64-bit arithmetic, so a span wider than
+  // Long.MAX_VALUE milliseconds wrapped negative and the per-step loop ran unbounded. The evaluator rejects every one
+  // of these before touching the database, so a null database is enough. The @Timeout is a hang detector, not a latency
+  // bound.
+
+  private static final PromQLExpr UP = new PromQLParser("up").parse();
+
+  // #6807
+  @Test
+  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  void spanWiderThanLongIsRejectedInsteadOfLoopingForever() {
+    // The exact repro from the issue: start=-9e15s, end=9e15s, step=60s. Both operands are in order, so the
+    // endMs < startMs test does not fire, and (endMs - startMs) overflows to a negative number.
+    assertThatThrownBy(() -> new PromQLEvaluator(null).evaluateRange(UP, -9_000_000_000_000_000_000L,
+        9_000_000_000_000_000_000L, 60_000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("wider than the representable time span");
+  }
+
+  // #6807
+  @Test
+  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  void spanOfLongMaxWithStepOneIsRejectedInsteadOfSilentlyEmpty() {
+    // spanMs / stepMs is Long.MAX_VALUE here, so the historical "+ 1" would itself have overflowed to
+    // Long.MIN_VALUE and turned the rejection into an empty result. The guard is tested before the "+ 1".
+    assertThatThrownBy(() -> new PromQLEvaluator(null).evaluateRange(UP, 0L, Long.MAX_VALUE, 1L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("maximum of");
+  }
+
+  // #6807
+  @Test
+  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  void representableButTooManyStepsIsStillRejected() {
+    // The pre-existing guard must keep working unchanged for a range that does not overflow.
+    assertThatThrownBy(() -> new PromQLEvaluator(null).evaluateRange(UP, 0L, 2_000_000_000L, 1_000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("maximum of 1000000");
+  }
+
+  // #6807
+  @Test
+  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  void endBeforeStartIsStillRejected() {
+    assertThatThrownBy(() -> new PromQLEvaluator(null).evaluateRange(UP, 1_000L, 0L, 1_000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be >=");
+  }
+
+  // #6807
+  @Test
+  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  void nonPositiveStepIsStillRejected() {
+    assertThatThrownBy(() -> new PromQLEvaluator(null).evaluateRange(UP, 0L, 1_000L, 0L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("stepMs must be positive");
+  }
+
+  // #9644: the bool modifier, parser side
+  // #9644
+  @Test
+  void theParserRecordsTheModifier() {
+    final BinaryExpr withBool = (BinaryExpr) new PromQLParser("m9644 > bool 1").parse();
+    assertThat(withBool.op()).isEqualTo(BinaryOp.GT);
+    assertThat(withBool.returnBool()).isTrue();
+    assertThat(withBool.left()).isInstanceOf(VectorSelector.class);
+
+    final BinaryExpr upperCase = (BinaryExpr) new PromQLParser("m9644 >= BOOL 1").parse();
+    assertThat(upperCase.returnBool()).isTrue();
+
+    final BinaryExpr without = (BinaryExpr) new PromQLParser("m9644 > 1").parse();
+    assertThat(without.returnBool()).isFalse();
+  }
+
+  // #9644
+  @Test
+  void everyComparisonOperatorAcceptsTheModifier() {
+    for (final String op : new String[] { "==", "!=", "<", ">", "<=", ">=" }) {
+      final PromQLExpr expr = new PromQLParser("m9644 " + op + " bool 1").parse();
+      assertThat(expr).as(op).isInstanceOf(BinaryExpr.class);
+      assertThat(((BinaryExpr) expr).returnBool()).as(op).isTrue();
+    }
+  }
+
+  // #9644
+  @Test
+  void aMetricWhoseNameStartsWithBoolIsNotTheModifier() {
+    final BinaryExpr bin = (BinaryExpr) new PromQLParser("m9644 > boolean_metric").parse();
+    assertThat(bin.returnBool()).isFalse();
+    assertThat(((VectorSelector) bin.right()).metricName()).isEqualTo("boolean_metric");
+  }
+
+  // #9644
+  @Test
+  void theModifierOnANonComparisonOperatorIsAnErrorThatNamesIt() {
+    for (final String op : new String[] { "+", "-", "*", "/", "%", "^", "and", "or", "unless" })
+      assertThatThrownBy(() -> new PromQLParser("m9644 " + op + " bool 1").parse()).as(op)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("bool modifier can only be used on comparison operators");
+  }
+
+  // #9644
+  @Test
+  void theErrorPointsAtTheModifier() {
+    // "m9644 + bool 1": the modifier starts at position 8
+    assertThatThrownBy(() -> new PromQLParser("m9644 + bool 1").parse()).hasMessageEndingWith("at position 8");
+  }
+
+  // #9644
+  @Test
+  void boolIsAKeywordRightAfterAnOperatorAsInPrometheus() {
+    // Prometheus lexes `bool` as a keyword, so a metric literally named `bool` cannot be the right operand of a binary
+    // operator: `a + bool` and `a > bool` are parse errors there too
+    assertThatThrownBy(() -> new PromQLParser("m9644 + bool").parse()).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("bool modifier can only be used on comparison operators");
+    assertThatThrownBy(() -> new PromQLParser("m9644 > bool").parse()).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  // #9644
+  @Test
+  void theAstRefusesTheModifierOnANonComparisonOperator() {
+    assertThatThrownBy(() -> new BinaryExpr(new VectorSelector("m9644", List.of(), 0), BinaryOp.ADD,
+        new VectorSelector("m9644", List.of(), 0), true)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("bool modifier can only be used on comparison operators");
+  }
+
+  // #9644
+  @Test
+  void chainedAndParenthesisedBoolComparisonsParse() {
+    // left-associative: (m9644 > bool 1) > bool 0
+    final BinaryExpr chained = (BinaryExpr) new PromQLParser("m9644 > bool 1 > bool 0").parse();
+    assertThat(chained.returnBool()).isTrue();
+    assertThat(((BinaryExpr) chained.left()).returnBool()).isTrue();
+
+    final BinaryExpr plusOne = (BinaryExpr) new PromQLParser("(m9644 > bool 1) + 1").parse();
+    assertThat(plusOne.op()).isEqualTo(BinaryOp.ADD);
+    assertThat(plusOne.returnBool()).isFalse();
+    assertThat(((BinaryExpr) plusOne.left()).returnBool()).isTrue();
   }
 }

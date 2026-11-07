@@ -1153,7 +1153,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // The read lock covers this block's RESOLUTION and its DECODE, and nothing else - not the next block's, and
       // not the visitor. What comes out of it is the block's columns, which is the residency this walk has always
       // had; the rows are built from them afterwards, one at a time, so a visitor that stops on the first one
-      // still costs one Object[] and not a block of them (Issue7354BoundedTagScanTest).
+      // still costs one Object[] and not a block of them (TagFilterTest).
       //
       // The combinations fast path is INSIDE this window too (issue #8043). It used to run ahead of it, off the
       // snapshot entry, which made the two arms of the same walk answer different questions: the decode arm
@@ -5354,7 +5354,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * </ul>
    * An image that only ADDS blocks - the ordinary case, a leader shipping its latest compaction - loses no id
    * and moves neither, so nothing changes and a walk crossing it reads straight through, which is what issue
-   * #8043 fixed and what {@code Issue8043SealedWalkAcrossInstallTest} pins.
+   * #8043 fixed and what {@code TimeSeriesSealedWalkTest} pins.
    * <p>
    * <b>The precondition, which lives in another module.</b> Telling the two apart by what replaced the lost ids
    * needs ONE install to carry ONE rewrite session per shard. {@code RaftReplicatedDatabase} ships a

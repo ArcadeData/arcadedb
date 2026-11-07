@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a tiny bucket interval over a wide range paid the whole scan and the whole bucket allocation and was refused
  * afterwards. The bound is now carried into the scan. What must not change is the REFUSAL - the same status and
  * the same wording, naming the setting that decided - because that is the contract a caller reads; what changes
- * is only its price, which the engine test {@code Issue7724AggregationBucketCeilingTest} pins on block counts.
+ * is only its price, which the engine test {@code TimeSeriesAggregationCeilingTest} pins on block counts.
  * <p>
  * #7717: every {@code /ts/**} handler passed {@code null} where the engine takes its read counters, so nothing
  * an operator can see recorded whether the sealed push-downs were working. This asserts they now reach the

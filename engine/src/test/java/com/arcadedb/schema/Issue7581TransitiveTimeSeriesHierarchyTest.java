@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * Once that legacy shape exists, linking a brand new, entirely ordinary super type onto the ordinary type in the
  * middle must still be refused: the new super type's properties flow down through the middle type to the
- * TIMESERIES type at the bottom, which is exactly the silent-drop {@link Issue7581TimeSeriesSupertypeTest} closes
+ * TIMESERIES type at the bottom, which is exactly the silent-drop {@code TimeSeriesColumnConstraintsTest} closes
  * for the direct case.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

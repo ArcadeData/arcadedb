@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * The client-limited arm now fetches through {@code TimeSeriesEngine.queryAscending} with {@code limit + 1}: the
  * extra row still decides {@code truncated}, and the comment now says what the unlimited arm actually costs.
  * <p>
- * The residency saving is asserted at engine level by {@code Issue7336AscendingLimitTest}, which counts the blocks
+ * The residency saving is asserted at engine level by {@code TimeSeriesAscendingDescendingLimitTest.AscendingLimit}, which counts the blocks
  * decompressed. What this class pins is that NOTHING a client can observe changed - row count, ordering, content,
  * {@code truncated}, {@code last}, {@code runningTotalEmitted} and the ceiling's refusals - because a bounded
  * fetch is only a fix if the answer is the same one.
