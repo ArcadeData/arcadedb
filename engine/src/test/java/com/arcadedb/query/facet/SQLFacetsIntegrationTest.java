@@ -619,6 +619,31 @@ class SQLFacetsIntegrationTest extends TestHelper {
     }
   }
 
+  /** The buckets of one response stay under the ceiling: the facet that would pass it, and any after it that does not fit, are unavailable. */
+  @Test
+  @Timeout(300)
+  void totalBucketsAreCapped() {
+    load(data(), 2_000);
+    final int previous = GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.getValueAsInteger();
+    try {
+      final FacetResults free = facets("SELECT FROM " + TYPE + " FACETS brand TERMS TOP 100, tags TERMS TOP 100");
+      final int brandBuckets = free.get("brand").buckets().size();
+      final int tagBuckets = free.get("tags").buckets().size();
+      assertThat(brandBuckets).isGreaterThan(1);
+      assertThat(tagBuckets).isGreaterThan(0);
+
+      GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.setValue(brandBuckets);
+      final FacetResults capped = facets("SELECT FROM " + TYPE + " FACETS brand TERMS TOP 100, tags TERMS TOP 100");
+      assertThat(capped.get("brand").source()).isNotEqualTo(FacetResult.UNAVAILABLE);
+      assertThat(capped.get("brand").buckets()).hasSize(brandBuckets);
+      assertThat(capped.get("tags").source()).isEqualTo(FacetResult.UNAVAILABLE);
+      assertThat(capped.get("tags").reason()).isEqualTo("bucket limit");
+      assertThat(capped.get("tags").buckets()).isEmpty();
+    } finally {
+      GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.setValue(previous);
+    }
+  }
+
   /** LIMIT 0 returns no row and still every facet; a WHERE false for every record gives empty, exact facets. */
   @Test
   @Timeout(300)

@@ -249,6 +249,36 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
     }
   }
 
+  /** #11353: the facet count and the total buckets of a response are capped over gRPC as they are embedded. */
+  @Test
+  void facetCountAndTotalBucketsAreCapped() {
+    final int maxFacets = GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.getValueAsInteger();
+    final int maxBuckets = GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.getValueAsInteger();
+    try {
+      final int brandBuckets;
+      try (final ResultSet rs = database.query("sql", QUERY)) {
+        brandBuckets = rs.getFacets().get("brand").buckets().size();
+      }
+      GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.setValue(brandBuckets);
+      try (final ResultSet rs = database.query("sql", QUERY)) {
+        final FacetResults facets = rs.getFacets();
+        assertThat(facets.get("brand").source()).isNotEqualTo(FacetResult.UNAVAILABLE);
+        assertThat(facets.get("tags").source()).isEqualTo(FacetResult.UNAVAILABLE);
+        assertThat(facets.get("tags").reason()).isEqualTo("bucket limit");
+      }
+
+      GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.setValue(1);
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = database.query("sql", QUERY)) {
+          rs.stream().count();
+        }
+      }).hasMessageContaining("arcadedb.columnar.maxFacetsPerQuery");
+    } finally {
+      GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.setValue(maxFacets);
+      GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.setValue(maxBuckets);
+    }
+  }
+
   @Test
   void commandCarriesFacets() {
     try (final ResultSet rs = database.command("sql", QUERY)) {

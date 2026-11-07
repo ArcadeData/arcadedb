@@ -483,6 +483,14 @@ public enum GlobalConfiguration {
       "Maximum value accepted by the TOP option of a FACETS clause. A larger value is a parse error. Default is 1000",
       Integer.class, 1000),
 
+  COLUMNAR_MAX_FACETS_PER_QUERY("arcadedb.columnar.maxFacetsPerQuery", SCOPE.SERVER,
+      "Maximum number of facets in one FACETS clause. A larger clause is a parse error. Default is 32", Integer.class, 32),
+
+  COLUMNAR_MAX_RESPONSE_BUCKETS("arcadedb.columnar.maxResponseBuckets", SCOPE.SERVER,
+      "Maximum total number of buckets the facets of one query may return. The facets are taken in declaration order: the first one "
+          + "that would take the total above the limit, and every facet after it that does not fit, is answered as unavailable with the "
+          + "reason 'bucket limit'. Default is 250000", Integer.class, 250_000),
+
   COLUMNAR_MAX_FALLBACK_SCANS("arcadedb.columnar.maxFallbackScans", SCOPE.DATABASE,
       "Maximum number of FACETS queries of a database that may run a fallback scan of the records at the same time (a facet on a "
           + "property with no COLUMNAR index, or on a bucket whose projection is unusable). Read when the database is opened. "
