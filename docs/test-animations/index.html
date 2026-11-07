@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArcadeDB HA: Raft protocol and e2e-ha test workflows</title>
+<style>
+:root{--bg:#0b1220;--panel:#141f36;--edge:#25344f;--text:#e7eefc;--muted:#8ea3c4;--blue:#41b6f7}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+header{padding:28px 32px 14px}
+h1{margin:0 0 6px;font-size:22px}
+header p{margin:0;color:var(--muted);font-size:13.5px;max-width:880px;line-height:1.55}
+main{display:grid;grid-template-columns:320px 1fr;gap:18px;padding:14px 32px 32px;align-items:start}
+nav{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:8px;
+ position:sticky;top:14px}
+nav h3{margin:12px 12px 6px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+ color:var(--muted);font-weight:600}
+nav h3:first-child{margin-top:6px}
+nav button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--muted);
+ font:inherit;font-size:13px;padding:9px 12px;border-radius:9px;cursor:pointer;line-height:1.35}
+nav button:hover{background:#ffffff0d;color:var(--text)}
+nav button.on{background:#41b6f71f;border:1px solid #41b6f766;color:var(--text);font-weight:600}
+nav button small{display:block;color:var(--muted);font-weight:400;font-size:11px;margin-top:2px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+section{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:18px}
+section h2{margin:0 0 4px;font-size:17px}
+section p.blurb{margin:0 0 12px;color:var(--muted);font-size:13px;line-height:1.5}
+object.stage{width:100%;aspect-ratio:1000/620;border-radius:12px;display:block;background:var(--bg);
+ border:0}
+p.hint{margin:10px 0 0;color:var(--muted);font-size:12px}
+p.hint kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+ border:1px solid var(--edge);border-radius:5px;padding:1px 5px;color:var(--text)}
+ul.meta{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:12px 0 0}
+ul.meta li{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+ color:var(--muted);border:1px solid var(--edge);border-radius:9px;padding:4px 9px}
+a{color:var(--blue)}
+@media (max-width:900px){main{grid-template-columns:1fr}nav{position:static}}
+</style>
+</head>
+<body>
+<header>
+  <h1>ArcadeDB HA - Raft protocol and e2e-ha test workflows</h1>
+  <p>Looping animations, two groups. <strong>Raft protocol</strong> explains the consensus algorithm as
+     this codebase implements it, with the real entry types, settings and endpoints.
+     <strong>Test workflows</strong> gives one animation per integration test in <code>e2e-ha</code>.
+     In every diagram the left rail is the sequence, the stage is the cluster, the caption bar
+     carries the contract, and the transport bar at the bottom pauses, steps and scrubs.
+     Regenerate with <code>python3 build_all.py</code>.</p>
+</header>
+<main>
+  <nav id="nav"></nav>
+  <section>
+    <h2 id="title"></h2>
+    <p class="blurb" id="blurb"></p>
+    <object id="svg" class="stage" type="image/svg+xml" data=""></object>
+    <p class="hint">Click the diagram first, then: <kbd>space</kbd> pause / resume,
+       <kbd>&larr;</kbd> <kbd>&rarr;</kbd> step scenes. The bar at the bottom of every diagram has the
+       same controls, and can be dragged to scrub.</p>
+    <ul class="meta" id="meta"></ul>
+  </section>
+</main>
+<script>
+const DIAGRAMS = [
+  {
+    "slug": "raft-leader-election",
+    "title": "Raft - leader election",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/ - RaftPropertiesBuilder, GetClusterHandler",
+    "blurb": "How a term gets a leader, why exactly one, and what a split vote costs.",
+    "scenes": 8,
+    "loop": 30
+  },
+  {
+    "slug": "raft-log-replication",
+    "title": "Raft - log replication",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/ - RaftLogEntryType, RaftTransactionBroker, ArcadeStateMachine",
+    "blurb": "The write path: what is appended, when it commits, and when the client is answered.",
+    "scenes": 8,
+    "loop": 31
+  },
+  {
+    "slug": "raft-quorum-and-partitions",
+    "title": "Raft - quorum, partitions and split-brain",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/ - Quorum, RaftHAServer; exercised by SplitBrainIT",
+    "blurb": "What a majority buys, what happens on each side of a partition, and how a rejoin resolves.",
+    "scenes": 8,
+    "loop": 31
+  },
+  {
+    "slug": "raft-in-arcadedb",
+    "title": "Raft - how ArcadeDB wires it up",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/, GlobalConfiguration, server/.../LeaderCommandForwarder",
+    "blurb": "The mapping from the algorithm to this codebase: what runs where, and on which setting.",
+    "scenes": 7,
+    "loop": 28
+  },
+  {
+    "slug": "simple-ha-scenario",
+    "title": "SimpleHaScenarioIT - twoNodeRaftReplication()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/SimpleHaScenarioIT.java",
+    "methods": [
+      "twoNodeRaftReplication"
+    ],
+    "source": null,
+    "blurb": "The baseline: two nodes, one leader, schema and data must reach the follower.",
+    "scenes": 8,
+    "loop": 28
+  },
+  {
+    "slug": "three-instances-scenario",
+    "title": "ThreeInstancesScenarioIT - threeNodeReplication()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/ThreeInstancesScenarioIT.java",
+    "methods": [
+      "threeNodeReplication"
+    ],
+    "source": null,
+    "blurb": "Three nodes, writes issued from all of them, absolute counts then equality.",
+    "scenes": 9,
+    "loop": 31
+  },
+  {
+    "slug": "load-three-instances-scenario",
+    "title": "LoadThreeInstancesScenarioIT - threeNodeReplication()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/LoadThreeInstancesScenarioIT.java",
+    "methods": [
+      "threeNodeReplication",
+      "threeNodeReplicationMulti"
+    ],
+    "source": null,
+    "blurb": "The volume variant: 500-user batches per node, plus a threaded run with friendships and likes.",
+    "scenes": 9,
+    "loop": 31
+  },
+  {
+    "slug": "drop-database-scenario",
+    "title": "DropDatabaseScenarioIT - dropDatabaseReplicatedAcrossCluster()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/DropDatabaseScenarioIT.java",
+    "methods": [
+      "dropDatabaseReplicatedAcrossCluster"
+    ],
+    "source": null,
+    "blurb": "Drop issued on a replica, so the forward-to-leader path is what is really under test.",
+    "scenes": 9,
+    "loop": 31
+  },
+  {
+    "slug": "import-database-scenario",
+    "title": "ImportDatabaseScenarioIT - importDatabaseReplicatedAcrossCluster()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/ImportDatabaseScenarioIT.java",
+    "methods": [
+      "importDatabaseReplicatedAcrossCluster"
+    ],
+    "source": null,
+    "blurb": "An import runs on the leader and reaches the peers as ordinary replicated transactions.",
+    "scenes": 7,
+    "loop": 25
+  },
+  {
+    "slug": "restore-database-scenario",
+    "title": "RestoreDatabaseScenarioIT - restoreDatabaseReplicatedAcrossCluster()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/RestoreDatabaseScenarioIT.java",
+    "methods": [
+      "restoreDatabaseReplicatedAcrossCluster"
+    ],
+    "source": null,
+    "blurb": "Backup on node 0, drop everywhere, force leadership back, restore, verify all three.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "user-management-scenario",
+    "title": "UserManagementScenarioIT - userCreateAndDropReplicatedAcrossCluster()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/UserManagementScenarioIT.java",
+    "methods": [
+      "userCreateAndDropReplicatedAcrossCluster"
+    ],
+    "source": null,
+    "blurb": "Security replication measured the only way that counts: by logging in on each peer.",
+    "scenes": 8,
+    "loop": 28
+  },
+  {
+    "slug": "user-seed-on-peer-add-scenario",
+    "title": "UserSeedOnPeerAddScenarioIT - peerAddEndpointPreservesExistingUsers()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/UserSeedOnPeerAddScenarioIT.java",
+    "methods": [
+      "peerAddEndpointPreservesExistingUsers"
+    ],
+    "source": null,
+    "blurb": "A wiring smoke test for /api/v1/cluster/peer that must leave user state intact.",
+    "scenes": 7,
+    "loop": 25
+  },
+  {
+    "slug": "leader-failover",
+    "title": "LeaderFailoverIT - leaderFailover()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/LeaderFailoverIT.java",
+    "methods": [
+      "leaderFailover",
+      "repeatedLeaderFailures",
+      "leaderFailoverDuringWrites"
+    ],
+    "source": null,
+    "blurb": "The leader is stopped outright; the majority must elect, keep writing, and re-absorb it.",
+    "scenes": 11,
+    "loop": 39
+  },
+  {
+    "slug": "rolling-restart",
+    "title": "RollingRestartIT - rollingRestart()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/RollingRestartIT.java",
+    "methods": [
+      "rollingRestart",
+      "rapidRollingRestart",
+      "rollingRestartWithContinuousWrites"
+    ],
+    "source": null,
+    "blurb": "Zero-downtime maintenance: one node down at a time, writes continuing throughout.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "network-partition",
+    "title": "NetworkPartitionIT - leaderPartitionWithQuorum()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkPartitionIT.java",
+    "methods": [
+      "leaderPartitionWithQuorum",
+      "singleFollowerPartition",
+      "noQuorumScenario"
+    ],
+    "source": null,
+    "blurb": "Docker network disconnect as a real partition: who may still write, and who catches up.",
+    "scenes": 10,
+    "loop": 36
+  },
+  {
+    "slug": "network-partition-recovery",
+    "title": "NetworkPartitionRecoveryIT - partitionRecovery()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkPartitionRecoveryIT.java",
+    "methods": [
+      "partitionRecovery",
+      "multiplePartitionCycles",
+      "asymmetricPartitionRecovery"
+    ],
+    "source": null,
+    "blurb": "The minority never wrote, so healing is a replay - no conflict resolution exists or is needed.",
+    "scenes": 10,
+    "loop": 35
+  },
+  {
+    "slug": "split-brain",
+    "title": "SplitBrainIT - splitBrainPrevention()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/SplitBrainIT.java",
+    "methods": [
+      "splitBrainPrevention",
+      "completePartitionNoQuorum",
+      "clusterReformation",
+      "quorumLossRecovery"
+    ],
+    "source": null,
+    "blurb": "Quorum enforcement: divergent writes are impossible, so healing is truncate-and-replay.",
+    "scenes": 10,
+    "loop": 36
+  },
+  {
+    "slug": "network-delay",
+    "title": "NetworkDelayIT - symmetricDelay()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkDelayIT.java",
+    "methods": [
+      "symmetricDelay",
+      "asymmetricLeaderDelay",
+      "highLatencyWithJitter",
+      "extremeLatency"
+    ],
+    "source": null,
+    "blurb": "Latency injected on port 2434 only, so consensus slows down while HTTP stays fast.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "packet-loss",
+    "title": "PacketLossIT - lowPacketLoss()",
+    "group": "Test workflows",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/PacketLossIT.java",
+    "methods": [
+      "lowPacketLoss",
+      "moderatePacketLoss",
+      "highPacketLoss",
+      "directionalPacketLoss",
+      "intermittentPacketLoss"
+    ],
+    "source": null,
+    "blurb": "Dropped consensus traffic at 5% to 50%, one-way and intermittent.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "single-server-load",
+    "title": "SingleServerLoadTestIT - singleServerLoadTest(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleServerLoadTestIT.java",
+    "methods": [
+      "singleServerLoadTest"
+    ],
+    "source": null,
+    "blurb": "The full single-node load run: users, photos, friendships and likes, asserted exactly.",
+    "scenes": 7,
+    "loop": 27
+  },
+  {
+    "slug": "single-server-simple-load",
+    "title": "SingleServerSimpleLoadTestIT - singleServerLoadTest(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleServerSimpleLoadTestIT.java",
+    "methods": [
+      "singleServerLoadTest"
+    ],
+    "source": null,
+    "blurb": "The short arm: a single client stream writing users and photos, asserted exactly.",
+    "scenes": 4,
+    "loop": 14
+  },
+  {
+    "slug": "single-localhost-load",
+    "title": "SingleLocalhostServerSimpleLoadTestIT - singleServerLoadTest()",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleLocalhostServerSimpleLoadTestIT.java",
+    "methods": [
+      "singleServerLoadTest"
+    ],
+    "source": null,
+    "blurb": "The manual benchmark: a 16G server on localhost, 250K photos, edges after a head start.",
+    "scenes": 5,
+    "loop": 19
+  },
+  {
+    "slug": "single-server-timeseries-load",
+    "title": "SingleServerTimeSeriesLoadTestIT - singleServerTimeSeriesLoadTest(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleServerTimeSeriesLoadTestIT.java",
+    "methods": [
+      "singleServerTimeSeriesLoadTest"
+    ],
+    "source": null,
+    "blurb": "Time series ingestion under load, and which of its query results are deterministic.",
+    "scenes": 5,
+    "loop": 20
+  },
+  {
+    "slug": "three-nodes-load",
+    "title": "ThreeNodesLoadTestIT - threeNodeReplication(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/ThreeNodesLoadTestIT.java",
+    "methods": [
+      "threeNodeReplication",
+      "threeNodeReplicationWithMaterializedView"
+    ],
+    "source": null,
+    "blurb": "HA under load: writers on the leader, convergence, per-node exact counts and log signatures.",
+    "scenes": 8,
+    "loop": 31
+  },
+  {
+    "slug": "three-nodes-timeseries-load",
+    "title": "ThreeNodesTimeSeriesLoadTestIT - threeNodeTimeSeriesReplication(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/ThreeNodesTimeSeriesLoadTestIT.java",
+    "methods": [
+      "threeNodeTimeSeriesReplication"
+    ],
+    "source": null,
+    "blurb": "TS load plus replication: ingest on one protocol, read back on HTTP from all three nodes.",
+    "scenes": 5,
+    "loop": 20
+  }
+];
+const REPO = "../..";
+const nav = document.getElementById('nav');
+const buttons = [];
+function show(i) {
+  const d = DIAGRAMS[i];
+  document.getElementById('title').textContent = d.title;
+  document.getElementById('blurb').textContent = d.blurb;
+  const obj = document.getElementById('svg');
+  obj.data = d.slug + '.svg?' + Date.now();  // reload, so the animation restarts from scene 1
+  obj.setAttribute('aria-label', d.title);
+  const meta = ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>'];
+  if (d.methods.length)
+    meta.push('<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>');
+  if (d.java) meta.push('<li><a href="' + REPO + '/' + d.java + '">'
+    + d.java.split('/').pop() + '</a></li>');
+  if (d.source) meta.push('<li>' + d.source + '</li>');
+  document.getElementById('meta').innerHTML = meta.join('');
+  buttons.forEach((b, j) => b.classList.toggle('on', i === j));
+  location.hash = d.slug;
+}
+let group = null;
+DIAGRAMS.forEach((d, i) => {
+  if (d.group !== group) {
+    group = d.group;
+    const h = document.createElement('h3');
+    h.textContent = group;
+    nav.appendChild(h);
+  }
+  const b = document.createElement('button');
+  const parts = d.title.split(' - ');
+  b.innerHTML = parts[0] + '<small>' + parts.slice(1).join(' - ') + '</small>';
+  b.onclick = () => show(i);
+  nav.appendChild(b);
+  buttons.push(b);
+});
+const from = DIAGRAMS.findIndex(d => d.slug === location.hash.slice(1));
+show(from >= 0 ? from : 0);
+</script>
+</body>
+</html>
