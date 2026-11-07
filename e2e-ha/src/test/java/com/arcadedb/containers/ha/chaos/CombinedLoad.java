@@ -55,6 +55,12 @@ public final class CombinedLoad implements LoadGenerator {
   }
 
   @Override
+  public void routeAround(final long nodeMask) {
+    for (final LoadGenerator member : members)
+      member.routeAround(nodeMask);
+  }
+
+  @Override
   public long acked() {
     return members.get(0).acked();
   }

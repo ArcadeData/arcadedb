@@ -173,6 +173,72 @@ class WorkloadTest {
     assertThat(bodies).anySatisfy(body -> assertThat(body).contains("\"language\":\"sqlscript\"").contains("\"target\""));
   }
 
+  /** Node 0 is the live server, node 1 refuses connections: a write sent to it is FAILED. */
+  private Endpoints liveAndRefusing(final int closedPort) {
+    final Endpoint live = new Endpoint("127.0.0.1", server.getAddress().getPort());
+    final Endpoint refusing = new Endpoint("127.0.0.1", closedPort);
+    return new Endpoints() {
+      @Override
+      public int size() {
+        return 2;
+      }
+
+      @Override
+      public Endpoint endpoint(final int node) {
+        return node == 0 ? live : refusing;
+      }
+    };
+  }
+
+  private static int freeClosedPort() throws IOException {
+    try (final ServerSocket socket = new ServerSocket(0)) {
+      return socket.getLocalPort();
+    }
+  }
+
+  private static long countOutcome(final Ledger ledger, final int writer, final byte outcome) {
+    long count = 0;
+    for (int seq = 0; seq < ledger.size(writer); seq++)
+      if (ledger.outcome(Ledger.key(writer, seq)) == outcome)
+        ++count;
+    return count;
+  }
+
+  @Test
+  void routedAroundNodeIsNotWrittenToExceptByTheBlindWriter() throws IOException {
+    final Ledger ledger = new Ledger(2);
+    try (final Workload workload = workload(ledger, liveAndRefusing(freeClosedPort()), 2_000)) {
+      workload.routeAround(1L << 1);
+      workload.start();
+      await().atMost(Duration.ofSeconds(20)).until(() -> countOutcome(ledger, 1, Ledger.FAILED) >= 5);
+    }
+    assertThat(countOutcome(ledger, 0, Ledger.FAILED)).as("writer 0 must avoid the routed-around node").isZero();
+    assertThat(countOutcome(ledger, 0, Ledger.ACKED)).isPositive();
+    assertThat(countOutcome(ledger, 1, Ledger.FAILED)).as("the last writer stays blind to keep the frozen-node coverage").isPositive();
+  }
+
+  @Test
+  void routingAroundEveryNodeFallsBackToAnyNode() throws IOException {
+    final Ledger ledger = new Ledger(2);
+    try (final Workload workload = workload(ledger, liveAndRefusing(freeClosedPort()), 2_000)) {
+      workload.routeAround(0b11);
+      workload.start();
+      await().atMost(Duration.ofSeconds(20)).until(() -> ledger.count(Ledger.ACKED) >= 5);
+    }
+  }
+
+  @Test
+  void clearingTheRouteLetsEveryWriterReachTheNodeAgain() throws IOException {
+    final Ledger ledger = new Ledger(2);
+    try (final Workload workload = workload(ledger, liveAndRefusing(freeClosedPort()), 2_000)) {
+      workload.routeAround(1L << 1);
+      workload.start();
+      await().atMost(Duration.ofSeconds(20)).until(() -> ledger.count(Ledger.ACKED) >= 20);
+      workload.routeAround(0);
+      await().atMost(Duration.ofSeconds(20)).until(() -> countOutcome(ledger, 0, Ledger.FAILED) >= 1);
+    }
+  }
+
   @Test
   void outcomeClassification() {
     assertThat(OpOutcome.fromStatus(200)).isEqualTo(Ledger.ACKED);

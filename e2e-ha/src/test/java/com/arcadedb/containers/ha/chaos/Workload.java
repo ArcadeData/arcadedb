@@ -33,6 +33,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * transaction (20%), record the outcome, think briefly. Each operation is attempted exactly once. Writers pick any node
  * whatever its state: writes to a stopped node fail fast, writes to a paused one time out as UNKNOWN, writes to a
  * follower exercise leader forwarding. Each writer has its own Random derived from the seed.
+ * <p>
+ * While the runner holds a node frozen ({@link #routeAround}), every writer but the last avoids it: the runner reads the
+ * acknowledgements as the cluster's availability, and writers stuck on a frozen node for their whole read timeout would make
+ * that a measure of their luck (issue #11377). With more than one writer the last one stays blind, so a write to a frozen node still ends UNKNOWN and
+ * reaches the checkpoint's resolution of unknown outcomes.
  */
 public final class Workload implements LoadGenerator {
   private static final int  DEFAULT_CONNECT_TIMEOUT_MS = 2_000;
@@ -51,6 +56,7 @@ public final class Workload implements LoadGenerator {
   private final ReentrantReadWriteLock gate    = new ReentrantReadWriteLock(true);
   private final AtomicBoolean          running = new AtomicBoolean();
   private final List<Thread>           threads = new ArrayList<>();
+  private volatile long                routedAroundMask;
 
   public Workload(final ChaosConfig config, final Ledger ledger, final Endpoints endpoints, final String database) {
     this(config, ledger, endpoints, database, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS, DEFAULT_THINK_MS);
@@ -99,8 +105,29 @@ public final class Workload implements LoadGenerator {
     }
   }
 
+  @Override
+  public void routeAround(final long nodeMask) {
+    routedAroundMask = nodeMask;
+  }
+
+  private int pickNode(final int writer, final Random random) {
+    final int nodes = endpoints.size();
+    final long avoided = config.writers() > 1 && writer == config.writers() - 1 ? 0 : routedAroundMask;
+    int allowed = 0;
+    for (int i = 0; i < nodes; i++)
+      if ((avoided & (1L << i)) == 0)
+        ++allowed;
+    if (allowed == 0)
+      return random.nextInt(nodes);
+    int pick = random.nextInt(allowed);
+    for (int i = 0; i < nodes; i++)
+      if ((avoided & (1L << i)) == 0 && pick-- == 0)
+        return i;
+    throw new IllegalStateException("No node picked among " + allowed + " allowed");
+  }
+
   private void operation(final int writer, final Random random) {
-    final int node = random.nextInt(endpoints.size());
+    final int node = pickNode(writer, random);
     final long target = random.nextInt(100) < PAIR_PERCENT ? ledger.randomAckedKey(writer, random) : -1;
     final boolean pair = target >= 0;
     final long key = ledger.reserve(writer, pair);

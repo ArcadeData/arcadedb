@@ -31,6 +31,14 @@ public interface LoadGenerator extends AutoCloseable {
 
   void resume();
 
+  /**
+   * Tells the load which nodes are frozen (a bit per node index): a write sent to one blocks for its whole read timeout, so
+   * a load whose acknowledgements are read as the cluster's availability signal must stop counting on them. An empty mask
+   * lifts it. A load that does not route by node ignores it.
+   */
+  default void routeAround(final long nodeMask) {
+  }
+
   /** @return operations acknowledged so far, including late commits found at checkpoints */
   long acked();
 

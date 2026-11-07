@@ -166,20 +166,31 @@ public final class ChaosRunner {
     final Duration drawn = between(random, config.holdMin(), config.holdMax());
     final Duration hold = drawn.compareTo(fault.minHold()) < 0 ? fault.minHold() : drawn;
     long ackedDuringHold = -1;
-    if (fault.expectsWritesAvailable()) {
-      sleeper.sleep(config.availabilityGrace());
-      final long ackedAtGrace = load.acked();
-      final Duration rest = hold.minus(config.availabilityGrace());
-      sleeper.sleep(rest.compareTo(MIN_AVAILABILITY_WINDOW) < 0 ? MIN_AVAILABILITY_WINDOW : rest);
-      ackedDuringHold = load.acked() - ackedAtGrace;
-      if (ackedDuringHold <= 0) {
-        failIfANodeIsUnhealthy(step);
-        throw new ChaosFailure(ResultKind.AVAILABILITY,
-            "No write acknowledged during fault '" + fault.name() + "' " + targets + " after the " + config.availabilityGrace()
-                + " election grace (step " + step + "). Nodes report: " + control.leaderView());
-      }
-    } else
-      sleeper.sleep(hold);
+    // Writers stuck on a frozen node for their whole read timeout would make the acknowledgement count below a measure of their
+    // luck, not of the cluster (issue #11377): they route around it until the fault is healed. A write already blocked when the
+    // fault landed ends within its read timeout, which the availability grace is expected to outlast
+    final long frozen = frozenNodes();
+    if (frozen != 0)
+      load.routeAround(frozen);
+    try {
+      if (fault.expectsWritesAvailable()) {
+        sleeper.sleep(config.availabilityGrace());
+        final long ackedAtGrace = load.acked();
+        final Duration rest = hold.minus(config.availabilityGrace());
+        sleeper.sleep(rest.compareTo(MIN_AVAILABILITY_WINDOW) < 0 ? MIN_AVAILABILITY_WINDOW : rest);
+        ackedDuringHold = load.acked() - ackedAtGrace;
+        if (ackedDuringHold <= 0) {
+          failIfANodeIsUnhealthy(step);
+          throw new ChaosFailure(ResultKind.AVAILABILITY,
+              "No write acknowledged during fault '" + fault.name() + "' " + targets + " after the " + config.availabilityGrace()
+                  + " election grace (step " + step + "). Nodes report: " + control.leaderView());
+        }
+      } else
+        sleeper.sleep(hold);
+    } finally {
+      if (frozen != 0)
+        load.routeAround(0);
+    }
 
     try {
       fault.heal(state, control);
@@ -238,6 +249,15 @@ public final class ChaosRunner {
         "Raft storage reformatted during fault '" + fault.name() + "' " + targets + " (step " + step + "): " + census.nodes()
             + "; the node should have caught up, or been recovered in place keeping its log", new long[0]));
     return fromViolations(violations, step);
+  }
+
+  /** A bit per node the fault froze: a connection to it is accepted and never answered, unlike a stopped node's refusal. */
+  private long frozenNodes() {
+    long mask = 0;
+    for (int i = 0; i < state.size(); i++)
+      if (state.state(i) == ClusterState.NodeState.PAUSED)
+        mask |= 1L << i;
+    return mask;
   }
 
   /**

@@ -213,6 +213,32 @@ class ChaosRunnerTest {
   }
 
   @Test
+  void writersRouteAroundAFrozenNodeForTheHoldOnly() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "pause", "chaos.maxSteps", "1"));
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    final int frozen = harness.control().calls.stream().filter(call -> call.startsWith("pause:"))
+        .mapToInt(call -> Integer.parseInt(call.substring("pause:".length()))).findFirst().orElseThrow();
+    assertThat(harness.load().routedAround).containsExactly(1L << frozen, 0L);
+  }
+
+  @Test
+  void routeIsLiftedEvenWhenTheAvailabilityCheckFails() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "pause", "chaos.maxSteps", "1"));
+    for (int i = 0; i < ChaosRunner.WARMUP_ACKS; i++)
+      harness.ledger().record(harness.ledger().reserve(0, false), Ledger.ACKED);
+    harness.load().progress = false;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(harness.load().routedAround).hasSize(2).last().isEqualTo(0L);
+  }
+
+  @Test
+  void writersKeepEveryNodeWhenNothingIsFrozen() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "kill", "chaos.maxSteps", "1"));
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(harness.load().routedAround).isEmpty();
+  }
+
+  @Test
   void longPauseHoldsTheFollowerFrozenLongerThanTheRatisCloseThreshold() throws IOException {
     final Harness harness = harness(config("chaos.faults", "longpause", "chaos.maxSteps", "1", "chaos.holdMin", "PT10S",
         "chaos.holdMax", "PT10S", "chaos.availabilityGrace", "PT5S"));

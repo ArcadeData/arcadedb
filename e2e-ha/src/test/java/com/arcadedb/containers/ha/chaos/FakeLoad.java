@@ -19,6 +19,9 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Load generator that, while {@code progress} is set, acknowledges one new write each time {@link #acked()} is read,
  * which is how the runner observes progress.
@@ -29,6 +32,8 @@ final class FakeLoad implements LoadGenerator {
   int     quiesced;
   int     resumed;
   boolean closed;
+  /** Every mask handed to {@link #routeAround(long)}, in order. */
+  final List<Long> routedAround = new ArrayList<>();
 
   FakeLoad(final Ledger ledger) {
     this.ledger = ledger;
@@ -53,6 +58,11 @@ final class FakeLoad implements LoadGenerator {
     if (progress && !closed)
       ledger.record(ledger.reserve(0, false), Ledger.ACKED);
     return ledger.count(Ledger.ACKED) + ledger.count(Ledger.ACKED_LATE);
+  }
+
+  @Override
+  public void routeAround(final long nodeMask) {
+    routedAround.add(nodeMask);
   }
 
   @Override
