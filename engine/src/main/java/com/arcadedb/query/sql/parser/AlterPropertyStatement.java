@@ -150,7 +150,8 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("oldValue", oldValue);
       result.setProperty("newValue", finalValue);
     } else
-      throw new SchemaException("Property '" + property + "' not found on type '" + typez + "'");
+      // neither a custom attribute nor a setting: the statement says nothing to alter (the property was found above)
+      throw new CommandExecutionException("ALTER PROPERTY " + typez.getName() + "." + property.getName() + " names neither a setting nor a custom attribute to alter");
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

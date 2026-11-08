@@ -67,6 +67,9 @@ class MissingObjectRefusalCensusTest {
 
   /** The reviewed constructions, as {@code class#method} relative to {@code com/arcadedb}, each with why it stays. */
   private static final Map<String, String> REVIEWED = new TreeMap<>(Map.ofEntries(//
+      Map.entry("query/opencypher/query/OpenCypherQueryEngine#missingUser",
+          "carries an IllegalArgumentException as its cause, which every protocol reads (VALIDATION), and keeps the message the "
+              + "Cypher command() rewrap would otherwise replace"),
       Map.entry("database/DatabaseContext#getContext", "no transaction context on the current thread: an engine invariant, a server fault"),
       Map.entry("engine/LocalBucket#checkRestoreTargetIsFree",
           "the page a restore targets is past the end of its bucket: the precondition of the restore protocol, not a name looked up"),

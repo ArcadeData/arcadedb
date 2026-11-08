@@ -1364,20 +1364,31 @@ public class OpenCypherQueryEngine implements QueryEngine {
         security.dropUser(admin.getUserName());
       } else {
         if (!security.existsUser(admin.getUserName()))
-          throw new IllegalArgumentException("User '" + admin.getUserName() + "' does not exist");
+          throw missingUser(admin.getUserName());
         security.dropUser(admin.getUserName());
       }
       break;
     }
     case ALTER_USER: {
       if (!security.existsUser(admin.getUserName()))
-        throw new IllegalArgumentException("User '" + admin.getUserName() + "' does not exist");
+        throw missingUser(admin.getUserName());
       security.setUserPassword(admin.getUserName(), admin.getPassword());
       break;
     }
     }
 
     return resultSet;
+  }
+
+  /**
+   * The refusal of DROP USER / ALTER USER naming a user the server does not have: the caller's mistake (Neo4j answers it
+   * {@code InvalidArguments}), so the {@link IllegalArgumentException} under it decides the category on every protocol (issue
+   * #11384), while the {@link CommandExecutionException} on top keeps the message through the rewrap of {@code command()}, which
+   * passes that type through as it is, and keeps the type embedded callers catch.
+   */
+  private static CommandExecutionException missingUser(final String userName) {
+    final String message = "User '" + userName + "' does not exist";
+    return new CommandExecutionException(message, new IllegalArgumentException(message));
   }
 
   /**
