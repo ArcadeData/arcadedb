@@ -27,6 +27,7 @@ import com.arcadedb.database.DocumentValidator.StoredValueConstraints;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -66,7 +67,7 @@ public class AlterPropertyStatement extends DDLStatement {
 
     final Property property = typez.getProperty(propertyName.getStringValue());
     if (property == null)
-      throw new CommandExecutionException("Property '" + propertyName + "' not found on type " + typez);
+      throw new SchemaException("Property '" + propertyName + "' not found on type " + typez);
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("type", typeName.getStringValue());
@@ -149,7 +150,7 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("oldValue", oldValue);
       result.setProperty("newValue", finalValue);
     } else
-      throw new CommandExecutionException("Property '" + property + "' not found on type '" + typez + "'");
+      throw new SchemaException("Property '" + property + "' not found on type '" + typez + "'");
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

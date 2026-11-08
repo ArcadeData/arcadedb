@@ -26,7 +26,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -132,7 +133,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     if (name.getStringValue().startsWith("$")) {
       final Object resolved = context.getVariable(name.getStringValue());
       if (resolved == null)
-        throw new CommandExecutionException("Variable '" + name.getStringValue() + "' naming the type to create is not defined");
+        throw new CommandSemanticException("Variable '" + name.getStringValue() + "' naming the type to create is not defined");
       typeName = resolved.toString();
     } else
       typeName = name.getStringValue();
@@ -323,7 +324,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     if (supertypes != null) {
       for (final Identifier superType : supertypes) {
         if (!schema.existsType(superType.getStringValue())) {
-          throw new CommandExecutionException("Supertype '" + superType + "' not found");
+          throw new SchemaException("Supertype '" + superType + "' not found");
         }
       }
     }

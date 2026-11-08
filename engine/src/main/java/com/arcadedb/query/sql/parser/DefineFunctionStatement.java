@@ -177,5 +177,12 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     result = 31 * result + (language != null ? language.hashCode() : 0);
     return result;
   }
+
+  /** Defining a function answers a row describing it, where PostgreSQL's CREATE FUNCTION answers a bare tag (issue #11385). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=bbc914f66e96822dedc7e89e14240872 (do not edit this line) */

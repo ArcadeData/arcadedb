@@ -20,7 +20,6 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -214,7 +213,7 @@ class Issue7163DatabaseScopeCallbackTest {
     final String logFormatBefore = GlobalConfiguration.SERVER_LOG_FORMAT.getValueAsString();
 
     assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.server.logFormat` 'json'").close())
-        .isInstanceOf(DatabaseOperationException.class)
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("SERVER")
         .hasMessageContaining("SET SERVER SETTING");
 
@@ -224,7 +223,7 @@ class Issue7163DatabaseScopeCallbackTest {
         .as("nor stored a server setting in this database").isFalse();
 
     assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.profile` 'low-ram'").close())
-        .isInstanceOf(DatabaseOperationException.class).hasMessageContaining("JVM");
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("JVM");
   }
 
   /** The DATABASE-scoped settings it exists for keep working. */

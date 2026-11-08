@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -168,18 +169,26 @@ public class InsertExecutionPlanner {
       if (bucket == null)
         // Now that the unknown-name / unknown-id cases actually reach this branch, "not specified" would be a lie
         // for two of the three ways to get here: the target WAS specified, it just does not exist.
-        throw new CommandSQLParsingException(resolvedName != null ?
-            "Target bucket '" + resolvedName + "' not found" :
-            targetBucket.getBucketNumber() != null ?
-                "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
-                // Same wording as handleInsertSelect below: it is the bucket that is missing, and the two paths
-                // answer the same question.
-                "Target bucket not specified");
+        throw missingTargetBucket(resolvedName);
 
       targetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
 
     result.chain(new CreateRecordStep(targetType.getStringValue(), context, tot));
+  }
+
+  /**
+   * The refusal of a target bucket that resolves to no bucket, the same for both insert paths: a name or an id no bucket has is a
+   * missing schema object, a {@link SchemaException} as DROP BUCKET raises for it (issue #11384), where the
+   * {@link CommandSQLParsingException} it was answered as a syntax error ({@code 42601} on the Postgres wire); a target with
+   * neither is the statement's own mistake.
+   */
+  private RuntimeException missingTargetBucket(final String resolvedName) {
+    if (resolvedName != null)
+      return new SchemaException("Target bucket '" + resolvedName + "' not found");
+    if (targetBucket.getBucketNumber() != null)
+      return new SchemaException("Target bucket with id " + targetBucket.getBucketNumber() + " not found");
+    return new CommandSQLParsingException("Target bucket not specified");
   }
 
   /**
@@ -221,14 +230,8 @@ public class InsertExecutionPlanner {
       // `else bucket = null` arm, so an unknown bucket lost its message to a generic SchemaException and a target
       // with neither name nor number unboxed null on getBucketNumber(). And its message named nothing.
       final com.arcadedb.engine.Bucket bucket = findTargetBucket(context);
-      if (bucket == null) {
-        final String resolvedName = resolveBucketName(targetBucket, context);
-        throw new CommandSQLParsingException(resolvedName != null ?
-            "Target bucket '" + resolvedName + "' not found" :
-            targetBucket.getBucketNumber() != null ?
-                "Target bucket with id " + targetBucket.getBucketNumber() + " not found" :
-                "Target bucket not specified");
-      }
+      if (bucket == null)
+        throw missingTargetBucket(resolveBucketName(targetBucket, context));
 
       effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }

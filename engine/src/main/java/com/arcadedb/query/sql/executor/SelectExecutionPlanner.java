@@ -28,6 +28,7 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -2055,7 +2056,7 @@ public class SelectExecutionPlanner {
     final String indexName = indexIdentifier.getIndexName();
     final RangeIndex index = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
-      throw new CommandExecutionException("Index not found: " + indexName);
+      throw new SchemaException("Index not found: " + indexName);
     }
 
     List<Integer> filterClusterIds = null;
@@ -2168,7 +2169,7 @@ public class SelectExecutionPlanner {
       else if (name.startsWith("index:"))
         plan.chain(new FetchFromSchemaIndexDetailStep(metadata.getName().substring("index:".length()), context));
       else
-        throw new CommandExecutionException("Invalid metadata: " + metadata.getName());
+        throw new SchemaException("Invalid metadata: " + metadata.getName());
     }
     }
   }
@@ -4535,7 +4536,7 @@ public class SelectExecutionPlanner {
 
     final DocumentType typez = context.getDatabase().getSchema().getType(queryTarget.getStringValue());
     if (typez == null)
-      throw new CommandExecutionException("Type not found: " + queryTarget);
+      throw new SchemaException("Type not found: " + queryTarget);
 
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return false;
@@ -5130,7 +5131,7 @@ public class SelectExecutionPlanner {
 
     final DocumentType typez = context.getDatabase().getSchema().getType(queryTarget.getStringValue());
     if (typez == null)
-      throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
+      throw new SchemaException("Type not found: " + queryTarget.getStringValue());
 
     for (final TypeIndex idx : plannableIndexes(typez.getAllIndexes(true))) {
       final List<String> indexFields;
@@ -5325,7 +5326,7 @@ public class SelectExecutionPlanner {
 
     final DocumentType typez = context.getDatabase().getSchema().getType(targetType.getStringValue());
     if (typez == null)
-      throw new CommandExecutionException("Cannot find type '" + targetType + "'");
+      throw new SchemaException("Cannot find type '" + targetType + "'");
 
     if (context.getDatabase().countType(typez.getName(), false) > 0 || typez.getSubTypes().isEmpty() || isDiamondHierarchy(typez))
       return false;
@@ -5379,7 +5380,7 @@ public class SelectExecutionPlanner {
       result = new ArrayList<>();
       final DocumentType typez = context.getDatabase().getSchema().getType(targetType);
       if (typez == null)
-        throw new CommandExecutionException("Cannot find class " + targetType);
+        throw new SchemaException("Cannot find class " + targetType);
 
       if (context.getDatabase().countType(typez.getName(), false) != 0 || typez.getSubTypes().size() == 0 || isDiamondHierarchy(
           typez))
@@ -5419,7 +5420,7 @@ public class SelectExecutionPlanner {
 
     final DocumentType typez = context.getDatabase().getSchema().getType(targetType);
     if (typez == null)
-      throw new CommandExecutionException("Cannot find type " + targetType);
+      throw new SchemaException("Cannot find type " + targetType);
 
     final List<TypeIndex> indexes = plannableIndexes(typez.getAllIndexes(true));
 
@@ -6713,7 +6714,7 @@ public class SelectExecutionPlanner {
       }
 
       if (bucketId == null)
-        throw new CommandExecutionException("Bucket '" + parserBucket + "' does not exist");
+        throw new SchemaException("Bucket '" + parserBucket + "' does not exist");
 
       final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context);
       if (Boolean.TRUE.equals(orderByRidAsc))
@@ -6737,7 +6738,7 @@ public class SelectExecutionPlanner {
         }
 
         if (bucketId == null) {
-          throw new CommandExecutionException("Bucket '" + parserBucket + "' does not exist");
+          throw new SchemaException("Bucket '" + parserBucket + "' does not exist");
         }
         bucketIds[i] = bucketId;
       }
@@ -6956,7 +6957,7 @@ public class SelectExecutionPlanner {
       final String indexName = item.getIndex().getIndexName();
       final Index idx = db.getSchema().getIndexByName(indexName);
       if (idx == null)
-        throw new CommandExecutionException("Index '" + indexName + "' does not exist");
+        throw new SchemaException("Index '" + indexName + "' does not exist");
 
       if (idx instanceof TypeIndex index) {
         for (final Index subIdx : index.getSubIndexes())

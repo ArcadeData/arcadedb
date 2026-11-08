@@ -168,5 +168,12 @@ public class DeleteStatement extends Statement {
   protected Set<OperationType> getOperationTypesItself() {
     return CollectionUtils.singletonSet(OperationType.DELETE);
   }
+
+  /** The count of a DELETE with no RETURN BEFORE only acknowledges the write (issue #11017). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return !isReturnBefore();
+  }
+
 }
 /* JavaCC - OriginalChecksum=5fb4ca5ba648e6c9110f41d806206a6f (do not edit this line) */

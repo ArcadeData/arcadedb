@@ -63,5 +63,12 @@ public class RollbackStatement extends SimpleExecStatement {
   public int hashCode() {
     return 0;
   }
+
+  /** The row only reports the transaction control, where PostgreSQL's ROLLBACK answers a bare tag. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=7efe0306e0cec51e035d64cad02ebc30 (do not edit this line) */

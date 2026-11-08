@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -82,10 +83,11 @@ public class RestoreEdgeStatement extends SimpleExecStatement {
 
     // existsRecord, not lookupByRID: the latter's loadContent=false mode builds a lazy proxy without verifying the
     // record is actually there, so it never raises RecordNotFoundException for a made-up RID.
+    // A missing endpoint is a record that does not exist, not a statement that cannot be read (issue #11384)
     if (!recordExists(database, out))
-      throw new CommandSQLParsingException("Cannot restore edge " + rid + ": FROM vertex " + out + " does not exist");
+      throw new RecordNotFoundException("Cannot restore edge " + rid + ": FROM vertex " + out + " does not exist", out);
     if (!recordExists(database, in))
-      throw new CommandSQLParsingException("Cannot restore edge " + rid + ": TO vertex " + in + " does not exist");
+      throw new RecordNotFoundException("Cannot restore edge " + rid + ": TO vertex " + in + " does not exist", in);
 
     final MutableEdge shell = new MutableEdge(database, edgeType, out, in);
     RestoreStatementSupport.applyBody(shell, insertBody, context);
@@ -151,4 +153,11 @@ public class RestoreEdgeStatement extends SimpleExecStatement {
   public int hashCode() {
     return Objects.hash(targetType, targetRid, fromRid, toRid, insertBody);
   }
+
+  /** The row only echoes the RID the statement was given. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }

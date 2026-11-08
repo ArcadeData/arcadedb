@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -177,9 +177,9 @@ class Issue9912MatchRidWithTypeTest extends TestHelper {
   @Test
   void unknownTypeOrBucketNextToARidIsStillReported() {
     assertThatThrownBy(() -> column("MATCH {type:NoSuchType, as:x, rid:" + small2 + "} RETURN x.n AS n", "n"))//
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Type 'NoSuchType' not defined");
+        .isInstanceOf(SchemaException.class).hasMessageContaining("Type 'NoSuchType' not defined");
     assertThatThrownBy(() -> column("MATCH {bucket:NoSuchBucket, as:x, rid:" + small2 + "} RETURN x.n AS n", "n"))//
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Bucket 'NoSuchBucket' not defined");
+        .isInstanceOf(SchemaException.class).hasMessageContaining("Bucket 'NoSuchBucket' not defined");
   }
 
   @Test

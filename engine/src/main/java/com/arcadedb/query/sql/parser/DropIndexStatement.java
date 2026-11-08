@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -96,7 +96,7 @@ public class DropIndexStatement extends DDLStatement {
         MultiTypeIndexes.drop(schema, logical);
       else {
         if (!schema.existsIndex(indexName) && !ifExists)
-          throw new CommandExecutionException("Index not found: " + indexName);
+          throw new SchemaException("Index not found: " + indexName);
 
         // dropping a member alone would leave the logical index naming it, and covering fewer types than it says
         MultiTypeIndexes.requireNotMember(schema, indexName);

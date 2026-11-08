@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -58,7 +58,7 @@ public class DropContinuousAggregateStatement extends DDLStatement {
         result.add(r);
         return result;
       }
-      throw new CommandExecutionException("Continuous aggregate '" + caName + "' does not exist");
+      throw new SchemaException("Continuous aggregate '" + caName + "' does not exist");
     }
 
     database.getSchema().dropContinuousAggregate(caName);

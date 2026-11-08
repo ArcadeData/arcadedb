@@ -67,7 +67,7 @@ public class DropBucketStatement extends DDLStatement {
           rs.add(result);
           return rs;
         }
-        throw new CommandExecutionException("Bucket '" + name + "' not found");
+        throw new SchemaException("Bucket '" + name + "' not found");
       }
     } else {
       if (ifExists && !database.getSchema().existsBucket(name.getStringValue())) {

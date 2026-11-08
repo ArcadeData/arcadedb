@@ -23,8 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
@@ -237,7 +237,7 @@ public class CreateIndexStatement extends DDLStatement {
     if (this.typeName.getStringValue().startsWith("$")) {
       final Object resolved = context.getVariable(this.typeName.getStringValue());
       if (resolved == null)
-        throw new CommandExecutionException("Variable '" + this.typeName.getStringValue() + "' naming the type to index is not defined");
+        throw new CommandSemanticException("Variable '" + this.typeName.getStringValue() + "' naming the type to index is not defined");
       typeName = resolved.toString();
     } else
       typeName = this.typeName.getStringValue();

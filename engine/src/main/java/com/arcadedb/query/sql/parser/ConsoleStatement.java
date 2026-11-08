@@ -89,5 +89,12 @@ public class ConsoleStatement extends SimpleExecStatement {
   protected Object[] getIdentityElements() {
     return new Object[] { logLevel, message };
   }
+
+  /** The row only echoes the message that was logged. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=626c09cda52a1a8a63eeefcb37bd66a1 (do not edit this line) */

@@ -54,6 +54,7 @@ import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -2014,6 +2015,11 @@ public class BoltNetworkExecutor extends Thread {
     if (category == ErrorCategory.VALIDATION && CauseChain.find(error, ValidationException.class) instanceof ValidationException refused
         && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A CALL of a procedure nothing answers: Neo4j's ProcedureNotFound, where the category alone says SyntaxError, the title of
+    // a FUNCTION nothing answers (issue #11384)
+    if (category == ErrorCategory.PARSING && CauseChain.contains(error, UnknownProcedureException.class))
+      return BoltErrorCodes.PROCEDURE_NOT_FOUND_ERROR;
 
     // A follower's refusal of leader-only work that names the leader: a redirect, not a conflict to retry in place (#9845)
     // (redirectIn asks for the RETRY category itself, so a termination still wins)

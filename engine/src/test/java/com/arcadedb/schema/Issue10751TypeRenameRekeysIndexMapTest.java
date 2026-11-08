@@ -21,7 +21,6 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -74,7 +73,7 @@ class Issue10751TypeRenameRekeysIndexMapTest extends TestHelper {
     assertEveryIndexResolvesToItself();
 
     // the old name is not a way to reach the index of a type that no longer exists under it
-    assertThatThrownBy(() -> database.command("sql", "DROP INDEX `Foo[a]`")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "DROP INDEX `Foo[a]`")).isInstanceOf(SchemaException.class)
         .hasMessageContaining("Index not found");
     assertThat(database.getSchema().existsIndex("Bar[a]")).isTrue();
 

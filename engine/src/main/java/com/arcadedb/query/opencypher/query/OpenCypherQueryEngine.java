@@ -1364,14 +1364,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
         security.dropUser(admin.getUserName());
       } else {
         if (!security.existsUser(admin.getUserName()))
-          throw new CommandExecutionException("User '" + admin.getUserName() + "' does not exist");
+          throw new IllegalArgumentException("User '" + admin.getUserName() + "' does not exist");
         security.dropUser(admin.getUserName());
       }
       break;
     }
     case ALTER_USER: {
       if (!security.existsUser(admin.getUserName()))
-        throw new CommandExecutionException("User '" + admin.getUserName() + "' does not exist");
+        throw new IllegalArgumentException("User '" + admin.getUserName() + "' does not exist");
       security.setUserPassword(admin.getUserName(), admin.getPassword());
       break;
     }

@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -69,7 +70,7 @@ public class TruncateTypeStatement extends DDLStatement {
     final Schema schema = db.getSchema();
     final DocumentType typez = schema.getType(typeName.getStringValue());
     if (typez == null) {
-      throw new CommandExecutionException("Schema Class not found: " + typeName);
+      throw new SchemaException("Schema Class not found: " + typeName);
     }
 
     // ONLY THE REFRESH OF A MATERIALIZED VIEW OR A CONTINUOUS AGGREGATE WRITES ITS BACKING TYPE (issue #11020). Truncated, a view

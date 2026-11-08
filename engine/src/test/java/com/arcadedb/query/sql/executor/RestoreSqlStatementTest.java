@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Vertex;
@@ -194,7 +193,7 @@ class RestoreSqlStatementTest extends TestHelper {
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
         "RESTORE EDGE " + EDGE_TYPE + " RID " + edgeRid[0] + " FROM " + v1[0] + " TO " + fakeVertex))).isInstanceOf(
-        CommandSQLParsingException.class).hasMessageContaining("does not exist");
+        RecordNotFoundException.class).hasMessageContaining("does not exist");
   }
 
   @Test

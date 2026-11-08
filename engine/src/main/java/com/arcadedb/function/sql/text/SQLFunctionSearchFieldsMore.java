@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -143,7 +144,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
       // Validate source RIDs exist
       for (final RID rid : sourceRids) {
         if (!database.existsRecord(rid))
-          throw new CommandExecutionException("Record " + rid + " not found");
+          throw new RecordNotFoundException("Record " + rid + " not found", rid);
       }
 
       // Execute MLT search across all bucket indexes, stopping when the statement is terminated or past its deadline (#9894)

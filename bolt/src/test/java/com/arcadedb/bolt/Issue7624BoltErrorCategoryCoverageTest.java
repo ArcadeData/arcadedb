@@ -21,6 +21,7 @@ package com.arcadedb.bolt;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
@@ -37,6 +38,8 @@ import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.UnknownFunctionException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import org.junit.jupiter.api.Test;
 
@@ -139,6 +142,22 @@ class Issue7624BoltErrorCategoryCoverageTest {
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.SEMANTIC_ERROR);
     assertThat(BoltErrorCodes.SEMANTIC_ERROR).startsWith("Neo.ClientError.");
+  }
+
+  /**
+   * Issue #11384: a CALL of a procedure nothing answers was a plain CommandExecutionException, answered UnknownError. It is Neo4j's
+   * ProcedureNotFound now, wrapped or not, while a FUNCTION nothing answers keeps the SyntaxError Neo4j gives it.
+   */
+  @Test
+  void aProcedureNothingAnswersIsProcedureNotFound() {
+    final Throwable unknown = new UnknownProcedureException("db.nosuch", "Unknown procedure/function: db.nosuch");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(unknown, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.PROCEDURE_NOT_FOUND_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new CommandExecutionException("Error", unknown), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.PROCEDURE_NOT_FOUND_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new UnknownFunctionException("nosuch", "Unknown function"),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
+    assertThat(BoltErrorCodes.PROCEDURE_NOT_FOUND_ERROR).isEqualTo("Neo.ClientError.Procedure.ProcedureNotFound");
   }
 
   @Test

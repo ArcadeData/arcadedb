@@ -64,6 +64,9 @@ public final class BoltErrorCodes {
   // operations with invalid arguments. Same reasoning as ENTITY_NOT_FOUND_ERROR: permanent and the caller's, not
   // the server's (issue #7624).
   public static final String ARGUMENT_ERROR         = "Neo.ClientError.Statement.ArgumentError";
+  // A CALL of a procedure nothing answers (UnknownProcedureException): Neo4j's own title for it, where a function nothing answers
+  // is a SyntaxError. It was the generic DatabaseError, an unexplained server fault to a driver (issue #11384)
+  public static final String PROCEDURE_NOT_FOUND_ERROR = "Neo.ClientError.Procedure.ProcedureNotFound";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";

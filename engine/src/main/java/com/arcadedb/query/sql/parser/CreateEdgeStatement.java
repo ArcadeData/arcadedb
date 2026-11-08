@@ -187,5 +187,12 @@ public class CreateEdgeStatement extends Statement {
   protected Set<OperationType> getOperationTypesItself() {
     return CollectionUtils.singletonSet(OperationType.CREATE);
   }
+
+  /** The edges it wrote only echo the write. CREATE EDGE has no RETURN clause in the grammar: if it ever gains one, check it here like CREATE VERTEX (issue #11017). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=2d3dc5693940ffa520146f8f7f505128 (do not edit this line) */

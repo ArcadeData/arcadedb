@@ -89,4 +89,11 @@ public class SetGlobalStatement extends SimpleExecStatement {
     result = 31 * result + (expression != null ? expression.hashCode() : 0);
     return result;
   }
+
+  /** Setting a variable returns nothing, as PostgreSQL's SET answers a bare tag. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }

@@ -22,7 +22,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.BucketIterator;
 import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.ScanPressureReporter;
@@ -75,7 +75,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
         // "Bucket 'x' does not exist" from the planner - the same mistake, two different error contracts.
         final Bucket bucket = context.getDatabase().getSchema().getBucketByIdIfExists(bucketId);
         if (bucket == null)
-          throw new CommandExecutionException("Bucket with id " + bucketId + " does not exist");
+          throw new SchemaException("Bucket with id " + bucketId + " does not exist");
 
         if (fromPage > -1)
           iterator = ((LocalBucket) bucket).iterator(fromPage, toPage);

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
@@ -183,7 +184,7 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
     database.transaction(() ->
       // Try to truncate a non-existent bucket
       assertThatThrownBy(() -> database.command("sql", "TRUNCATE BUCKET NonExistentBucket"))
-          .isInstanceOf(CommandExecutionException.class)
+          .isInstanceOf(SchemaException.class)
           .hasMessageContaining("not found"));
   }
 

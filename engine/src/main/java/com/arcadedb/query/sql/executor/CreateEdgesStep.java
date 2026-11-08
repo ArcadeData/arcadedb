@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
@@ -245,7 +246,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       final DatabaseInternal database = context.getDatabase();
       uniqueIndex = database.getSchema().getIndexByName(uniqueIndexName);
       if (uniqueIndex == null)
-        throw new CommandExecutionException("Index not found for upsert: " + uniqueIndexName);
+        throw new SchemaException("Index not found for upsert: " + uniqueIndexName);
     }
   }
 

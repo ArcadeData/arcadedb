@@ -115,4 +115,11 @@ public class RestoreDocumentStatement extends SimpleExecStatement {
   public int hashCode() {
     return Objects.hash(targetType, targetRid, insertBody);
   }
+
+  /** The row only echoes the RID the statement was given. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }

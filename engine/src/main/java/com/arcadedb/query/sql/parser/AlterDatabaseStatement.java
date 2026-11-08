@@ -26,7 +26,6 @@ import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -62,8 +61,11 @@ public class AlterDatabaseStatement extends DDLStatement {
 
     final String settingNameAsString = settingName.getStringValue();
     final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingNameAsString);
+    // A name no setting declares, or a setting this command cannot set, is the caller's mistake, refused as the IllegalArgumentException
+    // a value the setting cannot take is refused with below: the DatabaseOperationException it was answered as a server fault on
+    // every protocol (XX000 on the Postgres wire, issue #11384)
     if (cfg == null)
-      throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
+      throw new IllegalArgumentException("Database setting '" + settingNameAsString + "' not found");
 
     // ALTER DATABASE alters DATABASE settings. The key lookup above accepts any declared key, and this command
     // is gated only by the per-database UPDATE_DATABASE_SETTINGS permission - far below the server-admin check
@@ -73,7 +75,7 @@ public class AlterDatabaseStatement extends DDLStatement {
     // format of the entire server, and saved a SCOPE.SERVER setting into one database's configuration where
     // nothing would ever read it back.
     if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE)
-      throw new DatabaseOperationException(
+      throw new IllegalArgumentException(
           "Setting '" + settingNameAsString + "' has " + cfg.getScope() + " scope and cannot be set per database"
               + (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER ? ": use SET SERVER SETTING instead" : ""));
 

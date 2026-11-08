@@ -570,6 +570,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
     if (ctx.limit() != null) {
       stmt.limit = (Limit) visit(ctx.limit());
+      // the order they were written in, which the rendering keeps: positional parameters are numbered by it (issue #11383)
+      stmt.limitBeforeSkip = ctx.skip() != null && ctx.limit().getStart().getTokenIndex() < ctx.skip().getStart().getTokenIndex();
     }
 
     // TIMEOUT clause

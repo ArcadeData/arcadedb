@@ -187,4 +187,11 @@ public abstract class DDLStatement extends Statement {
 
     return exact.intValue();
   }
+
+  /** Every schema change: its row describes the change, where PostgreSQL's CREATE TABLE answers a bare tag (issue #11312). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }

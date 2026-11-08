@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
@@ -214,11 +214,11 @@ class Issue9741ConcurrentCreateIndexTest extends TestHelper {
 
     // An undefined variable names no type: refused with a message that says so, for each statement shape
     assertThatThrownBy(() -> createIndex.execute(database, (Map<String, Object>) null, new BasicCommandContext(), false))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("'$t'").hasMessageContaining("not defined");
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("'$t'").hasMessageContaining("not defined");
     assertThatThrownBy(() -> createProperty.execute(database, (Map<String, Object>) null, new BasicCommandContext(), false))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not defined");
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("not defined");
     assertThatThrownBy(() -> createType.execute(database, (Map<String, Object>) null, new BasicCommandContext(), false))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not defined");
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("not defined");
   }
 
   /** A manual index name is kept on the $variable path too: the old code discarded it whenever the type was a variable. */

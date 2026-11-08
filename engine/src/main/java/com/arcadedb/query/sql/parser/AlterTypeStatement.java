@@ -237,7 +237,7 @@ public class AlterTypeStatement extends DDLStatement {
 
     final DocumentType type = context.getDatabase().getSchema().getType(name.getStringValue());
     if (type == null)
-      throw new CommandExecutionException("Type not found: " + name);
+      throw new SchemaException("Type not found: " + name);
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
 
@@ -460,7 +460,7 @@ public class AlterTypeStatement extends DDLStatement {
 
       final DocumentType superclass = context.getDatabase().getSchema().getType(superTypeName.getStringValue());
       if (superclass == null)
-        throw new CommandExecutionException("Super type '" + superTypeName.getStringValue() + "' not found");
+        throw new SchemaException("Super type '" + superTypeName.getStringValue() + "' not found");
 
       if (add)
         type.addSuperType(superclass);

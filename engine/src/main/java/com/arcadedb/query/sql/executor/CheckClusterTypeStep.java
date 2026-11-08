@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 
@@ -61,11 +62,11 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
         bucketObj = null;
 
       if (bucketObj == null)
-        throw new CommandExecutionException("Bucket '" + bucketName + "' not found");
+        throw new SchemaException("Bucket '" + bucketName + "' not found");
 
       final DocumentType typez = db.getSchema().getType(targetType);
       if (typez == null)
-        throw new CommandExecutionException("Type '" + targetType + "' not found");
+        throw new SchemaException("Type '" + targetType + "' not found");
 
       for (final Integer bucketId : typez.getBucketIds(true)) {
         if (bucketId == bucketObj.getFileId()) {

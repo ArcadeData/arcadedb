@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -61,7 +62,7 @@ public class DropPropertyStatement extends DDLStatement {
     final Database database = context.getDatabase();
     final DocumentType sourceClass = database.getSchema().getType(typeName.getStringValue());
     if (sourceClass == null)
-      throw new CommandExecutionException("Source class '" + typeName + "' not found");
+      throw new SchemaException("Source class '" + typeName + "' not found");
 
     // getPropertyIfExists(), NOT getProperty(): the latter throws SchemaException instead of returning null when the
     // property is missing, which made the IF EXISTS no-op branch below unreachable dead code (issue #7871).
@@ -78,7 +79,7 @@ public class DropPropertyStatement extends DDLStatement {
         rs.add(result);
         return rs;
       }
-      throw new CommandExecutionException("Property '" + propertyName + "' not found on class " + typeName);
+      throw new SchemaException("Property '" + propertyName + "' not found on class " + typeName);
     }
     final List<TypeIndex> indexes = sourceClass.getIndexesByProperties(propertyName.getStringValue());
     if (!indexes.isEmpty()) {

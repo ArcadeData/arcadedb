@@ -87,5 +87,12 @@ public class SleepStatement extends SimpleExecStatement {
   public int hashCode() {
     return expression != null ? expression.hashCode() : 0;
   }
+
+  /** The row only reports that the pause happened (issue #11385). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=2ea765ee266d4215414908b0e09c0779 (do not edit this line) */

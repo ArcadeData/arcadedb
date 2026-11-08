@@ -109,18 +109,17 @@ public class FromItem extends SimpleNode {
     } else if (bucketList != null) {
       bucketList.toString(params, builder);
       return;
-    } else if (schema != null) {
+    } else if (schema != null)
+      // no return here and in the two arms below: a subquery carries its modifiers and its alias like an identifier does, and
+      // returning early dropped both, so the rendered statement was another query (issue #11380)
       schema.toString(params, builder);
-      return;
-    } else if (statement != null) {
+    else if (statement != null) {
       builder.append("(");
       statement.toString(params, builder);
       builder.append(")");
-      return;
-    } else if (index != null) {
+    } else if (index != null)
       index.toString(params, builder);
-      return;
-    } else if (inputParam != null) {
+    else if (inputParam != null) {
       inputParam.toString(params, builder);
     } else if (functionCall != null) {
       functionCall.toString(params, builder);

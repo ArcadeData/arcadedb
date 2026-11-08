@@ -28,6 +28,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -139,7 +140,7 @@ public class RebuildTypeStatement extends DDLStatement {
     final Schema schema = db.getSchema();
     final DocumentType type = schema.getType(typeName.getStringValue());
     if (type == null)
-      throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
+      throw new SchemaException("Type not found: " + typeName.getStringValue());
 
     // Repartitioning gives every record a new RID. The move-phase re-creation path uses
     // {@code db.newDocument}, which only writes {@code Document.RECORD_TYPE}. Any type whose

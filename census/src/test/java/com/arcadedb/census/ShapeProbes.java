@@ -18,6 +18,9 @@
  */
 package com.arcadedb.census;
 
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
@@ -163,6 +166,28 @@ final class ShapeProbes {
 
     Object aNamedClass() throws ReflectiveOperationException {
       return StringBuilder.class.getConstructor().newInstance();
+    }
+  }
+
+  /** {@link MissingObjectRefusalCensusTest}. */
+  static final class MissingObject {
+    static RuntimeException concatenated(final String name) {
+      return new CommandExecutionException("Index '" + name +
+          "' not found");
+    }
+
+    static RuntimeException throughALocal() {
+      final String message = "Trigger does not exist";
+      return new DatabaseOperationException(message);
+    }
+
+    // not offenders: the schema family, and a refusal that names no missing object
+    static RuntimeException asASchemaFailure(final String name) {
+      return new SchemaException("Index '" + name + "' not found");
+    }
+
+    static RuntimeException anotherFailure(final String name) {
+      return new CommandExecutionException("Cannot read " + name);
     }
   }
 }

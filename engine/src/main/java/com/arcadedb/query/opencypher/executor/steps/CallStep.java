@@ -26,6 +26,7 @@ import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.CallClause;
@@ -400,11 +401,11 @@ public class CallStep extends AbstractExecutionStep {
       return executeFunction(function, args.toArray(), context);
 
     // Try to call as custom function (DEFINE FUNCTION) first
-    if (!namespace.isEmpty()) {
-      final Object customResult = callCustomFunction(namespace, simpleName, args, context);
-      if (customResult != null)
-        return customResult;
-    }
+    // Decided by whether the function exists, not by what it returned: a defined function answering null used to fall through
+    // to the SQL functions and be refused as unknown
+    if (!namespace.isEmpty() && context.getDatabase().getSchema().hasFunctionLibrary(namespace)
+        && context.getDatabase().getSchema().getFunctionLibrary(namespace).hasFunction(simpleName))
+      return callCustomFunction(namespace, simpleName, args, context);
 
     // Fall back to ArcadeDB SQL function (try full name first, e.g. "vector.neighbors", then simple name)
     if (functionFactory.getSQLFunctionFactory().hasFunction(procedureName))
@@ -604,17 +605,15 @@ public class CallStep extends AbstractExecutionStep {
   private Object callSQLFunction(final String functionName, final List<Object> args,
                                   final CommandContext context) {
     // Try to get the function from factory
-    if (!functionFactory.getSQLFunctionFactory().hasFunction(functionName)) {
-      if (callClause.isOptional())
-        return null;
-      throw new CommandExecutionException("Unknown procedure/function: " + callClause.getProcedureName());
-    }
-    final SQLFunction function = functionFactory.getSQLFunctionFactory().getFunctionInstance(functionName);
-    if (function == null) {
-      if (callClause.isOptional())
-        return null;
-      throw new CommandExecutionException("Unknown procedure/function: " + callClause.getProcedureName());
-    }
+    // A name nothing answers is the caller's mistake, which Neo4j refuses with ProcedureNotFound, OPTIONAL or not: OPTIONAL CALL
+    // suppresses "no rows", not "your call names nothing", the same reasoning that refuses a malformed argument above (issue
+    // #5602). It was a plain CommandExecutionException, a server fault on every protocol (Bolt UnknownError, Postgres XX000), and
+    // answered null under OPTIONAL as if the procedure had found no row (issue #11384)
+    final SQLFunction function = functionFactory.getSQLFunctionFactory().hasFunction(functionName) ?
+        functionFactory.getSQLFunctionFactory().getFunctionInstance(functionName) :
+        null;
+    if (function == null)
+      throw new UnknownProcedureException(callClause.getProcedureName(), "Unknown procedure/function: " + callClause.getProcedureName());
 
     // Execute the function
     return function.execute(null, null, null, args.toArray(), context);

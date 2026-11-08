@@ -246,5 +246,12 @@ public class InsertStatement extends Statement {
   protected Set<OperationType> getOperationTypesItself() {
     return CollectionUtils.singletonSet(OperationType.CREATE);
   }
+
+  /** The records an INSERT with no RETURN clause wrote only echo the write (issue #11017). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return getReturnStatement() == null;
+  }
+
 }
 /* JavaCC - OriginalChecksum=ccfabcf022d213caed873e6256cb26ad (do not edit this line) */
