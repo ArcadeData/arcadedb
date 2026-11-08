@@ -101,6 +101,15 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * The plain name of a {@code WITH} setting key, without the back-ticks a quoted identifier is written in. The key is an
+   * {@code Expression} wrapping an {@code Identifier}, and {@code Expression.toString()} renders it as written, so a name quoted
+   * because it is a reserved word, such as {@code `parallel`}, reached the importer with the back-ticks in it (issue #11367).
+   */
+  protected static String settingName(final Expression key) {
+    return key.isBaseIdentifier() ? key.getDefaultAlias().getStringValue() : key.toString();
+  }
+
+  /**
    * Renders a {@code WITH key = value, ...} clause for the statements that carry a free-form settings map
    * (REBUILD INDEX, REBUILD TYPE, IMPORT/EXPORT/BACKUP DATABASE). Appends nothing when {@code settings} is empty.
    * Shared so every one of them stays in sync: before this, {@code EXPORT}/{@code BACKUP DATABASE} and
