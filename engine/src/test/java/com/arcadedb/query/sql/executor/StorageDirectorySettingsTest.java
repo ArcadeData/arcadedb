@@ -139,6 +139,40 @@ class StorageDirectorySettingsTest {
     assertThat(outside.resolve("tier")).doesNotExist();
   }
 
+  /**
+   * The file system follows {@code link} before it applies {@code ..}, so {@code root/link/../tier} is a sibling of the
+   * link's target, outside the root: removing {@code link/..} as text would wrongly put it inside.
+   */
+  @Test
+  void aParentReferenceAfterASymbolicLinkCannotLeaveTheServerDirectory() throws IOException {
+    final Path root = Files.createDirectories(tempDir.resolve("root"));
+    final Path target = Files.createDirectories(tempDir.resolve("outside").resolve("child"));
+    final Path link = root.resolve("link");
+    try {
+      Files.createSymbolicLink(link, target);
+    } catch (final IOException | UnsupportedOperationException e) {
+      assumeTrue(false, "symbolic links are not available on this file system: " + e);
+    }
+    GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.setValue(root.toString());
+    bindUser(true);
+
+    final String escaping = link + File.separator + ".." + File.separator + "tier";
+    assertRefusedAsSecurity("ALTER DATABASE `arcadedb.externalPropertyBucketPath` '" + escaping + "'");
+    assertRefusedAsSecurity("ALTER DATABASE `arcadedb.pageSnapshotSpillPath` '" + escaping + "'");
+    assertThat(tempDir.resolve("outside").resolve("tier")).doesNotExist();
+
+    // a link whose target does not exist cannot be told to stay inside
+    final Path dangling = root.resolve("dangling");
+    Files.createSymbolicLink(dangling, tempDir.resolve("nowhere"));
+    assertRefusedAsSecurity("ALTER DATABASE `arcadedb.externalPropertyBucketPath` '" + dangling.resolve("tier") + "'");
+
+    // a parent reference that stays inside after the link is resolved is accepted
+    final Path inner = Files.createDirectories(root.resolve("a").resolve("b"));
+    database.command("sql",
+        "ALTER DATABASE `arcadedb.externalPropertyBucketPath` '" + inner + File.separator + ".." + File.separator + "tier" + "'")
+        .close();
+  }
+
   @Test
   void aSubDirectoryOfTheServerDirectoryIsAccepted() throws IOException {
     final Path root = Files.createDirectories(tempDir.resolve("root"));

@@ -86,8 +86,8 @@ public class FileUtils {
 
   /**
    * Whether {@code path} names {@code directory} itself or something inside it, as the file system will resolve them: both
-   * are made absolute and normalized, so a {@code ..} cannot step out, and the part of each that exists already is resolved
-   * to its real path, so a symbolic link cannot lead out either. Neither has to exist.
+   * are resolved one name at a time, so a {@code ..} cannot step out and a symbolic link cannot lead out either, whatever
+   * order they come in. Neither has to exist.
    * <p>
    * The answer holds for the file system as it is now: a link put in place after the check and before the caller creates
    * the directory is not seen. Doing that needs write access inside {@code directory} already, which is what the check
@@ -97,24 +97,39 @@ public class FileUtils {
     if (path == null || directory == null || path.isBlank() || directory.isBlank())
       return false;
     try {
-      return realPathOfExistingPart(Path.of(path)).startsWith(realPathOfExistingPart(Path.of(directory)));
+      return resolveAsTheFileSystemDoes(Path.of(path)).startsWith(resolveAsTheFileSystemDoes(Path.of(directory)));
     } catch (final IOException | InvalidPathException e) {
       return false;
     }
   }
 
   /**
-   * {@code path} made absolute and normalized, with its longest existing prefix replaced by that prefix's real path. The rest
-   * cannot hold a {@code ..} once normalized, and does not exist yet, so it cannot be a link.
+   * {@code path} made absolute and resolved name by name, in the order the file system resolves it. A name that exists is
+   * replaced by its real path BEFORE the next name applies, so in {@code allowed/link/../x} the {@code ..} steps up from the
+   * target of {@code link}, as the file system does, and not back into {@code allowed}, as a lexical
+   * {@link Path#normalize()} would conclude. A name that does not exist is not a link and is kept as it is. A link whose
+   * target does not exist is refused, since what it would lead to cannot be told.
    */
-  private static Path realPathOfExistingPart(final Path path) throws IOException {
-    final Path absolute = path.toAbsolutePath().normalize();
-    Path existing = absolute;
-    while (existing != null && !Files.exists(existing))
-      existing = existing.getParent();
-    if (existing == null)
-      return absolute;
-    return existing.toRealPath().resolve(existing.relativize(absolute)).normalize();
+  private static Path resolveAsTheFileSystemDoes(final Path path) throws IOException {
+    final Path absolute = path.toAbsolutePath();
+    Path current = absolute.getRoot();
+    for (final Path element : absolute) {
+      final String name = element.toString();
+      if (name.equals("."))
+        continue;
+      if (name.equals("..")) {
+        final Path parent = current.getParent();
+        if (parent != null)
+          current = parent;
+        continue;
+      }
+      current = current.resolve(name);
+      if (Files.exists(current))
+        current = current.toRealPath();
+      else if (Files.isSymbolicLink(current))
+        throw new IOException("Symbolic link '" + current + "' leads to a path that does not exist");
+    }
+    return current;
   }
 
   public static String getStringContent(final Object iValue) {
