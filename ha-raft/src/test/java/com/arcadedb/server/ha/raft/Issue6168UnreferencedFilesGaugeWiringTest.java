@@ -43,7 +43,7 @@ import static org.mockito.Mockito.when;
  * Issue #6168, item 1: the wiring between the HA gauge and the memoized walk.
  * <p>
  * {@code UnreferencedFiles.MemoizedCount} is tested on its own against a real database in the engine module
- * ({@code Issue6168MemoizedUnreferencedCountTest}); what is left over is the delegation this class holds -
+ * ({@code UnreferencedFilesTest.MemoizedUnreferencedCount}); what is left over is the delegation this class holds -
  * {@link RaftHAServer#getUnreferencedFilesSamples()} asks the DATABASE for its count, and the database answers from
  * an instance of the cache it owns, over the database it wraps. Two things can be wrong there and neither is caught
  * by the engine test: the count could be taken over the wrong instance, and the cache could be re-created per call,

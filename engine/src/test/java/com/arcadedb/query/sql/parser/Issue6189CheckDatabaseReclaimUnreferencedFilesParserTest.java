@@ -40,7 +40,7 @@ class Issue6189CheckDatabaseReclaimUnreferencedFilesParserTest extends AbstractP
     // Combinable with the other opt-in reclaim clause: two independent removals, one FIX.
     checkRightSyntax("check database fix delete orphans reclaim unreferenced files");
     // Accepted by the GRAMMAR; refused at execution because it removes files - see
-    // Issue6189ReclaimUnreferencedFilesTest.reclaimWithoutFixIsRefused.
+    // UnreferencedFilesTest.ReclaimUnreferencedFiles.reclaimWithoutFixIsRefused.
     checkRightSyntax("check database reclaim unreferenced files");
 
     checkWrongSyntax("check database fix reclaim");

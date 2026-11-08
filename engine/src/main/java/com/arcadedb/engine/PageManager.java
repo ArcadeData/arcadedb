@@ -1207,7 +1207,7 @@ public class PageManager extends LockContext {
       // channelLock acquisition - ran under the JVM-wide lock the rest of this barrier works to keep short, and on a
       // stalled filesystem not one of them was bounded by SNAPSHOT_BARRIER_MAX_MILLIS the way every other step is.
       // PaginatedComponentFile now keeps the count itself; see its `totalPages` field for why it is exact, and
-      // Issue6132SnapshotBarrierFollowupsTest for the assertion that it agrees with the filesystem at t0.
+      // PageSnapshotWindowTest.SnapshotBarrierFollowups for the assertion that it agrees with the filesystem at t0.
       files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, paginated.getPageSize(),
           (int) paginated.getTotalPages(), paginated.getFileName()));
     }

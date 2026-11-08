@@ -42,7 +42,7 @@ class Issue7952CheckDatabaseDeleteInvalidRecordsParserTest extends AbstractParse
     // Combinable with the other opt-in removals: three independent repairs, one FIX.
     checkRightSyntax("check database fix delete orphans delete invalid records reclaim unreferenced files");
     // Accepted by the GRAMMAR; refused at execution because it removes records - see
-    // Issue7952ConstraintViolationScanTest.deleteInvalidRecordsWithoutFixIsRefused.
+    // ConstraintViolationScanTest.deleteInvalidRecordsWithoutFixIsRefused.
     checkRightSyntax("check database delete invalid records");
 
     checkWrongSyntax("check database fix delete invalid");

@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #7458, end to end: a database close requested while a snapshot backup is streaming waits for the backup,
  * the backup completes and restores, and the close completes right after. The engine-level property (the close
- * waits for the window and refuses new ones) is covered by {@code Issue7458CloseWaitsForSnapshotWindowTest}; this
+ * waits for the window and refuses new ones) is covered by {@code PageSnapshotWindowTest.CloseWaitsForSnapshotWindow}; this
  * checks the outcome the operator sees - a good archive and a closed database, in that order.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
