@@ -51,7 +51,7 @@
     "style-loader": "^4.0.0",
     "url-loader": "^4.1.1",
     "webpack": "^5.112.2",
-    "webpack-cli": "^7.2.3"
+    "webpack-cli": "^7.3.1"
   },
   "overrides": {
     "ajv": "^8.20.0"
