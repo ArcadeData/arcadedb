@@ -31,6 +31,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import de.bwaldvogel.mongo.MongoDatabase;
+import de.bwaldvogel.mongo.MongoVersion;
 import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
@@ -44,6 +45,7 @@ import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -102,9 +104,28 @@ public class MongoDBBackend extends AbstractMongoBackend {
   // on the same connection. The entry is removed on channel close (handleClose).
   private final Map<Channel, ServerSecurityUser> authenticatedUsers = new ConcurrentHashMap<>();
 
+  /**
+   * The MongoDB release this backend reports in {@code isMaster} ({@code maxWireVersion}) and {@code buildInfo}. The library's
+   * newest {@code ServerVersion}, {@code MONGO_5_0}, pairs "5.0.0" with wire version 8, which is MongoDB 4.2's: a driver trusts the
+   * wire version, and PyMongo 4.18 (which dropped MongoDB 4.2) refuses a server that reports less than 9, the wire version of
+   * MongoDB 4.4 (issue #11373). 4.4 is the lowest release current drivers accept, so the version string says the same.
+   */
+  private static final MongoVersion REPORTED_VERSION = new MongoVersion() {
+    @Override
+    public List<Integer> getVersionArray() {
+      return List.of(4, 4, 0);
+    }
+
+    @Override
+    public int getWireVersion() {
+      return 9;
+    }
+  };
+
   public MongoDBBackend(final ArcadeDBServer server, final MongoDBProtocolPlugin plugin) {
     this.server = server;
     this.plugin = plugin;
+    version(REPORTED_VERSION);
   }
 
   @Override
