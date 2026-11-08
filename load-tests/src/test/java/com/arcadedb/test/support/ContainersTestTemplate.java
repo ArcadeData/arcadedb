@@ -322,6 +322,26 @@ public abstract class ContainersTestTemplate {
     }
   }
 
+  /**
+   * Makes the bind-mounted databases readable by the build user, from a short-lived root container. The server writes
+   * them as the image's own user, so on Linux CI a node's {@code configuration.json} and schema file can be unreadable
+   * here: the database then opens with no types, and the comparison reports a bogus {@code Types: 4 <> 0} divergence
+   * instead of comparing anything. Same reason, and same image, as {@link #deleteContainersDirectoriesFromContainer()}.
+   */
+  private void makeDatabasesReadableFromContainer() {
+    final String targetPath = Path.of("./target").toAbsolutePath().normalize().toString();
+
+    try (final GenericContainer<?> fixer = new GenericContainer<>(CLEANUP_IMAGE)
+        .withFileSystemBind(targetPath, "/cleanup", BindMode.READ_WRITE)
+        .withCreateContainerCmdModifier(cmd -> cmd.withUser("root"))
+        .withCommand("chmod", "-R", "a+rX", "/cleanup/databases")
+        .withStartupCheckStrategy(new OneShotStartupCheckStrategy())) {
+      fixer.start();
+    } catch (final Exception e) {
+      logger.warn("Privileged chmod container failed, the comparison may not be able to read every node: {}", e.getMessage());
+    }
+  }
+
   /** Whether the tag of an image reference (what follows the last ':' after the last '/') names a native build. */
   static boolean isNativeTag(final String image) {
     final int colon = image.lastIndexOf(':');
@@ -675,6 +695,8 @@ public abstract class ContainersTestTemplate {
       logger.warn("Cannot compare databases: directory ./target/databases does not exist");
       return;
     }
+
+    makeDatabasesReadableFromContainer();
 
     final File[] serverDirs = databasesDir.listFiles(File::isDirectory);
     if (serverDirs == null || serverDirs.length < 2) {
