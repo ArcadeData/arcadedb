@@ -76,7 +76,7 @@ class Issue11367ImportQuotedSettingNameTest {
     Files.writeString(csv, "id,name\n1,Ann\n2,Bob\n3,Cid\n", StandardCharsets.UTF_8);
 
     final Result result = importDatabase(
-        "IMPORT DATABASE " + csv.toUri() + " WITH documents = '" + csv.toUri() + "', documentsFileType = 'csv',"
+        "IMPORT DATABASE WITH documents = '" + csv.toUri() + "', documentsFileType = 'csv',"
             + " documentType = 'Doc', `parallel` = 1, `commitEvery` = 100");
 
     assertThat(result.<String>getProperty("result")).as("reason: %s", result.<String>getProperty("reason")).isEqualTo("OK");
@@ -89,7 +89,7 @@ class Issue11367ImportQuotedSettingNameTest {
     Files.writeString(csv, "id,name\n1,Ann\n", StandardCharsets.UTF_8);
 
     final Result result = importDatabase(
-        "IMPORT DATABASE " + csv.toUri() + " WITH documents = '" + csv.toUri() + "', documentsFileType = 'csv',"
+        "IMPORT DATABASE WITH documents = '" + csv.toUri() + "', documentsFileType = 'csv',"
             + " documentType = 'Doc', `paralell` = 1");
 
     assertThat(result.<String>getProperty("result")).isEqualTo("FAIL");
