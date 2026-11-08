@@ -3562,7 +3562,16 @@ public class PostgresNetworkExecutor extends Thread {
       for (int i = 0; i < paramCount; i++)
         declaredTypes[i] = channel.readUnsignedInt();
 
-      final Query query = getLanguageAndQuery(statementText);
+      final Query query;
+      try {
+        query = getLanguageAndQuery(statementText);
+      } catch (final PostgresQueryLanguages.Refusal refusal) {
+        // A pipeline that already failed, or an aborted block, discards this Parse unanswered, as it discards every
+        // other statement below: a refused marker is no transaction-end statement, the one thing still accepted there
+        if (skipUntilSync || errorInTransaction)
+          return;
+        throw refusal;
+      }
 
       final PostgresPortal portal = new PostgresPortal(query.query, query.language);
       // Counted on the text the engine lexes, where a $N is resolved: the wire text still carries PostgreSQL's literals, whose
@@ -5382,7 +5391,13 @@ public class PostgresNetworkExecutor extends Thread {
    * the exact matchers did not recognize, so the parse costs nothing on the ordinary path.
    */
   private PostgresPortal.TransactionControl parsedTransactionControl(final String queryText) {
-    final Query query = getLanguageAndQuery(queryText);
+    final Query query;
+    try {
+      query = getLanguageAndQuery(queryText);
+    } catch (final PostgresQueryLanguages.Refusal refusal) {
+      // Not a transaction-end statement: refused with 25P02 like any other statement of the aborted block
+      return null;
+    }
     return "sql".equalsIgnoreCase(query.language) ? transactionControlOf(parseStatement(query.query)) : null;
   }
 

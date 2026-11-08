@@ -40,6 +40,7 @@ import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
 import static com.arcadedb.postgres.PostgresWireMessages.firstDataRowValue;
 import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
 import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
+import static com.arcadedb.postgres.PostgresWireMessages.readyForQueryStatusOf;
 import static com.arcadedb.postgres.PostgresWireMessages.sendParseWithTypes;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSimpleQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
@@ -153,6 +154,77 @@ class PostgresLanguageMarkerIT extends PostgresWireProtocolTestBase {
    */
   @Test
   void aRefusedParseWithDeclaredParameterTypesKeepsTheConnectionInStep() throws Exception {
+    onRawConnection((out, in) -> {
+      sendParseWithTypes(out, "", "{java}com.arcadedb.Constants::getVersion", 23, 25, 1043);
+      sendSync(out);
+      final List<WireMessage> refused = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(refused)).containsExactly('E', 'Z');
+      assertThat(sqlStateOf(refused)).isEqualTo("0A000");
+
+      assertSelectOneAnswers(out, in);
+    });
+  }
+
+  /**
+   * A pipeline that already failed discards every message up to its Sync unanswered: a Parse with a refused marker is one
+   * of them, and must not add a second ErrorResponse.
+   */
+  @Test
+  void aRefusedParseInAFailedPipelineIsDiscardedUnanswered() throws Exception {
+    onRawConnection((out, in) -> {
+      sendParseWithTypes(out, "", "SELEC FROM nowhere");
+      sendParseWithTypes(out, "", "{java}com.arcadedb.Constants::getVersion", 23);
+      sendSync(out);
+      final List<WireMessage> answered = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answered)).containsExactly('E', 'Z');
+      assertThat(sqlStateOf(answered)).isEqualTo("42601");
+
+      assertSelectOneAnswers(out, in);
+    });
+  }
+
+  /**
+   * Inside an aborted block a statement with a refused marker is refused like any other statement there, with 25P02, and
+   * the block still ends with ROLLBACK.
+   */
+  @Test
+  void aRefusedMarkerInsideAnAbortedBlockIsRefusedAsAbortedOnBothProtocols() throws Exception {
+    onRawConnection((out, in) -> {
+      // Simple query protocol
+      sendSimpleQuery(out, "BEGIN");
+      readUntilReadyForQuery(in);
+      sendSimpleQuery(out, "SELEC FROM nowhere");
+      assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('E');
+      sendSimpleQuery(out, "{java}com.arcadedb.Constants::getVersion");
+      final List<WireMessage> refused = readUntilReadyForQuery(in);
+      assertThat(sqlStateOf(refused)).isEqualTo("25P02");
+      assertThat(readyForQueryStatusOf(refused)).isEqualTo('E');
+
+      // Extended protocol, same aborted block: the Parse is discarded unanswered
+      sendParseWithTypes(out, "", "{java}com.arcadedb.Constants::getVersion");
+      sendSync(out);
+      final List<WireMessage> discarded = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(discarded)).containsExactly('Z');
+      assertThat(readyForQueryStatusOf(discarded)).isEqualTo('E');
+
+      sendSimpleQuery(out, "ROLLBACK");
+      assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+      assertSelectOneAnswers(out, in);
+    });
+  }
+
+  private static void assertSelectOneAnswers(final DataOutputStream out, final DataInputStream in) throws Exception {
+    sendSimpleQuery(out, "SELECT 1 AS one");
+    final List<WireMessage> answered = readUntilReadyForQuery(in);
+    assertThat(messageTypesOf(answered)).doesNotContain('E');
+    assertThat(firstDataRowValue(answered)).isEqualTo("1");
+  }
+
+  private interface RawConnectionTest {
+    void run(DataOutputStream out, DataInputStream in) throws Exception;
+  }
+
+  private void onRawConnection(final RawConnectionTest test) throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -162,18 +234,7 @@ class PostgresLanguageMarkerIT extends PostgresWireProtocolTestBase {
       sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
       readMessageOfType(in, 'Z');
 
-      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        sendParseWithTypes(out, "", "{java}com.arcadedb.Constants::getVersion", 23, 25, 1043);
-        sendSync(out);
-        final List<WireMessage> refused = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(refused)).containsExactly('E', 'Z');
-        assertThat(sqlStateOf(refused)).isEqualTo("0A000");
-
-        sendSimpleQuery(out, "SELECT 1 AS one");
-        final List<WireMessage> answered = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(answered)).doesNotContain('E');
-        assertThat(firstDataRowValue(answered)).isEqualTo("1");
-      });
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> test.run(out, in));
     }
   }
 
