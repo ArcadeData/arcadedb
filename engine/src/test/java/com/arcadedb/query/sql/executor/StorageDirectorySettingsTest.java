@@ -247,6 +247,32 @@ class StorageDirectorySettingsTest {
     assertThat(database.getSchema().existsBucket("Planted")).isFalse();
   }
 
+  /**
+   * The file a creation interrupted by a crash leaves behind is found by the scan of the next open and keeps its id, so the
+   * creations after the restart draw ids past it and are not refused.
+   */
+  @Test
+  void aFileLeftByAnInterruptedCreationDoesNotBlockTheNextCreations() throws IOException {
+    DatabaseInternal db = (DatabaseInternal) database;
+    final int leftoverFileId = db.getFileManager().getFiles().size();
+    final int pageSize = db.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE);
+    database.close();
+
+    final Path leftover = Path.of(PATH, "Crashed." + leftoverFileId + "." + pageSize + ".v0.bucket");
+    Files.createFile(leftover);
+
+    database = factory.open();
+    db = (DatabaseInternal) database;
+    assertThat(db.getFileManager().getFiles().size()).isGreaterThan(leftoverFileId);
+
+    database.getSchema().createBucket("AfterRestart");
+    database.getSchema().createDocumentType("Doc").createProperty("blob", Type.STRING).setExternal(true);
+    database.transaction(() -> database.newDocument("Doc").set("blob", "payload").save());
+
+    assertThat(database.getSchema().existsBucket("AfterRestart")).isTrue();
+    assertThat(database.countType("Doc", false)).isEqualTo(1);
+  }
+
   private void assertRefusedAsSecurity(final String sql) {
     assertThatThrownBy(() -> database.command("sql", sql).close()).as(sql).isInstanceOf(SecurityException.class);
   }

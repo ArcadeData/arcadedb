@@ -88,6 +88,10 @@ public class FileUtils {
    * Whether {@code path} names {@code directory} itself or something inside it, as the file system will resolve them: both
    * are made absolute and normalized, so a {@code ..} cannot step out, and the part of each that exists already is resolved
    * to its real path, so a symbolic link cannot lead out either. Neither has to exist.
+   * <p>
+   * The answer holds for the file system as it is now: a link put in place after the check and before the caller creates
+   * the directory is not seen. Doing that needs write access inside {@code directory} already, which is what the check
+   * grants, so it gains nothing a caller could not do anyway.
    */
   public static boolean isInsideDirectory(final String path, final String directory) {
     if (path == null || directory == null || path.isBlank() || directory.isBlank())

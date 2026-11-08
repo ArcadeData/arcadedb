@@ -2815,11 +2815,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                           {@link GlobalConfiguration#checkDatabaseStorageDirectory(String, String)}
    */
   public String resolveExternalBucketPath() {
-    final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
-    if (configured == null || configured.isEmpty())
+    final String configured = configuredExternalBucketPath();
+    if (configured == null)
       return null;
     GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.checkDatabaseStorageDirectory(configured, databasePath);
     return configured + File.separator + name;
+  }
+
+  /** The configured override root, trimmed so the directory checked is the directory used, or null if not configured. */
+  private String configuredExternalBucketPath() {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
+    if (configured == null || configured.isBlank())
+      return null;
+    return configured.trim();
   }
 
   /**
@@ -2829,8 +2837,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * is reported, since no new bucket can be created there.
    */
   private String externalBucketScanPath() {
-    final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
-    if (configured == null || configured.isEmpty())
+    final String configured = configuredExternalBucketPath();
+    if (configured == null)
       return null;
     try {
       GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.checkDatabaseStorageDirectory(configured, databasePath);

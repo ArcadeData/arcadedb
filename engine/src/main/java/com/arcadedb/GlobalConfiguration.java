@@ -5255,13 +5255,14 @@ public enum GlobalConfiguration {
     if (directory == null || directory.isBlank())
       return;
 
+    final String candidate = directory.trim();
     final String serverDirectory = getValueAsString();
     if (serverDirectory != null && !serverDirectory.isBlank()) {
-      if (directory.trim().equals(serverDirectory.trim()) || FileUtils.isInsideDirectory(directory.trim(), serverDirectory.trim()))
+      if (candidate.equals(serverDirectory.trim()) || FileUtils.isInsideDirectory(candidate, serverDirectory.trim()))
         return;
     }
 
-    if (databasePath != null && FileUtils.isInsideDirectory(directory.trim(), databasePath))
+    if (databasePath != null && FileUtils.isInsideDirectory(candidate, databasePath))
       return;
 
     throw new SecurityException("Directory '" + directory + "' is not allowed for setting '" + key
