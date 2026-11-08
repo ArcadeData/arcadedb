@@ -62,6 +62,9 @@ final class FakeNodeControl implements NodeControl {
   /** Node whose position is reported as unreadable (-1 for none). */
   int                    unreadablePositionOfNode = -1;
   int                    positionReads;
+  /** Time one {@link #findLeader()} takes while positions are being polled, and how many lookups that happened. */
+  long                   findLeaderMillis;
+  int                    leaderLookupsDuringWait;
   /** Time one {@link #raftPositions()} read takes, as for nodes that answer slowly. */
   long                   positionReadMillis;
   /** Leader reported by {@link #findLeader()} is -1 from this read on, as during a leader change. */
@@ -147,6 +150,15 @@ final class FakeNodeControl implements NodeControl {
 
   @Override
   public int findLeader() {
+    if (positionReads > 0) {
+      ++leaderLookupsDuringWait;
+      if (findLeaderMillis > 0)
+        try {
+          Thread.sleep(findLeaderMillis);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+    }
     return leaderAvailable && positionReads < noLeaderFromRead ? leader : -1;
   }
 

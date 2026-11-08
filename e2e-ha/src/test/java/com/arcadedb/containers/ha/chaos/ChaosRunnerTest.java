@@ -554,4 +554,15 @@ class ChaosRunnerTest {
     assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
     assertThat(result.message()).contains("node 2 lag=36000").doesNotContain("unreadable");
   }
+
+  @Test
+  void leaderLookupTimeCountsTowardsTheCatchUpTimeoutAndIsResolvedOncePerPoll() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT3S", "chaos.maxSteps", "1"));
+    harness.control().lag[1] = 36_000;
+    harness.control().findLeaderMillis = 1_500;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(harness.control().positionReads).isLessThan(4);
+    assertThat(harness.control().leaderLookupsDuringWait).isEqualTo(harness.control().positionReads);
+  }
 }

@@ -167,4 +167,12 @@ class ChaosConfigTest {
     assertThat(config.catchUpTimeout()).isEqualTo(Duration.ofMinutes(2));
     assertThat(config.replayCommand()).contains("-Dchaos.catchUpLag=1000").contains("-Dchaos.catchUpTimeout=PT2M");
   }
+
+  @Test
+  void catchUpSettingsAreValidated() {
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.catchUpLag", "-1")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.catchUpLag");
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.catchUpTimeout", "PT0S")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.catchUpTimeout");
+  }
 }

@@ -268,16 +268,17 @@ public final class ChaosRunner {
     while (true) {
       final long readStart = System.nanoTime();
       final NodeControl.RaftPosition[] positions = control.raftPositions();
-      // The read itself counts: a node that is slow to answer must not stretch the bound far past the configured timeout
+      final int leader = control.findLeader();
+      // The reads count: a node that is slow to answer must not stretch the bound far past the configured timeout
       waited = waited.plusNanos(System.nanoTime() - readStart);
-      final String behind = followersBehind(positions, control.findLeader());
+      final String behind = followersBehind(positions, leader);
       if (behind.isEmpty())
         return;
       if (waited.compareTo(config.catchUpTimeout()) >= 0)
         throw new ChaosFailure(ResultKind.AVAILABILITY,
             "A follower did not catch up within " + config.catchUpTimeout() + " after healing fault '" + fault.name() + "' (step "
                 + step + "), more than " + config.catchUpLag() + " entries behind the leader: " + behind + ". "
-                + lagView(positions, control.findLeader()) + previousConvergence());
+                + lagView(positions, leader) + previousConvergence());
       sleeper.sleep(CATCH_UP_POLL);
       waited = waited.plus(CATCH_UP_POLL);
     }
