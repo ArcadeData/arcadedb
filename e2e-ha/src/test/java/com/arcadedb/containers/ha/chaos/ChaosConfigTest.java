@@ -159,4 +159,20 @@ class ChaosConfigTest {
     assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.logConfig", "no/such/file.properties")))
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.logConfig");
   }
+
+  @Test
+  void catchUpDefaultsAndReplayCommand() {
+    final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.seed", "1"));
+    assertThat(config.catchUpLag()).isEqualTo(1_000);
+    assertThat(config.catchUpTimeout()).isEqualTo(Duration.ofMinutes(2));
+    assertThat(config.replayCommand()).contains("-Dchaos.catchUpLag=1000").contains("-Dchaos.catchUpTimeout=PT2M");
+  }
+
+  @Test
+  void catchUpSettingsAreValidated() {
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.catchUpLag", "-1")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.catchUpLag");
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.catchUpTimeout", "PT0S")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.catchUpTimeout");
+  }
 }

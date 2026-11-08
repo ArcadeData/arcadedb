@@ -33,6 +33,16 @@ public interface NodeControl {
   record InPlaceRestarts(int recovered, int reformatted) {
   }
 
+  /** A node's Raft indexes from {@code GET /api/v1/cluster}: what it has applied and what it knows to be committed. */
+  record RaftPosition(long applied, long commit) {
+  }
+
+  /**
+   * Every node's {@link RaftPosition}, indexed by node, with {@code null} for a node that does not answer or does not report
+   * its indexes (issue #11378). Never a zero in place of a missing value: a node that cannot be read must not look caught up.
+   */
+  RaftPosition[] raftPositions();
+
   void kill(int node) throws Exception;
 
   void stopGracefully(int node) throws Exception;
