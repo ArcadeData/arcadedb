@@ -43,7 +43,7 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
                           Map<String, Integer> faultWeights, Duration holdMin, Duration holdMax, Duration calmMin,
                           Duration calmMax, Duration convergenceTimeout, Duration electionTimeout,
                           Duration availabilityGrace, String nodeHeap, String serverOpts, String logConfig,
-                          int facetWriters) {
+                          int facetWriters, long catchUpLag, Duration catchUpTimeout) {
 
   private static final long    MIN_NODE_HEAP_BYTES = 256L << 20;
   private static final Pattern HEAP_SIZE           = Pattern.compile("(\\d+)([mMgG])");
@@ -105,7 +105,9 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         properties.getProperty("chaos.nodeHeap", "1G").trim(),
         properties.getProperty("chaos.serverOpts", ""),
         properties.getProperty("chaos.logConfig", ""),
-        integer(properties, "chaos.facetWriters", 2));
+        integer(properties, "chaos.facetWriters", 2),
+        integer(properties, "chaos.catchUpLag", 1_000),
+        duration(properties, "chaos.catchUpTimeout", "PT2M"));
   }
 
   /**
@@ -152,6 +154,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         + " -Dchaos.maxSteps=" + maxSteps
         + " -Dchaos.writers=" + writers
         + " -Dchaos.facetWriters=" + facetWriters
+        + " -Dchaos.catchUpLag=" + catchUpLag
+        + " -Dchaos.catchUpTimeout=" + catchUpTimeout
         + " -Dchaos.faults=" + faultsSpec()
         + " -Dchaos.holdMin=" + holdMin
         + " -Dchaos.holdMax=" + holdMax

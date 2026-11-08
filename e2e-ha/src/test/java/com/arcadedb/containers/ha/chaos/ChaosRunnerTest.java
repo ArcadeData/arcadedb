@@ -485,4 +485,73 @@ class ChaosRunnerTest {
     assertThat(summary.getJSONArray("facetWarnings").length()).isEqualTo(1);
     assertThat(summary.getJSONArray("facetWarnings").getString(0)).contains("FACET_META").contains("node 1");
   }
+
+  @Test
+  void followerWithinTheCatchUpLagDoesNotDelayTheStep() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100"));
+    harness.control().lag[1] = 100;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    assertThat(harness.control().positionReads).isEqualTo(5);
+  }
+
+  @Test
+  void followerThatCatchesUpAfterSomePollsLetsTheStepGoOn() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT30S", "chaos.maxSteps", "1"));
+    harness.control().lag[1] = 36_000;
+    harness.control().readsBeforeCaughtUp = 3;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    assertThat(harness.control().positionReads).isEqualTo(4);
+  }
+
+  @Test
+  void followerThatNeverCatchesUpIsAnAvailabilityFailureNamingTheNodeAndItsLag() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT5S", "chaos.maxSteps", "1"));
+    harness.control().lag[2] = 36_000;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("node 2").contains("36000").contains("catch up").contains("PT5S");
+  }
+
+  @Test
+  void followerWhoseIndexesCannotBeReadIsNeverTreatedAsCaughtUp() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpTimeout", "PT3S", "chaos.maxSteps", "1"));
+    harness.control().unreadablePositionOfNode = 1;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("node 1").contains("unreadable");
+  }
+
+  @Test
+  void availabilityFailureReportsEachNodesLag() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "kill", "chaos.maxSteps", "1"));
+    for (int i = 0; i < ChaosRunner.WARMUP_ACKS; i++)
+      harness.ledger().record(harness.ledger().reserve(0, false), Ledger.ACKED);
+    harness.load().progress = false;
+    harness.control().lag[1] = 36_000;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("Raft lag").contains("node 1 applied=964000 commit=1000000 lag=36000");
+  }
+
+  @Test
+  void timeSpentReadingThePositionsCountsTowardsTheCatchUpTimeout() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT3S", "chaos.maxSteps", "1"));
+    harness.control().lag[1] = 36_000;
+    harness.control().positionReadMillis = 1_500;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(harness.control().positionReads).as("each poll costs its 1 s sleep plus the 1.5 s read").isLessThan(4);
+  }
+
+  @Test
+  void lagIsMeasuredAgainstTheHighestCommitWhenNoLeaderIsKnown() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT2S", "chaos.maxSteps", "1"));
+    harness.control().lag[2] = 36_000;
+    harness.control().noLeaderFromRead = 1;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("node 2 lag=36000").doesNotContain("unreadable");
+  }
 }

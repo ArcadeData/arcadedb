@@ -56,6 +56,16 @@ final class FakeNodeControl implements NodeControl {
   /** After an unpause, reading the in-place restart counts fails, as for a node that no longer answers HTTP. */
   boolean                countsUnreadableAfterUnpause;
   boolean                restartCountsUnreadable;
+  /** Applied-index lag per node behind the leader, reported by {@link #raftPositions()} for {@code readsBeforeCaughtUp} reads. */
+  final long[]           lag              = new long[5];
+  int                    readsBeforeCaughtUp = Integer.MAX_VALUE;
+  /** Node whose position is reported as unreadable (-1 for none). */
+  int                    unreadablePositionOfNode = -1;
+  int                    positionReads;
+  /** Time one {@link #raftPositions()} read takes, as for nodes that answer slowly. */
+  long                   positionReadMillis;
+  /** Leader reported by {@link #findLeader()} is -1 from this read on, as during a leader change. */
+  int                    noLeaderFromRead = Integer.MAX_VALUE;
 
   private void log(final String call) {
     if (failure != null)
@@ -137,13 +147,29 @@ final class FakeNodeControl implements NodeControl {
 
   @Override
   public int findLeader() {
-    return leaderAvailable ? leader : -1;
+    return leaderAvailable && positionReads < noLeaderFromRead ? leader : -1;
   }
 
   @Override
   public boolean awaitLeader(final Duration timeout) {
     calls.add("awaitLeader");
     return leaderAvailable;
+  }
+
+  @Override
+  public RaftPosition[] raftPositions() {
+    ++positionReads;
+    if (positionReadMillis > 0)
+      try {
+        Thread.sleep(positionReadMillis);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    final boolean lagging = readsBeforeCaughtUp-- > 0;
+    final RaftPosition[] positions = new RaftPosition[5];
+    for (int node = 0; node < positions.length; node++)
+      positions[node] = node == unreadablePositionOfNode ? null : new RaftPosition(1_000_000 - (lagging ? lag[node] : 0), 1_000_000);
+    return positions;
   }
 
   @Override

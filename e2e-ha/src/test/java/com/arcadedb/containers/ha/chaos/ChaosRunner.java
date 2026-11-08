@@ -35,6 +35,8 @@ import java.util.Random;
  */
 public final class ChaosRunner {
   static final long     WARMUP_ACKS             = 20;
+  /** How often the Raft indexes are re-read while waiting for a follower to catch up (issue #11378). */
+  static final Duration CATCH_UP_POLL = Duration.ofSeconds(1);
   /** A writer stuck on a paused node blocks for its 15 s read timeout; the window must outlast it. */
   static final Duration MIN_AVAILABILITY_WINDOW = Duration.ofSeconds(25);
 
@@ -62,6 +64,7 @@ public final class ChaosRunner {
   private final TrendSource      trends;
   private final Sleeper          sleeper;
   private       long             lastSampleAcked;
+  private       long             previousConvergenceMs = -1;
   private       long             lastSampleNanos;
 
   public ChaosRunner(final ChaosConfig config, final ClusterState state, final NodeControl control, final FaultPicker picker,
@@ -183,7 +186,8 @@ public final class ChaosRunner {
           failIfANodeIsUnhealthy(step);
           throw new ChaosFailure(ResultKind.AVAILABILITY,
               "No write acknowledged during fault '" + fault.name() + "' " + targets + " after the " + config.availabilityGrace()
-                  + " election grace (step " + step + "). Nodes report: " + control.leaderView());
+                  + " election grace (step " + step + "). Nodes report: " + control.leaderView() + ". " + lagView()
+                  + previousConvergence());
         }
       } else
         sleeper.sleep(hold);
@@ -207,6 +211,7 @@ public final class ChaosRunner {
     }
     final long timeToLeaderMs = (System.nanoTime() - healedAt) / 1_000_000;
     final int leaderAfter = control.findLeader();
+    awaitFollowersCaughtUp(step, fault);
 
     load.quiesce();
     final Checkpoint.Result result;
@@ -227,6 +232,7 @@ public final class ChaosRunner {
       countsFailure = e;
       census = ReformatCensus.UNKNOWN;
     }
+    previousConvergenceMs = result.convergenceMillis();
     report.step(new StepRecord(step, fault.name(), targets, leaderBefore, leaderAfter, timeToLeaderMs,
         result.convergenceMillis(), ackedDuringHold, ledger.count(Ledger.ACKED) + ledger.count(Ledger.ACKED_LATE),
         ledger.count(Ledger.UNKNOWN), ledger.count(Ledger.FAILED), census.reformats()));
@@ -249,6 +255,102 @@ public final class ChaosRunner {
         "Raft storage reformatted during fault '" + fault.name() + "' " + targets + " (step " + step + "): " + census.nodes()
             + "; the node should have caught up, or been recovered in place keeping its log", new long[0]));
     return fromViolations(violations, step);
+  }
+
+  /**
+   * Waits until every live follower has applied to within {@code catchUpLag} entries of the leader's commit index (issue #11378).
+   * A leader known by every node and equal row counts do not say how far behind a follower still is in Raft terms: the next fault
+   * would land on a cluster whose only other voter is still catching up. A follower whose indexes cannot be read is never taken
+   * for caught up.
+   */
+  private void awaitFollowersCaughtUp(final int step, final Fault fault) throws InterruptedException {
+    Duration waited = Duration.ZERO;
+    while (true) {
+      final long readStart = System.nanoTime();
+      final NodeControl.RaftPosition[] positions = control.raftPositions();
+      // The read itself counts: a node that is slow to answer must not stretch the bound far past the configured timeout
+      waited = waited.plusNanos(System.nanoTime() - readStart);
+      final String behind = followersBehind(positions, control.findLeader());
+      if (behind.isEmpty())
+        return;
+      if (waited.compareTo(config.catchUpTimeout()) >= 0)
+        throw new ChaosFailure(ResultKind.AVAILABILITY,
+            "A follower did not catch up within " + config.catchUpTimeout() + " after healing fault '" + fault.name() + "' (step "
+                + step + "), more than " + config.catchUpLag() + " entries behind the leader: " + behind + ". "
+                + lagView(positions, control.findLeader()) + previousConvergence());
+      sleeper.sleep(CATCH_UP_POLL);
+      waited = waited.plus(CATCH_UP_POLL);
+    }
+  }
+
+  /**
+   * The commit index the followers are measured against: the leader's, or the highest one reported when no leader is known (a
+   * leader change between the election check and this read), or {@code null} when no node reports any.
+   */
+  private static NodeControl.RaftPosition head(final NodeControl.RaftPosition[] positions, final int leader) {
+    if (leader >= 0 && leader < positions.length && positions[leader] != null)
+      return positions[leader];
+    NodeControl.RaftPosition highest = null;
+    for (final NodeControl.RaftPosition position : positions)
+      if (position != null && (highest == null || position.commit() > highest.commit()))
+        highest = position;
+    return highest;
+  }
+
+  /** The live followers further behind the head than allowed, as {@code node N lag=L}; empty when none is. */
+  private String followersBehind(final NodeControl.RaftPosition[] positions, final int leader) {
+    final NodeControl.RaftPosition head = head(positions, leader);
+    final StringBuilder behind = new StringBuilder();
+    for (int node = 0; node < config.nodes(); node++) {
+      if (node == leader || state.state(node) != ClusterState.NodeState.UP)
+        continue;
+      final NodeControl.RaftPosition position = positions[node];
+      final String description;
+      if (position == null || head == null)
+        description = "node " + node + " indexes unreadable";
+      else if (head.commit() - position.applied() > config.catchUpLag())
+        description = "node " + node + " lag=" + (head.commit() - position.applied());
+      else
+        continue;
+      if (!behind.isEmpty())
+        behind.append(", ");
+      behind.append(description);
+    }
+    return behind.toString();
+  }
+
+  /** Every node's applied and commit index and its lag behind the head, for the failure messages. */
+  private String lagView(final NodeControl.RaftPosition[] positions, final int leader) {
+    final NodeControl.RaftPosition head = head(positions, leader);
+    final StringBuilder view = new StringBuilder("Raft lag:");
+    for (int node = 0; node < config.nodes(); node++) {
+      final NodeControl.RaftPosition position = positions[node];
+      view.append(" node ").append(node);
+      if (position == null)
+        view.append(" unreadable");
+      else {
+        view.append(" applied=").append(position.applied()).append(" commit=").append(position.commit());
+        if (head != null)
+          view.append(" lag=").append(head.commit() - position.applied());
+      }
+      if (node == leader)
+        view.append(" (leader)");
+      view.append(';');
+    }
+    return view.toString();
+  }
+
+  /** {@link #lagView(NodeControl.RaftPosition[], int)} read now, for a failure that has no positions at hand. */
+  private String lagView() {
+    try {
+      return lagView(control.raftPositions(), control.findLeader());
+    } catch (final RuntimeException e) {
+      return "Raft lag unavailable: " + e.getMessage();
+    }
+  }
+
+  private String previousConvergence() {
+    return previousConvergenceMs < 0 ? "" : " Previous step converged in " + previousConvergenceMs + "ms.";
   }
 
   /** A bit per node the fault froze: a connection to it is accepted and never answered, unlike a stopped node's refusal. */
