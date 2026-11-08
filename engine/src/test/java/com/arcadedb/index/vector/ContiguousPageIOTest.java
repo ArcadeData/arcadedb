@@ -28,6 +28,7 @@ import com.arcadedb.engine.ComponentFile;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -69,7 +70,7 @@ class ContiguousPageIOTest {
       LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
           dbInternal,
           fileName,
-          dbInternal.getDatabasePath(),
+          dbInternal.getDatabasePath() + File.separator + fileName,
           ComponentFile.MODE.READ_WRITE,
           pageSize
       );
@@ -188,7 +189,8 @@ class ContiguousPageIOTest {
       database.begin();
 
       final int pageSize = 256;
-      final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(dbInternal, "test-bulk-io", dbInternal.getDatabasePath(),
+      final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(dbInternal, "test-bulk-io",
+          dbInternal.getDatabasePath() + File.separator + "test-bulk-io",
           ComponentFile.MODE.READ_WRITE, pageSize);
       final ContiguousPageWriter writer = new ContiguousPageWriter(dbInternal, graphFile.getFileId(), pageSize);
 
@@ -299,7 +301,7 @@ class ContiguousPageIOTest {
       final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
           dbInternal,
           "test-offset-io",
-          dbInternal.getDatabasePath(),
+          dbInternal.getDatabasePath() + File.separator + "test-offset-io",
           ComponentFile.MODE.READ_WRITE,
           pageSize
       );

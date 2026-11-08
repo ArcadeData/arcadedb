@@ -1307,6 +1307,17 @@ public class PageManager extends LockContext {
     if (configured == null || configured.isBlank())
       return new File(database.getDatabasePath());
 
+    // A VALUE THE DATABASE WAS GIVEN MUST NOT LEAD THE SERVER TO CREATE DIRECTORIES WHERE NOBODY ALLOWED IT: CHECKED HERE,
+    // BEFORE mkdirs, AND NOT ONLY WHERE THE SETTING IS CHANGED, SINCE A VALUE CAN REACH THE CONFIGURATION ANOTHER WAY. LIKE
+    // AN UNUSABLE PATH IT COSTS A WARNING AND THE DATABASE DIRECTORY, NEVER THE BACKUP
+    try {
+      GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.checkDatabaseStorageDirectory(configured.trim(), database.getDatabasePath());
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.WARNING, "Database '%s': %s. Falling back to the database directory", null,
+          database.getName(), e.getMessage());
+      return new File(database.getDatabasePath());
+    }
+
     final File directory = new File(configured.trim());
     // THE isDirectory RE-CHECK IS NOT REDUNDANT: TWO WINDOWS OPENING AT ONCE AGAINST A NOT-YET-EXISTING DIRECTORY
     // BOTH CALL mkdirs, AND THE LOSER GETS false FOR A DIRECTORY THAT NOW EXISTS. WITHOUT IT THAT WINDOW WOULD

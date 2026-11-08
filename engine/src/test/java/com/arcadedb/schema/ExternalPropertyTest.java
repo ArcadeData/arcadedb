@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
@@ -578,9 +579,12 @@ class ExternalPropertyTest extends TestHelper {
   @Test
   void externalBucketPathOverridePlacesFileOnSecondaryDirectory() throws Exception {
     // Persist the override on the database itself via ALTER DATABASE. This writes the value into the
-    // database's configuration.json so it survives close+reopen without polluting the JVM-wide
-    // GlobalConfiguration (which would leak into concurrent tests).
-    final Path overrideDir = Files.createTempDirectory("arcadedb-ext-tier-");
+    // database's configuration.json so it survives close+reopen. A database may only point it inside the directory the
+    // server-level value names (or its own), so the server-level value names the tier root and the database takes a
+    // directory under it; it is reset at the end so it does not leak into other tests.
+    final Path tierRoot = Files.createTempDirectory("arcadedb-ext-tier-");
+    final Path overrideDir = tierRoot.resolve("tier");
+    GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.setValue(tierRoot.toString());
     try {
       database.command("sql",
           "alter database `arcadedb.externalPropertyBucketPath` '" + overrideDir.toString() + "'");
@@ -619,7 +623,8 @@ class ExternalPropertyTest extends TestHelper {
       final var loaded = database.lookupByRID(saved[0], true).asDocument();
       assertThat(loaded.getString("blob")).isEqualTo("tiered-payload");
     } finally {
-      FileUtils.deleteRecursively(overrideDir.toFile());
+      GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.reset();
+      FileUtils.deleteRecursively(tierRoot.toFile());
     }
   }
 

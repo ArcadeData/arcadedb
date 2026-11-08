@@ -47,6 +47,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -82,6 +83,35 @@ public class FileUtils {
    */
   private static final boolean       NO_DIRECTORY_SYNC_ON_THIS_PLATFORM =
       System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH).contains("win");
+
+  /**
+   * Whether {@code path} names {@code directory} itself or something inside it, as the file system will resolve them: both
+   * are made absolute and normalized, so a {@code ..} cannot step out, and the part of each that exists already is resolved
+   * to its real path, so a symbolic link cannot lead out either. Neither has to exist.
+   */
+  public static boolean isInsideDirectory(final String path, final String directory) {
+    if (path == null || directory == null || path.isBlank() || directory.isBlank())
+      return false;
+    try {
+      return realPathOfExistingPart(Path.of(path)).startsWith(realPathOfExistingPart(Path.of(directory)));
+    } catch (final IOException | InvalidPathException e) {
+      return false;
+    }
+  }
+
+  /**
+   * {@code path} made absolute and normalized, with its longest existing prefix replaced by that prefix's real path. The rest
+   * cannot hold a {@code ..} once normalized, and does not exist yet, so it cannot be a link.
+   */
+  private static Path realPathOfExistingPart(final Path path) throws IOException {
+    final Path absolute = path.toAbsolutePath().normalize();
+    Path existing = absolute;
+    while (existing != null && !Files.exists(existing))
+      existing = existing.getParent();
+    if (existing == null)
+      return absolute;
+    return existing.toRealPath().resolve(existing.relativize(absolute)).normalize();
+  }
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)

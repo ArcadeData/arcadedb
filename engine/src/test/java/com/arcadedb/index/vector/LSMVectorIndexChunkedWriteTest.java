@@ -28,6 +28,8 @@ import com.arcadedb.engine.PageId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -59,7 +61,7 @@ class LSMVectorIndexChunkedWriteTest {
       // Create a graph file to write into
       final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
           dbInternal, "test-chunk-graph",
-          dbInternal.getDatabasePath(),
+          dbInternal.getDatabasePath() + File.separator + "test-chunk-graph",
           ComponentFile.MODE.READ_WRITE, pageSize);
 
       dbInternal.getSchema().getEmbedded().registerFile(graphFile);
@@ -131,7 +133,7 @@ class LSMVectorIndexChunkedWriteTest {
       // Create a graph file
       final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
           dbInternal, "test-corrupt-metadata",
-          dbInternal.getDatabasePath(),
+          dbInternal.getDatabasePath() + File.separator + "test-corrupt-metadata",
           ComponentFile.MODE.READ_WRITE, pageSize);
 
       dbInternal.getSchema().getEmbedded().registerFile(graphFile);
@@ -194,7 +196,7 @@ class LSMVectorIndexChunkedWriteTest {
 
       final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
           dbInternal, "test-overflow-graph",
-          dbInternal.getDatabasePath(),
+          dbInternal.getDatabasePath() + File.separator + "test-overflow-graph",
           ComponentFile.MODE.READ_WRITE, pageSize);
 
       dbInternal.getSchema().getEmbedded().registerFile(graphFile);

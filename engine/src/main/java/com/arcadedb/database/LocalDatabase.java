@@ -2805,11 +2805,40 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return name;
   }
 
-  /** Override root + dbName subdir, or null if not configured. The subdir prevents collisions across databases. */
+  /**
+   * Where a new external-property bucket is created: the override root + dbName subdir, or null if not configured. The
+   * subdir prevents collisions across databases. The root is checked here, where the directory and the file are created,
+   * and not only where the setting is changed: a value can reach the database's configuration another way (a
+   * configuration file written before the check existed, embedded code).
+   *
+   * @throws SecurityException if the root lies outside the directories a database may use, see
+   *                           {@link GlobalConfiguration#checkDatabaseStorageDirectory(String, String)}
+   */
   public String resolveExternalBucketPath() {
     final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
     if (configured == null || configured.isEmpty())
       return null;
+    GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.checkDatabaseStorageDirectory(configured, databasePath);
+    return configured + File.separator + name;
+  }
+
+  /**
+   * The directory the external-property buckets created by {@link #resolveExternalBucketPath()} are found in when the
+   * database opens. Not refused when the root lies outside the directories a database may use, because the buckets
+   * already there hold records and only reading them is at stake: no directory is created and no file is added. Such a root
+   * is reported, since no new bucket can be created there.
+   */
+  private String externalBucketScanPath() {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
+    if (configured == null || configured.isEmpty())
+      return null;
+    try {
+      GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.checkDatabaseStorageDirectory(configured, databasePath);
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s': %s. The external-property buckets already there are loaded, new ones cannot be created", null, name,
+          e.getMessage());
+    }
     return configured + File.separator + name;
   }
 
@@ -4570,7 +4599,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       DatabaseContext.INSTANCE.init(this);
       setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
-      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
+      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, externalBucketScanPath());
       fileManager.setDroppedFileHandler(file -> PageManager.INSTANCE.deferFileDrop(wrappedDatabaseInstance, file));
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
       columnarIndexManager = new ColumnarIndexManager(this);

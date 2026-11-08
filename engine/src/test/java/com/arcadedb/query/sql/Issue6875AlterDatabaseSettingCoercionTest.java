@@ -73,11 +73,15 @@ class Issue6875AlterDatabaseSettingCoercionTest extends TestHelper {
         .doesNotThrowAnyException();
   }
 
-  /** A String setting is unaffected: it takes any text, quotes stripped by the expression evaluator as before. */
+  /**
+   * A String setting is unaffected: it takes any text, quotes stripped by the expression evaluator as before. The text is a
+   * directory inside the database's own, the only place this setting may point to without a server-level value.
+   */
   @Test
   void alterDatabaseStillAcceptsAnyTextForAStringSetting() {
-    database.command("sql", "alter database `arcadedb.externalPropertyBucketPath` 'not a number at all'").close();
+    final String text = database.getDatabasePath() + "/not a number at all";
+    database.command("sql", "alter database `arcadedb.externalPropertyBucketPath` '" + text + "'").close();
     assertThat(database.getConfiguration().getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH))
-        .isEqualTo("not a number at all");
+        .isEqualTo(text);
   }
 }

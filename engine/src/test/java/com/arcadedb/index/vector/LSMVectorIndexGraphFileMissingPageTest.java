@@ -66,7 +66,8 @@ class LSMVectorIndexGraphFileMissingPageTest {
 
         database.begin();
         final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
-            dbInternal, "missing-page-test", dbInternal.getDatabasePath(), ComponentFile.MODE.READ_WRITE, pageSize);
+            dbInternal, "missing-page-test", dbInternal.getDatabasePath() + File.separator + "missing-page-test",
+            ComponentFile.MODE.READ_WRITE, pageSize);
         database.commit();
 
         // Simulate a truncated/evicted graph file: the component believes it has one page, but the

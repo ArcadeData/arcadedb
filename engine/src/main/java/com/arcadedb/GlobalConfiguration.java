@@ -290,7 +290,7 @@ public enum GlobalConfiguration {
       Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
 
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
-      "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
+      "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes. A value set for one database (ALTER DATABASE, which needs the updateSecurity permission) must lie inside the database directory or inside the directory the server-level value names.",
       String.class, ""),
 
   TIMESERIES_TAG_DICTIONARY_MAX_SIZE("arcadedb.timeSeriesTagDictionaryMaxSize", SCOPE.DATABASE,
@@ -793,7 +793,9 @@ public enum GlobalConfiguration {
       alone it competes for space with the very files it is protecting; pointing this at another volume removes \
       that coupling, and the automatic PAGE_SNAPSHOT_MAX_SIZE is then measured against the free space THERE. The \
       file is pure scratch - it is created when the RAM budget is exhausted, deleted when the window closes, and \
-      never read by recovery.""",
+      never read by recovery. A value set for one database (ALTER DATABASE, which needs the updateSecurity permission) \
+      must lie inside the database directory or inside the directory the server-level value names; one that does not \
+      is ignored with a warning and the database directory is used.""",
       String.class, ""),
 
   PAGE_SNAPSHOT_TRACK_OPENERS("arcadedb.pageSnapshotTrackOpeners", SCOPE.JVM,
@@ -5213,16 +5215,58 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Whether this setting is a security control: it decides what the server may reach or read on behalf of a query, so
-   * changing it needs the administrative {@code updateSecurity} permission and not merely the per-database
-   * {@code updateDatabaseSettings} one that is meant for tuning. Declare any new database-scoped setting of that kind here.
+   * Whether this setting is a security control: it decides what the server may reach or read on behalf of a query, or
+   * where on the host it creates files, so changing it needs the administrative {@code updateSecurity} permission and not
+   * merely the per-database {@code updateDatabaseSettings} one that is meant for tuning. Declare any new database-scoped
+   * setting of that kind here.
    */
   public boolean isSecuritySensitive() {
     return switch (this) {
       case OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY, OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS,
            OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES -> true;
-      default -> false;
+      default -> isStorageDirectory();
     };
+  }
+
+  /**
+   * Whether this setting names a directory the engine creates files in on behalf of one database. Its value for a database
+   * is held to {@link #checkDatabaseStorageDirectory(String, String)}, both where it is changed and where the files are
+   * created. Declare any new database-scoped setting of that kind here.
+   */
+  public boolean isStorageDirectory() {
+    return this == EXTERNAL_PROPERTY_BUCKET_PATH || this == PAGE_SNAPSHOT_SPILL_PATH;
+  }
+
+  /**
+   * Refuses a directory a database's own value of this {@link #isStorageDirectory() storage-directory setting} names, unless
+   * it lies inside the database's own directory or inside the directory the server-level value of the same setting names
+   * (the value of this enum, which only the process configuration sets: system properties, environment, embedded code).
+   * Without it a user allowed to change the database's settings would choose where on the host the server creates
+   * directories and files. Both paths are compared as the file system resolves them, so neither {@code ..} nor a symbolic
+   * link leads out. An empty value means the database's own directory and is always accepted, and so is the server-level
+   * value itself.
+   *
+   * @param directory    the directory, with its variables already resolved
+   * @param databasePath the directory of the database the value belongs to
+   *
+   * @throws SecurityException if the directory lies outside both
+   */
+  public void checkDatabaseStorageDirectory(final String directory, final String databasePath) {
+    if (directory == null || directory.isBlank())
+      return;
+
+    final String serverDirectory = getValueAsString();
+    if (serverDirectory != null && !serverDirectory.isBlank()) {
+      if (directory.trim().equals(serverDirectory.trim()) || FileUtils.isInsideDirectory(directory.trim(), serverDirectory.trim()))
+        return;
+    }
+
+    if (databasePath != null && FileUtils.isInsideDirectory(directory.trim(), databasePath))
+      return;
+
+    throw new SecurityException("Directory '" + directory + "' is not allowed for setting '" + key
+        + "': a database may only use a directory inside its own directory or inside the directory the server-level value of '"
+        + key + "' names" + (serverDirectory == null || serverDirectory.isBlank() ? ", which is not set" : ""));
   }
 
   /**

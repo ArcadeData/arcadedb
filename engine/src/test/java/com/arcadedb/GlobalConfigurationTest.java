@@ -20,6 +20,9 @@ package com.arcadedb;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -141,13 +144,40 @@ class GlobalConfigurationTest extends TestHelper {
   }
 
   @Test
-  void loadCsvReachSettingsAreSecuritySensitive() {
+  void settingsReachingOutsideTheDatabaseAreSecuritySensitive() {
     // Pins the settings ALTER DATABASE gates behind updateSecurity: dropping one from isSecuritySensitive() must be deliberate.
     assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS.isSecuritySensitive()).isTrue();
     assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY.isSecuritySensitive()).isTrue();
     assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS.isSecuritySensitive()).isTrue();
     assertThat(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES.isSecuritySensitive()).isTrue();
+    assertThat(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.isSecuritySensitive()).isTrue();
+    assertThat(GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.isSecuritySensitive()).isTrue();
     assertThat(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.isSecuritySensitive()).isFalse();
+  }
+
+  @Test
+  void theDatabaseStorageDirectorySettingsAreAllDeclared() {
+    // Every database-scoped String setting is either a directory the engine creates files in, and so declared by
+    // isStorageDirectory(), or listed here as one that is not: a new setting naming a directory cannot be added without
+    // deciding which it is. The LOAD CSV import directory is one files are READ from, gated by isSecuritySensitive() and
+    // contained by LOAD CSV itself.
+    final Set<GlobalConfiguration> notADirectory = Set.of(GlobalConfiguration.DATE_FORMAT, GlobalConfiguration.DATE_TIME_FORMAT,
+        GlobalConfiguration.BUCKET_REUSE_SPACE_MODE, GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_IMPL,
+        GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS, GlobalConfiguration.GREMLIN_ENGINE, GlobalConfiguration.INSTANCE_ID,
+        GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES, GlobalConfiguration.OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY);
+    final Set<GlobalConfiguration> undecided = new HashSet<>();
+    int storageDirectories = 0;
+    for (final GlobalConfiguration setting : GlobalConfiguration.values()) {
+      if (setting.getScope() != GlobalConfiguration.SCOPE.DATABASE || setting.getType() != String.class)
+        continue;
+      if (setting.isStorageDirectory())
+        ++storageDirectories;
+      else if (!notADirectory.contains(setting))
+        undecided.add(setting);
+    }
+    assertThat(storageDirectories).as("the scan must still reach the storage-directory settings").isEqualTo(2);
+    assertThat(undecided).as("database-scoped String settings neither declared a storage directory nor listed as not one")
+        .isEmpty();
   }
 
   @Test
