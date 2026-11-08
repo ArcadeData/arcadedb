@@ -227,6 +227,7 @@ public class PostgresNetworkExecutor extends Thread {
   // (issue #7233). Still sampled once per connection, which is what they always were.
   private final boolean                     DEBUG;
   private final boolean                     QUOTED_IDENTIFIERS;
+  private final PostgresQueryLanguages      languages;
   // What this connection's SET commands and startup packet established, and what SHOW answers (issue #8217). Per
   // connection, as a PostgreSQL SET is session-scoped: nothing a client sets here reaches the schema or another session.
   private final PostgresSessionSettings     sessionSettings       = new PostgresSessionSettings();
@@ -308,6 +309,7 @@ public class PostgresNetworkExecutor extends Thread {
     this.sslHelper = sslHelper;
     this.DEBUG = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_DEBUG);
     this.QUOTED_IDENTIFIERS = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS);
+    this.languages = new PostgresQueryLanguages(server.getConfiguration().getValueAsString(GlobalConfiguration.POSTGRES_LANGUAGES));
 
     // Bound the pre-authentication window (issue #6377). One thread and one file descriptor are committed
     // per accepted connection, before anyone has proved who they are, and the listener caps neither; without
@@ -3552,10 +3554,17 @@ public class PostgresNetworkExecutor extends Thread {
       // Execute while the protocol's own block state - explicitTransactionStarted, errorInTransaction, the
       // ReadyForQuery status byte - never moved, so a statement pipelined after a failure inside the block still
       // ran and was committed. The same normalization queryCommand() applies to its own text.
-      final Query query = getLanguageAndQuery(normalizeStatementText(readString()));
+      final String statementText = normalizeStatementText(readString());
+      // The whole message is read before anything about the statement can be refused (its language marker below): a
+      // refusal answered with the declared parameter types still unread would leave them to be read as the next message
+      final int paramCount = channel.readUnsignedShort();
+      final long[] declaredTypes = new long[paramCount];
+      for (int i = 0; i < paramCount; i++)
+        declaredTypes[i] = channel.readUnsignedInt();
+
+      final Query query = getLanguageAndQuery(statementText);
 
       final PostgresPortal portal = new PostgresPortal(query.query, query.language);
-      final int paramCount = channel.readUnsignedShort();
       // Counted on the text the engine lexes, where a $N is resolved: the wire text still carries PostgreSQL's literals, whose
       // backslashes mean something else under standard_conforming_strings (issue #11018 review). Reused for the parse below
       final String engineText = toEngineText(query.language, query.query);
@@ -3563,10 +3572,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (paramCount > 0) {
         portal.parameterTypes = new ArrayList<>(Math.max(paramCount, Math.min(highestPlaceholder, MAX_STATEMENT_PARAMETERS)));
-        for (int i = 0; i < paramCount; i++) {
-          final long param = channel.readUnsignedInt();
-          portal.parameterTypes.add(param);
-        }
+        for (final long declaredType : declaredTypes)
+          portal.parameterTypes.add(declaredType);
         // The statement requires a value for every $N up to the highest its text references, declared or not (issue #11018):
         // PostgreSQL infers the type of the ones the client left out, and bindCommand() checks the count against this list.
         // UNSPECIFIED is what bindCommand() already deserialized those values as.
@@ -4541,6 +4548,8 @@ public class PostgresNetworkExecutor extends Thread {
       return setting.sqlState;
     if (error instanceof PostgresCatalog.Refusal refusal)
       return refusal.sqlState; // program_limit_exceeded (issue #10228), feature_not_supported (issue #10371)
+    if (error instanceof PostgresQueryLanguages.Refusal refusal)
+      return refusal.sqlState; // feature_not_supported: a language marker this protocol does not honour
     return switch (ErrorCategory.of(error)) {
       // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
       // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)
@@ -4664,9 +4673,10 @@ public class PostgresNetworkExecutor extends Thread {
   private String concealableMessage(final String message, final Throwable cause) {
     // A refused SET/DISCARD is text the protocol layer wrote, with no user data in it, and the explanation is what the
     // client is owed; it is also a client mistake, never a server fault (issue #9327). A refused catalog query is the same: text
-    // this server wrote, with at most the relation the client named in it (issue #10371)
+    // this server wrote, with at most the relation the client named in it (issue #10371). So is a refused language marker,
+    // with at most the language name the client sent
     if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException
-        || cause instanceof PostgresCatalog.Refusal)
+        || cause instanceof PostgresCatalog.Refusal || cause instanceof PostgresQueryLanguages.Refusal)
       return message;
     // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
     // failure (syntax error, duplicated key, ...) is not an incident: the message alone, no stack trace. Anything the
@@ -5011,18 +5021,17 @@ public class PostgresNetworkExecutor extends Thread {
     return true;
   }
 
+  /**
+   * The language of {@code query} and the text its engine is handed. Only a {@code {language}} marker that is the first
+   * token of the statement selects a language, and only one {@link GlobalConfiguration#POSTGRES_LANGUAGES} permits: see
+   * {@link PostgresQueryLanguages}.
+   *
+   * @throws PostgresQueryLanguages.Refusal for a leading marker this protocol does not honour
+   */
   private Query getLanguageAndQuery(final String query) {
-    String language = "sql";
-    String queryText = query;
-
-    // Regular expression to match language prefixes
-    Pattern pattern = Pattern.compile("\\{(\\w+)\\}");
-    Matcher matcher = pattern.matcher(query);
-
-    if (matcher.find()) {
-      language = matcher.group(1);
-      queryText = query.substring(matcher.end()).trim();
-    }
+    final PostgresQueryLanguages.Selection selection = languages.select(query);
+    final String language = selection.language();
+    String queryText = selection.text();
 
     if (QUOTED_IDENTIFIERS && ("sql".equals(language) || "sqlscript".equals(language)) && !isSessionCommand(queryText))
       // POSTGRES CLIENTS QUOTE IDENTIFIERS WITH DOUBLE QUOTES, WHILE ARCADEDB SQL USES BACK-TICKS (ISSUE #5369)

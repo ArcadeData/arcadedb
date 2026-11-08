@@ -3448,6 +3448,14 @@ public enum GlobalConfiguration {
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 
+  POSTGRES_LANGUAGES("arcadedb.postgres.languages", SCOPE.SERVER, """
+      Comma-separated query languages a statement received through the Postgres wire protocol may select with a \
+      leading {language} marker, as in '{cypher}MATCH (n) RETURN n'. The marker is only read as the first token of the \
+      statement (leading whitespace and comments aside). A statement without a marker is SQL, which is always \
+      permitted. A marker naming any other language, or one no query engine of this server answers, is refused. \
+      Leave empty to accept SQL only. Default is 'sqlscript,cypher,opencypher,gremlin,graphql,mongo'""", String.class,
+      "sqlscript,cypher,opencypher,gremlin,graphql,mongo"),
+
   POSTGRES_QUOTED_IDENTIFIERS("arcadedb.postgres.quotedIdentifiers", SCOPE.SERVER, """
       Interprets double-quoted tokens in SQL statements received through the Postgres wire protocol as identifiers, as \
       PostgreSQL and the SQL standard mandate, instead of as string literals. Set to false to restore the legacy \
