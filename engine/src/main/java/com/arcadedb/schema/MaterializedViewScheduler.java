@@ -27,6 +27,7 @@ import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -119,6 +120,34 @@ public class MaterializedViewScheduler {
     } finally {
       if (contextInstalledHere)
         DatabaseContext.INSTANCE.removeContext(databasePath);
+    }
+  }
+
+  /**
+   * Runs {@code work}, the further passes of a refresh the committing thread no longer owes (issue #11464), on the scheduler
+   * thread. Returns {@code false} when the scheduler is shut down, so the caller keeps the work. Leader-only like the
+   * periodic pass: a node that stopped being the leader meanwhile gives the refresh up rather than rewriting the backing type
+   * beside the leader's own rewrite (issue #11031).
+   */
+  boolean handOff(final Database database, final MaterializedViewImpl view, final Runnable work) {
+    try {
+      executor.execute(() -> {
+        if (database instanceof DatabaseInternal internal && internal.isFollower()) {
+          view.endRefresh();
+          return;
+        }
+        final String databasePath = database.getDatabasePath();
+        final boolean contextInstalledHere = DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null;
+        try {
+          work.run();
+        } finally {
+          if (contextInstalledHere)
+            DatabaseContext.INSTANCE.removeContext(databasePath);
+        }
+      });
+      return true;
+    } catch (final RejectedExecutionException e) {
+      return false;
     }
   }
 

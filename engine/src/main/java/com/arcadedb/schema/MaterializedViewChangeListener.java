@@ -66,7 +66,7 @@ public class MaterializedViewChangeListener
     // is a future optimization — see MaterializedViewQueryClassifier.isSimple().
     tx.addAfterCommitCallbackIfAbsent(callbackKey, () -> {
       try {
-        MaterializedViewRefresher.fullRefresh(database, view);
+        MaterializedViewRefresher.refreshAfterCommit(database, view);
       } catch (final Exception e) {
         view.setStatus(MaterializedViewStatus.STALE);
         MaterializedViewRefresher.persistStatus(database, view.getName(), view.getStatus());
