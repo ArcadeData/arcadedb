@@ -92,6 +92,22 @@ class Issue11392SqlReturningTest extends TestHelper {
     assertThat(database.countType("Ret", false)).isEqualTo(1);
   }
 
+  /** An EXTERNAL property lives in storage the delete removes: RETURNING reads it before, not after. */
+  @Test
+  void deleteReturningReadsAnExternalPropertyBeforeItsStorageIsGone() {
+    database.command("sql", "CREATE PROPERTY Ret.blob STRING (EXTERNAL true)");
+    database.transaction(() -> database.command("sql", "INSERT INTO Ret SET a = 9, blob = 'payload'").close());
+    // REOPENED, SO THE RECORD IS READ BACK FROM DISK WITH ITS EXTERNAL VALUE NOT LOADED YET
+    reopenDatabase();
+
+    database.transaction(() -> {
+      final List<Result> rows = rows(database.command("sql", "DELETE FROM Ret WHERE a = 9 RETURNING a, blob"));
+      assertThat(rows).hasSize(1);
+      assertThat(rows.getFirst().<String>getProperty("blob")).isEqualTo("payload");
+    });
+    assertThat(database.countType("Ret", false)).isZero();
+  }
+
   @Test
   void returnAndReturningCannotBeCombined() {
     assertThatThrownBy(() -> database.command("sql", "INSERT INTO Ret SET a = 1 RETURN @this RETURNING *"))

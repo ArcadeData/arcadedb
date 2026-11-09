@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.Projection;
 
 /**
  * Deletes records coming from upstream steps. Only the rows the engine actually deleted are passed on: a delete a
@@ -33,9 +34,21 @@ import com.arcadedb.exception.TimeoutException;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class DeleteStep extends AbstractExecutionStep {
+  // THE PROJECTION OF A DELETE ... RETURNING (issue #11392), OR NULL
+  private final Projection returning;
 
   public DeleteStep(final CommandContext context) {
+    this(context, null);
+  }
+
+  /**
+   * @param returning the projection of a {@code DELETE ... RETURNING}, computed on each record BEFORE it is deleted - a value the
+   *                  record reads lazily, such as an EXTERNAL property, is gone once its storage is - and answered only for a
+   *                  record the delete removed, never for one a listener vetoed
+   */
+  public DeleteStep(final CommandContext context, final Projection returning) {
     super(context);
+    this.returning = returning;
   }
 
   @Override
@@ -48,13 +61,17 @@ public class DeleteStep extends AbstractExecutionStep {
       protected Result process(final Result result) {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          if (result.isElement())
-            return database.deleteRecordReportingVeto(result.getElement().get()) ? result : null;
+          if (result.isElement()) {
+            final Result answer = beforeImage(context, result);
+            return database.deleteRecordReportingVeto(result.getElement().get()) ? answer : null;
+          }
           // A PROJECTION THAT CARRIES THE @rid OF A RECORD DELETES THAT RECORD, AS UPDATE WRITES TO IT (ConvertToUpdatableResultStep).
           // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
           // (issue #10336)
-          if (result.getProperty("@rid") instanceof Identifiable identifiable && identifiable.getRecord() instanceof Record record)
-            return database.deleteRecordReportingVeto(record) ? result : null;
+          if (result.getProperty("@rid") instanceof Identifiable identifiable && identifiable.getRecord() instanceof Record record) {
+            final Result answer = beforeImage(context, result);
+            return database.deleteRecordReportingVeto(record) ? answer : null;
+          }
           throw new CommandExecutionException(ConvertToUpdatableResultStep.NOT_A_RECORD);
         } finally {
           if (context.isProfiling())
@@ -64,12 +81,25 @@ public class DeleteStep extends AbstractExecutionStep {
     };
   }
 
+  /** The row this step answers for {@code result}: the row itself, or its RETURNING projection taken before the delete. */
+  private Result beforeImage(final CommandContext context, final Result result) {
+    if (returning == null)
+      return result;
+    final Object oldCurrent = context.getVariable("current");
+    context.setVariable("current", result);
+    try {
+      return returning.calculateSingle(context, result);
+    } finally {
+      context.setVariable("current", oldCurrent);
+    }
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
-    result.append("+ DELETE");
+    result.append(returning != null ? "+ DELETE RETURNING " + returning : "+ DELETE");
     if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 

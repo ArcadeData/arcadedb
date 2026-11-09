@@ -1169,9 +1169,14 @@ public class BoltNetworkExecutor extends Thread {
       }
       hasMore = stream.hasMore();
     } catch (final RuntimeException e) {
-      // AS FOR A FAILED PULL: THE STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
+      // ANSWERED AS A FAILED PULL IS (issue #11392): A TIMEOUT OR A RETRYABLE CONFLICT MET WHILE SKIPPING ROWS KEEPS ITS CODE, AND THE
+      // STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
+      LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT DISCARD error", e);
+      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error discarding records";
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       closeStream(stream, "DISCARD failure");
-      throw e;
+      state = State.FAILED;
+      return;
     }
 
     final Map<String, Object> metadata = hasMore ? new LinkedHashMap<>() : completeStream(stream, "DISCARD");

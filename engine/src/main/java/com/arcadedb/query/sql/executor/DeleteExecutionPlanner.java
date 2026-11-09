@@ -200,7 +200,7 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context));
+    result.chain(new DeleteStep(context, returnProjection));
   }
 
   private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {
@@ -214,11 +214,9 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean returnBefore) {
+    // A RETURNING projection (issue #11392) is computed by the DeleteStep itself, on each record before it is deleted
     if (!returnBefore)
       result.chain(new CountStep(context));
-    else if (returnProjection != null)
-      // RETURNING (issue #11392): the records as they were before the delete, through the projection the statement wrote
-      result.chain(new ProjectionCalculationStep(returnProjection, context));
   }
 
   private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit) {
