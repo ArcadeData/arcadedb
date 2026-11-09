@@ -2596,6 +2596,16 @@ public enum GlobalConfiguration {
       more of the log tail decoded in memory.""",
       String.class, ""),
 
+  HA_APPLY_BACKLOG_MAX("arcadedb.ha.applyBacklogMax", SCOPE.SERVER,
+      """
+      Byte budget for the Raft entries a follower may hold received but not yet applied (e.g. '256MB'). Ratis keeps \
+      every such entry decoded on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
+      entries below the applied index. While the leader estimates that a follower is over the budget (applied index \
+      reported by the follower, average entry size measured by the leader) it sends that follower heartbeats only, \
+      and resumes when the follower has caught up. Empty (the default) means a quarter of the maximum JVM heap, \
+      at least 32MB. 0 disables the back-pressure (issue #11458).""",
+      String.class, ""),
+
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       """
       AppendEntries batch byte limit for replication (e.g. '32MB'). Ratis applies this limit per ENTRY as \
