@@ -101,7 +101,9 @@ class Issue8900ClosedServerInPlaceRestartIT extends BaseRaftHATest {
     // The health monitor restarts the server in place and the new division runs.
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
         .until(() -> node.getRaftServerForTesting() != oldServer && node.getRaftLifeCycleState() == LifeCycle.State.RUNNING);
-    assertThat(node.getRecoverRestartCount()).isGreaterThanOrEqualTo(1);
+    // The server is RUNNING before the restart finishes: the counter is bumped after the Raft client and the broker are built (#11467)
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+        .untilAsserted(() -> assertThat(node.getRecoverRestartCount()).isGreaterThanOrEqualTo(1));
 
     // The restart verified the OLD server's gRPC services against the real Ratis, not against nothing: they are found,
     // and none is still running beside the new server.
