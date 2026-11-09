@@ -55,6 +55,14 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostgresQuotedIdentifierRewriter {
+  /**
+   * The record attributes the ArcadeDB SQL lexer has a token for ({@code THIS}, {@code RID_ATTR}, ... in {@code SQLLexer.g4}), lower
+   * case. Only these are written bare: any other {@code @name} is no token there, and {@code @ridfoo} would lex as {@code @rid}
+   * aliased {@code foo}.
+   */
+  private static final Set<String> RECORD_ATTRIBUTES = Set.of("@this", "@rid", "@rid_id", "@rid_pos", "@out", "@in", "@type",
+      "@props", "@cat");
+
 
   private PostgresQuotedIdentifierRewriter() {
   }
@@ -500,14 +508,6 @@ public class PostgresQuotedIdentifierRewriter {
     out.append('`');
     return i;
   }
-
-  /**
-   * The record attributes the ArcadeDB SQL lexer has a token for ({@code THIS}, {@code RID_ATTR}, ... in {@code SQLLexer.g4}), lower
-   * case. Only these are written bare: any other {@code @name} is no token there, and {@code @ridfoo} would lex as {@code @rid}
-   * aliased {@code foo}.
-   */
-  private static final Set<String> RECORD_ATTRIBUTES = Set.of("@this", "@rid", "@rid_id", "@rid_pos", "@out", "@in", "@type",
-      "@props", "@cat");
 
   /** Whether {@code identifier} is one of the {@link #RECORD_ATTRIBUTES}, in any case as the lexer reads them. */
   private static boolean isRecordAttribute(final CharSequence identifier) {
