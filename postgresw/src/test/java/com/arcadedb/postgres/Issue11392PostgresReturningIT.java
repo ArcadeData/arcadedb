@@ -70,10 +70,36 @@ class Issue11392PostgresReturningIT extends PostgresWireProtocolTestBase {
         }
       }
 
+      // The identity ArcadeDB generates for a record is its RID: asked for by name, it is the RID of the record inserted
+      final String rid;
+      try (final PreparedStatement insert = connection.prepareStatement("INSERT INTO Gk (name, n) VALUES (?, ?)",
+          new String[] { "@rid" })) {
+        insert.setString(1, "third");
+        insert.setInt(2, 3);
+        assertThat(insert.executeUpdate()).isEqualTo(1);
+        try (final ResultSet keys = insert.getGeneratedKeys()) {
+          assertThat(keys.next()).isTrue();
+          rid = keys.getString("@rid");
+        }
+      }
+      assertThat(rid).startsWith("#");
+      try (final Statement statement = connection.createStatement();
+          final ResultSet byRid = statement.executeQuery("SELECT name FROM " + rid)) {
+        assertThat(byRid.next()).isTrue();
+        assertThat(byRid.getString("name")).isEqualTo("third");
+      }
+
+      // the same quoted attribute in a query is the attribute too, not the string "@rid"
+      try (final Statement statement = connection.createStatement();
+          final ResultSet byQuotedRid = statement.executeQuery("SELECT \"@rid\" FROM Gk WHERE name = 'third'")) {
+        assertThat(byQuotedRid.next()).isTrue();
+        assertThat(byQuotedRid.getString(1)).isEqualTo(rid);
+      }
+
       try (final Statement statement = connection.createStatement();
           final ResultSet count = statement.executeQuery("SELECT count(*) AS c FROM Gk")) {
         assertThat(count.next()).isTrue();
-        assertThat(count.getLong("c")).isEqualTo(2L);
+        assertThat(count.getLong("c")).isEqualTo(3L);
       }
     }
   }

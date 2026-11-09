@@ -102,8 +102,11 @@ class PostgresQuotedIdentifierRewriterTest {
   }
 
   @Test
-  void recordAttributesAreLeftUntouched() {
-    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@rid\", \"name\" FROM V")).isEqualTo("SELECT \"@rid\", `name` FROM V");
+  void recordAttributesAreWrittenBare() {
+    // issue #11392: double-quoted, ArcadeDB SQL read "@rid" as a string literal
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@rid\", \"name\" FROM V")).isEqualTo("SELECT @rid, `name` FROM V");
+    // not a plain attribute name after the @: left as written
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@a b\" FROM V")).isEqualTo("SELECT \"@a b\" FROM V");
   }
 
   @Test

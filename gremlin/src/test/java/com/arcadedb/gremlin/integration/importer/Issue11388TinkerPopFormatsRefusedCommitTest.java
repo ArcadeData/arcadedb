@@ -114,6 +114,7 @@ class Issue11388TinkerPopFormatsRefusedCommitTest {
     assertThat(refusals).as("both vertices land in the one pass whose commit is refused").isEqualTo(2);
     assertNothingLeftOnTheThread();
     assertThat(database.countType("Person", true)).isZero();
+    assertThat(database.countType("knows", true)).isZero();
   }
 
   /** What the stranded transaction did: the caller's next unit of work nested inside it and never ended. */
@@ -155,6 +156,7 @@ class Issue11388TinkerPopFormatsRefusedCommitTest {
     assertThat(refusals).isEqualTo(2);
     assertNothingLeftOnTheThread();
     assertThat(database.countType("Person", true)).isZero();
+    assertThat(database.countType("knows", true)).isZero();
   }
 
   /**

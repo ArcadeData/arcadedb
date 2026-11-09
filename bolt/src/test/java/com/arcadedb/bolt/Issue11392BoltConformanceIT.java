@@ -143,6 +143,17 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
     }
   }
 
+  /** A statement that does not parse is reported as such in READ access mode, not as a write refusal. */
+  @Test
+  void aMalformedQueryInReadModeIsASyntaxErrorNotAnAccessModeRefusal() throws Exception {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
+      bolt.run("MATC (n) RETRN n", Map.of("mode", "r"));
+      final BoltWireConnection.Summary refused = bolt.readSummary();
+      assertThat(refused.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(refused.code()).isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
+    }
+  }
+
   /** A transaction that outlives its timeout is rolled back at COMMIT, whatever its statements did in time. */
   @Test
   void aCommitPastTheTransactionTimeoutIsRefusedAndRolledBack() throws Exception {

@@ -54,6 +54,7 @@ import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
@@ -904,9 +905,11 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     RunningQuery.Binding binding = null;
+    final boolean readAccessMode = explicitTransaction ? transactionReadOnly : isReadAccessMode(message.getExtra());
     try {
-      // Determine if this is a write query using the query analyzer
-      stream.writeOperation = isWriteQuery(query);
+      // Determine if this is a write query using the query analyzer: one it cannot analyze counts as a write, to be safe
+      final Boolean writeQuery = classifyWriteQuery(query);
+      stream.writeOperation = writeQuery == null || writeQuery;
 
       // Detect EXPLAIN / PROFILE prefix so we can later surface the execution plan
       // in PULL SUCCESS metadata (consumed by Neo4j drivers as ResultSummary#plan / #profile).
@@ -920,19 +923,11 @@ public class BoltNetworkExecutor extends Thread {
 
       // A write in READ access mode is refused before it runs, as Neo4j refuses it (issue #11392): session.executeRead used
       // to write. An EXPLAIN executes nothing, so it is not a write whatever it explains
-      if (stream.writeOperation && !explainMode && (explicitTransaction ? transactionReadOnly :
-          isReadAccessMode(message.getExtra()))) {
+      if (readAccessMode && Boolean.TRUE.equals(writeQuery) && !explainMode) {
         stream.close(this, "RUN failure");
         sendFailure(BoltErrorCodes.ACCESS_MODE_ERROR, "Writing in read access mode not allowed");
         state = State.FAILED;
         return;
-      }
-
-      // The budget the engine enforces on the statement (arcadedb.command.timeout), taken when its context is built here, so
-      // the rows a later PULL reads run against the same deadline. The earlier of the two wins, as for Postgres statement_timeout
-      if (statementTimeoutMs > 0) {
-        final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-        CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
       }
 
       // Waits for the query admission gate (issue #9518). The slot belongs to the stream and goes back when the stream is closed -
@@ -948,13 +943,23 @@ public class BoltNetworkExecutor extends Thread {
       stream.runningQuery.setStatement("opencypher", query);
       binding = stream.runningQuery.bind();
 
+      // The budget the engine enforces on the statement (arcadedb.command.timeout), published right before the statement's
+      // context is built - after the admission wait, which is not the statement's - so the rows a later PULL reads run against
+      // the same deadline. The earlier of the two wins, as for Postgres statement_timeout
+      if (statementTimeoutMs > 0) {
+        final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+        CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
+      }
+
       // Use command() for writes, query() for reads.
       // An AUTO-COMMIT write commits here, at RUN, not at the end of its stream as the Bolt specification has it: a RESET or a
       // dropped connection between RUN and PULL cannot take it back (issue #11392). Deliberate: the engine runs it as one
       // transaction with its own retry on a conflict (#10190), which deferring the commit to the last PULL would give up, and
       // ArcadeDB's page-level conflicts are far more frequent than Neo4j's row locks. A driver pipelines PULL right after RUN, so
       // only a raw client that resets or drops in between sees the difference; an explicit transaction is unaffected
-      if (stream.writeOperation) {
+      // In READ access mode a statement the analyzer could not classify runs as a read: query() reports what is wrong with it,
+      // and refuses it if it does write (QueryNotIdempotentException, answered as the access-mode refusal below)
+      if (stream.writeOperation && !(readAccessMode && writeQuery == null)) {
         stream.resultSet = database.command("opencypher", query, params);
       } else {
         stream.resultSet = database.query("opencypher", query, params);
@@ -1010,6 +1015,13 @@ public class BoltNetworkExecutor extends Thread {
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), clientMessage(parseMsg, e), e);
       state = State.FAILED;
     } catch (final Exception e) {
+      if (readAccessMode && CauseChain.contains(e, QueryNotIdempotentException.class)) {
+        // A write the analyzer could not see in advance, refused by query() in READ access mode (issue #11392)
+        stream.close(this, "RUN failure");
+        sendFailure(BoltErrorCodes.ACCESS_MODE_ERROR, "Writing in read access mode not allowed");
+        state = State.FAILED;
+        return;
+      }
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
       // so log them at FINE to avoid flooding WARNING with normal, recoverable flow; genuine errors stay WARNING.
       stream.close(this, "RUN failure");
@@ -1789,24 +1801,25 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Determine if a Cypher query contains write operations.
-   * Uses ArcadeDB's query analyzer for accurate detection.
+   * Determine if a Cypher query contains write operations, using ArcadeDB's query analyzer: {@code TRUE} for a write,
+   * {@code FALSE} for a read, and {@code null} when the analysis itself failed (a statement that does not parse, for one),
+   * which the caller runs as a write to be safe - except in READ access mode, where it is run as a read so the engine reports
+   * what is wrong with it rather than a write refusal it may not deserve (issue #11392).
    */
-  private boolean isWriteQuery(final String query) {
+  private Boolean classifyWriteQuery(final String query) {
     if (query == null || query.isEmpty())
-      return false;
+      return Boolean.FALSE;
 
     try {
       // Use the statement cache directly to avoid creating an AnalyzedQuery wrapper object.
       // The statement cache returns the parsed CypherStatement with isReadOnly() already computed.
       return !((DatabaseInternal) database).getCypherStatementCache().isIdempotent(query);
     } catch (final Exception e) {
-      // If analysis fails, assume it's a write operation to be safe
       // Log at FINE level to avoid spam for complex but valid queries
       LogManager.instance().log(this, Level.FINE,
           "Query analysis failed for: " + (query.length() > 100 ? query.substring(0, 100) + "..." : query) +
               " - assuming write operation", e);
-      return true;
+      return null;
     }
   }
 

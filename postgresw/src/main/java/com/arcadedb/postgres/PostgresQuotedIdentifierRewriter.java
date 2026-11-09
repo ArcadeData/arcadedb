@@ -46,8 +46,8 @@ import com.arcadedb.exception.CommandSQLParsingException;
  * ArcadeDB dialect, have no Postgres counterpart, and there the double quote keeps its ArcadeDB meaning of string
  * literal. A single-quoted literal keeps its ArcadeDB meaning inside a JSON object only: square brackets are also
  * PostgreSQL's (an {@code ARRAY['a', 'b']} constructor, a subscript), so a literal between them is read as PostgreSQL
- * reads it. Identifiers starting with {@code @} (such as {@code "@rid"}) are left untouched because ArcadeDB SQL
- * already understands that form as a record attribute.
+ * reads it. A double-quoted record attribute (such as {@code "@rid"}) is written bare, {@code @rid}, the form ArcadeDB SQL
+ * reads as the attribute; double-quoted, it was a string literal (issue #11392).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -471,8 +471,15 @@ public class PostgresQuotedIdentifierRewriter {
       }
     }
 
+    if (closed && isRecordAttribute(identifier)) {
+      // A RECORD ATTRIBUTE ("@rid", "@type", ...) IS WRITTEN BARE, THE ONE FORM ARCADEDB SQL READS AS THE ATTRIBUTE: LEFT
+      // DOUBLE-QUOTED IT WAS THE STRING "@rid" ON EVERY ROW, AND pgjdbc ASKING FOR THE GENERATED KEY "@rid" GOT THAT (#11392)
+      out.append(identifier);
+      return i;
+    }
+
     if (!closed || identifier.isEmpty() || identifier.charAt(0) == '@') {
-      // UNTERMINATED, EMPTY OR RECORD ATTRIBUTE (E.G. "@rid"): LEAVE THE ORIGINAL TEXT UNCHANGED
+      // UNTERMINATED, EMPTY OR NOT A PLAIN ATTRIBUTE NAME AFTER THE @: LEAVE THE ORIGINAL TEXT UNCHANGED
       out.append(sql, start, i);
       return i;
     }
@@ -489,5 +496,18 @@ public class PostgresQuotedIdentifierRewriter {
     }
     out.append('`');
     return i;
+  }
+
+  /** {@code @} followed by a plain attribute name ({@code @rid}, {@code @type}, {@code @this}...), safe to write unquoted. */
+  private static boolean isRecordAttribute(final CharSequence identifier) {
+    final int len = identifier.length();
+    if (len < 2 || identifier.charAt(0) != '@' || !Character.isLetter(identifier.charAt(1)))
+      return false;
+    for (int k = 2; k < len; k++) {
+      final char c = identifier.charAt(k);
+      if (!Character.isLetterOrDigit(c) && c != '_')
+        return false;
+    }
+    return true;
   }
 }
