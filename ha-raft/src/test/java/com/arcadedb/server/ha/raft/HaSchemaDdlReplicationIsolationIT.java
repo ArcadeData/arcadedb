@@ -292,11 +292,25 @@ class HaSchemaDdlReplicationIsolationIT extends BaseRaftHATest {
       awaitConfiguredValue(i, setting, expected);
       final DatabaseInternal database = (DatabaseInternal) getServerDatabase(i, getDatabaseName());
       assertThat(database.getConfiguration().getValueAsInteger(setting)).as("server %d in memory", i).isEqualTo(expected);
+      // The apply puts the value in force in memory BEFORE it writes configuration.json: give the file time to follow
+      final int server = i;
+      awaitTrue(() -> fileHolds(database, fileKey, expected, setting), "server " + server + " wrote " + fileKey + "=" + expected);
       final JSONObject saved = readConfigurationFile(database);
       // A setting never changed on this database is not in its file: it holds the default there, and the in-memory
       // check above is the whole assertion for it
       if (saved.has(fileKey) || expected != setting.getValueAsInteger())
         assertThat(saved.getInt(fileKey, -1)).as("server %d configuration.json", i).isEqualTo(expected);
+    }
+  }
+
+  /** Whether the file agrees with {@code expected}, or the setting is one the file never names and holds its default. */
+  private static boolean fileHolds(final DatabaseInternal database, final String fileKey, final int expected,
+      final GlobalConfiguration setting) {
+    try {
+      final JSONObject saved = readConfigurationFile(database);
+      return saved.getInt(fileKey, -1) == expected || !saved.has(fileKey) && expected == setting.getValueAsInteger();
+    } catch (final IOException e) {
+      return false;
     }
   }
 
