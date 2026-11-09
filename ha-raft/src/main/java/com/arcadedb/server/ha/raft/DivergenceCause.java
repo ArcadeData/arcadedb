@@ -84,7 +84,15 @@ public enum DivergenceCause {
    * tell the two cases apart, so the node must not serve the database until a copy from the cluster replaces it.
    */
   UNAVAILABLE_UNIQUE_INDEX("a unique index of this node's own copy that could not be loaded for a missing header page, so "
-      + "its constraint is not enforced here", true);
+      + "its constraint is not enforced here", true),
+
+  /**
+   * The schema dictionary of this node's copy was found without any committed page while the schema declares types (issue
+   * #11258): a power loss kept the file name and dropped its content, and the load wrote a fresh empty page over it, so every
+   * type and property name is gone and records read back with null properties. Crash recovery has nothing to repair it from
+   * and reports completed, so the node must not serve, nor lead with, this copy until one from the cluster replaces it.
+   */
+  EMPTY_DICTIONARY("a schema dictionary of this node's own copy that a power loss emptied, so property names are lost", true);
 
   private final String  description;
   private final boolean localCopyUntrustworthy;

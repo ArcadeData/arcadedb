@@ -97,6 +97,25 @@ class Issue11250IncompleteRecoveryQuarantineTest {
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
   }
 
+  /** #11258: a dictionary a power loss emptied is quarantined like an incomplete recovery. */
+  @Test
+  void anEmptiedDictionaryQuarantinesTheDatabase() {
+    assertThat(sm.quarantineAfterEmptiedDictionary(DB_NAME)).isTrue();
+
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isTrue();
+    assertThat(sm.quarantineCause(DB_NAME)).isEqualTo(DivergenceCause.EMPTY_DICTIONARY);
+    assertThat(sm.isResyncInProgress()).isTrue();
+    assertThat(raft.calls("handOffLeadershipToResync")).hasSize(1);
+  }
+
+  @Test
+  void aSoleVoterIsNotQuarantinedForAnEmptiedDictionary() {
+    soleVoter.set(true);
+
+    assertThat(sm.quarantineAfterEmptiedDictionary(DB_NAME)).isFalse();
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
+  }
+
   @Test
   void theScanIsANoOpWithoutAServer() {
     assertThat(sm.quarantineDatabasesWithIncompleteRecovery()).isEmpty();
