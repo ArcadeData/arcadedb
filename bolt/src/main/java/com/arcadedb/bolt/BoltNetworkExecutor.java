@@ -1049,9 +1049,13 @@ public class BoltNetworkExecutor extends Thread {
     return extra.get("tx_timeout") instanceof Number timeout && timeout.longValue() > 0 ? timeout.longValue() : 0L;
   }
 
-  /** {@code System.nanoTime()} {@code timeoutMs} from now, never 0, which stands for "no deadline". */
+  /**
+   * {@code System.nanoTime()} {@code timeoutMs} from now, never 0, which stands for "no deadline". The timeout is capped (at
+   * about 73 years) so an absurd {@code tx_timeout} neither overflows the multiplication into a deadline already past nor
+   * leaves {@code transactionTimedOut()}'s wrap-safe comparison.
+   */
   private static long deadlineNanos(final long timeoutMs) {
-    final long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+    final long deadline = System.nanoTime() + Math.min(timeoutMs, Long.MAX_VALUE / 4 / 1_000_000L) * 1_000_000L;
     return deadline != 0L ? deadline : 1L;
   }
 

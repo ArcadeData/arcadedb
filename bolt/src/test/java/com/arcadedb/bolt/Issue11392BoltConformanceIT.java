@@ -181,6 +181,21 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
     }
   }
 
+  /** An absurd tx_timeout is no timeout at all in practice: it must not overflow into a deadline already past. */
+  @Test
+  void aHugeTransactionTimeoutDoesNotExpireAtOnce() throws Exception {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
+      bolt.sendMap(BoltMessage.BEGIN, Map.of("db", getDatabaseName(), "tx_timeout", Long.MAX_VALUE));
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.run("RETURN 1 AS one");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.pull(-1, -1);
+      assertThat(bolt.readSummary().records()).containsExactly(List.of(1L));
+      bolt.sendNoFields(BoltMessage.COMMIT);
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+    }
+  }
+
   /** The reported case: TransactionConfig.withTimeout did nothing, a statement ran far past it. */
   @Test
   void aStatementPastTheTransactionTimeoutIsStopped() {
