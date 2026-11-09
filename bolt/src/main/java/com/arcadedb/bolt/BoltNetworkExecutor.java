@@ -193,6 +193,9 @@ public class BoltNetworkExecutor extends Thread {
    * rather than quietly act on whichever stream happens to be current.
    */
   private static final long OMITTED_QID = -1;
+  /** What a COMMIT or a RUN past the explicit transaction's tx_timeout is refused with (issue #11392). */
+  private static final String TRANSACTION_TIMED_OUT_MESSAGE =
+      "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
   private static final AtomicLong LAST_CONNECTION_ID = new AtomicLong();
   /** How {@code SHOW TRANSACTIONS} and {@code list queries} name this connection (issue #9689). */
   private final String connectionId = "bolt-" + LAST_CONNECTION_ID.incrementAndGet();
@@ -1035,9 +1038,6 @@ public class BoltNetworkExecutor extends Thread {
         binding.close();
     }
   }
-
-  private static final String TRANSACTION_TIMED_OUT_MESSAGE =
-      "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
 
   /** Whether the Bolt {@code mode} of a BEGIN or an auto-commit RUN asks for READ access ({@code "r"}; the default is write). */
   private static boolean isReadAccessMode(final Map<String, Object> extra) {

@@ -105,8 +105,11 @@ class PostgresQuotedIdentifierRewriterTest {
   void recordAttributesAreWrittenBare() {
     // issue #11392: double-quoted, ArcadeDB SQL read "@rid" as a string literal
     assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@rid\", \"name\" FROM V")).isEqualTo("SELECT @rid, `name` FROM V");
-    // not a plain attribute name after the @: left as written
-    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@a b\" FROM V")).isEqualTo("SELECT \"@a b\" FROM V");
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@TYPE\", \"@this\" FROM V")).isEqualTo("SELECT @TYPE, @this FROM V");
+    // an @name the SQL lexer has no token for is left as written: bare, "@foo" would not parse and "@ridfoo" would lex as @rid
+    // aliased foo
+    for (final String other : new String[] { "\"@a b\"", "\"@foo\"", "\"@ridfoo\"" })
+      assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT " + other + " FROM V")).isEqualTo("SELECT " + other + " FROM V");
   }
 
   @Test

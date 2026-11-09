@@ -20,6 +20,9 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 
+import java.util.Locale;
+import java.util.Set;
+
 /**
  * Translates the lexical forms the ArcadeDB SQL lexer reads differently from PostgreSQL: double-quoted identifiers and
  * string literals.
@@ -498,16 +501,17 @@ public class PostgresQuotedIdentifierRewriter {
     return i;
   }
 
-  /** {@code @} followed by a plain attribute name ({@code @rid}, {@code @type}, {@code @this}...), safe to write unquoted. */
+  /**
+   * The record attributes the ArcadeDB SQL lexer has a token for ({@code THIS}, {@code RID_ATTR}, ... in {@code SQLLexer.g4}), lower
+   * case. Only these are written bare: any other {@code @name} is no token there, and {@code @ridfoo} would lex as {@code @rid}
+   * aliased {@code foo}.
+   */
+  private static final Set<String> RECORD_ATTRIBUTES = Set.of("@this", "@rid", "@rid_id", "@rid_pos", "@out", "@in", "@type",
+      "@props", "@cat");
+
+  /** Whether {@code identifier} is one of the {@link #RECORD_ATTRIBUTES}, in any case as the lexer reads them. */
   private static boolean isRecordAttribute(final CharSequence identifier) {
-    final int len = identifier.length();
-    if (len < 2 || identifier.charAt(0) != '@' || !Character.isLetter(identifier.charAt(1)))
-      return false;
-    for (int k = 2; k < len; k++) {
-      final char c = identifier.charAt(k);
-      if (!Character.isLetterOrDigit(c) && c != '_')
-        return false;
-    }
-    return true;
+    return identifier.length() > 1 && identifier.charAt(0) == '@'
+        && RECORD_ATTRIBUTES.contains(identifier.toString().toLowerCase(Locale.ROOT));
   }
 }
