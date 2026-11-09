@@ -18,6 +18,7 @@
  */
 package com.arcadedb.mcp;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -98,7 +99,13 @@ public class MCPConfiguration implements MCPPermissions {
   public synchronized void load() {
     final File configFile = getConfigFile();
     if (!configFile.exists()) {
-      save();
+      // THE FIRST-RUN WRITE ONLY MATERIALISES THE DEFAULTS ALREADY IN FORCE: A SERVER ON A READ-ONLY CONFIGURATION
+      // DIRECTORY STILL STARTS, WITH THE SAME DEFAULTS IT WOULD READ BACK
+      try {
+        save();
+      } catch (final ConfigurationException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error saving the default MCP configuration", e);
+      }
       return;
     }
 
@@ -144,13 +151,29 @@ public class MCPConfiguration implements MCPPermissions {
     }
   }
 
+  /**
+   * Writes the configuration in force to {@code mcp-config.json}.
+   *
+   * @throws ConfigurationException when the file could not be written, so a caller never reports as persisted a
+   *                                configuration the next start will not read back (issue #11390)
+   */
   public synchronized void save() {
-    try {
-      // Atomic write so a crash mid-write leaves the previous valid config/mcp-config.json intact.
-      FileUtils.atomicWriteFile(getConfigFile(), toJSON().toString(2));
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error saving MCP configuration: %s", e.getMessage());
-    }
+    write(snapshot());
+  }
+
+  /**
+   * Applies a partial configuration update and persists it, in that order of effect: the updated configuration is
+   * written first and published to the live fields only once the write succeeded (persist-then-publish). A write that
+   * fails leaves the configuration in force exactly as it was, so a narrowing that could not be persisted is refused
+   * rather than applied until the next restart silently reverts it to the broader file (issue #11390).
+   *
+   * @throws IllegalArgumentException or {@link JSONException} when the payload is rejected, see {@link #updateFrom}
+   * @throws ConfigurationException   when the file could not be written
+   */
+  public synchronized void updateAndSave(final JSONObject json) {
+    final Settings updated = merge(json);
+    write(updated);
+    publish(updated);
   }
 
   public boolean isEnabled() {
@@ -320,39 +343,23 @@ public class MCPConfiguration implements MCPPermissions {
   }
 
   public synchronized JSONObject toJSON() {
-    final JSONObject json = new JSONObject();
-    json.put("enabled", enabled);
-    json.put("allowReads", allowReads);
-    json.put("allowInsert", allowInsert);
-    json.put("allowUpdate", allowUpdate);
-    json.put("allowDelete", allowDelete);
-    json.put("allowSchemaChange", allowSchemaChange);
-    json.put("allowAdmin", allowAdmin);
-    json.put("profile", toolProfile.configName());
-    json.put("allowedUsers", new JSONArray(allowedUsers));
-    json.put("allowedOrigins", new JSONArray(allowedOrigins));
-    if (!principalProfiles.isEmpty()) {
-      final JSONObject principals = new JSONObject();
-      for (final Map.Entry<String, ToolProfile> entry : principalProfiles.entrySet())
-        principals.put(entry.getKey(), entry.getValue().configName());
-      json.put("principalProfiles", principals);
-    }
-    final JSONObject databases = new JSONObject();
-    for (final Map.Entry<String, DatabaseOverride> entry : databaseOverrides.entrySet())
-      databases.put(entry.getKey(), entry.getValue().toJSON());
-    if (databases.length() > 0)
-      json.put("databases", databases);
-    return json;
+    return snapshot().toJSON();
   }
 
   /**
-   * Applies a partial configuration update atomically: every field is parsed and validated into a local before the
-   * first one is assigned, so a payload rejected on any field leaves the configuration exactly as it was. Assigning
-   * inline would let a client see a {@code 400} from {@link MCPConfigHandler} while an earlier field of the same
-   * payload had already taken effect, with no way to tell which prefix was applied short of re-reading the
-   * configuration.
+   * Applies a partial configuration update atomically, to the live configuration only: every field is parsed and
+   * validated into a local before the first one is assigned, so a payload rejected on any field leaves the
+   * configuration exactly as it was. Assigning inline would let a client see a {@code 400} from
+   * {@link MCPConfigHandler} while an earlier field of the same payload had already taken effect, with no way to tell
+   * which prefix was applied short of re-reading the configuration. An update that must also survive a restart goes
+   * through {@link #updateAndSave}.
    */
   public synchronized void updateFrom(final JSONObject json) {
+    publish(merge(json));
+  }
+
+  /** The configuration {@code json} describes once applied to the one in force, validated, without publishing it. */
+  private Settings merge(final JSONObject json) {
     final Map<String, DatabaseOverride> updatedDatabaseOverrides = json.has("databases")
         ? mergeDatabaseOverrides(databaseOverrides, objectValue(json, "databases"))
         : databaseOverrides;
@@ -377,22 +384,87 @@ public class MCPConfiguration implements MCPPermissions {
         ? new CopyOnWriteArrayList<>(stringListValue(json, "allowedOrigins"))
         : allowedOrigins;
 
-    enabled = updatedEnabled;
-    allowReads = updatedAllowReads;
-    allowInsert = updatedAllowInsert;
-    allowUpdate = updatedAllowUpdate;
-    allowDelete = updatedAllowDelete;
-    allowSchemaChange = updatedAllowSchemaChange;
-    allowAdmin = updatedAllowAdmin;
-    databaseOverrides = updatedDatabaseOverrides;
-    toolProfile = updatedProfile;
-    principalProfiles = updatedPrincipalProfiles;
-    allowedUsers = updatedAllowedUsers;
-    allowedOrigins = updatedAllowedOrigins;
+    return new Settings(updatedEnabled, updatedAllowReads, updatedAllowInsert, updatedAllowUpdate, updatedAllowDelete,
+        updatedAllowSchemaChange, updatedAllowAdmin, updatedAllowedUsers, updatedAllowedOrigins, updatedDatabaseOverrides,
+        updatedProfile, updatedPrincipalProfiles);
+  }
+
+  /** Assigns {@code settings} to the live fields. Must be called while holding this monitor. */
+  private void publish(final Settings settings) {
+    enabled = settings.enabled();
+    allowReads = settings.allowReads();
+    allowInsert = settings.allowInsert();
+    allowUpdate = settings.allowUpdate();
+    allowDelete = settings.allowDelete();
+    allowSchemaChange = settings.allowSchemaChange();
+    allowAdmin = settings.allowAdmin();
+    databaseOverrides = settings.databaseOverrides();
+    toolProfile = settings.toolProfile();
+    principalProfiles = settings.principalProfiles();
+    allowedUsers = settings.allowedUsers();
+    allowedOrigins = settings.allowedOrigins();
+  }
+
+  /** The configuration in force. Must be called while holding this monitor, so no update interleaves with the copy. */
+  private Settings snapshot() {
+    return new Settings(enabled, allowReads, allowInsert, allowUpdate, allowDelete, allowSchemaChange, allowAdmin, allowedUsers,
+        allowedOrigins, databaseOverrides, toolProfile, principalProfiles);
+  }
+
+  /** Writes {@code settings} atomically, so a crash mid-write leaves the previous valid file intact. */
+  private void write(final Settings settings) {
+    final File configFile = getConfigFile();
+    try {
+      FileUtils.atomicWriteFile(configFile, settings.toJSON().toString(2));
+    } catch (final IOException e) {
+      throw new ConfigurationException("Error saving MCP configuration to file '" + configFile + "'", e);
+    }
   }
 
   private File getConfigFile() {
     return configDirectory.resolve("mcp-config.json").toFile();
+  }
+
+  /** One complete MCP configuration, as it is persisted and as it is published to the live fields. */
+  private record Settings(
+      boolean enabled,
+      boolean allowReads,
+      boolean allowInsert,
+      boolean allowUpdate,
+      boolean allowDelete,
+      boolean allowSchemaChange,
+      boolean allowAdmin,
+      List<String> allowedUsers,
+      List<String> allowedOrigins,
+      Map<String, DatabaseOverride> databaseOverrides,
+      ToolProfile toolProfile,
+      Map<String, ToolProfile> principalProfiles) {
+
+    private JSONObject toJSON() {
+      final JSONObject json = new JSONObject();
+      json.put("enabled", enabled);
+      json.put("allowReads", allowReads);
+      json.put("allowInsert", allowInsert);
+      json.put("allowUpdate", allowUpdate);
+      json.put("allowDelete", allowDelete);
+      json.put("allowSchemaChange", allowSchemaChange);
+      json.put("allowAdmin", allowAdmin);
+      json.put("profile", toolProfile.configName());
+      json.put("allowedUsers", new JSONArray(allowedUsers));
+      json.put("allowedOrigins", new JSONArray(allowedOrigins));
+      if (!principalProfiles.isEmpty()) {
+        final JSONObject principals = new JSONObject();
+        for (final Map.Entry<String, ToolProfile> entry : principalProfiles.entrySet())
+          principals.put(entry.getKey(), entry.getValue().configName());
+        json.put("principalProfiles", principals);
+      }
+      final JSONObject databases = new JSONObject();
+      for (final Map.Entry<String, DatabaseOverride> entry : databaseOverrides.entrySet())
+        databases.put(entry.getKey(), entry.getValue().toJSON());
+      if (databases.length() > 0)
+        json.put("databases", databases);
+      return json;
+    }
   }
 
   private static Map<String, DatabaseOverride> parseDatabaseOverrides(final JSONObject databases) {

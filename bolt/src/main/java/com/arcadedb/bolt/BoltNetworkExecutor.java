@@ -48,6 +48,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.TypeMismatchException;
@@ -60,6 +61,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
@@ -154,6 +156,11 @@ public class BoltNetworkExecutor extends Thread {
 
   // Transaction state
   private boolean explicitTransaction = false;
+  // The access mode and the timeout BEGIN declared for the explicit transaction (issue #11392). Set by every BEGIN and read
+  // only while explicitTransaction holds, so a value left from an earlier transaction is never consulted
+  private boolean transactionReadOnly;
+  // System.nanoTime() past which the explicit transaction has timed out, or 0 for no timeout
+  private long    transactionDeadlineNanos;
 
   // GQL session state for this connection (SESSION SET/RESET/CLOSE parameters).
   private final BoltSession session = new BoltSession();
@@ -847,6 +854,17 @@ public class BoltNetworkExecutor extends Thread {
     if (!ensureDatabase())
       return;
 
+    // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
+    // query's own tx_timeout. A transaction already past its timeout runs nothing more
+    if (explicitTransaction && transactionTimedOut()) {
+      sendFailure(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR, TRANSACTION_TIMED_OUT_MESSAGE);
+      state = State.FAILED;
+      return;
+    }
+    final long statementTimeoutMs = explicitTransaction ?
+        remainingTransactionMillis() :
+        txTimeoutMillis(message.getExtra());
+
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query, stream)) {
       // The command's own YIELD/WHERE tail, applied to the table it produced. Parsed and then dropped before
@@ -897,6 +915,23 @@ public class BoltNetworkExecutor extends Thread {
       final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
       final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
 
+      // A write in READ access mode is refused before it runs, as Neo4j refuses it (issue #11392): session.executeRead used
+      // to write. An EXPLAIN executes nothing, so it is not a write whatever it explains
+      if (stream.writeOperation && !explainMode && (explicitTransaction ? transactionReadOnly :
+          isReadAccessMode(message.getExtra()))) {
+        stream.close(this, "RUN failure");
+        sendFailure(BoltErrorCodes.ACCESS_MODE_ERROR, "Writing in read access mode not allowed");
+        state = State.FAILED;
+        return;
+      }
+
+      // The budget the engine enforces on the statement (arcadedb.command.timeout), taken when its context is built here, so
+      // the rows a later PULL reads run against the same deadline. The earlier of the two wins, as for Postgres statement_timeout
+      if (statementTimeoutMs > 0) {
+        final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+        CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
+      }
+
       // Waits for the query admission gate (issue #9518). The slot belongs to the stream and goes back when the stream is closed -
       // drained by PULL, discarded, reset or dropped with the connection - so the rows still to send keep it, as they keep the
       // heap their buffers reserved. A second stream of the same transaction runs on this connection's thread and shares it
@@ -910,7 +945,12 @@ public class BoltNetworkExecutor extends Thread {
       stream.runningQuery.setStatement("opencypher", query);
       binding = stream.runningQuery.bind();
 
-      // Use command() for writes, query() for reads
+      // Use command() for writes, query() for reads.
+      // An AUTO-COMMIT write commits here, at RUN, not at the end of its stream as the Bolt specification has it: a RESET or a
+      // dropped connection between RUN and PULL cannot take it back (issue #11392). Deliberate: the engine runs it as one
+      // transaction with its own retry on a conflict (#10190), which deferring the commit to the last PULL would give up, and
+      // ArcadeDB's page-level conflicts are far more frequent than Neo4j's row locks. A driver pipelines PULL right after RUN, so
+      // only a raw client that resets or drops in between sees the difference; an explicit transaction is unaffected
       if (stream.writeOperation) {
         stream.resultSet = database.command("opencypher", query, params);
       } else {
@@ -975,9 +1015,44 @@ public class BoltNetworkExecutor extends Thread {
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       state = State.FAILED;
     } finally {
+      CommandTimeoutOverride.clear();
       if (binding != null)
         binding.close();
     }
+  }
+
+  private static final String TRANSACTION_TIMED_OUT_MESSAGE =
+      "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
+
+  /** Whether the Bolt {@code mode} of a BEGIN or an auto-commit RUN asks for READ access ({@code "r"}; the default is write). */
+  private static boolean isReadAccessMode(final Map<String, Object> extra) {
+    return "r".equals(extra.get("mode"));
+  }
+
+  /** The {@code tx_timeout} of a BEGIN or an auto-commit RUN, in milliseconds, or 0 when it sets none (absent, 0, negative). */
+  private static long txTimeoutMillis(final Map<String, Object> extra) {
+    return extra.get("tx_timeout") instanceof Number timeout && timeout.longValue() > 0 ? timeout.longValue() : 0L;
+  }
+
+  /** {@code System.nanoTime()} {@code timeoutMs} from now, never 0, which stands for "no deadline". */
+  private static long deadlineNanos(final long timeoutMs) {
+    final long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+    return deadline != 0L ? deadline : 1L;
+  }
+
+  /** Whether the explicit transaction has a timeout and has run past it. */
+  private boolean transactionTimedOut() {
+    return transactionDeadlineNanos != 0L && System.nanoTime() - transactionDeadlineNanos >= 0;
+  }
+
+  /**
+   * What is left of the explicit transaction's timeout, in milliseconds and at least 1 while any of it is left, or 0 for a
+   * transaction with no timeout.
+   */
+  private long remainingTransactionMillis() {
+    if (transactionDeadlineNanos == 0L)
+      return 0L;
+    return Math.max(1L, (transactionDeadlineNanos - System.nanoTime()) / 1_000_000L);
   }
 
   /**
@@ -1024,32 +1099,7 @@ public class BoltNetworkExecutor extends Thread {
       }
 
       final boolean hasMore = stream.hasMore();
-
-      // Build success metadata
-      final Map<String, Object> metadata = new LinkedHashMap<>();
-      if (!hasMore) {
-        // Determine query type based on whether it performed writes
-        // r=read, w=write (for simplicity, we use binary classification)
-        metadata.put("type", stream.writeOperation ? "w" : "r");
-
-        // Calculate time to last record
-        final long tLastMs = (System.nanoTime() - stream.queryStartTime) / 1_000_000;
-        metadata.put("t_last", tLastMs);
-
-        // Surface execution plan from EXPLAIN / PROFILE (PME) so neo4j drivers populate
-        // ResultSummary#plan() / #profile() instead of returning null.
-        if (stream.planMetadata != null && stream.planMetadataKey != null)
-          metadata.put(stream.planMetadataKey, stream.planMetadata);
-
-        if (stream.resultSet != null) {
-          final Optional<QueryStatistics> stats = stream.resultSet.getStatistics();
-          if (stats.isPresent() && stats.get().containsUpdates())
-            metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
-        }
-
-        // Leaves TX_STREAMING only once this connection has no other stream still open.
-        closeStream(stream, "PULL completion");
-      }
+      final Map<String, Object> metadata = hasMore ? new LinkedHashMap<>() : completeStream(stream, "PULL completion");
       metadata.put("has_more", hasMore);
 
       sendSuccess(metadata);
@@ -1068,43 +1118,70 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Handle DISCARD message - discard remaining records.
+   * Handle DISCARD message - discard the next {@code n} records of the stream, or all of them with {@code n = -1}.
+   * <p>
+   * Bolt 4.0+ defines DISCARD n as the twin of PULL n (issue #11392): the stream stays open, and the answer says
+   * {@code has_more = true}, while records remain past the ones discarded, so a following PULL or DISCARD reads on from
+   * there. It used to discard every record whatever {@code n} said and close the stream, so a PULL after a partial DISCARD
+   * failed the connection. The Java driver always sends {@code n = -1}, which is why its tests never saw it.
    */
   private void handleDiscard(final DiscardMessage discardMessage) throws IOException {
     final BoltQueryStream stream = resolveStream(discardMessage.getQid());
     if (stream == null)
       return;
 
-    // Discard all remaining records
-    Optional<QueryStatistics> stats = Optional.empty();
-    if (stream.resultSet != null) {
-      // Statistics are computed eagerly when the write is materialized in the query plan, so they
-      // are valid to read before draining/closing the result set.
-      stats = stream.resultSet.getStatistics();
-      try (final RunningQuery.Binding ignored = stream.bind()) {
-        while (stream.resultSet.hasNext())
-          stream.resultSet.next();
-      } catch (final RuntimeException e) {
-        // AS FOR A FAILED PULL: THE STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
-        closeStream(stream, "DISCARD failure");
-        throw e;
+    final long n = discardMessage.getN();
+    final boolean hasMore;
+    try (final RunningQuery.Binding ignored = stream.bind()) {
+      if (stream.syntheticResults != null) {
+        final int size = stream.syntheticResults.size();
+        stream.syntheticResults.subList(0, n < 0 ? size : (int) Math.min(n, size)).clear();
+      } else {
+        long count = 0;
+        if (stream.firstResult != null && (n < 0 || count < n)) {
+          stream.firstResult = null;
+          count++;
+        }
+        if (stream.resultSet != null)
+          while ((n < 0 || count < n) && stream.resultSet.hasNext()) {
+            stream.resultSet.next();
+            count++;
+          }
       }
+      hasMore = stream.hasMore();
+    } catch (final RuntimeException e) {
+      // AS FOR A FAILED PULL: THE STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
+      closeStream(stream, "DISCARD failure");
+      throw e;
     }
 
+    final Map<String, Object> metadata = hasMore ? new LinkedHashMap<>() : completeStream(stream, "DISCARD");
+    metadata.put("has_more", hasMore);
+    sendSuccess(metadata);
+  }
+
+  /**
+   * Closes a stream that has no record left, by PULL or by DISCARD alike, and answers the summary Neo4j sends with the
+   * last SUCCESS of a stream: the query type, the time to the last record, the plan of an EXPLAIN / PROFILE (so a client
+   * that DISCARDs instead of PULLing still gets {@code ResultSummary#plan()} / {@code #profile()}) and the update counters.
+   * Read before the stream is released, which clears them. Leaves TX_STREAMING only once this connection has no other
+   * stream still open.
+   */
+  private Map<String, Object> completeStream(final BoltQueryStream stream, final String phase) {
     final Map<String, Object> metadata = new LinkedHashMap<>();
-    // Even on DISCARD we still surface the plan so EXPLAIN clients that DISCARD instead
-    // of PULL still get ResultSummary#plan / #profile populated. Read before the stream is released,
-    // which clears it.
+    // r=read, w=write (for simplicity, we use binary classification)
+    metadata.put("type", stream.writeOperation ? "w" : "r");
+    metadata.put("t_last", (System.nanoTime() - stream.queryStartTime) / 1_000_000);
     if (stream.planMetadata != null && stream.planMetadataKey != null)
       metadata.put(stream.planMetadataKey, stream.planMetadata);
-    if (stats.isPresent() && stats.get().containsUpdates())
-      metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
-    metadata.put("has_more", false);
-
-    // Leaves TX_STREAMING only once this connection has no other stream still open.
-    closeStream(stream, "DISCARD");
-
-    sendSuccess(metadata);
+    if (stream.resultSet != null) {
+      // Computed eagerly when the write is materialized in the query plan, so valid however many rows were read
+      final Optional<QueryStatistics> stats = stream.resultSet.getStatistics();
+      if (stats.isPresent() && stats.get().containsUpdates())
+        metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
+    }
+    closeStream(stream, phase);
+    return metadata;
   }
 
   /**
@@ -1127,6 +1204,10 @@ public class BoltNetworkExecutor extends Thread {
       ((DatabaseInternal) database).getTransaction().setClientManaged(true);
       explicitTransaction = true;
       nextQid = 0; // qids are numbered per explicit transaction
+      // What session.executeRead and TransactionConfig.withTimeout send (issue #11392): enforced by RUN and COMMIT
+      transactionReadOnly = isReadAccessMode(beginMessage.getExtra());
+      final long timeoutMs = txTimeoutMillis(beginMessage.getExtra());
+      transactionDeadlineNanos = timeoutMs > 0 ? deadlineNanos(timeoutMs) : 0L;
 
       sendSuccess(Map.of());
       state = State.TX_READY;
@@ -1158,6 +1239,15 @@ public class BoltNetworkExecutor extends Thread {
     if (database != null && !authorizeDatabase(database.getName())) {
       rollbackExplicitTransaction();
       explicitTransaction = false;
+      return;
+    }
+
+    // A transaction past the timeout BEGIN gave it is terminated, not committed (issue #11392): what it wrote goes, and the
+    // client is told with the code a driver reads as "retry with a longer timeout if you want"
+    if (transactionTimedOut()) {
+      rollbackExplicitTransaction();
+      sendFailure(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR, TRANSACTION_TIMED_OUT_MESSAGE);
+      state = State.FAILED;
       return;
     }
 
@@ -2030,7 +2120,7 @@ public class BoltNetworkExecutor extends Thread {
       case DUPLICATED_KEY -> BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
       // A taken schema object name (issue #10153). It used to be SemanticError, which says the opposite (the schema does not
       // define it), or the generic DatabaseError for the ones the SQL statements refused themselves
-      case ALREADY_EXISTS -> alreadyExistsCode(CauseChain.find(error, AlreadyExistsException.class));
+      case ALREADY_EXISTS -> alreadyExistsCode(error);
       case NOT_FOUND -> BoltErrorCodes.ENTITY_NOT_FOUND_ERROR;
       // The caller named a type, bucket or property the schema does not define: a statement that parsed but means
       // nothing against this database, which is what Neo4j's SemanticError says.
@@ -2053,8 +2143,14 @@ public class BoltNetworkExecutor extends Thread {
     };
   }
 
-  /** Neo4j's title for a name held by an index, by a constraint, or by anything else (issue #10153). */
-  private static String alreadyExistsCode(final AlreadyExistsException taken) {
+  /**
+   * Neo4j's title for a name held by an index, by a constraint, or by anything else (issue #10153), and for an index or a
+   * constraint that exists already under another name, which is no name conflict but an equivalent schema rule (issue #11392).
+   */
+  private static String alreadyExistsCode(final Throwable error) {
+    if (CauseChain.contains(error, EquivalentIndexException.class))
+      return BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR;
+    final AlreadyExistsException taken = CauseChain.find(error, AlreadyExistsException.class);
     final AlreadyExistsException.Kind kind = taken != null ? taken.getKind() : null;
     if (kind == AlreadyExistsException.Kind.INDEX)
       return BoltErrorCodes.INDEX_ALREADY_EXISTS_ERROR;

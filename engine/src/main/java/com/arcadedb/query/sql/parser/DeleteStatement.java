@@ -42,6 +42,8 @@ public class DeleteStatement extends Statement {
   public FromClause  fromClause;
   public WhereClause whereClause;
   public boolean     returnBefore = false;
+  // The projection of a trailing RETURNING (issue #11392), applied to the records as they were before the delete
+  public Projection  returnProjection;
   public Batch       batch;
   public boolean     unsafe       = false;
 
@@ -51,7 +53,7 @@ public class DeleteStatement extends Statement {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DELETE FROM ");
     fromClause.toString(params, builder);
-    if (returnBefore) {
+    if (returnBefore && returnProjection == null) {
       builder.append(" RETURN BEFORE");
     }
     if (whereClause != null) {
@@ -66,6 +68,10 @@ public class DeleteStatement extends Statement {
     }
     if (unsafe) {
       builder.append(" UNSAFE");
+    }
+    if (returnProjection != null) {
+      builder.append(" RETURNING ");
+      returnProjection.toString(params, builder);
     }
   }
 
@@ -88,6 +94,7 @@ public class DeleteStatement extends Statement {
     result.fromClause = fromClause == null ? null : fromClause.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.returnBefore = returnBefore;
+    result.returnProjection = returnProjection == null ? null : returnProjection.copy();
     result.limit = limit == null ? null : limit.copy();
     result.batch = batch == null ? null : batch.copy();
     result.unsafe = unsafe;
@@ -96,7 +103,7 @@ public class DeleteStatement extends Statement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { fromClause, whereClause, returnBefore, limit, batch, unsafe };
+    return new Object[] { fromClause, whereClause, returnBefore, returnProjection, limit, batch, unsafe };
   }
 
   @Override
@@ -154,6 +161,10 @@ public class DeleteStatement extends Statement {
 
   public boolean isReturnBefore() {
     return returnBefore;
+  }
+
+  public Projection getReturnProjection() {
+    return returnProjection;
   }
 
   public Batch getBatch() {

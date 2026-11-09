@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
@@ -40,6 +41,7 @@ public class DeleteExecutionPlanner {
   private final FromClause  fromClause;
   private final WhereClause whereClause;
   private final boolean     returnBefore;
+  private final Projection  returnProjection;
   private final Limit       limit;
   private final Batch       batch;
   private final boolean     unsafe;
@@ -50,6 +52,7 @@ public class DeleteExecutionPlanner {
     this.fromClause = stm.getFromClause() == null ? null : stm.getFromClause().copy();
     this.whereClause = stm.getWhereClause() == null ? null : stm.getWhereClause().copy();
     this.returnBefore = stm.isReturnBefore();
+    this.returnProjection = stm.getReturnProjection() == null ? null : stm.getReturnProjection().copy();
     this.limit = stm.getLimit();
     this.batch = stm.getBatch();
     this.unsafe = stm.isUnsafe();
@@ -73,7 +76,7 @@ public class DeleteExecutionPlanner {
         throw new CommandExecutionException("Cannot apply a UNSAFE on a delete from index");
 
       if (returnBefore)
-        throw new CommandExecutionException("Cannot apply a RETURN BEFORE on a delete from index");
+        throw new CommandExecutionException("Cannot apply a RETURN BEFORE or a RETURNING on a delete from index");
 
       handleReturn(result, context, this.returnBefore);
     } else {
@@ -107,7 +110,7 @@ public class DeleteExecutionPlanner {
     if (batch != null)
       throw new CommandExecutionException("Cannot apply a BATCH to a DELETE on the TIMESERIES type '" + tsType.getName() + "'");
     if (returnBefore)
-      throw new CommandExecutionException("Cannot apply a RETURN BEFORE to a DELETE on the TIMESERIES type '" + tsType.getName()
+      throw new CommandExecutionException("Cannot apply a RETURN BEFORE or a RETURNING to a DELETE on the TIMESERIES type '" + tsType.getName()
           + "': a sample is not a record");
 
     final SelectExecutionPlanner.TimeSeriesDeleteScope scope = SelectExecutionPlanner.timeSeriesDeleteScope(tsType, whereClause, context);
@@ -212,6 +215,9 @@ public class DeleteExecutionPlanner {
   private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean returnBefore) {
     if (!returnBefore)
       result.chain(new CountStep(context));
+    else if (returnProjection != null)
+      // RETURNING (issue #11392): the records as they were before the delete, through the projection the statement wrote
+      result.chain(new ProjectionCalculationStep(returnProjection, context));
   }
 
   private void handleLimit(final UpdateExecutionPlan plan, final CommandContext context, final Limit limit) {

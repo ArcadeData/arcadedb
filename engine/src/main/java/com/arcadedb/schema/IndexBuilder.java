@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -239,12 +240,14 @@ public abstract class IndexBuilder<T extends Index> {
    * ArcadeDB cannot hold two indexes on one property set. Naming the existing index is the actionable part - it is
    * what a caller has to search for, or drop.
    * <p>
-   * {@link IllegalArgumentException} for the same reason as its sibling: the HTTP layer maps it to a 400.
+   * An {@link EquivalentIndexException}, still the {@link IllegalArgumentException} it was for the same reason as its
+   * sibling (the HTTP layer maps it to a 400): only reached when the existing index provides the requested definition, so the
+   * refusal is that an equivalent index exists, which a wire protocol answers as such (issue #11392).
    */
-  public static IllegalArgumentException conflictWithExistingIndexName(final Index existing, final String requestedName,
+  public static EquivalentIndexException conflictWithExistingIndexName(final Index existing, final String requestedName,
       final String requestedTypeName, final List<String> requestedProperties) {
     final boolean inherited = !existing.getTypeName().equals(requestedTypeName);
-    return new IllegalArgumentException(
+    return new EquivalentIndexException(
         "Cannot create the index '" + requestedName + "' on type '" + requestedTypeName + "' properties "
             + requestedProperties + " because those properties are already indexed by '" + existing.getName() + "'"
             + (inherited ? " on the parent type '" + existing.getTypeName() + "'" : "")
