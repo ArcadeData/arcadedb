@@ -120,6 +120,8 @@ class TransactionContextStatementStateTest {
     // what it was derived from. A statement taken back moves the stamp (structuralStamp, the page write stamps), so an entry made
     // before or during it no longer matches and is rebuilt; nothing here needs to be put back
     CLASSIFICATION.put("derived", NOT_STATEMENT_STATE);
+    // Issue #11472: the per-file part of that stamp; it only grows, and a statement taken back moves it the same way
+    CLASSIFICATION.put("fileStamps", NOT_STATEMENT_STATE);
     // The columnar marks of the commit (spec 6.2): scratch arrays the 2nd phase fills and reads, reused across commits; no statement
     // writes them
     CLASSIFICATION.put("columnarMarkKeys", NOT_STATEMENT_STATE);
