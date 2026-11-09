@@ -68,21 +68,23 @@ public class MCPConfiguration implements MCPPermissions {
 
   private final Path configDirectory;
 
-  private volatile boolean      enabled          = false;
-  private volatile boolean      allowReads       = true;
-  private volatile boolean      allowInsert      = false;
-  private volatile boolean      allowUpdate      = false;
-  private volatile boolean      allowDelete      = false;
-  private volatile boolean      allowSchemaChange = false;
-  private volatile boolean      allowAdmin        = false;
-  private volatile List<String> allowedUsers     = new CopyOnWriteArrayList<>(List.of("root"));
-  private volatile Map<String, DatabaseOverride> databaseOverrides = Map.of();
-  private volatile ToolProfile  toolProfile      = ToolProfile.ALL;
-  private volatile Map<String, ToolProfile> principalProfiles = Map.of();
+  // Every default is assigned by resetToDefaults(), which the constructor calls: a rejected load and a fresh instance
+  // share one definition of the defaults and cannot drift apart.
+  private volatile boolean                       enabled;
+  private volatile boolean                       allowReads;
+  private volatile boolean                       allowInsert;
+  private volatile boolean                       allowUpdate;
+  private volatile boolean                       allowDelete;
+  private volatile boolean                       allowSchemaChange;
+  private volatile boolean                       allowAdmin;
+  private volatile List<String>                  allowedUsers;
+  private volatile Map<String, DatabaseOverride> databaseOverrides;
+  private volatile ToolProfile                   toolProfile;
+  private volatile Map<String, ToolProfile>      principalProfiles;
   // Extra browser origins accepted by the HTTP transport, on top of always-allowed loopback origins.
   // Empty by default: a non-loopback browser page must be opted in explicitly, because deriving trust
   // from its Host header would not prevent DNS rebinding.
-  private volatile List<String> allowedOrigins   = new CopyOnWriteArrayList<>();
+  private volatile List<String>                  allowedOrigins;
 
   public MCPConfiguration(final String rootPath) {
     this(Paths.get(rootPath, "config"));
@@ -93,8 +95,21 @@ public class MCPConfiguration implements MCPPermissions {
    */
   public MCPConfiguration(final Path configDirectory) {
     this.configDirectory = configDirectory;
+    resetToDefaults();
   }
 
+  /**
+   * Loads the configuration file all or nothing: every field is parsed and validated into a local before the first one
+   * is assigned, as {@link #updateFrom(JSONObject)} does. A file that cannot be read or parsed leaves every setting at
+   * its default, MCP disabled included, which is exactly what the warning reports. The rejected file is not rewritten,
+   * so the operator can fix it.
+   * <p>
+   * An absent or explicitly {@code null} {@code allowedUsers} / {@code allowedOrigins} loads the default list here,
+   * while {@link #updateFrom(JSONObject)} reads an explicit {@code null} as "clear the list". The difference is
+   * deliberate: {@link #save()} never writes {@code null}, so in a file it can only be a hand edit, and the file
+   * describes the whole configuration rather than a change to the one in force. A change that unifies the two paths
+   * changes the access list such a file loads, so it must pick one meaning explicitly (the tests pin both).
+   */
   public synchronized void load() {
     final File configFile = getConfigFile();
     if (!configFile.exists()) {
@@ -110,38 +125,62 @@ public class MCPConfiguration implements MCPPermissions {
       final ToolProfile loadedProfile = ToolProfile.parse(json.getString("profile", "all"));
       final Map<String, ToolProfile> loadedPrincipalProfiles =
           parsePrincipalProfiles(objectValue(json, "principalProfiles"));
+      final boolean loadedEnabled = json.getBoolean("enabled", false);
+      final boolean loadedAllowReads = json.getBoolean("allowReads", true);
+      final boolean loadedAllowInsert = json.getBoolean("allowInsert", false);
+      final boolean loadedAllowUpdate = json.getBoolean("allowUpdate", false);
+      final boolean loadedAllowDelete = json.getBoolean("allowDelete", false);
+      final boolean loadedAllowSchemaChange = json.getBoolean("allowSchemaChange", false);
+      final boolean loadedAllowAdmin = json.getBoolean("allowAdmin", false);
+      final List<String> loadedAllowedUsers = json.isNull("allowedUsers")
+          ? defaultAllowedUsers()
+          : new CopyOnWriteArrayList<>(stringListValue(json, "allowedUsers"));
+      final List<String> loadedAllowedOrigins = json.isNull("allowedOrigins")
+          ? new CopyOnWriteArrayList<>()
+          : new CopyOnWriteArrayList<>(stringListValue(json, "allowedOrigins"));
 
-      enabled = json.getBoolean("enabled", false);
-      allowReads = json.getBoolean("allowReads", true);
-      allowInsert = json.getBoolean("allowInsert", false);
-      allowUpdate = json.getBoolean("allowUpdate", false);
-      allowDelete = json.getBoolean("allowDelete", false);
-      allowSchemaChange = json.getBoolean("allowSchemaChange", false);
-      allowAdmin = json.getBoolean("allowAdmin", false);
+      enabled = loadedEnabled;
+      allowReads = loadedAllowReads;
+      allowInsert = loadedAllowInsert;
+      allowUpdate = loadedAllowUpdate;
+      allowDelete = loadedAllowDelete;
+      allowSchemaChange = loadedAllowSchemaChange;
+      allowAdmin = loadedAllowAdmin;
       databaseOverrides = loadedDatabaseOverrides;
       toolProfile = loadedProfile;
       principalProfiles = loadedPrincipalProfiles;
-
-      final JSONArray usersArray = json.getJSONArray("allowedUsers", null);
-      if (usersArray != null) {
-        final List<String> users = new ArrayList<>();
-        for (int i = 0; i < usersArray.length(); i++)
-          users.add(usersArray.getString(i));
-        allowedUsers = new CopyOnWriteArrayList<>(users);
-      }
-
-      final JSONArray originsArray = json.getJSONArray("allowedOrigins", null);
-      if (originsArray != null) {
-        final List<String> origins = new ArrayList<>();
-        for (int i = 0; i < originsArray.length(); i++)
-          origins.add(originsArray.getString(i));
-        allowedOrigins = new CopyOnWriteArrayList<>(origins);
-      }
+      allowedUsers = loadedAllowedUsers;
+      allowedOrigins = loadedAllowedOrigins;
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error loading MCP configuration: %s", e.getMessage());
+      resetToDefaults();
+      LogManager.instance().log(this, Level.WARNING,
+          "Error loading MCP configuration file '%s', MCP is disabled and every setting is at its default: %s",
+          configFile, e.getMessage());
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Corrupt MCP configuration file, using defaults: %s", e.getMessage());
+      resetToDefaults();
+      LogManager.instance().log(this, Level.WARNING,
+          "Corrupt MCP configuration file '%s', MCP is disabled and every setting is at its default: %s",
+          configFile, e.getMessage());
     }
+  }
+
+  private void resetToDefaults() {
+    enabled = false;
+    allowReads = true;
+    allowInsert = false;
+    allowUpdate = false;
+    allowDelete = false;
+    allowSchemaChange = false;
+    allowAdmin = false;
+    allowedUsers = defaultAllowedUsers();
+    databaseOverrides = Map.of();
+    toolProfile = ToolProfile.ALL;
+    principalProfiles = Map.of();
+    allowedOrigins = new CopyOnWriteArrayList<>();
+  }
+
+  private static List<String> defaultAllowedUsers() {
+    return new CopyOnWriteArrayList<>(List.of("root"));
   }
 
   public synchronized void save() {
