@@ -132,7 +132,10 @@ public class MaterializedViewScheduler {
    * Runs {@code work}, the further passes of a refresh the committing thread no longer owes (issue #11464), on the scheduler
    * thread. Returns {@code false} when the scheduler is shut down, so the caller keeps the work. Leader-only like the
    * periodic pass: a node that stopped being the leader meanwhile gives the refresh up rather than rewriting the backing type
-   * beside the leader's own rewrite (issue #11031).
+   * beside the leader's own rewrite (issue #11031). Giving it up releases the ownership and discards the pending request, on
+   * purpose, and leaves the status as the last pass set it: the leader replicates its own rewrite, which is what this node's
+   * view then shows, so neither a refresh nor a STALE label is owed here. Each task runs ONE pass; a refresh that is owed more
+   * is handed off again (see {@code MaterializedViewRefresher}) and so queues behind the periodic ticks already due.
    */
   boolean handOff(final Database database, final MaterializedViewImpl view, final Runnable work) {
     handedOff.add(view);

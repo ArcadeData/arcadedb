@@ -119,13 +119,19 @@ public class MaterializedViewRefresher {
    * further passes. Ownership is never released in between, so a request cannot be lost and no second owner can start. Returns
    * {@code false} when the scheduler cannot take it (closed, or not a local schema): the caller then keeps the passes, as it
    * did before the hand-off existed.
+   * <p>
+   * The scheduler thread also hands off: a pass it makes while further requests are owed ends by queueing the next one behind
+   * whatever is already due, instead of looping, because that single thread also runs every periodic refresh of every view of
+   * the database (issue #11470).
    */
   private static boolean handOffFurtherPasses(final Database database, final MaterializedViewImpl view) {
     if (!(database.getSchema() instanceof LocalSchema schema))
       return false;
     return schema.getMaterializedViewScheduler().handOff(database, view, () -> {
       try {
-        runOwnedPasses(database, view, false);
+        // true: one pass, then back to the end of the scheduler's queue if more are owed, so the periodic ticks of this
+        // database's other views interleave instead of waiting for as long as writers keep requesting passes (issue #11470)
+        runOwnedPasses(database, view, true);
       } catch (final Throwable e) {
         // runOwnedPasses() has already marked the view ERROR and logged it; there is no caller left to rethrow to
         view.setStatus(MaterializedViewStatus.STALE);
