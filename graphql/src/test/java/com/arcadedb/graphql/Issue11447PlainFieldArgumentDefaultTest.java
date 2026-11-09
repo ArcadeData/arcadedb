@@ -48,6 +48,8 @@ class Issue11447PlainFieldArgumentDefaultTest extends AbstractGraphQLTest {
           booksByPredicate(where: String!, name: String = "Mr. brain"): [Book]
           booksByRequiredName(name: String!): [Book]
           booksByRequiredNameDirective(name: String!): [Book] @sql(statement: "select from Book where name = :name")
+          booksByNames(name: [String!]): [Book]
+          booksByRequiredNames(name: [String]!): [Book]
           booksByFilter(filter: BookFilter = { name: "Mr. brain" }): [Book]
         }
 
@@ -134,6 +136,19 @@ class Issue11447PlainFieldArgumentDefaultTest extends AbstractGraphQLTest {
           .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
 
       assertThat(names(database, "{ booksByRequiredName(name: \"Mr. brain\") { name } }", Map.of())).isEqualTo("Mr. brain");
+      return null;
+    });
+  }
+
+  @Test
+  void omittedListArgumentIsAnErrorOnlyWhenTheListIsNonNull() {
+    executeTest(database -> {
+      defineTypes(database);
+      // [String!] is a nullable list of non-null items: it may be omitted
+      assertThat(names(database, "{ booksByNames { name } }", Map.of())).contains("Mr. brain")
+          .contains("Harry Potter and the Philosopher's Stone");
+      assertThatThrownBy(() -> names(database, "{ booksByRequiredNames { name } }", Map.of()))
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
       return null;
     });
   }
