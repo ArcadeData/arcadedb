@@ -39,6 +39,7 @@ import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.PropertyReadExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -80,7 +81,10 @@ import java.util.Set;
  * <b>What it tracks.</b> The analyzer accumulates the <i>shape</i> of everything read so far - the node
  * labels and relationship types the MATCH patterns can match, plus the two "matches anything" flags an
  * unlabelled node pattern and an untyped relationship pattern raise - and compares each write clause's
- * own shape against it. That comparison is what keeps the barrier off the shapes that do not need it:
+ * own shape against it. A MATCH is not the only clause that reads the graph once per row: so do the MATCH clauses of a
+ * {@code CALL { ... }} body, the {@code EXISTS} / {@code COUNT} / {@code COLLECT} subqueries and the pattern predicates
+ * and comprehensions of any clause, and their patterns join the same footprint (issue #11463). Comparing shapes is what
+ * keeps the barrier off the shapes that do not need it:
  * {@code UNWIND range(1, 1000000) AS i CREATE (:Log {i: i})} reads nothing, and
  * {@code MATCH (a)-[:KNOWS]->(b) CREATE (a)-[:SCORED]->(b)} writes a type no pattern reads, so both keep
  * their streaming, bounded-memory profile. A write procedure is opaque - it can create anything - so it
@@ -138,6 +142,8 @@ public final class CypherEagernessAnalyzer {
   // Whether observeClause() collects anything: what it collects is read only to weigh a property write against, and a statement
   // with no write clause has none, so for it the walk of every clause's expressions is pure planning cost (issue #11323)
   private final boolean             tracksPropertyReads;
+  // The collector of a clause that writes no pattern, which is most of them: created on the first walk and shared (issue #11463)
+  private       GraphReadCollector  patternReadCollector;
 
   /** An analyzer that weighs every write it is asked about: the shape of a statement it is not told about. */
   public CypherEagernessAnalyzer() {
@@ -193,20 +199,111 @@ public final class CypherEagernessAnalyzer {
   public void observeRead(final MatchClause matchClause) {
     if (matchClause == null)
       return;
+    if (!tracksPropertyReads) {
+      // a read-only statement asks no barrier question, so it skips the walk of the expressions below (issue #11323)
+      for (final PathPattern pathPattern : matchClause.getPathPatterns())
+        observeReadPattern(pathPattern);
+      return;
+    }
+    // The walk hands over the clause's own patterns and, besides them, what its WHERE and its inline predicates read through an
+    // EXISTS / COUNT / COLLECT subquery or a pattern predicate (issue #11463)
+    final GraphReadCollector reads = collectorFor(List.of());
+    for (final PathPattern pathPattern : matchClause.getPathPatterns())
+      CypherExpressionWalker.walk(pathPattern, reads);
+    if (matchClause.hasWhereClause() && matchClause.getWhereClause().getConditionExpression() != null)
+      CypherExpressionWalker.walk(matchClause.getWhereClause().getConditionExpression(), reads);
+  }
+
+  private void observeReadPattern(final PathPattern pathPattern) {
     anyRead = true;
-    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
-      for (final NodePattern node : pathPattern.getNodes()) {
-        if (node.hasDynamicLabels() || !node.hasLabels())
-          readsAnyNodeLabel = true;
-        else
-          readNodeLabels.addAll(node.getLabels());
+    for (final NodePattern node : pathPattern.getNodes()) {
+      if (node.hasDynamicLabels() || !node.hasLabels())
+        readsAnyNodeLabel = true;
+      else
+        readNodeLabels.addAll(node.getLabels());
+    }
+    for (final RelationshipPattern relationship : pathPattern.getRelationships()) {
+      if (relationship instanceof QuantifiedPathPattern group) {
+        // the group is one untyped placeholder hop of its enclosing pattern: what it reads is the pattern it repeats
+        if (group.getInnerPattern() != null)
+          observeReadPattern(group.getInnerPattern());
+      } else if (!relationship.hasTypes())
+        readsAnyRelationshipType = true;
+      else
+        readRelationshipTypes.addAll(relationship.getTypes());
+    }
+  }
+
+  /**
+   * Folds into the read footprint every graph read a clause makes besides the patterns of an outer MATCH, which
+   * {@link #observeRead(MatchClause)} folds: the MATCH clauses of a {@code CALL { ... }} body at any depth, the bodies of the
+   * {@code EXISTS} / {@code COUNT} / {@code COLLECT} subqueries, the pattern predicates and the pattern comprehensions of its
+   * expressions. Each of them runs once per row the clause receives, exactly as a MATCH re-enumerates its pattern once per row,
+   * so a later CREATE or MERGE of what they match changes what they answer for the rows not yet pulled: issue #11463, where a
+   * {@code COUNT { MATCH (:l2 ..) }} in a CALL body was not seen, the later {@code MERGE (:l2 ..)} streamed behind it, and the
+   * rows of the second pull batch were filtered out by the node the first batch had merged (100 rows instead of 121).
+   * <p>
+   * The patterns a CREATE or a MERGE writes are not reads of this footprint: a MERGE's own lookup is weighed by
+   * {@link #observeMergeRead} against the writes that can change it, and counting it here would plant a barrier between every
+   * pair of upserting MERGE clauses of a bulk load.
+   */
+  private void observeEmbeddedReads(final ClauseEntry entry) {
+    if (entry.getType() != ClauseEntry.ClauseType.MATCH)
+      CypherExpressionWalker.walk(entry, collectorFor(ownWritePatterns(entry)));
+  }
+
+  private GraphReadCollector collectorFor(final List<PathPattern> writePatterns) {
+    if (!writePatterns.isEmpty())
+      return new GraphReadCollector(writePatterns);
+    if (patternReadCollector == null)
+      patternReadCollector = new GraphReadCollector(List.of());
+    return patternReadCollector;
+  }
+
+  /** The patterns a clause writes, as opposed to the patterns its expressions read. */
+  private static List<PathPattern> ownWritePatterns(final ClauseEntry entry) {
+    return switch (entry.getType()) {
+      case CREATE -> {
+        final List<PathPattern> created = ((CreateClause) entry.getClause()).getPathPatterns();
+        yield created != null ? created : List.of();
       }
-      for (final RelationshipPattern relationship : pathPattern.getRelationships()) {
-        if (!relationship.hasTypes())
-          readsAnyRelationshipType = true;
-        else
-          readRelationshipTypes.addAll(relationship.getTypes());
+      case MERGE -> {
+        final PathPattern merged = ((MergeClause) entry.getClause()).getPathPattern();
+        yield merged != null ? List.of(merged) : List.of();
       }
+      default -> List.of();
+    };
+  }
+
+  /**
+   * Folds every pattern the walk reaches into the read footprint, but the write patterns of the clause it is collecting for.
+   * Entering a clause of a nested statement (a CALL body, a body of a FOREACH) re-binds it to the write patterns of that
+   * clause, so the CREATE of a CALL body is not taken for a read while the MATCH next to it is.
+   */
+  private final class GraphReadCollector implements CypherExpressionWalker.Visitor {
+    private final List<PathPattern> writePatterns;
+
+    private GraphReadCollector(final List<PathPattern> writePatterns) {
+      this.writePatterns = writePatterns;
+    }
+
+    @Override
+    public void visit(final Expression expression) {
+      // only the patterns matter
+    }
+
+    @Override
+    public void visitPattern(final PathPattern pattern) {
+      for (final PathPattern written : writePatterns)
+        if (written == pattern)
+          return;
+      observeReadPattern(pattern);
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forClauseEntry(final ClauseEntry entry) {
+      final List<PathPattern> written = ownWritePatterns(entry);
+      return written.isEmpty() && writePatterns.isEmpty() ? this : collectorFor(written);
     }
   }
 
@@ -642,6 +739,7 @@ public final class CypherEagernessAnalyzer {
   public void observeClause(final ClauseEntry entry, final boolean startsStatement, final Set<String> boundVariables) {
     if (entry == null || !tracksPropertyReads)
       return;
+    observeEmbeddedReads(entry);
     if (entry.getType() == ClauseEntry.ClauseType.MATCH)
       CypherExpressionWalker.walk(entry,
           new PropertyReadCollector(pendingMatchReads, false, Set.of(), List.of(), samePropertyPairs(entry.getTypedClause(), projectedProperties)));
