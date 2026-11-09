@@ -19,11 +19,13 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.schema.LocalDocumentType;
 
 /**
  * Deletes records coming from upstream steps. Only the rows the engine actually deleted are passed on: a delete a
@@ -36,19 +38,24 @@ import com.arcadedb.query.sql.parser.Projection;
 public class DeleteStep extends AbstractExecutionStep {
   // THE PROJECTION OF A DELETE ... RETURNING (issue #11392), OR NULL
   private final Projection returning;
+  // WHETHER THE STATEMENT ANSWERS THE DELETED RECORDS (RETURN BEFORE, RETURNING) RATHER THAN THEIR COUNT
+  private final boolean    returnsRecords;
 
   public DeleteStep(final CommandContext context) {
-    this(context, null);
+    this(context, null, false);
   }
 
   /**
-   * @param returning the projection of a {@code DELETE ... RETURNING}, computed on each record BEFORE it is deleted - a value the
-   *                  record reads lazily, such as an EXTERNAL property, is gone once its storage is - and answered only for a
-   *                  record the delete removed, never for one a listener vetoed
+   * @param returning      the projection of a {@code DELETE ... RETURNING}, computed on each record BEFORE it is deleted - a value
+   *                       the record reads lazily, such as an EXTERNAL property, is gone once its storage is - and answered only
+   *                       for a record the delete removed, never for one a listener vetoed
+   * @param returnsRecords whether the deleted records are answered ({@code RETURN BEFORE}, {@code RETURNING}): a record answered
+   *                       whole, whose type has EXTERNAL properties, is then answered as a copy taken before the delete
    */
-  public DeleteStep(final CommandContext context, final Projection returning) {
+  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords) {
     super(context);
     this.returning = returning;
+    this.returnsRecords = returnsRecords;
   }
 
   @Override
@@ -81,17 +88,30 @@ public class DeleteStep extends AbstractExecutionStep {
     };
   }
 
-  /** The row this step answers for {@code result}: the row itself, or its RETURNING projection taken before the delete. */
+  /**
+   * The row this step answers for {@code result}, taken before the delete: the row itself, or its RETURNING projection. A record
+   * answered whole ({@code RETURN BEFORE}, {@code RETURNING @this}) reads an EXTERNAL property from storage the delete removes, so
+   * when its type has one it is answered as a detached copy, identity included (issue #11392).
+   */
   private Result beforeImage(final CommandContext context, final Result result) {
-    if (returning == null)
+    if (!returnsRecords)
       return result;
-    final Object oldCurrent = context.getVariable("current");
-    context.setVariable("current", result);
-    try {
-      return returning.calculateSingle(context, result);
-    } finally {
-      context.setVariable("current", oldCurrent);
+    final Result answer;
+    if (returning == null)
+      answer = result;
+    else {
+      final Object oldCurrent = context.getVariable("current");
+      context.setVariable("current", result);
+      try {
+        answer = returning.calculateSingle(context, result);
+      } finally {
+        context.setVariable("current", oldCurrent);
+      }
     }
+    if (answer.isElement() && answer.getElement().get() instanceof Document document
+        && document.getType() instanceof LocalDocumentType type && type.hasExternalProperties())
+      return new ResultInternal(document.detach());
+    return answer;
   }
 
   @Override

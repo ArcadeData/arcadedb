@@ -200,7 +200,7 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context, returnProjection));
+    result.chain(new DeleteStep(context, returnProjection, returnBefore));
   }
 
   private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {

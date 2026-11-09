@@ -108,6 +108,23 @@ class Issue11392SqlReturningTest extends TestHelper {
     assertThat(database.countType("Ret", false)).isZero();
   }
 
+  /** A record answered whole - RETURNING @this, RETURN BEFORE - carries its EXTERNAL property too, and its identity. */
+  @Test
+  void aWholeRecordAnsweredByADeleteKeepsItsExternalProperty() {
+    database.command("sql", "CREATE PROPERTY Ret.blob STRING (EXTERNAL true)");
+    database.transaction(() -> database.command("sql", "INSERT INTO Ret (a, blob) VALUES (1, 'one'), (2, 'two')").close());
+    reopenDatabase();
+
+    for (final String sql : new String[] { "DELETE FROM Ret WHERE a = 1 RETURNING @this", "DELETE FROM Ret RETURN BEFORE WHERE a = 2" })
+      database.transaction(() -> {
+        final List<Result> rows = rows(database.command("sql", sql));
+        assertThat(rows).as(sql).hasSize(1);
+        assertThat(rows.getFirst().<String>getProperty("blob")).as(sql).isIn("one", "two");
+        assertThat(rows.getFirst().getIdentity()).as(sql).isPresent();
+      });
+    assertThat(database.countType("Ret", false)).isZero();
+  }
+
   @Test
   void returnAndReturningCannotBeCombined() {
     assertThatThrownBy(() -> database.command("sql", "INSERT INTO Ret SET a = 1 RETURN @this RETURNING *"))
