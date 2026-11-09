@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -1306,10 +1307,10 @@ public class MatchExecutionPlanner {
 
       // existsType(), NOT getType(): getType() RAISES ON AN UNKNOWN NAME, SO A null CHECK ON IT NEVER REACHED THIS MESSAGE
       if (typeName != null && !schema.existsType(typeName))
-        throw new CommandExecutionException("Type '" + typeName + "' not defined");
+        throw new SchemaException("Type '" + typeName + "' not defined");
       // #5636: getBucketByName(String) raises on an unknown name, so a null check on it never reached the MATCH-specific message
       if (bucketName != null && !schema.existsBucket(bucketName))
-        throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
+        throw new SchemaException("Bucket '" + bucketName + "' not defined");
 
       // A rid: BINDS THE NODE TO AT MOST ONE RECORD, WHATEVER ITS type: OR bucket: SAY: THE BEST ROOT THERE IS. IT USED TO BE
       // ESTIMATED AS THE WHOLE TYPE WHEN A type: WAS GIVEN TOO, AND NOT AT ALL WITHOUT ONE (ISSUE #9912). A RID THAT READS

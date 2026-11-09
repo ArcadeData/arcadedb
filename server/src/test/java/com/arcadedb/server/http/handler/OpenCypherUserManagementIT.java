@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -189,7 +190,9 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
     final Database database = getServerDatabase(0, getDatabaseName());
     assertThatThrownBy(() -> database.command("opencypher", "DROP USER nonExistentUser"))
         .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("does not exist");
+        .hasMessageContaining("does not exist")
+        // the caller's mistake on every protocol, not a server fault (issue #11384)
+        .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION));
   }
 
   @Test
@@ -209,7 +212,8 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
     final Database database = getServerDatabase(0, getDatabaseName());
     assertThatThrownBy(() -> database.command("opencypher", "ALTER USER nonExistentUser SET PASSWORD 'NewPass456!'"))
         .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("does not exist");
+        .hasMessageContaining("does not exist")
+        .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION));
   }
 
   @Test

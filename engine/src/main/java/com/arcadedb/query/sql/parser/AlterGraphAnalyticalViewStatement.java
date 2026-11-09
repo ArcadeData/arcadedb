@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -54,7 +55,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     // Validate the view exists
     final JSONObject allGavs = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
     if (allGavs == null || !allGavs.has(viewName))
-      throw new CommandExecutionException("Graph Analytical View '" + viewName + "' does not exist");
+      throw new SchemaException("Graph Analytical View '" + viewName + "' does not exist");
 
     final JSONObject gavDef = allGavs.getJSONObject(viewName);
     final InternalResultSet result = new InternalResultSet();

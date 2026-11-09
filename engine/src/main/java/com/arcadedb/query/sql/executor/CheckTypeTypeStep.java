@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -71,11 +72,11 @@ public class CheckTypeTypeStep extends AbstractExecutionStep {
       final Schema schema = db.getSchema();
       final DocumentType parentClazz = schema.getType(this.parentClass);
       if (parentClazz == null) {
-        throw new CommandExecutionException("Class not found: " + this.parentClass);
+        throw new SchemaException("Class not found: " + this.parentClass);
       }
       final DocumentType targetClazz = schema.getType(this.targetClass);
       if (targetClazz == null) {
-        throw new CommandExecutionException("Class not found: " + this.targetClass);
+        throw new SchemaException("Class not found: " + this.targetClass);
       }
 
       if (parentClazz.equals(targetClazz)) {

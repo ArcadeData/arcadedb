@@ -59,9 +59,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
-import com.arcadedb.query.sql.parser.CreateEdgeStatement;
-import com.arcadedb.query.sql.parser.CreateVertexStatement;
-import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.Expression;
@@ -1279,27 +1276,18 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * True for a SQL write whose result PostgreSQL would not return as a result set: INSERT, UPDATE, DELETE and
-   * CREATE VERTEX/EDGE with no RETURN clause, and every schema change. ArcadeDB answers them with the records (or the
-   * count) they wrote, or a row describing the schema change, which a client that prepared them expects only as a
-   * CommandComplete tag.
+   * True for a SQL statement whose result PostgreSQL would not return as a result set: one whose rows only acknowledge what it
+   * did ({@link Statement#returnsAcknowledgementOnly()}). INSERT, UPDATE, DELETE and CREATE VERTEX/EDGE with no RETURN clause
+   * (issue #11017), every schema change (issue #11312), DEFINE FUNCTION, DELETE FUNCTION, SLEEP and LOCK (issue #11385): NoData to
+   * a Describe, no DataRow, a tag. Their rows reached the client as a result set, which pgjdbc's {@code executeUpdate()} refuses
+   * ("A result was returned when none was expected"), and after a Describe('S') answered NoData, as the refusal of a statement
+   * the engine had already run.
    * <p>
-   * A schema change (every {@link DDLStatement}: CREATE TYPE, CREATE INDEX, ALTER PROPERTY, REBUILD INDEX...) is answered as
-   * PostgreSQL answers CREATE TABLE (issue #11312): NoData to a Describe, no DataRow, a bare tag. Its row reached the client as
-   * a result set, which pgjdbc's {@code executeUpdate()} refuses ("A result was returned when none was expected"), and after
-   * a Describe('S') answered NoData, as the refusal of a statement the engine had already run.
+   * Decided by the statement itself rather than by a list of classes kept here: the list was written for the writes and the
+   * {@code DDLStatement} subclasses, and a function-library change, which is neither, was answered like a query (issue #11385).
    */
   static boolean isRowlessWrite(final Statement statement) {
-    return switch (statement) {
-      case InsertStatement insert -> insert.getReturnStatement() == null;
-      case CreateVertexStatement createVertex -> createVertex.getReturnStatement() == null;
-      // CREATE EDGE has no RETURN clause in the grammar: if it ever gains one, check it here like CREATE VERTEX
-      case CreateEdgeStatement ignored -> true;
-      case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
-      case DeleteStatement delete -> !delete.isReturnBefore();
-      case DDLStatement ignored -> true;
-      case null, default -> false;
-    };
+    return statement != null && statement.returnsAcknowledgementOnly();
   }
 
   private CommandContext createCommandContext() {

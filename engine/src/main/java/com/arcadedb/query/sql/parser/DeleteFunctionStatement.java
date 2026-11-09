@@ -74,5 +74,12 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
     result = 31 * result + (functionName != null ? functionName.hashCode() : 0);
     return result;
   }
+
+  /** Deleting a function answers a row describing it, where PostgreSQL's DROP FUNCTION answers a bare tag (issue #11385). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* ParserGeneratorCC - OriginalChecksum=9adb6ad010d0e34d647466e36d295454 (do not edit this line) */

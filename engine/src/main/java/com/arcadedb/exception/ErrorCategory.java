@@ -69,7 +69,10 @@ public enum ErrorCategory {
   NOT_FOUND,
 
   /**
-   * The caller named a type, bucket or property the schema does not define.
+   * The caller named a type, bucket, property, index, trigger or view the schema does not define: a {@link SchemaException}, which
+   * every lookup of a missing schema object raises, the statements that check the name themselves included (issue #11384).
+   * Those raised a plain {@link CommandExecutionException}, which no rule classifies, so the same missing name was a client error
+   * on one statement and a server fault on its neighbour.
    */
   SCHEMA,
 
@@ -92,7 +95,8 @@ public enum ErrorCategory {
    * extends {@code IndexException} and so would otherwise be a {@link #SERVER} fault on every wire, which is the
    * defect issue #7393 reported on HTTP and #7862 found still open at four more call sites. Also
    * {@link UnknownFunctionException}, a call of a function nothing answers, which openCypher refuses at parse time and SQL
-   * only when the statement runs (issue #11314).
+   * only when the statement runs (issue #11314), and its subtype {@link UnknownProcedureException}, the procedure of a
+   * {@code CALL} nothing answers, as a method nothing answers is an {@link UnknownFunctionException} (issue #11384).
    */
   PARSING,
 

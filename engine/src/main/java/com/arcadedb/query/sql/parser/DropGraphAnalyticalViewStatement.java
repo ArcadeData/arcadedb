@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
@@ -61,7 +61,7 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
         result.add(r);
         return result;
       }
-      throw new CommandExecutionException("Graph Analytical View '" + viewName + "' does not exist");
+      throw new SchemaException("Graph Analytical View '" + viewName + "' does not exist");
     }
 
     // Drop the in-memory view if it exists (also removes from schema)

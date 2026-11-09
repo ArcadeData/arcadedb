@@ -194,5 +194,12 @@ public class CreateVertexStatement extends Statement {
   protected Set<OperationType> getOperationTypesItself() {
     return CollectionUtils.singletonSet(OperationType.CREATE);
   }
+
+  /** The vertices a CREATE VERTEX with no RETURN clause wrote only echo the write (issue #11017). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return getReturnStatement() == null;
+  }
+
 }
 /* JavaCC - OriginalChecksum=0ac3d3f09a76b9924a17fd05bc293863 (do not edit this line) */

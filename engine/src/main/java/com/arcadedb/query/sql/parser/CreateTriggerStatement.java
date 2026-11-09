@@ -21,8 +21,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -134,7 +134,7 @@ public class CreateTriggerStatement extends DDLStatement {
 
     // Check if type exists
     if (!database.getSchema().existsType(typeName.getStringValue())) {
-      throw new CommandExecutionException("Type '" + typeName.getStringValue() + "' does not exist");
+      throw new SchemaException("Type '" + typeName.getStringValue() + "' does not exist");
     }
 
     // Parse enums
