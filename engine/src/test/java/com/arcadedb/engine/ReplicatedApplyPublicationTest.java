@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -436,6 +437,41 @@ class ReplicatedApplyPublicationTest {
       }
 
       assertThat(bucket.getRecordFromCommittedPage(rids[0]).toByteArray()).as("settled again: read as before").isEqualTo(expected);
+    }
+
+    /**
+     * #11455: a transactional read of a multi-page record that meets a publication (a replicated apply on a follower) used to burn
+     * its whole retry budget in microseconds, because the validation did not wait for the publication to end. A follower under
+     * write load always has one open, so the reads failed by the thousand. The publication here closes only once the reader has
+     * retried, which the old budget could not wait for.
+     */
+    @Test
+    void aTransactionalReadWaitsOutAnApplyInsteadOfSpendingItsRetriesOnIt() throws Exception {
+      final RID[] rids = createChunkedRecords("Read");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final byte[] expected = database.lookupByRID(rids[0], true).asDocument().getString("payload").getBytes();
+      final AtomicBoolean released = new AtomicBoolean();
+
+      pageManager.beginPublication();
+      final long openedAt = System.nanoTime();
+      final Thread closer = new Thread(() -> {
+        // Held for longer than the old read took to spend its whole budget (microseconds), but for less than the read that
+        // waits for the apply to end is prepared to wait (20 ms per attempt)
+        while (System.nanoTime() - openedAt < TimeUnit.MILLISECONDS.toNanos(30))
+          Thread.onSpinWait();
+        if (!released.getAndSet(true))
+          pageManager.endPublication();
+      });
+      closer.start();
+      try {
+        final byte[][] read = new byte[1][];
+        database.transaction(() -> read[0] = database.lookupByRID(rids[0], true).asDocument().getString("payload").getBytes());
+        assertThat(read[0]).as("the read served the committed record once the apply ended").isEqualTo(expected);
+      } finally {
+        if (!released.getAndSet(true))
+          pageManager.endPublication();
+        closer.join();
+      }
     }
 
     @Test
