@@ -67,8 +67,9 @@ final class ColumnarFlusher {
    * Whether the projection needs a flush now (P39, Task 3 of #10662): the overlay holds {@code maxRows} rows or more; or holds
    * {@code minRows} rows or more the oldest of which is {@code intervalMs} old; or holds rows the oldest of which is {@code maxAgeMs}
    * old; or, with no overlay row (a deletes-only workload), applied pages wait for their dead sets to be persisted and the last flush is
-   * {@code maxAgeMs} old; or the unflushed pages of the projection reach half of {@link ColumnarIndexManager#REAPPLY_FLOOR}, so an unclean
-   * open re-applies what a crash left unflushed instead of rebuilding the projection. {@code maxAgeMs} is never less than
+   * {@code maxAgeMs} old; or the unflushed pages of the projection reach half of {@link ColumnarIndexManager#REAPPLY_FLOOR} and the last flush
+   * is {@code intervalMs} old, or reach {@link ColumnarIndexManager#REAPPLY_FLOOR} whatever the last flush, so an unclean open re-applies
+   * what a crash left unflushed instead of rebuilding the projection while scattered updates cannot flush on every tick (#11361). {@code maxAgeMs} is never less than
    * {@code intervalMs}. Always true while a failed flush left a frozen overlay. A WAL drop never asks for a flush: the recovery set covers
    * the unflushed pages ({@link ColumnarIndexManager#persistRecoverySet()}). Cheap: no allocation, one tracker lock per tracker at most.
    */
@@ -89,7 +90,13 @@ final class ColumnarFlusher {
     final int unflushed = unflushedPageCount(p);
     if (unflushed == 0)
       return false;
-    return unflushed >= ColumnarIndexManager.REAPPLY_FLOOR / 2 || rows == 0 && nowMs - p.lastFlushMs() >= maxAge;
+    // the page bound has a spacing (#11361): pages applied while a flush runs stay unflushed, so under scattered updates the count can
+    // sit above the half floor right after a flush and would flush again on every tick. Only the floor itself flushes at once
+    final int floor = ColumnarIndexManager.REAPPLY_FLOOR;
+    if (unflushed >= floor)
+      return true;
+    final long sinceFlushMs = nowMs - p.lastFlushMs();
+    return unflushed >= floor / 2 && sinceFlushMs >= intervalMs || rows == 0 && sinceFlushMs >= maxAge;
   }
 
   private static int unflushedPageCount(final ColumnarProjection p) {
