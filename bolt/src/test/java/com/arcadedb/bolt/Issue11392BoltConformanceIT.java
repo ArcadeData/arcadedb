@@ -143,6 +143,26 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
     }
   }
 
+  /** A write nested in a CALL subquery, a MERGE or a FOREACH is a write too: refused in READ mode, and nothing is written. */
+  @Test
+  void aNestedWriteInReadModeIsRefused() throws Exception {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
+      for (final String write : new String[] { "CALL { CREATE (:RO3 {x: 1}) } RETURN 1 AS one", "MERGE (:RO3 {x: 2})",
+          "FOREACH (i IN [1, 2] | CREATE (:RO3 {x: i}))", "UNWIND [1] AS i CALL { WITH i CREATE (:RO3 {x: i}) } RETURN i" }) {
+        bolt.run(write, Map.of("mode", "r"));
+        final BoltWireConnection.Summary refused = bolt.readSummary();
+        assertThat(refused.signature()).as(write).isEqualTo(BoltMessage.FAILURE);
+        assertThat(refused.code()).as(write).isEqualTo(BoltErrorCodes.ACCESS_MODE_ERROR);
+        bolt.sendNoFields(BoltMessage.RESET);
+        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      }
+      bolt.run("MATCH (n:RO3) RETURN count(n) AS c");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.pull(-1, -1);
+      assertThat(bolt.readSummary().records()).containsExactly(List.of(0L));
+    }
+  }
+
   /** A statement that does not parse is reported as such in READ access mode, not as a write refusal. */
   @Test
   void aMalformedQueryInReadModeIsASyntaxErrorNotAnAccessModeRefusal() throws Exception {
