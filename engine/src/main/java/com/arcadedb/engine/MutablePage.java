@@ -124,6 +124,9 @@ public class MutablePage extends BasePage implements TrackableContent {
   // #10346: the statement that created this page in its transaction or started to journal it, -1 when none did. Lets the transaction
   // tell a page that came with the statement (dropped to take it back) from one it must journal (restored)
   private              long    undoEpoch                  = -1L;
+  // #11394: counts every write that reached this page object and every restore of its bytes, and never goes back. Together with the
+  // transaction's own counter it says whether anything under the transaction changed since a derived structure was built from it
+  private              long    writeStamp;
 
   /**
    * The bookkeeping of a page that is not part of its bytes, saved by a {@link PageUndoLog} and given back with them.
@@ -198,6 +201,8 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   /** Gives the page back the bookkeeping {@link #captureState} saved. The bytes are the log's to restore. */
   void restoreState(final State source) {
+    // the bytes went back to an earlier image: that is a change for whoever derived something from the page
+    ++writeStamp;
     System.arraycopy(source.modifiedRanges, 0, modifiedRanges, 0, modifiedRanges.length);
     modifiedRangeCount = source.modifiedRangeCount;
     content.size(source.contentSize);
@@ -223,6 +228,11 @@ public class MutablePage extends BasePage implements TrackableContent {
    */
   public PageUndoLog getUndoLog() {
     return undoLog;
+  }
+
+  /** How many writes and restores this page object had, never decreasing (#11394). Internal: {@link TransactionContext#changeStamp}. */
+  public long getWriteStamp() {
+    return writeStamp;
   }
 
   /** The statement that created this page or started to journal it, -1 when none did (#10346). Internal, like {@link #getUndoLog()}. */
@@ -614,6 +624,9 @@ public class MutablePage extends BasePage implements TrackableContent {
     // and aborted the transaction, naming the page instead of the write. Every stored interval is thus non-empty.
     if (end < start)
       return;
+
+    // #11394: before the bytes change, as the journal below, so a reader of the stamp never misses a write
+    ++writeStamp;
 
     // #10346: every write passes here BEFORE it changes the bytes, so a statement that has to be taken back finds them as they were
     if (undoLog != null)
