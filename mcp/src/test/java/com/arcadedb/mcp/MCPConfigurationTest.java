@@ -550,4 +550,143 @@ class MCPConfigurationTest {
     final File configFile = new File(TEST_ROOT + "/config/mcp-config.json");
     assertThat(configFile.exists()).isTrue();
   }
+
+  /**
+   * A file rejected on its last parsed member must load to exactly what a fresh configuration reports, never to the
+   * values read ahead of the rejected one.
+   */
+  @Test
+  void malformedAllowedUsersElementLoadsDefaults() throws Exception {
+    final String content = permissiveFile().put("allowedUsers", new JSONArray().put("alice").put(new JSONObject().put("x", 1)))
+        .toString();
+    writeConfigFile(content);
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertLoadedDefaults(loaded);
+    // The rejected file is left as the operator wrote it, so it can be fixed rather than silently replaced.
+    assertThat(FileUtils.readFileAsString(configFile())).isEqualTo(content);
+  }
+
+  @Test
+  void malformedAllowedOriginsElementLoadsDefaults() throws Exception {
+    writeConfigFile(permissiveFile()
+        .put("allowedUsers", new JSONArray().put("alice"))
+        .put("allowedOrigins", new JSONArray().put("https://app.example.com").put(new JSONArray()))
+        .toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertLoadedDefaults(loaded);
+  }
+
+  @Test
+  void nullAllowedUsersElementLoadsDefaults() throws Exception {
+    writeConfigFile(permissiveFile().put("allowedUsers", new JSONArray().put("alice").put((Object) null)).toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertLoadedDefaults(loaded);
+  }
+
+  @Test
+  void nonArrayAllowedUsersLoadsDefaults() throws Exception {
+    writeConfigFile(permissiveFile().put("allowedUsers", "alice").toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertLoadedDefaults(loaded);
+  }
+
+  @Test
+  void nonArrayAllowedOriginsLoadsDefaults() throws Exception {
+    writeConfigFile(permissiveFile().put("allowedOrigins", new JSONObject()).toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertLoadedDefaults(loaded);
+  }
+
+  @Test
+  void invalidFlagLoadsDefaults() throws Exception {
+    writeConfigFile(permissiveFile().put("allowSchemaChange", "maybe").toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertLoadedDefaults(loaded);
+  }
+
+  /**
+   * Loading a rejected file over a configuration that already holds non-default values must still leave the defaults,
+   * because that is what the warning tells the operator.
+   */
+  @Test
+  void rejectedFileResetsAPreviouslyLoadedConfiguration() throws Exception {
+    final MCPConfiguration config = new MCPConfiguration(TEST_ROOT);
+    config.updateFrom(permissiveFile()
+        .put("allowedUsers", new JSONArray().put("*"))
+        .put("allowedOrigins", new JSONArray().put("*"))
+        .put("profile", "admin")
+        .put("principalProfiles", new JSONObject().put("bob", "rag"))
+        .put("databases", new JSONObject().put("tenant", new JSONObject().put("allowUpdate", false))));
+    assertThat(config.isEnabled()).isTrue();
+
+    writeConfigFile(permissiveFile().put("allowedUsers", new JSONArray().put(1.5).put(new JSONObject())).toString());
+    config.load();
+
+    assertLoadedDefaults(config);
+  }
+
+  @Test
+  void validFileWithTextualFlagsStillLoads() throws Exception {
+    writeConfigFile(new JSONObject()
+        .put("enabled", "true")
+        .put("allowInsert", true)
+        .put("allowedUsers", new JSONArray().put("alice"))
+        .put("allowedOrigins", new JSONArray().put("https://app.example.com"))
+        .toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertThat(loaded.isEnabled()).isTrue();
+    assertThat(loaded.isAllowInsert()).isTrue();
+    assertThat(loaded.isAllowAdmin()).isFalse();
+    assertThat(loaded.getAllowedUsers()).containsExactly("alice");
+    assertThat(loaded.getAllowedOrigins()).containsExactly("https://app.example.com");
+  }
+
+  private static JSONObject permissiveFile() {
+    return new JSONObject()
+        .put("enabled", true)
+        .put("allowReads", true)
+        .put("allowInsert", true)
+        .put("allowUpdate", true)
+        .put("allowDelete", true)
+        .put("allowSchemaChange", true)
+        .put("allowAdmin", true);
+  }
+
+  private static File configFile() {
+    return new File(TEST_ROOT + "/config/mcp-config.json");
+  }
+
+  private static void writeConfigFile(final String content) throws Exception {
+    FileUtils.writeFile(configFile(), content);
+  }
+
+  private static void assertLoadedDefaults(final MCPConfiguration loaded) {
+    assertThat(loaded.isEnabled()).isFalse();
+    assertThat(loaded.isAllowAdmin()).isFalse();
+    assertThat(loaded.isAllowInsert()).isFalse();
+    assertThat(loaded.getAllowedUsers()).containsExactly("root");
+    assertThat(loaded.getAllowedOrigins()).isEmpty();
+    assertThat(loaded.toJSON().toString()).isEqualTo(new MCPConfiguration(TEST_ROOT + "/unused").toJSON().toString());
+  }
 }
