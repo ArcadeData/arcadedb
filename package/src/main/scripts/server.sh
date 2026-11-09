@@ -113,7 +113,10 @@ if [ -n "$ARCADEDB_HEAP_DUMP_DIR" ]; then
 fi
 
 if [ -z "$JAVA_OPTS_SCRIPT" ]; then
-  JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError \
+  # ExitOnOutOfMemoryError (issue #11456): the heap dump above is written first, then the JVM exits so a supervisor restarts
+  # the node. Without it an OutOfMemoryError that kills one thread (the Raft apply thread, for one) leaves a half alive node
+  # that serves HTTP with a dead state machine. Set JAVA_OPTS_SCRIPT yourself (it replaces this default) to opt out.
+  JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError \
         --add-exports java.management/sun.management=ALL-UNNAMED \
         --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
         --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED \
