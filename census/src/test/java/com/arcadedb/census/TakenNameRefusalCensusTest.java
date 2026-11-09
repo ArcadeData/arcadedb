@@ -66,6 +66,9 @@ class TakenNameRefusalCensusTest {
       // INTERNAL INVARIANTS ON THE FILE REGISTRY, NEVER A NAME A CALLER CHOSE
       Map.entry("schema/LocalSchema#registerFile", INTERNAL),//
       Map.entry("engine/FileManager#checkFileNameMatches", INTERNAL),//
+      Map.entry("engine/PaginatedComponent#refuseExistingFile", "a file left on disk at the path of a component being created, under a "
+          + "file id no registered file has: no schema object holds it, and the creation is refused so its content is not "
+          + "overwritten (#11409)"),//
       Map.entry("schema/LocalSchema#createBucketIndex", "a bucket index named after the bucket and System.nanoTime(): an internal "
           + "invariant, not a caller's name"),//
       // IF NOT EXISTS (OR ignoreIfExists) ANSWERED BY AN INDEX OF ANOTHER DEFINITION: A 400 BY DESIGN (#6921, #7228, #5765)
