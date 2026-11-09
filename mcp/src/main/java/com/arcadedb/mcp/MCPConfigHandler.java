@@ -65,9 +65,10 @@ public class MCPConfigHandler extends AbstractServerHttpHandler {
         return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
       } catch (final ConfigurationException e) {
         LogManager.instance().log(this, Level.SEVERE, "MCP configuration update refused: it could not be persisted", e);
+        // THE PATH AND THE OS ERROR GO TO THE SERVER LOG ABOVE, NOT TO THE CLIENT: THE ANSWER NAMES THE FILE AND WHAT DID NOT HAPPEN
         return new ExecutionResponse(500, new JSONObject().put("error",
-            e.getMessage() + (e.getCause() != null ? ": " + e.getCause() : "") + ". The configuration in force is unchanged")
-            .toString());
+            "The MCP configuration could not be saved to mcp-config.json in the server configuration directory, so it was not "
+                + "applied: the configuration in force is unchanged. See the server log for the cause").toString());
       }
       return new ExecutionResponse(200, config.toJSON().toString());
     }
