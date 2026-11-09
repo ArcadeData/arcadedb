@@ -272,7 +272,7 @@ public class GraphQLSchema {
       projection = operationSelectionSet;
 
       final Map<String, Object> boundParameters = new HashMap<>();
-      final String where = buildWhereClause(queryArguments, typeArgumentNames, variables, boundParameters);
+      final String where = buildWhereClause(queryArguments, typeArgumentNames, typeDefinition, variables, boundParameters);
 
       String query = "select from " + from;
       if (!where.isEmpty())
@@ -323,10 +323,17 @@ public class GraphQLSchema {
    * enough for a text the module does not control: a predicate that closes them and opens new ones ({@code a > 1) or (b < 2})
    * balances the wrapping. So the predicate must first parse as a complete condition on its own, which is exactly the
    * guarantee that, wrapped, it is one operand.
+   * <p>
+   * An argument the field declares and the operation does not provide - omitted, or bound to a variable the caller gave no
+   * value - is filtered on its default value, as the directive path binds it; omitted with no default, it is an error when it
+   * is non-null and adds no term otherwise (issue #11447). The reserved {@code where} argument is left out of this: its
+   * default would be SQL text taken from the schema rather than a value, and a field may declare it non-null, as
+   * {@code books(where: String!)} does, and still be called without it.
    */
   private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames,
-      final Map<String, Object> variables, final Map<String, Object> boundParameters) {
+      final FieldDefinition field, final Map<String, Object> variables, final Map<String, Object> boundParameters) {
     final List<String> terms = new ArrayList<>();
+    final Set<String> provided = new HashSet<>();
 
     if (queryArguments != null)
       for (final Argument queryArgument : queryArguments.getList()) {
@@ -340,6 +347,11 @@ public class GraphQLSchema {
           throw new CommandParsingException("The reserved 'where' argument is interpolated into the statement verbatim, "
               + "so it cannot be filled from the variable '$" + variable.getName()
               + "': use a @sql directive with a bound parameter for a predicate that has to vary at runtime");
+
+        // BOUND TO A VARIABLE THE CALLER GAVE NO VALUE, IT TAKES THE DEFAULT: WITH NONE IT STAYS NULL (ISSUES #6834, #11447)
+        if (isBoundToOmittedVariable(queryArgument, variables) && hasDefaultValue(field, argName))
+          continue;
+        provided.add(argName);
 
         final Object argValue = resolveValue(argument, variables);
 
@@ -359,6 +371,25 @@ public class GraphQLSchema {
           boundParameters.put(parameterName, argValue);
           terms.add(argName + " = :" + parameterName);
         }
+      }
+
+    if (field != null && field.getArgumentsDefinition() != null)
+      for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions()) {
+        final String argName = definition.getName().getValue();
+        if (provided.contains(argName) || "where".equals(argName))
+          continue;
+        if (definition.getDefaultValue() == null) {
+          checkNotRequired(definition);
+          continue;
+        }
+
+        final Object argValue = defaultValueOf(definition.getDefaultValue().getValue());
+        if (argValue == UNSUPPORTED_DEFAULT)
+          throw new CommandParsingException(
+              "Default value of GraphQL argument '" + argName + "' is not supported: object default values cannot be compared");
+        final String parameterName = BOUND_PARAMETER_PREFIX + boundParameters.size();
+        boundParameters.put(parameterName, argValue);
+        terms.add(argName + " = :" + parameterName);
       }
 
     final StringBuilder where = new StringBuilder();
@@ -556,7 +587,8 @@ public class GraphQLSchema {
   /**
    * Binds every argument the field declares and the operation omitted: to its default value, or to null, which is what an
    * omitted nullable argument means in GraphQL. The statement of the directive reads each one as a parameter, and a parameter
-   * with no value is refused rather than read as null (issue #11098).
+   * with no value is refused rather than read as null (issue #11098). An omitted non-null argument with no default is an
+   * error (issue #11447).
    */
   private static Map<String, Object> withOmittedArguments(Map<String, Object> arguments, final FieldDefinition field) {
     if (field == null || field.getArgumentsDefinition() == null)
@@ -571,12 +603,28 @@ public class GraphQLSchema {
         if (value == UNSUPPORTED_DEFAULT)
           // an object default is not supported: the argument stays unbound, which only a statement that reads it refuses
           continue;
-      }
+      } else
+        checkNotRequired(definition);
       if (arguments == null)
         arguments = new HashMap<>();
       arguments.put(name, value);
     }
     return arguments;
+  }
+
+  private static boolean hasDefaultValue(final FieldDefinition field, final String name) {
+    if (field != null && field.getArgumentsDefinition() != null)
+      for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions())
+        if (name.equals(definition.getName().getValue()))
+          return definition.getDefaultValue() != null;
+    return false;
+  }
+
+  private static void checkNotRequired(final InputValueDefinition definition) {
+    final com.arcadedb.graphql.parser.Type type = definition.getType();
+    if (type != null && (type.isBang() || (type.getListType() != null && type.getListType().isBang())))
+      throw new CommandParsingException(
+          "GraphQL argument '" + definition.getName().getValue() + "' is declared as non-null but no value was passed");
   }
 
   /** The Java value of a declared default: a scalar, or a list of them, or {@link #UNSUPPORTED_DEFAULT} for an object. */
@@ -596,16 +644,20 @@ public class GraphQLSchema {
     return list;
   }
 
+  /** An argument bound to a variable the caller did not provide is not provided either (issue #11098). */
+  private static boolean isBoundToOmittedVariable(final Argument queryArgument, final Map<String, Object> variables) {
+    return variables instanceof CoercedVariables coerced && !coerced.omitted.isEmpty() && queryArgument.getValueWithVariable() != null
+        && queryArgument.getValueWithVariable().getValue() instanceof VariableLiteral variable
+        && coerced.omitted.contains(variable.getName());
+  }
+
   private static Map<String, Object> getArguments(final Arguments queryArguments, final Map<String, Object> variables) {
     Map<String, Object> arguments = null;
 
     if (queryArguments != null) {
       for (final Argument queryArgument : queryArguments.getList()) {
         final String argName = queryArgument.getName();
-        // AN ARGUMENT BOUND TO A VARIABLE THE CALLER DID NOT PROVIDE IS NOT PROVIDED EITHER (ISSUE #11098)
-        if (variables instanceof CoercedVariables coerced && !coerced.omitted.isEmpty() && queryArgument.getValueWithVariable() != null
-            && queryArgument.getValueWithVariable().getValue() instanceof VariableLiteral variable && coerced.omitted.contains(
-            variable.getName()))
+        if (isBoundToOmittedVariable(queryArgument, variables))
           continue;
         final Object argValue = resolveValue(queryArgument.getValueWithVariable(), variables);
 
