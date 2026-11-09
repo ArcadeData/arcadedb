@@ -129,6 +129,7 @@ public class MaterializedViewRefresher {
       } catch (final Throwable e) {
         // runOwnedPasses() has already marked the view ERROR and logged it; there is no caller left to rethrow to
         view.setStatus(MaterializedViewStatus.STALE);
+        persistStatus(database, view.getName(), view.getStatus());
       }
     });
   }

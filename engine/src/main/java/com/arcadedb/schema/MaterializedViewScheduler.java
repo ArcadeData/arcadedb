@@ -24,7 +24,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -36,6 +39,8 @@ import java.util.logging.Level;
 public class MaterializedViewScheduler {
   private final ScheduledExecutorService  executor;
   private final Map<String, RefreshTask>  tasks = new ConcurrentHashMap<>();
+  /** Views whose hand-off is accepted and has not started yet: what a shutdown would drop. */
+  private final Set<MaterializedViewImpl>  handedOff = ConcurrentHashMap.newKeySet();
 
   /**
    * @param databaseName names the scheduler thread. One scheduler is created per {@link LocalSchema}, so a JVM with
@@ -130,8 +135,10 @@ public class MaterializedViewScheduler {
    * beside the leader's own rewrite (issue #11031).
    */
   boolean handOff(final Database database, final MaterializedViewImpl view, final Runnable work) {
+    handedOff.add(view);
     try {
       executor.execute(() -> {
+        handedOff.remove(view);
         if (database instanceof DatabaseInternal internal && internal.isFollower()) {
           view.endRefresh();
           return;
@@ -147,6 +154,7 @@ public class MaterializedViewScheduler {
       });
       return true;
     } catch (final RejectedExecutionException e) {
+      handedOff.remove(view);
       return false;
     }
   }
@@ -157,9 +165,16 @@ public class MaterializedViewScheduler {
       task.future.cancel(false);
   }
 
-  public void shutdown() {
+  /**
+   * Stops the scheduler. Returns the views whose hand-off (see {@link #handOff}) was accepted and then dropped by the shutdown
+   * before it ran: their committers have returned, so the caller must not leave them looking VALID.
+   */
+  public List<MaterializedViewImpl> shutdown() {
     executor.shutdownNow();
     tasks.clear();
+    final List<MaterializedViewImpl> dropped = new ArrayList<>(handedOff);
+    handedOff.clear();
+    return dropped;
   }
 
   /**

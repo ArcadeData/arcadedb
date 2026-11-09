@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -54,6 +55,42 @@ class Issue11464IncrementalRefreshBoundedOnCommitterTest extends TestHelper {
     assertThat(writers.stream().filter("writer-11464"::equals).count())
         .as("the committer made the follow-up pass itself (writers: %s)", writers)
         .isEqualTo(3);
+  }
+
+  /** A hand-off the scheduler accepted and a shutdown dropped before it ran must not leave the view looking VALID. */
+  @Test
+  void aHandOffDroppedByShutdownLeavesTheViewStale() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("Src11464"));
+    database.transaction(() -> database.getSchema().buildMaterializedView()
+        .withName("Src11464View")
+        .withQuery("SELECT value FROM Src11464")
+        .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+        .create());
+    final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("Src11464View");
+    final MaterializedViewScheduler scheduler = ((LocalSchema) database.getSchema()).getMaterializedViewScheduler();
+
+    // occupy the scheduler thread so the hand-off stays queued
+    final CountDownLatch busy = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    scheduler.handOff(database, view, () -> {
+      busy.countDown();
+      try {
+        release.await(60, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    assertThat(busy.await(30, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(view.tryBeginRefresh()).isTrue();
+    final AtomicBoolean ran = new AtomicBoolean();
+    assertThat(scheduler.handOff(database, view, () -> ran.set(true))).isTrue();
+
+    final List<MaterializedViewImpl> dropped = scheduler.shutdown();
+    release.countDown();
+
+    assertThat(dropped).containsExactly(view);
+    assertThat(ran.get()).as("the queued hand-off was dropped, not run").isFalse();
   }
 
   private List<String> runTwoOverlappingCommits(final boolean schedulerShutDown) throws Exception {
