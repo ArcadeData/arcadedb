@@ -10244,10 +10244,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         continue;
       final boolean incomplete;
       final List<String> unavailableUnique;
+      final boolean dictionaryLost;
       try {
         final ServerDatabase db = srv.getDatabase(dbName, false, false);
         incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
         unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
+        dictionaryLost = db != null && db.getEmbedded().getSchema().getEmbedded().isDictionaryLostForExistingTypes();
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
             e.getMessage());
@@ -10255,6 +10257,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       if (incomplete) {
         if (quarantineAfterIncompleteRecovery(dbName))
+          quarantined.add(dbName);
+      } else if (dictionaryLost) {
+        if (quarantineAfterEmptiedDictionary(dbName))
           quarantined.add(dbName);
       } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
         quarantined.add(dbName);
@@ -10318,6 +10323,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.SEVERE,
         "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
             + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
+   * The decision for one database whose schema dictionary a power loss emptied (issue #11258): the files kept their names but
+   * not their content, the load wrote a fresh empty dictionary page, and crash recovery had no WAL left to repair it from, so
+   * it reported completed while every property name was lost. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines
+   * the database and re-installs it from the leader, so the node neither serves the copy, nor leads with it, nor ships it as a
+   * snapshot, unless this node is the only voter.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterEmptiedDictionary(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The schema dictionary of database '%s' was found empty although the schema declares types, and this node is the "
+              + "only voter, so there is no peer to re-install it from. It is NOT quarantined; property names are lost: "
+              + "restore it from a backup (issue #11258)", dbName);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.EMPTY_DICTIONARY))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The schema dictionary of database '%s' was found empty although the schema declares types, so its local copy lost "
+            + "its property names: quarantining it and re-installing it from the leader (issue #11258)", dbName);
     triggerDatabaseResync(dbName);
     handOffLeadershipIfLeader(dbName);
     return true;

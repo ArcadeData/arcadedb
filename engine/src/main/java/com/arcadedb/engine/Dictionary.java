@@ -111,6 +111,12 @@ public class Dictionary extends PaginatedComponent {
 
   private volatile Entries entries = new Entries(new String[64], 0, new ConcurrentHashMap<>(1024));
 
+  /**
+   * Set when the load found no committed page and wrote a fresh empty one (issue #11258). A power loss that kept the file name
+   * but not its content leaves exactly this, and the fresh page hides it: every name is gone and nothing says so.
+   */
+  private volatile boolean headerPageRecreated;
+
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
@@ -589,9 +595,18 @@ public class Dictionary extends PaginatedComponent {
     if (pageCount.get() > 0)
       return;
 
+    headerPageRecreated = true;
     database.transaction(() -> {
       final MutablePage header = database.getTransaction().addPage(new PageId(database, file.getFileId(), 0), pageSize);
       updateCounters(header);
     });
+  }
+
+  /**
+   * Whether the load found this dictionary without any committed page and had to write a new one (issue #11258). On a database
+   * that already declares types, that means the names were lost, not that the database is new.
+   */
+  public boolean wasHeaderPageRecreated() {
+    return headerPageRecreated;
   }
 }

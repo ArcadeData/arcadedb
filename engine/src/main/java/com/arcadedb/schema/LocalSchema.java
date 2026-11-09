@@ -1788,6 +1788,17 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Whether the dictionary file was found without any committed page at load while the schema declares types (issue #11258):
+   * a power loss kept the file name and dropped its content, so every type and property name the records refer to is gone and
+   * they read back as null. A dictionary is never legitimately empty once a type exists, because creating a type or a property
+   * writes its name there. An HA node reads this to re-install the database from its cluster.
+   */
+  public boolean isDictionaryLostForExistingTypes() {
+    final Dictionary current = dictionary;
+    return current != null && current.wasHeaderPageRecreated() && !typeMap().isEmpty();
+  }
+
+  /**
    * The compaction base names ({@link LSMTreeIndexAbstract#compactionBaseName}) of the mutable LSM index files the file
    * manager holds and this load did not turn into a component: the ones refused for a missing header (issue #10046).
    */
