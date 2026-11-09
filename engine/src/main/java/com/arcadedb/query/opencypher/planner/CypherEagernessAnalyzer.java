@@ -39,6 +39,7 @@ import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.PropertyReadExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -222,7 +223,11 @@ public final class CypherEagernessAnalyzer {
         readNodeLabels.addAll(node.getLabels());
     }
     for (final RelationshipPattern relationship : pathPattern.getRelationships()) {
-      if (!relationship.hasTypes())
+      if (relationship instanceof QuantifiedPathPattern group) {
+        // the group is one untyped placeholder hop of its enclosing pattern: what it reads is the pattern it repeats
+        if (group.getInnerPattern() != null)
+          observeReadPattern(group.getInnerPattern());
+      } else if (!relationship.hasTypes())
         readsAnyRelationshipType = true;
       else
         readRelationshipTypes.addAll(relationship.getTypes());

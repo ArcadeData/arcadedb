@@ -295,6 +295,38 @@ class Issue11463SubqueryReadsNeedWriteBarrierTest {
       assertThat((Object) row.getProperty("c")).isEqualTo(first);
   }
 
+  /**
+   * A quantified path pattern reads the types of the relationship it repeats, not every type: the untyped placeholder that stands
+   * for the group in its enclosing pattern must not count as a read of any relationship.
+   */
+  @Test
+  void quantifiedPathPatternReadsOnlyTheTypesItRepeats() {
+    assertThat(explain("""
+        UNWIND range(1, 150) AS i
+        CALL (i) { MATCH (:Q) ((:Q)-[:S]->(:Q)){1,2} (:Q) RETURN count(*) AS c }
+        MERGE (:Other {id: i})-[:T]->(:Other {id: -i})
+        RETURN c""")).doesNotContain(EAGER);
+    assertThat(explain("""
+        UNWIND range(1, 150) AS i
+        MATCH (:Q) ((:Q)-[:S]->(:Q)){1,2} (:Q)
+        MERGE (:Other {id: i})-[:T]->(:Other {id: -i})""")).doesNotContain(EAGER);
+  }
+
+  /** A pattern subquery in the inline WHERE of a node pattern reads the graph once per row too. */
+  @Test
+  void subqueryInInlineNodePredicateIsARead() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:C)").close());
+    final String query = """
+        UNWIND range(1, 150) AS i
+        MATCH (c:C WHERE NOT EXISTS { MATCH (:D) })
+        MERGE (:D {id: i})
+        RETURN i""";
+
+    assertThat(explain(query)).contains(EAGER);
+    assertThat(run(query)).hasSize(150);
+    assertThat(countOf("D")).isEqualTo(150L);
+  }
+
   /** A write the subquery's reads cannot match keeps streaming: no barrier is planned for it. */
   @Test
   void unrelatedWriteKeepsStreaming() {
