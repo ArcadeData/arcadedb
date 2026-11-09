@@ -1207,7 +1207,7 @@ public class PageManager extends LockContext {
       // channelLock acquisition - ran under the JVM-wide lock the rest of this barrier works to keep short, and on a
       // stalled filesystem not one of them was bounded by SNAPSHOT_BARRIER_MAX_MILLIS the way every other step is.
       // PaginatedComponentFile now keeps the count itself; see its `totalPages` field for why it is exact, and
-      // Issue6132SnapshotBarrierFollowupsTest for the assertion that it agrees with the filesystem at t0.
+      // PageSnapshotWindowTest.SnapshotBarrierFollowups for the assertion that it agrees with the filesystem at t0.
       files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, paginated.getPageSize(),
           (int) paginated.getTotalPages(), paginated.getFileName()));
     }
@@ -1306,6 +1306,17 @@ public class PageManager extends LockContext {
     final String configured = database.getConfiguration().getValueAsString(GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH);
     if (configured == null || configured.isBlank())
       return new File(database.getDatabasePath());
+
+    // A VALUE THE DATABASE WAS GIVEN MUST NOT LEAD THE SERVER TO CREATE DIRECTORIES WHERE NOBODY ALLOWED IT: CHECKED HERE,
+    // BEFORE mkdirs, AND NOT ONLY WHERE THE SETTING IS CHANGED, SINCE A VALUE CAN REACH THE CONFIGURATION ANOTHER WAY. LIKE
+    // AN UNUSABLE PATH IT COSTS A WARNING AND THE DATABASE DIRECTORY, NEVER THE BACKUP
+    try {
+      GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.checkDatabaseStorageDirectory(configured.trim(), database.getDatabasePath());
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.WARNING, "Database '%s': %s. Falling back to the database directory", null,
+          database.getName(), e.getMessage());
+      return new File(database.getDatabasePath());
+    }
 
     final File directory = new File(configured.trim());
     // THE isDirectory RE-CHECK IS NOT REDUNDANT: TWO WINDOWS OPENING AT ONCE AGAINST A NOT-YET-EXISTING DIRECTORY

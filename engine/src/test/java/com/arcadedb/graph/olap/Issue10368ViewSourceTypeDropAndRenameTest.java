@@ -20,7 +20,6 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -189,7 +188,7 @@ class Issue10368ViewSourceTypeDropAndRenameTest extends TestHelper {
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW gav");
     database.command("sql", "DROP TYPE Unlisted");
     assertThatThrownBy(() -> database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW gav"))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("does not exist");
+        .isInstanceOf(SchemaException.class).hasMessageContaining("does not exist");
   }
 
   /** REBUILD of a view whose build failed on open builds it again from its definition. */

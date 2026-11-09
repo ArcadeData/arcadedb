@@ -123,6 +123,10 @@ public class DateUtils {
    */
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
+      // A bare date followed by a zone ("2024-05-06 +01", what pgjdbc sends for a java.sql.Date, issue #11389). Each form
+      // needs a MANDATORY offset so it cannot match a string with a time, whose digits are not an offset, and rolls back when not.
+      .optionalStart().appendLiteral(' ').appendPattern("XXX").optionalEnd()//
+      .optionalStart().appendLiteral(' ').appendPattern("X").optionalEnd()//
       .optionalStart()//
       .appendLiteral(' ')//
       .appendValue(ChronoField.HOUR_OF_DAY, 2)//

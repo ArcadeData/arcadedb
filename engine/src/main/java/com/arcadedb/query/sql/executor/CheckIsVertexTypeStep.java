@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalVertexType;
@@ -60,7 +61,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
 
       final DocumentType targettypez = schema.getType(this.targetClass);
       if (targettypez == null) {
-        throw new CommandExecutionException("Type not found: " + this.targetClass);
+        throw new SchemaException("Type not found: " + this.targetClass);
       }
 
       if (targettypez instanceof LocalVertexType) {

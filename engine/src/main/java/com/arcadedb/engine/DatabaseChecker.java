@@ -1769,7 +1769,7 @@ public class DatabaseChecker {
    * <p>
    * Package-private rather than private: the seam a test needs to drive this exact race deterministically, by
    * handing it a finding whose fileId has since gained a real component, instead of only documenting the residual
-   * window in a comment (see {@code Issue6189ReclaimUnreferencedFilesTest}).
+   * window in a comment (see {@code UnreferencedFilesTest.ReclaimUnreferencedFiles}).
    * <p>
    * The "is it still gone from the schema" check and the "actually drop it" step are two separate calls rather
    * than one, and cannot be otherwise: unregistering a schema component and removing a file are different

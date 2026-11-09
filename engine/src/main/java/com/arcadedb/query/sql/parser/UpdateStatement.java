@@ -270,5 +270,12 @@ public class UpdateStatement extends Statement {
       return Set.of(OperationType.UPDATE, OperationType.CREATE);
     return CollectionUtils.singletonSet(OperationType.UPDATE);
   }
+
+  /** The count of an UPDATE with no RETURN clause only acknowledges the write (issue #11017). */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return !isReturnBefore() && !isReturnAfter() && getReturnProjection() == null;
+  }
+
 }
 /* JavaCC - OriginalChecksum=093091d7273f1073ad49f2a2bf709a53 (do not edit this line) */

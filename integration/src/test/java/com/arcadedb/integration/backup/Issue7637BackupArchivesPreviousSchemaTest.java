@@ -62,7 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * previous copy can hold a generation NEWER than the archived {@code schema.json} (two DDLs after t0 leave it
  * holding the first one's result), which would be a fallback describing a page set the archive does not contain.
  * {@link #theArchivedPreviousSchemaIsNotRetroFittedByALaterDdl} pins the end-to-end half of that, and
- * {@code Issue6114SnapshotConfigurationCaptureTest} the t0 barrier itself.
+ * {@code PageSnapshotWindowTest.SnapshotConfigurationCapture} the t0 barrier itself.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -163,7 +163,7 @@ class Issue7637BackupArchivesPreviousSchemaTest {
    * operator: what came out of the archive is the schema the database had at backup time.
    * <p>
    * The t0 claim itself is pinned where it is decidable, at the barrier:
-   * {@code Issue6114SnapshotConfigurationCaptureTest#theWindowCarriesBothConfigurationFilesAsOfT0} runs a DDL
+   * {@code PageSnapshotWindowTest.SnapshotConfigurationCapture#theWindowCarriesBothConfigurationFilesAsOfT0} runs a DDL
    * WHILE the window is open - so the live {@code schema.prev.json} moves on to hold the generation the window is
    * serving as its primary - and asserts the window still serves the t0 copy. A backup that re-read the file
    * instead of capturing it fails there.

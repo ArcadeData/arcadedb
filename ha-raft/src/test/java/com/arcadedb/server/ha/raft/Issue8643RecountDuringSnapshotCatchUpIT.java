@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * entries the follower applied meanwhile took no bucket lock, so the scan missed or double-counted them and then
  * published the result. The stored counter stayed wrong for good, while a scan of the same type was right.
  * <p>
- * The engine-level {@code Issue8640ApplyChangesRecountRaceTest} stands in for the recompute with a hand-held lock and
+ * The engine-level {@code ReplicatedApplyLockTest} stands in for the recompute with a hand-held lock and
  * drives {@code TransactionManager.applyChanges} directly. This test runs the real thing on a 3-node cluster:
  * <ol>
  *   <li>a leader under steady write load,</li>

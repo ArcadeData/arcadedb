@@ -5337,7 +5337,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // for this scope to be stated rather than left implicit): the size field sits BESIDE the continuation
           // pointer, not in front of it, so a chain whose only fault is a declared size still walks perfectly - the
           // delete finds every chunk, frees every slot and simply succeeds. There is nothing there to name and
-          // nothing to retry, which is what Issue6282BrokenChainDeleteAndProbeTest pins from the other side.
+          // nothing to retry, which is what BucketChunkChainTest.BrokenChainDeleteAndProbe pins from the other side.
           //
           // The one shape where the two walks disagree is a bad size AND a bad pointer: this walk stops at the size,
           // the delete stops at the pointer, the hops do not match and the confirmation declines. That fails SAFE -
@@ -5775,7 +5775,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * #5608: that re-run is the load-bearing half of the declaration, so it lives INSIDE the two methods that produce a
    * rebased page ({@code TransactionContext.rebaseEdgeAppends} and {@code rebaseSlots}) rather than in the commit loop
    * that calls them - where reordering or dropping it would have invalidated the declaration with no test failing.
-   * {@code Issue5608RebasedPageCompressionTest} pins the invariant from the outside.
+   * {@code PageWriteCommitTest} pins the invariant from the outside.
    */
   public void compressPage(final MutablePage page, final boolean forceWipeOut) throws IOException {
     final int previousCoverage = page.beginCoveredWrite(forceWipeOut ? 0 : MutablePage.COVERAGE_ALL_MERGES);

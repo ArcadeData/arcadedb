@@ -359,7 +359,7 @@ class RecoveryHousekeepingTest extends TestHelper {
   }
 
   private static ByteBuffer transaction(final long txId, final int deltaSize) {
-    // The same format used by Issue4508TornWALRecoveryTest, with a large valid page delta to cross rotation's limit.
+    // The same format used by WalFileCorruptionTest.TornWALRecovery, with a large valid page delta to cross rotation's limit.
     final int segmentSize = 24 + deltaSize;
     final ByteBuffer buffer = ByteBuffer.allocate(24 + segmentSize + 12);
     buffer.putLong(txId).putLong(1L).putInt(1).putInt(segmentSize);

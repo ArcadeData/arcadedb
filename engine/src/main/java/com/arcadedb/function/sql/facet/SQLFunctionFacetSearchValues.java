@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -142,7 +143,7 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
     final DatabaseInternal db = context.getDatabase();
     final String typeName = params[0] == null ? null : params[0].toString();
     if (typeName == null || !db.getSchema().existsType(typeName))
-      throw new CommandExecutionException(NAME + ": type '" + typeName + "' not found");
+      throw new SchemaException(NAME + ": type '" + typeName + "' not found");
     final DocumentType type = db.getSchema().getType(typeName);
     final String property = params[1] == null ? null : params[1].toString();
     final String prefix = params[2] == null ? "" : params[2].toString();

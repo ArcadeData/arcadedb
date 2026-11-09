@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 
 import org.junit.jupiter.api.Test;
@@ -73,6 +74,6 @@ class CheckClusterTypeStepTest {
           TestHelper.createRandomType(db).getName(), context);
 
       step.syncPull(context, 20);
-    })).isInstanceOf(CommandExecutionException.class).hasMessageContaining("Bucket 'NoSuchBucket' not found");
+    })).isInstanceOf(SchemaException.class).hasMessageContaining("Bucket 'NoSuchBucket' not found");
   }
 }

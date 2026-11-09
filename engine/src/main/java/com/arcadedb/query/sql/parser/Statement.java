@@ -335,6 +335,23 @@ public class Statement extends SimpleNode {
     return false;
   }
 
+  /**
+   * Whether what this statement returns only acknowledges what it did, rather than being data the caller asked for: the records
+   * an INSERT with no RETURN clause wrote, the count of an UPDATE, the row describing a schema change, a function-library change,
+   * a lock or a SLEEP (issues #11017, #11312, #11385). ArcadeDB answers such a statement with those rows on every protocol, and a
+   * protocol whose clients expect a status for it answers it without them: PostgreSQL announces it as {@code NoData} and ends it
+   * with a bare {@code CommandComplete}, the way it answers {@code CREATE TABLE} or an INSERT, where a result set is refused by
+   * the drivers ({@code executeUpdate()}: "A result was returned when none was expected").
+   * <p>
+   * A property of the statement and not a list of classes kept by a protocol, so a new statement decides it where it is written,
+   * and {@code StatementAcknowledgementCensusTest} (census module) fails on a statement class nobody decided for. The default is
+   * {@code false}: a statement whose rows are a report the caller reads (CHECK DATABASE, BACKUP DATABASE, EXPLAIN) or a query.
+   * The answer concerns this statement alone, never the statements nested in it.
+   */
+  public boolean returnsAcknowledgementOnly() {
+    return false;
+  }
+
   /** Whether this statement, or a statement nested in it, changes the schema. */
   public boolean isDDL() {
     return this instanceof DDLStatement || nestedClassification().ddl();

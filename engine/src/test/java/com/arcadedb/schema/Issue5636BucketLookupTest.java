@@ -20,8 +20,6 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.serializer.BinarySerializerTestHelper;
@@ -130,7 +128,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   @Test
   void truncateBucketReportsAMissingIdOnce() {
     assertThatThrownBy(() -> database.command("sql", "truncate bucket " + UNLOADED_BUCKET_ID))
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Bucket with id " + UNLOADED_BUCKET_ID + " not found")
         .matches(e -> !e.getMessage().contains("Bucket not found:"), "the message must not be doubled by the rewrap");
   }
@@ -138,7 +136,7 @@ class Issue5636BucketLookupTest extends TestHelper {
   @Test
   void truncateBucketReportsAMissingNameOnce() {
     assertThatThrownBy(() -> database.command("sql", "truncate bucket NoSuchBucket"))
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Bucket 'NoSuchBucket' not found")
         .matches(e -> !e.getMessage().contains("Bucket not found:"), "the message must not be doubled by the rewrap");
   }
@@ -152,7 +150,7 @@ class Issue5636BucketLookupTest extends TestHelper {
     database.getSchema().createVertexType("V1");
 
     assertThatThrownBy(() -> database.query("sql", "match {bucket: NoSuchBucket, as: v} return v").stream().toList())
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(SchemaException.class)
         // "not defined" and not just the bucket name: the generic SchemaException this replaces also quotes the
         // name, so asserting on the name alone would not notice a regression back to it.
         .hasMessageContaining("Bucket 'NoSuchBucket' not defined");
@@ -169,12 +167,12 @@ class Issue5636BucketLookupTest extends TestHelper {
 
     assertThatThrownBy(
         () -> database.command("sql", "insert into bucket:NoSuchBucket from select from Doc").close())
-        .isInstanceOf(CommandSQLParsingException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Target bucket 'NoSuchBucket' not found");
 
     assertThatThrownBy(
         () -> database.command("sql", "insert into bucket:" + UNLOADED_BUCKET_ID + " from select from Doc").close())
-        .isInstanceOf(CommandSQLParsingException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Target bucket with id " + UNLOADED_BUCKET_ID + " not found");
   }
 
@@ -188,7 +186,7 @@ class Issue5636BucketLookupTest extends TestHelper {
 
     assertThatThrownBy(() -> database.command("sql", "insert into bucket:? from select from Doc",
         Map.of("0", "NoSuchBucket")).close())
-        .isInstanceOf(CommandSQLParsingException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Target bucket 'NoSuchBucket' not found");
   }
 
@@ -240,11 +238,11 @@ class Issue5636BucketLookupTest extends TestHelper {
     database.getSchema().createDocumentType("Doc");
 
     assertThatThrownBy(() -> database.command("sql", "insert into bucket:NoSuchBucket set k = 1").close())
-        .isInstanceOf(CommandSQLParsingException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Target bucket 'NoSuchBucket' not found");
 
     assertThatThrownBy(() -> database.command("sql", "insert into bucket:" + UNLOADED_BUCKET_ID + " set k = 1").close())
-        .isInstanceOf(CommandSQLParsingException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Target bucket with id " + UNLOADED_BUCKET_ID + " not found");
   }
 
@@ -259,11 +257,11 @@ class Issue5636BucketLookupTest extends TestHelper {
     database.getSchema().createDocumentType("Doc", 1);
 
     assertThatThrownBy(() -> database.query("sql", "select from bucket:" + UNLOADED_BUCKET_ID).stream().toList())
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Bucket with id " + UNLOADED_BUCKET_ID + " does not exist");
 
     assertThatThrownBy(() -> database.query("sql", "select from bucket:NoSuchBucket").stream().toList())
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("does not exist");
   }
 

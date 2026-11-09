@@ -156,7 +156,7 @@ class Issue6114LockFreeBackupIT {
    * carry - is microseconds wide, so a DDL loop cannot be relied on to land inside it. Verified: with the fix
    * reverted to "drop the lock, keep reading the configuration off the filesystem" this test still passes. What
    * pins the property deterministically is
-   * {@code Issue6114SnapshotConfigurationCaptureTest.theWindowCarriesBothConfigurationFilesAsOfT0}, which moves the
+   * {@code PageSnapshotWindowTest.SnapshotConfigurationCapture.theWindowCarriesBothConfigurationFilesAsOfT0}, which moves the
    * live schema on while the window is open and asserts the window does not follow. What this test defends is that
    * the two ends are actually wired together, and that the churn the removed lock now permits does not break the
    * archive.

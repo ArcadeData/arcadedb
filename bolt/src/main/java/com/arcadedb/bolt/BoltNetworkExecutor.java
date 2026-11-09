@@ -55,6 +55,7 @@ import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -99,6 +100,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -153,6 +155,8 @@ public class BoltNetworkExecutor extends Thread {
   private ServerSecurityUser user;
   private Database           database;
   private String             databaseName;
+  // The database HELLO named, if any: what a RUN or BEGIN that names none resolves to (issue #11381)
+  private String             helloDatabaseName;
 
   // Transaction state
   private boolean explicitTransaction = false;
@@ -598,7 +602,8 @@ public class BoltNetworkExecutor extends Thread {
       @SuppressWarnings("unchecked")
       final Map<String, Object> routing = (Map<String, Object>) extra.get("routing");
       if (routing != null && routing.containsKey("db")) {
-        databaseName = (String) routing.get("db");
+        helloDatabaseName = (String) routing.get("db");
+        databaseName = helloDatabaseName;
       }
     }
 
@@ -834,9 +839,7 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    if (db != null && !db.isEmpty()) {
-      databaseName = db;
-    }
+    resolveRequestDatabase(db);
 
     final String query = message.getQuery();
     final Map<String, Object> params = message.getParameters();
@@ -1190,9 +1193,7 @@ public class BoltNetworkExecutor extends Thread {
   private void handleBegin(final BeginMessage beginMessage) throws IOException {
     // Get database from message if specified
     final String db = beginMessage.getDatabase();
-    if (db != null && !db.isEmpty()) {
-      databaseName = db;
-    }
+    resolveRequestDatabase(db);
 
     if (!ensureDatabase()) {
       return;
@@ -1301,7 +1302,7 @@ public class BoltNetworkExecutor extends Thread {
   private void handleRoute(final RouteMessage message) throws IOException {
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", server.getConfiguration().getValueAsLong(GlobalConfiguration.BOLT_ROUTING_TTL));
-    rt.put("db", message.getDatabase() != null ? message.getDatabase() : databaseName);
+    rt.put("db", message.getDatabase() != null ? message.getDatabase() : helloDatabaseName);
 
     final List<Map<String, Object>> servers = new ArrayList<>();
 
@@ -1373,6 +1374,23 @@ public class BoltNetworkExecutor extends Thread {
         && requestedDatabase != null && !requestedDatabase.isEmpty()
         && !"system".equals(requestedDatabase) && !"neo4j".equals(requestedDatabase)
         && !database.getName().equals(requestedDatabase);
+  }
+
+  /**
+   * Binds the database of a RUN or BEGIN. A request that names none must not inherit the database an earlier request on
+   * this (pooled) connection named: it falls back to the HELLO/configured default, unless an explicit transaction is open,
+   * which stays on the database BEGIN opened it on (issue #11381).
+   */
+  private void resolveRequestDatabase(final String requested) {
+    if (requested != null && !requested.isEmpty()) {
+      databaseName = requested;
+      return;
+    }
+    if (explicitTransaction || Objects.equals(databaseName, helloDatabaseName))
+      return;
+    databaseName = helloDatabaseName;
+    // isDatabaseSwitch() ignores an empty name, so drop the open database to force ensureDatabase() to resolve the default
+    database = null;
   }
 
   private boolean ensureDatabase() throws IOException {
@@ -2104,6 +2122,11 @@ public class BoltNetworkExecutor extends Thread {
     if (category == ErrorCategory.VALIDATION && CauseChain.find(error, ValidationException.class) instanceof ValidationException refused
         && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A CALL of a procedure nothing answers: Neo4j's ProcedureNotFound, where the category alone says SyntaxError, the title of
+    // a FUNCTION nothing answers (issue #11384)
+    if (category == ErrorCategory.PARSING && CauseChain.contains(error, UnknownProcedureException.class))
+      return BoltErrorCodes.PROCEDURE_NOT_FOUND_ERROR;
 
     // A follower's refusal of leader-only work that names the leader: a redirect, not a conflict to retry in place (#9845)
     // (redirectIn asks for the RETRY category itself, so a termination still wins)

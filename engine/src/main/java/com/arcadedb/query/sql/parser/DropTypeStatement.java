@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -77,7 +78,7 @@ public class DropTypeStatement extends DDLStatement {
 
     final DocumentType typez = schema.getType(typeName);
     if (typez == null) {
-      throw new CommandExecutionException("Type '" + typeName + "' does not exist");
+      throw new SchemaException("Type '" + typeName + "' does not exist");
     }
 
     if (!unsafe && (typez.getType() == Vertex.RECORD_TYPE || typez.getType() == Edge.RECORD_TYPE)) {

@@ -114,5 +114,12 @@ public class TruncateRecordStatement extends SimpleExecStatement {
     result = 31 * result + (records != null ? records.hashCode() : 0);
     return result;
   }
+
+  /** A removal of records, which a DELETE with no RETURN BEFORE acknowledges too. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=9da68e9fe4c4bf94a12d8a6f8864097a (do not edit this line) */

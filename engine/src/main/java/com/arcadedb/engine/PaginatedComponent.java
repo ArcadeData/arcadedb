@@ -27,6 +27,7 @@ import java.util.logging.Level;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -67,7 +68,19 @@ public abstract class PaginatedComponent extends Component {
   private PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
       final int id,
       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-    this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
+    this(database, name, refuseExistingFile(filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, mode), id, mode,
+        pageSize, version);
+  }
+
+  /**
+   * A component created here gets a file id no registered file has, so a file already on disk at its path is not one of the
+   * database's: something left there, or put there, outside of it. Opening it would write the new component's pages over
+   * its content, so the creation is refused instead and the file is left as it is.
+   */
+  private static String refuseExistingFile(final String filePath, final ComponentFile.MODE mode) throws IOException {
+    if (mode == ComponentFile.MODE.READ_WRITE && new File(filePath).exists())
+      throw new FileAlreadyExistsException(filePath, null, "a file not belonging to the database already exists at this path");
+    return filePath;
   }
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final int id,

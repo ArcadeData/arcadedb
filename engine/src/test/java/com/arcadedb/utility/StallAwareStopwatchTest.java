@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Reproduces #6260 and covers its fix: the wall-clock bounds in the engine suite went red on the shared JVM's
  * stop-the-world pauses rather than on the behaviour they test. {@code AsyncShutdownDrainTest} measured 27 396 ms
- * for a {@code close()} bounded by a 1 s timeout plus a 2 s join, and {@code Issue6199DrainWakeupTest} measured
+ * for a {@code close()} bounded by a 1 s timeout plus a 2 s join, and {@code PageManagerFlushQueueAdmissionTest} measured
  * 24 143 ms for a wait bounded by 200 ms - both while the code behaved correctly.
  * <p>
  * The stall is injected here rather than provoked, because provoking a multi-second stop-the-world pause on

@@ -30,6 +30,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
@@ -232,7 +233,8 @@ public class RedisQueryEngine implements QueryEngine {
 
       // Single command execution
       return executeSingleCommand(query);
-    } catch (final RedisException | CommandParsingException e) {
+    } catch (final RedisException | CommandParsingException | SchemaException e) {
+      // a missing index is the caller's mistake (issue #11384): neither a server error logged SEVERE nor a command that cannot be read
       throw e;
     } catch (final NeedRetryException | DuplicatedKeyException e) {
       // Unwrapped rather than folded into the branch below: a conflict a write command's own
@@ -854,8 +856,9 @@ public class RedisQueryEngine implements QueryEngine {
       if (parts.size() < 3)
         throw badRequest(RedisCommandArity.wrongArity("HDEL"));
 
+      // a missing schema object, not a command that cannot be read (issue #11384)
       if (!database.getSchema().existsIndex(firstArg))
-        throw new CommandParsingException("Index '" + firstArg + "' not found");
+        throw new SchemaException("Index '" + firstArg + "' not found");
       database.transaction(() -> {
         int removed = 0;
         for (int i = 2; i < parts.size(); i++)

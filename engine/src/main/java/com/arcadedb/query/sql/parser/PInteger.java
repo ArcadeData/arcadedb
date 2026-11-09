@@ -78,8 +78,17 @@ public class PInteger extends PNumber {
     return this;
   }
 
+  /**
+   * Renders the literal so that parsing the text back yields the same value of the same Java type (issue #11391). A
+   * {@link Long} whose value an {@code int} could hold only exists because it was written with an {@code L} suffix (or set as a
+   * long programmatically), and the suffix-less text would parse back as an {@link Integer}: the suffix goes with it. A long the
+   * int range cannot hold parses back as a long anyway, and is rendered as it always was. So does {@code -2147483648}: its
+   * magnitude does not fit an int, the literal is read as a long before the sign is folded into it (issue #6359).
+   */
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("" + value);
+    builder.append(value);
+    if (value instanceof Long l && l > Integer.MIN_VALUE && l <= Integer.MAX_VALUE)
+      builder.append('L');
   }
 
   public PInteger copy() {

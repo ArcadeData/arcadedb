@@ -1520,7 +1520,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // The BM25 corpus deltas ride with the bucket record counts and obey the same rule: applyChanges folds them only when it
       // advances a page. The local commit folds both as the LAST step of publishing its pages, so a failure before that leaves a
       // page to advance here, and one after it finds every page published and folds nothing (a fold counted twice would be
-      // silent; Issue10051ReplicatedCorpusDeltaTest pins the replay of an entry already applied)
+      // silent; ReplicatedApplyCorpusDeltaTest pins the replay of an entry already applied)
       proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), payload.corpusDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());

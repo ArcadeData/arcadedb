@@ -140,5 +140,12 @@ public class LetStatement extends SimpleExecStatement {
   protected Set<OperationType> getOperationTypesItself() {
     return Set.of();
   }
+
+  /** Setting a variable returns nothing. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=cc646e5449351ad9ced844f61b687928 (do not edit this line) */

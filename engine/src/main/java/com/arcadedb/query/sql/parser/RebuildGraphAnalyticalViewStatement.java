@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -51,7 +51,7 @@ public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
       // it fails, if it still does, reaches the caller rather than a log line (issue #10368)
       liveView = GraphAnalyticalViewPersistence.rebuildFromDefinition(database, viewName);
       if (liveView == null)
-        throw new CommandExecutionException("Graph Analytical View '" + viewName + "' does not exist");
+        throw new SchemaException("Graph Analytical View '" + viewName + "' does not exist");
     }
 
     final InternalResultSet result = new InternalResultSet();

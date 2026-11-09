@@ -73,7 +73,7 @@ class TransactionManagerLastTxIdRotationTest extends TestHelper {
   /**
    * The rotation hook used to force the drop, deleting the WAL of a committed transaction whose pages the asynchronous
    * flush thread had not written yet: a crash right after lost the transaction. It surfaced as an intermittent failure of
-   * {@code Issue9795RecoveryTransactionIdCounterTest} on a loaded CI runner, where the flush lagged behind the commit.
+   * {@code WalRecoveryTest.RecoveryTransactionIdCounter} on a loaded CI runner, where the flush lagged behind the commit.
    * Suspending the flush makes that interleaving certain.
    */
   @Test

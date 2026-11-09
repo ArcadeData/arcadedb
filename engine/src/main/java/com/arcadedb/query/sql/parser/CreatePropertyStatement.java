@@ -25,7 +25,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -88,7 +89,7 @@ public class CreatePropertyStatement extends DDLStatement {
       return declared;
     final Object resolved = context.getVariable(declared);
     if (resolved == null)
-      throw new CommandExecutionException("Variable '" + declared + "' naming the type of the property is not defined");
+      throw new CommandSemanticException("Variable '" + declared + "' naming the type of the property is not defined");
     return resolved.toString();
   }
 
@@ -96,7 +97,7 @@ public class CreatePropertyStatement extends DDLStatement {
     final Database db = context.getDatabase();
     final DocumentType typez = db.getSchema().getType(typeName);
     if (typez == null)
-      throw new CommandExecutionException("Type '" + typeName + "' not found");
+      throw new SchemaException("Type '" + typeName + "' not found");
 
     if (ifNotExists) {
       if (typez.existsPolymorphicProperty(propertyName.getStringValue())) {

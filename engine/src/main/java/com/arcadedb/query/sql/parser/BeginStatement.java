@@ -74,5 +74,12 @@ public class BeginStatement extends SimpleExecStatement {
   protected Object[] getIdentityElements() {
     return new Object[] { isolation };
   }
+
+  /** The row only reports the transaction control, where PostgreSQL's BEGIN answers a bare tag. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */

@@ -77,6 +77,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -108,6 +109,7 @@ import io.grpc.stub.StreamObserver;
 import org.jspecify.annotations.NonNull;
 
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.StringUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -6618,6 +6620,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return fromGrpcValue(grpcValue);
   }
 
+  /**
+   * Issue #11382: a scalar arm hands the request's value on as it came and lets {@code MutableDocument.set()} apply the declared type with
+   * its range checks, exactly as the bulk routes ({@code applyGrpcRecord}) do. A narrowing cast here wrapped an out-of-range number
+   * and a {@code null} arm erased a value of a kind the property cannot hold, so the engine's refusal never ran. A kind the declared
+   * type cannot take is refused with the property and the kind named.
+   */
   private Object convertWithSchemaType(Database db, MutableDocument parent, Property prop, String propName,
                                        GrpcValue v) {
 
@@ -6628,62 +6636,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case BOOLEAN:
         return switch (v.getKindCase()) {
           case BOOL_VALUE -> v.getBoolValue();
-          case STRING_VALUE -> Boolean.parseBoolean(v.getStringValue());
-          default -> null;
+          case STRING_VALUE -> StringUtils.parseStrictBoolean(v.getStringValue());
+          default -> throw cannotConvert(propName, t, v);
         };
 
       case BYTE:
-        return switch (v.getKindCase()) {
-          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> ((Number) fromGrpcValue(v)).byteValue();
-          case STRING_VALUE -> Byte.parseByte(v.getStringValue());
-          default -> null;
-        };
-
       case SHORT:
-        return switch (v.getKindCase()) {
-          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE -> ((Number) fromGrpcValue(v)).shortValue();
-          case STRING_VALUE -> Short.parseShort(v.getStringValue());
-          default -> null;
-        };
-
       case INTEGER:
-        return switch (v.getKindCase()) {
-          case INT32_VALUE -> v.getInt32Value();
-          case INT64_VALUE -> (int) v.getInt64Value();
-          case DOUBLE_VALUE -> (int) v.getDoubleValue();
-          case FLOAT_VALUE -> (int) v.getFloatValue();
-          case STRING_VALUE -> Integer.parseInt(v.getStringValue());
-          default -> null;
-        };
-
       case LONG:
-        return switch (v.getKindCase()) {
-          case INT64_VALUE -> v.getInt64Value();
-          case INT32_VALUE -> (long) v.getInt32Value();
-          case DOUBLE_VALUE -> (long) v.getDoubleValue();
-          case FLOAT_VALUE -> (long) v.getFloatValue();
-          case STRING_VALUE -> Long.parseLong(v.getStringValue());
-          default -> null;
-        };
-
       case FLOAT:
-        return switch (v.getKindCase()) {
-          case FLOAT_VALUE -> v.getFloatValue();
-          case DOUBLE_VALUE -> (float) v.getDoubleValue();
-          case INT32_VALUE -> (float) v.getInt32Value();
-          case INT64_VALUE -> (float) v.getInt64Value();
-          case STRING_VALUE -> Float.parseFloat(v.getStringValue());
-          default -> null;
-        };
-
       case DOUBLE:
         return switch (v.getKindCase()) {
-          case DOUBLE_VALUE -> v.getDoubleValue();
-          case FLOAT_VALUE -> (double) v.getFloatValue();
-          case INT32_VALUE -> (double) v.getInt32Value();
-          case INT64_VALUE -> (double) v.getInt64Value();
-          case STRING_VALUE -> Double.parseDouble(v.getStringValue());
-          default -> null;
+          case INT32_VALUE, INT64_VALUE, DOUBLE_VALUE, FLOAT_VALUE, STRING_VALUE -> fromGrpcValue(v);
+          default -> throw cannotConvert(propName, t, v);
         };
 
       case STRING:
@@ -6699,7 +6664,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           case DOUBLE_VALUE -> BigDecimal.valueOf(v.getDoubleValue());
           case INT32_VALUE -> BigDecimal.valueOf(v.getInt32Value());
           case INT64_VALUE -> BigDecimal.valueOf(v.getInt64Value());
-          default -> null;
+          default -> throw cannotConvert(propName, t, v);
         };
 
       case DATE:
@@ -6719,24 +6684,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               yield new Date(Long.parseLong(s));
             } catch (NumberFormatException ignored) {
               final Long millis = DateUtils.dateTimeToTimestamp(db, s, ChronoUnit.MILLIS);
-              yield millis != null ? new Date(millis) : null;
+              if (millis == null)
+                throw cannotConvert(propName, t, v);
+              yield new Date(millis);
             }
           }
-          default -> null;
+          default -> throw cannotConvert(propName, t, v);
         };
 
       case BINARY:
         return switch (v.getKindCase()) {
           case BYTES_VALUE -> v.getBytesValue().toByteArray();
           case STRING_VALUE -> v.getStringValue().getBytes(StandardCharsets.UTF_8);
-          default -> null;
+          default -> throw cannotConvert(propName, t, v);
         };
 
       case LINK:
         return switch (v.getKindCase()) {
           case LINK_VALUE -> new RID(v.getLinkValue().getRid());
           case STRING_VALUE -> new RID(v.getStringValue());
-          default -> null;
+          default -> throw cannotConvert(propName, t, v);
         };
 
       case EMBEDDED: {
@@ -6843,7 +6810,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           v.getMapValue().getEntriesMap().forEach((k, vv) -> m.put(k, fromGrpcValue(vv)));
           return m;
         }
-        return null;
+        throw cannotConvert(propName, t, v);
 
       case LIST:
         if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
@@ -6853,81 +6820,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
           return list;
         }
-        return null;
-      case ARRAY_OF_SHORTS: {
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-          var out = new ArrayList<Short>();
-          for (GrpcValue item : v.getListValue().getValuesList()) {
-            Object o = fromGrpcValue(item);
-            if (o instanceof Number n)
-              out.add(n.shortValue());
-            else if (o instanceof String s)
-              out.add(Short.parseShort(s));
-          }
-          return out;
-        }
-        return null;
-      }
+        throw cannotConvert(propName, t, v);
 
-      case ARRAY_OF_INTEGERS: {
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-          var out = new ArrayList<Integer>();
-          for (GrpcValue item : v.getListValue().getValuesList()) {
-            Object o = fromGrpcValue(item);
-            if (o instanceof Number n)
-              out.add(n.intValue());
-            else if (o instanceof String s)
-              out.add(Integer.parseInt(s));
-          }
-          return out;
-        }
-        return null;
-      }
-
-      case ARRAY_OF_LONGS: {
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-          var out = new ArrayList<Long>();
-          for (GrpcValue item : v.getListValue().getValuesList()) {
-            Object o = fromGrpcValue(item);
-            if (o instanceof Number n)
-              out.add(n.longValue());
-            else if (o instanceof String s)
-              out.add(Long.parseLong(s));
-          }
-          return out;
-        }
-        return null;
-      }
-
-      case ARRAY_OF_FLOATS: {
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-          var out = new ArrayList<Float>();
-          for (GrpcValue item : v.getListValue().getValuesList()) {
-            Object o = fromGrpcValue(item);
-            if (o instanceof Number n)
-              out.add(n.floatValue());
-            else if (o instanceof String s)
-              out.add(Float.parseFloat(s));
-          }
-          return out;
-        }
-        return null;
-      }
-
-      case ARRAY_OF_DOUBLES: {
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE) {
-          var out = new ArrayList<Double>();
-          for (GrpcValue item : v.getListValue().getValuesList()) {
-            Object o = fromGrpcValue(item);
-            if (o instanceof Number n)
-              out.add(n.doubleValue());
-            else if (o instanceof String s)
-              out.add(Double.parseDouble(s));
-          }
-          return out;
-        }
-        return null;
-      }
+      case ARRAY_OF_SHORTS:
+      case ARRAY_OF_INTEGERS:
+      case ARRAY_OF_LONGS:
+      case ARRAY_OF_FLOATS:
+      case ARRAY_OF_DOUBLES:
+        // The items go to the engine as they came: its conversion of the array range-checks each one (issue #11382)
+        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE)
+          return fromGrpcValue(v);
+        throw cannotConvert(propName, t, v);
 
       case DATETIME_SECOND:
       case DATETIME_MICROS:
@@ -6954,16 +6857,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               yield Instant.ofEpochMilli(Long.parseLong(s));
             } catch (final NumberFormatException ignored) {
               final Long nanos = DateUtils.dateTimeToTimestamp(db, s, ChronoUnit.NANOS);
-              yield nanos != null ? Instant.ofEpochSecond(0L, nanos) : null;
+              if (nanos == null)
+                throw cannotConvert(propName, t, v);
+              yield Instant.ofEpochSecond(0L, nanos);
             }
           }
-          default -> null;
+          default -> throw cannotConvert(propName, t, v);
         };
       }
     }
 
     // default fallback
     return fromGrpcValue(v);
+  }
+
+  /** The refusal of a value whose kind the declared type cannot hold, answered {@code INVALID_ARGUMENT} like the engine's own (issue #11382). */
+  private static IllegalArgumentException cannotConvert(final String propName, final Type type, final GrpcValue value) {
+    return new IllegalArgumentException(
+        "Cannot convert a gRPC value of kind " + value.getKindCase() + " to type " + type + " for property '" + propName + "'");
   }
 
   private String generateTransactionId() {

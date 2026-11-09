@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -73,7 +73,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
 
           final DocumentType typez = context.getDatabase().getSchema().getType(targetName);
           if (typez == null) {
-            throw new CommandExecutionException("Type " + targetName + " does not exist in the database schema");
+            throw new SchemaException("Type " + targetName + " does not exist in the database schema");
           }
 
           // countType() counts records, and a lightweight edge has none: on such a type it would answer 0 for a

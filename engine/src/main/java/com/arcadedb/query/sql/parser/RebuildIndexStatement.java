@@ -345,7 +345,7 @@ public class RebuildIndexStatement extends DDLStatement {
     } else {
       final Index idx = database.getSchema().getIndexByName(name.getValue());
       if (idx == null)
-        throw new CommandExecutionException("Index '" + name.getValue() + "' not found");
+        throw new SchemaException("Index '" + name.getValue() + "' not found");
       if (!(idx instanceof final IndexInternal internal))
         throw new CommandExecutionException("Index '" + idx.getName() + "' does not support statistics recomputation");
       if (internal.recomputeStatistics())

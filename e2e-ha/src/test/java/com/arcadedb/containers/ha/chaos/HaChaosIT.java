@@ -395,6 +395,24 @@ class HaChaosIT extends ContainersTestTemplate {
       return ClusterStatusSummary.inPlaceRestarts(cluster, node);
     }
 
+    /** Each node's applied and commit index from {@code GET /api/v1/cluster}; {@code null} where the node does not report them. */
+    @Override
+    public RaftPosition[] raftPositions() {
+      final RaftPosition[] positions = new RaftPosition[size()];
+      for (int node = 0; node < positions.length; node++)
+        try {
+          final JSONObject cluster = clusterStatus(node, 5_000);
+          // A negative index is the server's "no Raft division yet" (null server, or an in-place restart in progress)
+          final long applied = cluster.getLong("localAppliedIndex", -1);
+          final long commit = cluster.getLong("localCommitIndex", -1);
+          if (applied >= 0 && commit >= 0)
+            positions[node] = new RaftPosition(applied, commit);
+        } catch (final Exception e) {
+          // Left null: an unreadable node is never taken for caught up
+        }
+      return positions;
+    }
+
     /** {@code GET /api/v1/cluster} on the node as root; throws on a non-200 answer. */
     private JSONObject clusterStatus(final int node, final int timeoutMs) throws IOException {
       final Endpoint endpoint = endpoint(node);

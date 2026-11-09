@@ -2354,7 +2354,7 @@ public class TransactionContext implements Transaction {
     // #5608: MUST stay here, in the method that produces the rebased page. Re-running the compression on the page the
     // merge just re-derived is what makes compressPage's COVERAGE_ALL_MERGES declaration true rather than merely
     // plausible - a declaration that, without this call, would vouch for a defrag the rebase silently dropped.
-    // Pinned by Issue5608RebasedPageCompressionTest.
+    // Pinned by PageWriteCommitTest.
     //
     // The null-tolerant two-arg lookup, where rebaseSlots below simply reuses the bucket it already resolved, is not an
     // accident: THAT method needs its bucket to replay the slots at all, so it is non-null long before it compresses,
@@ -2975,7 +2975,7 @@ public class TransactionContext implements Transaction {
     // #5608: MUST stay here, in the method that produces the rebased page. A shrinking update or a delete replayed
     // above leaves a hole exactly as the original write did, and re-running the compression is what makes
     // compressPage's COVERAGE_ALL_MERGES declaration true rather than merely plausible (a declaration that, without
-    // this call, would vouch for a defrag the rebase silently dropped). Pinned by Issue5608RebasedPageCompressionTest.
+    // this call, would vouch for a defrag the rebase silently dropped). Pinned by PageWriteCommitTest.
     bucket.compressPage(committed, false);
 
     // Counted AFTER the compression, for the reason given at the end of rebaseEdgeAppends: only a merge that really

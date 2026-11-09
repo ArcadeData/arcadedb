@@ -26,7 +26,6 @@ import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -37,6 +36,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.IOException;
 import java.util.Map;
@@ -62,8 +62,11 @@ public class AlterDatabaseStatement extends DDLStatement {
 
     final String settingNameAsString = settingName.getStringValue();
     final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingNameAsString);
+    // A name no setting declares, or a setting this command cannot set, is the caller's mistake, refused as the IllegalArgumentException
+    // a value the setting cannot take is refused with below: the DatabaseOperationException it was answered as a server fault on
+    // every protocol (XX000 on the Postgres wire, issue #11384)
     if (cfg == null)
-      throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
+      throw new IllegalArgumentException("Database setting '" + settingNameAsString + "' not found");
 
     // ALTER DATABASE alters DATABASE settings. The key lookup above accepts any declared key, and this command
     // is gated only by the per-database UPDATE_DATABASE_SETTINGS permission - far below the server-admin check
@@ -73,14 +76,15 @@ public class AlterDatabaseStatement extends DDLStatement {
     // format of the entire server, and saved a SCOPE.SERVER setting into one database's configuration where
     // nothing would ever read it back.
     if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE)
-      throw new DatabaseOperationException(
+      throw new IllegalArgumentException(
           "Setting '" + settingNameAsString + "' has " + cfg.getScope() + " scope and cannot be set per database"
               + (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER ? ": use SET SERVER SETTING instead" : ""));
 
     // A database administrator holds updateDatabaseSettings for tuning. The settings that guard what a query may
     // reach (LOAD CSV remote/file access and the SSRF block list) are security controls: clearing the block list
     // turns the server into a proxy to its internal network, so they need the same privilege as the statements that
-    // fetch caller-supplied URLs or read local files (IMPORT DATABASE).
+    // fetch caller-supplied URLs or read local files (IMPORT DATABASE). So are the ones naming a directory the engine
+    // creates files in, which decide where on the host the server writes, like BACKUP DATABASE.
     if (cfg.isSecuritySensitive())
       db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
@@ -124,6 +128,12 @@ public class AlterDatabaseStatement extends DDLStatement {
       // result row and turn the write-ahead log OFF for this database - a durability hazard produced by a typo,
       // reported as a success, and saved to the database configuration.
       finalValue = cfg.coerceFromAdminCommand(finalValue);
+
+      // Refused here, before anything is stored, so the administrator learns it now and not at the first file the
+      // directory would get. The places that create the files check again: a value can reach a database another way.
+      if (cfg.isStorageDirectory() && finalValue != null)
+        cfg.checkDatabaseStorageDirectory(SystemVariableResolver.INSTANCE.resolveSystemVariables(finalValue.toString(), ""),
+            db.getDatabasePath());
 
       // A Class-typed setting is stored by NAME: the database configuration is a JSON document, and the name is
       // what ContextConfiguration.fromJSON reads back (issue #7163). The resolved class is kept for the
