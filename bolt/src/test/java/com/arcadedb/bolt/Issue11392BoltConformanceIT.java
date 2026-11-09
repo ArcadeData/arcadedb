@@ -201,6 +201,26 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
     }
   }
 
+  /**
+   * The deadline is the statement's, not RUN's: rows produced lazily while a PULL streams them run against it too, because the
+   * budget is captured by the statement's context when RUN builds it, before the override is cleared.
+   */
+  @Test
+  void aStreamedReadPastTheTransactionTimeoutIsStoppedDuringPull() throws Exception {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
+      bolt.sendMap(BoltMessage.BEGIN, Map.of("db", getDatabaseName(), "tx_timeout", 500L));
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.run("UNWIND range(1, 5000) AS a UNWIND range(1, 5000) AS b WITH a, b WHERE (a + b) % 3 = 0 RETURN a, b");
+      assertThat(bolt.readSummary().signature()).as("RUN answers before the rows are produced").isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.pull(-1, -1);
+      final BoltWireConnection.Summary stopped = bolt.readSummary();
+      assertThat(stopped.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(stopped.code()).isEqualTo(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR);
+      assertThat(stopped.records().size()).as("stopped part way, not after every row").isLessThan(25_000_000 / 3);
+    }
+  }
+
   /** An absurd tx_timeout is no timeout at all in practice: it must not overflow into a deadline already past. */
   @Test
   void aHugeTransactionTimeoutDoesNotExpireAtOnce() throws Exception {
