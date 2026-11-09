@@ -136,6 +136,12 @@ class Issue11447PlainFieldArgumentDefaultTest extends AbstractGraphQLTest {
           .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
 
       assertThat(names(database, "{ booksByRequiredName(name: \"Mr. brain\") { name } }", Map.of())).isEqualTo("Mr. brain");
+
+      // bound to a variable the caller gave no value, it is not provided either
+      final String viaVariable = "query q($n: String) { booksByRequiredName(name: $n) { name } }";
+      assertThatThrownBy(() -> names(database, viaVariable, Map.of()))
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
+      assertThat(names(database, viaVariable, Map.of("n", "Mr. brain"))).isEqualTo("Mr. brain");
       return null;
     });
   }

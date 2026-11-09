@@ -348,9 +348,16 @@ public class GraphQLSchema {
               + "so it cannot be filled from the variable '$" + variable.getName()
               + "': use a @sql directive with a bound parameter for a predicate that has to vary at runtime");
 
-        // BOUND TO A VARIABLE THE CALLER GAVE NO VALUE, IT TAKES THE DEFAULT: WITH NONE IT STAYS NULL (ISSUES #6834, #11447)
-        if (isBoundToOmittedVariable(queryArgument, variables) && hasDefaultValue(field, argName))
-          continue;
+        // BOUND TO A VARIABLE THE CALLER GAVE NO VALUE, IT TAKES THE DEFAULT: WITH NONE IT STAYS NULL WHEN NULLABLE (ISSUES #6834,
+        // #11447) AND IS AN ERROR WHEN NON-NULL, AS ON THE DIRECTIVE PATH
+        if (isBoundToOmittedVariable(queryArgument, variables)) {
+          final InputValueDefinition definition = argumentDefinition(field, argName);
+          if (definition != null) {
+            if (definition.getDefaultValue() != null)
+              continue;
+            checkNotRequired(definition);
+          }
+        }
         provided.add(argName);
 
         final Object argValue = resolveValue(argument, variables);
@@ -612,12 +619,12 @@ public class GraphQLSchema {
     return arguments;
   }
 
-  private static boolean hasDefaultValue(final FieldDefinition field, final String name) {
+  private static InputValueDefinition argumentDefinition(final FieldDefinition field, final String name) {
     if (field != null && field.getArgumentsDefinition() != null)
       for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions())
         if (name.equals(definition.getName().getValue()))
-          return definition.getDefaultValue() != null;
-    return false;
+          return definition;
+    return null;
   }
 
   private static void checkNotRequired(final InputValueDefinition definition) {
