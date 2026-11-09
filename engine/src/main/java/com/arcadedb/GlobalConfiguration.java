@@ -2602,8 +2602,11 @@ public enum GlobalConfiguration {
       every such entry decoded on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
       entries below the applied index. While the leader estimates that a follower is over the budget (applied index \
       reported by the follower, average entry size measured by the leader) it sends that follower heartbeats only, \
-      and resumes when the follower has caught up. Empty (the default) means a quarter of the maximum JVM heap, \
-      at least 32MB. 0 disables the back-pressure (issue #11458).""",
+      and resumes when the follower has caught up. It is a soft limit: the applied index reaches the leader with the \
+      5 s capability poll, so a follower can overshoot the budget during a burst between two polls, and the size of \
+      an entry is a running average, which understates a mix of a few huge entries among many small ones. Empty \
+      (the default) means a quarter of the maximum JVM heap, but never less than 32MB (on a very small heap that \
+      floor can exceed a quarter of it). 0 disables the back-pressure (issue #11458).""",
       String.class, ""),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
