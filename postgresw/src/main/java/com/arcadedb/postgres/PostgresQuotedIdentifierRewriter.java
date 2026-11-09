@@ -20,6 +20,9 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 
+import java.util.Locale;
+import java.util.Set;
+
 /**
  * Translates the lexical forms the ArcadeDB SQL lexer reads differently from PostgreSQL: double-quoted identifiers and
  * string literals.
@@ -46,12 +49,20 @@ import com.arcadedb.exception.CommandSQLParsingException;
  * ArcadeDB dialect, have no Postgres counterpart, and there the double quote keeps its ArcadeDB meaning of string
  * literal. A single-quoted literal keeps its ArcadeDB meaning inside a JSON object only: square brackets are also
  * PostgreSQL's (an {@code ARRAY['a', 'b']} constructor, a subscript), so a literal between them is read as PostgreSQL
- * reads it. Identifiers starting with {@code @} (such as {@code "@rid"}) are left untouched because ArcadeDB SQL
- * already understands that form as a record attribute.
+ * reads it. A double-quoted record attribute (such as {@code "@rid"}) is written bare, {@code @rid}, the form ArcadeDB SQL
+ * reads as the attribute; double-quoted, it was a string literal (issue #11392).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostgresQuotedIdentifierRewriter {
+  /**
+   * The record attributes the ArcadeDB SQL lexer has a token for ({@code THIS}, {@code RID_ATTR}, ... in {@code SQLLexer.g4}), lower
+   * case. Only these are written bare: any other {@code @name} is no token there, and {@code @ridfoo} would lex as {@code @rid}
+   * aliased {@code foo}.
+   */
+  private static final Set<String> RECORD_ATTRIBUTES = Set.of("@this", "@rid", "@rid_id", "@rid_pos", "@out", "@in", "@type",
+      "@props", "@cat");
+
 
   private PostgresQuotedIdentifierRewriter() {
   }
@@ -471,8 +482,15 @@ public class PostgresQuotedIdentifierRewriter {
       }
     }
 
+    if (closed && isRecordAttribute(identifier)) {
+      // A RECORD ATTRIBUTE ("@rid", "@type", ...) IS WRITTEN BARE, THE ONE FORM ARCADEDB SQL READS AS THE ATTRIBUTE: LEFT
+      // DOUBLE-QUOTED IT WAS THE STRING "@rid" ON EVERY ROW, AND pgjdbc ASKING FOR THE GENERATED KEY "@rid" GOT THAT (#11392)
+      out.append(identifier);
+      return i;
+    }
+
     if (!closed || identifier.isEmpty() || identifier.charAt(0) == '@') {
-      // UNTERMINATED, EMPTY OR RECORD ATTRIBUTE (E.G. "@rid"): LEAVE THE ORIGINAL TEXT UNCHANGED
+      // UNTERMINATED, EMPTY OR NOT A PLAIN ATTRIBUTE NAME AFTER THE @: LEAVE THE ORIGINAL TEXT UNCHANGED
       out.append(sql, start, i);
       return i;
     }
@@ -489,5 +507,11 @@ public class PostgresQuotedIdentifierRewriter {
     }
     out.append('`');
     return i;
+  }
+
+  /** Whether {@code identifier} is one of the {@link #RECORD_ATTRIBUTES}, in any case as the lexer reads them. */
+  private static boolean isRecordAttribute(final CharSequence identifier) {
+    return identifier.length() > 1 && identifier.charAt(0) == '@'
+        && RECORD_ATTRIBUTES.contains(identifier.toString().toLowerCase(Locale.ROOT));
   }
 }

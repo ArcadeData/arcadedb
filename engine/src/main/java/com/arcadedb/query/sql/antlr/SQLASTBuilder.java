@@ -5225,9 +5225,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.insertBody = (InsertBody) visit(insertCtx.insertBody());
     }
 
-    // RETURN clause
+    // RETURN clause, or PostgreSQL's trailing RETURNING (issue #11392): the same projection of the records inserted
     if (insertCtx.projection() != null) {
       stmt.returnStatement = (Projection) visit(insertCtx.projection());
+    }
+    if (insertCtx.returningClause() != null) {
+      if (stmt.returnStatement != null)
+        throw new CommandSQLParsingException("INSERT cannot have both RETURN and RETURNING: use one of them");
+      stmt.returnStatement = (Projection) visit(insertCtx.returningClause().projection());
     }
 
     // FROM SELECT clause
@@ -5375,6 +5380,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (updateCtx.projection() != null) {
         stmt.returnProjection = (Projection) visit(updateCtx.projection());
       }
+    }
+    // PostgreSQL's trailing RETURNING (issue #11392): the records as the update left them, RETURN AFTER
+    if (updateCtx.returningClause() != null) {
+      if (updateCtx.RETURN() != null)
+        throw new CommandSQLParsingException("UPDATE cannot have both RETURN and RETURNING: use one of them");
+      stmt.returnAfter = true;
+      stmt.returnProjection = (Projection) visit(updateCtx.returningClause().projection());
     }
 
     // WHERE clause
@@ -5587,6 +5599,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private void buildDeleteClauses(final DeleteStatement stmt, final SQLParser.DeleteStatementContext deleteCtx) {
     // RETURN BEFORE flag
     stmt.returnBefore = deleteCtx.RETURN() != null && deleteCtx.BEFORE() != null;
+    // PostgreSQL's trailing RETURNING (issue #11392): the records as they were before the delete, projected
+    if (deleteCtx.returningClause() != null) {
+      if (stmt.returnBefore)
+        throw new CommandSQLParsingException("DELETE cannot have both RETURN BEFORE and RETURNING: use one of them");
+      stmt.returnBefore = true;
+      stmt.returnProjection = (Projection) visit(deleteCtx.returningClause().projection());
+    }
 
     // WHERE clause
     if (deleteCtx.whereClause() != null) {

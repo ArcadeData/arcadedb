@@ -18,6 +18,8 @@
  */
 package com.arcadedb.mcp;
 
+import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -26,6 +28,8 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Methods;
+
+import java.util.logging.Level;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -53,12 +57,19 @@ public class MCPConfigHandler extends AbstractServerHttpHandler {
     if (Methods.POST.equals(exchange.getRequestMethod())) {
       if (payload == null)
         return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
+      // PERSIST-THEN-PUBLISH (issue #11390): A CONFIGURATION THAT COULD NOT BE WRITTEN IS NOT APPLIED EITHER, AND THE
+      // CLIENT IS TOLD SO. ANSWERING 200 WOULD REPORT AS IN FORCE A CHANGE THE NEXT START REVERTS TO THE EARLIER FILE
       try {
-        config.updateFrom(payload);
+        config.updateAndSave(payload);
       } catch (final IllegalArgumentException | JSONException e) {
         return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+      } catch (final ConfigurationException e) {
+        LogManager.instance().log(this, Level.SEVERE, "MCP configuration update refused: it could not be persisted", e);
+        // THE PATH AND THE OS ERROR GO TO THE SERVER LOG ABOVE, NOT TO THE CLIENT: THE ANSWER NAMES THE FILE AND WHAT DID NOT HAPPEN
+        return new ExecutionResponse(500, new JSONObject().put("error",
+            "The MCP configuration could not be saved to mcp-config.json in the server configuration directory, so it was not "
+                + "applied: the configuration in force is unchanged. See the server log for the cause").toString());
       }
-      config.save();
       return new ExecutionResponse(200, config.toJSON().toString());
     }
 

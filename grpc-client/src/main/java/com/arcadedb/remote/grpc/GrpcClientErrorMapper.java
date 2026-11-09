@@ -108,6 +108,9 @@ final class GrpcClientErrorMapper {
       case ABORTED -> new ConcurrentModificationException(msg);
       case DEADLINE_EXCEEDED -> new TimeoutException(msg);
       case PERMISSION_DENIED -> new SecurityException(msg);
+      // A refused or missing credential: the type the HTTP driver raises for its 401/403, and the one the admin service's
+      // UNAUTHENTICATED arm stands for (ArcadeDbGrpcAdminService), rather than a generic RemoteException (issue #11393)
+      case UNAUTHENTICATED -> new SecurityException(msg);
       case UNAVAILABLE -> new NeedRetryException(msg);
       default -> new RemoteException("gRPC error: " + msg, e);
     };

@@ -36,6 +36,7 @@ import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.UnknownFunctionException;
@@ -4577,6 +4578,9 @@ public class PostgresNetworkExecutor extends Thread {
    * missing table ({@code 42P01}), which is what it was told before.
    */
   private static String alreadyExistsSqlState(final Throwable error) {
+    // An index (or a constraint's index) that exists already under another name (issue #11392): an index is a relation
+    if (CauseChain.contains(error, EquivalentIndexException.class))
+      return "42P07";                                                         // duplicate_table
     final AlreadyExistsException taken = CauseChain.find(error, AlreadyExistsException.class);
     final AlreadyExistsException.Kind kind = taken != null ? taken.getKind() : null;
     if (kind == null)

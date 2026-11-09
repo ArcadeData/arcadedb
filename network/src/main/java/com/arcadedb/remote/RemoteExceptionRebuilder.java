@@ -37,6 +37,7 @@ import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.EncryptionException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -124,6 +125,7 @@ public final class RemoteExceptionRebuilder {
       // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)
       Map.entry(UnknownProcedureException.class.getName(), message -> new UnknownProcedureException(null, message)),
       Map.entry(IllegalArgumentException.class.getName(), IllegalArgumentException::new),
+      Map.entry(EquivalentIndexException.class.getName(), EquivalentIndexException::new),
       Map.entry(ValueOutOfRangeException.class.getName(), ValueOutOfRangeException::new),
       // A QUERY REFUSED FOR WHAT IT WOULD COST
       Map.entry(HeapLimitExceededException.class.getName(), HeapLimitExceededException::new),

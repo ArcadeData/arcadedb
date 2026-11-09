@@ -89,6 +89,10 @@ public final class BoltErrorCodes {
   // generic DatabaseError a driver reads as an unexplained server fault.
   public static final String TRANSACTION_TIMED_OUT_ERROR = "Neo.ClientError.Transaction.TransactionTimedOut";
 
+  // A write sent in a transaction or an auto-commit query the client opened in READ access mode (BEGIN or RUN with
+  // mode "r", what session.executeRead and a READ session send): refused before it runs, as Neo4j does (issue #11392).
+  public static final String ACCESS_MODE_ERROR = "Neo.ClientError.Statement.AccessMode";
+
   // The statement was stopped on request (TERMINATE TRANSACTIONS, "terminate query", issue #9689): what Neo4j answers
   // for a transaction a user killed. A ClientError since Neo4j 5, precisely so that no driver retries it.
   public static final String TRANSACTION_TERMINATED_ERROR = "Neo.ClientError.Transaction.Terminated";

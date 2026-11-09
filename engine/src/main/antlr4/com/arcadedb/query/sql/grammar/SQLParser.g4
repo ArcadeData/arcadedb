@@ -342,7 +342,10 @@ nestedProjectionItem
 /**
  * INSERT statement
  * INSERT INTO target [(fields)] VALUES (values) | SET field=value | CONTENT {...} | FROM query
- * [ON DUPLICATE KEY SKIP] [RETURN projection] [UNSAFE]
+ * [ON DUPLICATE KEY SKIP] [RETURN projection] [UNSAFE] [RETURNING projection]
+ *
+ * RETURNING (issue #11392) is PostgreSQL's spelling of RETURN, at the end of the statement where PostgreSQL writes it: what
+ * pgjdbc appends for RETURN_GENERATED_KEYS, and Hibernate IDENTITY, Spring KeyHolder and jOOQ rely on. The two cannot be combined.
  *
  * ON DUPLICATE KEY SKIP (issue #4918): a record whose unique-index key already exists is silently skipped
  * instead of aborting the whole batch - useful for bulk-inserting a CONTENT array where some rows may already
@@ -356,6 +359,15 @@ insertStatement
       (RETURN projection)?
       (FROM? (selectStatement | LPAREN selectStatement RPAREN))?
       UNSAFE?
+      returningClause?
+    ;
+
+/**
+ * RETURNING projection (issue #11392): PostgreSQL's trailing form of RETURN on INSERT, UPDATE and DELETE. The records as the
+ * statement left them for INSERT and UPDATE (RETURN AFTER), as they were before it for DELETE (RETURN BEFORE).
+ */
+returningClause
+    : RETURNING projection
     ;
 
 insertBody
@@ -378,6 +390,7 @@ jsonArray
  * UPDATE statement
  * UPDATE target [SET...] [ADD...] [PUT...] [REMOVE...] [INCREMENT...] [CONTENT...]
  * [UPSERT] [APPLY DEFAULTS] [RETURN BEFORE|AFTER|COUNT projection] [WHERE condition] [LIMIT n] [TIMEOUT n]
+ * [RETURNING projection]
  */
 updateStatement
     : UPDATE fromClause
@@ -389,6 +402,7 @@ updateStatement
       limit?
       (BATCH expression)?
       timeout?
+      returningClause?
     ;
 
 updateOperation
@@ -419,7 +433,7 @@ updateIncrementItem
 
 /**
  * DELETE statement
- * DELETE [VERTEX] FROM target [RETURN BEFORE] [WHERE condition] [LIMIT n] [UNSAFE]
+ * DELETE [VERTEX] FROM target [RETURN BEFORE] [WHERE condition] [LIMIT n] [UNSAFE] [RETURNING projection]
  */
 deleteStatement
     : DELETE VERTEX?
@@ -429,6 +443,7 @@ deleteStatement
       limit?
       (BATCH expression)?
       UNSAFE?
+      returningClause?
     ;
 
 /**
@@ -1944,4 +1959,5 @@ identifier
     | FIXED
     | TIMEZONE
     | BOUNDS
+    | RETURNING
     ;

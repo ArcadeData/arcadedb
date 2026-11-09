@@ -169,6 +169,8 @@ public enum ErrorCategory {
       new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
       // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
       new Rule(AlreadyExistsException.class, ALREADY_EXISTS),
+      // before IllegalArgumentException, which it extends: the definition asked for exists already (issue #11392)
+      new Rule(EquivalentIndexException.class, ALREADY_EXISTS),
       new Rule(RecordNotFoundException.class, NOT_FOUND),
       new Rule(SchemaException.class, SCHEMA),
       new Rule(SecurityException.class, SECURITY),

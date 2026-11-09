@@ -1186,16 +1186,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
           drained = true;
           return false;
-        } catch (StatusRuntimeException | StatusException e) {
-          handleGrpcException(e);
-          throw new IllegalStateException("unreachable");
-        } catch (InterruptedException ie) {
-          Thread.currentThread().interrupt();
-          throw new RuntimeException("Stream interrupted", ie);
-        } catch (RuntimeException re) {
-          throw re;
-        } catch (Exception e) {
-          throw new RuntimeException("Stream failed", e);
+        } catch (final Exception e) {
+          throw streamReadFailure(e);
         }
       }
 
@@ -1250,16 +1242,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             // else loop to fetch next batch (handles empty batches)
           }
           return false;
-        } catch (StatusRuntimeException | StatusException e) {
-          handleGrpcException(e);
-          throw new IllegalStateException("unreachable");
-        } catch (InterruptedException ie) {
-          Thread.currentThread().interrupt();
-          throw new RuntimeException("Stream interrupted", ie);
-        } catch (RuntimeException re) {
-          throw re;
-        } catch (Exception e) {
-          throw new RuntimeException("Stream failed", e);
+        } catch (final Exception e) {
+          throw streamReadFailure(e);
         }
       }
 
@@ -2143,15 +2127,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         }
 
         try {
-          if (responseIterator.hasNext()) {
-
-            QueryResult result;
-            result = responseIterator.read();
-            currentBatch = result.getRecordsList().iterator();
-            return currentBatch.hasNext();
+          while (responseIterator.hasNext()) {
+            currentBatch = responseIterator.read().getRecordsList().iterator();
+            if (currentBatch.hasNext())
+              return true;
+            // AN EMPTY BATCH IS NOT THE END OF THE STREAM: ONLY THE SERVER CLOSING IT IS
           }
-        } catch (InterruptedException | StatusException e) {
-          throw new RuntimeException(e);
+        } catch (final Exception e) {
+          throw streamReadFailure(e);
         }
 
         return false;
@@ -2249,18 +2232,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   /** {@code typeName} must already be confirmed to exist client-side - see the {@code existsType()} check above. */
   private String mapRecordType(final String typeName) {
-    try {
-      final Object type = getSchema().getType(typeName);
-      return switch (type) {
-        case VertexType v -> "v";
-        case EdgeType e -> "e";
-        case DocumentType d -> "d";
-        default -> null;
-      };
-
-    } catch (Exception e) {
-      throw new RuntimeException(e);
-    }
+    // NOT WRAPPED: A FAILED SCHEMA READ KEEPS ITS OWN TYPE (A SchemaException, A MAPPED REMOTE FAILURE), AS EVERY OTHER CALL
+    // OF THIS DRIVER DOES (ISSUE #11393)
+    final Object type = getSchema().getType(typeName);
+    return switch (type) {
+      case VertexType v -> "v";
+      case EdgeType e -> "e";
+      case DocumentType d -> "d";
+      default -> null;
+    };
   }
 
   private Map<String, GrpcValue> convertParamsToGrpcValue(final Map<String, Object> params) {
@@ -2307,6 +2287,26 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private static RuntimeException mapStreamError(final Throwable t, final String opName, final boolean appliesWrites) {
     return appliesWrites ? GrpcClientErrorMapper.toStreamingWriteException(t, opName) : GrpcClientErrorMapper.toException(t);
+  }
+
+  /**
+   * What a failed read of a server stream surfaces as, the one translation every streaming iterator of this driver shares
+   * (issue #11393): a failure the server or the transport reported is the engine exception the same status maps to from a
+   * unary call ({@link GrpcClientErrorMapper}) - a {@link TimeoutException} for a deadline, a
+   * {@link SecurityException} for a permission change, and so on - whichever batch it arrived on; an interrupt keeps the
+   * thread's interrupt flag set for the caller to see. The first read is mapped by {@code callServerStreaming}, so it is the
+   * second and later batches this is for.
+   */
+  RuntimeException streamReadFailure(final Exception e) {
+    if (e instanceof StatusRuntimeException || e instanceof StatusException)
+      return GrpcClientErrorMapper.toException(e);
+    if (e instanceof InterruptedException) {
+      Thread.currentThread().interrupt();
+      return new RemoteException("Stream interrupted", e);
+    }
+    if (e instanceof RuntimeException runtime)
+      return runtime;
+    return new RemoteException("Stream failed", e);
   }
 
   void handleGrpcException(Throwable e) {
