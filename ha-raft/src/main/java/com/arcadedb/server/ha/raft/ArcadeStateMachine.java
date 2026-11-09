@@ -1004,16 +1004,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // refused by the guard below, and a cascade of follow-on failures would otherwise overwrite the cause.
   private final AtomicReference<CriticalHalt> haltedAfterCriticalError = new AtomicReference<>();
 
-  /** Exit status of the JVM halt that follows a {@link VirtualMachineError} in the apply path (issue #11456). */
+  /** Exit status of the JVM halt that follows an OutOfMemoryError or InternalError in the apply path (issue #11456). */
   private static final int FATAL_ERROR_EXIT_STATUS = 1;
 
-  /** How long the emergency stop gets to finish after a {@link VirtualMachineError} before the JVM is halted (issue #11456). */
-  private volatile long      fatalErrorGraceMillis = 30_000L;
-  private volatile Runnable  emergencyStop         = () -> {
+  /** How long the emergency stop gets to finish after an OutOfMemoryError or InternalError before the JVM is halted (issue #11456). */
+  private volatile long        fatalErrorGraceMillis = 30_000L;
+  private volatile Runnable    emergencyStop         = () -> {
     if (server != null)
       server.stop();
   };
-  private volatile IntConsumer jvmHalter           = status -> Runtime.getRuntime().halt(status);
+  private volatile IntConsumer jvmHalter             = status -> Runtime.getRuntime().halt(status);
 
   /**
    * What tripped the node-wide critical halt (issue #7872).
@@ -2317,7 +2317,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code compareAndSet} keeps the FIRST cause: it is the one that explains the halt, and every apply after it
    * is refused by the guard in {@code applyTransaction} rather than being a new problem.
    * <p>
-   * When the cause is a {@link VirtualMachineError} (an {@link OutOfMemoryError} above all, issue #11456) the JVM is
+   * When the cause is an {@link OutOfMemoryError} or an {@link InternalError} (issue #11456; a {@link StackOverflowError} is
+   * recoverable and does not qualify) the JVM is
    * halted once the stop returns or {@link #fatalErrorGraceMillis} has passed, whichever comes first. A graceful stop
    * on an exhausted heap can hang (the Ratis service closes against a heap it cannot allocate from), and the node
    * would stay half alive: HTTP up, state machine dead, nothing for an orchestrator to restart. The Raft log and the
@@ -2329,7 +2330,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void triggerCriticalHalt(final long index, final String reason, final Throwable cause) {
     haltedAfterCriticalError.compareAndSet(null, new CriticalHalt(index, reason, System.currentTimeMillis()));
-    final boolean fatal = isVirtualMachineError(cause);
+    final boolean fatal = isUnrecoverableJvmError(cause);
     try {
       final Thread stopThread = new Thread(() -> {
         try {
@@ -2370,10 +2371,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     jvmHalter.accept(FATAL_ERROR_EXIT_STATUS);
   }
 
-  private static boolean isVirtualMachineError(final Throwable cause) {
+  private static boolean isUnrecoverableJvmError(final Throwable cause) {
     Throwable t = cause;
     for (int depth = 0; t != null && depth < 8; depth++, t = t.getCause())
-      if (t instanceof VirtualMachineError)
+      if (t instanceof OutOfMemoryError || t instanceof InternalError)
         return true;
     return false;
   }

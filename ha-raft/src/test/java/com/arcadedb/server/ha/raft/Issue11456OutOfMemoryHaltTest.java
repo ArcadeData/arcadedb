@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Regression test for issue #11456: a follower catching up a large backlog ran out of heap, its Raft apply thread died on the
  * {@link OutOfMemoryError} and the node stayed half alive, hung in a shutdown that could not allocate what it needed to finish.
- * The critical halt must end the JVM when the cause is a {@link VirtualMachineError}, whether or not the graceful stop returns,
+ * The critical halt must end the JVM when the cause is a {@link OutOfMemoryError}, whether or not the graceful stop returns,
  * and must leave the JVM alone for every other cause.
  */
 class Issue11456OutOfMemoryHaltTest {
@@ -123,6 +123,22 @@ class Issue11456OutOfMemoryHaltTest {
   }
 
   @Test
+  void aRecoverableStackOverflowDoesNotHaltTheJvm() throws Exception {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final CountDownLatch stopped = new CountDownLatch(1);
+    final AtomicInteger halts = new AtomicInteger();
+    sm.setEmergencyStopForTesting(stopped::countDown);
+    sm.setJvmHalterForTesting(s -> halts.incrementAndGet());
+    sm.setFatalErrorGraceMillisForTesting(50L);
+
+    sm.applyTransaction(failingContext(sm, new StackOverflowError()));
+
+    assertThat(stopped.await(30, TimeUnit.SECONDS)).isTrue();
+    Thread.sleep(500L);
+    assertThat(halts.get()).as("a StackOverflowError is recoverable").isZero();
+  }
+
+  @Test
   void anOrdinaryCriticalErrorStopsTheServerButLeavesTheJvmAlone() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     final CountDownLatch stopped = new CountDownLatch(1);
@@ -137,6 +153,6 @@ class Issue11456OutOfMemoryHaltTest {
     assertThat(sm.isHaltedAfterCriticalError()).isTrue();
     // A negative that has to wait: well past the 50ms grace a fatal cause would have halted within
     Thread.sleep(500L);
-    assertThat(halts.get()).as("only a VirtualMachineError halts the JVM").isZero();
+    assertThat(halts.get()).as("only an OutOfMemoryError or InternalError halts the JVM").isZero();
   }
 }
