@@ -6983,7 +6983,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private int validateChainReadAgainstOneCommit(final long[] chainTrace, final int chunks, final Binary record,
                                                 final long lastNextChunkPointer, final long headMarker) throws IOException {
     final PageManager pageManager = database.getPageManager();
-    final long sequence = pageManager.getPublicationSequence();
+    // #11455: WAIT OUT A PUBLICATION IN FLIGHT BEFORE VALIDATING, AS validateAgainstOneCommit DOES. A REPLICA UNDER WRITE LOAD
+    // ALWAYS HAS ONE OPEN, AND WITHOUT THE WAIT EVERY ATTEMPT FAILED AT ONCE ON THE ODD SEQUENCE, SO THE WHOLE RETRY BUDGET WAS SPENT
+    // IN MICROSECONDS ON AN APPLY THAT TAKES MILLISECONDS, AND THE READ FAILED WITH A CONCURRENT MODIFICATION ON A RECORD NOBODY HAD
+    // TOUCHED
+    final long sequence = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
     final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
     if (verdict == CHAIN_READ_CHANGED || ((sequence & 1) == 0 && pageManager.getPublicationSequence() == sequence))
       return verdict;
