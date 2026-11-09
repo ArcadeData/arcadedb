@@ -224,7 +224,11 @@ public final class ColumnarTestData {
         end = Math.min(end, (done / placeholderEvery + 1) * placeholderEvery);
       final int from = done;
       final int to = end;
+      final Bookkeeping before = bookkeeping();
       db.transaction(() -> {
+        // the block runs again on a retry (a concurrent modification, a replication hiccup): drop what a rolled back attempt left
+        restore(before);
+        inserted.subList(from, inserted.size()).clear();
         for (int i = from; i < to; i++)
           inserted.add(insert(db));
       });
@@ -244,7 +248,10 @@ public final class ColumnarTestData {
     int done = 0;
     while (done < operations) {
       final int batch = Math.min(MUTATION_BATCH, operations - done);
+      final Bookkeeping before = bookkeeping();
       db.transaction(() -> {
+        // the block runs again on a retry: the rolled back attempt must not leave its deletes or inserts in the live set
+        restore(before);
         for (; pendingReuseInserts > 0; pendingReuseInserts--)
           insert(db);
         for (int i = 0; i < batch; i++)
@@ -257,6 +264,21 @@ public final class ColumnarTestData {
         for (; pendingReuseInserts > 0; pendingReuseInserts--)
           insert(db);
       });
+  }
+
+  /** What a transaction block changes outside the database, kept so a retried attempt starts from the committed state. */
+  private record Bookkeeping(List<RID> live, long generated, int pendingReuseInserts) {
+  }
+
+  private Bookkeeping bookkeeping() {
+    return new Bookkeeping(new ArrayList<>(live), generated, pendingReuseInserts);
+  }
+
+  private void restore(final Bookkeeping state) {
+    live.clear();
+    live.addAll(state.live());
+    generated = state.generated();
+    pendingReuseInserts = state.pendingReuseInserts();
   }
 
   private void mutateOne(final Database db) {

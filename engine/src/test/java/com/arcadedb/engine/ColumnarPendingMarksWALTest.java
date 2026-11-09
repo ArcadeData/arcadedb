@@ -135,7 +135,10 @@ class ColumnarPendingMarksWALTest extends TestHelper {
     };
 
     final ExecutorService committer = Executors.newSingleThreadExecutor();
+    final ExecutorService holder = Executors.newSingleThreadExecutor();
+    final CountDownLatch resumeFlush = new CountDownLatch(1);
     try {
+      final Future<?> flushHeld = holdPageFlush(holder, resumeFlush);
       final Future<?> commit = committer.submit(() -> database.transaction(() -> database.newDocument("Asset").set("brand", "a").save()));
       // a hang detector, not a latency bound
       assertThat(paused.await(30, TimeUnit.SECONDS)).isTrue();
@@ -162,6 +165,8 @@ class ColumnarPendingMarksWALTest extends TestHelper {
       final File targetFile = new File(target.getFilePath());
 
       // the published pages reach the disk: only the pending second mark protects the file now
+      resumeFlush.countDown();
+      flushHeld.get(30, TimeUnit.SECONDS);
       for (int i = 0; i < 30_000 && target.getPendingPagesToFlush() > 0; i++)
         Thread.sleep(1);
       assertThat(target.getPendingPagesToFlush()).isZero();
@@ -206,7 +211,10 @@ class ColumnarPendingMarksWALTest extends TestHelper {
     };
 
     final ExecutorService committer = Executors.newSingleThreadExecutor();
+    final ExecutorService holder = Executors.newSingleThreadExecutor();
+    final CountDownLatch resumeFlush = new CountDownLatch(1);
     try {
+      holdPageFlush(holder, resumeFlush);
       final Future<?> commit = committer.submit(() -> database.transaction(() -> database.newDocument("Asset").set("brand", "a").save()));
       // a hang detector, not a latency bound
       assertThat(paused.await(30, TimeUnit.SECONDS)).isTrue();
@@ -220,10 +228,30 @@ class ColumnarPendingMarksWALTest extends TestHelper {
       commit.get(30, TimeUnit.SECONDS);
     } finally {
       release.countDown();
+      resumeFlush.countDown();
       committer.shutdownNow();
+      holder.shutdown();
     }
   }
 
+
+  /**
+   * Keeps the page flush thread off the pages the next commit publishes. The flush of a published page waits for its group commit's
+   * WAL record to be durable and makes it so, which would race the test's own look at the still queued record.
+   */
+  private Future<?> holdPageFlush(final ExecutorService holder, final CountDownLatch resume) throws Exception {
+    final CountDownLatch held = new CountDownLatch(1);
+    final Future<?> hold = holder.submit(() -> {
+      ((DatabaseInternal) database).getPageManager().suspendFlushAndExecute(database, () -> {
+        held.countDown();
+        resume.await();
+      });
+      return null;
+    });
+    // a hang detector, not a latency bound
+    assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
+    return hold;
+  }
 
   private TransactionManager tm() {
     return ((DatabaseInternal) database).getTransactionManager();
