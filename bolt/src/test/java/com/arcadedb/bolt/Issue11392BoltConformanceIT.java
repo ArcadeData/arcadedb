@@ -239,8 +239,12 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
     }
   }
 
-  /** A statement the engine's command timeout is checked in, long enough to run for seconds without one. */
-  private static final String LONG_QUERY = "UNWIND range(1, 50000000) AS x WITH x WHERE x % 7 = 0 RETURN count(x) AS c";
+  /**
+   * A statement the engine's command timeout is checked in, long enough to run for seconds without one: 25M rows, from two ranges
+   * each well under arcadedb.queryMaxRangeSize, which refuses a single range of that size before it runs.
+   */
+  private static final String LONG_QUERY =
+      "UNWIND range(1, 5000) AS a UNWIND range(1, 5000) AS b WITH a, b WHERE (a + b) % 7 = 0 RETURN count(*) AS c";
 
   private Driver driver() {
     return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
