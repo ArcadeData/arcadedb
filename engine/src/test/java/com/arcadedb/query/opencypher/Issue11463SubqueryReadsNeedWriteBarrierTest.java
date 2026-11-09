@@ -256,6 +256,45 @@ class Issue11463SubqueryReadsNeedWriteBarrierTest {
       assertThat(((Number) row.getProperty("c")).longValue()).isEqualTo(1L);
   }
 
+  /** A read nested two levels deep (a COUNT inside an EXISTS inside a CALL inside a CALL) joins the footprint too. */
+  @Test
+  void deeplyNestedSubqueryReadIsARead() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:X), (:A), (:H)").close());
+    final String query = """
+        UNWIND range(1, 150) AS i
+        CALL (i) {
+          CALL (i) {
+            MATCH (x:X) WHERE EXISTS { MATCH (a:A) WHERE COUNT { MATCH (:H) } = 1 }
+            RETURN i AS j
+          }
+          RETURN j
+        }
+        MERGE (:H {id: i})
+        RETURN j""";
+
+    assertThat(explain(query)).contains(EAGER);
+    assertThat(run(query)).hasSize(150);
+    assertThat(countOf("H")).isEqualTo(151L);
+  }
+
+  /** The relationship a quantified path pattern repeats is a read of its type: a later write of that type needs the barrier. */
+  @Test
+  void quantifiedPathPatternInCallBodyIsARead() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Q)-[:S]->(:Q)").close());
+    final String query = """
+        UNWIND range(1, 150) AS i
+        CALL (i) { MATCH (:Q) ((:Q)-[:S]->(:Q)){1,2} (:Q) RETURN count(*) AS c }
+        MERGE (:Q {id: i})-[:S]->(:Q {id: -i})
+        RETURN c""";
+
+    assertThat(explain(query)).contains(EAGER);
+    final List<Result> rows = run(query);
+    assertThat(rows).hasSize(150);
+    final Object first = rows.getFirst().getProperty("c");
+    for (final Result row : rows)
+      assertThat((Object) row.getProperty("c")).isEqualTo(first);
+  }
+
   /** A write the subquery's reads cannot match keeps streaming: no barrier is planned for it. */
   @Test
   void unrelatedWriteKeepsStreaming() {

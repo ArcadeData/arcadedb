@@ -82,9 +82,8 @@ import java.util.Set;
  * unlabelled node pattern and an untyped relationship pattern raise - and compares each write clause's
  * own shape against it. A MATCH is not the only clause that reads the graph once per row: so do the MATCH clauses of a
  * {@code CALL { ... }} body, the {@code EXISTS} / {@code COUNT} / {@code COLLECT} subqueries and the pattern predicates
- * and comprehensions of any clause, and their patterns join the same footprint (issue #11463). The analyzer compares each
- * write clause's
- * own shape against it. That comparison is what keeps the barrier off the shapes that do not need it:
+ * and comprehensions of any clause, and their patterns join the same footprint (issue #11463). Comparing shapes is what
+ * keeps the barrier off the shapes that do not need it:
  * {@code UNWIND range(1, 1000000) AS i CREATE (:Log {i: i})} reads nothing, and
  * {@code MATCH (a)-[:KNOWS]->(b) CREATE (a)-[:SCORED]->(b)} writes a type no pattern reads, so both keep
  * their streaming, bounded-memory profile. A write procedure is opaque - it can create anything - so it
@@ -142,6 +141,8 @@ public final class CypherEagernessAnalyzer {
   // Whether observeClause() collects anything: what it collects is read only to weigh a property write against, and a statement
   // with no write clause has none, so for it the walk of every clause's expressions is pure planning cost (issue #11323)
   private final boolean             tracksPropertyReads;
+  // The collector of a clause that writes no pattern, which is most of them: created on the first walk and shared (issue #11463)
+  private       GraphReadCollector  patternReadCollector;
 
   /** An analyzer that weighs every write it is asked about: the shape of a statement it is not told about. */
   public CypherEagernessAnalyzer() {
@@ -205,7 +206,7 @@ public final class CypherEagernessAnalyzer {
     }
     // The walk hands over the clause's own patterns and, besides them, what its WHERE and its inline predicates read through an
     // EXISTS / COUNT / COLLECT subquery or a pattern predicate (issue #11463)
-    final GraphReadCollector reads = new GraphReadCollector(List.of());
+    final GraphReadCollector reads = collectorFor(List.of());
     for (final PathPattern pathPattern : matchClause.getPathPatterns())
       CypherExpressionWalker.walk(pathPattern, reads);
     if (matchClause.hasWhereClause() && matchClause.getWhereClause().getConditionExpression() != null)
@@ -243,7 +244,15 @@ public final class CypherEagernessAnalyzer {
    */
   private void observeEmbeddedReads(final ClauseEntry entry) {
     if (entry.getType() != ClauseEntry.ClauseType.MATCH)
-      CypherExpressionWalker.walk(entry, new GraphReadCollector(ownWritePatterns(entry)));
+      CypherExpressionWalker.walk(entry, collectorFor(ownWritePatterns(entry)));
+  }
+
+  private GraphReadCollector collectorFor(final List<PathPattern> writePatterns) {
+    if (!writePatterns.isEmpty())
+      return new GraphReadCollector(writePatterns);
+    if (patternReadCollector == null)
+      patternReadCollector = new GraphReadCollector(List.of());
+    return patternReadCollector;
   }
 
   /** The patterns a clause writes, as opposed to the patterns its expressions read. */
@@ -289,7 +298,7 @@ public final class CypherEagernessAnalyzer {
     @Override
     public CypherExpressionWalker.Visitor forClauseEntry(final ClauseEntry entry) {
       final List<PathPattern> written = ownWritePatterns(entry);
-      return written.isEmpty() && writePatterns.isEmpty() ? this : new GraphReadCollector(written);
+      return written.isEmpty() && writePatterns.isEmpty() ? this : collectorFor(written);
     }
   }
 
