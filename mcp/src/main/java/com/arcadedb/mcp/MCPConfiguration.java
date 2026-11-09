@@ -68,21 +68,23 @@ public class MCPConfiguration implements MCPPermissions {
 
   private final Path configDirectory;
 
-  private volatile boolean      enabled          = false;
-  private volatile boolean      allowReads       = true;
-  private volatile boolean      allowInsert      = false;
-  private volatile boolean      allowUpdate      = false;
-  private volatile boolean      allowDelete      = false;
-  private volatile boolean      allowSchemaChange = false;
-  private volatile boolean      allowAdmin        = false;
-  private volatile List<String> allowedUsers     = defaultAllowedUsers();
-  private volatile Map<String, DatabaseOverride> databaseOverrides = Map.of();
-  private volatile ToolProfile  toolProfile      = ToolProfile.ALL;
-  private volatile Map<String, ToolProfile> principalProfiles = Map.of();
+  // Every default is assigned by resetToDefaults(), which the constructor calls: a rejected load and a fresh instance
+  // share one definition of the defaults and cannot drift apart.
+  private volatile boolean                       enabled;
+  private volatile boolean                       allowReads;
+  private volatile boolean                       allowInsert;
+  private volatile boolean                       allowUpdate;
+  private volatile boolean                       allowDelete;
+  private volatile boolean                       allowSchemaChange;
+  private volatile boolean                       allowAdmin;
+  private volatile List<String>                  allowedUsers;
+  private volatile Map<String, DatabaseOverride> databaseOverrides;
+  private volatile ToolProfile                   toolProfile;
+  private volatile Map<String, ToolProfile>      principalProfiles;
   // Extra browser origins accepted by the HTTP transport, on top of always-allowed loopback origins.
   // Empty by default: a non-loopback browser page must be opted in explicitly, because deriving trust
   // from its Host header would not prevent DNS rebinding.
-  private volatile List<String> allowedOrigins   = new CopyOnWriteArrayList<>();
+  private volatile List<String>                  allowedOrigins;
 
   public MCPConfiguration(final String rootPath) {
     this(Paths.get(rootPath, "config"));
@@ -93,14 +95,20 @@ public class MCPConfiguration implements MCPPermissions {
    */
   public MCPConfiguration(final Path configDirectory) {
     this.configDirectory = configDirectory;
+    resetToDefaults();
   }
 
   /**
    * Loads the configuration file all or nothing: every field is parsed and validated into a local before the first one
    * is assigned, as {@link #updateFrom(JSONObject)} does. A file that cannot be read or parsed leaves every setting at
    * its default, MCP disabled included, which is exactly what the warning reports. The rejected file is not rewritten,
-   * so the operator can fix it. {@link #resetToDefaults()} must stay in step with the field initializers: the tests
-   * compare a rejected load against a fresh instance.
+   * so the operator can fix it.
+   * <p>
+   * An absent or explicitly {@code null} {@code allowedUsers} / {@code allowedOrigins} loads the default list here,
+   * while {@link #updateFrom(JSONObject)} reads an explicit {@code null} as "clear the list". The difference is
+   * deliberate: {@link #save()} never writes {@code null}, so in a file it can only be a hand edit, and the file
+   * describes the whole configuration rather than a change to the one in force. A change that unifies the two paths
+   * changes the access list such a file loads, so it must pick one meaning explicitly (the tests pin both).
    */
   public synchronized void load() {
     final File configFile = getConfigFile();

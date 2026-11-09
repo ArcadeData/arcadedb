@@ -662,6 +662,26 @@ class MCPConfigurationTest {
     assertThat(loaded.getAllowedOrigins()).containsExactly("https://app.example.com");
   }
 
+  /**
+   * In a file an explicit {@code null} list means "use the default", unlike {@link MCPConfiguration#updateFrom} where it
+   * clears the list (see {@code updateFromNullAllowedUsersResultsInEmptyList}).
+   */
+  @Test
+  void nullListsInFileLoadTheDefaults() throws Exception {
+    writeConfigFile(new JSONObject()
+        .put("enabled", true)
+        .put("allowedUsers", (Object) null)
+        .put("allowedOrigins", (Object) null)
+        .toString());
+
+    final MCPConfiguration loaded = new MCPConfiguration(TEST_ROOT);
+    loaded.load();
+
+    assertThat(loaded.isEnabled()).isTrue();
+    assertThat(loaded.getAllowedUsers()).containsExactly("root");
+    assertThat(loaded.getAllowedOrigins()).isEmpty();
+  }
+
   private static JSONObject permissiveFile() {
     return new JSONObject()
         .put("enabled", true)
