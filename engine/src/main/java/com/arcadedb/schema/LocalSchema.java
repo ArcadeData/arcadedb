@@ -3208,8 +3208,24 @@ public class LocalSchema implements Schema {
     }
 
     if (materializedViewScheduler != null) {
-      materializedViewScheduler.shutdown();
+      final List<MaterializedViewImpl> droppedRefreshes = materializedViewScheduler.shutdown();
       materializedViewScheduler = null;
+      // A refresh a committer handed to the scheduler and the shutdown dropped before it ran (issue #11464): that committer has
+      // returned, so the view would reopen as VALID without the change. Say so, and persist it
+      if (!droppedRefreshes.isEmpty()) {
+        for (final MaterializedViewImpl dropped : droppedRefreshes) {
+          dropped.setStatus(MaterializedViewStatus.STALE);
+          dropped.endRefresh();
+        }
+        if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+          try {
+            writeNextGeneration();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error saving the STALE status of %d materialized views on close: %s", e,
+                droppedRefreshes.size(), e.getMessage());
+          }
+        }
+      }
     }
 
     if (timeSeriesMaintenanceScheduler != null) {
