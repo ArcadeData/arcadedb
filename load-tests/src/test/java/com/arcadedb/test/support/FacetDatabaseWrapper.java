@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.support;
 
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.facet.FacetResults;
@@ -274,11 +275,28 @@ public class FacetDatabaseWrapper implements AutoCloseable {
     DatabaseWrapper.createDatabase(server);
   }
 
-  public void createSchema() {
+  public void createSchema() throws InterruptedException {
     for (final String ddl : FacetSchema.DDL)
+      commandOnceDatabaseExists(ddl);
+  }
+
+  /**
+   * Runs {@code ddl}, retrying while this node answers that the database does not exist: the leader committed its creation, but a
+   * follower's state machine may not have applied it when the first command arrives. Nothing ran when that answer comes back, so the
+   * retry cannot repeat a statement.
+   */
+  private void commandOnceDatabaseExists(final String ddl) throws InterruptedException {
+    final int maxAttempts = 30;
+    for (int attempt = 1; ; attempt++) {
       try (final ResultSet ignored = db.command("sql", ddl)) {
-        // the statement ran
+        return;
+      } catch (final DatabaseNotFoundException e) {
+        if (attempt == maxAttempts)
+          throw e;
+        logger.info("Database not yet created on {} (attempt {}/{}), retrying in 2s", describe(), attempt, maxAttempts);
+        Thread.sleep(2_000);
       }
+    }
   }
 
   /**

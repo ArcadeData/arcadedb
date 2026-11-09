@@ -144,6 +144,11 @@ class TestSortedIndexBuildBenchmark {
       builder.withType(Schema.INDEX_TYPE.LSM_TREE);
       builder.withBuildMode(mode);
       builder.withUnique(false);
+      if (mode == IndexBuildMode.DEFAULT)
+        // A DEFAULT build of a large NOTUNIQUE type is promoted to the sorted build on its own (#10267), which would turn
+        // this control into the sorted build and leave nothing to compact. 0 switches the promotion off, so the control
+        // stays the record-at-a-time build the benchmark compares against.
+        database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS, 0L);
       builder.withCallback((document, total) -> scannedEntries.set(total));
       if (mode == IndexBuildMode.SORTED)
         builder.withBuildMemoryBudget(SORTED_MEMORY_BUDGET).withBuildMergeFanIn(SORTED_MERGE_FAN_IN);

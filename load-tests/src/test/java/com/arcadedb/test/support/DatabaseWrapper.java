@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.support;
 
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -186,7 +187,8 @@ public class DatabaseWrapper {
       } catch (final Exception e) {
         if (attempt == maxAttempts)
           throw e;
-        if (!e.getMessage().contains("not available")) {
+        // "does not exist": a follower that has not applied the database creation yet answers 404 for the first command
+        if (!e.getMessage().contains("not available") && !(e instanceof DatabaseNotFoundException)) {
           logger.warn("Schema creation failed with unexpected error on attempt {}: {}", attempt, e.getMessage());
           throw e;
         }

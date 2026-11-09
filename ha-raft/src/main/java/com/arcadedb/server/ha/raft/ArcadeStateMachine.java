@@ -131,6 +131,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -1002,6 +1003,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Set with compareAndSet so the FIRST halt is the one recorded, like raftLogFailure: every later apply is
   // refused by the guard below, and a cascade of follow-on failures would otherwise overwrite the cause.
   private final AtomicReference<CriticalHalt> haltedAfterCriticalError = new AtomicReference<>();
+
+  /** Exit status of the JVM halt that follows an OutOfMemoryError or InternalError in the apply path (issue #11456). */
+  private static final int FATAL_ERROR_EXIT_STATUS = 1;
+
+  /** How long the emergency stop gets to finish after an OutOfMemoryError or InternalError before the JVM is halted (issue #11456). */
+  private volatile long        fatalErrorGraceMillis = 30_000L;
+  private volatile Runnable    emergencyStop         = () -> {
+    if (server != null)
+      server.stop();
+  };
+  private volatile IntConsumer jvmHalter             = status -> Runtime.getRuntime().halt(status);
 
   /**
    * What tripped the node-wide critical halt (issue #7872).
@@ -2070,7 +2082,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "Refusing to skip a committed entry and halting to prevent silent state divergence; "
                 + "upgrade this node to a compatible version to resume.", index);
         triggerCriticalHalt(index, "unknown Raft log entry type, most likely written by a newer node version; "
-            + "upgrade this node to a version that understands it");
+            + "upgrade this node to a version that understands it", null);
         return CompletableFuture.failedFuture(new ReplicationException(
             "Unknown Raft log entry type at index " + index + "; node halted to prevent silent divergence"));
       }
@@ -2271,7 +2283,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return CompletableFuture.failedFuture(quarantined);
       } catch (final RuntimeException fatal) {
         triggerCriticalHalt(index, "a committed entry of type " + e.getType() + " could not be decoded and the "
-            + "envelope named no database to quarantine instead: " + e.getMessage());
+            + "envelope named no database to quarantine instead: " + e.getMessage(), null);
         return CompletableFuture.failedFuture(fatal);
       }
       // handleUnexpectedApplyError always throws; unreachable, but the compiler needs a value.
@@ -2283,7 +2295,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           """
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
-      triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e);
+      triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e, e);
       return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
   }
@@ -2304,22 +2316,82 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * so through {@code GET /api/v1/cluster} rather than only through a SEVERE that has already scrolled past.
    * {@code compareAndSet} keeps the FIRST cause: it is the one that explains the halt, and every apply after it
    * is refused by the guard in {@code applyTransaction} rather than being a new problem.
+   * <p>
+   * When the cause is an {@link OutOfMemoryError} or an {@link InternalError} (issue #11456; a {@link StackOverflowError} is
+   * recoverable and does not qualify) the JVM is
+   * halted once the stop returns or {@link #fatalErrorGraceMillis} has passed, whichever comes first. A graceful stop
+   * on an exhausted heap can hang (the Ratis service closes against a heap it cannot allocate from), and the node
+   * would stay half alive: HTTP up, state machine dead, nothing for an orchestrator to restart. The Raft log and the
+   * WAL are what recovery reads, so a halt loses nothing a crash would not.
    *
    * @param index  the Raft log index being applied, or -1 when there is none
    * @param reason one line naming the condition, in the vocabulary an operator can act on
+   * @param cause  the error that tripped the halt, or {@code null} when it is a condition rather than an exception
    */
-  private void triggerCriticalHalt(final long index, final String reason) {
+  private void triggerCriticalHalt(final long index, final String reason, final Throwable cause) {
     haltedAfterCriticalError.compareAndSet(null, new CriticalHalt(index, reason, System.currentTimeMillis()));
-    final Thread stopThread = new Thread(() -> {
-      try {
-        if (server != null)
-          server.stop();
-      } catch (final Throwable t) {
-        LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+    final boolean fatal = isUnrecoverableJvmError(cause);
+    try {
+      final Thread stopThread = new Thread(() -> {
+        try {
+          emergencyStop.run();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+        }
+      }, "arcadedb-emergency-stop");
+      stopThread.setDaemon(true);
+      stopThread.start();
+      if (fatal) {
+        final Thread watchdog = new Thread(() -> {
+          try {
+            stopThread.join(fatalErrorGraceMillis);
+          } catch (final InterruptedException ignored) {
+            // halt anyway: the JVM is unstable
+          }
+          haltJvm(stopThread.isAlive());
+        }, "arcadedb-fatal-error-halt");
+        watchdog.setDaemon(true);
+        watchdog.start();
       }
-    }, "arcadedb-emergency-stop");
-    stopThread.setDaemon(true);
-    stopThread.start();
+    } catch (final Throwable t) {
+      // No thread could be started, which on an exhausted heap is the likeliest reason: nothing graceful is left
+      if (fatal)
+        haltJvm(true);
+    }
+  }
+
+  private void haltJvm(final boolean stopDidNotFinish) {
+    try {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Halting the JVM after a fatal error in the Raft state machine (%s); the node restarts and recovers from its Raft log "
+              + "(issue #11456)", stopDidNotFinish ? "the emergency stop did not finish in time" : "the emergency stop finished");
+    } catch (final Throwable ignored) {
+      // logging needs heap too
+    }
+    jvmHalter.accept(FATAL_ERROR_EXIT_STATUS);
+  }
+
+  private static boolean isUnrecoverableJvmError(final Throwable cause) {
+    Throwable t = cause;
+    for (int depth = 0; t != null && depth < 8; depth++, t = t.getCause())
+      if (t instanceof OutOfMemoryError || t instanceof InternalError)
+        return true;
+    return false;
+  }
+
+  // @VisibleForTesting
+  void setEmergencyStopForTesting(final Runnable emergencyStop) {
+    this.emergencyStop = emergencyStop;
+  }
+
+  // @VisibleForTesting
+  void setJvmHalterForTesting(final IntConsumer jvmHalter) {
+    this.jvmHalter = jvmHalter;
+  }
+
+  // @VisibleForTesting
+  void setFatalErrorGraceMillisForTesting(final long millis) {
+    this.fatalErrorGraceMillis = millis;
   }
 
   /**
@@ -10172,10 +10244,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         continue;
       final boolean incomplete;
       final List<String> unavailableUnique;
+      final boolean dictionaryLost;
       try {
         final ServerDatabase db = srv.getDatabase(dbName, false, false);
         incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
         unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
+        dictionaryLost = db != null && db.getEmbedded().getSchema().getEmbedded().isDictionaryLostForExistingTypes();
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
             e.getMessage());
@@ -10183,6 +10257,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       if (incomplete) {
         if (quarantineAfterIncompleteRecovery(dbName))
+          quarantined.add(dbName);
+      } else if (dictionaryLost) {
+        if (quarantineAfterEmptiedDictionary(dbName))
           quarantined.add(dbName);
       } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
         quarantined.add(dbName);
@@ -10246,6 +10323,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.SEVERE,
         "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
             + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
+   * The decision for one database whose schema dictionary a power loss emptied (issue #11258): the files kept their names but
+   * not their content, the load wrote a fresh empty dictionary page, and crash recovery had no WAL left to repair it from, so
+   * it reported completed while every property name was lost. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines
+   * the database and re-installs it from the leader, so the node neither serves the copy, nor leads with it, nor ships it as a
+   * snapshot, unless this node is the only voter.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterEmptiedDictionary(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The schema dictionary of database '%s' was found empty although the schema declares types, and this node is the "
+              + "only voter, so there is no peer to re-install it from. It is NOT quarantined; property names are lost: "
+              + "restore it from a backup (issue #11258)", dbName);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.EMPTY_DICTIONARY))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The schema dictionary of database '%s' was found empty although the schema declares types, so its local copy lost "
+            + "its property names: quarantining it and re-installing it from the leader (issue #11258)", dbName);
     triggerDatabaseResync(dbName);
     handOffLeadershipIfLeader(dbName);
     return true;

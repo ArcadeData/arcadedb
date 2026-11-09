@@ -158,17 +158,21 @@ class HaSchemaDdlReplicationUnknownOutcomeIT extends BaseRaftHATest {
     assertClusterConsistency();
     for (int i = 0; i < getServerCount(); i++) {
       final DatabaseInternal database = (DatabaseInternal) getServerDatabase(i, getDatabaseName());
-      waitForAppliedValue(i, database, setting, expected);
+      waitForAppliedValue(i, database, setting, fileKey, expected);
       assertThat(database.getConfiguration().getValueAsInteger(setting)).as("server %d in memory", i).isEqualTo(expected);
       assertThat(readConfigurationFile(database).getInt(fileKey)).as("server %d configuration.json", i).isEqualTo(expected);
     }
   }
 
-  /** The entry may commit after the command returned, so each node is given time to apply it. A hang detector. */
+  /**
+   * The entry may commit after the command returned, so each node is given time to apply it. A hang detector. The apply puts
+   * the value in force in memory BEFORE it writes configuration.json, so the file is awaited too.
+   */
   private static void waitForAppliedValue(final int index, final DatabaseInternal database,
-      final GlobalConfiguration setting, final int expected) throws InterruptedException {
+      final GlobalConfiguration setting, final String fileKey, final int expected) throws InterruptedException, IOException {
     final long deadline = System.currentTimeMillis() + APPLY_WAIT_MS;
-    while (database.getConfiguration().getValueAsInteger(setting) != expected && System.currentTimeMillis() < deadline)
+    while ((database.getConfiguration().getValueAsInteger(setting) != expected
+        || readConfigurationFile(database).getInt(fileKey, -1) != expected) && System.currentTimeMillis() < deadline)
       Thread.sleep(100);
   }
 

@@ -166,6 +166,12 @@ class Issue11281QuarantinedDatabaseRefusesClientsTest {
   }
 
   @Test
+  void everyClientEntryPointIsRefusedWhenTheDictionaryWasEmptied() {
+    cause.set(DivergenceCause.EMPTY_DICTIONARY);
+    assertEveryClientEntryPointIsRefused("http");
+  }
+
+  @Test
   void theServiceResumesOnceTheQuarantineLifts() {
     cause.set(DivergenceCause.LOCAL_RECOVERY_INCOMPLETE);
     assertEveryClientEntryPointIsRefused("http");
@@ -194,6 +200,7 @@ class Issue11281QuarantinedDatabaseRefusesClientsTest {
     assertThat(DivergenceCause.values()).as("the scan still reaches DivergenceCause").isNotEmpty();
     for (final DivergenceCause c : DivergenceCause.values())
       assertThat(c.isLocalCopyUntrustworthy()).as(c.name()).isEqualTo(
-          c == DivergenceCause.LOCAL_RECOVERY_INCOMPLETE || c == DivergenceCause.UNAVAILABLE_UNIQUE_INDEX);
+          c == DivergenceCause.LOCAL_RECOVERY_INCOMPLETE || c == DivergenceCause.UNAVAILABLE_UNIQUE_INDEX
+              || c == DivergenceCause.EMPTY_DICTIONARY);
   }
 }
