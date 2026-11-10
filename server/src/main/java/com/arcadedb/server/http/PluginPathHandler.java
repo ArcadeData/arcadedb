@@ -18,18 +18,17 @@
  */
 package com.arcadedb.server.http;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ServerPlugin;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
 
 /**
  * The outer {@link PathHandler} {@code HttpServer} routes through. It is the one object every plugin registers on, so it is
@@ -47,17 +46,12 @@ import java.util.logging.Level;
  * line in a log. {@link PluginRoutes} shares its method-keyed table through {@link #getRouteTable()}, so a second plugin
  * declaring ANOTHER method on a path merges into the same entry instead of replacing it.
  * <p>
- * The deprecated {@code ServerPlugin.registerAPI(HttpServer, PathHandler)} keeps handing plugins a {@link PathHandler},
- * so a plugin built against it keeps working. But a handler added to it directly answers every HTTP method, which turned
- * {@code GET} into a way to run state-changing cluster operations. Every plugin in this repository implements
- * {@code registerAPI(HttpServer, PluginRoutes)} instead (issue #10296); a route a plugin adds to the raw handler is named
- * here, once per path, at {@code WARNING}, so the gap is visible at startup rather than in a code review. Routing is
- * unchanged: the route is served as registered, once the claim itself is accepted.
+ * Plugins no longer receive the raw {@link PathHandler}: they declare routes through {@link PluginRoutes}, which always registers
+ * a method-restricted handler (issues #10157, #10296, #10310).
  */
 final class PluginPathHandler extends PathHandler {
   private static final String SERVER = "the server";
 
-  private final List<String>              unrestricted = new ArrayList<>();
   private final PluginRoutes.RouteTable   routeTable   = new PluginRoutes.RouteTable();
   // Normalized path -> who registered it as an exact path and as a prefix ("the server" or "plugin 'name'"). One table for both
   // kinds, so that a lookup cannot be written against one kind and forget the other (issue #10532)
@@ -145,7 +139,7 @@ final class PluginPathHandler extends PathHandler {
   public synchronized PathHandler addExactPath(final String path, final HttpHandler handler) {
     judge(path, false);
     final PathHandler result = super.addExactPath(path, handler);
-    record(path, handler, false);
+    record(path, false);
     return result;
   }
 
@@ -153,38 +147,44 @@ final class PluginPathHandler extends PathHandler {
   public synchronized PathHandler addPrefixPath(final String path, final HttpHandler handler) {
     judge(path, true);
     final PathHandler result = super.addPrefixPath(path, handler);
-    record(path, handler, true);
+    record(path, true);
     return result;
   }
 
-  /** The {@code plugin path} of every plugin route registered without a method restriction, in registration order. */
-  synchronized List<String> getUnrestrictedPluginRoutes() {
-    return List.copyOf(unrestricted);
-  }
-
   /**
-   * Whether {@code plugin}'s class (or a superclass or interface of it) overrides the deprecated
-   * {@code registerAPI(HttpServer, PathHandler)}, rather than inheriting the {@link ServerPlugin} no-op default (issue
-   * #10296).
+   * Whether {@code plugin}'s class declares {@code registerAPI(HttpServer, PathHandler)}, the overload removed in issue #10310.
+   * Nothing calls it any more, so a plugin still written against it would start with none of its routes and no error: the
+   * server names it at startup instead.
    */
-  static boolean implementsDeprecatedRegisterAPI(final ServerPlugin plugin) {
-    return overridesRegisterAPI(plugin, PathHandler.class);
+  static boolean declaresRemovedRegisterAPI(final ServerPlugin plugin) {
+    for (Class<?> type = plugin.getClass(); type != null; type = type.getSuperclass())
+      for (final Method method : type.getDeclaredMethods())
+        if (isRemovedRegisterAPI(method))
+          return true;
+    for (final Class<?> type : allInterfaces(plugin.getClass()))
+      for (final Method method : type.getDeclaredMethods())
+        if (isRemovedRegisterAPI(method))
+          return true;
+    return false;
   }
 
-  /** Whether {@code plugin} overrides {@code registerAPI(HttpServer, PluginRoutes)} (issue #10296). */
-  static boolean implementsPluginRoutesRegisterAPI(final ServerPlugin plugin) {
-    return overridesRegisterAPI(plugin, PluginRoutes.class);
+  private static boolean isRemovedRegisterAPI(final Method method) {
+    final Class<?>[] parameters = method.getParameterTypes();
+    return "registerAPI".equals(method.getName()) && parameters.length == 2 && parameters[0] == HttpServer.class
+        && parameters[1] == PathHandler.class;
   }
 
-  private static boolean overridesRegisterAPI(final ServerPlugin plugin, final Class<?> routesType) {
-    try {
-      return plugin.getClass().getMethod("registerAPI", HttpServer.class, routesType).getDeclaringClass() != ServerPlugin.class;
-    } catch (final NoSuchMethodException e) {
-      // ServerPlugin declares both overloads, so this means the SPI changed without this lookup: failing here is what
-      // keeps a renamed overload from silently dropping every third-party plugin's routes
-      throw new IllegalStateException(
-          "ServerPlugin no longer declares registerAPI(HttpServer, " + routesType.getSimpleName() + ")", e);
-    }
+  private static Set<Class<?>> allInterfaces(final Class<?> type) {
+    final Set<Class<?>> interfaces = new LinkedHashSet<>();
+    for (Class<?> current = type; current != null; current = current.getSuperclass())
+      collectInterfaces(current, interfaces);
+    return interfaces;
+  }
+
+  private static void collectInterfaces(final Class<?> type, final Set<Class<?>> into) {
+    for (final Class<?> parent : type.getInterfaces())
+      if (into.add(parent))
+        collectInterfaces(parent, into);
   }
 
   /** Refuses a plugin's claim on a name that is taken, before the {@link PathHandler} sees it. The server's own are never judged. */
@@ -194,11 +194,8 @@ final class PluginPathHandler extends PathHandler {
       refuseIfTaken("plugin '" + owner + "'", path, normalize(path), isPrefix);
   }
 
-  /**
-   * Records who holds a path once the {@link PathHandler} has accepted it, so a registration it refuses leaves no claim behind,
-   * and names a plugin route that was added without its methods.
-   */
-  private void record(final String path, final HttpHandler handler, final boolean isPrefix) {
+  /** Records who holds a path once the {@link PathHandler} has accepted it, so a registration it refuses leaves no claim behind. */
+  private void record(final String path, final boolean isPrefix) {
     final String owner = registeringPlugin;
     final PathClaims held = claims.computeIfAbsent(normalize(path), key -> new PathClaims());
     if (owner == null) {
@@ -208,14 +205,6 @@ final class PluginPathHandler extends PathHandler {
     }
 
     held.hold(isPrefix, "plugin '" + owner + "'");
-
-    // A route declared through PluginRoutes carries its methods, which is what the warning below is about
-    if (handler instanceof PluginRoutes.MethodRestrictedHandler)
-      return;
-    unrestricted.add(owner + " " + path);
-    LogManager.instance().log(this, Level.WARNING,
-        "Plugin '%s' registered the HTTP route %s without declaring its method, so it answers every method (GET included). "
-            + "Implement registerAPI(HttpServer, PluginRoutes) and declare it there instead", owner, path);
   }
 
   /** Throws when {@code key} is a name somebody already holds, or when it would shadow a route the server registered. */

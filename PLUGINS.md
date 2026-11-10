@@ -247,11 +247,9 @@ public void registerAPI(HttpServer httpServer, PluginRoutes routes) {
 Any method a route does not declare is answered `405 Method Not Allowed` with an `Allow` header, before the handler
 runs.
 
-The older `registerAPI(HttpServer, PathHandler)` overload is deprecated and will be removed in a future release. The
-server still calls it, so a plugin built against it keeps working, but it logs a warning for every plugin that
-implements it, and a route added to that `PathHandler` with `addExactPath`/`addPrefixPath` matches on the path alone:
-it answers every method, `GET` included, and the server logs a second warning naming the route at startup. Implement
-one overload, not both: the server calls both.
+The older `registerAPI(HttpServer, PathHandler)` overload was removed in 26.12.1 (issue #10310). The server no longer calls
+it: a plugin that still implements it starts with none of its routes, and the server logs a `SEVERE` line naming the
+plugin. Move its routes to `registerAPI(HttpServer, PluginRoutes)`.
 
 `HEAD` and `OPTIONS` are methods like any other: a route declared only with `get(...)` answers `HEAD` with 405, as the
 core routes do, and the server answers no CORS preflight on plugin routes. Declare them explicitly
