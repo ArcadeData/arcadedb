@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -187,6 +189,36 @@ class Issue11481RelationshipIndexSpellingsTest extends TestHelper {
         Map.of(), rows);
     assertThat(plan).doesNotContain("MATCH EDGE BY INDEX");
     assertThat(rows).isNotEmpty();
+  }
+
+  @Test
+  void aViewBackedChainAfterTheSeekKeepsTheRelationshipTheSeekBound() throws InterruptedException {
+    // The seek binds e below two hops a graph analytical view walks: fused into one operator, those hops would emit only their own
+    // variables, and e.uuid would read null
+    database.transaction(() -> {
+      database.command("opencypher", "UNWIND range(1, 60) AS i CREATE (:P {name: 'p' + toString(i)})");
+      database.command("opencypher",
+          "MATCH (a:P {name: 'p1'}), (b:P {name: 'p2'}), (c:P {name: 'p3'}), (d:P {name: 'p4'}) "
+              + "CREATE (a)-[:KNOWS {uuid: 'k1'}]->(b)-[:FOLLOWS]->(c)-[:LIKES]->(d)");
+      database.command("opencypher",
+          "MATCH (a:P), (b:P) WHERE a.name STARTS WITH 'p5' AND b.name = 'p6' CREATE (a)-[:KNOWS {uuid: 'n' + a.name}]->(b)");
+    });
+    database.command("opencypher", "CREATE CONSTRAINT FOR ()-[k:KNOWS]-() REQUIRE k.uuid IS UNIQUE");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gav11481 VERTEX TYPES (Entity, P) EDGE TYPES (FOLLOWS, LIKES) UPDATE MODE OFF");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "gav11481");
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (!view.isReady() && System.currentTimeMillis() < deadline)
+      Thread.sleep(20);
+    assertThat(view.isReady()).isTrue();
+    try {
+      final List<String> rows = new ArrayList<>();
+      final String plan = run("MATCH (a:P)-[e:KNOWS]->(b:P)-[:FOLLOWS]->(c:P)-[:LIKES]->(d:P) WHERE e.uuid = 'k1' "
+          + "RETURN e.uuid + '/' + d.name AS uuid", Map.of(), rows);
+      assertThat(plan).contains("EdgeIndexSeek").contains("GAV");
+      assertThat(rows).containsExactly("k1/p4");
+    } finally {
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW gav11481");
+    }
   }
 
   private void assertSeeks(final String query, final Map<String, Object> parameters, final String... expected) {

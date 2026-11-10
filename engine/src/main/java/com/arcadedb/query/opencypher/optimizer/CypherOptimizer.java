@@ -1929,6 +1929,8 @@ public class CypherOptimizer {
     for (final GAVExpandAll gav : chain)
       if (gav.getTargetVariable() != null)
         chainVariables.add(gav.getTargetVariable());
+    // a tracked hop's relationship binding is the chain's own too
+    chainVariables.addAll(chainTrackingVars);
     if (readsPatternVariableOutside(usedVariables, chainVariables))
       return null;
 
@@ -1977,19 +1979,29 @@ public class CypherOptimizer {
     return early ? byDepth : null;
   }
 
-  /** Whether {@code used} names a node variable of the MATCH patterns that is not one of {@code chainVariables}. */
+  /**
+   * Whether {@code used} names a node or relationship variable of the MATCH patterns that is not one of {@code chainVariables}. A
+   * relationship counts as much as a node: an {@link EdgeIndexSeek} anchor binds one below the chain, which the fused chain would
+   * not carry into its rows (issue #11481).
+   */
   private boolean readsPatternVariableOutside(final Set<String> used, final Set<String> chainVariables) {
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns())
         continue;
       for (final PathPattern pathPattern : mc.getPathPatterns())
         for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
-          final String variable = pathPattern.getNode(i).getVariable();
-          if (variable != null && used.contains(variable) && !chainVariables.contains(variable))
+          if (isReadOutside(pathPattern.getNode(i).getVariable(), used, chainVariables))
+            return true;
+          if (i < pathPattern.getRelationshipCount()
+              && isReadOutside(pathPattern.getRelationship(i).getVariable(), used, chainVariables))
             return true;
         }
     }
     return false;
+  }
+
+  private static boolean isReadOutside(final String variable, final Set<String> used, final Set<String> chainVariables) {
+    return variable != null && used.contains(variable) && !chainVariables.contains(variable);
   }
 
   /**
