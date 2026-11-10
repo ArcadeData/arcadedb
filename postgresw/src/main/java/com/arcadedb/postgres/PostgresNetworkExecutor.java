@@ -1382,14 +1382,19 @@ public class PostgresNetworkExecutor extends Thread {
 
   /**
    * Opens the implicit transaction block the statements of a multi-statement simple query share (issue #11483), before a
-   * statement that can write while more statements of the same message follow it: without it every write committed its own
-   * statement-level transaction, and an error in a later statement could not roll it back as PostgreSQL does. The same rule
-   * as {@link #beginImplicitTransactionBlock(PostgresPortal)}: a statement proven a read opens nothing, a transaction already
-   * open is joined. The last statement of the message needs none - nothing after it can fail - and an explicit block is open
-   * already.
+   * statement the engine runs while more statements of the same message follow it: without it every write committed its own
+   * statement-level transaction, and an error in a later statement could not roll it back as PostgreSQL does. A transaction
+   * already open is joined. The last statement of the message needs none - nothing after it can fail - and an explicit block
+   * is open already.
+   * <p>
+   * Unlike {@link #beginImplicitTransactionBlock(PostgresPortal)} a read is not exempted: {@code isIdempotent()} classifies a
+   * statement by its own syntax, so a {@code SELECT} calling a library function whose body inserts reads as a read, and its
+   * write committed on its own, out of reach of the error that failed the message (#11483 review). The pipeline keeps the
+   * exemption because nearly all JDBC reads arrive there; a message of several statements is rare enough that a transaction
+   * around a read in it costs nothing that matters.
    */
-  private void beginSimpleQueryBlock(final Statement parsedStatement) {
-    if (simpleQueryBlockContinues && !database.isTransactionActive() && (parsedStatement == null || !parsedStatement.isIdempotent()))
+  private void beginSimpleQueryBlock() {
+    if (simpleQueryBlockContinues && !database.isTransactionActive())
       database.begin();
   }
 
@@ -1455,7 +1460,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (PostgresCopyStatement.isCopy(query.query)) {
         final PostgresCopyStatement copy = PostgresCopyStatement.parse(query.query);
         final Statement inner = "sql".equalsIgnoreCase(query.language) ? parseStatement(copy.getQuery()) : null;
-        beginSimpleQueryBlock(inner);
+        beginSimpleQueryBlock();
         final int rows = copyOut(copy, query.language, NO_PARAMETERS, inner, profile);
         // Unlike the ordinary path below, the CopyData/CopyDone are already sent when this commits, so a failed
         // commit is reported after them - the same order as PostgreSQL, whose finish_xact_command() follows DoCopy()
@@ -1546,7 +1551,7 @@ public class PostgresNetworkExecutor extends Thread {
             answersNoRows = true;
             resultSet = new IteratorResultSet(Collections.emptyIterator());
           } else {
-            beginSimpleQueryBlock(parsedStatement);
+            beginSimpleQueryBlock();
             admission = QueryAdmissionGate.getInstance().admit();
             statement = startStatement(query.language, query.query);
             resultSet = database.command(query.language, toEngineText(query.language, query.query), server.getConfiguration());

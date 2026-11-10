@@ -149,6 +149,25 @@ class Issue11483MultiStatementSimpleQueryIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  @DisplayName("[#11483] a SELECT that writes through a library function is rolled back with the block too")
+  void selectCallingAWritingFunctionIsRolledBack() throws Exception {
+    final String type = "Issue11483Function";
+    withConnection((out, in) -> {
+      createType(out, in, type);
+      getServerDatabase(0, getDatabaseName()).command("sql",
+          "DEFINE FUNCTION fw11483.add \"INSERT INTO " + type + " SET id = 1\" LANGUAGE sql");
+
+      // isIdempotent() reads the SELECT's own syntax and cannot see the write inside the function it calls
+      sendSimpleQuery(out, "SELECT `fw11483.add`() AS r; SELEKT bogus");
+      final List<WireMessage> answers = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answers)).containsExactly('T', 'D', 'C', 'E', 'Z');
+      assertThat(readyForQueryStatusOf(answers)).isEqualTo('I');
+      assertStreamStillInStep(out, in);
+    });
+    assertThat(idsOf(type)).as("the function's write belonged to the failed message").isEmpty();
+  }
+
+  @Test
   @DisplayName("[#11483] a SET of a failed implicit block is rolled back with it")
   void setOfFailedBlockIsRolledBack() throws Exception {
     withConnection((out, in) -> {
