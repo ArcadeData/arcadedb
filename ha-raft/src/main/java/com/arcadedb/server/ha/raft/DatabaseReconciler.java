@@ -214,6 +214,10 @@ public class DatabaseReconciler {
         acquireOp.run(db);
         acquired.add(db);
       } catch (final Exception e) {
+        // Logged here with its cause (issue #11465): the outcome keeps only the message, so a failure that no deeper layer
+        // logged was otherwise invisible while the same database was retried over and over.
+        LogManager.instance().log(DatabaseReconciler.class, Level.WARNING,
+            "Failed to acquire database '%s' from the leader: %s", e, db, e.getMessage());
         acquireFailures.put(db, String.valueOf(e.getMessage()));
       }
     }
@@ -222,6 +226,10 @@ public class DatabaseReconciler {
         refreshOp.run(db);
         refreshed.add(db);
       } catch (final Exception e) {
+        // Logged here with its cause (issue #11465): the outcome keeps only the message, so a failure that no deeper layer
+        // logged was otherwise invisible while the same database was retried over and over.
+        LogManager.instance().log(DatabaseReconciler.class, Level.WARNING,
+            "Failed to refresh database '%s' from the leader: %s", e, db, e.getMessage());
         refreshFailures.put(db, String.valueOf(e.getMessage()));
       }
     }
