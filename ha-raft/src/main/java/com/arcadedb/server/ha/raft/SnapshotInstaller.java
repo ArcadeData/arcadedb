@@ -2472,12 +2472,24 @@ public final class SnapshotInstaller {
     final File volume = nearestExistingAncestor(targetDir.toAbsolutePath().toFile());
     if (volume == null)
       return;
-    final long usable = volume.getUsableSpace();
+    checkUsableSpace(volume.getAbsolutePath(), volume.getUsableSpace(), volume.getTotalSpace(), requiredBytes, databaseName);
+  }
+
+  /**
+   * The decision of {@link #checkUsableSpace(Path, long, String)} over the two numbers the volume answered. A volume
+   * that reports no total space (0 or negative) is a filesystem that does not implement {@code statfs} faithfully,
+   * a FUSE mount such as LazyFS answers 0 blocks for both: its "0 usable" is not "full", it is "unknown", and it
+   * never refuses (issue #11487). Package-private for tests.
+   */
+  static void checkUsableSpace(final String volumePath, final long usable, final long total, final long requiredBytes,
+      final String databaseName) throws IOException {
+    if (total <= 0)
+      return;
     final long needed = withAllocationReserve(requiredBytes);
     if (usable < needed)
       throw new IOException("Insufficient space to install the snapshot of '" + databaseName + "': it inflates to "
           + requiredBytes + " bytes (" + needed + " with the allocation reserve) but the volume of '"
-          + volume.getAbsolutePath() + "' has " + usable + " usable. Free space on the volume (the Raft log is purged "
+          + volumePath + "' has " + usable + " usable. Free space on the volume (the Raft log is purged "
           + "before an install when its volume is under pressure; see arcadedb.ha.snapshotInterval and "
           + "arcadedb.ha.raftStorageMinFreeSpacePerc) and the install is retried");
   }
