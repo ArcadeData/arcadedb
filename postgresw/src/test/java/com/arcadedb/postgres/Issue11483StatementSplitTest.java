@@ -135,5 +135,16 @@ class Issue11483StatementSplitTest {
   @DisplayName("[#11483] an unterminated literal swallows the rest of the text, for the parser to report")
   void unterminatedLiteral() {
     assertThat(split("SELECT 'abc;SELECT 2")).containsExactly("SELECT 'abc;SELECT 2");
+    assertThat(split("SELECT \"abc;SELECT 2")).containsExactly("SELECT \"abc;SELECT 2");
+    assertThat(split("SELECT `abc;SELECT 2")).containsExactly("SELECT `abc;SELECT 2");
+    assertThat(split("SELECT 1 /* abc; /* nested */ ;SELECT 2")).containsExactly("SELECT 1 /* abc; /* nested */ ;SELECT 2");
+  }
+
+  @Test
+  @DisplayName("[#11483] a dollar quote that never closes is an ordinary character, as an ArcadeDB context variable is")
+  void unterminatedDollarQuote() {
+    // the first statement then fails to parse and stops the message, which is where PostgreSQL's raw parse stops it too
+    assertThat(split("SELECT $$abc;SELECT 2")).containsExactly("SELECT $$abc", "SELECT 2");
+    assertThat(split("SELECT $tag$abc;SELECT 2")).containsExactly("SELECT $tag$abc", "SELECT 2");
   }
 }
