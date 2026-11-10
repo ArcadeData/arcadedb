@@ -4438,13 +4438,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE,
           "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
           databaseName, txId, e.getMessage());
-      try {
-        lifecycleExecutor.submit(this::triggerSnapshotDownload);
-      } catch (final RejectedExecutionException ree) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
-            ree, databaseName);
-      }
+      // Targeted at the one database whose WAL has a gap (issue #11489): a gap in one database says nothing about
+      // the others, and the full download reinstalled every database on the node (~40 unrelated ones in the report).
+      triggerDatabaseResync(databaseName);
       handOffLeadershipIfLeader(databaseName);
     } else if (shouldLogDivergedResync(databaseName)) {
       LogManager.instance().log(this, Level.INFO,
@@ -9599,7 +9595,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * resync is recovered by the {@link HealthMonitor} persistent-lag backstop ({@link #recoverFromPersistentLag()}).
    * No-op when there is no leader/server context or the lifecycle executor is shutting down.
    */
-  private void triggerDatabaseResync(final String dbName) {
+  // @VisibleForTesting
+  void triggerDatabaseResync(final String dbName) {
     // A cheap early-out, not the guard: nothing below relies on this read, which is why it may be a separate one.
     if (raftHAServer == null || server == null)
       return;
