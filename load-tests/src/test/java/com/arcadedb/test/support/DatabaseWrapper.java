@@ -33,9 +33,12 @@ import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -360,11 +363,25 @@ public class DatabaseWrapper {
         addPhotosOfUser(userId, numberOfPhotos);
 
       } catch (Exception e) {
-        Metrics.counter("arcadedb.test.inserted.users.error").increment();
-        logger.error("Error creating user {}: {}", userId, e.getMessage());
+        if (isClientTimeout(e)) {
+          // The server may well have gone on to commit the command: the user is possibly there, not lost (issue #11470)
+          Metrics.counter("arcadedb.test.inserted.users.timeout").increment();
+          logger.error("Client timeout creating user {}, the server may still have committed it: {}", userId, e.getMessage());
+        } else {
+          Metrics.counter("arcadedb.test.inserted.users.error").increment();
+          logger.error("Error creating user {}: {}", userId, e.getMessage());
+        }
       }
 
     }
+  }
+
+  /** Whether the failure is the client giving up waiting, which says nothing about whether the server applied the command. */
+  static boolean isClientTimeout(final Throwable failure) {
+    for (Throwable t = failure; t != null; t = t.getCause())
+      if (t instanceof SocketTimeoutException || t instanceof HttpTimeoutException || t instanceof TimeoutException)
+        return true;
+    return false;
   }
 
   /**
