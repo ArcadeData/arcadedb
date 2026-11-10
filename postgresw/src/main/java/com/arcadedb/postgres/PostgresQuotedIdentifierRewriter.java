@@ -20,6 +20,8 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -104,6 +106,103 @@ public class PostgresQuotedIdentifierRewriter {
       return sql;
     final String translated = translate(sql, false, true, standardConformingStrings);
     return translated.equals(sql) ? sql : translated;
+  }
+
+  /**
+   * Splits the text of a simple-query message into its statements (issue #11483): on every {@code ;} outside a string
+   * literal, a quoted identifier, a back-tick name, a dollar-quoted literal, a comment, and an ArcadeDB JSON object or
+   * collection literal, each read exactly as {@link #rewrite} and {@link #toEngineLiterals} read it, so the three passes
+   * cannot disagree on where a token ends. A statement holding nothing but whitespace and comments is no statement, as in
+   * PostgreSQL, whose grammar drops the empty statement a trailing or doubled {@code ;} leaves.
+   *
+   * @param sql                       the text as received on the wire
+   * @param standardConformingStrings whether a backslash in a plain {@code '...'} literal is an ordinary character,
+   *                                  which decides where such a literal ends
+   * @param quotedIdentifiers         whether a double quote outside a JSON literal opens a PostgreSQL identifier (where
+   *                                  {@code ""} stands for a quote) rather than an ArcadeDB string (where a backslash
+   *                                  escapes it)
+   *
+   * @return the statements in order, each without its {@code ;}; the same instance as the only element when the text
+   * holds one statement; an empty list when it holds none
+   */
+  public static List<String> splitStatements(final String sql, final boolean standardConformingStrings,
+      final boolean quotedIdentifiers) {
+    final int len = sql.length();
+    if (sql.indexOf(';') < 0)
+      // FAST PATH: one statement, or none
+      return isBlank(sql) ? List.of() : List.of(sql);
+
+    List<String> statements = null;
+    int statementStart = 0;
+    int braceDepth = 0;
+    int bracketDepth = 0;
+    int i = 0;
+    while (i < len) {
+      final char c = sql.charAt(i);
+      switch (c) {
+      case '\'' -> {
+        if (braceDepth > 0)
+          i = endOfBackslashQuoted(sql, i, len);
+        else {
+          final int end = endOfStringLiteral(sql, i, len, isEscapeStringPrefix(sql, i) || !standardConformingStrings);
+          i = end < 0 ? len : end;
+        }
+      }
+      case '$' -> i = endOfDollarQuotedLiteral(sql, i, len);
+      case '-' -> i = endOfLineComment(sql, i, len);
+      case '/' -> i = endOfBlockComment(sql, i, len);
+      case '`' -> i = endOfBackslashQuoted(sql, i, len);
+      case '"' -> i = !quotedIdentifiers || braceDepth > 0 || bracketDepth > 0 ?
+          endOfBackslashQuoted(sql, i, len) :
+          endOfQuotedIdentifier(sql, i, len);
+      case '{' -> {
+        braceDepth++;
+        i++;
+      }
+      case '[' -> {
+        bracketDepth++;
+        i++;
+      }
+      case '}' -> {
+        if (braceDepth > 0)
+          braceDepth--;
+        i++;
+      }
+      case ']' -> {
+        if (bracketDepth > 0)
+          bracketDepth--;
+        i++;
+      }
+      case ';' -> {
+        if (braceDepth == 0 && bracketDepth == 0) {
+          statements = addStatement(sql, statementStart, i, statements);
+          statementStart = i + 1;
+        }
+        i++;
+      }
+      default -> i++;
+      }
+    }
+    statements = addStatement(sql, statementStart, len, statements);
+    return statements != null ? statements : List.of();
+  }
+
+  private static List<String> addStatement(final String sql, final int start, final int end, List<String> statements) {
+    if (start == 0 && end == sql.length())
+      // NO SEPARATOR OUTSIDE A TOKEN: THE WHOLE TEXT IS THE STATEMENT
+      return isBlank(sql) ? null : List.of(sql);
+    final String statement = sql.substring(start, end);
+    if (isBlank(statement))
+      return statements;
+    if (statements == null)
+      statements = new ArrayList<>(4);
+    statements.add(statement);
+    return statements;
+  }
+
+  /** Whether {@code text} holds nothing but whitespace and comments. */
+  private static boolean isBlank(final String text) {
+    return PostgresQueryLanguages.firstTokenOffset(text) >= text.length();
   }
 
   private static String translate(final String sql, final boolean identifiers, final boolean literals,
@@ -338,23 +437,32 @@ public class PostgresQuotedIdentifierRewriter {
    * scanning for the closing quote.
    */
   private static int copyEngineStringLiteral(final String sql, final int start, final int len, final StringBuilder out) {
-    out.append('\'');
+    return copyRange(sql, start, endOfBackslashQuoted(sql, start, len), out);
+  }
+
+  /**
+   * The index right after the quote closing the token opened at {@code start} by the quote character found there, a
+   * backslash escaping the character after it: an ArcadeDB single-quoted literal, a back-tick name, a JSON string. The
+   * length of {@code sql} when it is unterminated, for the parser to report.
+   */
+  private static int endOfBackslashQuoted(final String sql, final int start, final int len) {
+    final char quote = sql.charAt(start);
     int i = start + 1;
     while (i < len) {
       final char c = sql.charAt(i);
-      if (c == '\\' && i + 1 < len) {
-        out.append(c).append(sql.charAt(i + 1));
+      if (c == '\\' && i + 1 < len)
         i += 2;
-      } else if (c == '\'') {
-        out.append('\'');
+      else if (c == quote)
         return i + 1;
-      } else {
-        out.append(c);
+      else
         i++;
-      }
     }
-    // UNTERMINATED: let the parser report the error
     return i;
+  }
+
+  private static int copyRange(final String sql, final int start, final int end, final StringBuilder out) {
+    out.append(sql, start, end);
+    return end;
   }
 
   /**
@@ -363,44 +471,55 @@ public class PostgresQuotedIdentifierRewriter {
    * are not affected.
    */
   private static int copyDollarQuotedLiteral(final String sql, final int start, final int len, final StringBuilder out) {
+    return copyRange(sql, start, endOfDollarQuotedLiteral(sql, start, len), out);
+  }
+
+  /**
+   * The index right after the dollar-quoted literal opened at {@code start}, or {@code start + 1} when none opens there
+   * or it is never closed: the dollar sign is then an ordinary character.
+   */
+  private static int endOfDollarQuotedLiteral(final String sql, final int start, final int len) {
     int i = start + 1;
     while (i < len && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_'))
       i++;
 
-    if (i >= len || sql.charAt(i) != '$') {
-      out.append('$');
+    if (i >= len || sql.charAt(i) != '$')
       return start + 1;
-    }
 
     final String tag = sql.substring(start, i + 1);
     final int end = sql.indexOf(tag, i + 1);
-    if (end < 0) {
-      out.append('$');
-      return start + 1;
-    }
-
-    out.append(sql, start, end + tag.length());
-    return end + tag.length();
+    return end < 0 ? start + 1 : end + tag.length();
   }
 
   private static int copyLineComment(final String sql, final int start, final int len, final StringBuilder out) {
-    if (start + 1 >= len || sql.charAt(start + 1) != '-') {
-      out.append('-');
+    return copyRange(sql, start, endOfLineComment(sql, start, len), out);
+  }
+
+  /**
+   * The index of the line break ending the {@code --} comment opened at {@code start}, or {@code start + 1} when the
+   * {@code -} found there opens none.
+   */
+  private static int endOfLineComment(final String sql, final int start, final int len) {
+    if (start + 1 >= len || sql.charAt(start + 1) != '-')
       return start + 1;
-    }
 
     int i = start;
     while (i < len && sql.charAt(i) != '\n')
       i++;
-    out.append(sql, start, i);
     return i;
   }
 
   private static int copyBlockComment(final String sql, final int start, final int len, final StringBuilder out) {
-    if (start + 1 >= len || sql.charAt(start + 1) != '*') {
-      out.append('/');
+    return copyRange(sql, start, endOfBlockComment(sql, start, len), out);
+  }
+
+  /**
+   * The index right after the block comment opened at {@code start}, which nests as in PostgreSQL, or {@code start + 1}
+   * when the {@code /} found there opens none.
+   */
+  private static int endOfBlockComment(final String sql, final int start, final int len) {
+    if (start + 1 >= len || sql.charAt(start + 1) != '*')
       return start + 1;
-    }
 
     int i = start + 2;
     int depth = 1;
@@ -414,50 +533,36 @@ public class PostgresQuotedIdentifierRewriter {
       } else
         i++;
     }
-    out.append(sql, start, i);
     return i;
   }
 
   private static int copyBackTickIdentifier(final String sql, final int start, final int len, final StringBuilder out) {
-    out.append('`');
-    int i = start + 1;
-    while (i < len) {
-      final char c = sql.charAt(i);
-      if (c == '\\' && i + 1 < len) {
-        out.append(c).append(sql.charAt(i + 1));
-        i += 2;
-      } else if (c == '`') {
-        out.append('`');
-        return i + 1;
-      } else {
-        out.append(c);
-        i++;
-      }
-    }
-    return i;
+    return copyRange(sql, start, endOfBackslashQuoted(sql, start, len), out);
   }
 
   /**
    * Copies a JSON string verbatim, honouring the back-slash escapes of the JSON grammar.
    */
   private static int copyJsonString(final String sql, final int start, final int len, final StringBuilder out) {
-    out.append('"');
+    return copyRange(sql, start, endOfBackslashQuoted(sql, start, len), out);
+  }
+
+  /**
+   * The index right after the double quote closing the PostgreSQL identifier opened at {@code start}, a doubled
+   * {@code ""} standing for one quote inside it, or the length of {@code sql} when it is unterminated.
+   */
+  private static int endOfQuotedIdentifier(final String sql, final int start, final int len) {
     int i = start + 1;
     while (i < len) {
-      final char c = sql.charAt(i);
-      if (c == '\\' && i + 1 < len) {
-        out.append(c).append(sql.charAt(i + 1));
-        i += 2;
-      } else if (c == '"') {
-        out.append('"');
-        return i + 1;
-      } else {
-        out.append(c);
+      if (sql.charAt(i) == '"') {
+        if (i + 1 < len && sql.charAt(i + 1) == '"')
+          i += 2;
+        else
+          return i + 1;
+      } else
         i++;
-      }
     }
-    // UNTERMINATED: let the parser report the error
-    return i;
+    return len;
   }
 
   private static int translateQuotedIdentifier(final String sql, final int start, final int len, final StringBuilder out) {
