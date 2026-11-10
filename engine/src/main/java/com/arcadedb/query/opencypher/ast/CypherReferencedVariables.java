@@ -79,7 +79,9 @@ public final class CypherReferencedVariables {
       ComparisonExpressionWrapper.class, FunctionCallExpression.class, ListComprehensionExpression.class,
       ListExpression.class, ListIndexExpression.class, ListPredicateExpression.class, ListSliceExpression.class,
       LiteralExpression.class, MapExpression.class, ParameterExpression.class, PatternComprehensionExpression.class,
-      ReduceExpression.class, ShortestPathExpression.class, StarExpression.class, TernaryLogicalExpression.class);
+      ReduceExpression.class, ShortestPathExpression.class, StarExpression.class, TernaryLogicalExpression.class,
+      // a.b.c, $d.u, startNode(r).name: the property of whatever its base evaluates to, which the walk descends into (issue #11480)
+      ChainedPropertyAccessExpression.class);
 
   /**
    * The predicate types that carry no variable name of their own. Each holds its operands as expressions or as a

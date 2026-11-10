@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -1033,6 +1034,8 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private List<Result> createNewPath(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Vertex> vertices = new ArrayList<>();
+    // The nodes this MERGE creates: no other transaction can know them, so a relationship ending in one cannot be a duplicate
+    final boolean[] createdHere = new boolean[pathPattern.getRelationshipCount() + 1];
 
     for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
       final NodePattern nodePattern = pathPattern.getNode(i);
@@ -1046,6 +1049,7 @@ public class MergeStep extends AbstractExecutionStep {
 
       if (vertex == null) {
         vertex = createVertex(nodePattern, baseResult, null);
+        createdHere[i] = true;
         if (nodePattern.getVariable() != null)
           baseResult.setProperty(nodePattern.getVariable(), vertex);
       }
@@ -1064,7 +1068,7 @@ public class MergeStep extends AbstractExecutionStep {
       final Vertex toVertex = relPattern.getDirection() == Direction.IN
           ? vertices.get(i) : vertices.get(i + 1);
 
-      final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult);
+      final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult, !createdHere[i] && !createdHere[i + 1]);
       tracePathElement(trace, 2 * i + 1, edge);
       if (relPattern.getVariable() != null)
         baseResult.setProperty(relPattern.getVariable(), edge);
@@ -1477,16 +1481,20 @@ public class MergeStep extends AbstractExecutionStep {
    * @param result current result context for evaluating property expressions
    * @return created edge
    */
+  /**
+   * @param betweenExistingNodes both endpoints existed before this MERGE: a concurrent MERGE may be creating the same relationship,
+   *                             which the commit then refuses (issue #11482)
+   */
   private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
-                          final Result result) {
+                          final Result result, final boolean betweenExistingNodes) {
     try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
         (DatabaseInternal) context.getDatabase())) {
-      return createPatternEdge(fromVertex, toVertex, relPattern, result);
+      return createPatternEdge(fromVertex, toVertex, relPattern, result, betweenExistingNodes);
     }
   }
 
   private Edge createPatternEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
-                          final Result result) {
+                          final Result result, final boolean betweenExistingNodes) {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
     // Ensure edge type exists (Cypher auto-creates types)
@@ -1499,9 +1507,10 @@ public class MergeStep extends AbstractExecutionStep {
     // before the internal save()/validation. Otherwise edges with mandatory properties fail
     // validation inside newEdge() (issue #4413).
     final Object[] edgeProperties;
+    Map<String, Object> evaluatedProperties = null;
     if (relPattern.hasProperties()) {
       final Map<String, Object> rawProperties = relPattern.getProperties();
-      final Map<String, Object> evaluatedProperties = evaluateProperties(rawProperties, result);
+      evaluatedProperties = evaluateProperties(rawProperties, result);
       final List<Object> keyValues = new ArrayList<>(evaluatedProperties.size() * 2);
       for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
         // Skip a null value, matching setProperties (the vertex creation branch) and CreateStep's own
@@ -1521,6 +1530,13 @@ public class MergeStep extends AbstractExecutionStep {
     final Edge edge = edgeProperties != null
         ? fromVertex.newEdge(type, toVertex, edgeProperties)
         : fromVertex.newEdge(type, toVertex);
+
+    if (betweenExistingNodes) {
+      // The match that did not find it read an edge list a concurrent MERGE may be appending the same relationship to (#11482)
+      final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
+      if (tx != null)
+        tx.addMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+    }
 
     final QueryStatistics stats = context.getStatistics();
     stats.incRelationshipsCreated();

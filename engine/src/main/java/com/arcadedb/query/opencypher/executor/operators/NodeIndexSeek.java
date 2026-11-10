@@ -38,9 +38,8 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.InExpression;
-import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
-import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -260,16 +259,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         seekKeys.add(key);
       }
 
+      /** A literal, a parameter, or any row-independent expression such as a field of a parameter, {@code $d.u} (issue #11480) */
       private Object resolveValue(final Object value) {
-        if (value instanceof ParameterExpression) {
-          final String paramName = ((ParameterExpression) value).getParameterName();
-          if (context.getInputParameters() != null)
-            return context.getInputParameters().get(paramName);
-          return null;
-        }
-        if (value instanceof LiteralExpression)
-          return ((LiteralExpression) value).getValue();
-        return value;
+        return RowIndependentValues.resolve(value, context);
       }
 
       private void fetchMore(final int n) {

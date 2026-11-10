@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.procedures.merge;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -162,6 +164,11 @@ public class MergeRelationship implements CypherProcedure {
     }
 
     newEdge.save();
+
+    // The match above read an edge list a concurrent merge may be appending the same relationship to (#11482)
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    if (tx != null)
+      tx.addMergedEdge(latestStartNode.getIdentity(), latestEndNode.getIdentity(), newEdge.getTypeName(), matchProps);
 
     return createResultStream(newEdge);
   }

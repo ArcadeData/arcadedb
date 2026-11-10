@@ -73,6 +73,9 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("scannedBuckets", CAPTURED);
     CLASSIFICATION.put("newRecords", MARKED);
     CLASSIFICATION.put("afterCommitCallbacks", MARKED);
+    // the match-or-create relationships of issue #11482: arrays grown in place, put back by their counts
+    CLASSIFICATION.put("mergedEdgeChecked", MARKED);
+    CLASSIFICATION.put("mergedEdgeMarked", MARKED);
     CLASSIFICATION.put("insertReservationBuckets", MARKED);
     CLASSIFICATION.put("insertReservationPages", MARKED);
     CLASSIFICATION.put("insertReservationSlots", MARKED);
