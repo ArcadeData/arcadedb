@@ -92,6 +92,27 @@ class MergedEdgeRegistryTest {
   }
 
   @Test
+  void everyStripeIsFreeAgainOnceItsCommitEndsWhicheverWayItEnds() {
+    final MergedEdgeRegistry registry = new MergedEdgeRegistry();
+    final int own = MergedEdgeRegistry.stripeOf(A, B, "R", Map.of("uuid", "e1"));
+    final int typeOnly = MergedEdgeRegistry.stripeOf(A, B, "R", null);
+    final int[] marked = { own, typeOnly };
+
+    assertThat(registry.reserve(new int[] { own }, 1, marked, 2, registry.getSequence())).isTrue();
+    assertThat(registry.inFlight(own)).isEqualTo(1);
+    registry.committed(marked, 2);
+    assertThat(registry.inFlight(own)).isZero();
+    assertThat(registry.inFlight(typeOnly)).isZero();
+
+    assertThat(registry.reserve(new int[] { own }, 1, marked, 2, registry.getSequence())).isTrue();
+    registry.release(marked, 2);
+    // A second release of the same stripes cannot drive a counter below zero, which would leave the stripe refusing for good
+    registry.release(marked, 2);
+    assertThat(registry.inFlight(own)).isZero();
+    assertThat(registry.reserve(new int[] { own }, 1, marked, 2, registry.getSequence())).isTrue();
+  }
+
+  @Test
   void twoRelationshipsOfOneTransactionSharingAStripeAreNotItsOwnConflict() {
     final MergedEdgeRegistry registry = new MergedEdgeRegistry();
     final int typeOnly = MergedEdgeRegistry.stripeOf(A, B, "R", null);

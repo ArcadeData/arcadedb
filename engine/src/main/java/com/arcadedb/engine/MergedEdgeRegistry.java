@@ -57,6 +57,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * concurrent statement with the larger map, is not seen by the one with the smaller (non-empty) map. A unique constraint on the
  * identifying property is exact in every case, and remains the declaration to use where it applies.</li>
  * </ul>
+ * The monitor guards only the two arrays: no I/O and no other lock is ever taken while holding it, which is what makes it safe to take
+ * under the commit file locks without a lock-order inversion. Keep it that way.
+ * <p>
  * In memory, per database and per server: a transaction originated on another member of a cluster commits through its own leader
  * and is checked there, where the conflicting commits are.
  *
@@ -118,7 +121,7 @@ public final class MergedEdgeRegistry {
     for (int i = 0; i < markedCount; i++) {
       final int stripe = marked[i];
       lastCommit[stripe] = committedAt;
-      --inFlight[stripe];
+      unmark(stripe);
     }
   }
 
@@ -127,7 +130,18 @@ public final class MergedEdgeRegistry {
     if (inFlight == null)
       return;
     for (int i = 0; i < markedCount; i++)
-      --inFlight[marked[i]];
+      unmark(marked[i]);
+  }
+
+  /** Never below zero: a stripe left marked by a double release would refuse every later commit in it, for the life of the database. */
+  private void unmark(final int stripe) {
+    if (inFlight[stripe] > 0)
+      --inFlight[stripe];
+  }
+
+  /** How many commits are writing the stripe now, for the tests. */
+  synchronized int inFlight(final int stripe) {
+    return inFlight == null ? 0 : inFlight[stripe];
   }
 
   /**

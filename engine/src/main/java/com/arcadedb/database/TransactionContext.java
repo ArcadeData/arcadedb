@@ -940,7 +940,10 @@ public class TransactionContext implements Transaction {
     return insertReservationCount;
   }
 
-  /** How many match-or-create relationships the transaction registered, both counts packed in one long (issue #11482). */
+  /**
+   * How many match-or-create relationships the transaction registered, both counts packed in one long (issue #11482). Two counts,
+   * not one: a relationship matched by properties marks one more stripe than it checks, the type-only one of its pair and type.
+   */
   long getMergedEdgeMark() {
     return ((long) mergedEdgeCheckedCount << 32) | (mergedEdgeMarkedCount & 0xFFFFFFFFL);
   }
