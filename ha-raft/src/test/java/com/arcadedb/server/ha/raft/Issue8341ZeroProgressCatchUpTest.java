@@ -240,6 +240,17 @@ class Issue8341ZeroProgressCatchUpTest {
     assertThat(server.isFollowerStuckDiverged()).isTrue();
   }
 
+  /** The caller, not only the predicate (issue #11493): the leader's reported commit index equals the applied index. */
+  @Test
+  void followerCaughtUpToTheLeaderReportedCommitIsNotStuckDiverged() throws Exception {
+    final ArcadeStateMachine sm = new FakeArcadeStateMachine().lastAppliedTermIndex(TermIndex.valueOf(35, 216_693));
+
+    final RaftHAServer server = followerWith(sm, 36, 216_693, 216_693);
+    setField(server, "leaderReportedCommitIndex", 216_693L);
+
+    assertThat(server.isFollowerStuckDiverged()).isFalse();
+  }
+
   /**
    * The caller of the lag check: a follower whose catch-up stopped applying (commit far ahead, applied frozen) is
    * reported lagging on the second tick instead of being exempted forever by the sticky flag.

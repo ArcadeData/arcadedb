@@ -2686,7 +2686,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // commitIndex == appliedIndex hid exactly the signature below.
     final long commitIndex = getCommitIndex();
     return isStuckDivergedState(getLeaderId() != null, isActivelyCatchingUp(sm.isCatchingUp(), applied.getIndex(), commitIndex),
-        sm.isSnapshotDownloadPending(), getCurrentTerm(), applied.getTerm(), applied.getIndex(), commitIndex);
+        sm.isSnapshotDownloadPending(), getCurrentTerm(), applied.getTerm(), applied.getIndex(), commitIndex,
+        leaderReportedCommitIndex);
   }
 
   /**
@@ -2717,7 +2718,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * that recognizes a leader, is neither catching up nor installing a snapshot, has applied everything it
    * could locally commit ({@code commitIndex == appliedIndex}) yet at a stale term
    * ({@code currentTerm > appliedTerm}). Any negative term/index input (state not readable) yields
-   * {@code false}, including a negative {@code appliedTerm}.
+   * {@code false}, including a negative {@code appliedTerm}. A follower whose applied index has reached the commit
+   * index its leader last reported ({@code leaderReportedCommitIndex}, {@code -1} when unknown) does not match
+   * either: the leader has committed nothing it could be rejecting (issue #11493).
    * <p>
    * Note this signature is satisfied by a genuine Raft-log divergence and also, in principle, by a
    * follower that simply cannot receive the leader's current-term entries for a sustained period (a
@@ -2731,10 +2734,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean isStuckDivergedState(final boolean leaderPresent, final boolean catchingUp,
       final boolean snapshotPending, final long currentTerm, final long appliedTerm, final long appliedIndex,
-      final long commitIndex) {
+      final long commitIndex, final long leaderReportedCommitIndex) {
     if (!leaderPresent || catchingUp || snapshotPending)
       return false;
     if (currentTerm < 0 || appliedTerm < 0 || appliedIndex < 0 || commitIndex < 0)
+      return false;
+    // Issue #11493: the leader itself has committed nothing beyond what this follower applied (an idle cluster right
+    // after a leader change, before the new term's first commit), so there is nothing to reject and the applied term
+    // cannot advance. Applied entries are committed, hence part of the leader's log: not divergence. A negative
+    // figure means the leader has not reported one yet, and keeps the signature below.
+    if (leaderReportedCommitIndex >= 0 && leaderReportedCommitIndex <= appliedIndex)
       return false;
     // We have applied everything we could locally commit, but at a stale term: we are rejecting the
     // leader's current-term entries and cannot move forward.
