@@ -107,6 +107,25 @@ class Issue11483StatementSplitTest {
   }
 
   @Test
+  @DisplayName("[#11483] a bracket or brace inside a quoted form is not counted, a stray closing one is harmless")
+  void bracketsAndBracesOutsideALiteral() {
+    assertThat(split("SELECT '[';SELECT '{';SELECT \"}\" FROM t;SELECT 4"))
+        .containsExactly("SELECT '['", "SELECT '{'", "SELECT \"}\" FROM t", "SELECT 4");
+    assertThat(split("SELECT /* [ { */ 1;SELECT 2 -- ]\n;SELECT 3")).containsExactly("SELECT /* [ { */ 1", "SELECT 2 -- ]\n", "SELECT 3");
+    // a closing bracket or brace that opens nothing leaves the depth at zero, so the separators after it still split
+    assertThat(split("SELECT ];SELECT };SELECT 3")).containsExactly("SELECT ]", "SELECT }", "SELECT 3");
+  }
+
+  @Test
+  @DisplayName("[#11483] an unclosed bracket or brace keeps the rest of the text in one statement, which the parser refuses whole")
+  void unclosedBracketOrBrace() {
+    // PostgreSQL refuses such a message whole, at its raw parse, before running anything; one statement that fails to parse
+    // runs nothing either
+    assertThat(split("SELECT [1;SELECT 2")).containsExactly("SELECT [1;SELECT 2");
+    assertThat(split("SELECT {1;SELECT 2")).containsExactly("SELECT {1;SELECT 2");
+  }
+
+  @Test
   @DisplayName("[#11483] an ArcadeDB context variable is no dollar-quoted literal")
   void contextVariable() {
     assertThat(split("SELECT $current;SELECT 2")).containsExactly("SELECT $current", "SELECT 2");
