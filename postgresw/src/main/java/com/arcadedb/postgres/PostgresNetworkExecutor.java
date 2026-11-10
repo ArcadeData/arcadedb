@@ -284,6 +284,16 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private boolean  skipUntilSync              = false;
   /**
+   * True while a simple-query message holding several statements is being run (issue #11483): its statements form one
+   * implicit transaction block, as in PostgreSQL.
+   */
+  private boolean  multiStatementQuery        = false;
+  /**
+   * True while a statement of a multi-statement simple query runs that more statements of the same message follow: its
+   * success must leave the message's implicit block open for them instead of committing it (issue #11483).
+   */
+  private boolean  simpleQueryBlockContinues  = false;
+  /**
    * The type of the frontend message being handled, for the main loop's catch-all: it decides whether an exception
    * escaping a handler raises {@link #skipUntilSync} (extended protocol) or not (simple query protocol).
    */
@@ -1313,6 +1323,87 @@ public class PostgresNetworkExecutor extends Thread {
       return;
     }
 
+    final long deserStart = System.nanoTime();
+    try {
+      final List<String> statements;
+      try {
+        statements = splitSimpleQuery(readString());
+      } catch (final Exception e) {
+        failSimpleQuery(clientMessage("Error on executing query: " + e.getMessage(), e), sqlStateFor(e));
+        return;
+      }
+
+      final int count = statements.size();
+      if (count <= 1) {
+        executeSimpleStatement(count == 0 ? "" : statements.get(0), deserStart);
+        return;
+      }
+
+      // Several statements in one message (issue #11483): run in order, each answered on its own, stopping at the first
+      // error, inside ONE implicit transaction block - committed with the last statement, rolled back as a whole by an
+      // error - exactly as PostgreSQL's exec_simple_query() runs them. A BEGIN among them turns the block into an
+      // explicit one (the statements before it included), a COMMIT/ROLLBACK ends it and the next write opens another.
+      multiStatementQuery = true;
+      long statementStart = deserStart;
+      for (int i = 0; i < count; i++) {
+        simpleQueryBlockContinues = i < count - 1;
+        if (!executeSimpleStatement(statements.get(i), statementStart))
+          break;
+        statementStart = System.nanoTime();
+      }
+    } finally {
+      multiStatementQuery = false;
+      simpleQueryBlockContinues = false;
+      if (!explicitTransactionStarted)
+        // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
+        // end with it exactly as they do at a Sync (issue #8212)
+        dropPortals();
+      // ONE ReadyForQuery for the whole message, whatever number of statements it held
+      writeReadyForQueryMessage();
+    }
+  }
+
+  /**
+   * The statements of a simple-query message (issue #11483). A text in SQL - no language marker, or {@code {sql}} - is
+   * split on its {@code ;} separators as PostgreSQL's lexer reads them; one that selects another language is that
+   * language's to read, a SQL script's or a JavaScript program's own {@code ;} included, and is handed over whole. An
+   * empty list for a text with no statement at all (only separators, whitespace and comments), the empty query.
+   */
+  private List<String> splitSimpleQuery(final String text) {
+    try {
+      if (!PostgresQueryLanguages.SQL.equals(languages.select(text).language()))
+        return List.of(text);
+    } catch (final PostgresQueryLanguages.Refusal refusal) {
+      // Refused again, and answered, by the statement itself
+      return List.of(text);
+    }
+    return PostgresQuotedIdentifierRewriter.splitStatements(text, sessionSettings.standardConformingStrings(), QUOTED_IDENTIFIERS);
+  }
+
+  /**
+   * Opens the implicit transaction block the statements of a multi-statement simple query share (issue #11483), before a
+   * statement the engine runs while more statements of the same message follow it: without it every write committed its own
+   * statement-level transaction, and an error in a later statement could not roll it back as PostgreSQL does. A transaction
+   * already open is joined. The last statement of the message needs none - nothing after it can fail - and an explicit block
+   * is open already.
+   * <p>
+   * Unlike {@link #beginImplicitTransactionBlock(PostgresPortal)} a read is not exempted: {@code isIdempotent()} classifies a
+   * statement by its own syntax, so a {@code SELECT} calling a library function whose body inserts reads as a read, and its
+   * write committed on its own, out of reach of the error that failed the message (#11483 review). The pipeline keeps the
+   * exemption because nearly all JDBC reads arrive there; a message of several statements is rare enough that a transaction
+   * around a read in it costs nothing that matters.
+   */
+  private void beginSimpleQueryBlock() {
+    if (simpleQueryBlockContinues && !database.isTransactionActive())
+      database.begin();
+  }
+
+  /**
+   * Runs one statement of a simple-query message and answers it, everything but the ReadyForQuery that ends the message.
+   *
+   * @return false when the statement failed, so the statements after it in the same message are skipped
+   */
+  private boolean executeSimpleStatement(final String rawText, final long deserStart) {
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     Query query = null;
@@ -1323,8 +1414,7 @@ public class PostgresNetworkExecutor extends Thread {
     // The registry entry a CancelRequest stops, over the same window as the slot (issue #9689)
     RunningStatement statement = null;
     try {
-      final long deserStart = System.nanoTime();
-      queryText = normalizeStatementText(readString());
+      queryText = normalizeStatementText(rawText);
 
       if (errorInTransaction) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
@@ -1344,8 +1434,9 @@ public class PostgresNetworkExecutor extends Thread {
           // ErrorResponse to know its statement never ran, and errorInTransaction must stay set so the
           // session remains aborted until COMMIT/ROLLBACK/END ends the block.
           writeError(ERROR_SEVERITY.ERROR, ABORTED_TRANSACTION_MESSAGE, "25P02");
+          return false;
         }
-        return;
+        return true;
       }
 
       if (isEmptyStatement(queryText)) {
@@ -1353,7 +1444,7 @@ public class PostgresNetworkExecutor extends Thread {
         // PostgreSQL closes the transaction even for an empty query string (issue #8214)
         commitSimpleQueryTransaction();
         emptyQueryResponse();
-        return;
+        return true;
       }
 
       query = getLanguageAndQuery(queryText);
@@ -1369,12 +1460,13 @@ public class PostgresNetworkExecutor extends Thread {
       if (PostgresCopyStatement.isCopy(query.query)) {
         final PostgresCopyStatement copy = PostgresCopyStatement.parse(query.query);
         final Statement inner = "sql".equalsIgnoreCase(query.language) ? parseStatement(copy.getQuery()) : null;
+        beginSimpleQueryBlock();
         final int rows = copyOut(copy, query.language, NO_PARAMETERS, inner, profile);
         // Unlike the ordinary path below, the CopyData/CopyDone are already sent when this commits, so a failed
         // commit is reported after them - the same order as PostgreSQL, whose finish_xact_command() follows DoCopy()
         commitSimpleQueryTransaction();
         writeCommandComplete("COPY", rows);
-        return;
+        return true;
       }
 
       // ROLLBACK TO <savepoint> promises to discard every write made since that savepoint, but this server has
@@ -1385,7 +1477,7 @@ public class PostgresNetworkExecutor extends Thread {
       // statement is refused once the session is aborted - is the only reply that cannot silently lose data.
       if (query.query.toUpperCase(Locale.ENGLISH).startsWith("ROLLBACK TO ")) {
         failSimpleQuery(ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
-        return;
+        return false;
       }
 
       // Reused below for both the schema-fallback and the target-type resolution, but only set in the one
@@ -1459,6 +1551,7 @@ public class PostgresNetworkExecutor extends Thread {
             answersNoRows = true;
             resultSet = new IteratorResultSet(Collections.emptyIterator());
           } else {
+            beginSimpleQueryBlock();
             admission = QueryAdmissionGate.getInstance().admit();
             statement = startStatement(query.language, query.query);
             resultSet = database.command(query.language, toEngineText(query.language, query.query), server.getConfiguration());
@@ -1500,6 +1593,7 @@ public class PostgresNetworkExecutor extends Thread {
       writeCommandComplete(answersNoRows ? null : parsedStatement, commandTag,
           rowlessWrite ? affectedRecords(parsedStatement, cachedResultSet) : cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
+      return true;
 
     } catch (final PostgresCopyStatement.CopyException e) {
       // A COPY this server declines is not a syntax error, and the message says what to do instead.
@@ -1516,17 +1610,13 @@ public class PostgresNetworkExecutor extends Thread {
       if (statement != null)
         statement.close();
       CommandTimeoutOverride.clear();
-      if (!explicitTransactionStarted)
-        // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
-        // end with it exactly as they do at a Sync (issue #8212)
-        dropPortals();
-      writeReadyForQueryMessage();
       if (query != null)
         recordPostgresProfile(profile, query.language, query.query);
       else if (queryText != null && !queryText.isEmpty())
         recordPostgresProfile(profile, "sql", queryText);
       QueryProfile.popCurrent();
     }
+    return false;
   }
 
   private void recordPostgresProfile(final QueryProfile profile, final String language, final String queryText) {
@@ -3692,6 +3782,16 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
+      if (PostgresQueryLanguages.SQL.equals(query.language)
+          && PostgresQuotedIdentifierRewriter.splitStatements(statementText, sessionSettings.standardConformingStrings(), QUOTED_IDENTIFIERS)
+          .size() > 1) {
+        // Only a simple query may hold several statements (issue #11483): PostgreSQL's exec_parse_message() refuses them
+        // with this message, where the engine answered a syntax error pointing at the second statement
+        setExtendedProtocolError();
+        writeError(ERROR_SEVERITY.ERROR, "cannot insert multiple commands into a prepared statement", "42601");
+        return;
+      }
+
       final String upperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
@@ -4101,7 +4201,9 @@ public class PostgresNetworkExecutor extends Thread {
   private void applySessionCommand(final PostgresSessionCommand command) {
     switch (command.kind()) {
     case DISCARD_ALL -> {
-      if (explicitTransactionStarted)
+      // The statements of a multi-statement message form an implicit transaction block, which PostgreSQL's
+      // PreventInTransactionBlock() refuses DISCARD ALL in too (issue #11483)
+      if (explicitTransactionStarted || multiStatementQuery)
         throw new PostgresSessionSettings.SettingException("DISCARD ALL cannot run inside a transaction block", "25001");
       sessionSettings.resetAll();
       preparedStatements.clear();
@@ -5094,7 +5196,9 @@ public class PostgresNetworkExecutor extends Thread {
    * transaction has already committed itself.
    */
   private void commitSimpleQueryTransaction() {
-    if (!explicitTransactionStarted) {
+    // A statement of a multi-statement message that more statements follow leaves the message's implicit block open for
+    // them: the last one commits it, an error in any of them discards it, SETs included (issue #11483)
+    if (!explicitTransactionStarted && !simpleQueryBlockContinues) {
       if (database.isTransactionActive())
         database.commit();
       // A SET outside an explicit block is a transaction of its own too, and a SET LOCAL there ends with it (#8242)
