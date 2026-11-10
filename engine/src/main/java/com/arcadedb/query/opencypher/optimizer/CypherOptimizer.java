@@ -38,13 +38,17 @@ import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
+import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
 import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
+import com.arcadedb.query.opencypher.executor.operators.EdgeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -89,6 +93,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -280,12 +285,34 @@ public class CypherOptimizer {
         // above would land on, so verify it here, now that the concrete anchor is known, and decline the
         // whole plan (falling back to the legacy pipeline, which evaluates every alternative correctly)
         // rather than build an operator tree that would return an incomplete result.
-        if (hasUnanchoredLabelDisjunction(logicalPlan, component.variables(), componentAnchor.getVariable()))
+        PhysicalOperator nodeAnchorOperator = null;
+        ExpansionPlan nodeExpansion = null;
+        if (!hasUnanchoredLabelDisjunction(logicalPlan, component.variables(), Set.of(componentAnchor.getVariable()))) {
+          nodeAnchorOperator = createAnchorOperator(componentAnchor);
+          nodeExpansion = buildExpansionChain(logicalPlan, component.relationships(), componentAnchor, nodeAnchorOperator,
+              needsEdgeTracking, gavTracked, syntheticEdgeVarCounter, null);
+        }
+
+        // Issue #11481: a relationship whose type's index the WHERE clause pins can be a more selective start than any node. The
+        // seek binds both endpoints and checks their labels, a disjunction included, so the plan is the cheaper of the two
+        final EdgeSeedPlan edgeSeed = edgeIndexSeedFor(logicalPlan, component);
+        if (edgeSeed != null
+            && !hasUnanchoredLabelDisjunction(logicalPlan, component.variables(), Set.copyOf(edgeSeed.operator().getBoundVariables()))) {
+          final List<LogicalRelationship> rest = new ArrayList<>(component.relationships());
+          rest.remove(edgeSeed.relationship());
+          final ExpansionPlan seeded = buildExpansionChain(logicalPlan, rest, edgeSeed.anchor(), edgeSeed.operator(),
+              needsEdgeTracking, gavTracked, syntheticEdgeVarCounter, edgeSeed.relationship());
+          if (nodeExpansion == null || seeded.root().getEstimatedCost() < nodeExpansion.root().getEstimatedCost()) {
+            componentAnchor = edgeSeed.anchor();
+            nodeAnchorOperator = edgeSeed.operator();
+            nodeExpansion = seeded;
+          }
+        }
+        if (nodeExpansion == null)
           return null;
 
-        final PhysicalOperator componentAnchorOperator = createAnchorOperator(componentAnchor);
-        final ExpansionPlan expansion = buildExpansionChain(logicalPlan, component.relationships(),
-            componentAnchor, componentAnchorOperator, needsEdgeTracking, gavTracked, syntheticEdgeVarCounter);
+        final PhysicalOperator componentAnchorOperator = nodeAnchorOperator;
+        final ExpansionPlan expansion = nodeExpansion;
 
         if (anchor == null) {
           anchor = componentAnchor;
@@ -852,15 +879,86 @@ public class CypherOptimizer {
    * (return {@code null}) instead, falling back to the legacy pipeline
    */
   private boolean hasUnanchoredLabelDisjunction(final LogicalPlan logicalPlan, final Set<String> componentVariables,
-      final String anchorVariable) {
+      final Set<String> anchorVariables) {
     for (final String variable : componentVariables) {
-      if (variable.equals(anchorVariable))
+      if (anchorVariables.contains(variable))
         continue;
       final LogicalNode node = logicalPlan.getPatternNode(variable);
       if (node != null && node.isLabelDisjunction() && node.getLabels().size() > 1)
         return true;
     }
     return false;
+  }
+
+  /** A relationship the plan can start from by its type's index, the seek doing it and the anchor it stands for (issue #11481). */
+  private record EdgeSeedPlan(LogicalRelationship relationship, EdgeIndexSeek operator, AnchorSelection anchor) {
+  }
+
+  /**
+   * The cheapest relationship of a component its type's index can answer, or null (issue #11481): a fixed-length, directed, named
+   * relationship whose key, or a leading prefix of it, the {@code WHERE} clause pins with row-independent equalities or
+   * {@code IN}-lists, over every type it names (see {@link EdgeIndexSeedPlanner}). The seek binds both endpoints and checks their
+   * labels; the whole {@code WHERE} clause still filters above it, inline node maps included, which the logical plan lowered into it.
+   * <p>
+   * Left out: a component holding a unidirectional type besides the seeded hop, whose reachability the anchor validation
+   * reasons about from one node; and a prefix seek in a statement that writes, which could meet the entries its own writes move
+   * inside the range it walks.
+   */
+  private EdgeSeedPlan edgeIndexSeedFor(final LogicalPlan logicalPlan, final RelationshipComponent component) {
+    if (logicalPlan.getWhereFilters().isEmpty())
+      return null;
+    if (component.relationships().size() > 1 && hasUnidirectionalEdge(component.relationships()))
+      return null;
+
+    EdgeSeedPlan best = null;
+    for (final LogicalRelationship rel : component.relationships()) {
+      final String relVar = rel.getVariable();
+      if (rel.isVariableLength() || !rel.hasTypes() || relVar == null || relVar.isEmpty() || relVar.startsWith("  "))
+        continue;
+      if (rel.getDirection() != Direction.OUT && rel.getDirection() != Direction.IN)
+        continue;
+      final RelationshipPattern pattern = rel.getPattern();
+      if (pattern != null && (pattern instanceof QuantifiedPathPattern || pattern.hasProperties() || pattern.hasWhereExpression()))
+        continue;
+
+      final Map<String, Object> predicates = new LinkedHashMap<>();
+      for (final WhereClause where : logicalPlan.getWhereFilters())
+        EdgeIndexSeedPlanner.collectWherePredicates(relVar, where.getConditionExpression(), predicates);
+      final List<EdgeIndexSeedPlanner.TypeSeek> seeks = EdgeIndexSeedPlanner.planSeeks(database.getSchema(), rel.getTypes(),
+          predicates);
+      if (seeks == null)
+        continue;
+
+      long edgeCount = 0;
+      long keys = 0;
+      boolean wholeKeys = true;
+      for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks) {
+        edgeCount += statisticsProvider.getCardinality(seek.edgeType());
+        keys += seek.keyCount();
+        wholeKeys &= database.getSchema().existsIndex(seek.indexName())
+            && database.getSchema().getIndexByName(seek.indexName()).getPropertyNames().size() == seek.propertyNames().length;
+      }
+      if (!wholeKeys && !statement.isReadOnly())
+        continue;
+
+      final long rows = EdgeIndexSeedPlanner.estimateRows(seeks, edgeCount);
+      // Each key is an index lookup; each edge found is read with its two endpoints, the work of an expansion step
+      final double cost = keys * CostModel.INDEX_SEEK_COST
+          + rows * (CostModel.INDEX_LOOKUP_COST_PER_ROW + CostModel.EXPAND_COST_PER_ROW);
+
+      final LogicalNode source = logicalPlan.getPatternNode(rel.getSourceVariable());
+      final LogicalNode target = logicalPlan.getPatternNode(rel.getTargetVariable());
+      final EdgeIndexSeek operator = new EdgeIndexSeek(seeks, rel.getDirection(), rel.getSourceVariable(), relVar,
+          rel.getTargetVariable(),
+          source != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(source.getLabels(), source.isLabelDisjunction()) :
+              EdgeIndexSeedPlanner.EndpointFilter.NONE,
+          target != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(target.getLabels(), target.isLabelDisjunction()) :
+              EdgeIndexSeedPlanner.EndpointFilter.NONE,
+          database.getSchema(), cost, rows);
+      if (best == null || cost < best.operator().getEstimatedCost())
+        best = new EdgeSeedPlan(rel, operator, new AnchorSelection(rel.getSourceVariable(), source, cost, rows));
+    }
+    return best;
   }
 
   /**
@@ -1051,13 +1149,16 @@ public class CypherOptimizer {
    * @param needsEdgeTracking    relationships whose identity can collide in their MATCH clause
    * @param gavTracked           the colliding relationships walked through a view, with the view (#8394)
    * @param syntheticEdgeCounter plan-wide counter for anonymous tracking bindings
+   * @param seeded               the relationship the anchor already binds, with both its endpoints, when the anchor is an
+   *                             {@link EdgeIndexSeek} (issue #11481); null for a node anchor. It is not in {@code relationships}
    *
    * @return root operator and relationship bindings of the expansion chain
    */
   private ExpansionPlan buildExpansionChain(final LogicalPlan logicalPlan,
       final List<LogicalRelationship> relationships, final AnchorSelection anchor,
       final PhysicalOperator anchorOperator, final Set<LogicalRelationship> needsEdgeTracking,
-      final Map<LogicalRelationship, GraphTraversalProvider> gavTracked, final int[] syntheticEdgeCounter) {
+      final Map<LogicalRelationship, GraphTraversalProvider> gavTracked, final int[] syntheticEdgeCounter,
+      final LogicalRelationship seeded) {
     // Get optimization rules
     final JoinOrderRule joinOrderRule = (JoinOrderRule) rules.get(3);
     final ExpandIntoRule expandIntoRule = (ExpandIntoRule) rules.get(2);
@@ -1065,6 +1166,10 @@ public class CypherOptimizer {
     // Determine which variables are bound
     final Set<String> boundVariables = expandIntoRule.determineBoundVariables(
         logicalPlan, anchor.getVariable());
+    if (seeded != null) {
+      boundVariables.add(seeded.getSourceVariable());
+      boundVariables.add(seeded.getTargetVariable());
+    }
 
     // Order relationships by estimated cardinality
     final List<LogicalRelationship> orderedRels =
@@ -1080,6 +1185,9 @@ public class CypherOptimizer {
     // clause - cross-clause edge reuse is valid Cypher and must not be blocked.
     PhysicalOperator currentOp = anchorOperator;
     final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
+    // A later hop of the same clause must not reuse the relationship the anchor bound
+    if (seeded != null && needsEdgeTracking.contains(seeded))
+      relVarsPerClause.computeIfAbsent(seeded.getClauseIndex(), k -> new HashSet<>()).add(seeded.getVariable());
 
     for (final LogicalRelationship rel : orderedRels) {
       final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
@@ -1510,7 +1618,9 @@ public class CypherOptimizer {
         addVariable(bound, gavExpand.getTargetVariable());
       } else if (op instanceof GAVExpandInto gavInto) {
         addVariable(bound, gavInto.getTargetVariable());
-      } else if (op == anchorOperator)
+      } else if (op == anchorOperator && op instanceof EdgeIndexSeek seek)
+        bound.addAll(seek.getBoundVariables());
+      else if (op == anchorOperator)
         addVariable(bound, anchorVariable);
       boundAt.set(i, new HashSet<>(bound));
     }

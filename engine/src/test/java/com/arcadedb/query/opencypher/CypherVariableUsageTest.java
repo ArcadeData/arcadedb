@@ -204,7 +204,7 @@ class CypherVariableUsageTest {
    * Issue #6567 review: a relationship read through a chained property access on a function result -
    * {@code startNode(r).name}, not the simple {@code r.name} - must also keep its real binding.
    * {@link com.arcadedb.query.opencypher.parser.CypherExpressionWalker} had no case for that node type
-   * (built by {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} whenever a property access
+   * (built by {@code ChainedPropertyAccessExpression} whenever a property access
    * follows something other than a bare variable) and treated it as a leaf, so the walk never reached
    * the {@code r} inside {@code startNode(r)}.
    */

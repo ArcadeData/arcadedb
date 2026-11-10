@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
@@ -488,16 +489,12 @@ public class AnchorSelector {
   }
 
   /**
-   * Returns true if an inline property value is something the seek operator can turn into a key
-   * without a row: a literal, or a parameter resolved from the command context. An expression that
-   * has to be evaluated - {@code $data.uuid}, {@code other.property} - is not seekable and belongs in
-   * the Filter.
+   * Returns true if an inline property value is something the seek operator can turn into a key without a row: a literal, a
+   * parameter or a part of one ({@code $data.uuid}, issue #11480), see {@link RowIndependentValues#isParameterDerived}. An
+   * expression that reads a row - {@code other.property} - or computes a value belongs in the Filter.
    */
   private static boolean isStaticallySeekable(final Object value) {
-    if (value instanceof ParameterExpression || value instanceof LiteralExpression
-        || value instanceof CypherASTBuilder.ParameterReference)
-      return true;
-    return !(value instanceof Expression);
+    return RowIndependentValues.isSeekable(value);
   }
 
   /**
@@ -655,22 +652,24 @@ public class AnchorSelector {
     final Expression right = comparison.getRight();
 
     // Check if left side is a property access on our variable
-    if (left instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable)) {
-      // Try to extract constant value from right side
-      if (right instanceof LiteralExpression literal)
-        predicates.putIfAbsent(propAccess.getPropertyName(), literal.getValue());
-      else if (right instanceof ParameterExpression)
-        // Store the ParameterExpression so NodeIndexSeek can resolve it at runtime
-        predicates.putIfAbsent(propAccess.getPropertyName(), right);
-    }
+    if (left instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable))
+      putSeekValue(predicates, propAccess.getPropertyName(), right);
 
     // Also check reverse: value = property (e.g., 500 = p.id)
-    if (right instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable)) {
-      if (left instanceof LiteralExpression literal)
-        predicates.putIfAbsent(propAccess.getPropertyName(), literal.getValue());
-      else if (left instanceof ParameterExpression)
-        predicates.putIfAbsent(propAccess.getPropertyName(), left);
-    }
+    if (right instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable))
+      putSeekValue(predicates, propAccess.getPropertyName(), left);
+  }
+
+  /**
+   * Keeps the value side of an equality when a seek can be built from it: a literal as its value, a parameter or a part of one
+   * ({@code $d.u}, issue #11480) as the expression itself, which {@code NodeIndexSeek} resolves once per execution. Anything else -
+   * a value only a row can give, a computed one - is left to the Filter, see {@link RowIndependentValues#isParameterDerived}.
+   */
+  private static void putSeekValue(final Map<String, Object> predicates, final String property, final Expression value) {
+    if (value instanceof LiteralExpression literal)
+      predicates.putIfAbsent(property, literal.getValue());
+    else if (RowIndependentValues.isParameterDerived(value))
+      predicates.putIfAbsent(property, value);
   }
 
   /**
@@ -936,8 +935,9 @@ public class AnchorSelector {
     seekValues.scalar.add(operand);
   }
 
+  /** A value a node seek can be built from before any row exists (issue #11480), see {@link RowIndependentValues#isParameterDerived}. */
   private static boolean isConstant(final Expression expression) {
-    return expression instanceof LiteralExpression || expression instanceof ParameterExpression;
+    return RowIndependentValues.isParameterDerived(expression);
   }
 
   /**
@@ -1024,8 +1024,11 @@ public class AnchorSelector {
           } else if (right instanceof ParameterExpression) {
             isParameter = true;
             value = ((ParameterExpression) right).getParameterName();
+          } else if (RowIndependentValues.isParameterDerived(right)) {
+            // A field of a parameter, $d.from: resolved by the scan (issue #11480)
+            value = right;
           } else {
-            return; // Unsupported right side (function call, etc.)
+            return; // A bound only a row can give
           }
 
           final RangePredicate predicate = new RangePredicate(propertyName, operator, value, isParameter);
@@ -1048,8 +1051,10 @@ public class AnchorSelector {
           } else if (left instanceof ParameterExpression) {
             isParameter = true;
             value = ((ParameterExpression) left).getParameterName();
+          } else if (RowIndependentValues.isParameterDerived(left)) {
+            value = left;
           } else {
-            return; // Unsupported left side
+            return; // A bound only a row can give
           }
 
           // Flip the operator: 65 > age  becomes  age < 65

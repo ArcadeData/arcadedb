@@ -23,6 +23,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MergedEdgeRegistry;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -365,6 +366,17 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
+  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the stripes of the relationships it created by a
+  // match-or-create: the ones its commit checks, and the ones it marks. Primitive arrays grown on demand, null until the first
+  private       long                                 mergedEdgeEpoch;
+  private       int[]                                mergedEdgeChecked;
+  private       int                                  mergedEdgeCheckedCount;
+  private       int[]                                mergedEdgeMarked;
+  private       int                                  mergedEdgeMarkedCount;
+  // #11482: the stripes are reserved in the registry, so they have to be marked committed or released when the transaction ends
+  private       boolean                              mergedEdgesReserved;
+  // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
+  private       boolean                              mergedEdgesPastCommitPoint;
   // #10588: TransactionManager.getIndexRegistrationSequence() when this transaction began. An index bound to a type after it owes
   // this transaction's writes to the buckets it covers an entry each, made up at the commit
   private       long                                 indexRegistrationSequenceAtBegin;
@@ -504,6 +516,7 @@ public class TransactionContext implements Transaction {
       unidirectionalEdgeChanges.transactionEnded();
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
+    mergedEdgeEpoch = database.getTransactionManager().getMergedEdges().getSequence();
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
@@ -925,6 +938,17 @@ public class TransactionContext implements Transaction {
 
   int getInsertReservationCount() {
     return insertReservationCount;
+  }
+
+  /** How many match-or-create relationships the transaction registered, both counts packed in one long (issue #11482). */
+  long getMergedEdgeMark() {
+    return ((long) mergedEdgeCheckedCount << 32) | (mergedEdgeMarkedCount & 0xFFFFFFFFL);
+  }
+
+  /** A failed statement takes back the match-or-create relationships it registered: they were never created. */
+  void restoreMergedEdges(final long mark) {
+    mergedEdgeCheckedCount = (int) (mark >>> 32);
+    mergedEdgeMarkedCount = (int) mark;
   }
 
   int getAfterCommitCallbackCount() {
@@ -3524,6 +3548,8 @@ public class TransactionContext implements Transaction {
         }
       }
 
+      reserveMergedEdges();
+
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
       final PageManager pageManager = database.getPageManager();
@@ -3790,6 +3816,7 @@ public class TransactionContext implements Transaction {
 
       // Every file lock is held and nothing can refuse this commit any more: this is the order the callbacks that mirror it run in
       reachCommitPoint();
+      mergedEdgesPastCommitPoint = true;
 
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
@@ -3827,6 +3854,13 @@ public class TransactionContext implements Transaction {
         final IntHashSet targetBuckets = new IntHashSet();
         unidirectionalEdgeTargets.forEach(target -> targetBuckets.add((int) (target >>> UNIDIRECTIONAL_TARGET_BUCKET_SHIFT)));
         database.getTransactionManager().unidirectionalEdgesCommitted(targetBuckets);
+      }
+
+      // #11482: AFTER the relationships are published, so a transaction that began before this bump is refused at its commit and one
+      // that began after it reads them
+      if (mergedEdgesReserved) {
+        mergedEdgesReserved = false;
+        database.getTransactionManager().getMergedEdges().committed(mergedEdgeMarked, mergedEdgeMarkedCount);
       }
 
       // UPDATE RECORD COUNT
@@ -4372,6 +4406,7 @@ public class TransactionContext implements Transaction {
     unidirectionalEdgeTargets = null;
     unidirectionalScanEpoch = -1L;
     scannedBuckets = null;
+    endMergedEdges();
     indexesReconciled = null;
     derived = null;
     bucketFirstWriteSequences = null;
@@ -4638,6 +4673,73 @@ public class TransactionContext implements Transaction {
       throw new ConcurrentModificationException("Vertex " + target + ", the target of a unidirectional edge created by this "
           + "transaction, was deleted by a concurrent transaction. Please retry the operation");
     });
+  }
+
+  /**
+   * Remembers a relationship this transaction created because a match-or-create did not find it (issue #11482): a Cypher
+   * {@code MERGE}, {@code merge.relationship}, SQL {@code CREATE EDGE ... IF NOT EXISTS}. Nothing a page version sees protects the
+   * read that did not find it, because the same relationship created by a concurrent transaction is an append to the same edge list,
+   * and two appends commute at commit. The commit therefore asks the {@link MergedEdgeRegistry} whether a relationship with the same
+   * key was committed since this transaction began, and refuses with a retryable conflict when one was: the retry finds it.
+   *
+   * @param from       the vertex the relationship goes out of
+   * @param to         the vertex it goes into
+   * @param type       its type
+   * @param matchedBy  the properties the statement looked for it by, null or empty when it matched by type alone
+   */
+  public void addMergedEdge(final RID from, final RID to, final String type, final Map<String, ?> matchedBy) {
+    // Outside a transaction the read was not covered by the epoch its begin takes, and nothing would commit the relationship anyway
+    if (from == null || to == null || !isActive())
+      return;
+    final int own = MergedEdgeRegistry.stripeOf(from, to, type, matchedBy);
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, own);
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, own);
+    if (matchedBy != null && !matchedBy.isEmpty())
+      // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
+      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
+  private static int[] append(int[] array, final int index, final int value) {
+    if (array == null)
+      array = new int[4];
+    else if (index == array.length)
+      array = Arrays.copyOf(array, index * 2);
+    array[index] = value;
+    return array;
+  }
+
+  /**
+   * Under the commit locks, before the page versions are validated: refuses a transaction whose match-or-create created a
+   * relationship that another transaction committed after this one began, or is committing now (issue #11482).
+   */
+  private void reserveMergedEdges() {
+    if (mergedEdgeCheckedCount == 0)
+      return;
+    if (!database.getTransactionManager().getMergedEdges()
+        .reserve(mergedEdgeChecked, mergedEdgeCheckedCount, mergedEdgeMarked, mergedEdgeMarkedCount, mergedEdgeEpoch))
+      throw new ConcurrentModificationException("A relationship this transaction created because a MERGE (or CREATE EDGE ... IF "
+          + "NOT EXISTS) did not find it was created by a concurrent transaction in the meantime. Please retry the operation");
+    mergedEdgesReserved = true;
+  }
+
+  /**
+   * The transaction ends: stripes still reserved belong to a commit that failed before publishing, and are released, or to one
+   * that failed past its commit point, whose relationships may be visible already and are published as committed.
+   */
+  private void endMergedEdges() {
+    if (mergedEdgesReserved) {
+      mergedEdgesReserved = false;
+      final MergedEdgeRegistry registry = database.getTransactionManager().getMergedEdges();
+      if (mergedEdgesPastCommitPoint)
+        registry.committed(mergedEdgeMarked, mergedEdgeMarkedCount);
+      else
+        registry.release(mergedEdgeMarked, mergedEdgeMarkedCount);
+    }
+    mergedEdgesPastCommitPoint = false;
+    mergedEdgeChecked = null;
+    mergedEdgeCheckedCount = 0;
+    mergedEdgeMarked = null;
+    mergedEdgeMarkedCount = 0;
   }
 
   /**

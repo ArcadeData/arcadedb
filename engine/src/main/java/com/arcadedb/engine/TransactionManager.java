@@ -103,6 +103,8 @@ public class TransactionManager {
   // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
   private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
+  // The relationships committed by a match-or-create, by stripe of their key (#11482)
+  private final MergedEdgeRegistry           mergedEdges                  = new MergedEdgeRegistry();
   // Sequence of the bucket indexes bound to their type, and the number each of them took (#10588): what a transaction that began
   // before an index existed asks at its commit to know which indexes it owes entries to
   private final AtomicLong                   indexRegistrationSequence = new AtomicLong();
@@ -223,6 +225,11 @@ public class TransactionManager {
    * does not hold the page-manager lock. Null in production.
    */
   static volatile Runnable                   applyChangesHookForTesting;
+
+  /** The relationships committed by a match-or-create since a given sequence (#11482). */
+  public MergedEdgeRegistry getMergedEdges() {
+    return mergedEdges;
+  }
 
   /** The sequence a delete takes before it scans for the unidirectional edges ending in its vertices (#8986). */
   public long getUnidirectionalEdgeSequence() {

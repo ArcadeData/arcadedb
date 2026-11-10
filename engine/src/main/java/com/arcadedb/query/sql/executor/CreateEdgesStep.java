@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
@@ -172,6 +173,13 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               if (properties != null && properties.length > 0) {
                 edge.set(properties);
               }
+            }
+
+            if (ifNotExists) {
+              // The check above read an edge list a concurrent CREATE EDGE ... IF NOT EXISTS may be appending the same edge to (#11482)
+              final TransactionContext tx = context.getDatabase().getTransactionIfExists();
+              if (tx != null)
+                tx.addMergedEdge(currentFrom.getIdentity(), currentTo.getIdentity(), edgeType.getName(), null);
             }
 
             // Store vertices for later connection after save

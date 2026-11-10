@@ -25,13 +25,16 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -46,6 +49,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -53,6 +57,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -82,14 +87,15 @@ import java.util.Set;
  * {@code (a)-[t:TYPE]->(a)}, asks for self-loops only. Binding both endpoints under one name would let the
  * second {@code setProperty} silently overwrite the first and pass a non-self-loop edge off as a match
  * (issue #7008), so this step enforces {@code out == in} itself for that shape and keeps the index seek.
+ * <p>
+ * Since issue #11481 the step serves every spelling of the same lookup, not only the one above: a union of types is one seek per
+ * type, one after the other ({@link EdgeIndexSeedPlanner#planSeeks}); the relationship's inline property map, which no filter above
+ * the step re-applies, is checked on each edge here; and so are the labels and inline properties of the endpoints, which let the
+ * seek answer {@code (n:Entity)-[e:T]->(m:Entity)} instead of a scan of every Entity and an expansion of every edge.
  */
 public class MatchEdgeByIndexStep extends AbstractExecutionStep {
-  private final String    edgeType;
-  /** The leading index columns the seek resolves, in key order; may be shorter than the index key. */
-  private final String[]  propertyNames;
-  /** One entry per {@link #propertyNames}: an {@link Expression} (equality) or an {@link InListValues}. */
-  private final Object[]  keyValues;
-  private final String    indexName;
+  /** One seek per relationship type of the pattern, walked in order. */
+  private final List<EdgeIndexSeedPlanner.TypeSeek> seeks;
   private final Direction direction;
   private final String    sourceVariable;
   private final String    relationshipVariable; // may be null when the edge is anonymous
@@ -97,6 +103,11 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   // True when the pattern repeats one variable at both endpoints - (a)-[t:TYPE]->(a) - which constrains the
   // hop to self-loops. Anonymous endpoints get distinct generated names, so only an explicit repeat sets it.
   private final boolean   selfLoopOnly;
+  /** What the pattern asks of the vertices bound to the source and the target, checked on each edge found */
+  private final EdgeIndexSeedPlanner.EndpointFilter sourceFilter;
+  private final EdgeIndexSeedPlanner.EndpointFilter targetFilter;
+  /** The relationship's inline property map, which no filter above re-applies; null when it has none */
+  private final Map<String, Object>                 relationshipProperties;
 
   private final ExpressionEvaluator evaluator;
 
@@ -110,34 +121,29 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   // parameters and functions such as date('...'). Mirrors MatchNodeStep.EMPTY_RESULT.
   private static final Result EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
 
-  /** Full-key equality form: one value expression per index column. */
-  public MatchEdgeByIndexStep(final String edgeType, final String[] propertyNames,
-      final Expression[] valueExpressions, final String indexName, final Direction direction,
-      final String sourceVariable, final String relationshipVariable, final String targetVariable,
-      final CommandContext context) {
-    this(edgeType, propertyNames, (Object[]) valueExpressions, indexName, direction, sourceVariable,
-        relationshipVariable, targetVariable, context);
-  }
-
   /**
-   * @param propertyNames the leading index columns covered by the predicates, in key order
-   * @param keyValues     one per column: an {@link Expression} for an equality, an {@link InListValues} for a list
+   * @param seeks                  one per relationship type, see {@link EdgeIndexSeedPlanner#planSeeks}
+   * @param sourceFilter           what the source endpoint asks of its vertex, {@link EdgeIndexSeedPlanner.EndpointFilter#NONE} for nothing
+   * @param targetFilter           the same for the target endpoint
+   * @param relationshipProperties the relationship's inline property map, null when it has none
    */
-  public MatchEdgeByIndexStep(final String edgeType, final String[] propertyNames, final Object[] keyValues,
-      final String indexName, final Direction direction, final String sourceVariable,
-      final String relationshipVariable, final String targetVariable, final CommandContext context) {
+  public MatchEdgeByIndexStep(final List<EdgeIndexSeedPlanner.TypeSeek> seeks, final Direction direction,
+      final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final EdgeIndexSeedPlanner.EndpointFilter sourceFilter, final EdgeIndexSeedPlanner.EndpointFilter targetFilter,
+      final Map<String, Object> relationshipProperties, final CommandContext context) {
     super(context);
-    if (propertyNames.length != keyValues.length)
-      throw new IllegalArgumentException("One key value per covered index column is required");
-    this.edgeType = edgeType;
-    this.propertyNames = propertyNames;
-    this.keyValues = keyValues;
-    this.indexName = indexName;
+    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks)
+      if (seek.propertyNames().length != seek.keyValues().length)
+        throw new IllegalArgumentException("One key value per covered index column is required");
+    this.seeks = seeks;
     this.direction = direction;
     this.sourceVariable = sourceVariable;
     this.relationshipVariable = relationshipVariable;
     this.targetVariable = targetVariable;
     this.selfLoopOnly = sourceVariable != null && sourceVariable.equals(targetVariable);
+    this.sourceFilter = sourceFilter != null ? sourceFilter : EdgeIndexSeedPlanner.EndpointFilter.NONE;
+    this.targetFilter = targetFilter != null ? targetFilter : EdgeIndexSeedPlanner.EndpointFilter.NONE;
+    this.relationshipProperties = relationshipProperties == null || relationshipProperties.isEmpty() ? null : relationshipProperties;
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
   }
 
@@ -151,9 +157,12 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
       private int                bufferIndex = 0;
       private boolean            finished    = false;
 
+      /** The seek of {@link #seeks} being walked, -1 before the first. */
+      private int                           typeIndex = -1;
+      private EdgeIndexSeedPlanner.TypeSeek seek;
       private Index          index;
       private boolean        wholeKey;
-      private List<Object[]> seekKeys;
+      private List<Object[]> seekKeys  = Collections.emptyList();
       private int            seekIndex = 0;
       /** RIDs already emitted, kept only when more than one seek key could yield the same edge. */
       private Set<RID>       seen;
@@ -175,26 +184,32 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
-      private void initialize() {
-        initialized = true;
+      /** Moves to the next relationship type's seek, or returns false when every one has been walked. */
+      private boolean nextTypeSeek() {
+        while (++typeIndex < seeks.size()) {
+          seek = seeks.get(typeIndex);
+          index = context.getDatabase().getSchema().getIndexByName(seek.indexName());
+          if (index == null)
+            // The planner picked an index that the schema no longer offers. Returning an empty result set
+            // here would silently drop rows the query must return, so fail instead (as NodeIndexSeek does).
+            throw new CommandExecutionException(
+                "Index '" + seek.indexName() + "' on type '" + seek.edgeType() + "' is no longer available: re-plan the query");
 
-        index = context.getDatabase().getSchema().getIndexByName(indexName);
-        if (index == null)
-          // The planner picked an index that the schema no longer offers. Returning an empty result set
-          // here would silently drop rows the query must return, so fail instead (as NodeIndexSeek does).
-          throw new CommandExecutionException(
-              "Index '" + indexName + "' on type '" + edgeType + "' is no longer available: re-plan the query");
-
-        seekKeys = resolveSeekKeys();
-        wholeKey = !seekKeys.isEmpty() && seekKeys.getFirst().length == index.getPropertyNames().size();
-        if (seekKeys.size() > 1)
-          seen = new HashSet<>();
+          seekKeys = resolveSeekKeys(seek.keyValues());
+          seekIndex = 0;
+          wholeKey = !seekKeys.isEmpty() && seekKeys.getFirst().length == index.getPropertyNames().size();
+          // An edge has one type, so the seeks of two types never return the same one: the set spans one type's keys
+          seen = seekKeys.size() > 1 ? new HashSet<>() : null;
+          if (!seekKeys.isEmpty())
+            return true;
+        }
+        return false;
       }
 
-      /** Opens the cursor for the next seek key, or returns false when every key has been walked. */
+      /** Opens the cursor for the next seek key, or returns false when every key of every type has been walked. */
       private boolean openNextCursor() {
         releaseCursor();
-        if (seekIndex >= seekKeys.size())
+        if (seekIndex >= seekKeys.size() && !nextTypeSeek())
           return false;
 
         if (wholeKey && seekIndex == 0) {
@@ -217,7 +232,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         if (!initialized) {
-          initialize();
+          initialized = true;
           if (!openNextCursor()) {
             finished = true;
             return;
@@ -273,7 +288,12 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             // type, while the record here is already loaded (the Edge cast above needs it), so the check is
             // one instanceOf on a type reference already in hand and a flag to skip it would cost more to
             // carry than to ignore.
-            if (!edge.getType().instanceOf(edgeType))
+            if (!edge.getType().instanceOf(seek.edgeType()))
+              continue;
+
+            // The inline map is a filter only this step applies: the WHERE above does not hold it (issue #11481). It also
+            // decides what the index key conversion let through, a '5' found by the key 5
+            if (relationshipProperties != null && !InlineProperties.matches(edge, relationshipProperties, EMPTY_RESULT, context))
               continue;
 
             final ResultInternal result = new ResultInternal();
@@ -284,13 +304,15 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             // the edge's OUT vertex; for IN the pattern is written (a)<-[t]-(b), so the source (a) is the
             // edge's IN vertex.
             try {
-              if (direction == Direction.IN) {
-                result.setProperty(sourceVariable, edge.getInVertex());
-                result.setProperty(targetVariable, edge.getOutVertex());
-              } else {
-                result.setProperty(sourceVariable, edge.getOutVertex());
-                result.setProperty(targetVariable, edge.getInVertex());
-              }
+              final Vertex source = direction == Direction.IN ? edge.getInVertex() : edge.getOutVertex();
+              final Vertex target = direction == Direction.IN ? edge.getOutVertex() : edge.getInVertex();
+              // The endpoints' labels and inline properties, which the seek answers instead of a scan of the label (#11481)
+              if (!sourceFilter.isEmpty() && !sourceFilter.matches(source, EMPTY_RESULT, context))
+                continue;
+              if (!targetFilter.isEmpty() && !targetFilter.matches(target, EMPTY_RESULT, context))
+                continue;
+              result.setProperty(sourceVariable, source);
+              result.setProperty(targetVariable, target);
             } catch (final RecordNotFoundException e) {
               // Ghost endpoint (dangling edge left by a rollback/HA resync): skip the row.
               continue;
@@ -335,7 +357,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
    * {@code WHERE} filter above re-validates; a leading column with no value yields no seek at all, as no edge
    * can equal {@code null}.
    */
-  private List<Object[]> resolveSeekKeys() {
+  private List<Object[]> resolveSeekKeys(final Object[] keyValues) {
     final List<List<Object>> columns = new ArrayList<>(keyValues.length);
     for (final Object keyValue : keyValues) {
       final List<Object> values = resolveColumnValues(keyValue);
@@ -406,41 +428,66 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     return value;
   }
 
+  /**
+   * {@code MATCH EDGE BY INDEX (a)-[t:T]->(b) [index: ...] [key: ...]}, with one index and key per relationship type of a union. Shared
+   * with the cost-based plan's {@code EdgeIndexSeek}, which runs this step.
+   */
+  public String describe(final Schema schema) {
+    return describe(schema, seeks, direction, sourceVariable, relationshipVariable, targetVariable, sourceFilter, targetFilter);
+  }
+
+  /** The description of a seek with these parts, for an operator that has no step at hand to ask. */
+  public static String describe(final Schema schema, final List<EdgeIndexSeedPlanner.TypeSeek> seeks, final Direction direction,
+      final String sourceVariable, final String relationshipVariable, final String targetVariable,
+      final EdgeIndexSeedPlanner.EndpointFilter sourceFilter, final EdgeIndexSeedPlanner.EndpointFilter targetFilter) {
+    final StringBuilder builder = new StringBuilder("MATCH EDGE BY INDEX ");
+    builder.append("(").append(sourceVariable).append(labelsOf(sourceFilter)).append(")");
+    final String arrowRel = relationshipVariable != null && !relationshipVariable.isEmpty()
+        && !relationshipVariable.startsWith("  ") ? relationshipVariable : "";
+    final StringBuilder types = new StringBuilder();
+    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks)
+      types.append(types.isEmpty() ? ":" : "|").append(seek.edgeType());
+    if (direction == Direction.IN)
+      builder.append("<-[").append(arrowRel).append(types).append("]-");
+    else
+      builder.append("-[").append(arrowRel).append(types).append("]->");
+    builder.append("(").append(targetVariable).append(labelsOf(targetFilter)).append(")");
+    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks) {
+      // The whole index key, then every column the seek resolves, so a prefix seek or an IN-list on a composite
+      // index is recognizable at a glance. A dropped index falls back to the covered columns.
+      final Index index = schema.existsIndex(seek.indexName()) ? schema.getIndexByName(seek.indexName()) : null;
+      final List<String> indexKey = index != null ? index.getPropertyNames() : List.of(seek.propertyNames());
+      builder.append(" [index: ").append(seek.indexName()).append(" on ").append(String.join(",", indexKey)).append("]");
+      builder.append(" [key: ");
+      for (int i = 0; i < seek.propertyNames().length; i++) {
+        if (i > 0)
+          builder.append(", ");
+        builder.append(seek.propertyNames()[i]);
+        if (seek.keyValues()[i] instanceof InListValues inList) {
+          builder.append(" IN [");
+          for (int j = 0; j < inList.getValues().size(); j++) {
+            if (j > 0)
+              builder.append(", ");
+            builder.append(inList.getValues().get(j).getText());
+          }
+          builder.append("]");
+        } else
+          builder.append(" = ").append(((Expression) seek.keyValues()[i]).getText());
+      }
+      builder.append("]");
+    }
+    return builder.toString();
+  }
+
+  private static String labelsOf(final EdgeIndexSeedPlanner.EndpointFilter filter) {
+    return filter.labels().isEmpty() ? "" : ":" + String.join(filter.disjunction() ? "|" : ":", filter.labels());
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder builder = new StringBuilder();
     builder.append("  ".repeat(Math.max(0, depth * indent)));
-    builder.append("+ MATCH EDGE BY INDEX ");
-    builder.append("(").append(sourceVariable).append(")");
-    final String arrowRel = relationshipVariable != null && !relationshipVariable.isEmpty()
-        && !relationshipVariable.startsWith("  ") ? relationshipVariable : "";
-    if (direction == Direction.IN)
-      builder.append("<-[").append(arrowRel).append(":").append(edgeType).append("]-");
-    else
-      builder.append("-[").append(arrowRel).append(":").append(edgeType).append("]->");
-    builder.append("(").append(targetVariable).append(")");
-    // The whole index key, then every column the seek resolves, so a prefix seek or an IN-list on a composite
-    // index is recognizable at a glance. A dropped index falls back to the covered columns.
-    final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
-    final List<String> indexKey = index != null ? index.getPropertyNames() : List.of(propertyNames);
-    builder.append(" [index: ").append(indexName).append(" on ").append(String.join(",", indexKey)).append("]");
-    builder.append(" [key: ");
-    for (int i = 0; i < propertyNames.length; i++) {
-      if (i > 0)
-        builder.append(", ");
-      builder.append(propertyNames[i]);
-      if (keyValues[i] instanceof InListValues inList) {
-        builder.append(" IN [");
-        for (int j = 0; j < inList.getValues().size(); j++) {
-          if (j > 0)
-            builder.append(", ");
-          builder.append(inList.getValues().get(j).getText());
-        }
-        builder.append("]");
-      } else
-        builder.append(" = ").append(((Expression) keyValues[i]).getText());
-    }
-    builder.append("]");
+    builder.append("+ ").append(describe(context.getDatabase().getSchema()));
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)

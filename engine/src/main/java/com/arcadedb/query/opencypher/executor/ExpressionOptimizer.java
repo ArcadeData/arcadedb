@@ -184,7 +184,7 @@ public class ExpressionOptimizer {
   /**
    * Checks if a function is deterministic (always returns the same result for the same inputs).
    */
-  private static boolean isDeterministicFunction(final String functionName) {
+  static boolean isDeterministicFunction(final String functionName) {
     return switch (functionName.toLowerCase(Locale.ROOT)) {
       // Non-deterministic functions
       case "rand", "randomuuid", "timestamp" -> false;

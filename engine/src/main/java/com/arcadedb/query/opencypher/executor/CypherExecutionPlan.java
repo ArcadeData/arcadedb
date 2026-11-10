@@ -2919,31 +2919,29 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Builds a {@link MatchEdgeByIndexStep} seed for a single-hop pattern whose edge type has an index
-   * whose key, or a leading prefix of it, is covered by equality or {@code IN}-list predicates on the
-   * edge variable, when neither endpoint is selective (issue #740). Returns {@code null} - deferring to
-   * the ordinary vertex-scan + expansion plan - whenever any precondition is not met. On success it also
-   * registers the source, target and edge variables in {@code matchVariables}, since the seed step binds
-   * all three.
+   * Builds a {@link MatchEdgeByIndexStep} seed for a single-hop pattern whose relationship type has an index whose key, or a
+   * leading prefix of it, is covered by equality or {@code IN}-list predicates on the relationship (issue #740). Since issue
+   * #11481 every spelling of the lookup qualifies, not only an anonymous-endpoint, single-type, {@code WHERE} one: the predicates
+   * come from the MATCH's {@code WHERE} clause and from the relationship's inline property map, a union of types is one seek per
+   * type, and an endpoint may carry labels, which the step checks on the vertices of each edge it finds instead of anchoring the
+   * plan on a scan of the label (see {@link EdgeIndexSeedPlanner}). Returns {@code null} - deferring to the ordinary vertex-scan +
+   * expansion plan - whenever a precondition is not met. On success it also registers the source, target and edge variables in
+   * {@code matchVariables}, since the seed step binds all three.
    * <p>
-   * Safety: the seek returns every edge whose leading key columns take one of the predicate values - a
-   * superset of the rows the MATCH's WHERE clause keeps, whether the key is complete or a prefix and
-   * whether a column is pinned to one value or to a list. That WHERE clause is re-applied by the
-   * {@link FilterPropertiesStep} added above this step, so the seek can never let through a row the
-   * unoptimised plan would have rejected.
+   * Safety: the seek returns every edge whose leading key columns take one of the predicate values - a superset of the rows the
+   * MATCH keeps, whether the key is complete or a prefix and whether a column is pinned to one value or to a list. The WHERE clause
+   * is re-applied by the {@link FilterPropertiesStep} added above this step, and the inline maps, which nothing above re-applies, are
+   * checked by the step itself, so the seek can never let through a row the unoptimised plan would have rejected.
    */
   private MatchEdgeByIndexStep tryBuildEdgeIndexScanSeed(final MatchClause matchClause,
       final PathPattern pathPattern, final Set<String> boundVariables, final Set<String> matchVariables,
       final CommandContext context) {
-    // The WHERE clause must belong to this MATCH so its FilterPropertiesStep re-validates above the seed.
-    if (!matchClause.hasWhereClause() || matchClause.getWhereClause() == null)
-      return null;
     if (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
       return null;
 
     final RelationshipPattern rel = pathPattern.getRelationship(0);
-    if (rel.isVariableLength() || rel.hasProperties() || rel.hasWhereExpression()
-        || rel.getPropertiesParameterName() != null)
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || rel.hasWhereExpression()
+        || rel.getPropertiesParameterName() != null || !rel.hasTypes())
       return null;
 
     // Only a directed hop maps unambiguously to the edge's out/in endpoints; BOTH is skipped.
@@ -2951,76 +2949,44 @@ public class CypherExecutionPlan {
     if (dir != Direction.OUT && dir != Direction.IN)
       return null;
 
-    // Exactly one edge type, which must be a declared edge type.
-    if (!rel.hasTypes() || rel.getTypes().size() != 1)
-      return null;
-    final String edgeTypeName = rel.getTypes().get(0);
-    if (!context.getDatabase().getSchema().existsType(edgeTypeName)
-        || !(context.getDatabase().getSchema().getType(edgeTypeName) instanceof EdgeType edgeType))
-      return null;
-
-    // The WHERE clause references the edge, so the edge must carry a named variable that is still free.
+    // A named relationship must still be free; an anonymous one can be pinned by its inline map alone
     final String edgeVar = rel.getVariable();
-    if (edgeVar == null || edgeVar.isEmpty()
-        || boundVariables.contains(edgeVar) || matchVariables.contains(edgeVar))
+    final boolean namedEdge = edgeVar != null && !edgeVar.isEmpty();
+    if (namedEdge && (boundVariables.contains(edgeVar) || matchVariables.contains(edgeVar)))
       return null;
 
-    // Both endpoints must be unselective (no labels, no inline properties) and not already bound - there
-    // is nothing to validate on them beyond what the WHERE filter above already re-checks. Note that a
-    // variable repeated at both endpoints is unselective by this measure yet still constrains the hop; see
-    // MatchEdgeByIndexStep's class javadoc for why the step, not this test, enforces it (issue #7008).
-    final NodePattern srcNode = pathPattern.getFirstNode();
-    final NodePattern tgtNode = pathPattern.getLastNode();
-    if (isSelectiveEndpoint(srcNode, boundVariables, matchVariables)
-        || isSelectiveEndpoint(tgtNode, boundVariables, matchVariables))
+    // The seed is the first step of the plan: there is no row to evaluate an inline value that reads a variable against
+    final Map<String, Object> relProperties = rel.hasProperties() ? rel.getProperties() : null;
+    if (!EdgeIndexSeedPlanner.isRowIndependent(relProperties))
       return null;
 
-    // Collect the row-independent equality and IN-list predicates on the edge variable from the WHERE clause.
+    // The row-independent equality and IN-list predicates on the relationship. The WHERE clause belongs to this MATCH, so its
+    // FilterPropertiesStep re-validates above the seed
+    final BooleanExpression where = matchClause.hasWhereClause() && matchClause.getWhereClause() != null ?
+        matchClause.getWhereClause().getConditionExpression() : null;
     final Map<String, Object> predicates = new LinkedHashMap<>();
-    extractEdgeKeyPredicates(edgeVar, matchClause.getWhereClause().getConditionExpression(), predicates);
+    if (namedEdge)
+      EdgeIndexSeedPlanner.collectWherePredicates(edgeVar, where, predicates);
+    EdgeIndexSeedPlanner.collectInlinePredicates(relProperties, predicates);
     if (predicates.isEmpty())
       return null;
 
-    // Pick the index whose longest leading key prefix is covered by those predicates: a complete key is an
-    // exact lookup, a prefix walks the contiguous range of the ordered index sharing it (the same seek
-    // NodeIndexSeek performs for a vertex anchor, and the one SQL performs for `WHERE transactionId IN (...)`
-    // on a (transactionId, date) index). On an equal prefix the narrower index wins: nothing extra to walk.
-    // Polymorphic, for the same reason node patterns are (issue #7021): an index declared on a parent edge
-    // type is inherited by this one, and a relationship pattern already matches every subtype of the type it
-    // names. MatchEdgeByIndexStep filters an inherited index's cursor back down to that same rule.
-    TypeIndex bestIndex = null;
-    List<String> bestKeyProps = null;
-    int bestPrefix = 0;
-    for (final TypeIndex index : TypeIndex.filterReadyForQueries(edgeType.getAllIndexes(true))) {
-      try {
-        if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
-          continue; // a full-text or vector index does not answer an equality on its key
-        final List<String> keyProps = index.getPropertyNames();
-        int prefix = 0;
-        while (prefix < keyProps.size() && predicates.containsKey(keyProps.get(prefix)))
-          prefix++;
-        if (prefix == 0)
-          continue;
-        if (prefix < keyProps.size() && !index.supportsOrderedIterations())
-          continue; // a prefix seek needs the range cursor
-        if (bestIndex == null || prefix > bestPrefix || (prefix == bestPrefix && keyProps.size() < bestKeyProps.size())) {
-          bestIndex = index;
-          bestKeyProps = keyProps;
-          bestPrefix = prefix;
-        }
-      } catch (final IndexException e) {
-        // dropped or rebuilt by a concurrent DDL while being read: not a candidate (issue #8918)
-      }
-    }
-    if (bestIndex == null)
+    final List<EdgeIndexSeedPlanner.TypeSeek> seeks = EdgeIndexSeedPlanner.planSeeks(context.getDatabase().getSchema(),
+        rel.getTypes(), predicates);
+    if (seeks == null)
       return null;
 
-    final String[] propertyNames = new String[bestPrefix];
-    final Object[] keyValues = new Object[bestPrefix];
-    for (int i = 0; i < bestPrefix; i++) {
-      propertyNames[i] = bestKeyProps.get(i);
-      keyValues[i] = predicates.get(propertyNames[i]);
-    }
+    boolean exact = true;
+    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks)
+      exact &= seek.exact();
+
+    // Note that a variable repeated at both endpoints still constrains the hop; see MatchEdgeByIndexStep's class javadoc for why
+    // the step, not this test, enforces it (issue #7008).
+    final NodePattern srcNode = pathPattern.getFirstNode();
+    final NodePattern tgtNode = pathPattern.getLastNode();
+    if (!isSeedableEndpoint(srcNode, where, exact, boundVariables, matchVariables)
+        || !isSeedableEndpoint(tgtNode, where, exact, boundVariables, matchVariables))
+      return null;
 
     final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable()
         : ("  src" + anonymousVarCounter++);
@@ -3029,122 +2995,36 @@ public class CypherExecutionPlan {
 
     matchVariables.add(effectiveSourceVar);
     matchVariables.add(effectiveTargetVar);
-    matchVariables.add(edgeVar);
+    if (namedEdge)
+      matchVariables.add(edgeVar);
 
-    return new MatchEdgeByIndexStep(edgeTypeName, propertyNames, keyValues, bestIndex.getName(), dir,
-        effectiveSourceVar, edgeVar, effectiveTargetVar, context);
-  }
-
-  /** An endpoint is selective (and so must anchor the plan itself) if it has labels, inline properties, or is already bound. */
-  private boolean isSelectiveEndpoint(final NodePattern node, final Set<String> boundVariables,
-      final Set<String> matchVariables) {
-    if (node.hasLabels() || node.hasDynamicLabels() || node.hasProperties())
-      return true;
-    final String var = node.getVariable();
-    return var != null && (boundVariables.contains(var) || matchVariables.contains(var));
+    return new MatchEdgeByIndexStep(seeks, dir, effectiveSourceVar, namedEdge ? edgeVar : null, effectiveTargetVar,
+        EdgeIndexSeedPlanner.EndpointFilter.of(srcNode), EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode), relProperties, context);
   }
 
   /**
-   * Collects the predicates on the edge variable that can seed an index seek, keyed by property: the value each
-   * property is pinned to, as the {@link Expression} of an {@code edgeVar.property = <value>} equality (or
-   * reversed) or as the {@link InListValues} of an {@code edgeVar.property IN [...]}. The two are kept apart even
-   * for a one-element list, since that element may be a parameter standing for a whole list ({@code IN $ids}),
-   * which the seek expands into one key per element where an equality would seek the list as a single key. Only
-   * row-independent values qualify (a literal, a parameter, or a function of those such as {@code date('...')});
-   * a value that would need the current row cannot seed a static lookup, so its predicate is left out and the
-   * optimization simply does not apply to it.
-   * <p>
-   * An {@code AND} contributes both sides; when both pin the same property the one with fewer values is kept, as
-   * either already bounds the rows. An {@code OR} contributes a property only when <em>both</em> sides pin it, as
-   * the union of the two sides' values: a row satisfying the disjunction takes one of its sides' values, so the
-   * union is a superset - whereas a property pinned on one side only bounds nothing about rows from the other.
-   * {@code (t.k = 'a' OR t.k = 'b')} therefore seeds the same two-key seek as {@code t.k IN ['a', 'b']}.
+   * Whether the seed can bind an endpoint and check what the pattern asks of it by itself (issue #11481). Not when it is bound
+   * already: the expansion from a bound vertex is the cheaper plan. Not when it carries a dynamic label, an inline {@code WHERE} or
+   * a property map given as a whole parameter, which only a row or a pattern evaluator answers. Its labels are always checked by
+   * the seek: anchoring on a scan of the label to then expand every edge is exactly what the index avoids. Its own equalities - an
+   * inline map, or one in the {@code WHERE} clause - may be what an index of the label answers better, so they are left to the
+   * ordinary plan unless the seek resolves at most one edge per value.
    */
-  private void extractEdgeKeyPredicates(final String edgeVar, final BooleanExpression expression,
-      final Map<String, Object> predicates) {
-    if (expression == null)
-      return;
-
-    if (expression instanceof BooleanWrapperExpression wrapper) {
-      extractEdgeKeyPredicates(edgeVar, wrapper.getBooleanExpression(), predicates);
-      return;
+  private boolean isSeedableEndpoint(final NodePattern node, final BooleanExpression where, final boolean exactSeek,
+      final Set<String> boundVariables, final Set<String> matchVariables) {
+    final String var = node.getVariable();
+    if (var != null && (boundVariables.contains(var) || matchVariables.contains(var)))
+      return false;
+    if (node.hasDynamicLabels() || node.hasWhereExpression() || node.getPropertiesParameterName() != null)
+      return false;
+    if (node.hasProperties() && (!exactSeek || !EdgeIndexSeedPlanner.isRowIndependent(node.getProperties())))
+      return false;
+    if (!exactSeek && node.hasLabels() && var != null && where != null) {
+      final Map<String, Object> pinned = new LinkedHashMap<>();
+      EdgeIndexSeedPlanner.collectWherePredicates(var, where, pinned);
+      return pinned.isEmpty();
     }
-    if (expression instanceof LogicalExpression logical) {
-      if (logical.getOperator() == LogicalExpression.Operator.AND) {
-        extractEdgeKeyPredicates(edgeVar, logical.getLeft(), predicates);
-        extractEdgeKeyPredicates(edgeVar, logical.getRight(), predicates);
-      } else if (logical.getOperator() == LogicalExpression.Operator.OR) {
-        final Map<String, Object> left = new LinkedHashMap<>();
-        final Map<String, Object> right = new LinkedHashMap<>();
-        extractEdgeKeyPredicates(edgeVar, logical.getLeft(), left);
-        extractEdgeKeyPredicates(edgeVar, logical.getRight(), right);
-        for (final Map.Entry<String, Object> entry : left.entrySet()) {
-          final Object otherSide = right.get(entry.getKey());
-          if (otherSide == null)
-            continue;
-          final List<Expression> union = new ArrayList<>(edgeKeyValues(entry.getValue()));
-          union.addAll(edgeKeyValues(otherSide));
-          addEdgeKeyPredicate(predicates, entry.getKey(), new InListValues(union));
-        }
-      }
-      return;
-    }
-
-    if (expression instanceof InExpression inExpr) {
-      // No negated form to decline: Cypher has no NOT IN operator. The negation is written NOT x IN list and
-      // parses as a TernaryLogicalExpression(NOT) around this node, which this walk has no branch for.
-      if (!(inExpr.getExpression() instanceof PropertyAccessExpression prop) || !edgeVar.equals(prop.getVariableName()))
-        return;
-      List<Expression> list = inExpr.getList();
-      // A list literal (x IN [a, b, c]) is parsed as a single ListExpression element: unwrap it to its values.
-      if (list != null && list.size() == 1 && list.getFirst() instanceof ListExpression listExpr)
-        list = listExpr.getElements();
-      if (list == null || list.isEmpty())
-        return;
-      for (final Expression element : list)
-        if (!isRowIndependentExpression(element))
-          return;
-      addEdgeKeyPredicate(predicates, prop.getPropertyName(), new InListValues(list));
-      return;
-    }
-
-    if (!(expression instanceof ComparisonExpression comparison)
-        || comparison.getOperator() != ComparisonExpression.Operator.EQUALS)
-      return;
-
-    final Expression left = comparison.getLeft();
-    final Expression right = comparison.getRight();
-    if (left instanceof PropertyAccessExpression prop && edgeVar.equals(prop.getVariableName())
-        && isRowIndependentExpression(right))
-      addEdgeKeyPredicate(predicates, prop.getPropertyName(), right);
-    else if (right instanceof PropertyAccessExpression prop && edgeVar.equals(prop.getVariableName())
-        && isRowIndependentExpression(left))
-      addEdgeKeyPredicate(predicates, prop.getPropertyName(), left);
-  }
-
-  /** Keeps the value with fewer candidates for a property pinned twice: either already bounds the seek. */
-  private static void addEdgeKeyPredicate(final Map<String, Object> predicates, final String property, final Object value) {
-    final Object existing = predicates.get(property);
-    if (existing == null || edgeKeyValues(value).size() < edgeKeyValues(existing).size())
-      predicates.put(property, value);
-  }
-
-  /** The candidate expressions behind a seed value: the one of an equality, the elements of an IN-list. */
-  private static List<Expression> edgeKeyValues(final Object value) {
-    return value instanceof InListValues inList ? inList.getValues() : List.of((Expression) value);
-  }
-
-  /** True when an expression can be evaluated without a row: a literal, a parameter, or a function of such. */
-  private boolean isRowIndependentExpression(final Expression expression) {
-    if (expression instanceof LiteralExpression || expression instanceof ParameterExpression)
-      return true;
-    if (expression instanceof FunctionCallExpression func) {
-      for (final Expression arg : func.getArguments())
-        if (!isRowIndependentExpression(arg))
-          return false;
-      return true;
-    }
-    return false;
+    return true;
   }
 
   /**
@@ -6700,9 +6580,8 @@ public class CypherExecutionPlan {
      * For the rewriters the base class was written for, an unreached subtree costs an optimization.
      * Here it costs correctness - a missed read leaves the FOREACH streaming and the query answers
      * from a batch-boundary snapshot - so the two defaults have to differ. This also covers
-     * {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} (package-private, so it cannot
-     * be dispatched on by type from here) and any {@code Expression} subtype added later, which would
-     * otherwise each need their own fix to this class.
+     * {@code ChainedPropertyAccessExpression} (which the base dispatch has no arm for) and any
+     * {@code Expression} subtype added later, which would otherwise each need their own fix to this class.
      */
     @Override
     protected Object visitUnknown(final Object expression) {
