@@ -84,10 +84,15 @@ public final class PeerCapabilityRegistry {
 
   /** One peer's last successful answer. */
   public record Advertisement(Set<String> capabilities, String version, long observedAtMs, boolean serviceGap,
-      Set<String> quarantined) {
+      Set<String> quarantined, long appliedIndex) {
     public Advertisement {
       if (quarantined == null)
         quarantined = Set.of();
+    }
+
+    public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs,
+        final boolean serviceGap, final Set<String> quarantined) {
+      this(capabilities, version, observedAtMs, serviceGap, quarantined, -1L);
     }
 
     public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs) {
@@ -221,12 +226,22 @@ public final class PeerCapabilityRegistry {
    */
   public boolean record(final long generation, final String peerId, final Set<String> capabilities,
       final String version, final boolean serviceGap, final Set<String> quarantined) {
+    return record(generation, peerId, capabilities, version, serviceGap, quarantined, -1L);
+  }
+
+  /**
+   * As {@link #record(long, String, Set, String, boolean, Set)}, also holding the Raft index the peer reports as applied
+   * ({@code -1} when it does not say), which the leader reads to hold entries back from a follower with a large apply
+   * backlog (issue #11458). Like the service gap, a change of it alone is not a transition to report.
+   */
+  public boolean record(final long generation, final String peerId, final Set<String> capabilities,
+      final String version, final boolean serviceGap, final Set<String> quarantined, final long appliedIndex) {
     final Set<String> frozen = Set.copyOf(capabilities);
     final Set<String> frozenQuarantined = quarantined == null || quarantined.isEmpty() ? Set.of() : Set.copyOf(quarantined);
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
-      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined));
+      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined, appliedIndex));
       unknownReasons.remove(peerId);
       return !frozen.equals(lastReported.put(peerId, frozen));
     }
@@ -404,6 +419,16 @@ public final class PeerCapabilityRegistry {
     if (advertisement == null)
       return null;
     return clock.getAsLong() - advertisement.observedAtMs() <= ttlMs ? advertisement : null;
+  }
+
+  /**
+   * The Raft index {@code peerId} reported as applied in its last fresh answer, or {@code -1} when it is unknown,
+   * expired or never said (a build that predates the field). Unknown must read as "no limit": a stale report must never
+   * hold a follower back (issue #11458).
+   */
+  public long freshAppliedIndexOf(final String peerId) {
+    final Advertisement advertisement = freshAdvertisementOf(peerId);
+    return advertisement == null ? -1L : advertisement.appliedIndex();
   }
 
   /**

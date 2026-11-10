@@ -28,6 +28,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.ApplyBackPressure;
 import com.arcadedb.server.ha.raft.ratis.GuardedRaftServer;
 import com.arcadedb.server.ha.raft.ratis.RaftPeerChannels;
 import com.arcadedb.server.ha.raft.ratis.RatisMisdirectedRequestFilter;
@@ -317,6 +318,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Serialises start/stop of {@link #capabilityMonitorExecutor}; never held across anything that blocks. */
   private final    Object                    capabilityMonitorLock = new Object();
   private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
+  private volatile ApplyBackPressure         applyBackPressure;
   // How one capability probe is made (see CapabilityProber). A method reference rather than a lambda reading
   // arcadeServer, which is a blank final the constructor has not assigned yet at this point.
   private volatile CapabilityProber          capabilityProber = this::queryPeerCapabilities;
@@ -2127,6 +2129,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
+    // Read by the leader's log appenders, which Ratis builds itself (issue #11458)
+    applyBackPressure = new ApplyBackPressure(ApplyBackPressure.resolveBudgetBytes(configuration, Runtime.getRuntime().maxMemory()),
+        peerCapabilities::freshAppliedIndexOf);
+    ApplyBackPressure.register(localPeerId.toString(), applyBackPressure);
+
     final File storageDir = getRaftStorageDir();
     // Only delete existing Raft storage when persistence is not requested.
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
@@ -3586,6 +3593,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public void stop() {
     shutdownRequested = true;
+    final ApplyBackPressure backPressure = applyBackPressure;
+    if (backPressure != null) {
+      ApplyBackPressure.unregister(localPeerId.toString(), backPressure);
+      applyBackPressure = null;
+    }
     final Thread joinThread = autoJoinThread;
     if (joinThread != null) {
       // Wake the auto-join retry loop out of its backoff sleep so shutdown is not delayed (issue #5268).
@@ -7887,7 +7899,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private void recordPeerCapabilities(final long generation, final String peerId,
       final PeerCapabilityQuery.Advertisement advertisement) {
     if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version(),
-        advertisement.serviceGap(), advertisement.quarantined()))
+        advertisement.serviceGap(), advertisement.quarantined(), advertisement.appliedIndex()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));

@@ -89,6 +89,12 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
   static final String PEER_HTTP_ADDRESSES = "peerHttpAddresses";
 
   /**
+   * The document's Raft index this node has applied (issue #11458). Absent when unknown. The leader reads it to hold
+   * entries back from a follower whose apply backlog, which Ratis keeps decoded on the heap, would exceed a byte budget.
+   */
+  static final String APPLIED_INDEX = "appliedIndex";
+
+  /**
    * Request header: the calling node's peer id (issue #9255). The self-description travels in headers rather than in the
    * body so this handler keeps answering on the IO thread: the shared pipeline reads a body only on a worker thread.
    */
@@ -134,7 +140,7 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
         advertisement(raftHAServer.getLocalPeerId().toString(), raftHAServer.getAdvertisedCapabilities(),
             stateMachine != null && stateMachine.hasLeaderServiceGap(),
             stateMachine != null ? stateMachine.getQuarantinedDatabaseNames() : Set.of(),
-            raftHAServer.getRelayablePeerHttpAddresses()).toString());
+            raftHAServer.getRelayablePeerHttpAddresses(), raftHAServer.getLastAppliedIndex()).toString());
   }
 
   /**
@@ -172,6 +178,16 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
   // @VisibleForTesting
   static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
       final Set<String> quarantined, final Map<String, String> peerHttpAddresses) {
+    return advertisement(peerId, capabilities, serviceGap, quarantined, peerHttpAddresses, -1L);
+  }
+
+  /**
+   * As {@link #advertisement(String, Set, boolean, Set, Map)}, also carrying {@link #APPLIED_INDEX} when it is known
+   * (issue #11458). Written only when not negative, so a node that cannot tell leaves the document as it was.
+   */
+  // @VisibleForTesting
+  static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
+      final Set<String> quarantined, final Map<String, String> peerHttpAddresses, final long appliedIndex) {
     final JSONArray array = new JSONArray();
     for (final String capability : new TreeSet<>(capabilities))
       array.put(capability);
@@ -182,6 +198,8 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
         .put("capabilities", array);
     if (serviceGap)
       json.put(SERVICE_GAP, true);
+    if (appliedIndex >= 0)
+      json.put(APPLIED_INDEX, appliedIndex);
     if (quarantined != null && !quarantined.isEmpty()) {
       final JSONArray names = new JSONArray();
       for (final String name : new TreeSet<>(quarantined))
