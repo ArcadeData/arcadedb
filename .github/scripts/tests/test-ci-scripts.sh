@@ -2682,6 +2682,21 @@ else
     fail "slow *Test classes outside the engine have a lane in mvn-test.yml" "$slow_outside"
 fi
 
+# #9850: two PRs that are each green against a base lacking the other can merge into a red main.
+# The in-repository half of the fix is a `merge_group` trigger, so a GitHub merge queue tests the
+# merge result; without it the queue's checks never start and the queue waits forever. The
+# concurrency group must also keep merge-queue entries apart (keyed by SHA, never cancelled).
+if grep -qE '^  merge_group:' .github/workflows/mvn-test.yml; then
+    pass "mvn-test.yml runs on merge_group so a merge queue tests the merge result (#9850)"
+else
+    fail "mvn-test.yml runs on merge_group so a merge queue tests the merge result (#9850)" "no merge_group trigger"
+fi
+if grep -qF "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" .github/workflows/mvn-test.yml; then
+    pass "merge_group runs are never cancelled in progress (#9850)"
+else
+    fail "merge_group runs are never cancelled in progress (#9850)" "cancel-in-progress is not limited to pull_request"
+fi
+
 echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"

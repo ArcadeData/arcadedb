@@ -8,13 +8,20 @@ on:
   push:
     branches:
       - main
+  # A GitHub merge queue tests the merge result (the PR rebased onto the current main plus every
+  # entry queued ahead of it), not the branch, so two PRs that are each green against a base lacking
+  # the other cannot land into a red main (#9850). Without this trigger the queue's required checks
+  # never start and the entry waits until it times out. Enabling the queue itself is a repository
+  # ruleset setting ("Require merge queue" on main), which lives outside the tree.
+  merge_group:
 
 permissions:
   contents: read
 
 # A push to a PR cancels that PR's run still building the previous commit: only the newest
 # commit's result can gate the merge, and the superseded run otherwise keeps a full set of runners
-# busy for nothing. Every other event is keyed by its commit SHA, so no two pushes to main ever
+# busy for nothing. Every other event (merge_group entries included: each is a distinct merge
+# commit, and cancelling one would eject it from the queue) is keyed by its commit SHA, so no two pushes to main ever
 # share a group - each merge keeps its own complete run, and a red main still points at one commit.
 # (A shared main group would not do: GitHub keeps one pending run per group and silently cancels
 # the one it replaces, so merges landing close together would skip their middle commits.)
