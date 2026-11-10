@@ -612,9 +612,15 @@ public final class SnapshotInstaller {
     try {
       downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
           maxRetries, retryBaseMs, server);
-    } catch (final IOException e) {
+    } catch (final IOException | RuntimeException e) {
       // Download failed: the live database has not been touched and is still open. Drop the staging
       // directory and rethrow so the caller (or Raft) can retry later without losing availability.
+      // An unchecked failure is cleaned up the same way (issue #11465): it used to escape with the staging
+      // directory and the pending marker still on disk, a state only the startup recovery ever cleared.
+      if (!(e instanceof IOException))
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "Snapshot download for '%s' failed with an unexpected error; dropping the staged files: %s", e, databaseName,
+            e.getMessage());
       deleteDirectoryIfExists(snapshotNew);
       if (keepMarkerIfDownloadFails)
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
