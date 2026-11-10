@@ -101,10 +101,40 @@ class TransactionChangeStampTest extends TestHelper {
       final ChangeStamp before = ((DatabaseInternal) database).getTransaction().changeStamp(none);
       database.command("sql", "UPDATE T SET id = 100 WHERE id = 1").close();
       final ChangeStamp after = ((DatabaseInternal) database).getTransaction().changeStamp(none);
-      // no page of the (empty) file set is counted: only the transaction-wide counter moves
+      // no page of the (empty) file set is counted, and no write of another file moves the structural part either (issue #11472)
       assertThat(after.pages()).isZero();
       assertThat(after.pageWrites()).isZero();
-      assertThat(after.structural()).isGreaterThan(before.structural());
+      assertThat(after).isEqualTo(before);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /** Issue #11472: a record written to another bucket, whatever the write, leaves the stamp of the watched files as it was. */
+  @Test
+  void aWriteToAnotherFileLeavesTheStampAndAWriteToTheWatchedOneMovesIt() {
+    database.command("sql", "CREATE DOCUMENT TYPE U").close();
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newDocument("U").set("id", i).save();
+    });
+    database.begin();
+    try {
+      database.command("sql", "UPDATE T SET id = 100 WHERE id = 1").close();
+      final ChangeStamp held = stamp();
+
+      database.newDocument("U").set("id", 50).save();
+      assertThat(stamp()).as("a record created in another file").isEqualTo(held);
+      database.command("sql", "UPDATE U SET id = 51 WHERE id = 1").close();
+      assertThat(stamp()).as("a record updated in another file").isEqualTo(held);
+      database.command("sql", "DELETE FROM U WHERE id = 2").close();
+      assertThat(stamp()).as("a record deleted in another file").isEqualTo(held);
+
+      database.newDocument("T").set("id", 60).save();
+      final ChangeStamp created = stamp();
+      assertThat(created).as("a record created in a watched file").isNotEqualTo(held);
+      database.command("sql", "DELETE FROM T WHERE id = 3").close();
+      assertThat(stamp()).as("a record deleted in a watched file").isNotEqualTo(created);
     } finally {
       database.rollback();
     }

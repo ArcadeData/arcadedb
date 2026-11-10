@@ -398,8 +398,10 @@ public class TransactionContext implements Transaction {
   private       String                               rollbackOnlyReason    = null;
   /** Monotonic: only the difference across a statement is read, see {@link #countCompletedRecordWrite()}. */
   private       long                                 completedRecordWrites = 0L;
-  /** #11394: bumped by every change of what the transaction holds that is not a write into a page it already holds, never reset. */
+  /** #11394: bumped by every change of what the transaction holds that is not a write into a page it already holds and that no file owns. */
   private       long                                 structuralStamp       = 0L;
+  /** #11472: the same, per file (a bucket id is its file id): what the change belongs to, so a change elsewhere is not a change of a stamp over other files. */
+  private       LongLongHashMap                      fileStamps;
   /** #11394: structures derived from what the transaction holds, by owner; dropped when the transaction ends. */
   private       Map<Object, Object>                  derived;
   // #10346: the savepoint of the statement the caller is running in this transaction, null while none is: what the statement changes is
@@ -709,9 +711,10 @@ public class TransactionContext implements Transaction {
    * need this; internal records such as edge segments are never re-saved by user code.
    */
   public void registerNewRecord(final Record record) {
-    ++structuralStamp;
     if (record.getIdentity() != null)
       noteBucketWritten(record.getIdentity().getBucketId());
+    else
+      ++structuralStamp;
     // With read-your-writes on the record cache holds it anyway; off, nothing but the caller may (issue #10813). Decided per
     // record: one registered before a mid-transaction toggle keeps the mode it was registered in, and either mode resets it
     newRecords.add(record, !database.isReadYourWrites());
@@ -962,7 +965,7 @@ public class TransactionContext implements Transaction {
   }
 
   void restoreModifiedRecord(final RID rid, final Record previous) {
-    ++structuralStamp;
+    stampRecord(rid);
     if (previous == null)
       modifiedRecordsCache.remove(rid);
     else
@@ -970,7 +973,7 @@ public class TransactionContext implements Transaction {
   }
 
   void restoreUpdatedRecord(final RID rid, final Record previous) {
-    ++structuralStamp;
+    stampRecord(rid);
     if (previous == null) {
       if (updatedRecords != null)
         updatedRecords.remove(rid);
@@ -1034,7 +1037,7 @@ public class TransactionContext implements Transaction {
   }
 
   void restoreAddedPage(final PageId pageId, final boolean isNew, final ImmutablePage pinned) {
-    ++structuralStamp;
+    stampFile(pageId.getFileId());
     if (isNew) {
       if (newPages != null)
         newPages.remove(pageId);
@@ -1100,7 +1103,7 @@ public class TransactionContext implements Transaction {
    * just registered is, so the case this exists for costs one comparison.
    */
   public void unregisterNewRecord(final Record record) {
-    ++structuralStamp;
+    stampRecord(record.getIdentity());
     final int i = newRecords.lastIndexOf(record);
     if (i < 0)
       return;
@@ -1111,7 +1114,7 @@ public class TransactionContext implements Transaction {
   }
 
   public void updateRecordInCache(final Record record) {
-    ++structuralStamp;
+    stampRecord(record.getIdentity());
     if (database.isReadYourWrites()) {
       final RID rid = record.getIdentity();
       if (rid == null)
@@ -1140,7 +1143,7 @@ public class TransactionContext implements Transaction {
   }
 
   public void removeRecordFromCache(final RID rid) {
-    ++structuralStamp;
+    stampRecord(rid);
     if (updatedRecords != null) {
       final Record removed = updatedRecords.remove(rid);
       if (removed != null && statement != null)
@@ -2021,7 +2024,7 @@ public class TransactionContext implements Transaction {
           newPages.put(pageId, page);
         else
           modifiedPages.put(pageId, page);
-        ++structuralStamp;
+        stampFile(pageId.getFileId());
 
         // A page the statement brings into the transaction is dropped to take the statement back; the pinned one it replaced is given back
         if (statement != null)
@@ -2047,7 +2050,7 @@ public class TransactionContext implements Transaction {
     final PageId pageId = page.getPageId();
     final boolean isNew = newPages.containsKey(pageId);
     final MutablePage previous = isNew ? newPages.put(pageId, mutablePage) : modifiedPages.put(pageId, mutablePage);
-    ++structuralStamp;
+    stampFile(pageId.getFileId());
 
     final ImmutablePage pinned = immutablePages.remove(pageId);
 
@@ -2069,7 +2072,7 @@ public class TransactionContext implements Transaction {
     // CREATE A PAGE ID BASED ON NEW PAGES IN TX. IN CASE OF ROLLBACK THEY ARE SIMPLY REMOVED AND THE GLOBAL PAGE COUNT IS UNCHANGED
     final MutablePage page = new MutablePage(pageId, pageSize);
     final MutablePage replaced = newPages.put(pageId, page);
-    ++structuralStamp;
+    stampFile(pageId.getFileId());
 
     final Integer indexCounter = newPageCounters.get(pageId.getFileId());
     if (indexCounter == null || indexCounter < pageId.getPageNumber() + 1) {
@@ -3078,7 +3081,32 @@ public class TransactionContext implements Transaction {
           pageWrites += entry.getValue().getWriteStamp();
           ++pages;
         }
-    return new ChangeStamp(structuralStamp, pageWrites, pages);
+    long structural = structuralStamp;
+    if (fileStamps != null && !fileIds.isEmpty()) {
+      // the files this transaction changed outside a page it holds, which are few: the watched set is only asked about them
+      final long[] sum = { 0L };
+      fileStamps.forEach((fileId, stamp) -> {
+        if (fileIds.contains((int) fileId))
+          sum[0] += stamp;
+      });
+      structural += sum[0];
+    }
+    return new ChangeStamp(structural, pageWrites, pages);
+  }
+
+  /** Counts a change of {@code fileId} that is not a write into a page the transaction already holds (issue #11472). */
+  private void stampFile(final int fileId) {
+    if (fileStamps == null)
+      fileStamps = new LongLongHashMap();
+    fileStamps.increment(fileId);
+  }
+
+  /** As {@link #stampFile} for the file of a record; a record with no identity yet belongs to no file, so it counts for all. */
+  private void stampRecord(final RID rid) {
+    if (rid == null)
+      ++structuralStamp;
+    else
+      stampFile(rid.getBucketId());
   }
 
   /** See {@link #changeStamp}. Page counters only grow while the structural one does, so equality is the whole test. */
@@ -3090,10 +3118,39 @@ public class TransactionContext implements Transaction {
     return derived != null ? derived.get(owner) : null;
   }
 
+  /**
+   * Keeps {@code value} for {@code owner} until the transaction ends, replacing (and closing) the one it had. A value that is
+   * {@link AutoCloseable} is closed when it leaves: it may hold something that must be given back (issue #11472).
+   */
   public void putDerived(final Object owner, final Object value) {
     if (derived == null)
       derived = new IdentityHashMap<>();
-    derived.put(owner, value);
+    final Object replaced = derived.put(owner, value);
+    if (replaced != null && replaced != value)
+      closeQuietly(replaced);
+  }
+
+  /** Drops what {@code owner} kept, closing it as {@link #putDerived} does. */
+  public void dropDerived(final Object owner) {
+    if (derived != null)
+      closeQuietly(derived.remove(owner));
+  }
+
+  private void closeDerived() {
+    final Map<Object, Object> dropped = derived;
+    derived = null;
+    if (dropped != null)
+      for (final Object value : dropped.values())
+        closeQuietly(value);
+  }
+
+  private static void closeQuietly(final Object value) {
+    if (value instanceof AutoCloseable closeable)
+      try {
+        closeable.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(TransactionContext.class, Level.WARNING, "Error closing a structure derived from a transaction", e);
+      }
   }
 
   /**
@@ -4373,7 +4430,8 @@ public class TransactionContext implements Transaction {
     unidirectionalScanEpoch = -1L;
     scannedBuckets = null;
     indexesReconciled = null;
-    derived = null;
+    closeDerived();
+    fileStamps = null;
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     if (unidirectionalEdgeChanges != null)
@@ -4658,7 +4716,7 @@ public class TransactionContext implements Transaction {
    */
   private void noteBucketWritten(final int bucketId) {
     // every create, queued update and delete of a record passes here, even for the bucket noted last (#11394)
-    ++structuralStamp;
+    stampFile(bucketId);
     if (bucketId == lastNotedBucket)
       return;
     lastNotedBucket = bucketId;

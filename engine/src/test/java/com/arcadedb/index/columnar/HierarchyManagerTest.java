@@ -283,6 +283,92 @@ class HierarchyManagerTest extends TestHelper {
     }
   }
 
+  /** Issue #11472: a write to a file the hierarchy does not watch is no change of what the private view was built from. */
+  @Test
+  void aWriteOutsideTheWatchedFilesKeepsThePrivateView() {
+    database.getSchema().createDocumentType("Unrelated");
+    manager.view();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView first = manager.view();
+      final long builds = manager.privateBuildCount();
+      database.newDocument("Unrelated").set("n", 1).save();
+      database.command("sql", "UPDATE Unrelated SET n = 2").close();
+      assertThat(manager.view()).isSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds);
+      // a change of the tag graph still builds a new one
+      edge("a/b", "a/d");
+      assertThat(manager.view()).isNotSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /** Issue #11472: the private view kept on the transaction is charged to the facet budget while it waits there, once. */
+  @Test
+  void theRetainedPrivateViewIsChargedToTheBudgetUntilTheTransactionEnds() {
+    manager.view();
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final long before = budget.available();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView first = manager.view();
+      assertThat(first.rejectedReason()).isNull();
+      assertThat(manager.isChargedToTransaction(first)).isTrue();
+      assertThat(before - budget.available()).isEqualTo(kib(first.heapBytes()));
+      // a rebuilt view replaces the retained one and its charge: one view is held, not two
+      edge("a/b", "a/d");
+      final HierarchyView second = manager.view();
+      assertThat(second).isNotSameAs(first);
+      assertThat(before - budget.available()).isEqualTo(kib(second.heapBytes()));
+    } finally {
+      database.rollback();
+    }
+    assertThat(budget.available()).isEqualTo(before);
+  }
+
+  @Test
+  void theRetainedPrivateViewIsGivenBackByACommit() {
+    manager.view();
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final long before = budget.available();
+    database.begin();
+    reparent("a/d", "x");
+    manager.view();
+    assertThat(budget.available()).isLessThan(before);
+    database.commit();
+    assertThat(budget.available()).isEqualTo(before);
+  }
+
+  /** Issue #11472: a budget with no room for the retained view leaves it unkept (and uncharged), so the query pays for it as before. */
+  @Test
+  void aPrivateViewTheBudgetCannotHoldIsNotRetained() {
+    manager.view();
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final FacetMemoryBudget.Reservation everything = budget.reserve(budget.available(), 0);
+    assertThat(everything).isNotNull();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final long builds = manager.privateBuildCount();
+      final HierarchyView first = manager.view();
+      assertThat(first.rejectedReason()).isNull();
+      assertThat(manager.isChargedToTransaction(first)).isFalse();
+      assertThat(manager.view()).isNotSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds + 2);
+    } finally {
+      database.rollback();
+      everything.close();
+    }
+  }
+
+  private static long kib(final long bytes) {
+    return (bytes + 1023L) / 1024L * 1024L;
+  }
+
   @Test
   void thePrivateViewDoesNotOutliveItsTransaction() {
     final HierarchyView shared = manager.view();

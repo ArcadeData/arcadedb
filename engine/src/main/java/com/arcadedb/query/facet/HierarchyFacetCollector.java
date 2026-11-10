@@ -476,7 +476,8 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       if (!readable())
         return NOT_READABLE;
       view = taken;
-      if (taken.rejectedReason() == null && !manager.isSharedView(taken))
+      // a private view the transaction keeps is charged by the transaction, as long as it keeps it (issue #11472)
+      if (taken.rejectedReason() == null && !manager.isSharedView(taken) && !manager.isChargedToTransaction(taken))
         privateHeap = taken.heapBytes();
       return null;
     }

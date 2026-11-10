@@ -217,16 +217,24 @@ public final class HierarchyManager {
   /**
    * What a private view was built from (issue #11394): the transaction's changes in the watched files, the committed generation it read
    * through its isolation level, the watched file set and the user it was built for. The same four make the same view; a view built
-   * under a deadline is never kept when it was cut short.
+   * under a deadline is never kept when it was cut short. It holds the facet budget for its heap for as long as the transaction keeps it
+   * (issue #11472): the transaction closes it when it replaces it or ends.
    */
-  private record PrivateView(TransactionContext.ChangeStamp stamp, long generation, FileSet files, String user, HierarchyView view) {
+  private record PrivateView(TransactionContext.ChangeStamp stamp, long generation, FileSet files, String user, HierarchyView view,
+                             FacetMemoryBudget.Reservation charge) implements AutoCloseable {
+    @Override
+    public void close() {
+      charge.close();
+    }
   }
 
   /**
    * The private view of a transaction that changed a watched file: the one kept on the transaction when nothing it holds in those files
    * changed since, else built through the caller's transaction and user and kept for the next query of the same transaction. The
-   * transaction owns it, so it goes with the transaction (a rollback, a commit, a reset); one per manager, the last built. Its heap is
-   * charged by every query that takes it ({@code ViewSource}), not while it waits here, which one view per manager bounds.
+   * transaction owns it, so it goes with the transaction (a rollback, a commit, a reset); one per manager, the last built. A kept view
+   * is charged to the facet memory budget while it waits there ({@link #isChargedToTransaction}), so a long transaction touching
+   * several hierarchies does not hold uncounted heap; a view the budget has no room for is not kept, and the query that takes it
+   * pays for it ({@code ViewSource}).
    */
   private HierarchyView privateView(final TransactionContext tx, final BooleanSupplier cancelled) {
     final FileSet watched = files;
@@ -237,6 +245,9 @@ public final class HierarchyManager {
     if (kept != null && kept.stamp().equals(stamp) && kept.generation() == generation && kept.files() == watched && Objects.equals(
         kept.user(), user))
       return kept.view();
+    // the stale view gives its heap back first: both held at once would refuse a view that fits on its own
+    if (kept != null)
+      tx.dropDerived(this);
     final HierarchyView built;
     try {
       built = HierarchyBuilder.build(database, def, generation, indexName, false, null, cancelled);
@@ -249,9 +260,21 @@ public final class HierarchyManager {
     // a rejected view (a cap, a cycle, the memory budget) is not kept: it stops early so it is the cheap build, and a refusal by the
     // budget is a moment's answer, not a property of the state. The stamp is read BEFORE the build: a change the build itself made
     // (none is expected) leaves the entry stale, never wrongly fresh
-    if (built != null && built.rejectedReason() == null)
-      tx.putDerived(this, new PrivateView(stamp, generation, watched, user, built));
+    if (built != null && built.rejectedReason() == null) {
+      final FacetMemoryBudget.Reservation charge = FacetMemoryBudget.instance().reserve(built.heapBytes(), 0);
+      if (charge != null)
+        tx.putDerived(this, new PrivateView(stamp, generation, watched, user, built, charge));
+    }
     return built;
+  }
+
+  /**
+   * Whether {@code view} is the private view this manager keeps on the calling thread's transaction, which already holds its heap in the
+   * facet memory budget: the query that takes it must not charge it again (issue #11472).
+   */
+  public boolean isChargedToTransaction(final HierarchyView view) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.getDerived(this) instanceof PrivateView kept && kept.view() == view;
   }
 
   /** The private views built so far, for the tests (a reused one is not a build). */
