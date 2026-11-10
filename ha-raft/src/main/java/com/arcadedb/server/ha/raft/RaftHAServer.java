@@ -2970,7 +2970,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftProperties properties = raftProperties;
     final long segmentSize = properties != null ? RaftServerConfigKeys.Log.segmentSizeMax(properties).getSize()
         : RaftServerConfigKeys.Log.SEGMENT_SIZE_MAX_DEFAULT.getSize();
-    return volume.getUsableSpace() >= 2L * segmentSize;
+    return hasRoomForSegments(volume.getUsableSpace(), volume.getTotalSpace(), segmentSize);
+  }
+
+  /**
+   * Two segments of room, or unknown: a volume reporting no total space does not implement {@code statfs} (a FUSE
+   * mount such as LazyFS answers 0 for both numbers), so its "0 usable" is not "full" (issue #11487).
+   */
+  static boolean hasRoomForSegments(final long usable, final long total, final long segmentSize) {
+    return total <= 0 || usable >= 2L * segmentSize;
   }
 
   /**
