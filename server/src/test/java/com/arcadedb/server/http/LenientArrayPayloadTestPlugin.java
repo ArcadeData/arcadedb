@@ -23,7 +23,6 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.server.handlers.PathHandler;
 
 /**
  * Registers /api/v1/test/array-lenient: the route of {@link ArrayPayloadTestPlugin} for a protocol that answers an unparseable body
@@ -62,7 +61,7 @@ public class LenientArrayPayloadTestPlugin implements ServerPlugin {
   }
 
   @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-    routes.addExactPath("/api/v1/test/array-lenient", new Handler(httpServer));
+  public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
+    routes.post("/api/v1/test/array-lenient", new Handler(httpServer));
   }
 }

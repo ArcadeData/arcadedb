@@ -25,7 +25,6 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.server.handlers.PathHandler;
 
 /**
  * Registers /api/v1/test/array, the only route in the server module that opts in to a top-level JSON array
@@ -69,7 +68,7 @@ public class ArrayPayloadTestPlugin implements ServerPlugin {
   }
 
   @Override
-  public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-    routes.addExactPath("/api/v1/test/array", new Handler(httpServer));
+  public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
+    routes.post("/api/v1/test/array", new Handler(httpServer));
   }
 }
