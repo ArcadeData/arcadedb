@@ -31,6 +31,8 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import de.bwaldvogel.mongo.MongoDatabase;
+import de.bwaldvogel.mongo.MongoVersion;
+import de.bwaldvogel.mongo.ServerVersion;
 import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
@@ -44,6 +46,7 @@ import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -81,6 +84,27 @@ public class MongoDBBackend extends AbstractMongoBackend {
   private static final String ADMIN_DATABASE = "admin";
 
   /**
+   * The lowest wire version current drivers accept: 9, MongoDB 4.4. PyMongo 4.x refuses a server below it.
+   */
+  static final int WIRE_VERSION = 9;
+
+  /**
+   * What the handshake advertises. The library's newest version, {@code MONGO_5_0}, reports wire version 8, so every current
+   * PyMongo refused to connect (issue #11373). The version array stays the library's, only the wire version is raised.
+   */
+  static final MongoVersion SERVER_VERSION = new MongoVersion() {
+    @Override
+    public List<Integer> getVersionArray() {
+      return ServerVersion.MONGO_5_0.getVersionArray();
+    }
+
+    @Override
+    public int getWireVersion() {
+      return WIRE_VERSION;
+    }
+  };
+
+  /**
    * Answered by {@code AbstractMongoBackend.handleCommand} itself, before it resolves any database, on whatever database
    * the client names. Lower case.
    */
@@ -105,6 +129,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
   public MongoDBBackend(final ArcadeDBServer server, final MongoDBProtocolPlugin plugin) {
     this.server = server;
     this.plugin = plugin;
+    version(SERVER_VERSION);
   }
 
   @Override
