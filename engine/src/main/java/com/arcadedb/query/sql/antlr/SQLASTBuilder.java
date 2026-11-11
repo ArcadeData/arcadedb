@@ -1689,90 +1689,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
       break;
     case "where":
-      if (valueObj instanceof WhereClause) {
-        item.filter = (WhereClause) valueObj;
-      } else if (valueObj instanceof BooleanExpression) {
-        final WhereClause whereClause = new WhereClause();
-        whereClause.baseExpression = (BooleanExpression) valueObj;
-        item.filter = whereClause;
-      } else if (valueObj instanceof final Expression expr) {
-        // Expression containing the WHERE condition: where:(name = 'n1')
-        // Check if it's a BaseExpression containing a boolean value like (true) or (false)
-        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-          if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
-            // Handle boolean literals wrapped in BaseExpression: where: (true)
-            final WhereClause whereClause = new WhereClause();
-            final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
-            whereClause.baseExpression = boolExpr;
-            item.filter = whereClause;
-          }
-        }
-        // For parenthesized conditions like (name = 'n1'), mathExpression is a ParenthesisExpression
-        else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
-          // Extract the inner expression's whereCondition from the parentheses
-          if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
-            item.filter = parenExpr.expression.whereCondition;
-          } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
-            // Handle boolean literals like (true) or (false)
-            final WhereClause whereClause = new WhereClause();
-            final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
-            whereClause.baseExpression = boolExpr;
-            item.filter = whereClause;
-          }
-        } else if (expr.whereCondition != null) {
-          // Direct WHERE clause
-          item.filter = expr.whereCondition;
-        } else if (expr.booleanValue != null) {
-          // Direct boolean literal
-          final WhereClause whereClause = new WhereClause();
-          final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
-          whereClause.baseExpression = boolExpr;
-          item.filter = whereClause;
-        }
-      }
+      item.filter = toMatchCondition(valueObj, "where");
       break;
     case "while":
-      if (valueObj instanceof WhereClause) {
-        item.whileCondition = (WhereClause) valueObj;
-      } else if (valueObj instanceof BooleanExpression) {
-        final WhereClause whereClause = new WhereClause();
-        whereClause.baseExpression = (BooleanExpression) valueObj;
-        item.whileCondition = whereClause;
-      } else if (valueObj instanceof final Expression expr) {
-        // Expression containing the WHILE condition
-        // Check if it's a BaseExpression containing a boolean value like (true) or (false)
-        if (expr.mathExpression instanceof final BaseExpression baseExpr) {
-          if (baseExpr.expression != null && baseExpr.expression.booleanValue != null) {
-            // Handle boolean literals wrapped in BaseExpression: while: (true)
-            final WhereClause whereClause = new WhereClause();
-            final BooleanExpression boolExpr = createBooleanLiteral(baseExpr.expression.booleanValue);
-            whereClause.baseExpression = boolExpr;
-            item.whileCondition = whereClause;
-          }
-        }
-        // For parenthesized conditions, mathExpression is a ParenthesisExpression
-        else if (expr.mathExpression instanceof final ParenthesisExpression parenExpr) {
-          // Extract the inner expression's whereCondition from the parentheses
-          if (parenExpr.expression != null && parenExpr.expression.whereCondition != null) {
-            item.whileCondition = parenExpr.expression.whereCondition;
-          } else if (parenExpr.expression != null && parenExpr.expression.booleanValue != null) {
-            // Handle boolean literals like (true) or (false)
-            final WhereClause whereClause = new WhereClause();
-            final BooleanExpression boolExpr = createBooleanLiteral(parenExpr.expression.booleanValue);
-            whereClause.baseExpression = boolExpr;
-            item.whileCondition = whereClause;
-          }
-        } else if (expr.whereCondition != null) {
-          // Direct WHERE clause (used for WHILE)
-          item.whileCondition = expr.whereCondition;
-        } else if (expr.booleanValue != null) {
-          // Direct boolean literal
-          final WhereClause whereClause = new WhereClause();
-          final BooleanExpression boolExpr = createBooleanLiteral(expr.booleanValue);
-          whereClause.baseExpression = boolExpr;
-          item.whileCondition = whereClause;
-        }
-      }
+      item.whileCondition = toMatchCondition(valueObj, "while");
       break;
     case "maxdepth":
       if (valueObj instanceof PInteger) {
@@ -8819,6 +8739,51 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Helper method to create a BooleanExpression from a boolean literal value.
    * This is used for WHILE clauses like "while: (true)" or "while: (false)".
    */
+  /**
+   * The condition of a MATCH {@code where:} or {@code while:}, whose value the grammar parses as an expression. A comparison or
+   * any other condition in parentheses arrives as its condition, a {@code true}/{@code false} as a literal, and any other value
+   * (a function call, a property, a parameter) is tested as {@code <value> = true}, as a SQL {@code WHERE fn()} is. Those last
+   * ones used to be dropped without a word, so a {@code where: (fn())} filtered nothing and a {@code while: (fn())} turned the
+   * item into a single hop (found while fixing issue #11501).
+   */
+  private WhereClause toMatchCondition(final Object valueObj, final String key) {
+    if (valueObj instanceof WhereClause whereClause)
+      return whereClause;
+
+    final WhereClause whereClause = new WhereClause();
+    if (valueObj instanceof BooleanExpression booleanExpression) {
+      whereClause.baseExpression = booleanExpression;
+      return whereClause;
+    }
+
+    if (!(valueObj instanceof Expression))
+      throw new CommandSQLParsingException("Invalid MATCH " + key + ": condition '" + valueObj + "'");
+
+    Expression expr = (Expression) valueObj;
+    while (expr.mathExpression instanceof ParenthesisExpression parenExpr && parenExpr.expression != null)
+      expr = parenExpr.expression;
+
+    if (expr.whereCondition != null)
+      return expr.whereCondition;
+
+    Boolean literal = expr.booleanValue;
+    if (literal == null && expr.mathExpression instanceof BaseExpression baseExpr && baseExpr.expression != null)
+      literal = baseExpr.expression.booleanValue;
+    if (literal != null) {
+      whereClause.baseExpression = createBooleanLiteral(literal);
+      return whereClause;
+    }
+
+    final Expression right = new Expression();
+    right.booleanValue = Boolean.TRUE;
+    final BinaryCondition condition = new BinaryCondition();
+    condition.left = expr;
+    condition.operator = new EqualsCompareOperator();
+    condition.right = right;
+    whereClause.baseExpression = condition;
+    return whereClause;
+  }
+
   private BooleanExpression createBooleanLiteral(final Boolean boolValue) {
     // Create an anonymous BooleanExpression that returns the literal value
     final boolean val = boolValue != null && boolValue;  // Convert to primitive to avoid closure issues
