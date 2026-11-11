@@ -257,8 +257,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private          long                                        nextConfigurationRetryNanos;
   private          int                                         failedConfigurationRetries;
   private static final long              HELD_REMINDER_INTERVAL_MS = 300_000L;
-  // How long a checkpoint waits per database for the pages pending in the asynchronous flush before it refuses (issue #11258).
-  // A refused checkpoint only keeps the log one interval longer, so the bound protects the apply thread, not the data
+  // How long a checkpoint waits in all, across every open database, for the pages pending in the asynchronous flush
+  // before it refuses (issue #11258). A refused checkpoint only keeps the log one interval longer, so the bound protects
+  // the apply thread, not the data
   static final         long              SNAPSHOT_DATA_FLUSH_WAIT_MS = 5_000L;
   // When takeSnapshot() last reminded that a hold keeps the Raft log from being purged, so a hold that lasts is not forgotten
   private volatile long                      heldCheckpointReminderMs;
@@ -2914,8 +2915,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Makes the pages written so far by every open database durable in its data files, for {@link #takeSnapshot()} (issue
    * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
-   * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} per database for the pages pending in the asynchronous
-   * flush, not at all while a backup suspends it, then forces the files written since their last fsync: a database with
+   * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
+   * the asynchronous flush, not at all while a backup suspends it, then forces the files written since their last fsync: a database with
    * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed.
    *
    * @return false when a database still had pages pending at the deadline or an fsync failed
@@ -2923,11 +2924,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private boolean syncDataFilesOfOpenDatabases() {
     if (this.server == null)
       return true;
+    // One deadline for the whole checkpoint, not one per database: the apply thread waits at most this long however many
+    // databases the node hosts
+    final long deadline = System.currentTimeMillis() + SNAPSHOT_DATA_FLUSH_WAIT_MS;
     for (final Database open : DatabaseFactory.getActiveDatabaseInstances())
       if (open instanceof LocalDatabase local && local.isOpen() && !local.getPageManager()
-          .flushAndSyncDatabase(local, SNAPSHOT_DATA_FLUSH_WAIT_MS)) {
+          .flushAndSyncDatabase(local, Math.max(0L, deadline - System.currentTimeMillis()))) {
+        // A failed fsync is logged at SEVERE with its exception by FileManager.syncFiles(), naming the file
         LogManager.instance().log(this, Level.WARNING,
-            "Database '%s': its pages are not all durable yet (flush pending or suspended, or an fsync failed)", local.getName());
+            "Database '%s': its pages are not all durable yet (flush still pending after %dms, flush suspended by a backup, "
+                + "or an fsync failed, logged above)", local.getName(), SNAPSHOT_DATA_FLUSH_WAIT_MS);
         return false;
       }
     return true;
