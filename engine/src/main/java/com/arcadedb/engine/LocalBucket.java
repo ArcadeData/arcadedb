@@ -6812,15 +6812,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * move under it ({@link PageManager#getPublicationSequence()}): every chunk is then compared with the newest committed images of one
    * state, and a chunk a publication changed since the walk read it fails the comparison. A publication that touched none of the
    * chain's pages costs nothing but the wait. A walk that failed, or whose validation a publication overlapped, is walked again, up
-   * to {@code maxRetries} times. When the last attempt was still in motion, the walk is redone once under the page-manager lock, on a
-   * leader only: the lock excludes the local commits, not the replicated apply of a replica (#10941), so that redo checks the
-   * sequence too and gives up when an apply overlapped it. A head that is no chain any more is one page, so one commit, and is
+   * to {@code maxRetries} times. When the last attempt was still in motion, the walk is redone once with the publications held off
+   * ({@link PageManager#callWithPublicationsHeld}), which excludes both the local commits and the replicated apply of a replica
+   * (#10941, #11455); it gives up only when no moment without a publication came within its wait. A head that is no chain any more is one page, so one commit, and is
    * answered at once.
    * <p>
    * Cost and liveness: a read waits at most {@code (maxRetries + 1)} x 20 ms, about 80 ms with the default {@code txRetries} of 3, and
-   * only while publications stay open that long. The publication sequence is shared by every database of the JVM, so a replica hosting
-   * several databases, or applying one large entry, can keep it odd through all the attempts: the read then fails with a retryable
-   * conflict (the apply pass retries the page), never with wrong data.
+   * only while publications stay open that long, plus the 100 ms the last redo can wait for one. The publication sequence is shared by
+   * every database of the JVM, so a replica applying one entry for longer than that can keep it odd through all the attempts: the read
+   * then fails with a retryable conflict (the apply pass retries the page), never with wrong data.
    * <p>
    * The walk mirrors the one in {@link #loadMultiPageRecord(RID, BasePage, int, long, int, boolean)}, chunk layout and trace
    * included, and must change with it. It is kept apart because that one reads through the transaction, which pins every
@@ -6882,28 +6882,44 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (!inMotion)
       // A broken chain
       return null;
-    if (!database.getWrappedDatabaseInstance().isLeader())
-      // A replica: its replicated apply does not take the lock, so a redo under it would not exclude it
-      return GAVE_UP_IN_MOTION;
 
     committedWalkLockRedos.incrementAndGet();
+    // The last redo holds the publications off (PageManager.callWithPublicationsHeld): the page-manager lock it took before excluded a
+    // local commit but not the replicated apply of a replica (#10941), so a replica under write load gave up here on every busy read
+    final Binary served = callAgainstOneCommit(() -> {
+      final long sequence = pageManager.getPublicationSequence();
+      final int outcome = walkNewestCommitted(headPageId, headSlot, headMarker, walk);
+      if (outcome == WALK_PLAIN)
+        return walk.served(null);
+      if (outcome == WALK_CHAIN && (sequence & 1) == 0
+              && validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false) != CHAIN_READ_CHANGED
+              && pageManager.getPublicationSequence() == sequence)
+        return walk.served(offPages);
+      return GAVE_UP_IN_MOTION;
+    });
+    return served != null ? served : GAVE_UP_IN_MOTION;
+  }
+
+  /**
+   * How long the redo of a read against one committed state waits for the publications in flight to end
+   * ({@link PageManager#callWithPublicationsHeld}): longer than {@link #PUBLICATION_WAIT_NANOS}, since it is the last attempt and the
+   * one that holds the next publication off.
+   */
+  private static final long PUBLICATION_HOLD_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
+
+  /**
+   * Runs {@code redo} with no publication open and the next one held off, so it reads one committed state whatever is being committed
+   * or applied (#11455).
+   *
+   * @return what {@code redo} returned, or null when the publications in flight did not end in {@link #PUBLICATION_HOLD_WAIT_NANOS}
+   */
+  private <T> T callAgainstOneCommit(final Callable<T> redo) throws IOException {
     try {
-      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
-      return (Binary) pageManager.executeInLock(() -> {
-        final long sequence = pageManager.getPublicationSequence();
-        final int outcome = walkNewestCommitted(headPageId, headSlot, headMarker, walk);
-        if (outcome == WALK_PLAIN)
-          return walk.served(null);
-        if (outcome == WALK_CHAIN && (sequence & 1) == 0
-                && validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false) != CHAIN_READ_CHANGED
-                && pageManager.getPublicationSequence() == sequence)
-          return walk.served(offPages);
-        return GAVE_UP_IN_MOTION;
-      });
-    } catch (final RuntimeException e) {
-      if (e.getCause() instanceof IOException ioException)
-        throw ioException;
+      return database.getPageManager().callWithPublicationsHeld(PUBLICATION_HOLD_WAIT_NANOS, redo);
+    } catch (final IOException | RuntimeException e) {
       throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error reading a multi-page record against one committed state", e);
     }
   }
 
@@ -7057,8 +7073,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * continuation chunk still at the old one, both equal to what the walk read: a record that never existed accepted as
    * current, and under {@code REPEATABLE_READ} recorded as the transaction's snapshot of it. The publication sequence tells
    * whether a publication overlapped the validation ({@link PageManager#getPublicationSequence()}, #9369); when one did, the
-   * validation runs again under the publication lock and, because a replicated apply is not excluded by it (#11283), with the
-   * sequence checked again inside it. A chain found changed needs no second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
+   * validation runs again with the publications held off ({@link PageManager#callWithPublicationsHeld}): the page-manager lock it
+   * ran under before did not exclude the replicated apply (#11283), which on a busy replica was open again on every attempt (#11455). A chain found changed needs no second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
    */
   private int validateChainReadAgainstOneCommit(final long[] chainTrace, final int chunks, final Binary record,
                                                 final long lastNextChunkPointer, final long headMarker) throws IOException {
@@ -7072,22 +7088,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (verdict == CHAIN_READ_CHANGED || ((sequence & 1) == 0 && pageManager.getPublicationSequence() == sequence))
       return verdict;
 
-    try {
-      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
-      return (Integer) pageManager.executeInLock(() -> {
-        // #11283: the lock excludes a local commit but not the replicated apply of a replica. A publication open or moved
-        // here makes the proof void: the chain is in motion, which is what the retry is for
-        final long locked = pageManager.getPublicationSequence();
-        if ((locked & 1) != 0)
-          return CHAIN_READ_CHANGED;
-        final int lockedVerdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
-        return pageManager.getPublicationSequence() == locked ? lockedVerdict : CHAIN_READ_CHANGED;
-      });
-    } catch (final RuntimeException e) {
-      if (e.getCause() instanceof IOException ioException)
-        throw ioException;
-      throw e;
-    }
+    // #11455: THE REDO HOLDS THE PUBLICATIONS OFF. A REPLICA APPLIES ITS ENTRIES BACK TO BACK WITHOUT THE PAGE-MANAGER LOCK (#11283), SO
+    // A REDO UNDER THAT LOCK FOUND THE NEXT APPLY OPEN ON EVERY ATTEMPT AND THE READ FAILED. THE SEQUENCE IS STILL CHECKED: A HOLD
+    // IS GRANTED ONLY WITH NO PUBLICATION OPEN AND NONE CAN START UNDER IT, SO A MOVE HERE WOULD BE A PUBLISHER THAT BYPASSED IT
+    final Integer held = callAgainstOneCommit(() -> {
+      final long locked = pageManager.getPublicationSequence();
+      if ((locked & 1) != 0)
+        return CHAIN_READ_CHANGED;
+      final int lockedVerdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
+      return pageManager.getPublicationSequence() == locked ? lockedVerdict : CHAIN_READ_CHANGED;
+    });
+    // NO MOMENT WITHOUT A PUBLICATION CAME: THE CHAIN IS IN MOTION, WHICH IS WHAT THE RETRY IS FOR
+    return held != null ? held : CHAIN_READ_CHANGED;
   }
 
   /**

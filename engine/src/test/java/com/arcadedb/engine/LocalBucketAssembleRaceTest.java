@@ -284,13 +284,13 @@ class LocalBucketAssembleRaceTest extends TestHelper {
   }
 
   /**
-   * On a replica ({@code isLeader()} false on the wrapped instance) the walk is never redone under the page-manager lock: the replicated
-   * apply does not take it, so the redo could not exclude it. An entry held half applied across the read: every optimistic attempt
-   * overlaps it, no lock redo is made, and the read is a retryable conflict, never a mix. The wrapper is a JDK proxy delegating every
-   * call to the real database but {@code isLeader()}, the way the engine tests stand in for the HA wrapper.
+   * On a replica ({@code isLeader()} false on the wrapped instance) the last redo holds the publications off instead of taking the
+   * page-manager lock, which the replicated apply does not take (#11455). An entry held half applied across the read: every optimistic
+   * attempt overlaps it, the redo waits for it in vain and gives up, and the read is a retryable conflict, never a mix. The wrapper is
+   * a JDK proxy delegating every call to the real database but {@code isLeader()}, the way the engine tests stand in for the HA wrapper.
    */
   @Test
-  void aReplicaNeverRedoesTheWalkUnderTheLock() throws Exception {
+  void aReplicaRedoWaitsForAnEntryHalfAppliedAndNeverReadsIntoIt() throws Exception {
     final RID rid = insertRecord('x');
     final LocalBucket bucket = bucketOf(rid);
     final Map<Integer, Image> imagesX = chainImages(bucket, rid, null);
@@ -326,7 +326,8 @@ class LocalBucketAssembleRaceTest extends TestHelper {
       assertThatThrownBy(() -> bucket.getRecordFromCommittedPage(rid)).isInstanceOf(ConcurrentModificationException.class);
       assertThat(bucket.getCommittedWalkRedosForTesting() - redos).as("every optimistic walk overlapped the entry")
           .isEqualTo(retries() + 1);
-      assertThat(bucket.getCommittedWalkLockRedosForTesting() - lockRedos).as("no redo under the lock on a replica").isZero();
+      assertThat(bucket.getCommittedWalkLockRedosForTesting() - lockRedos).as("one redo, which waited for the entry and gave up")
+          .isEqualTo(1);
     } finally {
       resume.countDown();
       local.setWrappedDatabaseInstance(previous);
