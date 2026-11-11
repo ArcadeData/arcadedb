@@ -257,6 +257,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private          long                                        nextConfigurationRetryNanos;
   private          int                                         failedConfigurationRetries;
   private static final long              HELD_REMINDER_INTERVAL_MS = 300_000L;
+  // How long a checkpoint waits in all, across every open database, for the pages pending in the asynchronous flush
+  // before it refuses (issue #11258). A refused checkpoint only keeps the log one interval longer, so the bound protects
+  // the apply thread, not the data
+  static final         long              SNAPSHOT_DATA_FLUSH_WAIT_MS = 5_000L;
   // When takeSnapshot() last reminded that a hold keeps the Raft log from being purged, so a hold that lasts is not forgotten
   private volatile long                      heldCheckpointReminderMs;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
@@ -2765,10 +2769,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Records a snapshot checkpoint so Ratis can compact the log up to the last-applied index.
    * <p>
-   * The ArcadeDB database files on disk are inherently the snapshot state - every committed
-   * transaction is already durably flushed by the {@link com.arcadedb.engine.TransactionManager}.
-   * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
-   * reducing log disk usage over time.
+   * The ArcadeDB database files on disk are inherently the snapshot state, once they are durable: neither a replicated
+   * apply nor a local commit fsyncs a data file, so the pages of every open database are flushed and forced first
+   * (issue #11258, {@link #syncDataFilesOfOpenDatabases()}). Returning the last-applied index here tells Ratis it may
+   * purge log entries up to that index, reducing log disk usage over time, and a restart replays none of them.
    * <p>
    * <b>Why a marker file is written (issue #4829):</b> the returned index is the Ratis contract
    * "state up to here is durable, you may purge the log up to it". Returning it without also writing
@@ -2874,6 +2878,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final TermIndex applied = getLastAppliedTermIndex();
     final long term = applied != null && applied.getTerm() > 0 ? applied.getTerm() : 0L;
 
+    // The pages of every entry up to the checkpoint go to disk before the marker does (issue #11258). Neither the apply
+    // nor a local commit fsyncs a data file: a replicated apply writes its pages straight to the files and a follower
+    // writes no WAL, a leader's pages go through the asynchronous flush and its WAL is not forced either by default. The
+    // restart replays only what follows the marker, so a power loss after a marker over pages still in the OS cache lost
+    // them with nothing left to replay: the empty dictionary and bucket files, with crash recovery `completed` over them,
+    // of the Jepsen LazyFS runs. appliedIndex was read above, and the apply writes or enqueues an entry's pages before
+    // lastAppliedIndex moves past it, so every page of an entry at or below currentIndex is pending or written by now.
+    if (!syncDataFilesOfOpenDatabases()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not make the data files of every open database durable at index %d; not authorising log purge", currentIndex);
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
     // The columnar marks of every entry up to the checkpoint go to disk before the marker does (plan 3, Task 22). A follower
     // writes no local WAL, so the cleanWALFiles hook that persists the recovery set never covers a replicated change, and a
     // restart replays only what follows the marker: the pages an applied entry marked would otherwise live only in memory.
@@ -2893,6 +2910,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     HALog.log(this, HALog.BASIC, "ArcadeStateMachine: snapshot checkpoint at index %d (term %d)", currentIndex, term);
     return currentIndex;
+  }
+
+  /**
+   * Makes the pages written so far by every open database durable in its data files, for {@link #takeSnapshot()} (issue
+   * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
+   * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
+   * the asynchronous flush, not at all while a backup suspends it, then forces the files written since their last fsync: a database with
+   * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed.
+   *
+   * @return false when a database still had pages pending at the deadline or an fsync failed
+   */
+  private boolean syncDataFilesOfOpenDatabases() {
+    if (this.server == null)
+      return true;
+    // One deadline for the whole checkpoint, not one per database: the apply thread waits at most this long however many
+    // databases the node hosts
+    final long deadline = System.currentTimeMillis() + SNAPSHOT_DATA_FLUSH_WAIT_MS;
+    for (final Database open : DatabaseFactory.getActiveDatabaseInstances())
+      if (open instanceof LocalDatabase local && local.isOpen() && !local.getPageManager()
+          .flushAndSyncDatabase(local, Math.max(0L, deadline - System.currentTimeMillis()))) {
+        // A failed fsync is logged at SEVERE with its exception by FileManager.syncFiles(), naming the file
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': its pages are not all durable yet (flush still pending after %dms, flush suspended by a backup, "
+                + "or an fsync failed, logged above)", local.getName(), SNAPSHOT_DATA_FLUSH_WAIT_MS);
+        return false;
+      }
+    return true;
   }
 
   /**
@@ -2925,8 +2969,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * latest snapshot in {@link #storage}, so {@link SimpleStateMachineStorage#getLatestSnapshot()}
    * can rediscover it after a restart (it scans for {@code snapshot.<term>_<index>} files).
    * <p>
-   * ArcadeDB's real snapshot is the set of database files on disk - every committed transaction is
-   * already durably flushed by the {@link com.arcadedb.engine.TransactionManager} - so the marker is
+   * ArcadeDB's real snapshot is the set of database files on disk - made durable before the marker by
+   * {@link #takeSnapshot()} and by the snapshot install, which fsyncs what it extracts - so the marker is
    * a zero-byte placeholder whose name carries the {@code (term, index)} that Ratis's snapshot-index
    * bookkeeping and log-purge contract point at. No {@code .md5} companion is written, so the
    * rediscovered {@link SingleFileSnapshotInfo} carries a null digest, the same as a fresh boot;

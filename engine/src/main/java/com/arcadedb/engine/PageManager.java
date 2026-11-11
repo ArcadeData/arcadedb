@@ -657,6 +657,27 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Makes every page the database committed before the call durable in its data file, for a caller about to declare that
+   * nothing else is needed to rebuild that state (issue #11258: the Raft snapshot checkpoint, below which a restart
+   * replays no entry). Without it the pages only reach the OS cache: the asynchronous flush writes them without an
+   * fsync, and a replicated apply writes them synchronously but without one too, so a power loss after the checkpoint
+   * loses them with nothing left to replay.
+   * <p>
+   * Waits up to {@code maxWaitMillis} for the pages pending at the call to reach the files, then forces every file
+   * written since its last fsync. While the flush of the database is suspended (a backup) the pending pages are
+   * deferred until it ends, so the wait is not attempted and the call fails at once when any is pending.
+   *
+   * @return {@code true} when the pages committed before the call are on disk, {@code false} when some were still
+   *     pending at the deadline or an fsync failed
+   */
+  public boolean flushAndSyncDatabase(final DatabaseInternal database, final long maxWaitMillis) {
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null && !waitPagesPendingNowOfDatabaseAreFlushed(database, thread.isSuspended(database) ? 0L : maxWaitMillis))
+      return false;
+    return database.getFileManager().syncFiles();
+  }
+
+  /**
    * @param dropped {@code true} when the database's files are about to be deleted: only then are the WAL acks of the
    *                pages deferred by a suspension released (issue #9881, see
    *                {@link PageManagerFlushThread#removeAllPagesOfDatabase(Database, boolean)}).
