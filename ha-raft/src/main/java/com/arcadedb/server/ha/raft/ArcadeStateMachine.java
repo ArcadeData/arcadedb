@@ -8762,6 +8762,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         Files.writeString(tmp, json.toString());
         Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       }
+      // Reached only when the write succeeded: a throw above leaves both flags as they were, so the next write is still
+      // made durable whenever this one had to be
       appliedIndexFileCarriesQuarantine = carriesQuarantine;
       return true;
     } catch (final Exception e) {
