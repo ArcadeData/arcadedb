@@ -494,12 +494,18 @@ public class TransactionIndexContext {
     return entries.size();
   }
 
-  public void commit() {
+  /**
+   * Checks the unique keys of the transaction and replays its entries into the indexes.
+   *
+   * @return true when at least one key was checked against a UNIQUE index: that check holds only while the commit keeps the
+   * locks it was taken under (issue #11526)
+   */
+  public boolean commit() {
     // REMOVE ENTRIES FOR INDEXES DROPPED DURING THE TRANSACTION (e.g. TYPE DROP)
     indexEntries.keySet().removeIf(indexName -> !laneIndexStillExists(indexName));
     unorderedEntries.keySet().removeIf(indexName -> !laneIndexStillExists(indexName));
 
-    checkUniqueIndexKeys();
+    final boolean uniqueKeysChecked = checkUniqueIndexKeys();
 
     // APPEND-ONLY LANE FIRST: ITS ENTRIES CARRY NO UNIQUENESS CONSTRAINT AND REPLAY STRICTLY IN
     // INSERTION ORDER, SO A REMOVE FOLLOWED BY AN ADD ON THE SAME KEY ENDS WITH THE ADD (AND VICE
@@ -638,6 +644,7 @@ public class TransactionIndexContext {
     ++laneVersion;
     if (cachedViews != null)
       cachedViews.clear();
+    return uniqueKeysChecked;
   }
 
   /**
@@ -1265,8 +1272,9 @@ public class TransactionIndexContext {
   /**
    * Checks unique indexes integrity. Since a type index is composed by multiple bucket indexes, the deleted keys are first collected across all the indexes.
    */
-  private void checkUniqueIndexKeys() {
+  private boolean checkUniqueIndexKeys() {
     final Map<TypeIndex, Map<ComparableKey, Set<RID>>> deletedKeys = getTxDeletedEntries();
+    boolean checked = false;
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
@@ -1285,11 +1293,13 @@ public class TransactionIndexContext {
               final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
               final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
+              checked = true;
             }
           }
         }
       }
     }
+    return checked;
   }
 
   /**

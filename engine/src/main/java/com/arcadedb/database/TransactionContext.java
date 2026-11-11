@@ -54,6 +54,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.IntHashSet;
@@ -3716,6 +3717,8 @@ public class TransactionContext implements Transaction {
         mergeEdgeListHeads(isLeader);
       }
 
+      final boolean hadDeferredUpdates = updatedRecords != null;
+
       // Process updatedRecords AFTER acquiring locks
       if (updatedRecords != null) {
         for (final Record rec : updatedRecords.values())
@@ -3753,57 +3756,27 @@ public class TransactionContext implements Transaction {
         return null;
       }
 
+      // #11526: the deferred writes above can reach files outside the lock set computed up front (an EXTERNAL property's paired
+      // bucket is added to it by lockFilesFromChanges, but this is the general guard). Taking the wider set releases every lock
+      // held, so it must happen BEFORE the unique-key check below, which holds only while the locks it ran under are kept: done
+      // after it, a concurrent transaction committed the same key into another bucket's sub-index in the window, unchecked.
+      if (hadDeferredUpdates)
+        lockLateJoiningFiles(explicitLockMode);
+
       // COMMIT INDEX CHANGES: always, on whichever node originates this commit (#6964) - see the note on
       // indexChangesReplayed above.
-      indexChanges.commit();
+      final boolean uniqueKeysChecked = indexChanges.commit();
 
-      // #4937: the steps above (updateRecordNoLock, indexChanges.commit) can add pages of files that were
-      // NOT in the lock set computed at lock time - EXTERNAL-property buckets, indexes created inside this
-      // transaction, multi-file index components. Their pages would pass the version checks below WITHOUT
-      // their file lock held, which is what made a phase-2 failure after the WAL append reachable (#4936:
-      // an aborted transaction partially replayed by recovery). Verify coverage; on a late joiner, release
-      // and re-acquire the UNION in order (lock-ordering discipline forbids acquiring extra locks in
-      // place). The version checks below run after this block, so anything that changed while unlocked
-      // fails validation with the standard retriable ConcurrentModificationException.
-      if (lockedFiles != null) {
-        // Fast path first: in the overwhelmingly common case every touched file is already locked, and this
-        // is one of the hottest paths in the engine - detect late joiners with a plain scan (no allocation,
-        // no boxing) and only build the union set when one is actually found.
-        boolean lateJoiners = false;
-        for (final PageId pid : modifiedPages.keySet())
-          if (!containsFileId(lockedFiles, pid.getFileId())) {
-            lateJoiners = true;
-            break;
-          }
-        if (!lateJoiners && newPages != null)
-          for (final PageId pid : newPages.keySet())
-            if (!containsFileId(lockedFiles, pid.getFileId())) {
-              lateJoiners = true;
-              break;
-            }
-
-        if (lateJoiners) {
-          final IntHashSet union = new IntHashSet(lockedFiles.size() + modifiedPages.size());
-          for (final int fileId : lockedFiles)
-            union.add(fileId);
-          for (final PageId pid : modifiedPages.keySet())
-            union.add(pid.getFileId());
-          if (newPages != null)
-            for (final PageId pid : newPages.keySet())
-              union.add(pid.getFileId());
-
-          if (explicitLockMode)
-            // The user's explicit lock list does not cover files this transaction actually modified:
-            // re-locking on their behalf would defeat the explicit-locking contract - surface it as the
-            // "not all the modified resources were locked" violation instead. (explicitLockedFiles was
-            // already nulled by the earlier checkExplicitLocks, so we branch on the captured mode.)
-            checkExplicitLocksForUnion(union);
-          else {
-            database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
-            lockedFiles = lockFilesInOrder(union);
-          }
-        }
-      }
+      // #4937: the index replay can still add pages of files outside the lock set (a multi-file index component, an index
+      // created inside this transaction). Their pages would pass the version checks below WITHOUT their file lock held, which
+      // is what made a phase-2 failure after the WAL append reachable (#4936). The version checks below run after this, so
+      // anything that changed while unlocked fails validation with the standard retriable ConcurrentModificationException.
+      // A unique key checked above is not covered by that: the colliding entry lands in another bucket's sub-index, a page this
+      // transaction never read (#11526). Re-locking here would void the check, so such a transaction is retried instead.
+      if (lockLateJoiningFiles(explicitLockMode) && uniqueKeysChecked)
+        throw new ConcurrentModificationException(
+            "Error on commit transaction: the files the unique-key check ran under had to be released to lock files the index "
+                + "changes reached late, please retry the operation");
 
       reserveMergedEdges();
 
@@ -5453,6 +5426,60 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * #4937: the commit steps after the lock (the deferred record updates, the index replay) can add pages of files that were NOT in
+   * the lock set computed at lock time. Verifies coverage; on a late joiner, releases and re-acquires the UNION in order
+   * (lock-ordering discipline forbids acquiring extra locks in place). An explicit-lock transaction is not widened: the uncovered
+   * file is reported as a violation of its lock list instead.
+   *
+   * @return true when the locks held were released to take the wider set, so anything checked under them no longer holds
+   */
+  private boolean lockLateJoiningFiles(final boolean explicitLockMode) {
+    if (lockedFiles == null)
+      return false;
+
+    // Fast path first: in the overwhelmingly common case every touched file is already locked, and this
+    // is one of the hottest paths in the engine - detect late joiners with a plain scan (no allocation,
+    // no boxing) and only build the union set when one is actually found.
+    boolean lateJoiners = false;
+    for (final PageId pid : modifiedPages.keySet())
+      if (!containsFileId(lockedFiles, pid.getFileId())) {
+        lateJoiners = true;
+        break;
+      }
+    if (!lateJoiners && newPages != null)
+      for (final PageId pid : newPages.keySet())
+        if (!containsFileId(lockedFiles, pid.getFileId())) {
+          lateJoiners = true;
+          break;
+        }
+
+    if (!lateJoiners)
+      return false;
+
+    final IntHashSet union = new IntHashSet(lockedFiles.size() + modifiedPages.size());
+    for (final int fileId : lockedFiles)
+      union.add(fileId);
+    for (final PageId pid : modifiedPages.keySet())
+      union.add(pid.getFileId());
+    if (newPages != null)
+      for (final PageId pid : newPages.keySet())
+        union.add(pid.getFileId());
+
+    if (explicitLockMode) {
+      // The user's explicit lock list does not cover files this transaction actually modified:
+      // re-locking on their behalf would defeat the explicit-locking contract - surface it as the
+      // "not all the modified resources were locked" violation instead. (explicitLockedFiles was
+      // already nulled by the earlier checkExplicitLocks, so we branch on the captured mode.)
+      checkExplicitLocksForUnion(union);
+      return false;
+    }
+
+    database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+    lockedFiles = lockFilesInOrder(union);
+    return true;
+  }
+
   private IntHashSet lockFilesFromChanges() {
     final IntHashSet modifiedFiles = new IntHashSet(modifiedPages.size() + 16);
 
@@ -5461,6 +5488,21 @@ public class TransactionContext implements Transaction {
     if (newPages != null)
       for (final PageId p : newPages.keySet())
         modifiedFiles.add(p.getFileId());
+
+    // #11526: a deferred update writes the values of EXTERNAL properties into the paired external bucket of the record's
+    // bucket when it is applied, after the locks are taken. Locked up front, that file does not join late, so the commit does
+    // not have to release its locks and take a wider set
+    if (updatedRecords != null) {
+      final LocalSchema schema = database.getSchema().getEmbedded();
+      for (final RID rid : updatedRecords.keySet()) {
+        final int bucketId = rid.getBucketId();
+        if (schema.getTypeByBucketId(bucketId) instanceof LocalDocumentType type && type.hasExternalBuckets()) {
+          final Integer externalBucketId = type.getExternalBucketIdFor(bucketId);
+          if (externalBucketId != null)
+            modifiedFiles.add(externalBucketId);
+        }
+      }
+    }
 
     indexChanges.addFilesToLock(modifiedFiles);
 
