@@ -48,6 +48,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
@@ -438,6 +439,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // The build a search decided on and handed off, so the search can stop waiting for it when its statement is
   // cancelled while the build runs on for everyone else (issue #9896). See buildGraphForSearch().
   private volatile Thread  searchBuildThread      = null;
+  // The build cache the last graph build ran with, in vectors (issue #11497): reported by getStats(), so a build the heap
+  // gate cut down to a smaller cache can be told apart from one that ran with what the configuration asks for.
+  private volatile int     lastGraphBuildCacheSize = 0;
+  // Whether a refusal of a search-decided build has been logged since a build last got through the heap gate: one
+  // WARNING per streak (issue #11497), since every query that reaches the missing graph is refused the same way while the
+  // heap stays that full, and the second line of a streak tells the operator nothing the first did not.
+  private volatile boolean searchBuildRefusalLogged = false;
+  // Heap figures pinned by a test in place of the live readings the search-build heap gate takes, -1 when not pinned
+  private volatile long    pinnedAvailableHeapForTest   = -1L;
+  private volatile long    pinnedReclaimableCacheForTest = -1L;
   // When the last online rebuild was declined for lack of heap (issue #6503). A deferral does not consume the
   // mutations that triggered it - only a successful build does - so without this the trigger is still true the
   // instant the deferred cycle ends, and rebuildGraphBeforeSearch() runs on EVERY query: one rebuild thread, one
@@ -3431,6 +3442,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback, final boolean compactDataFile,
       final boolean releaseResidentGraphFirst) {
+    buildGraphFromScratchWithRetry(graphCallback, compactDataFile, releaseResidentGraphFirst, 0);
+  }
+
+  /**
+   * {@link #buildGraphFromScratchWithRetry(GraphBuildCallback, boolean, boolean)} with the build cache held to at most
+   * {@code buildCacheCapacityCap} vectors, which is how a search-decided build that does not fit the heap with its full
+   * cache runs with the smaller one the heap gate measured for it (issue #11497).
+   *
+   * @param buildCacheCapacityCap the most vectors the build cache may hold, or 0 (or less) for no cap: the cache is then
+   *                              sized by {@link #computeGraphBuildCacheCapacity(int)} alone
+   */
+  private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback, final boolean compactDataFile,
+      final boolean releaseResidentGraphFirst, final int buildCacheCapacityCap) {
     // A compaction rewrites the data file outside transactional control, so it may not run under a caller's
     // transaction. That guard belongs to rewriteDataFileWithLiveEntries and still stands there, but from here on
     // the build runs with the caller's transaction suspended and would therefore never see one: asked here,
@@ -3471,7 +3495,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // follows does not hold writers up.
         compactionFileLock = compactDataFile ? lockDataFileForCompaction() : -1;
         try {
-          buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+          buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst, buildCacheCapacityCap);
         } finally {
           releaseCompactionFileLock();
         }
@@ -3529,7 +3553,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   private void buildGraphFromScratchExclusively(final GraphBuildCallback graphCallback, final boolean compactDataFile,
-      final boolean releaseResidentGraphFirst) {
+      final boolean releaseResidentGraphFirst, final int buildCacheCapacityCap) {
     // Everything below reads the location index, and the id snapshot a few lines down reads the id sequence the
     // load derives from it, so materialise it up front (issue #6722) rather than at whichever of those happens to
     // come first. A snapshot taken against an unmaterialised sequence would be 0, and every vector id would then
@@ -3855,7 +3879,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // searchers, so the available-heap cap no longer counts them. Move this call above that block - or that
       // block below this call - and the close-path rebuild would shrink its own build cache to make room for
       // memory it is in the act of freeing.
-      final int graphBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
+      //
+      // A cap is the heap gate's answer for a search-decided build that does not fit with the full cache (issue #11497).
+      // Applied as a ceiling on the size computed here, never as the size itself: the corpus can have shrunk since the
+      // gate measured it, and the cap is the most the heap allowed, not an amount the build has to claim.
+      final int computedBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
+      final int graphBuildCacheSize = buildCacheCapacityCap > 0 ?
+          Math.min(computedBuildCacheSize, buildCacheCapacityCap) : computedBuildCacheSize;
+      lastGraphBuildCacheSize = graphBuildCacheSize;
       // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
       final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
 
@@ -6129,12 +6160,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
           buildGraphFromScratchUnderRebuildPermit(scope, stillNeeded);
         } catch (final Throwable t) {
           failure.set(t);
-          // The search that started it may have stopped waiting: this is the one place sure to report it
-          LogManager.instance().log(this, Level.WARNING, "Graph build of vector index %s, started by a search, failed: %s",
-              indexName, t.toString());
+          // The search that started it may have stopped waiting: this is the one place sure to report it. Except for a
+          // refusal by the heap gate (issue #11497), which reported itself, once per streak, with everything this line
+          // would repeat: logged here as well it would be a WARNING per refused query on a server already short of heap
+          if (!(t instanceof VectorGraphBuildRefusedException))
+            LogManager.instance().log(this, Level.WARNING, "Graph build of vector index %s, started by a search, failed: %s",
+                indexName, t.toString());
         } finally {
           try {
-            endSearchRebuildOwnership(alsoClearPersistedGraphLatch);
+            // A refusal by the heap gate leaves persistedGraphUnresolved SET (issue #11497): the gate refused before the
+            // build cleared it, so nothing about the on-disk graph was settled, and the question is still open for the next
+            // search. Cleared, it would close the door on ensureGraphAvailable() for a session that wrote before it searched
+            // (graphState already MUTABLE): the PQ path, which reaches the build through ensureGraphAvailable() alone, would
+            // then answer from the delta buffer only - the incomplete result the refusal exists to avoid
+            endSearchRebuildOwnership(alsoClearPersistedGraphLatch && !(failure.get() instanceof VectorGraphBuildRefusedException));
           } finally {
             if (searchBuildThread == Thread.currentThread())
               searchBuildThread = null;
@@ -6230,16 +6269,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Eight large indexes rebuilding concurrently on eight request threads is the reported failure: the heap pinned
    * at its ceiling, {@link OutOfMemoryError} surfacing in unrelated handlers, and the node restarted under it.
    * <p>
-   * <b>It waits; it never declines.</b> {@link #admitOnlineRebuild()}'s refusal is not extended here, and its
-   * javadoc says why: a build with no later trigger to retry it turns "slower" into "never" when refused. This one
-   * has no trigger at all - the caller is a search that has nothing to return without it, and a search with no
-   * graph does not fail loudly, it returns an empty result set (see
-   * {@code findNeighborsFromVector}'s {@code graphIndex == null} branch). Serializing costs latency and returns
-   * the right answer; refusing would silently return the wrong one. The heap check is therefore taken here for
-   * its RECLAIM half only - {@link #reclaimHeapForRebuild} - which is a pure improvement over the nothing that
-   * came before it.
+   * <b>It waits for a permit, and is refused only by the heap.</b> {@link #admitOnlineRebuild()}'s deferral is not
+   * extended here: a search with no graph does not fail loudly, it answers from the delta buffer alone (see
+   * {@code findNeighborsFromVector}'s {@code graphIndex == null} branch), which for a persisted corpus is an
+   * incomplete result returned as a complete one, so this build is never quietly skipped. Serializing costs latency
+   * and returns the right answer. What the heap gate does instead is {@link #fitSearchBuildToHeap(int)}: reclaim page
+   * cache, then run with a smaller build cache, and only when the graph itself cannot fit, FAIL the search with a
+   * retryable {@link VectorGraphBuildRefusedException} rather than build on a heap that full (issue #11497) - the
+   * build it used to run "anyway" there is what ended in an {@link OutOfMemoryError} that stopped the server.
    * <p>
-   * <b>A build too small to matter takes no permit</b>, and does not pay {@link #reclaimHeapForRebuild} either:
+   * <b>A build too small to matter takes no permit</b>, and does not pay {@link #fitSearchBuildToHeap(int)} either:
    * {@link #buildGraphForSearch} runs it inline and never reaches here. Below {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} -
    * the same threshold this class already uses to separate a build cheap enough to run inline from one worth a
    * background thread - queueing would trade milliseconds of work for however long the permit holder's rebuild takes,
@@ -6315,8 +6354,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
             timedOutMs, indexName, scope);
       }
 
-      reclaimHeapForRebuild(scope);
-      buildGraphFromScratch();
+      // Measured here, holding the permit, for the reason the async path measures there: this is the moment the memory
+      // is about to be claimed, and the build this thread may have queued behind has released what it held by now.
+      // Throws when even the smallest build does not fit (issue #11497), with nothing built and the permit returned.
+      buildGraphFromScratchWithRetry(null, false, false, fitSearchBuildToHeap(scope));
     } finally {
       if (acquired)
         REBUILD_SEMAPHORE.release();
@@ -6388,84 +6429,167 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Gives up as much of the evictable page read cache as a from-scratch build needs to fit the heap that
-   * {@code VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT} allows it (issue #7814), and never declines the build.
+   * The heap gate of a from-scratch build a SEARCH decided on: fits the build to the heap that
+   * {@code VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT} allows it, giving up evictable page cache and then build cache to get
+   * there, and refuses it when even that is not enough (issue #11497).
    * <p>
-   * This is {@link #admitOnlineRebuild()}'s reclaim half without its refusal half, and the estimate is the
-   * OFFLINE one: the caller has no resident graph to keep alive while it builds - that is why it is building -
-   * so charging the online path's extra term would ask for heap nobody is holding.
+   * The estimate is the OFFLINE one: the caller has no resident graph to keep alive while it builds - that is why it is
+   * building - so charging the online path's extra term would ask for heap nobody is holding. In order:
+   * <ol>
+   *   <li><b>It fits as it is.</b> Built with the cache {@link #computeGraphBuildCacheCapacity(int)} sizes.</li>
+   *   <li><b>It fits once page cache is given up</b> (issue #7814). Exactly as much is reclaimed as closes the gap,
+   *   before the build allocates: the pages are strongly referenced, so no collection would take them on its behalf.</li>
+   *   <li><b>It fits with a smaller build cache.</b> The cache is the one term of the estimate the build can do without:
+   *   a vector it does not hold is read back from the pages it is stored in, which costs time, while the graph being built
+   *   has to be held whole. So the cache is cut down to what fits beside the graph - never below the
+   *   {@link ArcadePageVectorValues#DEFAULT_CACHE_SIZE} floor {@link #computeGraphBuildCacheCapacity(int)} itself applies,
+   *   or the corpus if that is smaller - and the page cache gives up what that smaller build still needs. Counted
+   *   ({@code searchRebuildsWithReducedCache}).</li>
+   *   <li><b>Nothing fits: the search is refused</b> with a {@link VectorGraphBuildRefusedException}, and nothing is built
+   *   or reclaimed. This used to log "It is built anyway" and build, and on a heap whose live set was at 95% of the
+   *   ceiling that build ended in an {@link OutOfMemoryError}, thrown on whichever thread allocated next, that stopped every
+   *   database of the server. The refusal costs this one query instead, with an error that says why and is retryable.
+   *   Counted ({@code searchRebuildsRefusedForMemory}), and logged once per streak.</li>
+   * </ol>
+   * <b>Why a refusal and not the delta scan.</b> Issue #7814 decided this path must never decline, because the search
+   * methods answer a missing graph from the delta buffer, which for a corpus already persisted is an incomplete result
+   * returned as a complete one. That still holds, and it is why this throws rather than returning. What #7814 weighed the
+   * refusal against was a slower answer; past the point where the gate says the build does not fit, the alternative is an
+   * {@link OutOfMemoryError}, and a defined failure of one query is the better trade against that. The retry is the query
+   * itself: no later trigger is needed, because the next search that reaches the missing graph asks the gate again.
    * <p>
-   * When even the whole cache does not close the gap the build still goes ahead, because the caller is a search
-   * that returns an empty result set without it. Everything reclaimable is handed over first anyway: past this
-   * point the only remaining outcomes are a build that fits and one that does not, and the pages cost a disk read
-   * to get back where the {@link OutOfMemoryError} costs the node.
+   * Setting {@code VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT} to 0 disables the gate, as it does for the online path, and the
+   * build then runs with its full cache whatever the heap reads.
    *
    * @param nodes how many vectors the build will walk, from {@link #rebuildScopeSize()}
+   *
+   * @return the most vectors the build cache may hold, for
+   * {@link #buildGraphFromScratchWithRetry(GraphBuildCallback, boolean, boolean, int)}, or 0 for no cap
+   *
+   * @throws VectorGraphBuildRefusedException when the build does not fit even with the smallest cache it may run with
    */
-  private void reclaimHeapForRebuild(final int nodes) {
+  private int fitSearchBuildToHeap(final int nodes) {
+    final long pinnedAvailable = pinnedAvailableHeapForTest;
+    final long pinnedReclaimable = pinnedReclaimableCacheForTest;
+    final PageManager pageManager = getDatabase().getPageManager();
+    return fitSearchBuildToHeap(nodes, pinnedAvailable >= 0L ? pinnedAvailable : VectorHeapBudget.availableHeapBytes(),
+        pinnedReclaimable >= 0L ? pinnedReclaimable : pageManager != null ? pageManager.getReadCacheRAM() : 0L);
+  }
+
+  /**
+   * {@link #fitSearchBuildToHeap(int)} against supplied heap figures, so a test can drive the shapes of issue #11497 - a
+   * build of 150,000 vectors at 768 dimensions against a few hundred MB of heap - without a heap that size. Nothing is
+   * reclaimed from the page cache when {@code reclaimableCacheBytes} is 0.
+   *
+   * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
+   * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
+   */
+  int fitSearchBuildToHeap(final int nodes, final long availableHeap, final long reclaimableCacheBytes) {
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
-    // The nodes test is defence in depth rather than a live branch: the only caller reaches this after its own
-    // scope check, so nothing under ASYNC_REBUILD_MIN_GRAPH_SIZE arrives here today. It stands because every
-    // arithmetic term below is derived from it, and a future caller passing 0 would otherwise reclaim against an
-    // estimate of nothing.
+    // The nodes test is defence in depth rather than a live branch: the only caller reaches this after its own scope
+    // check, so nothing under ASYNC_REBUILD_MIN_GRAPH_SIZE arrives here today. It stands because every term below is
+    // derived from it, and a future caller passing 0 would otherwise be judged against an estimate of nothing.
     if (percent <= 0 || nodes <= 0)
-      return; // gate disabled by configuration, or nothing to build
+      return admitSearchBuild(0); // gate disabled by configuration, or nothing to build: a build gets through all the same
 
+    final int dimensions = metadata.dimensions;
+    final int fullCache = computeGraphBuildCacheCapacity(nodes);
+    final long fullEstimate = VectorHeapBudget.estimateRebuildHeapBytes(nodes, dimensions, fullCache, false);
+    final long fullReclaimNeeded = VectorHeapBudget.reclaimNeededFor(fullEstimate, percent, availableHeap,
+        reclaimableCacheBytes);
+    if (fullReclaimNeeded == 0L)
+      return admitSearchBuild(0); // it already fits
+
+    // The smallest cache the build may run with: the floor computeGraphBuildCacheCapacity() applies whatever the heap
+    // percent says, or the whole of what it asked for when that is less (a small corpus, an explicit cache size)
+    final int floorCache = Math.min(fullCache, ArcadePageVectorValues.DEFAULT_CACHE_SIZE);
+    final int cache = fullReclaimNeeded > 0L ? fullCache :
+        (int) Math.min(fullCache, VectorHeapBudget.largestBuildCacheThatFits(nodes, dimensions, percent, availableHeap,
+            reclaimableCacheBytes));
+    if (cache < floorCache)
+      throw refuseSearchBuild(nodes, floorCache, percent, availableHeap, reclaimableCacheBytes);
+
+    final long estimate = cache == fullCache ? fullEstimate :
+        VectorHeapBudget.estimateRebuildHeapBytes(nodes, dimensions, cache, false);
+    final long reclaimNeeded = VectorHeapBudget.reclaimNeededFor(estimate, percent, availableHeap, reclaimableCacheBytes);
     final PageManager pageManager = getDatabase().getPageManager();
-    if (pageManager == null)
-      return;
+    int admittedCache = cache;
+    long freed = 0L;
+    if (reclaimNeeded > 0L && pageManager != null) {
+      freed = pageManager.reclaimReadCacheRAM(reclaimNeeded);
+      if (freed < reclaimNeeded) {
+        // The cache was smaller by the time it was asked than when it was measured a moment earlier: it is a process-wide
+        // LRU, and another database's build or plain eviction can take pages from it in between. The build is then judged
+        // again against what the reclaim actually delivered, never run on heap it was not given (the WARNING that used to
+        // say "proceeds anyway" here is gone with the build it announced)
+        admittedCache = (int) Math.min(cache, VectorHeapBudget.largestBuildCacheThatFits(nodes, dimensions, percent,
+            availableHeap, freed));
+        if (admittedCache < floorCache)
+          throw refuseSearchBuild(nodes, floorCache, percent, availableHeap, freed);
+      }
+    }
 
-    final long estimate = VectorHeapBudget.estimateRebuildHeapBytes(nodes, metadata.dimensions,
-        computeGraphBuildCacheCapacity(nodes), false);
-    final long reclaimable = pageManager.getReadCacheRAM();
-    final long availableHeap = VectorHeapBudget.availableHeapBytes();
-    final long reclaimNeeded = VectorHeapBudget.reclaimNeededFor(estimate, percent, availableHeap, reclaimable);
-    if (reclaimNeeded == 0L)
-      return; // it already fits
-
-    final long freed = pageManager.reclaimReadCacheRAM(reclaimNeeded > 0L ? reclaimNeeded : reclaimable);
-
-    // Asked whether the reclaim DELIVERED, not whether it was requested. The cache is a process-wide LRU and can
-    // shrink between getReadCacheRAM() and this call - another database's rebuild reclaiming the same pages, or
-    // ordinary eviction - so a short reclaim leaves the build running on heap it was not actually given.
-    // admitOnlineRebuild() turns that into a decline; this path cannot decline, so it says so instead, and saying
-    // "fits" on a reclaim that fell short is precisely the reading an operator must not be given while diagnosing
-    // a repeat of issue #7814.
-    if (reclaimNeeded > 0L && freed >= reclaimNeeded) {
+    final long admittedEstimate = admittedCache == fullCache ? fullEstimate :
+        VectorHeapBudget.estimateRebuildHeapBytes(nodes, dimensions, admittedCache, false);
+    if (freed > 0L)
       LogManager.instance().log(this, Level.INFO,
           """
               Freed %d MB of the %d MB page read cache so the graph build of vector index %s (about %d MB for %d \
               vectors) fits the %d MB of available heap that %s allows it. Those pages are read back from disk on \
               demand, and the cache is process-wide, so some of them may belong to another database""",
-          freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
+          freed / (1024 * 1024), reclaimableCacheBytes / (1024 * 1024), indexName, admittedEstimate / (1024 * 1024), nodes,
           availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
-      return;
-    }
 
-    if (reclaimNeeded > 0L) {
-      LogManager.instance().log(this, Level.WARNING,
-          """
-              The page read cache gave up %d MB of the %d MB the graph build of vector index %s (about %d MB for \
-              %d vectors) needed to fit the heap that %s allows it - it was %d MB when measured a moment earlier, \
-              so something else reclaimed from the same process-wide cache first. The build proceeds anyway, on \
-              heap it was not actually given: a query cannot be answered without the graph, and no later trigger \
-              would retry a build that was declined here""",
-          freed / (1024 * 1024), reclaimNeeded / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
-          GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), reclaimable / (1024 * 1024));
-      return;
-    }
+    if (admittedCache >= fullCache)
+      return admitSearchBuild(0);
 
-    LogManager.instance().log(this, Level.WARNING,
+    metrics.incrementSearchRebuildsWithReducedCache();
+    LogManager.instance().log(this, Level.INFO,
         """
-            The graph of vector index %s needs about %d MB for %d vectors, which does not fit the %d MB of the %d \
-            MB currently available heap that %s allows it even after giving up the %d MB of evictable page cache. \
-            It is built anyway: a query cannot be answered without the graph, and no later trigger would retry a \
-            build that was declined here. Give the JVM more heap, or lower %s, if this index is to be searched \
-            while the heap is this tight""",
-        indexName, estimate / (1024 * 1024), nodes, VectorHeapBudget.budgetBytes(percent) / (1024 * 1024),
-        availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(),
-        freed / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getKey());
+            The graph build of vector index %s over %d vectors does not fit the heap that %s allows it with a build \
+            cache of %d vectors (about %d MB in all), so it runs with a cache of %d vectors (about %d MB in all) and \
+            reads the rest of its vectors back from the pages: slower, with the same graph""",
+        indexName, nodes, GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), fullCache,
+        fullEstimate / (1024 * 1024), admittedCache, admittedEstimate / (1024 * 1024));
+    return admitSearchBuild(admittedCache);
+  }
+
+  /** A search-decided build got through the heap gate: the next refusal starts a new streak, worth its own WARNING. */
+  private int admitSearchBuild(final int buildCacheCapacityCap) {
+    searchBuildRefusalLogged = false;
+    return buildCacheCapacityCap;
+  }
+
+  /**
+   * Counts and reports the refusal of a search-decided build that does not fit the heap (issue #11497), and builds the
+   * exception the search fails with. The message names the estimate, the heap it was judged against and the setting
+   * involved, since it is what the client of the refused query gets to read.
+   *
+   * @param reclaimableBytes the page cache the build was judged with: what could be given up, or what a short reclaim
+   *                         actually gave up
+   */
+  private VectorGraphBuildRefusedException refuseSearchBuild(final int nodes, final int floorCache, final int percent,
+      final long availableHeap, final long reclaimableBytes) {
+    metrics.incrementSearchRebuildsRefusedForMemory();
+    final long smallestEstimate = VectorHeapBudget.estimateRebuildHeapBytes(nodes, metadata.dimensions, floorCache, false);
+    final long reclaimable = Math.max(0L, reclaimableBytes);
+    final long budget = VectorHeapBudget.budgetBytes(percent, Math.max(0L, availableHeap) + reclaimable);
+    final String message = String.format(Locale.ENGLISH, """
+            The query needs the graph of vector index '%s' built over %d vectors, which needs about %d MB of heap even with \
+            its build cache cut to %d vectors, and that does not fit the %d MB that %s=%d allows it of the %d MB of heap \
+            currently available plus the %d MB of page cache that could be given up. The graph is not built, so that the \
+            JVM does not run out of memory building it: retry once the heap has room, give the JVM more heap, or persist \
+            the graph (REBUILD INDEX) so that no query has to build it""",
+        indexName, nodes, smallestEstimate / (1024 * 1024), floorCache, budget / (1024 * 1024),
+        GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), percent, availableHeap / (1024 * 1024),
+        reclaimable / (1024 * 1024));
+    final Level level = searchBuildRefusalLogged ? Level.FINE : Level.WARNING;
+    searchBuildRefusalLogged = true;
+    LogManager.instance().log(this, level,
+        "%s (issue #11497: counted in searchRebuildsRefusedForMemory, further refusals are logged at FINE until a build gets "
+            + "through)", message);
+    return new VectorGraphBuildRefusedException(message);
   }
 
   /**
@@ -6480,10 +6604,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Only the online path is gated. A first build, a rebuild on close, {@code REBUILD INDEX} and
    * {@code COMPACT INDEX} are lifecycle- or operator-driven, have no later trigger to retry them, and in the
    * close case have already released the old graph - declining one of those would turn "slower" into "never".
-   * That reasoning is why issue #7814 did NOT extend this refusal to the build a search falls through to, which
-   * has no later trigger either and whose caller returns an empty result set without a graph. What that build
-   * takes from here is the reclaim half only, as {@link #reclaimHeapForRebuild}, plus the concurrency bound of
-   * {@code REBUILD_SEMAPHORE} - the term that was actually unbounded.
+   * That reasoning is why issue #7814 did NOT extend this deferral to the build a search falls through to, whose
+   * caller answers an incomplete result from the delta buffer without a graph. That build has its own gate,
+   * {@link #fitSearchBuildToHeap(int)}, under the concurrency bound of {@code REBUILD_SEMAPHORE}: it reclaims page
+   * cache, then shrinks its build cache, and when the graph itself does not fit it fails the query loudly instead of
+   * deferring quietly (issue #11497) - the query is its own retry.
    * <p>
    * <b>What issue #7184 changed, on both sides of the comparison.</b> A deferral costs every subsequent query a
    * linear scan of a delta buffer that keeps growing, and nothing else bounds that scan, so a gate that refuses a
@@ -13022,6 +13147,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("mutationsSinceRebuild", (long) mutationsSinceSerialize.get());
     stats.put("asyncRebuildInProgress", asyncRebuildInProgress ? 1L : 0L);
     stats.put("rebuildSnapshotGeneration", rebuildSnapshotGeneration);
+    // The build cache the last graph build of this session ran with, in vectors, 0 before the first one. Below the corpus
+    // size a build read the rest of its vectors back from pages; below what the configuration asks for, the heap gate of a
+    // search-decided build cut it down to fit (issue #11497, searchRebuildsWithReducedCache).
+    stats.put("lastGraphBuildCacheSize", (long) lastGraphBuildCacheSize);
 
     // Whether the LAST close() skipped a rebuild it would otherwise have run (issue #6657), as opposed to
     // graphState/mutationsSinceRebuild above, which cannot tell that apart from ordinary mid-session mutations.
@@ -14747,6 +14876,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   boolean graphBuildLockHeldForTest() {
     return graphBuildLock.isLocked();
+  }
+
+  /**
+   * Test-only hook: whether {@link #ensureGraphAvailable(WorkGuard)} still has work to do, i.e. whether the next search of
+   * any kind goes back to the persisted graph or to a build instead of answering from the delta buffer (issue #11497).
+   */
+  boolean graphNotYetMaterialisedForTest() {
+    return graphNotYetMaterialised();
+  }
+
+  /**
+   * Test-only hook: pins the heap figures the heap gate of a search-decided build reads ({@link #fitSearchBuildToHeap(int)},
+   * issue #11497), so a test can make that gate refuse, or cut the build cache, through a real search without filling a
+   * real heap. A negative figure goes back to the live reading.
+   *
+   * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} answers for the gate
+   * @param reclaimableCacheBytes what the page read cache answers for the gate as the bytes it could give up
+   */
+  void pinSearchBuildHeapReadingForTest(final long availableHeap, final long reclaimableCacheBytes) {
+    pinnedAvailableHeapForTest = availableHeap;
+    pinnedReclaimableCacheForTest = reclaimableCacheBytes;
   }
 
   /** Charges one query's brute-force scan of {@code scanned} buffered vectors to the amortization window. */

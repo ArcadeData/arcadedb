@@ -61,6 +61,7 @@ import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.ValueOutOfRangeException;
+import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
@@ -131,6 +132,7 @@ public final class RemoteExceptionRebuilder {
       Map.entry(HeapLimitExceededException.class.getName(), HeapLimitExceededException::new),
       Map.entry(QueryAdmissionException.class.getName(), QueryAdmissionException::new),
       Map.entry(QueryHeapBudgetExceededException.class.getName(), QueryHeapBudgetExceededException::new),
+      Map.entry(VectorGraphBuildRefusedException.class.getName(), VectorGraphBuildRefusedException::new),
       Map.entry(PartialResultTimeoutException.class.getName(), PartialResultTimeoutException::new),
       // RETRYABLE: THE SERVER SENDS THESE WITH 503, AND REBUILT AS THEMSELVES THEY STAY NeedRetryExceptions
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
