@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.support;
 
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -141,7 +142,9 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
 
   /**
    * Creates the {@code sensor} time series type. Retries while the database is still being
-   * replicated/opened after Raft creation.
+   * replicated/opened after Raft creation: when this wrapper's node is a follower, the leader has
+   * committed the creation but the follower may not have applied it yet, and the DDL is answered
+   * {@link DatabaseNotFoundException} (nothing ran, so the retry cannot repeat the statement).
    */
   public void createSchema() {
     final int maxAttempts = 30;
@@ -151,6 +154,11 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
             "CREATE TIMESERIES TYPE " + TYPE_NAME
                 + " TIMESTAMP ts TAGS (sensor_id STRING, region STRING) FIELDS (temperature DOUBLE, humidity DOUBLE)");
         return;
+      } catch (final DatabaseNotFoundException e) {
+        if (attempt == maxAttempts)
+          throw e;
+        logger.info("Database not yet created on {} (attempt {}/{}), retrying in 2s", server.host(), attempt, maxAttempts);
+        sleep(2_000);
       } catch (final Exception e) {
         if (attempt == maxAttempts)
           throw e;

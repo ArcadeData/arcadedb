@@ -73,6 +73,9 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("scannedBuckets", CAPTURED);
     CLASSIFICATION.put("newRecords", MARKED);
     CLASSIFICATION.put("afterCommitCallbacks", MARKED);
+    // the match-or-create relationships of issue #11482: arrays grown in place, put back by their counts
+    CLASSIFICATION.put("mergedEdgeChecked", MARKED);
+    CLASSIFICATION.put("mergedEdgeMarked", MARKED);
     CLASSIFICATION.put("insertReservationBuckets", MARKED);
     CLASSIFICATION.put("insertReservationPages", MARKED);
     CLASSIFICATION.put("insertReservationSlots", MARKED);
@@ -83,6 +86,11 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("edgeAppendPoisonedPages", POISONED);
     CLASSIFICATION.put("slotRebaseByPage", POISONED);
     CLASSIFICATION.put("slotRebasePoisonedPages", POISONED);
+    // Issue #11498: the vertices whose stale read the commit judges. A statement taken back sets edgeListHeadMergeRefused, and the
+    // commit then refuses every one of them as a conflict, as addUpdatedRecord did before: the same as a poisoned page
+    CLASSIFICATION.put("staleEdgeListWrites", POISONED);
+    // Issue #11498: filled by the commit, under its lock, never by a statement
+    CLASSIFICATION.put("mergedEdgeListBases", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("attachments", DELEGATED);
     // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction
@@ -116,6 +124,12 @@ class TransactionContextStatementStateTest {
     // deletedRecordsInTx (journaled) holds its segment, so the entry of a delete taken back is inert, and a later delete of the same
     // segment writes its own entry over it
     CLASSIFICATION.put("deletedEdgeSegments", NOT_STATEMENT_STATE);
+    // Issue #11394: structures derived from the transaction's state (a hierarchy's private view), each kept with the change stamp of
+    // what it was derived from. A statement taken back moves the stamp (structuralStamp, the page write stamps), so an entry made
+    // before or during it no longer matches and is rebuilt; nothing here needs to be put back
+    CLASSIFICATION.put("derived", NOT_STATEMENT_STATE);
+    // Issue #11472: the per-file part of that stamp; it only grows, and a statement taken back moves it the same way
+    CLASSIFICATION.put("fileStamps", NOT_STATEMENT_STATE);
     // The columnar marks of the commit (spec 6.2): scratch arrays the 2nd phase fills and reads, reused across commits; no statement
     // writes them
     CLASSIFICATION.put("columnarMarkKeys", NOT_STATEMENT_STATE);

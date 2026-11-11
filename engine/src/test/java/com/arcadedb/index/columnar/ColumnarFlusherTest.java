@@ -368,12 +368,65 @@ class ColumnarFlusherTest extends TestHelper {
     final ColumnarProjection projection = open();
     for (int page = 0; page < 31; page++)
       applyRows(projection, page, 1);
-    final long oldest = projection.overlay().oldestRowMs();
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, Long.MAX_VALUE, 65_536, 4_096, Long.MAX_VALUE)).isFalse();
+    final long flushedAt = projection.lastFlushMs();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 1_000, 1_000, 65_536, 4_096, Long.MAX_VALUE)).isFalse();
 
     applyRows(projection, 31, 1);
     assertThat(projection.tracker().unflushedPages()).hasSize(32);
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, Long.MAX_VALUE, 65_536, 4_096, Long.MAX_VALUE)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 1_000, 1_000, 65_536, 4_096, Long.MAX_VALUE)).isTrue();
+  }
+
+  /** #11361: the half-floor page bound waits for the flush interval since the last flush; the floor itself flushes at once. */
+  @Test
+  void pageBoundIsSpacedAndOnlyTheFloorFlushesAtOnce() {
+    ColumnarIndexManager.REAPPLY_FLOOR = 64;
+    final ColumnarProjection projection = open();
+    final long flushedAt = projection.lastFlushMs();
+    for (int page = 0; page < 40; page++)
+      applyRows(projection, page, 1);
+
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt, 1_000, 65_536, 4_096, Long.MAX_VALUE)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 999, 1_000, 65_536, 4_096, Long.MAX_VALUE)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 1_000, 1_000, 65_536, 4_096, Long.MAX_VALUE)).isTrue();
+
+    for (int page = 40; page < 64; page++)
+      applyRows(projection, page, 1);
+    assertThat(projection.tracker().unflushedPages()).hasSize(64);
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt, 1_000, 65_536, 4_096, Long.MAX_VALUE)).isTrue();
+  }
+
+  /**
+   * #11361: scattered updates that touch a few pages per tick flush at most once per spacing window, and the unflushed count that an
+   * unclean open would have to re-apply stays below {@link ColumnarIndexManager#REAPPLY_FLOOR}. A fake clock drives the ticks.
+   */
+  @Test
+  void scatteredUpdatesFlushOncePerSpacingWindowAndStayBelowTheFloor() throws Exception {
+    ColumnarIndexManager.REAPPLY_FLOOR = 64;
+    final ColumnarProjection projection = open();
+    final long intervalMs = 5_000;
+    final long tickMs = 100;
+    final int ticks = 160;
+    long sinceFlushMs = 0;
+    int flushes = 0;
+    int maxUnflushed = 0;
+    int page = 0;
+    for (int tick = 1; tick <= ticks; tick++) {
+      for (int i = 0; i < 4; i++)
+        applyRows(projection, page++, 1);
+      sinceFlushMs += tickMs;
+      maxUnflushed = Math.max(maxUnflushed, projection.tracker().unflushedCount());
+      if (ColumnarFlusher.shouldFlush(projection, projection.lastFlushMs() + sinceFlushMs, intervalMs, 65_536, 4_096, Long.MAX_VALUE)) {
+        assertThat(sinceFlushMs).as("a flush in less than the spacing window is the floor itself").satisfiesAnyOf(
+            since -> assertThat(since).isGreaterThanOrEqualTo(intervalMs),
+            since -> assertThat(projection.tracker().unflushedCount()).isGreaterThanOrEqualTo(ColumnarIndexManager.REAPPLY_FLOOR));
+        ColumnarFlusher.flush(projection, tick);
+        flushes++;
+        sinceFlushMs = 0;
+      }
+    }
+    // the floor (64 pages at 4 per tick) is reached every 16 ticks; flushing at the half floor on every tick it was met flushed every 8
+    assertThat(flushes).isLessThanOrEqualTo(ticks / 16);
+    assertThat(maxUnflushed).isLessThanOrEqualTo(ColumnarIndexManager.REAPPLY_FLOOR);
   }
 
   /** Task 3 of #10662: the deletes-only branch waits for flushMaxAge too. */

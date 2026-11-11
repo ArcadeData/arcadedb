@@ -360,6 +360,7 @@ public class Profiler {
     final long concurrentModificationExceptions = pStats.concurrentModificationExceptions;
     final long edgeAppendMerges = pStats.edgeAppendMerges;
     final long txPageSlotMerges = pStats.txPageSlotMerges;
+    final long edgeListHeadMerges = pStats.edgeListHeadMerges;
     final long mergesDeclinedByCoverage = pStats.mergesDeclinedByCoverage;
     final long chunkChainReadRevalidations = pStats.chunkChainReadRevalidations;
     final long chunkChainReadRetries = pStats.chunkChainReadRetries;
@@ -406,6 +407,8 @@ public class Profiler {
     // stops firing shows up as conflicts here and declines there, and neither half means anything alone.
     json.put("edgeAppendMerges", new JSONObject().put("count", edgeAppendMerges));
     json.put("txPageSlotMerges", new JSONObject().put("count", txPageSlotMerges));
+    // #11498: the same-record twin of txPageSlotMerges - two transactions that both moved a vertex's edge-list head
+    json.put("edgeListHeadMerges", new JSONObject().put("count", edgeListHeadMerges));
     json.put("mergesDeclinedByCoverage", new JSONObject().put("count", mergesDeclinedByCoverage));
     // #6217: the read-path twin of txPageSlotMerges - a chunked read that met a moved page and completed anyway -
     // and, next to it, the reads that had to restart because the record itself had moved.
@@ -708,6 +711,7 @@ public class Profiler {
       final long concurrentModificationExceptions = pStats.concurrentModificationExceptions;
       final long edgeAppendMerges = pStats.edgeAppendMerges;
       final long txPageSlotMerges = pStats.txPageSlotMerges;
+      final long edgeListHeadMerges = pStats.edgeListHeadMerges;
       final long mergesDeclinedByCoverage = pStats.mergesDeclinedByCoverage;
       final long chunkChainReadRevalidations = pStats.chunkChainReadRevalidations;
       final long chunkChainReadRetries = pStats.chunkChainReadRetries;
@@ -796,8 +800,8 @@ public class Profiler {
       // #5608: read this line together with concModExceptions above. Contention absorbed by a merge never becomes a
       // retry; a jump in mergesDeclined with a dip in the two merge counters is a writer dirtying a mergeable page
       // without declaring its coverage (see MutablePage.beginCoveredWrite).
-      buffer.append("%n    edgeAppendMerges=%d txPageSlotMerges=%d mergesDeclinedByCoverage=%d".formatted(
-          edgeAppendMerges, txPageSlotMerges, mergesDeclinedByCoverage));
+      buffer.append("%n    edgeAppendMerges=%d txPageSlotMerges=%d edgeListHeadMerges=%d mergesDeclinedByCoverage=%d".formatted(
+          edgeAppendMerges, txPageSlotMerges, edgeListHeadMerges, mergesDeclinedByCoverage));
 
       // #6217: the same reading, one line down, for the READ path of a record too big for its page. Revalidations are
       // false conflicts that did not happen; retries are reads thrown away because the record really had moved.

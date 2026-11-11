@@ -41,7 +41,29 @@ class RaftHAServerStuckDivergenceTest {
   void firesOnlyForTheDivergenceSignature() {
     // Leader present, not catching up / installing, applied everything it could commit (commit==applied)
     // but at a stale term (currentTerm 5 > appliedTerm 4): this is the stuck-diverged follower.
-    assertThat(isStuckDivergedState(true, false, false, 5, 4, 10, 10)).isTrue();
+    assertThat(isStuckDivergedState(true, false, false, 5, 4, 10, 10, -1)).isTrue();
+  }
+
+  /**
+   * Issue #11493: after a leader change on an idle cluster the new leader has committed nothing yet, so a fully
+   * caught-up follower cannot advance its applied term. The leader's own commit index equals the follower's applied
+   * index: nothing is being rejected, so this is not divergence.
+   */
+  @Test
+  void caughtUpToTheLeaderCommitIndexDoesNotFire() {
+    assertThat(isStuckDivergedState(true, false, false, 36, 35, 216_693, 216_693, 216_693)).isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 36, 35, 216_693, 216_693, 216_000)).as("older leader figure").isFalse();
+  }
+
+  @Test
+  void leaderCommitAheadOfTheAppliedIndexStillFires() {
+    // The leader has committed entries this follower never applied, yet the follower has applied all it could commit.
+    assertThat(isStuckDivergedState(true, false, false, 36, 35, 216_693, 216_693, 216_700)).isTrue();
+  }
+
+  @Test
+  void unknownLeaderCommitIndexKeepsTheSignature() {
+    assertThat(isStuckDivergedState(true, false, false, 36, 35, 216_693, 216_693, -1)).isTrue();
   }
 
   // --- Effective reformat window (issue #8375) ---
@@ -75,43 +97,43 @@ class RaftHAServerStuckDivergenceTest {
   @Test
   void healthyFollowerAtCurrentTermDoesNotFire() {
     // After the post-election no-op commits and applies, appliedTerm == currentTerm.
-    assertThat(isStuckDivergedState(true, false, false, 5, 5, 10, 10)).isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 5, 5, 10, 10, -1)).isFalse();
   }
 
   @Test
   void normallyLaggingFollowerDoesNotFire() {
     // A follower that simply trails the leader has commit > applied (entries committed, not yet applied),
     // even across a term boundary. It is making progress, not stuck.
-    assertThat(isStuckDivergedState(true, false, false, 5, 4, 8, 10)).isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 5, 4, 8, 10, -1)).isFalse();
   }
 
   @Test
   void leaderlessDoesNotFire() {
-    assertThat(isStuckDivergedState(false, false, false, 5, 4, 10, 10)).isFalse();
+    assertThat(isStuckDivergedState(false, false, false, 5, 4, 10, 10, -1)).isFalse();
   }
 
   @Test
   void catchingUpDoesNotFire() {
-    assertThat(isStuckDivergedState(true, true, false, 5, 4, 10, 10)).isFalse();
+    assertThat(isStuckDivergedState(true, true, false, 5, 4, 10, 10, -1)).isFalse();
   }
 
   @Test
   void snapshotPendingDoesNotFire() {
-    assertThat(isStuckDivergedState(true, false, true, 5, 4, 10, 10)).isFalse();
+    assertThat(isStuckDivergedState(true, false, true, 5, 4, 10, 10, -1)).isFalse();
   }
 
   @Test
   void unreadableStateDoesNotFire() {
     // Any negative value means the Raft state could not be read this tick: never act on it.
-    assertThat(isStuckDivergedState(true, false, false, -1, 4, 10, 10)).as("negative currentTerm").isFalse();
-    assertThat(isStuckDivergedState(true, false, false, 5, -1, 10, 10)).as("negative appliedTerm").isFalse();
-    assertThat(isStuckDivergedState(true, false, false, 5, 4, -1, 10)).as("negative appliedIndex").isFalse();
-    assertThat(isStuckDivergedState(true, false, false, 5, 4, 10, -1)).as("negative commitIndex").isFalse();
+    assertThat(isStuckDivergedState(true, false, false, -1, 4, 10, 10, -1)).as("negative currentTerm").isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 5, -1, 10, 10, -1)).as("negative appliedTerm").isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 5, 4, -1, 10, -1)).as("negative appliedIndex").isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 5, 4, 10, -1, -1)).as("negative commitIndex").isFalse();
   }
 
   @Test
   void sameTermButCommitAheadDoesNotFire() {
     // Edge: same term, commit ahead - still just lag, not divergence.
-    assertThat(isStuckDivergedState(true, false, false, 5, 5, 9, 10)).isFalse();
+    assertThat(isStuckDivergedState(true, false, false, 5, 5, 9, 10, -1)).isFalse();
   }
 }

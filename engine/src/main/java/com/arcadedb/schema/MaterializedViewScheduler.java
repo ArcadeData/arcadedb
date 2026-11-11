@@ -24,9 +24,13 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +39,8 @@ import java.util.logging.Level;
 public class MaterializedViewScheduler {
   private final ScheduledExecutorService  executor;
   private final Map<String, RefreshTask>  tasks = new ConcurrentHashMap<>();
+  /** Views whose hand-off is accepted and has not started yet: what a shutdown would drop. */
+  private final Set<MaterializedViewImpl>  handedOff = ConcurrentHashMap.newKeySet();
 
   /**
    * @param databaseName names the scheduler thread. One scheduler is created per {@link LocalSchema}, so a JVM with
@@ -122,15 +128,56 @@ public class MaterializedViewScheduler {
     }
   }
 
+  /**
+   * Runs {@code work}, the further passes of a refresh the committing thread no longer owes (issue #11464), on the scheduler
+   * thread. Returns {@code false} when the scheduler is shut down, so the caller keeps the work. Leader-only like the
+   * periodic pass: a node that stopped being the leader meanwhile gives the refresh up rather than rewriting the backing type
+   * beside the leader's own rewrite (issue #11031). Giving it up releases the ownership and discards the pending request, on
+   * purpose, and leaves the status as the last pass set it: the leader replicates its own rewrite, which is what this node's
+   * view then shows, so neither a refresh nor a STALE label is owed here. Each task runs ONE pass; a refresh that is owed more
+   * is handed off again (see {@code MaterializedViewRefresher}) and so queues behind the periodic ticks already due.
+   */
+  boolean handOff(final Database database, final MaterializedViewImpl view, final Runnable work) {
+    handedOff.add(view);
+    try {
+      executor.execute(() -> {
+        handedOff.remove(view);
+        if (database instanceof DatabaseInternal internal && internal.isFollower()) {
+          view.endRefresh();
+          return;
+        }
+        final String databasePath = database.getDatabasePath();
+        final boolean contextInstalledHere = DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null;
+        try {
+          work.run();
+        } finally {
+          if (contextInstalledHere)
+            DatabaseContext.INSTANCE.removeContext(databasePath);
+        }
+      });
+      return true;
+    } catch (final RejectedExecutionException e) {
+      handedOff.remove(view);
+      return false;
+    }
+  }
+
   public void cancel(final String viewName) {
     final RefreshTask task = tasks.remove(viewName);
     if (task != null)
       task.future.cancel(false);
   }
 
-  public void shutdown() {
+  /**
+   * Stops the scheduler. Returns the views whose hand-off (see {@link #handOff}) was accepted and then dropped by the shutdown
+   * before it ran: their committers have returned, so the caller must not leave them looking VALID.
+   */
+  public List<MaterializedViewImpl> shutdown() {
     executor.shutdownNow();
     tasks.clear();
+    final List<MaterializedViewImpl> dropped = new ArrayList<>(handedOff);
+    handedOff.clear();
+    return dropped;
   }
 
   /**

@@ -41,6 +41,7 @@ import com.arcadedb.utility.IntHashSet;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
@@ -74,7 +75,7 @@ import java.util.logging.Level;
  * normally find a fresh view; that rebuild counts as a running maintenance job of the database (its close waits for it, and it stops
  * at its next step once the manager is closed) and never waits for a build already running, which queues it again when it ends. A
  * caller whose own transaction changed a watched file gets a private view built through that transaction and the caller's user
- * (its result-set limit applies to it, and to it only), never cached and never logging the cycle WARNING.
+ * (its result-set limit applies to it, and to it only), kept on that transaction while nothing it holds in the watched files changes ({@link TransactionContext#changeStamp}), never shared and never logging the cycle WARNING.
  * <p>
  * <b>Sources.</b> The watched file set is recomputed at every rebuild (a stripe pool appears at a super-node's first promotion), when
  * the schema version moved, and on a {@code HIERARCHY_SOURCE_CHANGED} event naming {@code vertexType} or {@code parentEdge}; a change of
@@ -114,6 +115,7 @@ public final class HierarchyManager {
   private final AtomicBoolean        rebuildWanted = new AtomicBoolean();
   private final AtomicLong           sourceChanges = new AtomicLong();
   private final AtomicLong           rebuilds      = new AtomicLong();
+  private final AtomicLong           privateBuilds = new AtomicLong();
   /** Notified at every publication of the shared view (and at close): a caller with a deadline waits on it ({@link #view(long)}). */
   private final Object               published     = new Object();
   private final Object               chargeLock    = new Object();
@@ -172,7 +174,7 @@ public final class HierarchyManager {
   }
 
   /**
-   * The view for the calling thread's query: a private one, built through the caller's transaction and never cached, when that
+   * The view for the calling thread's query: a private one, built through the caller's transaction and kept while unchanged ({@link #privateView}), when that
    * transaction changed a watched file; otherwise the shared view, rebuilt first when it is older than the generation read now. Null
    * when the hierarchy is not available; {@link #unavailableReason()} then says why (also {@link #NESTING_TOO_DEEP}, for this caller
    * only).
@@ -194,13 +196,7 @@ public final class HierarchyManager {
         () -> closed || System.currentTimeMillis() > deadlineMs;
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null && tx.isActive() && tx.hasChangesInFiles(files.set()))
-      try {
-        return HierarchyBuilder.build(database, def, generation(), indexName, false, null, cancelled);
-      } catch (final CancellationException e) {
-        if (closed)
-          throw e;
-        return null;
-      }
+      return privateView(tx, cancelled);
     final long wanted = generation();
     final HierarchyView fresh = current;
     if (fresh != null && fresh.generation() >= wanted)
@@ -216,6 +212,74 @@ public final class HierarchyManager {
       buildLock.unlock();
       requeueIfWanted();
     }
+  }
+
+  /**
+   * What a private view was built from (issue #11394): the transaction's changes in the watched files, the committed generation it read
+   * through its isolation level, the watched file set and the user it was built for. The same four make the same view; a view built
+   * under a deadline is never kept when it was cut short. It holds the facet budget for its heap for as long as the transaction keeps it
+   * (issue #11472): the transaction closes it when it replaces it or ends.
+   */
+  private record PrivateView(TransactionContext.ChangeStamp stamp, long generation, FileSet files, String user, HierarchyView view,
+                             FacetMemoryBudget.Reservation charge) implements AutoCloseable {
+    @Override
+    public void close() {
+      charge.close();
+    }
+  }
+
+  /**
+   * The private view of a transaction that changed a watched file: the one kept on the transaction when nothing it holds in those files
+   * changed since, else built through the caller's transaction and user and kept for the next query of the same transaction. The
+   * transaction owns it, so it goes with the transaction (a rollback, a commit, a reset); one per manager, the last built. A kept view
+   * is charged to the facet memory budget while it waits there ({@link #isChargedToTransaction}), so a long transaction touching
+   * several hierarchies does not hold uncounted heap; a view the budget has no room for is not kept, and the query that takes it
+   * pays for it ({@code ViewSource}).
+   */
+  private HierarchyView privateView(final TransactionContext tx, final BooleanSupplier cancelled) {
+    final FileSet watched = files;
+    final long generation = generation();
+    final String user = database.getCurrentUserName();
+    final TransactionContext.ChangeStamp stamp = tx.changeStamp(watched.set());
+    final PrivateView kept = (PrivateView) tx.getDerived(this);
+    if (kept != null && kept.stamp().equals(stamp) && kept.generation() == generation && kept.files() == watched && Objects.equals(
+        kept.user(), user))
+      return kept.view();
+    // the stale view gives its heap back first: both held at once would refuse a view that fits on its own
+    if (kept != null)
+      tx.dropDerived(this);
+    final HierarchyView built;
+    try {
+      built = HierarchyBuilder.build(database, def, generation, indexName, false, null, cancelled);
+    } catch (final CancellationException e) {
+      if (closed)
+        throw e;
+      return null;
+    }
+    privateBuilds.incrementAndGet();
+    // a rejected view (a cap, a cycle, the memory budget) is not kept: it stops early so it is the cheap build, and a refusal by the
+    // budget is a moment's answer, not a property of the state. The stamp is read BEFORE the build: a change the build itself made
+    // (none is expected) leaves the entry stale, never wrongly fresh
+    if (built != null && built.rejectedReason() == null) {
+      final FacetMemoryBudget.Reservation charge = FacetMemoryBudget.instance().reserve(built.heapBytes(), 0);
+      if (charge != null)
+        tx.putDerived(this, new PrivateView(stamp, generation, watched, user, built, charge));
+    }
+    return built;
+  }
+
+  /**
+   * Whether {@code view} is the private view this manager keeps on the calling thread's transaction, which already holds its heap in the
+   * facet memory budget: the query that takes it must not charge it again (issue #11472).
+   */
+  public boolean isChargedToTransaction(final HierarchyView view) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.getDerived(this) instanceof PrivateView kept && kept.view() == view;
+  }
+
+  /** The private views built so far, for the tests (a reused one is not a build). */
+  long privateBuildCount() {
+    return privateBuilds.get();
   }
 
   /**

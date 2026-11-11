@@ -22,7 +22,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
@@ -173,6 +175,13 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               }
             }
 
+            if (ifNotExists) {
+              // The check above read an edge list a concurrent CREATE EDGE ... IF NOT EXISTS may be appending the same edge to (#11482)
+              final TransactionContext tx = context.getDatabase().getTransactionIfExists();
+              if (tx != null)
+                tx.addMergedEdge(currentFrom.getIdentity(), currentTo.getIdentity(), edgeType.getName(), null);
+            }
+
             // Store vertices for later connection after save
             context.setVariable("$__ARCADEDB_EDGE_FROM_" + System.identityHashCode(edge), currentFrom);
             context.setVariable("$__ARCADEDB_EDGE_TO_" + System.identityHashCode(edge), currentTo);
@@ -245,7 +254,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       final DatabaseInternal database = context.getDatabase();
       uniqueIndex = database.getSchema().getIndexByName(uniqueIndexName);
       if (uniqueIndex == null)
-        throw new CommandExecutionException("Index not found for upsert: " + uniqueIndexName);
+        throw new SchemaException("Index not found for upsert: " + uniqueIndexName);
     }
   }
 

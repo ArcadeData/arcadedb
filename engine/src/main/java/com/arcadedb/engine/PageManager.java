@@ -46,6 +46,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -114,6 +115,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalEdgeListHeadMerges               = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRetries            = new AtomicLong();
@@ -170,6 +172,14 @@ public class PageManager extends LockContext {
   private static final long                           PUBLICATION_WAIT_PARK_NANOS = 10_000L;
   // Publications in flight, guarded by publicationGate: the sequence is odd exactly while this is above zero
   private          int                                publicationsInFlight;
+  // callWithPublicationsHeld, all guarded by publicationGate: the holds granted (never above zero while a publication is in flight),
+  // the callers waiting for one, the publications waiting for the holds, and those of them that waited past PUBLICATION_DEFER_NANOS
+  private          int                                publicationHolds;
+  private          int                                publicationHoldsWaiting;
+  private          int                                publicationsWaiting;
+  private          int                                publicationsOverdue;
+  // How long a publication that would start a new one defers to a caller waiting for a hold before it refuses new holds
+  private static final long                           PUBLICATION_DEFER_NANOS     = 2_000_000L;
   private volatile int                                freePageRAM;
 
   /**
@@ -355,6 +365,8 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
+    public long edgeListHeadMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
     public long mergesDeclinedByCoverage;
     /** See {@link PageManager#incrementChunkChainReadRevalidations()}: the read-path twin of {@code txPageSlotMerges}. */
@@ -642,6 +654,27 @@ public class PageManager extends LockContext {
     }
 
     return count == notOnDisk.length ? notOnDisk : Arrays.copyOf(notOnDisk, count);
+  }
+
+  /**
+   * Makes every page the database committed before the call durable in its data file, for a caller about to declare that
+   * nothing else is needed to rebuild that state (issue #11258: the Raft snapshot checkpoint, below which a restart
+   * replays no entry). Without it the pages only reach the OS cache: the asynchronous flush writes them without an
+   * fsync, and a replicated apply writes them synchronously but without one too, so a power loss after the checkpoint
+   * loses them with nothing left to replay.
+   * <p>
+   * Waits up to {@code maxWaitMillis} for the pages pending at the call to reach the files, then forces every file
+   * written since its last fsync. While the flush of the database is suspended (a backup) the pending pages are
+   * deferred until it ends, so the wait is not attempted and the call fails at once when any is pending.
+   *
+   * @return {@code true} when the pages committed before the call are on disk, {@code false} when some were still
+   *     pending at the deadline or an fsync failed
+   */
+  public boolean flushAndSyncDatabase(final DatabaseInternal database, final long maxWaitMillis) {
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null && !waitPagesPendingNowOfDatabaseAreFlushed(database, thread.isSuspended(database) ? 0L : maxWaitMillis))
+      return false;
+    return database.getFileManager().syncFiles();
   }
 
   /**
@@ -1307,6 +1340,17 @@ public class PageManager extends LockContext {
     if (configured == null || configured.isBlank())
       return new File(database.getDatabasePath());
 
+    // A VALUE THE DATABASE WAS GIVEN MUST NOT LEAD THE SERVER TO CREATE DIRECTORIES WHERE NOBODY ALLOWED IT: CHECKED HERE,
+    // BEFORE mkdirs, AND NOT ONLY WHERE THE SETTING IS CHANGED, SINCE A VALUE CAN REACH THE CONFIGURATION ANOTHER WAY. LIKE
+    // AN UNUSABLE PATH IT COSTS A WARNING AND THE DATABASE DIRECTORY, NEVER THE BACKUP
+    try {
+      GlobalConfiguration.PAGE_SNAPSHOT_SPILL_PATH.checkDatabaseStorageDirectory(configured.trim(), database.getDatabasePath());
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.WARNING, "Database '%s': %s. Falling back to the database directory", null,
+          database.getName(), e.getMessage());
+      return new File(database.getDatabasePath());
+    }
+
     final File directory = new File(configured.trim());
     // THE isDirectory RE-CHECK IS NOT REDUNDANT: TWO WINDOWS OPENING AT ONCE AGAINST A NOT-YET-EXISTING DIRECTORY
     // BOTH CALL mkdirs, AND THE LOSER GETS false FOR A DIRECTORY THAT NOW EXISTS. WITHOUT IT THAT WINDOW WOULD
@@ -1781,6 +1825,15 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Counts a vertex the commit wrote as the merge of the edge-list heads it moved and the ones a concurrent transaction moved
+   * (issue #11498): a same-record conflict avoided, where the slot merge above avoids conflicts between different records.
+   * Surfaced via {@link #getStats()}.
+   */
+  public void incrementEdgeListHeadMerges() {
+    totalEdgeListHeadMerges.incrementAndGet();
+  }
+
+  /**
    * Counts a page merge declined because the page could not PROVE that every byte this transaction wrote to it was
    * replayable by that merge (#5596). The transaction falls back to an ordinary retry, so this is never a
    * correctness problem - but a non-zero and growing value means some writer is dirtying a mergeable page without
@@ -2157,6 +2210,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.edgeListHeadMerges = totalEdgeListHeadMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
     stats.chunkChainReadRetries = totalChunkChainReadRetries.get();
@@ -2384,8 +2438,94 @@ public class PageManager extends LockContext {
    */
   void beginPublication() {
     synchronized (publicationGate) {
+      // Joining a publication in flight never waits: no hold can be granted while one is, and a nested call (the reentrant lock of
+      // publishPages) waiting for a hold that waits for its own outer publication would stall both
+      if (publicationsInFlight == 0 && (publicationHolds > 0 || publicationHoldsWaiting > 0))
+        awaitPublicationHoldsReleased();
       if (publicationsInFlight++ == 0)
         ++publicationSequence;
+    }
+  }
+
+  /**
+   * Called holding {@link #publicationGate}, by a publication that would start one while {@link #callWithPublicationsHeld} holds it
+   * off or is about to: it defers to the callers waiting for a hold for at most {@link #PUBLICATION_DEFER_NANOS}, so a reader waiting
+   * for the instant between two publications gets it, then refuses new holds and waits only for the granted ones to be released,
+   * so readers coming one after another cannot starve it. Not interruptible: a publication cannot give up.
+   */
+  private void awaitPublicationHoldsReleased() {
+    final long deferUntil = System.nanoTime() + PUBLICATION_DEFER_NANOS;
+    boolean overdue = false;
+    boolean interrupted = false;
+    ++publicationsWaiting;
+    try {
+      // A publication that started meanwhile is joined at once: no hold is granted while one is in flight
+      while (publicationsInFlight == 0 && (publicationHolds > 0 || (!overdue && publicationHoldsWaiting > 0))) {
+        if (!overdue && System.nanoTime() - deferUntil >= 0) {
+          overdue = true;
+          ++publicationsOverdue;
+          continue;
+        }
+        try {
+          // Woken by the release of the last hold, or by a waiting reader that gave up; the timeout only re-checks the deferral
+          publicationGate.wait(1L);
+        } catch (final InterruptedException e) {
+          interrupted = true;
+        }
+      }
+    } finally {
+      --publicationsWaiting;
+      if (overdue)
+        --publicationsOverdue;
+      if (interrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * Runs {@code callable} at a moment no publication is open and holds the next one off until it returns, so that everything it
+   * reads from the read cache is one committed state. Readers that validate a short read against the newest committed images use it
+   * when the publication sequence moved under them: on a replica the replicated apply publishes its entries back to back without
+   * the page-manager lock, so a validation that only checks the sequence can find it moved on every attempt (#11455). It waits up to
+   * {@code maxWaitNanos} for the publications in flight to end; a publication that would start meanwhile defers to the waiting
+   * callers for a bounded time ({@link #awaitPublicationHoldsReleased}). Holds are shared: callers can hold at the same time.
+   * <p>
+   * The callable must be short (it delays every commit and apply of the JVM while it runs), must not publish, and must not wait for
+   * anything a publication holds: it can load pages, which takes neither the page-manager lock nor a publication.
+   *
+   * @return what {@code callable} returned, or {@code null} without running it when the publications did not end within
+   * {@code maxWaitNanos}, or when the waiting thread is interrupted (its interrupt is kept)
+   */
+  public <T> T callWithPublicationsHeld(final long maxWaitNanos, final Callable<T> callable) throws Exception {
+    synchronized (publicationGate) {
+      final long deadline = System.nanoTime() + maxWaitNanos;
+      ++publicationHoldsWaiting;
+      try {
+        while (publicationsInFlight > 0 || publicationsOverdue > 0) {
+          final long remaining = deadline - System.nanoTime();
+          if (remaining <= 0)
+            return null;
+          try {
+            publicationGate.wait(Math.max(1L, remaining / 1_000_000L));
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+          }
+        }
+        ++publicationHolds;
+      } finally {
+        if (--publicationHoldsWaiting == 0 && publicationsWaiting > 0)
+          // a publication deferring to the waiting callers stops deferring once none is left
+          publicationGate.notifyAll();
+      }
+    }
+    try {
+      return callable.call();
+    } finally {
+      synchronized (publicationGate) {
+        if (--publicationHolds == 0 && publicationsWaiting > 0)
+          publicationGate.notifyAll();
+      }
     }
   }
 
@@ -2394,8 +2534,11 @@ public class PageManager extends LockContext {
    */
   void endPublication() {
     synchronized (publicationGate) {
-      if (--publicationsInFlight == 0)
+      if (--publicationsInFlight == 0) {
         ++publicationSequence;
+        if (publicationHoldsWaiting > 0)
+          publicationGate.notifyAll();
+      }
     }
   }
 

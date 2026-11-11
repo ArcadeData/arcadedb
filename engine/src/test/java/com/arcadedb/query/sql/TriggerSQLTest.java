@@ -21,7 +21,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Trigger;
@@ -143,7 +143,7 @@ class TriggerSQLTest extends TestHelper {
   @Test
   void dropTriggerNotExists() {
     assertThatThrownBy(() -> database.command("sql", "DROP TRIGGER nonexistent_trigger"))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(SchemaException.class);
   }
 
   @Test
@@ -448,7 +448,7 @@ class TriggerSQLTest extends TestHelper {
         """
             CREATE TRIGGER bad_trigger BEFORE CREATE ON TYPE NonExistentType
             EXECUTE SQL 'SELECT 1'"""))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(SchemaException.class);
   }
 
   @Test

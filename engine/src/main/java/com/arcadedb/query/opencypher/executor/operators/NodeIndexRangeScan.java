@@ -30,6 +30,8 @@ import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -600,7 +602,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             // Resolve parameter at execution time
             final String paramName = (String) value;
             value = context.getInputParameters().get(paramName);
-          }
+          } else if (value instanceof Expression expression)
+            // A row-independent bound such as $d.from (issue #11480)
+            value = RowIndependentValues.resolve(expression, context);
 
           if (predicate.isPrefixSuccessor()) {
             // STARTS WITH (issue #8666): the bound is the string after every one with the prefix. With none (an empty or
@@ -730,7 +734,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       if (predicate.isParameter()) {
         sb.append("$").append(predicate.getValue());
       } else {
-        sb.append(predicate.getValue());
+        sb.append(predicate.getValue() instanceof Expression expression ? expression.getText() : predicate.getValue());
       }
       if (predicate.isPrefixSuccessor())
         sb.append(")");

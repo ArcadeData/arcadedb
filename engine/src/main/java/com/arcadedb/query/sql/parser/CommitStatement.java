@@ -118,5 +118,11 @@ public class CommitStatement extends SimpleExecStatement {
     return new Object[] { retry, elseStatements, elseFail };
   }
 
+  /** The row only reports the transaction control, where PostgreSQL's COMMIT answers a bare tag. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=eaa0bc8f765fdaa017789953861bc0aa (do not edit this line) */

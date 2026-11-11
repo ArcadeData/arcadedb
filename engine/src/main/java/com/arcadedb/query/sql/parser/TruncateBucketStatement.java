@@ -24,6 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -55,33 +56,26 @@ public class TruncateBucketStatement extends DDLStatement {
     final Bucket bucket;
     final String resolvedBucketName;
 
-    try {
-      if (bucketNumber != null) {
-        // Bucket specified by ID. The null-tolerant lookups here and below are deliberate (#5636): the throwing
-        // getBucketById(int) / getBucketByName(String) raise in exactly the case these branches test for, which
-        // left both unreachable and let the outer catch double the message ("Bucket not found: Bucket with id
-        // '9999' was not found").
-        final int bucketId = bucketNumber.getValue().intValue();
-        bucket = schema.getBucketByIdIfExists(bucketId);
-        if (bucket == null) {
-          throw new CommandExecutionException("Bucket with id " + bucketId + " not found");
-        }
-        resolvedBucketName = bucket.getName();
-      } else if (bucketName != null) {
-        // Bucket specified by name
-        resolvedBucketName = bucketName.getStringValue();
-        bucket = schema.getBucketByNameIfExists(resolvedBucketName);
-        if (bucket == null) {
-          throw new CommandExecutionException("Bucket '" + resolvedBucketName + "' not found");
-        }
-      } else {
-        throw new CommandExecutionException("Bucket name or id is required");
-      }
-    } catch (final CommandExecutionException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new CommandExecutionException("Bucket not found: " + e.getMessage(), e);
-    }
+    // A missing bucket is the caller's mistake, raised as the SchemaException DROP BUCKET raises for it (issue #11384): a plain
+    // CommandExecutionException was a server fault on every protocol (XX000 on the Postgres wire)
+    if (bucketNumber != null) {
+      // Bucket specified by ID. The null-tolerant lookups here and below are deliberate (#5636): the throwing
+      // getBucketById(int) / getBucketByName(String) raise in exactly the case these branches test for, which
+      // left both unreachable and let an outer catch double the message ("Bucket not found: Bucket with id
+      // '9999' was not found").
+      final int bucketId = bucketNumber.getValue().intValue();
+      bucket = schema.getBucketByIdIfExists(bucketId);
+      if (bucket == null)
+        throw new SchemaException("Bucket with id " + bucketId + " not found");
+      resolvedBucketName = bucket.getName();
+    } else if (bucketName != null) {
+      // Bucket specified by name
+      resolvedBucketName = bucketName.getStringValue();
+      bucket = schema.getBucketByNameIfExists(resolvedBucketName);
+      if (bucket == null)
+        throw new SchemaException("Bucket '" + resolvedBucketName + "' not found");
+    } else
+      throw new CommandExecutionException("Bucket name or id is required");
 
     // Check if the bucket is associated with a vertex or edge type
     final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());

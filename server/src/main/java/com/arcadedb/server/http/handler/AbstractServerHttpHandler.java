@@ -1492,6 +1492,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(400, "Cannot execute command", unknownFunction, null, ErrorLogKind.USER);
     }
 
+    // A type, an index, a bucket, a property, a trigger or a view the statement names and the schema does not define (issue
+    // #11384): the caller's mistake, as every other protocol answers it (ErrorCategory.SCHEMA). It answered 500 "Internal error",
+    // logged with a stack trace, whichever statement met the name. Only a SchemaException with no cause: one that carries the
+    // failure under it (a dictionary update that could not be written) is a server fault and keeps the 500 below
+    final SchemaException schemaRefusal = firstOf(e, cause, SchemaException.class);
+    if (schemaRefusal != null && schemaRefusal.getCause() == null) {
+      return new ErrorClassification(400, "Schema error", schemaRefusal, null, ErrorLogKind.USER);
+    }
+
     // A value a declared constraint refuses - NOT NULL, a MAX, a REGEXP - or that a listener vetoed (RecordVetoedException):
     // the request is refused, the server is fine. It answered 500 "Internal error" with a stack trace in the log, since no arm
     // named the type (issue #11314). The constraint goes in exceptionArgs, so the Java client rebuilds the kind, and in the

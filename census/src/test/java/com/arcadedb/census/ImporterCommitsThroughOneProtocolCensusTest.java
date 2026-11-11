@@ -20,6 +20,7 @@ package com.arcadedb.census;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -38,12 +39,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the compiled classes of the importer ({@link CompiledClasses}), so an importer format added later that commits by hand fails
  * here and is sent to {@code ImporterTransactions.commitOwnTransaction}. What remains is the protocol itself and the importer's
  * own lifecycle, which commits a transaction no row loop holds.
+ * <p>
+ * The importer is what defines a row loop, not the package it is written in (issue #11388): every implementation of
+ * {@code FormatImporter} and every subclass of {@code AbstractImporter}, in whichever module, plus the classes of the
+ * integration module's importer package a format delegates its rows to ({@code Neo4jImporter}, {@code GraphImporter}, ...). The
+ * census used to keep only the call sites keyed under {@code integration/importer/}, and the two formats of the gremlin module key
+ * as {@code gremlin/integration/importer/}: {@code GraphSONImporterFormat} committed by hand, out of sight, and stranded a
+ * refused commit exactly like #11208 and #11271.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class ImporterCommitsThroughOneProtocolCensusTest {
-  private static final String IMPORTER = "integration/importer/";
-  private static final String PROTOCOL = IMPORTER + "ImporterTransactions#commitOwnTransaction";
+  private static final String IMPORTER          = "integration/importer/";
+  private static final String PROTOCOL          = IMPORTER + "ImporterTransactions#commitOwnTransaction";
+  private static final String FORMAT_IMPORTER   = "com/arcadedb/integration/importer/format/FormatImporter";
+  private static final String ABSTRACT_IMPORTER = "com/arcadedb/integration/importer/AbstractImporter";
+  /** A format outside the integration module, so outside the importer package spelling: the census must reach it. */
+  private static final String GREMLIN_FORMAT    = "gremlin/integration/importer/format/GraphSONImporterFormat";
 
   private static final Map<String, String> REVIEWED = new TreeMap<>(Map.ofEntries(//
       Map.entry(PROTOCOL, "the protocol itself"),
@@ -59,9 +71,18 @@ class ImporterCommitsThroughOneProtocolCensusTest {
   void everyImporterRowLoopCommitsThroughImporterTransactions() throws Exception {
     final Map<String, byte[]> classes = CompiledClasses.ofEveryModule();
     final Set<String> databases = CompiledClasses.implementationsOf("com/arcadedb/database/Database", classes);
+    final Set<String> importer = new HashSet<>();
+    for (final String type : CompiledClasses.implementationsOf(FORMAT_IMPORTER, classes))
+      importer.add(CompiledClasses.keyOf(type));
+    for (final String type : CompiledClasses.implementationsOf(ABSTRACT_IMPORTER, classes))
+      importer.add(CompiledClasses.keyOf(type));
+
+    assertThat(importer).as("the census must reach every FormatImporter implementation, also outside the integration module: "
+        + GREMLIN_FORMAT).contains(GREMLIN_FORMAT);
+
     final Map<String, Set<String>> callSites = CompiledClasses.callSitesOf(classes,
             (owner, name, desc) -> databases.contains(owner) && "commit".equals(name) && "()V".equals(desc))//
-        .entrySet().stream().filter(site -> site.getKey().startsWith(IMPORTER))
+        .entrySet().stream().filter(site -> site.getKey().startsWith(IMPORTER) || importer.contains(classOf(site.getKey())))
         .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, TreeMap::new));
 
     assertThat(callSites).as("the census must reach the commit of the protocol it requires, " + PROTOCOL).containsKey(PROTOCOL);
@@ -69,8 +90,13 @@ class ImporterCommitsThroughOneProtocolCensusTest {
     assertThat(CompiledClasses.unreviewed(callSites, REVIEWED)).as(
             "importer methods that commit a transaction by hand: a row loop resolves the transaction it pushed through "
                 + "ImporterTransactions (beginOwnTransaction, commitOwnTransaction, rollbackOwnTransaction), or a refused commit "
-                + "strands it on the caller's thread (issues #11208, #11271)")
+                + "strands it on the caller's thread (issues #11208, #11271, #11388)")
         .isEmpty();
     assertThat(CompiledClasses.stale(callSites, REVIEWED)).as("REVIEWED entries that no longer commit: remove them").isEmpty();
+  }
+
+  /** {@code a/C#m} -> {@code a/C}. */
+  private static String classOf(final String callSite) {
+    return callSite.substring(0, callSite.indexOf('#'));
   }
 }

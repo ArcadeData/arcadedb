@@ -20,11 +20,14 @@ package com.arcadedb.server.ha.raft.ratis;
 
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.grpc.server.GrpcLogAppender;
+import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
+import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.leader.FollowerInfo;
 import org.apache.ratis.server.leader.LeaderState;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.raftlog.RaftLogIndex;
+import org.apache.ratis.server.raftlog.RaftLogIOException;
 
 import java.lang.reflect.Field;
 import java.util.function.LongUnaryOperator;
@@ -90,12 +93,63 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
   private volatile long lastLoggedAnchorIndex   = RaftLog.INVALID_LOG_INDEX;
   private volatile long lastLoggedFallbackIndex = RaftLog.INVALID_LOG_INDEX;
 
+  /** Exponential moving average of the size of the entries this appender sent, 0 until the first batch (issue #11458). */
+  private volatile long    averageEntryBytes;
+  /** Whether the last decision was to hold entries back, so the transition is logged once rather than per iteration. */
+  private volatile boolean heldBack;
+
   public FixedGrpcLogAppender(final RaftServer.Division server, final LeaderState leaderState, final FollowerInfo f) {
     super(server, leaderState, f);
     // Fail-loud startup self-check: verify the Ratis-internal matchIndex field is still present
     // and of the expected type. If a Ratis upgrade renamed/retyped the field, fail now (loudly)
     // instead of silently no-op'ing the RATIS-2523 workaround later and re-exposing the bug.
     resolveMatchIndexField(f.getClass());
+  }
+
+  /**
+   * Holds entries back from a follower whose apply backlog would exceed the {@link ApplyBackPressure} budget (issue
+   * #11458): Ratis keeps every received entry that the follower has not applied decoded on the follower's heap, so
+   * without this a follower applying slowly is fed until it runs out of memory. Heartbeats keep flowing, so the follower
+   * neither times out nor loses the leader's commit index (which is what makes it apply). Only the appender decides:
+   * the question is asked on every iteration, so it is a map lookup and two long reads.
+   */
+  @Override
+  public boolean hasAppendEntries() {
+    return super.hasAppendEntries() && !holdBackEntries();
+  }
+
+  @Override
+  public AppendEntriesRequestProto newAppendEntriesRequest(final long callId, final boolean heartbeat) throws RaftLogIOException {
+    // A heartbeat when held back: this is also reached through isFollowerCommitBehindLastCommitIndex(), which does not
+    // consult hasAppendEntries()
+    final AppendEntriesRequestProto request = super.newAppendEntriesRequest(callId, heartbeat || holdBackEntries());
+    if (request != null && request.getEntriesCount() > 0) {
+      long bytes = 0;
+      for (final LogEntryProto entry : request.getEntriesList())
+        bytes += entry.getSerializedSize();
+      averageEntryBytes = ApplyBackPressure.nextAverage(averageEntryBytes, bytes, request.getEntriesCount());
+    }
+    return request;
+  }
+
+  private boolean holdBackEntries() {
+    final ApplyBackPressure backPressure = ApplyBackPressure.of(getServer().getId().toString());
+    if (backPressure == null)
+      return false;
+    final FollowerInfo follower = getFollower();
+    final boolean hold = backPressure.shouldPause(follower.getId().toString(), follower.getNextIndex() - 1, averageEntryBytes);
+    if (hold != heldBack) {
+      heldBack = hold;
+      if (hold)
+        LogManager.instance().log(this, Level.WARNING,
+            "Holding Raft entries back from follower %s: its apply backlog is estimated above %d bytes, which Ratis keeps on "
+                + "its heap (issue #11458). Heartbeats continue; entries resume when it has applied enough "
+                + "(arcadedb.ha.applyBacklogMax)", follower.getName(), backPressure.getBudgetBytes());
+      else
+        LogManager.instance().log(this, Level.INFO, "Resuming Raft entries to follower %s: its apply backlog is back under budget",
+            follower.getName());
+    }
+    return hold;
   }
 
   @Override

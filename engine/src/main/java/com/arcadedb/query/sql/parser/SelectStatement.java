@@ -48,6 +48,12 @@ public class SelectStatement extends Statement {
   public Skip         skip;
   public LetClause    letClause;
   public FacetsClause facets;
+  /**
+   * True when the statement was written {@code LIMIT ... SKIP ...}, which the grammar accepts besides {@code SKIP ... LIMIT ...}.
+   * Only the rendering reads it: positional parameters are numbered in the order they are written, so a rendering that put SKIP
+   * first would bind the value meant for LIMIT to SKIP and the other way round once parsed again (issue #11383).
+   */
+  public boolean      limitBeforeSkip;
 
   public SelectStatement() {
   }
@@ -136,10 +142,13 @@ public class SelectStatement extends Statement {
       facets.toString(params, builder);
     }
 
+    if (limitBeforeSkip && limit != null)
+      limit.toString(params, builder);
+
     if (skip != null)
       skip.toString(params, builder);
 
-    if (limit != null)
+    if (!limitBeforeSkip && limit != null)
       limit.toString(params, builder);
 
     if (timeout != null)
@@ -275,6 +284,7 @@ public class SelectStatement extends Statement {
     result.unwind = unwind == null ? null : unwind.copy();
     result.skip = skip == null ? null : skip.copy();
     result.limit = limit == null ? null : limit.copy();
+    result.limitBeforeSkip = limitBeforeSkip;
     result.letClause = letClause == null ? null : letClause.copy();
     result.timeout = timeout == null ? null : timeout.copy();
     result.facets = facets == null ? null : facets.copy();

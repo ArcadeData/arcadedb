@@ -25,11 +25,10 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
-import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
+import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.EquiJoinKey;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -445,8 +444,9 @@ final class DisconnectedPatternJoinPlanner {
       constants.putIfAbsent(access.getPropertyName(), EquiJoinKey.of(comparison.getLeft(), comparison.getRight()));
   }
 
+  /** A value every row of the part shares: a literal, a parameter, or a part of one (issue #11480), see {@link RowIndependentValues}. */
   private static boolean isConstant(final Expression expression) {
-    return expression instanceof LiteralExpression || expression instanceof ParameterExpression;
+    return RowIndependentValues.isParameterDerived(expression);
   }
 
   private TypeIndex typeIndex(final String indexName) {

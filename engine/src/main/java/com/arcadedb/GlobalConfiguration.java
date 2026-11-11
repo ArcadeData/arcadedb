@@ -290,7 +290,7 @@ public enum GlobalConfiguration {
       Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
 
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
-      "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
+      "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes. A value set for one database (ALTER DATABASE, which needs the updateSecurity permission) must lie inside the database directory or inside the directory the server-level value names.",
       String.class, ""),
 
   TIMESERIES_TAG_DICTIONARY_MAX_SIZE("arcadedb.timeSeriesTagDictionaryMaxSize", SCOPE.DATABASE,
@@ -793,7 +793,9 @@ public enum GlobalConfiguration {
       alone it competes for space with the very files it is protecting; pointing this at another volume removes \
       that coupling, and the automatic PAGE_SNAPSHOT_MAX_SIZE is then measured against the free space THERE. The \
       file is pure scratch - it is created when the RAM budget is exhausted, deleted when the window closes, and \
-      never read by recovery.""",
+      never read by recovery. A value set for one database (ALTER DATABASE, which needs the updateSecurity permission) \
+      must lie inside the database directory or inside the directory the server-level value names; one that does not \
+      is ignored with a warning and the database directory is used.""",
       String.class, ""),
 
   PAGE_SNAPSHOT_TRACK_OPENERS("arcadedb.pageSnapshotTrackOpeners", SCOPE.JVM,
@@ -1124,7 +1126,7 @@ public enum GlobalConfiguration {
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
       and DISTINCT in heap, the result of a LET subquery or of one written inline in an expression (a projection, a function argument, \
       a SET value, a CREATE EDGE endpoint: its bytes are charged to the budget while the list is built, and given back when it is returned) and the rows of a user defined SQL function (against this cap only: no bytes are charged for \
-      the body of a function), the records a MATCH prefetches and the \
+      the body of a function), the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
       values an aggregate that keeps them holds, like list(), set(), percentile() or the ts.* windows; in OpenCypher also the rows \
       a Cartesian product or a hash join buffers, UNION, collect(), and the eager materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
@@ -1773,8 +1775,14 @@ public enum GlobalConfiguration {
       mutation-threshold or inactivity trigger retries it, and pending vectors stay exactly searchable through the \
       in-memory delta buffer meanwhile, so the cost of deferring is a longer delta scan per query rather than \
       wrong or missing results. The estimate is deliberately coarse, so the default is generous: it refuses only \
-      when a rebuild is confidently too large, not whenever one looks tight. Applies to online rebuilds only - a \
-      first build, a rebuild on close, an explicit REBUILD INDEX and a COMPACT INDEX are never declined. \
+      when a rebuild is confidently too large, not whenever one looks tight. A first build in the background, a \
+      rebuild on close, an explicit \
+      REBUILD INDEX and a COMPACT INDEX are never declined. The build a QUERY needs because the index has no usable \
+      graph is judged against the same share, with the estimate of a build that has no old graph to keep: it gives up \
+      page cache, then runs with a smaller build cache (slower, same graph), and when even the graph alone does not \
+      fit, the query fails with a retryable VectorGraphBuildRefusedException (503 on HTTP) instead of building on a \
+      heap that full, which is what ends in an OutOfMemoryError that stops the whole server. It is never answered from \
+      the pending vectors alone, which would be an incomplete result presented as a complete one. \
       Set to 0 to disable the gate and restore the attempt-and-hope behaviour. Values above 90 are clamped to 90: \
       a rebuild is never allowed to plan on the whole heap, since the request, I/O and GC threads need some too.""",
       Integer.class, 90),
@@ -2592,6 +2600,19 @@ public enum GlobalConfiguration {
       Entries outside the cache are read back from disk when needed (issue #9549), so a leader serving a follower \
       that lags by more than the cached segments reads them from disk: raise this value, not only the heap, to keep \
       more of the log tail decoded in memory.""",
+      String.class, ""),
+
+  HA_APPLY_BACKLOG_MAX("arcadedb.ha.applyBacklogMax", SCOPE.SERVER,
+      """
+      Byte budget for the Raft entries a follower may hold received but not yet applied (e.g. '256MB'). Ratis keeps \
+      every such entry decoded on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
+      entries below the applied index. While the leader estimates that a follower is over the budget (applied index \
+      reported by the follower, average entry size measured by the leader) it sends that follower heartbeats only, \
+      and resumes when the follower has caught up. It is a soft limit: the applied index reaches the leader with the \
+      5 s capability poll, so a follower can overshoot the budget during a burst between two polls, and the size of \
+      an entry is a running average, which understates a mix of a few huge entries among many small ones. Empty \
+      (the default) means a quarter of the maximum JVM heap, but never less than 32MB (on a very small heap that \
+      floor can exceed a quarter of it). 0 disables the back-pressure (issue #11458).""",
       String.class, ""),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
@@ -3447,6 +3468,14 @@ public enum GlobalConfiguration {
 
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
+
+  POSTGRES_LANGUAGES("arcadedb.postgres.languages", SCOPE.SERVER, """
+      Comma-separated query languages a statement received through the Postgres wire protocol may select with a \
+      leading {language} marker, as in '{cypher}MATCH (n) RETURN n'. The marker is only read as the first token of the \
+      statement (leading whitespace and comments aside). A statement without a marker is SQL, which is always \
+      permitted. A marker naming any other language, or one no query engine of this server answers, is refused. \
+      Leave empty to accept SQL only. Default is 'sqlscript,cypher,opencypher,gremlin,graphql,mongo'""", String.class,
+      "sqlscript,cypher,opencypher,gremlin,graphql,mongo"),
 
   POSTGRES_QUOTED_IDENTIFIERS("arcadedb.postgres.quotedIdentifiers", SCOPE.SERVER, """
       Interprets double-quoted tokens in SQL statements received through the Postgres wire protocol as identifiers, as \
@@ -5213,16 +5242,59 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Whether this setting is a security control: it decides what the server may reach or read on behalf of a query, so
-   * changing it needs the administrative {@code updateSecurity} permission and not merely the per-database
-   * {@code updateDatabaseSettings} one that is meant for tuning. Declare any new database-scoped setting of that kind here.
+   * Whether this setting is a security control: it decides what the server may reach or read on behalf of a query, or
+   * where on the host it creates files, so changing it needs the administrative {@code updateSecurity} permission and not
+   * merely the per-database {@code updateDatabaseSettings} one that is meant for tuning. Declare any new database-scoped
+   * setting of that kind here.
    */
   public boolean isSecuritySensitive() {
     return switch (this) {
       case OPENCYPHER_LOAD_CSV_ALLOW_FILE_URLS, OPENCYPHER_LOAD_CSV_IMPORT_DIRECTORY, OPENCYPHER_LOAD_CSV_ALLOW_REMOTE_URLS,
            OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES -> true;
-      default -> false;
+      default -> isStorageDirectory();
     };
+  }
+
+  /**
+   * Whether this setting names a directory the engine creates files in on behalf of one database. Its value for a database
+   * is held to {@link #checkDatabaseStorageDirectory(String, String)}, both where it is changed and where the files are
+   * created. Declare any new database-scoped setting of that kind here.
+   */
+  public boolean isStorageDirectory() {
+    return this == EXTERNAL_PROPERTY_BUCKET_PATH || this == PAGE_SNAPSHOT_SPILL_PATH;
+  }
+
+  /**
+   * Refuses a directory a database's own value of this {@link #isStorageDirectory() storage-directory setting} names, unless
+   * it lies inside the database's own directory or inside the directory the server-level value of the same setting names
+   * (the value of this enum, which only the process configuration sets: system properties, environment, embedded code).
+   * Without it a user allowed to change the database's settings would choose where on the host the server creates
+   * directories and files. Both paths are compared as the file system resolves them, so neither {@code ..} nor a symbolic
+   * link leads out. An empty value means the database's own directory and is always accepted, and so is the server-level
+   * value itself.
+   *
+   * @param directory    the directory, with its variables already resolved
+   * @param databasePath the directory of the database the value belongs to
+   *
+   * @throws SecurityException if the directory lies outside both
+   */
+  public void checkDatabaseStorageDirectory(final String directory, final String databasePath) {
+    if (directory == null || directory.isBlank())
+      return;
+
+    final String candidate = directory.trim();
+    final String serverDirectory = getValueAsString();
+    if (serverDirectory != null && !serverDirectory.isBlank()) {
+      if (candidate.equals(serverDirectory.trim()) || FileUtils.isInsideDirectory(candidate, serverDirectory.trim()))
+        return;
+    }
+
+    if (databasePath != null && FileUtils.isInsideDirectory(candidate, databasePath))
+      return;
+
+    throw new SecurityException("Directory '" + directory + "' is not allowed for setting '" + key
+        + "': a database may only use a directory inside its own directory or inside the directory the server-level value of '"
+        + key + "' names" + (serverDirectory == null || serverDirectory.isBlank() ? ", which is not set" : ""));
   }
 
   /**

@@ -35,6 +35,21 @@ import java.util.logging.Level;
 public class MaterializedViewRefresher {
 
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
+    refresh(database, view, false);
+  }
+
+  /**
+   * The refresh an INCREMENTAL view owes the commit that changed one of its sources. It runs on the committing thread, so
+   * that thread must not be kept for longer than the one pass it owes (issue #11464): when other writers asked for a further
+   * pass meanwhile, the owner hands that pass to the schema's scheduler thread instead of making it itself. Without the
+   * hand-off the owner made pass after pass for as long as the others kept committing, which under a steady write load from
+   * several clients was until they stopped, and its own client had long timed out waiting for the commit to return.
+   */
+  static void refreshAfterCommit(final Database database, final MaterializedViewImpl view) {
+    refresh(database, view, true);
+  }
+
+  private static void refresh(final Database database, final MaterializedViewImpl view, final boolean mayHandOffFurtherPasses) {
     if (!view.tryBeginRefresh()) {
       // A refresh is already running. Hand it our request so it makes a further pass over the
       // now-newer source data: simply returning here left the view reflecting a snapshot taken
@@ -49,6 +64,12 @@ public class MaterializedViewRefresher {
         return;
     }
 
+    runOwnedPasses(database, view, mayHandOffFurtherPasses);
+  }
+
+  /** Makes the passes of a refresh whose ownership the caller already holds, and gives the ownership back when none is owed. */
+  private static void runOwnedPasses(final Database database, final MaterializedViewImpl view,
+      final boolean mayHandOffFurtherPasses) {
     try {
       do {
         // #11019: a pass that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
@@ -63,7 +84,7 @@ public class MaterializedViewRefresher {
         view.setStatus(MaterializedViewStatus.VALID);
         if (persistedStatusIsStale)
           persistStatus(database, view.getName(), view.getStatus());
-      } while (view.finishRefreshPassAndCheckPending());
+      } while (view.finishRefreshPassAndCheckPending() && !(mayHandOffFurtherPasses && handOffFurtherPasses(database, view)));
 
     } catch (final Throwable e) {
       // Throwable, not Exception: refresh ownership is held from the tryBeginRefresh() above, and the only
@@ -91,6 +112,32 @@ public class MaterializedViewRefresher {
             null, view.getName());
       throw e;
     }
+  }
+
+  /**
+   * Passes the ownership of the refresh, with the request it still holds, to the schema's scheduler thread, which makes the
+   * further passes. Ownership is never released in between, so a request cannot be lost and no second owner can start. Returns
+   * {@code false} when the scheduler cannot take it (closed, or not a local schema): the caller then keeps the passes, as it
+   * did before the hand-off existed.
+   * <p>
+   * The scheduler thread also hands off: a pass it makes while further requests are owed ends by queueing the next one behind
+   * whatever is already due, instead of looping, because that single thread also runs every periodic refresh of every view of
+   * the database (issue #11470).
+   */
+  private static boolean handOffFurtherPasses(final Database database, final MaterializedViewImpl view) {
+    if (!(database.getSchema() instanceof LocalSchema schema))
+      return false;
+    return schema.getMaterializedViewScheduler().handOff(database, view, () -> {
+      try {
+        // true: one pass, then back to the end of the scheduler's queue if more are owed, so the periodic ticks of this
+        // database's other views interleave instead of waiting for as long as writers keep requesting passes (issue #11470)
+        runOwnedPasses(database, view, true);
+      } catch (final Throwable e) {
+        // runOwnedPasses() has already marked the view ERROR and logged it; there is no caller left to rethrow to
+        view.setStatus(MaterializedViewStatus.STALE);
+        persistStatus(database, view.getName(), view.getStatus());
+      }
+    });
   }
 
   /**

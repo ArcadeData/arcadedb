@@ -91,12 +91,17 @@ public final class PeerCapabilityQuery {
    * omits it, which relays nothing.
    */
   public record Advertisement(String peerId, String version, Set<String> capabilities, boolean serviceGap,
-      Set<String> quarantined, Map<String, String> peerHttpAddresses) {
+      Set<String> quarantined, Map<String, String> peerHttpAddresses, long appliedIndex) {
     public Advertisement {
       if (quarantined == null)
         quarantined = Set.of();
       if (peerHttpAddresses == null)
         peerHttpAddresses = Map.of();
+    }
+
+    public Advertisement(final String peerId, final String version, final Set<String> capabilities,
+        final boolean serviceGap, final Set<String> quarantined, final Map<String, String> peerHttpAddresses) {
+      this(peerId, version, capabilities, serviceGap, quarantined, peerHttpAddresses, -1L);
     }
 
     public Advertisement(final String peerId, final String version, final Set<String> capabilities) {
@@ -284,7 +289,8 @@ public final class PeerCapabilityQuery {
     }
 
     return new Advertisement(peerId, json.getString("version", ""), capabilities,
-        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false), quarantined, readPeerHttpAddresses(json, url));
+        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false), quarantined, readPeerHttpAddresses(json, url),
+        json.getLong(PostCapabilitiesHandler.APPLIED_INDEX, -1L));
   }
 
   /**

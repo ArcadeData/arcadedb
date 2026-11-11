@@ -72,7 +72,8 @@ class Issue10143AdminStatusRoundTripTest {
     final Map<Exception, Class<? extends Throwable>> types = new LinkedHashMap<>();
     types.put(AdminStatusTestBridge.adminAuthorizationRefusal("Only root can do that"), SecurityException.class);
     types.put(new ServerControlPlane.RestoreImportUrlNotAllowedException("URL scheme 'file' is not allowed"), SecurityException.class);
-    types.put(new SecurityException("Invalid credentials"), RemoteException.class);
+    // UNAUTHENTICATED is rebuilt as the SecurityException the server's arm stands for, as the HTTP driver does (issue #11393)
+    types.put(new SecurityException("Invalid credentials"), SecurityException.class);
     types.put(new ServerSecurityException("Password must be at least 8 characters"), SecurityException.class);
     types.put(new ServerControlPlane.NotFoundException("User 'ghost' not found"), RecordNotFoundException.class);
     types.put(new ServerControlPlane.AlreadyExistsException("API token 'ci' already issued"), RemoteAlreadyExistsException.class);

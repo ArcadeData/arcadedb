@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -57,7 +57,7 @@ public class DropTriggerStatement extends DDLStatement {
     final Database db = context.getDatabase();
 
     if (!db.getSchema().existsTrigger(name.getValue()) && !ifExists) {
-      throw new CommandExecutionException("Trigger not found: " + name.getValue());
+      throw new SchemaException("Trigger not found: " + name.getValue());
     }
 
     if (db.getSchema().existsTrigger(name.getValue())) {

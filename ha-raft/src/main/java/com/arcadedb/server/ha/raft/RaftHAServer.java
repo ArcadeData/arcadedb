@@ -28,6 +28,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.ApplyBackPressure;
 import com.arcadedb.server.ha.raft.ratis.GuardedRaftServer;
 import com.arcadedb.server.ha.raft.ratis.RaftPeerChannels;
 import com.arcadedb.server.ha.raft.ratis.RatisMisdirectedRequestFilter;
@@ -317,6 +318,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** Serialises start/stop of {@link #capabilityMonitorExecutor}; never held across anything that blocks. */
   private final    Object                    capabilityMonitorLock = new Object();
   private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
+  private volatile ApplyBackPressure         applyBackPressure;
   // How one capability probe is made (see CapabilityProber). A method reference rather than a lambda reading
   // arcadeServer, which is a blank final the constructor has not assigned yet at this point.
   private volatile CapabilityProber          capabilityProber = this::queryPeerCapabilities;
@@ -2127,6 +2129,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
+    // Read by the leader's log appenders, which Ratis builds itself (issue #11458)
+    applyBackPressure = new ApplyBackPressure(ApplyBackPressure.resolveBudgetBytes(configuration, Runtime.getRuntime().maxMemory()),
+        peerCapabilities::freshAppliedIndexOf);
+    ApplyBackPressure.register(localPeerId.toString(), applyBackPressure);
+
     final File storageDir = getRaftStorageDir();
     // Only delete existing Raft storage when persistence is not requested.
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
@@ -2679,7 +2686,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // commitIndex == appliedIndex hid exactly the signature below.
     final long commitIndex = getCommitIndex();
     return isStuckDivergedState(getLeaderId() != null, isActivelyCatchingUp(sm.isCatchingUp(), applied.getIndex(), commitIndex),
-        sm.isSnapshotDownloadPending(), getCurrentTerm(), applied.getTerm(), applied.getIndex(), commitIndex);
+        sm.isSnapshotDownloadPending(), getCurrentTerm(), applied.getTerm(), applied.getIndex(), commitIndex,
+        leaderReportedCommitIndex);
   }
 
   /**
@@ -2710,7 +2718,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * that recognizes a leader, is neither catching up nor installing a snapshot, has applied everything it
    * could locally commit ({@code commitIndex == appliedIndex}) yet at a stale term
    * ({@code currentTerm > appliedTerm}). Any negative term/index input (state not readable) yields
-   * {@code false}, including a negative {@code appliedTerm}.
+   * {@code false}, including a negative {@code appliedTerm}. A follower whose applied index has reached the commit
+   * index its leader last reported ({@code leaderReportedCommitIndex}, {@code -1} when unknown) does not match
+   * either: the leader has committed nothing it could be rejecting (issue #11493).
    * <p>
    * Note this signature is satisfied by a genuine Raft-log divergence and also, in principle, by a
    * follower that simply cannot receive the leader's current-term entries for a sustained period (a
@@ -2724,10 +2734,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean isStuckDivergedState(final boolean leaderPresent, final boolean catchingUp,
       final boolean snapshotPending, final long currentTerm, final long appliedTerm, final long appliedIndex,
-      final long commitIndex) {
+      final long commitIndex, final long leaderReportedCommitIndex) {
     if (!leaderPresent || catchingUp || snapshotPending)
       return false;
     if (currentTerm < 0 || appliedTerm < 0 || appliedIndex < 0 || commitIndex < 0)
+      return false;
+    // Issue #11493: the leader itself has committed nothing beyond what this follower applied (an idle cluster right
+    // after a leader change, before the new term's first commit), so there is nothing to reject and the applied term
+    // cannot advance. Applied entries are committed, hence part of the leader's log: not divergence. A negative
+    // figure means the leader has not reported one yet, and keeps the signature below.
+    if (leaderReportedCommitIndex >= 0 && leaderReportedCommitIndex <= appliedIndex)
       return false;
     // We have applied everything we could locally commit, but at a stale term: we are rejecting the
     // leader's current-term entries and cannot move forward.
@@ -2963,7 +2979,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftProperties properties = raftProperties;
     final long segmentSize = properties != null ? RaftServerConfigKeys.Log.segmentSizeMax(properties).getSize()
         : RaftServerConfigKeys.Log.SEGMENT_SIZE_MAX_DEFAULT.getSize();
-    return volume.getUsableSpace() >= 2L * segmentSize;
+    return hasRoomForSegments(volume.getUsableSpace(), volume.getTotalSpace(), segmentSize);
+  }
+
+  /**
+   * Two segments of room, or unknown: a volume reporting no total space does not implement {@code statfs} (a FUSE
+   * mount such as LazyFS answers 0 for both numbers), so its "0 usable" is not "full" (issue #11487).
+   */
+  static boolean hasRoomForSegments(final long usable, final long total, final long segmentSize) {
+    return total <= 0 || usable >= 2L * segmentSize;
   }
 
   /**
@@ -3586,6 +3610,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public void stop() {
     shutdownRequested = true;
+    final ApplyBackPressure backPressure = applyBackPressure;
+    if (backPressure != null) {
+      ApplyBackPressure.unregister(localPeerId.toString(), backPressure);
+      applyBackPressure = null;
+    }
     final Thread joinThread = autoJoinThread;
     if (joinThread != null) {
       // Wake the auto-join retry loop out of its backoff sleep so shutdown is not delayed (issue #5268).
@@ -7887,7 +7916,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private void recordPeerCapabilities(final long generation, final String peerId,
       final PeerCapabilityQuery.Advertisement advertisement) {
     if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version(),
-        advertisement.serviceGap(), advertisement.quarantined()))
+        advertisement.serviceGap(), advertisement.quarantined(), advertisement.appliedIndex()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));

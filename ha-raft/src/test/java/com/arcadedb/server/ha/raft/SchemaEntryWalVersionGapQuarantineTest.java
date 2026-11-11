@@ -35,6 +35,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,6 +98,25 @@ class SchemaEntryWalVersionGapQuarantineTest {
     assertThat(stateMachine.isDatabaseDiverged(DB)).as("the database must be quarantined for a resync").isTrue();
   }
 
+  /**
+   * A gap in one database resyncs that database alone (issue #11489): the full download reinstalled every database on
+   * the node, ~40 unrelated ones in the report.
+   */
+  @Test
+  void aVersionGapResyncsOnlyTheDatabaseWithTheGap() throws Exception {
+    final PageId behind = firstPageOf("Behind");
+    final byte[] wal = walOf(pageDelta(behind, (int) page(behind).getVersion() + 2));
+
+    final DatabaseBoundStateMachine stateMachine = new DatabaseBoundStateMachine(database);
+    final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(DB, "", Collections.emptyMap(), Collections.emptyMap(),
+        List.of(wal), Collections.emptyList());
+    assertThatThrownBy(() -> stateMachine.applySchemaEntry(RaftLogEntryCodec.decode(entry), 42L, false))
+        .isInstanceOf(ReplicationException.class);
+
+    assertThat(stateMachine.targetedResyncs).as("the database with the gap is resynced on its own").containsExactly(DB);
+    assertThat(stateMachine.fullDownloads.get()).as("no full download of every database on the node").isZero();
+  }
+
   private PageId firstPageOf(final String type) {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getType(type).getBuckets(false).getFirst();
     return new PageId(database, bucket.getFileId(), 0);
@@ -140,6 +160,18 @@ class SchemaEntryWalVersionGapQuarantineTest {
   /** A state machine with no server attached, whose only database is the one this test opened. */
   private static class DatabaseBoundStateMachine extends ArcadeStateMachine {
     private final DatabaseInternal database;
+    final List<String>             targetedResyncs = new CopyOnWriteArrayList<>();
+    final AtomicInteger            fullDownloads   = new AtomicInteger();
+
+    @Override
+    void triggerDatabaseResync(final String dbName) {
+      targetedResyncs.add(dbName);
+    }
+
+    @Override
+    void triggerSnapshotDownload() {
+      fullDownloads.incrementAndGet();
+    }
 
     DatabaseBoundStateMachine(final DatabaseInternal database) {
       this.database = database;

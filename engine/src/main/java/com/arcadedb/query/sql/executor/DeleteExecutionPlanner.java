@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BooleanExpression;
@@ -28,6 +29,7 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
@@ -40,6 +42,7 @@ public class DeleteExecutionPlanner {
   private final FromClause  fromClause;
   private final WhereClause whereClause;
   private final boolean     returnBefore;
+  private final Projection  returnProjection;
   private final Limit       limit;
   private final Batch       batch;
   private final boolean     unsafe;
@@ -50,6 +53,7 @@ public class DeleteExecutionPlanner {
     this.fromClause = stm.getFromClause() == null ? null : stm.getFromClause().copy();
     this.whereClause = stm.getWhereClause() == null ? null : stm.getWhereClause().copy();
     this.returnBefore = stm.isReturnBefore();
+    this.returnProjection = stm.getReturnProjection() == null ? null : stm.getReturnProjection().copy();
     this.limit = stm.getLimit();
     this.batch = stm.getBatch();
     this.unsafe = stm.isUnsafe();
@@ -73,7 +77,7 @@ public class DeleteExecutionPlanner {
         throw new CommandExecutionException("Cannot apply a UNSAFE on a delete from index");
 
       if (returnBefore)
-        throw new CommandExecutionException("Cannot apply a RETURN BEFORE on a delete from index");
+        throw new CommandExecutionException("Cannot apply a RETURN BEFORE or a RETURNING on a delete from index");
 
       handleReturn(result, context, this.returnBefore);
     } else {
@@ -107,7 +111,7 @@ public class DeleteExecutionPlanner {
     if (batch != null)
       throw new CommandExecutionException("Cannot apply a BATCH to a DELETE on the TIMESERIES type '" + tsType.getName() + "'");
     if (returnBefore)
-      throw new CommandExecutionException("Cannot apply a RETURN BEFORE to a DELETE on the TIMESERIES type '" + tsType.getName()
+      throw new CommandExecutionException("Cannot apply a RETURN BEFORE or a RETURNING to a DELETE on the TIMESERIES type '" + tsType.getName()
           + "': a sample is not a record");
 
     final SelectExecutionPlanner.TimeSeriesDeleteScope scope = SelectExecutionPlanner.timeSeriesDeleteScope(tsType, whereClause, context);
@@ -129,7 +133,7 @@ public class DeleteExecutionPlanner {
     final String indexName = indexIdentifier.getIndexName();
     final RangeIndex index = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
-      throw new CommandExecutionException("Index not found: " + indexName);
+      throw new SchemaException("Index not found: " + indexName);
     }
     List<AndBlock> flattenedWhereClause = whereClause == null ? null : whereClause.flatten();
 
@@ -196,7 +200,7 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context));
+    result.chain(new DeleteStep(context, returnProjection, returnBefore));
   }
 
   private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {
@@ -210,6 +214,7 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleReturn(final DeleteExecutionPlan result, final CommandContext context, final boolean returnBefore) {
+    // A RETURNING projection (issue #11392) is computed by the DeleteStep itself, on each record before it is deleted
     if (!returnBefore)
       result.chain(new CountStep(context));
   }

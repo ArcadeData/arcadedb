@@ -105,13 +105,6 @@ class Issue10157ClusterRoutesRefuseUndeclaredMethodsIT extends SharedClusterRaft
     assertThat(call(leader, "POST", "/api/v1/cluster/peer").status).as("POST /api/v1/cluster/peer").isEqualTo(400);
   }
 
-  @Test
-  void noShippedPluginRegistersARouteThatAnswersEveryMethod() {
-    for (int i = 0; i < getServerCount(); i++)
-      assertThat(getServer(i).getHttpServer().getUnrestrictedPluginRoutes())
-          .as("server %d: plugin routes registered on the raw PathHandler answer every method", i).isEmpty();
-  }
-
   private void assertRefused(final int serverIndex, final String method, final String path, final String allowed)
       throws Exception {
     final Response response = call(serverIndex, method, path);

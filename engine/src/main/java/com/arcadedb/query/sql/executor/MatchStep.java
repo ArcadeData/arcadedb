@@ -41,10 +41,24 @@ public class MatchStep extends AbstractExecutionStep {
 
   @Override
   public void reset() {
+    closeTraverser();
     this.upstream = null;
     this.lastUpstreamRecord = null;
-    this.traverser = null;
     this.nextResult = null;
+  }
+
+  @Override
+  public void close() {
+    closeTraverser();
+    super.close();
+  }
+
+  /** A traverser stopped before its end still holds the heap of its walk (issue #11501). */
+  private void closeTraverser() {
+    if (traverser != null) {
+      traverser.close();
+      traverser = null;
+    }
   }
 
   @Override

@@ -75,7 +75,8 @@ set CMD_LINE_ARGS=%*
 
 :doneSetArgs
 
-set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
+rem ExitOnOutOfMemoryError (issue #11456): exit after the heap dump so a supervisor restarts the node instead of leaving it half alive.
+set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError ^
   --add-exports java.management/sun.management=ALL-UNNAMED ^
   --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED ^
   --add-opens java.base/java.nio.channels.spi=ALL-UNNAMED ^

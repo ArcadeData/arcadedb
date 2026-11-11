@@ -2805,11 +2805,48 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return name;
   }
 
-  /** Override root + dbName subdir, or null if not configured. The subdir prevents collisions across databases. */
+  /**
+   * Where a new external-property bucket is created: the override root + dbName subdir, or null if not configured. The
+   * subdir prevents collisions across databases. The root is checked here, where the directory and the file are created,
+   * and not only where the setting is changed: a value can reach the database's configuration another way (a
+   * configuration file written before the check existed, embedded code).
+   *
+   * @throws SecurityException if the root lies outside the directories a database may use, see
+   *                           {@link GlobalConfiguration#checkDatabaseStorageDirectory(String, String)}
+   */
   public String resolveExternalBucketPath() {
-    final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
-    if (configured == null || configured.isEmpty())
+    final String configured = configuredExternalBucketPath();
+    if (configured == null)
       return null;
+    GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.checkDatabaseStorageDirectory(configured, databasePath);
+    return configured + File.separator + name;
+  }
+
+  /** The configured override root, trimmed so the directory checked is the directory used, or null if not configured. */
+  private String configuredExternalBucketPath() {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
+    if (configured == null || configured.isBlank())
+      return null;
+    return configured.trim();
+  }
+
+  /**
+   * The directory the external-property buckets created by {@link #resolveExternalBucketPath()} are found in when the
+   * database opens. Not refused when the root lies outside the directories a database may use, because the buckets
+   * already there hold records and only reading them is at stake: no directory is created and no file is added. Such a root
+   * is reported, since no new bucket can be created there.
+   */
+  private String externalBucketScanPath() {
+    final String configured = configuredExternalBucketPath();
+    if (configured == null)
+      return null;
+    try {
+      GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH.checkDatabaseStorageDirectory(configured, databasePath);
+    } catch (final SecurityException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s': %s. The external-property buckets already there are loaded, new ones cannot be created", null, name,
+          e.getMessage());
+    }
     return configured + File.separator + name;
   }
 
@@ -4353,8 +4390,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
       // decision below so the next open runs recovery exactly when there is something to recover.
       boolean walPreservedForRecovery = preserveWalForRecovery;
+      // #11514: whether the close-time flush of schema.prev.json failed, which leaves the copy to the next open's recovery
+      boolean schemaCopyLeftToRecovery = false;
       try {
-        schema.close();
+        try {
+          schema.close();
+        } finally {
+          // ALSO WHEN THE SCHEMA CLOSE THREW: THE COPY IT MAY NOT HAVE REACHED IS STILL OWED
+          schemaCopyLeftToRecovery = !drop && schema.isPreviousSchemaCopyUnsynced();
+        }
         fileManager.close();
         walPreservedForRecovery = transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();
@@ -4386,6 +4430,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             // makes the next open run recovery and replay the pages this close could not flush.
             LogManager.instance().log(this, Level.SEVERE,
                 "Database '%s' closed with unflushed pages: the lock file and the WAL were preserved so the next open will recover them",
+                null, name);
+          else if (schemaCopyLeftToRecovery)
+            // #11514: THE SAME MARKER MAKES THE NEXT OPEN RE-SECURE THE RECOVERY COPY OF THE SCHEMA THIS CLOSE COULD NOT FLUSH
+            LogManager.instance().log(this, Level.WARNING,
+                "Database '%s' closed without flushing the recovery copy of its schema: the lock file was preserved so the next open will re-secure it",
                 null, name);
           else {
             if (lockFile.exists())
@@ -4491,14 +4540,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // THE SAME FOR THE BM25 CORPUS COUNTERS (ISSUE #10133): THE SCHEMA HOLDS THE PAIR OF ITS LAST SAVE, THE REPLAY RESTORES
     // EVERYTHING COMMITTED AFTER IT. THE DRIFT CHECK ONLY COMPARES DOCUMENT COUNTS, SO A WORKLOAD THAT LEFT THE COUNT WHERE IT WAS
     // (A DOCUMENT REPLACED BY A LONGER ONE) WOULD KEEP THE OLD LENGTH FOREVER: THE FIRST SEARCH RESCANS UNCONDITIONALLY INSTEAD
-    int bm25Indexes = 0;
-    for (final Index index : schema.getIndexes()) {
-      final FullTextIndexMetadata ftMetadata = LSMTreeFullTextIndex.metadataOf(index);
-      if (ftMetadata != null && ftMetadata.isBM25()) {
-        ftMetadata.requireRescan();
-        ++bm25Indexes;
-      }
-    }
+    final int bm25Indexes = requireBM25Rescan();
     if (bm25Indexes > 0)
       LogManager.instance().log(this, Level.INFO,
           "The BM25 corpus counters of %d full-text index(es) of database '%s' will be recomputed by a full scan at their first search",
@@ -4512,11 +4554,38 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // TREATED AS UNSYNCED UNTIL THE FIRST SUCCESSFUL SYNC
     fileManager.markAllFilesUnsynced();
 
+    // #11514: THE SAME HOLDS FOR schema.prev.json, WHOSE FLUSH A SCHEMA WRITE DEFERS TO THE CLOSE THE CRASH SKIPPED
+    schema.securePreviousSchemaCopyAfterCrash();
+
     final Consumer<LocalDatabase> beforeReplayHook = TEST_BEFORE_RECOVERY_REPLAY_HOOK;
     if (beforeReplayHook != null)
       beforeReplayHook.accept(this);
 
     transactionManager.checkIntegrity();
+
+    // AN INDEX CREATED JUST BEFORE THE CRASH CAN HAVE ITS HEADER PAGE IN THE WAL ONLY: THE LOAD ABOVE, WHICH RUNS BEFORE THE
+    // REPLAY, FOUND ITS FILE EMPTY AND LEFT IT OUT (#10046), AND THE REPLAY HAS JUST WRITTEN THE HEADER. LOAD THE SCHEMA AGAIN
+    // SO THIS OPEN SERVES THE INDEX - A UNIQUE ONE WOULD OTHERWISE ENFORCE NOTHING UNTIL THE NEXT OPEN. THE RELOAD CARRIES THE
+    // BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE ARE SET AGAIN
+    if (mode == ComponentFile.MODE.READ_WRITE && schema.hasUnavailableIndexCompletedSinceLoad()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "The WAL replay of database '%s' completed the file of an index the schema load found with no header page: reloading the schema",
+          null, name);
+      schema.load(mode, true, true);
+      requireBM25Rescan();
+    }
+  }
+
+  private int requireBM25Rescan() {
+    int bm25Indexes = 0;
+    for (final Index index : schema.getIndexes()) {
+      final FullTextIndexMetadata ftMetadata = LSMTreeFullTextIndex.metadataOf(index);
+      if (ftMetadata != null && ftMetadata.isBM25()) {
+        ftMetadata.requireRescan();
+        ++bm25Indexes;
+      }
+    }
+    return bm25Indexes;
   }
 
   /**
@@ -4570,7 +4639,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       DatabaseContext.INSTANCE.init(this);
       setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
-      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
+      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, externalBucketScanPath());
       fileManager.setDroppedFileHandler(file -> PageManager.INSTANCE.deferFileDrop(wrappedDatabaseInstance, file));
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
       columnarIndexManager = new ColumnarIndexManager(this);

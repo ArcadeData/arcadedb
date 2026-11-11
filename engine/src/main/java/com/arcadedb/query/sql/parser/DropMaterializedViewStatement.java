@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -58,7 +58,7 @@ public class DropMaterializedViewStatement extends DDLStatement {
         result.add(r);
         return result;
       }
-      throw new CommandExecutionException("Materialized view '" + viewName + "' does not exist");
+      throw new SchemaException("Materialized view '" + viewName + "' does not exist");
     }
 
     database.getSchema().dropMaterializedView(viewName);

@@ -38,6 +38,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONException;
@@ -134,6 +135,11 @@ class Issue6201ErrorStatusParityTest {
       // CommandExecutionException, whose generic arm answers 500.
       new MappedFailure("QueryHeapBudgetExceededException", 503,
           () -> new QueryHeapBudgetExceededException("Query heap budget exceeded: the running queries hold it")),
+      // A vector search refused the graph build it needed because the build does not fit the heap (issue #11497): nothing
+      // was built, so the same request re-issued once the heap has room can succeed. A QueryHeapBudgetExceededException, so it
+      // takes that arm; through SQL it can arrive one CommandExecutionException down, the wrapped shape this table also runs.
+      new MappedFailure("VectorGraphBuildRefusedException", 503,
+          () -> new VectorGraphBuildRefusedException("The query needs the graph of vector index 'Doc[vector]' built")),
       // A query the admission gate did not start because it waited too long or found the queue full (issue #9518): nothing
       // of it ran, so the same request re-issued later can succeed. It extends CommandExecutionException too.
       new MappedFailure("QueryAdmissionException", 503,

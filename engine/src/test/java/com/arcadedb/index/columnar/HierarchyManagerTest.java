@@ -238,6 +238,163 @@ class HierarchyManagerTest extends TestHelper {
     assertThat(manager.rebuildCount()).isEqualTo(rebuilds);
   }
 
+  /** Issue #11394: a transaction that changed the tag graph reuses its private view until it changes anything again. */
+  @Test
+  void thePrivateViewOfATransactionIsReusedWhileItIsUnchanged() {
+    manager.view();
+    final long privateBuilds = manager.privateBuildCount();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView first = manager.view();
+      assertThat(parentValues(first, "a/d")).containsExactly("x");
+      assertThat(manager.privateBuildCount()).isEqualTo(privateBuilds + 1);
+      // a read is no change: neither a lookup nor a query of the transaction invalidates the view
+      tag("a/b");
+      assertThat(manager.view()).isSameAs(first);
+      assertThat(manager.view()).isSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(privateBuilds + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void aFurtherChangeOfTheTransactionBuildsANewPrivateView() {
+    manager.view();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView first = manager.view();
+      assertThat(parentValues(first, "a/d")).containsExactly("x");
+      // a lightweight edge appended to an edge list page the transaction already holds
+      edge("a/b", "a/d");
+      final HierarchyView second = manager.view();
+      assertThat(second).isNotSameAs(first);
+      assertThat(parentValues(second, "a/d")).containsExactlyInAnyOrder("x", "a/b");
+      // and a record update (a tag renamed) of a record the transaction already updated
+      final long builds = manager.privateBuildCount();
+      assertThat(manager.view()).isSameAs(second);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds);
+      reparent("a/d", "a");
+      assertThat(parentValues(manager.view(), "a/d")).containsExactly("a");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /** Issue #11472: a write to a file the hierarchy does not watch is no change of what the private view was built from. */
+  @Test
+  void aWriteOutsideTheWatchedFilesKeepsThePrivateView() {
+    database.getSchema().createDocumentType("Unrelated");
+    manager.view();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView first = manager.view();
+      final long builds = manager.privateBuildCount();
+      database.newDocument("Unrelated").set("n", 1).save();
+      database.command("sql", "UPDATE Unrelated SET n = 2").close();
+      assertThat(manager.view()).isSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds);
+      // a change of the tag graph still builds a new one
+      edge("a/b", "a/d");
+      assertThat(manager.view()).isNotSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /** Issue #11472: the private view kept on the transaction is charged to the facet budget while it waits there, once. */
+  @Test
+  void theRetainedPrivateViewIsChargedToTheBudgetUntilTheTransactionEnds() {
+    manager.view();
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final long before = budget.available();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView first = manager.view();
+      assertThat(first.rejectedReason()).isNull();
+      assertThat(manager.isChargedToTransaction(first)).isTrue();
+      assertThat(before - budget.available()).isEqualTo(kib(first.heapBytes()));
+      // a rebuilt view replaces the retained one and its charge: one view is held, not two
+      edge("a/b", "a/d");
+      final HierarchyView second = manager.view();
+      assertThat(second).isNotSameAs(first);
+      assertThat(before - budget.available()).isEqualTo(kib(second.heapBytes()));
+    } finally {
+      database.rollback();
+    }
+    assertThat(budget.available()).isEqualTo(before);
+  }
+
+  @Test
+  void theRetainedPrivateViewIsGivenBackByACommit() {
+    manager.view();
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final long before = budget.available();
+    database.begin();
+    reparent("a/d", "x");
+    manager.view();
+    assertThat(budget.available()).isLessThan(before);
+    database.commit();
+    assertThat(budget.available()).isEqualTo(before);
+  }
+
+  /** Issue #11472: a budget with no room for the retained view leaves it unkept (and uncharged), so the query pays for it as before. */
+  @Test
+  void aPrivateViewTheBudgetCannotHoldIsNotRetained() {
+    manager.view();
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final FacetMemoryBudget.Reservation everything = budget.reserve(budget.available(), 0);
+    assertThat(everything).isNotNull();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final long builds = manager.privateBuildCount();
+      final HierarchyView first = manager.view();
+      assertThat(first.rejectedReason()).isNull();
+      assertThat(manager.isChargedToTransaction(first)).isFalse();
+      assertThat(manager.view()).isNotSameAs(first);
+      assertThat(manager.privateBuildCount()).isEqualTo(builds + 2);
+    } finally {
+      database.rollback();
+      everything.close();
+    }
+  }
+
+  private static long kib(final long bytes) {
+    return (bytes + 1023L) / 1024L * 1024L;
+  }
+
+  @Test
+  void thePrivateViewDoesNotOutliveItsTransaction() {
+    final HierarchyView shared = manager.view();
+    database.begin();
+    final HierarchyView privateOne;
+    try {
+      reparent("a/d", "x");
+      privateOne = manager.view();
+    } finally {
+      database.rollback();
+    }
+    assertThat(manager.view()).isSameAs(shared);
+    // the same change in the next transaction is a change of its own: it is built, not taken from the one that ended
+    final long builds = manager.privateBuildCount();
+    database.begin();
+    try {
+      reparent("a/d", "x");
+      final HierarchyView next = manager.view();
+      assertThat(next).isNotSameAs(privateOne);
+      assertThat(parentValues(next, "a/d")).containsExactly("x");
+      assertThat(manager.privateBuildCount()).isEqualTo(builds + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
   @Test
   void concurrentQueriesBuildOnce() throws Exception {
     manager.view();

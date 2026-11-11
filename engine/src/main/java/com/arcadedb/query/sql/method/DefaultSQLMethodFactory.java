@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.query.sql.method.collection.SQLMethodField;
 import com.arcadedb.query.sql.method.collection.SQLMethodFirst;
@@ -220,8 +221,10 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     else
       method = (SQLMethod) m;
 
+    // A method nothing answers is the caller's mistake, raised as a function nothing answers is (issue #11384): the plain
+    // CommandExecutionException was a server fault on every protocol (XX000 on the Postgres wire)
     if (method == null)
-      throw new CommandExecutionException("Unknown method name: " + name);
+      throw new UnknownFunctionException(name, "Unknown method name: " + name);
 
     return method;
   }

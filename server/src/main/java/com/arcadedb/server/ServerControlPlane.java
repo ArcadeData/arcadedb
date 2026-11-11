@@ -52,6 +52,7 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
+import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.File;
 import java.io.IOException;
@@ -1229,6 +1230,11 @@ public class ServerControlPlane {
       local.checkWritesAccepted();
     final LocalDatabase.SettingChange change;
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
+    // A directory the engine creates files in is held to the rule ALTER DATABASE applies, before anything is stored
+    if (setting != null && setting.isStorageDirectory())
+      setting.checkDatabaseStorageDirectory(
+          SystemVariableResolver.INSTANCE.resolveSystemVariables(FileUtils.getStringContent(value.trim()), ""),
+          database.getDatabasePath());
     if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
         || setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION))
       change = changeDateImplementation(database, local, setting, value);

@@ -100,6 +100,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private int     newRecordsMark;
   private int     reservationMark;
   private int     callbackMark;
+  private long    mergedEdgeMark;
   private int     indexJournalMark;
   private long    unidirectionalSequence;
   // The scan for incoming unidirectional edges the deletes of the transaction made before the statement, to put back (copied only when
@@ -153,6 +154,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     newRecordsMark = tx.getNewRecordsCount();
     reservationMark = tx.getInsertReservationCount();
     callbackMark = tx.getAfterCommitCallbackCount();
+    mergedEdgeMark = tx.getMergedEdgeMark();
     unidirectionalSequence = tx.getUnidirectionalSequence();
     scanEpoch = tx.getUnidirectionalScanEpoch();
     scannedBucketsCount = tx.getScannedBucketsCount();
@@ -176,6 +178,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     return size > 0 || logCount > 0 || !pendingRecords.isEmpty() || !obtained.isEmpty()
         || tx.getIndexChanges().getStatementJournalSize(indexJournalMark) > 0 || tx.getUnidirectionalScanEpoch() != scanEpoch
         || tx.getScannedBucketsCount() != scannedBucketsCount || tx.getAfterCommitCallbackCount() != callbackMark
+        || tx.getMergedEdgeMark() != mergedEdgeMark
         || isQueuedRecordNotKept();
   }
 
@@ -532,6 +535,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       tx.restoreUnidirectionalTargets(unidirectional);
 
     tx.restoreAppendOnlyState(newRecordsMark, reservationMark, callbackMark, completedRecordWrites, unidirectionalSequence);
+    tx.restoreMergedEdges(mergedEdgeMark);
     tx.restoreUnidirectionalScan(scanEpoch, scannedBuckets);
     // handed to the transaction: the next statement takes its own copy
     scannedBuckets = null;

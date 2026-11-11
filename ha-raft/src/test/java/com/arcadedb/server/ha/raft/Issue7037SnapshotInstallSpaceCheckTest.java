@@ -87,6 +87,24 @@ class Issue7037SnapshotInstallSpaceCheckTest {
   }
 
   @Test
+  void aVolumeReportingNoTotalSpaceIsUnknownNotFull() {
+    // Issue #11487: a FUSE mount (LazyFS) answers 0 usable and 0 total for a 132 KB snapshot: not a full disk.
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace("/lazyfs", 0L, 0L, 132_085L, "jepsen")).doesNotThrowAnyException();
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace("/lazyfs", 0L, -1L, 132_085L, "jepsen")).doesNotThrowAnyException();
+    // A real volume that is full (total known, nothing usable) still refuses.
+    assertThatThrownBy(() -> SnapshotInstaller.checkUsableSpace("/data", 0L, 1L << 30, 132_085L, "jepsen"))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Insufficient space to install the snapshot of 'jepsen'");
+  }
+
+  @Test
+  void raftStorageWithNoReportedTotalSpaceIsNotReadAsFull() {
+    assertThat(RaftHAServer.hasRoomForSegments(0L, 0L, 64L << 20)).isTrue();
+    assertThat(RaftHAServer.hasRoomForSegments(0L, 1L << 30, 64L << 20)).isFalse();
+    assertThat(RaftHAServer.hasRoomForSegments(1L << 30, 1L << 30, 64L << 20)).isTrue();
+  }
+
+  @Test
   void theVolumeIsTheNearestExistingAncestor(@TempDir final Path tempDir) {
     assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.toFile())).isEqualTo(tempDir.toFile());
     assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.resolve("db").resolve(".snapshot-new").toFile()))

@@ -92,7 +92,7 @@ public class PropertyAccessExpression implements PropertyReadExpression {
 
   /**
    * Reads {@code propertyName} through a persisted LINK, shared by this (variable-bound) access path and the chained
-   * access path in {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} so both dereference a RID identically.
+   * access path in {@link ChainedPropertyAccessExpression} so both dereference a RID identically.
    * <p>
    * Three decisions here are load-bearing and easy to undo by accident:
    * <ul>

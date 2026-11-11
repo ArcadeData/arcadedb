@@ -305,6 +305,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * diagnostic.
    */
   private volatile     long                                              lastSchemaDeltaWithheldLog = 0L;
+  private volatile     long                                              lastSchemaDeltaDeclinedLog = 0L;
 
   /**
    * Memoized unreferenced-file count behind the (file modification count, schema version) gate (issue #6168).
@@ -4549,12 +4550,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             "Shipping the whole schema for database '%s': the cached base was shipped in term %d, this node is "
                 + "in term %d",
             getName(), lastReplicatedSchemaTerm, term);
+      else
+        HALog.log(this, HALog.DETAILED,
+            "Shipping the whole schema for database '%s': no schema has been replicated from this node yet, so "
+                + "there is no base to diff against",
+            getName());
       return null;
     }
 
     final String deltaJson = SchemaDelta.compute(base, fullSchema).toString();
-    if (!deltaIsWorthShipping(deltaJson.length(), lastFullSchemaLength))
+    if (!deltaIsWorthShipping(deltaJson.length(), lastFullSchemaLength)) {
+      logSchemaDeltaDeclined(deltaJson.length(), lastFullSchemaLength);
       return null;
+    }
 
     return new SchemaDelta.Payload(base.getLong(SchemaDelta.SCHEMA_VERSION, -1L), deltaJson);
   }
@@ -4659,6 +4667,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             + "restore contact with those peers and deltas resume by themselves.",
         getName(), GlobalConfiguration.HA_SCHEMA_DELTA.getKey(), peersMissingTheCapability,
         PeerCapabilities.SCHEMA_DELTA);
+  }
+
+  /**
+   * Reports, at most once per {@link #SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS} per database, that a delta was computed
+   * and thrown away because it was not at least twice as small as the last whole document (issue #11489). Without
+   * the line a cluster shipping 100+ MB schema documents on every LSM compaction gave no hint that the delta path
+   * had engaged and been declined, nor how big either side was.
+   */
+  private void logSchemaDeltaDeclined(final int deltaLength, final int lastFullSchemaLength) {
+    final long now = System.currentTimeMillis();
+    if (now - lastSchemaDeltaDeclinedLog < SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS)
+      return;
+    // Racy by design, as logSchemaDeltaWithheld: a duplicate line is cheaper than a lock on this path.
+    lastSchemaDeltaDeclinedLog = now;
+    LogManager.instance().log(this, Level.INFO,
+        "Schema change on database '%s' is shipping as a whole document: the delta is %d characters, which is not "
+            + "less than half of the last whole document (%d characters), so it was declined as not worth shipping "
+            + "(issue #11489)",
+        getName(), deltaLength, lastFullSchemaLength);
   }
 
   /** The Raft term this node is in, or {@code -1} when it cannot be read (no server, division restarting). */

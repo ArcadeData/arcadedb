@@ -21,8 +21,6 @@ package com.arcadedb.server.http;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.ServerPlugin;
-import io.undertow.server.handlers.PathHandler;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -38,8 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #10296: {@code ServerPlugin.registerAPI(HttpServer, PathHandler)} handed every plugin the server's raw
  * {@code PathHandler}, on which a route answers every HTTP method. The server now calls
  * {@link ServerPlugin#registerAPI(HttpServer, PluginRoutes)} first, so a plugin written against it can only declare
- * method-restricted routes; the deprecated {@code PathHandler} overload is still called after it, so a plugin built
- * against it keeps working and keeps being named.
+ * method-restricted routes. The {@code PathHandler} overload was removed by issue #10310.
  */
 class Issue10296PluginRoutesRegisterApiTest extends BaseGraphServerTest {
   private static final HttpClient CLIENT = HttpClient.newHttpClient();
@@ -69,83 +66,11 @@ class Issue10296PluginRoutesRegisterApiTest extends BaseGraphServerTest {
   }
 
   @Test
-  void onlyTheLegacyPluginsRouteIsNamedUnrestricted() {
-    assertThat(getServer(0).getHttpServer().getUnrestrictedPluginRoutes())
-        .containsExactly("ArrayPayloadTestPlugin /api/v1/test/array");
-  }
-
-  @Test
-  void aPluginStillImplementingTheDeprecatedOverloadIsStillServed() throws Exception {
+  void aPluginPortedToThePluginRoutesOverloadIsServed() throws Exception {
     final HttpResponse<String> response = send("POST", "/api/v1/test/array", "[{\"id\":1}]");
 
     assertThat(response.statusCode()).isEqualTo(200);
-  }
-
-  @Test
-  void theServerTellsWhichOverloadAPluginImplements() {
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(new ArrayPayloadTestPlugin())).isTrue();
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(new PluginRoutesTestPlugin())).isFalse();
-    // A plugin with no HTTP routes at all overrides neither overload
-    final ServerPlugin noRoutes = () -> {
-    };
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(noRoutes)).isFalse();
-    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(noRoutes)).isFalse();
-
-    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(new PluginRoutesTestPlugin())).isTrue();
-    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(new ArrayPayloadTestPlugin())).isFalse();
-  }
-
-  @Test
-  void aPluginImplementingBothOverloadsIsDetectedAsSuch() {
-    final ServerPlugin both = new BothOverloadsPlugin();
-
-    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(both)).isTrue();
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(both)).isTrue();
-  }
-
-  @Test
-  void anOverrideInheritedFromASuperclassIsStillDetected() {
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(new ArrayPayloadTestPlugin() {
-    })).isTrue();
-  }
-
-  @Test
-  void anOverrideInheritedFromASubInterfaceDefaultIsStillDetected() {
-    final ServerPlugin plugin = new LegacySubInterface() {
-      @Override
-      public void startService() {
-        // NO-OP
-      }
-    };
-
-    assertThat(PluginPathHandler.implementsDeprecatedRegisterAPI(plugin)).isTrue();
-    assertThat(PluginPathHandler.implementsPluginRoutesRegisterAPI(plugin)).isFalse();
-  }
-
-  @SuppressWarnings("removal")
-  private interface LegacySubInterface extends ServerPlugin {
-    @Override
-    default void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-      // NO-OP
-    }
-  }
-
-  @SuppressWarnings("removal")
-  private static final class BothOverloadsPlugin implements ServerPlugin {
-    @Override
-    public void startService() {
-      // NO-OP
-    }
-
-    @Override
-    public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
-      // NO-OP
-    }
-
-    @Override
-    public void registerAPI(final HttpServer httpServer, final PathHandler routes) {
-      // NO-OP
-    }
+    assertThat(send("GET", "/api/v1/test/array", null).statusCode()).isEqualTo(405);
   }
 
   private HttpResponse<String> send(final String method, final String path, final String body) throws Exception {

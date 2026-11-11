@@ -28,6 +28,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -838,17 +839,19 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     else if (!satisfied && (ignoreIfExists || replaceIfIncompatible))
       throw conflictWithExistingIndex(existingTypeIndex, indexType, unique, metadata.typeName, metadata.propertyNames,
           settingMismatches);
-    else
+    else {
       // Reached when the request was NOT guarded, whether or not the existing index satisfies it. The suffix names
       // the guard that makes the statement idempotent: the satisfied case here is a caller asking twice for
       // something already there - a Cypher CREATE CONSTRAINT without IF NOT EXISTS over its own unique index, say -
       // and the bare sentence left them to work out that the guard was the missing piece. The sentence itself is
-      // unchanged: it is long-standing wording that callers may already match on.
-      throw new IllegalArgumentException(
-          "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '" + Arrays.asList(
-              metadata.propertyNames) + "' for type '" + metadata.typeName + "'" + (satisfied ?
-              ". It already provides what was requested: use IF NOT EXISTS to make this statement idempotent" :
-              ". Drop it first if the definition has to change"));
+      // unchanged: it is long-standing wording that callers may already match on. The satisfied case is an equivalent
+      // index, and says so by its type (issue #11392); the other stays the plain IllegalArgumentException it always was.
+      final String message = "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '"
+          + Arrays.asList(metadata.propertyNames) + "' for type '" + metadata.typeName + "'" + (satisfied ?
+          ". It already provides what was requested: use IF NOT EXISTS to make this statement idempotent" :
+          ". Drop it first if the definition has to change");
+      throw satisfied ? new EquivalentIndexException(message) : new IllegalArgumentException(message);
+    }
   }
 
   /**

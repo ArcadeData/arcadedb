@@ -47,6 +47,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -56,6 +57,7 @@ import java.util.Deque;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.zip.GZIPOutputStream;
 
@@ -82,6 +84,61 @@ public class FileUtils {
    */
   private static final boolean       NO_DIRECTORY_SYNC_ON_THIS_PLATFORM =
       System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH).contains("win");
+
+  /**
+   * Test-only hook (issue #11514): when set, receives the published name of every file this class is about to fsync through
+   * {@link #atomicWriteFile} or {@link #syncFile}, so a test can count the flushes a write costs without mocking the JDK. Only
+   * called while {@link GlobalConfiguration#FILE_SYNC} is on, which is when the flush really happens.
+   */
+  public static volatile Consumer<Path> TEST_FILE_SYNC_HOOK;
+
+  /**
+   * Whether {@code path} names {@code directory} itself or something inside it, as the file system will resolve them: both
+   * are resolved one name at a time, so a {@code ..} cannot step out and a symbolic link cannot lead out either, whatever
+   * order they come in. Neither has to exist.
+   * <p>
+   * The answer holds for the file system as it is now: a link put in place after the check and before the caller creates
+   * the directory is not seen. Doing that needs write access inside {@code directory} already, which is what the check
+   * grants, so it gains nothing a caller could not do anyway.
+   */
+  public static boolean isInsideDirectory(final String path, final String directory) {
+    if (path == null || directory == null || path.isBlank() || directory.isBlank())
+      return false;
+    try {
+      return resolveAsTheFileSystemDoes(Path.of(path)).startsWith(resolveAsTheFileSystemDoes(Path.of(directory)));
+    } catch (final IOException | InvalidPathException e) {
+      return false;
+    }
+  }
+
+  /**
+   * {@code path} made absolute and resolved name by name, in the order the file system resolves it. A name that exists is
+   * replaced by its real path BEFORE the next name applies, so in {@code allowed/link/../x} the {@code ..} steps up from the
+   * target of {@code link}, as the file system does, and not back into {@code allowed}, as a lexical
+   * {@link Path#normalize()} would conclude. A name that does not exist is not a link and is kept as it is. A link whose
+   * target does not exist is refused, since what it would lead to cannot be told.
+   */
+  private static Path resolveAsTheFileSystemDoes(final Path path) throws IOException {
+    final Path absolute = path.toAbsolutePath();
+    Path current = absolute.getRoot();
+    for (final Path element : absolute) {
+      final String name = element.toString();
+      if (name.equals("."))
+        continue;
+      if (name.equals("..")) {
+        final Path parent = current.getParent();
+        if (parent != null)
+          current = parent;
+        continue;
+      }
+      current = current.resolve(name);
+      if (Files.exists(current))
+        current = current.toRealPath();
+      else if (Files.isSymbolicLink(current))
+        throw new IOException("Symbolic link '" + current + "' leads to a path that does not exist");
+    }
+    return current;
+  }
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)
@@ -495,21 +552,27 @@ public class FileUtils {
    * The parent directory is fsync'd after the rename, so the guarantee holds across a MACHINE crash and not only a
    * process one - the rename is directory metadata, and forcing the file does not make it durable (issue #7465). On
    * a platform that will not fsync a directory (Windows) the attempt is skipped; see {@link #forceDirectory}.
+   *
+   * @return {@code true} when the file was replaced by an atomic rename, {@code false} when the file store could not do
+   * one and a plain replacing move was used instead (see {@link #publishAtomically})
    */
-  public static void atomicWriteFile(final File file, final String content) throws IOException {
-    atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8));
+  public static boolean atomicWriteFile(final File file, final String content) throws IOException {
+    return atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8));
   }
 
   /**
    * Atomically replaces a file with the supplied bytes, without decoding or re-encoding its content.
    * Callers holding text that is not already encoded should use {@link #atomicWriteFile(File, String)},
    * which encodes in UTF-8.
+   *
+   * @return {@code true} when the file was replaced by an atomic rename, see {@link #atomicWriteFile(File, String)}
    */
-  public static void atomicWriteFile(final File file, final byte[] content) throws IOException {
-    atomicWriteFile(file, content, true);
+  public static boolean atomicWriteFile(final File file, final byte[] content) throws IOException {
+    return atomicWriteFile(file, content, true, true);
   }
 
-  private static void atomicWriteFile(final File file, final byte[] content, final boolean syncDirectory) throws IOException {
+  private static boolean atomicWriteFile(final File file, final byte[] content, final boolean syncContent,
+      final boolean syncDirectory) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -522,9 +585,10 @@ public class FileUtils {
       try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
         fos.write(content);
         fos.flush();
-        sync(fos.getFD());
+        if (syncContent)
+          sync(fos.getFD(), target);
       }
-      publishAtomically(tmp, target, syncDirectory);
+      return publishAtomically(tmp, target, syncDirectory);
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -563,7 +627,39 @@ public class FileUtils {
    * @param syncDirectory {@code false} only when the caller fsyncs the target's directory itself right after
    */
   public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory) throws IOException {
-    atomicWriteFile(target, Files.readAllBytes(source.toPath().toAbsolutePath()), syncDirectory);
+    atomicWriteFile(target, Files.readAllBytes(source.toPath().toAbsolutePath()), true, syncDirectory);
+  }
+
+  /**
+   * {@link #atomicCopyFile(File, File)} with NEITHER flush: the copy is published atomically against a process crash - a
+   * reader of {@code target} sees its previous complete content or the full copy, never a partial one - but its bytes and its
+   * name are left in the page cache (issue #11514). After a power failure {@code target} can be missing, empty, or name a file
+   * whose blocks were never written, so the caller owns making it durable later ({@link #syncFile}) and noticing, after a
+   * crash, a copy that did not survive.
+   * <p>
+   * Only for a copy nothing depends on while its source is intact: the recovery copy of the schema is read back only when the
+   * primary is damaged, and the primary is published fully durably right after.
+   */
+  public static void atomicCopyFileUnsynced(final File source, final File target) throws IOException {
+    atomicWriteFile(target, Files.readAllBytes(source.toPath().toAbsolutePath()), false, false);
+  }
+
+  /**
+   * fsyncs the content of an existing file, making durable what a reader of it sees now. Skipped while
+   * {@link GlobalConfiguration#FILE_SYNC} is off. Opened for writing, never truncated: Windows flushes a file's buffers only
+   * through a handle with write access.
+   */
+  public static void syncFile(final File file) throws IOException {
+    if (!GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
+      return;
+
+    final Path path = file.toPath().toAbsolutePath();
+    final Consumer<Path> hook = TEST_FILE_SYNC_HOOK;
+    if (hook != null)
+      hook.accept(path);
+    try (final FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+      channel.force(true);
+    }
   }
 
   /**
@@ -579,13 +675,17 @@ public class FileUtils {
    *
    * @param syncDirectory whether to fsync the parent directory after the rename; {@code false} only for a caller that
    *                      fsyncs that same directory itself right after (#8635)
+   *
+   * @return {@code true} when the move was atomic, {@code false} when the non-atomic fallback was taken
    */
-  public static void publishAtomically(final Path tmp, final Path target, final boolean syncDirectory) throws IOException {
+  public static boolean publishAtomically(final Path tmp, final Path target, final boolean syncDirectory) throws IOException {
+    boolean atomic = true;
     try {
       // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
       // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
       Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } catch (final AtomicMoveNotSupportedException e) {
+      atomic = false;
       if (NON_ATOMIC_MOVE_REPORTED.compareAndSet(false, true))
         LogManager.instance().log(FileUtils.class, Level.WARNING,
             "File store hosting '%s' cannot replace files atomically: a crash during a replacement can leave the file "
@@ -600,6 +700,7 @@ public class FileUtils {
     // both helpers' javadocs claim. Skipped only for a caller that fsyncs this same directory itself next (#8635).
     if (syncDirectory)
       forceDirectory(target.getParent());
+    return atomic;
   }
 
   /**
@@ -693,6 +794,16 @@ public class FileUtils {
   public static void sync(final FileDescriptor fd) throws IOException {
     if (GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
       fd.sync();
+  }
+
+  /** {@link #sync(FileDescriptor)} of the file to be published as {@code publishedAs}, reported to {@link #TEST_FILE_SYNC_HOOK}. */
+  private static void sync(final FileDescriptor fd, final Path publishedAs) throws IOException {
+    if (GlobalConfiguration.FILE_SYNC.getValueAsBoolean()) {
+      final Consumer<Path> hook = TEST_FILE_SYNC_HOOK;
+      if (hook != null)
+        hook.accept(publishedAs);
+      fd.sync();
+    }
   }
 
   private static void reportNoDirectorySync(final Path dir) {

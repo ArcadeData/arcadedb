@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.FloatingKeyBound;
 import com.arcadedb.index.Index;
@@ -388,8 +389,14 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   List<Integer> indexFileIds() {
-    // `index` is null between a reset() and the next init()
-    final Index current = index != null ? index : context.getDatabase().getSchema().getIndexByName(indexName);
+    // `index` is null between a reset() and the next init(); a dropped index has no file left to name
+    Index current = index;
+    if (current == null)
+      try {
+        current = context.getDatabase().getSchema().getIndexByName(indexName);
+      } catch (final SchemaException e) {
+        return List.of();
+      }
     return current instanceof IndexInternal internal ? internal.getFileIds() : List.of();
   }
 
@@ -548,7 +555,14 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private void init(final BooleanExpression condition, final Database db) {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     if (index == null) {
-      index = (RangeIndex) db.getSchema().getIndexByName(indexName);
+      // Resolved again by name after a reset(): a point lookup that overlapped a commit restarts (issue #9369), and a
+      // concurrent DROP INDEX may have taken the index away by then. That is the IndexException the statement is planned
+      // again on (issue #9331), not the SchemaException of a name that was never there
+      try {
+        index = (RangeIndex) db.getSchema().getIndexByName(indexName);
+      } catch (final SchemaException e) {
+        throw new IndexException("Index '" + indexName + "' was dropped while it was being read", e);
+      }
     }
     // This cursor answers straight from the index, without loading each record through its bucket, so apply the
     // same per-type read check a normal record load would go through.

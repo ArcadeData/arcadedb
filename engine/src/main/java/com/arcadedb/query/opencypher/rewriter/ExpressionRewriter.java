@@ -199,8 +199,7 @@ public abstract class ExpressionRewriter {
    * <p>
    * Two live types reach this today: {@code TernaryLogicalExpression}, which the general expression
    * parser builds for a top-level {@code AND}/{@code OR}/{@code XOR}/{@code NOT}, and
-   * {@code CypherExpressionBuilder.ChainedPropertyAccessExpression}, which is package-private and so
-   * cannot be dispatched on from here at all.
+   * {@code ChainedPropertyAccessExpression}, which this dispatch has no arm for.
    */
   protected Object visitUnknown(final Object expression) {
     return expression;

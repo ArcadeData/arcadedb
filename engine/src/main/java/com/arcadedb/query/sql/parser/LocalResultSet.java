@@ -38,7 +38,19 @@ public class LocalResultSet implements ResultSet {
 
   public LocalResultSet(final InternalExecutionPlan executionPlan) {
     this.executionPlan = executionPlan;
-    fetchNext();
+    try {
+      fetchNext();
+    } catch (final RuntimeException | Error e) {
+      // The caller never receives this result set, so nobody else can close the plan: what its steps hold (a FACETS step's memory
+      // reservations and projection snapshots) would be released only by the garbage collector (issue #11459)
+      try {
+        executionPlan.close();
+      } catch (final RuntimeException | Error closeFailure) {
+        // the failed fetch is the reason the caller sees
+        e.addSuppressed(closeFailure);
+      }
+      throw e;
+    }
   }
 
   private boolean fetchNext() {

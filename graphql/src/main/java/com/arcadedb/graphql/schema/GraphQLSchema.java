@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graphql.parser.AbstractValue;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
@@ -666,8 +667,10 @@ public class GraphQLSchema {
 
     final ResultInternal typeResult = buildTypeResult(typeName, selectionSet, fragments, 0, registry);
 
+    // A name no type answers, and a database type the caller may not read, alike: the missing schema object every other lookup of
+    // a type raises, rather than a statement that cannot be read (issue #11384)
     if (typeResult == null)
-      throw new CommandParsingException("Type '" + typeName + "' not found");
+      throw new SchemaException("Type '" + typeName + "' not found");
 
     final InternalResultSet resultSet = new InternalResultSet();
     resultSet.add(typeResult);

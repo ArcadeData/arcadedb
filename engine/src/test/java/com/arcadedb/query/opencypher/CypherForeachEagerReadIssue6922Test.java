@@ -296,8 +296,8 @@ class CypherForeachEagerReadIssue6922Test {
 
   @Test
   void subqueryUnderAChainedPropertyAccessIsStillARead() {
-    // (CASE ... END).v parses to CypherExpressionBuilder.ChainedPropertyAccessExpression, which is
-    // package-private and so cannot appear in the rewriter's dispatch at all. It is the fail-closed
+    // (CASE ... END).v parses to ChainedPropertyAccessExpression, which has no arm
+    // in the rewriter's dispatch. It is the fail-closed
     // default, not a type-specific arm, that has to catch this one.
     final List<Object> counts = queryColumn("""
         UNWIND range(1, 250) AS i

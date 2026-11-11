@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>the variable-bound path, {@code WITH holder.ref AS r RETURN r.id}
  *       ({@code PropertyAccessExpression});</li>
  *   <li>the chained path, {@code holder.ref.id}, reachable from ordinary Cypher since #5893
- *       ({@code CypherExpressionBuilder.ChainedPropertyAccessExpression}).</li>
+ *       ({@code ChainedPropertyAccessExpression}).</li>
  * </ul>
  * A LINK to a non-vertex record (a plain document or an edge) is not broken at all - it is an
  * ordinary property-bearing record - so both paths must read through it exactly like the adjacent

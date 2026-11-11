@@ -28,6 +28,7 @@ import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
@@ -182,13 +183,13 @@ class SQLFunctionFacetSearchValuesTest extends TestHelper {
     assertThat(search(TYPE, "tags", "run", 0)).isEmpty();
     assertThatThrownBy(() -> search(TYPE, "tags", "run", -1)).isInstanceOf(IllegalArgumentException.class)
         .hasMessage("facet.searchValues: limit must be >= 0");
-    assertThatThrownBy(() -> search("Nope", "tags", "run", 5)).isInstanceOf(CommandExecutionException.class).hasMessageContaining("Nope");
+    assertThatThrownBy(() -> search("Nope", "tags", "run", 5)).isInstanceOf(SchemaException.class).hasMessageContaining("Nope");
     assertThatThrownBy(() -> search(TYPE, "brand", "b", 5)).isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("no COLUMNAR index on Asset.brand");
     assertThatThrownBy(() -> search(TYPE, "nope", "b", 5)).isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("no COLUMNAR index on Asset.nope");
     // a name is never concatenated into the counting query unchecked
-    assertThatThrownBy(() -> search("Asset FACETS x: tags TERMS", "tags", "run", 5)).isInstanceOf(CommandExecutionException.class);
+    assertThatThrownBy(() -> search("Asset FACETS x: tags TERMS", "tags", "run", 5)).isInstanceOf(SchemaException.class);
   }
 
   @Test

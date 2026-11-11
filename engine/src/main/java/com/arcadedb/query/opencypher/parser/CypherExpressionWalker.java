@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.CaseAlternative;
 import com.arcadedb.query.opencypher.ast.CaseExpression;
+import com.arcadedb.query.opencypher.ast.ChainedPropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CollectExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
@@ -484,7 +485,7 @@ public final class CypherExpressionWalker {
       walk(predicate.getListExpression(), visitor);
       walk(predicate.getWhereExpression(), visitor.forLocalBindings(predicate.getVariable()));
     }
-    case CypherExpressionBuilder.ChainedPropertyAccessExpression chained -> walk(chained.getBaseExpression(), visitor);
+    case ChainedPropertyAccessExpression chained -> walk(chained.getBaseExpression(), visitor);
     case ReduceExpression reduce -> {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);

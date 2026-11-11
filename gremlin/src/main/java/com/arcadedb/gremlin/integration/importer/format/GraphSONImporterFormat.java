@@ -20,6 +20,7 @@ package com.arcadedb.gremlin.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -29,6 +30,7 @@ import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
@@ -169,20 +171,20 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
     final long parsedBefore = context.parsed.get();
     boolean committed = false;
 
-    database.begin();
-    // Whether the level just pushed is still the current one. Cleared right BEFORE the commit, not after:
-    // LocalDatabase#commit() pops in a finally whether or not the commit itself succeeded, so after a commit that
-    // threw the transaction database.isTransactionActive() reports is no longer ours and rolling it back would
-    // reach past our own level for whatever is underneath it (issue #7328).
-    boolean txOpen = true;
+    // The level this pass pushed, resolved only through ImporterTransactions, the protocol every importer row loop shares
+    // (issue #11388): a commit that popped it leaves the rollback below nothing to reach past (issue #7328), and a commit
+    // refused before it starts - a rollback-only transaction, a terminated statement, a server that stopped accepting
+    // writes - leaves it active and still the pass's, so the rollback discards it instead of stranding it on the
+    // caller's thread (issues #11046, #11271).
+    final boolean[] txOpen = { false };
+    final TransactionContext[] ownTx = { null };
+    ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
     try {
       pass.run();
-      txOpen = false;
-      database.commit();
+      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       committed = true;
     } finally {
-      if (txOpen && database.isTransactionActive())
-        database.rollback();
+      ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
       if (!committed) {
         context.createdVertices.set(verticesBefore);
         context.createdEdges.set(edgesBefore);

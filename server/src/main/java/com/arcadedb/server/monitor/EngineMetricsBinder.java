@@ -107,6 +107,8 @@ public final class EngineMetricsBinder implements MeterBinder {
     counter(registry, "arcadedb.engine.page.merges.edge.append", "Commit-time edge-append page merges",
         "edgeAppendMerges");
     counter(registry, "arcadedb.engine.page.merges.slot", "Commit-time disjoint-slot page merges", "txPageSlotMerges");
+    counter(registry, "arcadedb.engine.page.merges.edge.list.head", "Commit-time merges of concurrent vertex edge-list head moves",
+        "edgeListHeadMerges");
     counter(registry, "arcadedb.engine.page.merges.declined", "Page merges declined for lack of declared coverage",
         "mergesDeclinedByCoverage");
     // #6217: the read-path twin of the merges above. A record too big for its page is read by walking its chunk

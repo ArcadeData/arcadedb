@@ -64,6 +64,9 @@ public final class BoltErrorCodes {
   // operations with invalid arguments. Same reasoning as ENTITY_NOT_FOUND_ERROR: permanent and the caller's, not
   // the server's (issue #7624).
   public static final String ARGUMENT_ERROR         = "Neo.ClientError.Statement.ArgumentError";
+  // A CALL of a procedure nothing answers (UnknownProcedureException): Neo4j's own title for it, where a function nothing answers
+  // is a SyntaxError. It was the generic DatabaseError, an unexplained server fault to a driver (issue #11384)
+  public static final String PROCEDURE_NOT_FOUND_ERROR = "Neo.ClientError.Procedure.ProcedureNotFound";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";
@@ -85,6 +88,10 @@ public final class BoltErrorCodes {
   // longer timeout" - a caller decision, not an automatic driver retry, but still not the
   // generic DatabaseError a driver reads as an unexplained server fault.
   public static final String TRANSACTION_TIMED_OUT_ERROR = "Neo.ClientError.Transaction.TransactionTimedOut";
+
+  // A write sent in a transaction or an auto-commit query the client opened in READ access mode (BEGIN or RUN with
+  // mode "r", what session.executeRead and a READ session send): refused before it runs, as Neo4j does (issue #11392).
+  public static final String ACCESS_MODE_ERROR = "Neo.ClientError.Statement.AccessMode";
 
   // The statement was stopped on request (TERMINATE TRANSACTIONS, "terminate query", issue #9689): what Neo4j answers
   // for a transaction a user killed. A ClientError since Neo4j 5, precisely so that no driver retries it.

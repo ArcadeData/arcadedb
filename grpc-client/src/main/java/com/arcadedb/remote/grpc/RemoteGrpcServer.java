@@ -57,7 +57,6 @@ import com.arcadedb.server.grpc.ImportProgress;
 import com.arcadedb.server.grpc.ListApiTokensRequest;
 import com.arcadedb.server.grpc.ListBackupsRequest;
 import com.arcadedb.server.grpc.ListDatabasesRequest;
-import com.arcadedb.server.grpc.ListDatabasesResponse;
 import com.arcadedb.server.grpc.ListGroupsRequest;
 import com.arcadedb.server.grpc.ListSessionsRequest;
 import com.arcadedb.server.grpc.ListUsersRequest;
@@ -436,18 +435,11 @@ public class RemoteGrpcServer implements AutoCloseable {
    * Returns the list of database names from the server.
    */
   public List<String> listDatabases() {
-
-    ListDatabasesResponse resp = null;
-
-    try {
-
-      resp = withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs)
-          .listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build());
-      return resp.getDatabasesList();
-    } catch (StatusException e) {
-
-      throw new RuntimeException("Failed to list databases: " + e.getMessage(), e);
-    }
+    // THE ADMIN MAPPING EVERY OTHER READ OF THIS CLIENT USES, SO A REFUSED CREDENTIAL IS A SecurityException AND A DEADLINE A
+    // TimeoutException RATHER THAN A BARE RuntimeException AROUND THE STATUS (ISSUE #11393)
+    return call("list databases",
+        stub -> stub.listDatabases(ListDatabasesRequest.newBuilder().setCredentials(buildCredentials()).build()), false)
+        .getDatabasesList();
   }
 
   /**

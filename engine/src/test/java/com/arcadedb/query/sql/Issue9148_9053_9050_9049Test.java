@@ -21,8 +21,8 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -206,7 +206,7 @@ class Issue9148_9053_9050_9049Test extends TestHelper {
   @Test
   void unknownSchemaMetadataIsAnArcadeDBException() {
     assertThatThrownBy(() -> database.query("sql", "SELECT FROM schema:material").hasNext())
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Invalid metadata: material");
+        .isInstanceOf(SchemaException.class).hasMessageContaining("Invalid metadata: material");
   }
 
   @Test

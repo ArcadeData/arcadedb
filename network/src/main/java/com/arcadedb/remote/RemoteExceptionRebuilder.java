@@ -37,6 +37,7 @@ import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.EncryptionException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -57,8 +58,10 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.UnknownFunctionException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.ValueOutOfRangeException;
+import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
@@ -120,12 +123,16 @@ public final class RemoteExceptionRebuilder {
       Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
       // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
+      // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)
+      Map.entry(UnknownProcedureException.class.getName(), message -> new UnknownProcedureException(null, message)),
       Map.entry(IllegalArgumentException.class.getName(), IllegalArgumentException::new),
+      Map.entry(EquivalentIndexException.class.getName(), EquivalentIndexException::new),
       Map.entry(ValueOutOfRangeException.class.getName(), ValueOutOfRangeException::new),
       // A QUERY REFUSED FOR WHAT IT WOULD COST
       Map.entry(HeapLimitExceededException.class.getName(), HeapLimitExceededException::new),
       Map.entry(QueryAdmissionException.class.getName(), QueryAdmissionException::new),
       Map.entry(QueryHeapBudgetExceededException.class.getName(), QueryHeapBudgetExceededException::new),
+      Map.entry(VectorGraphBuildRefusedException.class.getName(), VectorGraphBuildRefusedException::new),
       Map.entry(PartialResultTimeoutException.class.getName(), PartialResultTimeoutException::new),
       // RETRYABLE: THE SERVER SENDS THESE WITH 503, AND REBUILT AS THEMSELVES THEY STAY NeedRetryExceptions
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),

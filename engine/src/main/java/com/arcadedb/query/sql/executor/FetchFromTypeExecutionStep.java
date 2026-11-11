@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedComponentFile;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.AndBlock;
@@ -93,7 +93,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep implements
 
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
     if (type == null)
-      throw new CommandExecutionException("Type " + typeName + " not found");
+      throw new SchemaException("Type " + typeName + " not found");
 
     final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getFileId()).distinct().sorted().toArray();
     final List<Integer> filteredTypeBuckets = new ArrayList<>();

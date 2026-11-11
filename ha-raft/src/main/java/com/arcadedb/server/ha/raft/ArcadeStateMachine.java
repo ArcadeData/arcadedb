@@ -131,6 +131,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -256,6 +257,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private          long                                        nextConfigurationRetryNanos;
   private          int                                         failedConfigurationRetries;
   private static final long              HELD_REMINDER_INTERVAL_MS = 300_000L;
+  // How long a checkpoint waits in all, across every open database, for the pages pending in the asynchronous flush
+  // before it refuses (issue #11258). A refused checkpoint only keeps the log one interval longer, so the bound protects
+  // the apply thread, not the data
+  static final         long              SNAPSHOT_DATA_FLUSH_WAIT_MS = 5_000L;
   // When takeSnapshot() last reminded that a hold keeps the Raft log from being purged, so a hold that lasts is not forgotten
   private volatile long                      heldCheckpointReminderMs;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
@@ -1002,6 +1007,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Set with compareAndSet so the FIRST halt is the one recorded, like raftLogFailure: every later apply is
   // refused by the guard below, and a cascade of follow-on failures would otherwise overwrite the cause.
   private final AtomicReference<CriticalHalt> haltedAfterCriticalError = new AtomicReference<>();
+
+  /** Exit status of the JVM halt that follows an OutOfMemoryError or InternalError in the apply path (issue #11456). */
+  private static final int FATAL_ERROR_EXIT_STATUS = 1;
+
+  /** How long the emergency stop gets to finish after an OutOfMemoryError or InternalError before the JVM is halted (issue #11456). */
+  private volatile long        fatalErrorGraceMillis = 30_000L;
+  private volatile Runnable    emergencyStop         = () -> {
+    if (server != null)
+      server.stop();
+  };
+  private volatile IntConsumer jvmHalter             = status -> Runtime.getRuntime().halt(status);
 
   /**
    * What tripped the node-wide critical halt (issue #7872).
@@ -2070,7 +2086,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "Refusing to skip a committed entry and halting to prevent silent state divergence; "
                 + "upgrade this node to a compatible version to resume.", index);
         triggerCriticalHalt(index, "unknown Raft log entry type, most likely written by a newer node version; "
-            + "upgrade this node to a version that understands it");
+            + "upgrade this node to a version that understands it", null);
         return CompletableFuture.failedFuture(new ReplicationException(
             "Unknown Raft log entry type at index " + index + "; node halted to prevent silent divergence"));
       }
@@ -2271,7 +2287,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return CompletableFuture.failedFuture(quarantined);
       } catch (final RuntimeException fatal) {
         triggerCriticalHalt(index, "a committed entry of type " + e.getType() + " could not be decoded and the "
-            + "envelope named no database to quarantine instead: " + e.getMessage());
+            + "envelope named no database to quarantine instead: " + e.getMessage(), null);
         return CompletableFuture.failedFuture(fatal);
       }
       // handleUnexpectedApplyError always throws; unreachable, but the compiler needs a value.
@@ -2283,7 +2299,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           """
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
-      triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e);
+      triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e, e);
       return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
   }
@@ -2304,22 +2320,82 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * so through {@code GET /api/v1/cluster} rather than only through a SEVERE that has already scrolled past.
    * {@code compareAndSet} keeps the FIRST cause: it is the one that explains the halt, and every apply after it
    * is refused by the guard in {@code applyTransaction} rather than being a new problem.
+   * <p>
+   * When the cause is an {@link OutOfMemoryError} or an {@link InternalError} (issue #11456; a {@link StackOverflowError} is
+   * recoverable and does not qualify) the JVM is
+   * halted once the stop returns or {@link #fatalErrorGraceMillis} has passed, whichever comes first. A graceful stop
+   * on an exhausted heap can hang (the Ratis service closes against a heap it cannot allocate from), and the node
+   * would stay half alive: HTTP up, state machine dead, nothing for an orchestrator to restart. The Raft log and the
+   * WAL are what recovery reads, so a halt loses nothing a crash would not.
    *
    * @param index  the Raft log index being applied, or -1 when there is none
    * @param reason one line naming the condition, in the vocabulary an operator can act on
+   * @param cause  the error that tripped the halt, or {@code null} when it is a condition rather than an exception
    */
-  private void triggerCriticalHalt(final long index, final String reason) {
+  private void triggerCriticalHalt(final long index, final String reason, final Throwable cause) {
     haltedAfterCriticalError.compareAndSet(null, new CriticalHalt(index, reason, System.currentTimeMillis()));
-    final Thread stopThread = new Thread(() -> {
-      try {
-        if (server != null)
-          server.stop();
-      } catch (final Throwable t) {
-        LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+    final boolean fatal = isUnrecoverableJvmError(cause);
+    try {
+      final Thread stopThread = new Thread(() -> {
+        try {
+          emergencyStop.run();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+        }
+      }, "arcadedb-emergency-stop");
+      stopThread.setDaemon(true);
+      stopThread.start();
+      if (fatal) {
+        final Thread watchdog = new Thread(() -> {
+          try {
+            stopThread.join(fatalErrorGraceMillis);
+          } catch (final InterruptedException ignored) {
+            // halt anyway: the JVM is unstable
+          }
+          haltJvm(stopThread.isAlive());
+        }, "arcadedb-fatal-error-halt");
+        watchdog.setDaemon(true);
+        watchdog.start();
       }
-    }, "arcadedb-emergency-stop");
-    stopThread.setDaemon(true);
-    stopThread.start();
+    } catch (final Throwable t) {
+      // No thread could be started, which on an exhausted heap is the likeliest reason: nothing graceful is left
+      if (fatal)
+        haltJvm(true);
+    }
+  }
+
+  private void haltJvm(final boolean stopDidNotFinish) {
+    try {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Halting the JVM after a fatal error in the Raft state machine (%s); the node restarts and recovers from its Raft log "
+              + "(issue #11456)", stopDidNotFinish ? "the emergency stop did not finish in time" : "the emergency stop finished");
+    } catch (final Throwable ignored) {
+      // logging needs heap too
+    }
+    jvmHalter.accept(FATAL_ERROR_EXIT_STATUS);
+  }
+
+  private static boolean isUnrecoverableJvmError(final Throwable cause) {
+    Throwable t = cause;
+    for (int depth = 0; t != null && depth < 8; depth++, t = t.getCause())
+      if (t instanceof OutOfMemoryError || t instanceof InternalError)
+        return true;
+    return false;
+  }
+
+  // @VisibleForTesting
+  void setEmergencyStopForTesting(final Runnable emergencyStop) {
+    this.emergencyStop = emergencyStop;
+  }
+
+  // @VisibleForTesting
+  void setJvmHalterForTesting(final IntConsumer jvmHalter) {
+    this.jvmHalter = jvmHalter;
+  }
+
+  // @VisibleForTesting
+  void setFatalErrorGraceMillisForTesting(final long millis) {
+    this.fatalErrorGraceMillis = millis;
   }
 
   /**
@@ -2693,10 +2769,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Records a snapshot checkpoint so Ratis can compact the log up to the last-applied index.
    * <p>
-   * The ArcadeDB database files on disk are inherently the snapshot state - every committed
-   * transaction is already durably flushed by the {@link com.arcadedb.engine.TransactionManager}.
-   * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
-   * reducing log disk usage over time.
+   * The ArcadeDB database files on disk are inherently the snapshot state, once they are durable: neither a replicated
+   * apply nor a local commit fsyncs a data file, so the pages of every open database are flushed and forced first
+   * (issue #11258, {@link #syncDataFilesOfOpenDatabases()}). Returning the last-applied index here tells Ratis it may
+   * purge log entries up to that index, reducing log disk usage over time, and a restart replays none of them.
    * <p>
    * <b>Why a marker file is written (issue #4829):</b> the returned index is the Ratis contract
    * "state up to here is durable, you may purge the log up to it". Returning it without also writing
@@ -2802,6 +2878,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final TermIndex applied = getLastAppliedTermIndex();
     final long term = applied != null && applied.getTerm() > 0 ? applied.getTerm() : 0L;
 
+    // The pages of every entry up to the checkpoint go to disk before the marker does (issue #11258). Neither the apply
+    // nor a local commit fsyncs a data file: a replicated apply writes its pages straight to the files and a follower
+    // writes no WAL, a leader's pages go through the asynchronous flush and its WAL is not forced either by default. The
+    // restart replays only what follows the marker, so a power loss after a marker over pages still in the OS cache lost
+    // them with nothing left to replay: the empty dictionary and bucket files, with crash recovery `completed` over them,
+    // of the Jepsen LazyFS runs. appliedIndex was read above, and the apply writes or enqueues an entry's pages before
+    // lastAppliedIndex moves past it, so every page of an entry at or below currentIndex is pending or written by now.
+    if (!syncDataFilesOfOpenDatabases()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not make the data files of every open database durable at index %d; not authorising log purge", currentIndex);
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
     // The columnar marks of every entry up to the checkpoint go to disk before the marker does (plan 3, Task 22). A follower
     // writes no local WAL, so the cleanWALFiles hook that persists the recovery set never covers a replicated change, and a
     // restart replays only what follows the marker: the pages an applied entry marked would otherwise live only in memory.
@@ -2821,6 +2910,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     HALog.log(this, HALog.BASIC, "ArcadeStateMachine: snapshot checkpoint at index %d (term %d)", currentIndex, term);
     return currentIndex;
+  }
+
+  /**
+   * Makes the pages written so far by every open database durable in its data files, for {@link #takeSnapshot()} (issue
+   * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
+   * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
+   * the asynchronous flush, not at all while a backup suspends it, then forces the files written since their last fsync: a database with
+   * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed.
+   *
+   * @return false when a database still had pages pending at the deadline or an fsync failed
+   */
+  private boolean syncDataFilesOfOpenDatabases() {
+    if (this.server == null)
+      return true;
+    // One deadline for the whole checkpoint, not one per database: the apply thread waits at most this long however many
+    // databases the node hosts
+    final long deadline = System.currentTimeMillis() + SNAPSHOT_DATA_FLUSH_WAIT_MS;
+    for (final Database open : DatabaseFactory.getActiveDatabaseInstances())
+      if (open instanceof LocalDatabase local && local.isOpen() && !local.getPageManager()
+          .flushAndSyncDatabase(local, Math.max(0L, deadline - System.currentTimeMillis()))) {
+        // A failed fsync is logged at SEVERE with its exception by FileManager.syncFiles(), naming the file
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': its pages are not all durable yet (flush still pending after %dms, flush suspended by a backup, "
+                + "or an fsync failed, logged above)", local.getName(), SNAPSHOT_DATA_FLUSH_WAIT_MS);
+        return false;
+      }
+    return true;
   }
 
   /**
@@ -2853,8 +2969,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * latest snapshot in {@link #storage}, so {@link SimpleStateMachineStorage#getLatestSnapshot()}
    * can rediscover it after a restart (it scans for {@code snapshot.<term>_<index>} files).
    * <p>
-   * ArcadeDB's real snapshot is the set of database files on disk - every committed transaction is
-   * already durably flushed by the {@link com.arcadedb.engine.TransactionManager} - so the marker is
+   * ArcadeDB's real snapshot is the set of database files on disk - made durable before the marker by
+   * {@link #takeSnapshot()} and by the snapshot install, which fsyncs what it extracts - so the marker is
    * a zero-byte placeholder whose name carries the {@code (term, index)} that Ratis's snapshot-index
    * bookkeeping and log-purge contract point at. No {@code .md5} companion is written, so the
    * rediscovered {@link SingleFileSnapshotInfo} carries a null digest, the same as a fresh boot;
@@ -4366,13 +4482,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE,
           "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
           databaseName, txId, e.getMessage());
-      try {
-        lifecycleExecutor.submit(this::triggerSnapshotDownload);
-      } catch (final RejectedExecutionException ree) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
-            ree, databaseName);
-      }
+      // Targeted at the one database whose WAL has a gap (issue #11489): a gap in one database says nothing about
+      // the others, and the full download reinstalled every database on the node (~40 unrelated ones in the report).
+      triggerDatabaseResync(databaseName);
       handOffLeadershipIfLeader(databaseName);
     } else if (shouldLogDivergedResync(databaseName)) {
       LogManager.instance().log(this, Level.INFO,
@@ -9527,7 +9639,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * resync is recovered by the {@link HealthMonitor} persistent-lag backstop ({@link #recoverFromPersistentLag()}).
    * No-op when there is no leader/server context or the lifecycle executor is shutting down.
    */
-  private void triggerDatabaseResync(final String dbName) {
+  // @VisibleForTesting
+  void triggerDatabaseResync(final String dbName) {
     // A cheap early-out, not the guard: nothing below relies on this read, which is why it may be a separate one.
     if (raftHAServer == null || server == null)
       return;
@@ -10172,10 +10285,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         continue;
       final boolean incomplete;
       final List<String> unavailableUnique;
+      final boolean dictionaryLost;
       try {
         final ServerDatabase db = srv.getDatabase(dbName, false, false);
         incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
         unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
+        dictionaryLost = db != null && db.getEmbedded().getSchema().getEmbedded().isDictionaryLostForExistingTypes();
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
             e.getMessage());
@@ -10183,6 +10298,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       if (incomplete) {
         if (quarantineAfterIncompleteRecovery(dbName))
+          quarantined.add(dbName);
+      } else if (dictionaryLost) {
+        if (quarantineAfterEmptiedDictionary(dbName))
           quarantined.add(dbName);
       } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
         quarantined.add(dbName);
@@ -10246,6 +10364,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.SEVERE,
         "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
             + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
+   * The decision for one database whose schema dictionary a power loss emptied (issue #11258): the files kept their names but
+   * not their content, the load wrote a fresh empty dictionary page, and crash recovery had no WAL left to repair it from, so
+   * it reported completed while every property name was lost. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines
+   * the database and re-installs it from the leader, so the node neither serves the copy, nor leads with it, nor ships it as a
+   * snapshot, unless this node is the only voter.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterEmptiedDictionary(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The schema dictionary of database '%s' was found empty although the schema declares types, and this node is the "
+              + "only voter, so there is no peer to re-install it from. It is NOT quarantined; property names are lost: "
+              + "restore it from a backup (issue #11258)", dbName);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.EMPTY_DICTIONARY))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The schema dictionary of database '%s' was found empty although the schema declares types, so its local copy lost "
+            + "its property names: quarantining it and re-installing it from the leader (issue #11258)", dbName);
     triggerDatabaseResync(dbName);
     handOffLeadershipIfLeader(dbName);
     return true;

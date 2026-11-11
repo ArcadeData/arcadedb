@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.CaseAlternative;
 import com.arcadedb.query.opencypher.ast.CaseExpression;
+import com.arcadedb.query.opencypher.ast.ChainedPropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CollectExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
@@ -379,6 +380,7 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
     fixtures.put(BooleanWrapperExpression.class, new BooleanWrapperExpression(new BooleanCoercionExpression(planted())));
     fixtures.put(CaseExpression.class,
         new CaseExpression(planted(), List.of(new CaseAlternative(literal(), literal())), literal()));
+    fixtures.put(ChainedPropertyAccessExpression.class, new ChainedPropertyAccessExpression(planted(), "v"));
     fixtures.put(ComparisonExpressionWrapper.class,
         new ComparisonExpressionWrapper(planted(), ComparisonExpression.Operator.EQUALS, literal()));
     fixtures.put(FunctionCallExpression.class, new FunctionCallExpression("abs", List.of(planted()), false));

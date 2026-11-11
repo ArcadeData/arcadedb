@@ -108,6 +108,16 @@ class LSMVectorIndexMetrics {
   // non-zero value means some other index has been holding a permit for at least that timeout - almost always a
   // rebuild that is stuck rather than slow - and concurrent builds were unbounded for as long as it lasted.
   private final AtomicLong searchRebuildsWithoutPermit = new AtomicLong(0);
+  // Searches whose from-scratch build did not fit the heap with its full build cache, and that were built with a smaller
+  // one instead (issue #11497). The cache only saves the build page reads, so a smaller one makes the build slower, never
+  // wrong: a value that climbs says the heap is tight whenever these indexes resolve their graphs, and the builds are paying
+  // for it in time.
+  private final AtomicLong searchRebuildsWithReducedCache = new AtomicLong(0);
+  // Searches refused because the graph they needed did not fit the heap even with the smallest build cache and every
+  // evictable page handed back (issue #11497). Each one failed a query with a retryable error rather than building on a
+  // heap that full, which is what ended in an OutOfMemoryError taking the whole server down. Any non-zero value is the
+  // signal to give the JVM more heap, find what holds it, or persist the graph (REBUILD INDEX) so no search has to build it.
+  private final AtomicLong searchRebuildsRefusedForMemory = new AtomicLong(0);
   // Searches whose from-scratch build was small enough to be exempt from the JVM-wide rebuild permit, but which had
   // to take one anyway because the aggregate of small builds ALREADY in flight had spent the process-wide budget
   // (issue #7930). The exemption is a per-build test - a thousand vectors cannot threaten the heap - and says
@@ -206,6 +216,14 @@ class LSMVectorIndexMetrics {
 
   void incrementSearchRebuildsWithoutPermit() {
     searchRebuildsWithoutPermit.incrementAndGet();
+  }
+
+  void incrementSearchRebuildsWithReducedCache() {
+    searchRebuildsWithReducedCache.incrementAndGet();
+  }
+
+  void incrementSearchRebuildsRefusedForMemory() {
+    searchRebuildsRefusedForMemory.incrementAndGet();
   }
 
   void incrementSmallRebuildsOverBudget() {
@@ -352,6 +370,8 @@ class LSMVectorIndexMetrics {
     stats.put("residentGraphDemotions", residentGraphDemotions.get());
     stats.put("searchRebuildsQueuedForPermit", searchRebuildsQueuedForPermit.get());
     stats.put("searchRebuildsWithoutPermit", searchRebuildsWithoutPermit.get());
+    stats.put("searchRebuildsWithReducedCache", searchRebuildsWithReducedCache.get());
+    stats.put("searchRebuildsRefusedForMemory", searchRebuildsRefusedForMemory.get());
     stats.put("smallRebuildsOverBudget", smallRebuildsOverBudget.get());
     stats.put("stalePrefixGraphReuses", stalePrefixGraphReuses.get());
     stats.put("graphReusesWithTombstonedNodes", graphReusesWithTombstonedNodes.get());
@@ -385,6 +405,8 @@ class LSMVectorIndexMetrics {
     residentGraphDemotions.set(0);
     searchRebuildsQueuedForPermit.set(0);
     searchRebuildsWithoutPermit.set(0);
+    searchRebuildsWithReducedCache.set(0);
+    searchRebuildsRefusedForMemory.set(0);
     smallRebuildsOverBudget.set(0);
     stalePrefixGraphReuses.set(0);
     graphReusesWithTombstonedNodes.set(0);

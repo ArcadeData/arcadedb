@@ -70,5 +70,12 @@ public class LockStatement extends SimpleExecStatement {
   protected Object[] getIdentityElements() {
     return new Object[] { mode, identifiers };
   }
+
+  /** The row only reports the lock, where PostgreSQL's LOCK TABLE answers a bare tag. */
+  @Override
+  public boolean returnsAcknowledgementOnly() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=1f7d8e694c5a2e60168dc050e867c9cb (do not edit this line) */
