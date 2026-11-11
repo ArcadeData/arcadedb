@@ -224,19 +224,34 @@ class Issue11514DeferredRecoveryCopySyncTest extends TestHelper {
 
   @Test
   void aCopyTheRecoveryCouldNotRebuildIsRebuiltByTheClose() throws Exception {
+    // Missing by the close: there is nothing to flush, the close has to rebuild it
+    closeAfterARecoveryThatCouldNotRebuildTheCopy(null);
+  }
+
+  @Test
+  void aDamagedCopyTheRecoveryCouldNotRebuildIsRebuiltByTheCloseNotFlushed() throws Exception {
+    // Still damaged by the close: flushing it would secure a copy that cannot be loaded, the close has to rebuild it
+    closeAfterARecoveryThatCouldNotRebuildTheCopy(new byte[512]);
+  }
+
+  /**
+   * The recovery's rebuild of a copy lost in the crash fails (a directory under its name is in the way), then the directory
+   * gives way to {@code copyAtClose} ({@code null}: nothing) before the close, which must rebuild the copy from the primary.
+   */
+  private void closeAfterARecoveryThatCouldNotRebuildTheCopy(final byte[] copyAtClose) throws Exception {
     database.getSchema().createDocumentType("Warm");
     database.getSchema().createDocumentType("A");
     crashAndLoseTheRecoveryCopy(null);
     final Path lockFile = Path.of(getDatabasePath()).toAbsolutePath().resolve(NodeLocalFiles.DATABASE_LOCK_FILE_NAME);
 
-    // Lost in the crash, and in the way of its own rebuild: a directory under its name makes the recovery's rebuild fail
     Files.delete(prevFile());
     Files.createDirectory(prevFile());
     database = factory.open();
     assertThat(((LocalSchema) database.getSchema().getEmbedded()).isPreviousSchemaCopyUnsynced()).isTrue();
 
-    // Missing by the close: flushing what is there would secure nothing, the close has to rebuild it
     Files.delete(prevFile());
+    if (copyAtClose != null)
+      Files.write(prevFile(), copyAtClose);
     database.close();
 
     assertThat(Files.readString(prevFile())).isEqualTo(Files.readString(schemaFile()));

@@ -6519,6 +6519,7 @@ public class LocalSchema implements Schema {
       // A member that is there but not an object throws, which the catch below reads as "not whole" too
       return root.has("schemaVersion") && root.getJSONObject("settings", null) != null && root.getJSONObject(TYPES, null) != null;
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Schema file '%s' does not read back whole: %s", null, file, e.toString());
       return false;
     }
   }
