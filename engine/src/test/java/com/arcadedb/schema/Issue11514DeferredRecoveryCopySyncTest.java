@@ -21,16 +21,19 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #11514: every schema write fsync'd two files, the copy of the current generation published as
@@ -163,10 +166,63 @@ class Issue11514DeferredRecoveryCopySyncTest extends TestHelper {
     assertThat(((LocalSchema) database.getSchema().getEmbedded()).isLoadedFromPreviousSchema()).isTrue();
   }
 
-  /** Simulates a crash after which {@code schema.prev.json} holds {@code prevContent} ({@code null}: left as it was). */
-  private void crashAndLoseTheRecoveryCopy(final byte[] prevContent) throws Exception {
-    ((DatabaseInternal) database).kill();
+  @Test
+  void aRecoveryCopyWhoseNameWasLostInACrashIsRebuiltAtRecovery() throws Exception {
+    database.getSchema().createDocumentType("Warm");
+    database.getSchema().createDocumentType("A");
+    crashAndLoseTheRecoveryCopy(null);
+    Files.delete(prevFile());
+
+    synced.clear();
+    database = factory.open();
+
+    assertThat(syncsOf(LocalSchema.SCHEMA_PREV_FILE_NAME)).isEqualTo(1);
+    assertThat(Files.readString(prevFile())).isEqualTo(Files.readString(schemaFile()));
+  }
+
+  @Test
+  void aFailedFlushAtCloseKeepsTheLockFileSoTheNextOpenReSecuresTheCopy() throws Exception {
+    database.getSchema().createDocumentType("Warm");
+    database.getSchema().createDocumentType("A");
+    final File prev = prevFile().toFile();
+    final Path lockFile = Path.of(getDatabasePath()).toAbsolutePath().resolve(NodeLocalFiles.DATABASE_LOCK_FILE_NAME);
+
+    // A copy the close cannot open for writing: its flush fails
+    assumeTrue(prev.setWritable(false) && !prev.canWrite(), "the platform does not deny writes to a read-only file");
+    try {
+      database.close();
+      assertThat(lockFile).as("kept as the marker that makes the next open re-secure the copy").exists();
+    } finally {
+      prev.setWritable(true);
+    }
+
+    synced.clear();
+    database = factory.open();
+
+    assertThat(database.getSchema().existsType("A")).isTrue();
+    assertThat(syncsOf(LocalSchema.SCHEMA_PREV_FILE_NAME)).as("re-secured by the recovery").isEqualTo(1);
+    assertThat(((LocalSchema) database.getSchema().getEmbedded()).isPreviousSchemaCopyUnsynced()).isFalse();
+
+    // A clean close after that deletes the marker as usual
     database.close();
+    assertThat(lockFile).doesNotExist();
+    database = factory.open();
+  }
+
+  /**
+   * Simulates a crash after which {@code schema.prev.json} holds {@code prevContent} ({@code null}: left as it was). The kill
+   * runs the schema close too, so fsync is off meanwhile: the copy reaches the recovery with its flush still owed.
+   */
+  private void crashAndLoseTheRecoveryCopy(final byte[] prevContent) throws Exception {
+    synced.clear();
+    GlobalConfiguration.FILE_SYNC.setValue(false);
+    try {
+      ((DatabaseInternal) database).kill();
+      database.close();
+    } finally {
+      GlobalConfiguration.FILE_SYNC.setValue(true);
+    }
+    assertThat(syncsOf(LocalSchema.SCHEMA_PREV_FILE_NAME)).as("the simulated crash flushed nothing").isZero();
     if (prevContent != null)
       Files.write(prevFile(), prevContent);
   }

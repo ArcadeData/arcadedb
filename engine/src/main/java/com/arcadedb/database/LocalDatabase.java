@@ -4390,8 +4390,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
       // decision below so the next open runs recovery exactly when there is something to recover.
       boolean walPreservedForRecovery = preserveWalForRecovery;
+      // #11514: whether the close-time flush of schema.prev.json failed, which leaves the copy to the next open's recovery
+      boolean schemaCopyLeftToRecovery = false;
       try {
         schema.close();
+        schemaCopyLeftToRecovery = !drop && schema.isPreviousSchemaCopyUnsynced();
         fileManager.close();
         walPreservedForRecovery = transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();
@@ -4423,6 +4426,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             // makes the next open run recovery and replay the pages this close could not flush.
             LogManager.instance().log(this, Level.SEVERE,
                 "Database '%s' closed with unflushed pages: the lock file and the WAL were preserved so the next open will recover them",
+                null, name);
+          else if (schemaCopyLeftToRecovery)
+            // #11514: THE SAME MARKER MAKES THE NEXT OPEN RE-SECURE THE RECOVERY COPY OF THE SCHEMA THIS CLOSE COULD NOT FLUSH
+            LogManager.instance().log(this, Level.WARNING,
+                "Database '%s' closed without flushing the recovery copy of its schema: the lock file was preserved so the next open will re-secure it",
                 null, name);
           else {
             if (lockFile.exists())
