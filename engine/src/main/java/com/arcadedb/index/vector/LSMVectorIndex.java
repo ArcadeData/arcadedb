@@ -6491,7 +6491,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // check, so nothing under ASYNC_REBUILD_MIN_GRAPH_SIZE arrives here today. It stands because every term below is
     // derived from it, and a future caller passing 0 would otherwise be judged against an estimate of nothing.
     if (percent <= 0 || nodes <= 0)
-      return 0; // gate disabled by configuration, or nothing to build
+      return admitSearchBuild(0); // gate disabled by configuration, or nothing to build: a build gets through all the same
 
     final int dimensions = metadata.dimensions;
     final int fullCache = computeGraphBuildCacheCapacity(nodes);
