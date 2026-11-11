@@ -6445,6 +6445,10 @@ public class LocalSchema implements Schema {
    * <p>
    * Only over a primary this open read whole: one damaged or missing has been read from the copy, which is then all there is.
    * A failure is logged, never thrown, for the reason given in {@link #syncPreviousSchemaCopy()}.
+   * <p>
+   * Internal: public only for {@link com.arcadedb.database.LocalDatabase}'s recovery, its one caller. That recovery is what
+   * decides "after a crash", from the lock file a clean close deletes. A power failure that loses that lock file too is one
+   * where the copy can stay unflushed: still safe, since the primary is durable and the copy only covers a second fault.
    */
   public synchronized void securePreviousSchemaCopyAfterCrash() {
     if (schemaReadFromPreviousCopy || !configurationFile.exists() || database.getMode() != ComponentFile.MODE.READ_WRITE)
@@ -6470,13 +6474,16 @@ public class LocalSchema implements Schema {
     }
   }
 
-  /** Whether {@code file} reads back as a schema JSON document, as {@link #readConfiguration()} would read it. */
+  /**
+   * Whether {@code file} reads back as a schema JSON document, as {@link #readConfiguration()} would read it, carrying the
+   * {@code schemaVersion} every save writes. A copy without it (a legacy file, or anything else that happens to parse) is
+   * rebuilt from the primary, which costs one copy and never loses anything the primary does not hold.
+   */
   private boolean isWholeSchema(final File file) {
     if (file.length() == 0)
       return false;
     try (final FileInputStream fis = new FileInputStream(file)) {
-      new JSONObject(FileUtils.readStreamAsString(fis, encoding));
-      return true;
+      return new JSONObject(FileUtils.readStreamAsString(fis, encoding)).has("schemaVersion");
     } catch (final Exception e) {
       return false;
     }

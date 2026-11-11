@@ -55,6 +55,7 @@ class Issue11514DeferredRecoveryCopySyncTest extends TestHelper {
   @Override
   protected void endTest() {
     FileUtils.TEST_FILE_SYNC_HOOK = null;
+    GlobalConfiguration.FILE_SYNC.reset();
   }
 
   @Test
