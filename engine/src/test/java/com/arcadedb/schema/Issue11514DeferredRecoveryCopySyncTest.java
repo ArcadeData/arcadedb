@@ -26,14 +26,13 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #11514: every schema write fsync'd two files, the copy of the current generation published as
@@ -136,6 +135,18 @@ class Issue11514DeferredRecoveryCopySyncTest extends TestHelper {
   }
 
   @Test
+  void aRecoveryCopyThatParsesButIsNoLoadableSchemaIsRebuiltToo() throws Exception {
+    database.getSchema().createDocumentType("Warm");
+    database.getSchema().createDocumentType("A");
+    // Valid JSON with a version, but without the settings and types the load requires
+    crashAndLoseTheRecoveryCopy("{\"schemaVersion\":7}".getBytes(StandardCharsets.UTF_8));
+
+    database = factory.open();
+
+    assertThat(Files.readString(prevFile())).isEqualTo(Files.readString(schemaFile()));
+  }
+
+  @Test
   void aReadableRecoveryCopyKeepsItsGenerationAndIsMadeDurableAtRecovery() throws Exception {
     database.getSchema().createDocumentType("Warm");
     database.getSchema().createDocumentType("A");
@@ -184,16 +195,18 @@ class Issue11514DeferredRecoveryCopySyncTest extends TestHelper {
   void aFailedFlushAtCloseKeepsTheLockFileSoTheNextOpenReSecuresTheCopy() throws Exception {
     database.getSchema().createDocumentType("Warm");
     database.getSchema().createDocumentType("A");
-    final File prev = prevFile().toFile();
     final Path lockFile = Path.of(getDatabasePath()).toAbsolutePath().resolve(NodeLocalFiles.DATABASE_LOCK_FILE_NAME);
 
-    // A copy the close cannot open for writing: its flush fails
-    assumeTrue(prev.setWritable(false) && !prev.canWrite(), "the platform does not deny writes to a read-only file");
+    // A copy the close cannot open for writing, whatever the privileges of the runner: a directory under its name
+    final byte[] prevContent = Files.readAllBytes(prevFile());
+    Files.delete(prevFile());
+    Files.createDirectory(prevFile());
     try {
       database.close();
       assertThat(lockFile).as("kept as the marker that makes the next open re-secure the copy").exists();
     } finally {
-      prev.setWritable(true);
+      Files.delete(prevFile());
+      Files.write(prevFile(), prevContent);
     }
 
     synced.clear();

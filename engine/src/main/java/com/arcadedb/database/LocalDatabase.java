@@ -4393,8 +4393,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // #11514: whether the close-time flush of schema.prev.json failed, which leaves the copy to the next open's recovery
       boolean schemaCopyLeftToRecovery = false;
       try {
-        schema.close();
-        schemaCopyLeftToRecovery = !drop && schema.isPreviousSchemaCopyUnsynced();
+        try {
+          schema.close();
+        } finally {
+          // ALSO WHEN THE SCHEMA CLOSE THREW: THE COPY IT MAY NOT HAVE REACHED IS STILL OWED
+          schemaCopyLeftToRecovery = !drop && schema.isPreviousSchemaCopyUnsynced();
+        }
         fileManager.close();
         walPreservedForRecovery = transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();

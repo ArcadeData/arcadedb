@@ -6495,14 +6495,17 @@ public class LocalSchema implements Schema {
 
   /**
    * Whether {@code file} reads back as a schema JSON document, as {@link #readConfiguration()} would read it, carrying the
-   * {@code schemaVersion} every save writes. A copy without it (a legacy file, or anything else that happens to parse) is
-   * rebuilt from the primary, which costs one copy and never loses anything the primary does not hold.
+   * {@code schemaVersion}, {@code settings} and {@code types} every save writes and the load requires. A copy without them (a
+   * legacy file, or anything else that happens to parse) is rebuilt from the primary, which costs one copy and never loses
+   * anything the primary does not hold.
    */
   private boolean isWholeSchema(final File file) {
     if (!file.exists() || file.length() == 0)
       return false;
     try (final FileInputStream fis = new FileInputStream(file)) {
-      return new JSONObject(FileUtils.readStreamAsString(fis, encoding)).has("schemaVersion");
+      final JSONObject root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
+      // A member that is there but not an object throws, which the catch below reads as "not whole" too
+      return root.has("schemaVersion") && root.getJSONObject("settings", null) != null && root.getJSONObject(TYPES, null) != null;
     } catch (final Exception e) {
       return false;
     }
