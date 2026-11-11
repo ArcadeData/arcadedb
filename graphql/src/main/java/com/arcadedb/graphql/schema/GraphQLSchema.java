@@ -325,10 +325,11 @@ public class GraphQLSchema {
    * guarantee that, wrapped, it is one operand.
    * <p>
    * An argument the field declares and the operation does not provide - omitted, or bound to a variable the caller gave no
-   * value - is filtered on its default value, as the directive path binds it; omitted with no default, it is an error when it
-   * is non-null and adds no term otherwise (issue #11447). The reserved {@code where} argument is left out of this: its
-   * default would be SQL text taken from the schema rather than a value, and a field may declare it non-null, as
-   * {@code books(where: String!)} does, and still be called without it.
+   * value - is filtered on its default value, as the directive path binds it. With no default it is an error when it is
+   * non-null (issue #11447); when it is nullable, an omitted argument adds no term, while one bound to a variable the caller
+   * gave no value is filtered on null, which matches nothing, as a variable passed as null is (issue #6834). The reserved
+   * {@code where} argument is left out of this: its default would be SQL text taken from the schema rather than a value, and
+   * a field may declare it non-null, as {@code books(where: String!)} does, and still be called without it.
    */
   private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames,
       final FieldDefinition field, final Map<String, Object> variables, final Map<String, Object> boundParameters) {
@@ -619,6 +620,7 @@ public class GraphQLSchema {
     return arguments;
   }
 
+  /** The declaration of the field's argument with this name, or null when the field declares none. */
   private static InputValueDefinition argumentDefinition(final FieldDefinition field, final String name) {
     if (field != null && field.getArgumentsDefinition() != null)
       for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions())
@@ -627,6 +629,7 @@ public class GraphQLSchema {
     return null;
   }
 
+  /** Refuses a missing value for an argument declared non-null: a bare type or a list marked with {@code !}. */
   private static void checkNotRequired(final InputValueDefinition definition) {
     final com.arcadedb.graphql.parser.Type type = definition.getType();
     if (type != null && (type.isBang() || (type.getListType() != null && type.getListType().isBang())))
