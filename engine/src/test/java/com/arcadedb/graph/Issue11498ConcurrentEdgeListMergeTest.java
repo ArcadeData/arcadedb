@@ -395,9 +395,95 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
       throw new AssertionError(errors.size() + " writer(s) failed, first: " + errors.getFirst(), errors.getFirst());
 
     assertThat(committed).hasSize(writers * transactionsPerWriter * edgesPerTransaction);
+    assertEdgeListsHold(rids, committed);
+  }
+
+  /**
+   * Writers creating edges between shared vertices and deleting some of the ones they committed, then a crash: what the merges
+   * committed is what the WAL brings back, and every edge list still holds exactly the live edges.
+   */
+  @Test
+  @Timeout(300)
+  void concurrentInsertsAndDeletesSurviveACrash() throws Exception {
+    final int vertices = 500;
+    final int writers = 6;
+    final int transactionsPerWriter = 20;
+    final int edgesPerTransaction = 50;
+
+    final RID[] rids = new RID[vertices];
     database.transaction(() -> {
-      assertThat(database.countType("E", false)).isEqualTo(committed.size());
-      // every edge is in the OUT list of its source and the IN list of its destination, once
+      for (int i = 0; i < vertices; i++)
+        rids[i] = database.newVertex("V").set("name", "v" + i).save().getIdentity();
+    });
+
+    final Set<RID> live = ConcurrentHashMap.newKeySet();
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+    for (int w = 0; w < writers; w++) {
+      final int seed = 100 + w;
+      final Thread thread = new Thread(() -> {
+        final Random random = new Random(seed);
+        final List<RID> mine = new ArrayList<>();
+        try {
+          start.await();
+          for (int t = 0; t < transactionsPerWriter; t++) {
+            final int[][] pairs = new int[edgesPerTransaction][];
+            for (int i = 0; i < edgesPerTransaction; i++)
+              pairs[i] = new int[] { random.nextInt(vertices), random.nextInt(vertices) };
+            // every other transaction also deletes some of the edges this writer committed before
+            final List<RID> toDelete = new ArrayList<>();
+            if (t % 2 == 1)
+              for (int i = 0; i < 10 && !mine.isEmpty(); i++)
+                toDelete.add(mine.remove(random.nextInt(mine.size())));
+
+            for (int attempt = 0; ; attempt++) {
+              final List<RID> created = new ArrayList<>(edgesPerTransaction);
+              try {
+                database.transaction(() -> {
+                  created.clear();
+                  for (final int[] pair : pairs)
+                    created.add(vertex(rids[pair[0]]).newEdge("E", vertex(rids[pair[1]])).getIdentity());
+                  for (final RID edge : toDelete)
+                    edge.asEdge(true).delete();
+                });
+                mine.addAll(created);
+                live.addAll(created);
+                toDelete.forEach(live::remove);
+                break;
+              } catch (final NeedRetryException e) {
+                if (attempt == MAX_CALLER_RETRIES)
+                  throw new AssertionError("a transaction still conflicts after " + MAX_CALLER_RETRIES + " retries", e);
+              }
+            }
+          }
+        } catch (final Throwable e) {
+          errors.add(e);
+        }
+      }, "writer-" + w);
+      threads.add(thread);
+      thread.start();
+    }
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    if (!errors.isEmpty())
+      throw new AssertionError(errors.size() + " writer(s) failed, first: " + errors.getFirst(), errors.getFirst());
+
+    assertEdgeListsHold(rids, live);
+
+    // a crash: the database is opened again from what the WAL holds
+    ((DatabaseInternal) database).kill();
+    database.close();
+    database = factory.open();
+    assertEdgeListsHold(rids, live);
+  }
+
+  /** Every edge of {@code edges} is in the OUT list of its source and the IN list of its destination, once, and no other is. */
+  private void assertEdgeListsHold(final RID[] rids, final Set<RID> edges) {
+    database.transaction(() -> {
+      assertThat(database.countType("E", false)).isEqualTo(edges.size());
       final Set<RID> fromOutLists = new HashSet<>();
       final Set<RID> fromInLists = new HashSet<>();
       long outEntries = 0;
@@ -414,10 +500,10 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
           ++inEntries;
         }
       }
-      assertThat(outEntries).isEqualTo(committed.size());
-      assertThat(inEntries).isEqualTo(committed.size());
-      assertThat(fromOutLists).isEqualTo(committed);
-      assertThat(fromInLists).isEqualTo(committed);
+      assertThat(outEntries).isEqualTo(edges.size());
+      assertThat(inEntries).isEqualTo(edges.size());
+      assertThat(fromOutLists).isEqualTo(edges);
+      assertThat(fromInLists).isEqualTo(edges);
     });
   }
 
@@ -479,8 +565,9 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
     return compute(() -> database.newVertex("V").set("name", name).save().getIdentity());
   }
 
+  /** Through the database the test holds now, so a RID taken before a crash reads the reopened database. */
   private Vertex vertex(final RID rid) {
-    return rid.asVertex(true);
+    return database.lookupByRID(rid, true).asVertex();
   }
 
   private List<RID> neighbours(final RID rid, final Vertex.DIRECTION direction) {
