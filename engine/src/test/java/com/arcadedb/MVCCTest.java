@@ -105,7 +105,14 @@ class MVCCTest extends TestHelper {
       } finally {
         new DatabaseChecker(database).setVerboseLevel(0).check();
 
-        assertThat(mvccErrors.get() > 0).isTrue();
+        // Issue #11498: every transaction appends an edge to the same account, and since then those appends merge at commit
+        // instead of conflicting, so there may be no conflict at all. What must hold either way: each transaction that
+        // committed left its edge on the account, and no other.
+        final long committed = TOT_TX - txErrors.get();
+        assertThat(database.countType("PurchasedBy", false)).isEqualTo(committed);
+        database.transaction(() -> assertThat(
+            database.lookupByKey("Account", new String[] { "id" }, new Object[] { 0 }).next().asVertex()
+                .countEdges(Vertex.DIRECTION.IN, "PurchasedBy")).isEqualTo(committed));
         assertThat(otherErrors.get()).isEqualTo(0);
         // With retries=0 every conflict exhausts immediately and notifies both the global onError handler and the
         // per-task error callback, so each detected conflict increments both counters in lockstep.

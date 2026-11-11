@@ -58,7 +58,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   // cannot show - an operator would otherwise have to sample and subtract them by hand.
   private static final Set<String> RATE_TRACKED_PROFILER_METRICS = Set.of(
       "writeTx", "readTx", "txRollbacks", "queries", "concurrentModificationExceptions",
-      "edgeAppendMerges", "txPageSlotMerges", "mergesDeclinedByCoverage"
+      "edgeAppendMerges", "txPageSlotMerges", "edgeListHeadMerges", "mergesDeclinedByCoverage"
   );
 
   public GetServerHandler(final HttpServer httpServer) {

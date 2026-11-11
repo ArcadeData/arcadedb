@@ -3662,12 +3662,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // transaction's own - dirty, and therefore older than the committed page - so on a page somebody ELSE is
     // inserting into, the hole is confirmed against the committed page with a single O(1) record-table read. On an
     // uncontended page the caller's image is the truth and the extra lookup would just cost a page read per insert.
-    final boolean holeCandidate = candidateSlot < pageAnalysis.totalRecordsInPage;
+    boolean holeCandidate = candidateSlot < pageAnalysis.totalRecordsInPage;
+    int appendBase = pageAnalysis.totalRecordsInPage;
+    int offset = candidateOffset;
+    // #11498: the reservations only tell apart the transactions inserting into the page RIGHT NOW. One that is alone there
+    // measures the page with its own image of it, and that image is older than the committed page when the transaction
+    // pinned it before a concurrent commit into it: the slot it offers can be one that commit used, and the room it sees
+    // can be gone. The insert then failed its replay at commit, as a conflict on a record nobody else wrote. The committed
+    // page is asked only when the image is older, so the common case pays a version read and nothing else.
+    final int[] committedLayout = committedLayoutIfNewer(foundPage);
+    if (committedLayout != null) {
+      if (holeCandidate && !isSlotFreeInCommittedPage(reusedPageNumber, candidateSlot))
+        holeCandidate = false;
+      appendBase = Math.max(appendBase, committedLayout[0]);
+      offset = Math.max(offset, committedLayout[1]);
+    }
     final PageInsertReservation probe = insertReservations.get(reusedPageNumber);
-    final boolean holeVerified = holeCandidate && probe != null && probe.soleOwner != tx//
-            && isSlotFreeInCommittedPage(reusedPageNumber, candidateSlot);
+    final boolean holeVerified = holeCandidate && (committedLayout != null || probe != null && probe.soleOwner != tx//
+            && isSlotFreeInCommittedPage(reusedPageNumber, candidateSlot));
     final int reservedSlot = reserveInsertSlot(tx, reusedPageNumber, holeCandidate ? candidateSlot : -1, holeVerified,
-            pageAnalysis.totalRecordsInPage, candidateOffset, spaceNeeded, foundPage.getMaxContentSize());
+            appendBase, offset, spaceNeeded, foundPage.getMaxContentSize());
     if (reservedSlot >= 0)
       tx.trackInsertSlotReservation(this, reusedPageNumber, reservedSlot);
     return reservedSlot;
@@ -3762,6 +3776,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * transaction has committed into meanwhile (#5279). A page with no committed version yet (created by this
    * transaction) has no hole to confirm.
    */
+  /**
+   * The record count and the content insertion offset of the committed version of {@code page}, when it is newer than
+   * {@code page} (issue #11498), or {@code null} when it is not, or cannot be read.
+   */
+  private int[] committedLayoutIfNewer(final BasePage page) {
+    try {
+      final PageId pageId = page.getPageId();
+      if (database.getPageManager().getMostRecentVersionOfPage(pageId, pageSize) == page.getVersion())
+        return null;
+      final BasePage committed = database.getPageManager().getImmutablePage(pageId, pageSize, false, false);
+      if (committed == null)
+        return null;
+      final int recordCount = committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      return new int[] { recordCount, findContentInsertionOffset(committed, recordCount) };
+    } catch (final Exception e) {
+      // not being able to read the committed page leaves the claim as it was before #11498
+      return null;
+    }
+  }
+
   private boolean isSlotFreeInCommittedPage(final int pageNumber, final int slot) {
     try {
       final BasePage committed = database.getPageManager()
@@ -4205,6 +4239,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @return the body, or {@code null} when the slot is free or does not hold a plain record that fits the page (a
    * placeholder, a chunk, a corrupted entry), which the caller turns into a refusal to merge.
    */
+  /**
+   * The bytes past the end of the page's last record, the room a record of the page can grow into by shifting the ones that follow
+   * it ({@code growRecordInPage}). Holes left by shrinks and deletes are not in it. {@code 0} when it cannot be read.
+   */
+  public int getFreeTailInPage(final BasePage page) {
+    try {
+      return Math.max(0, page.getMaxContentSize() - findContentInsertionOffset(page, page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET)));
+    } catch (final IOException | DatabaseOperationException e) {
+      return 0;
+    }
+  }
+
   public byte[] readPlainRecordBody(final BasePage page, final int positionInPage) {
     try {
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);

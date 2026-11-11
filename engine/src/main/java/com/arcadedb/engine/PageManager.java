@@ -114,6 +114,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalEdgeListHeadMerges               = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRetries            = new AtomicLong();
@@ -355,6 +356,8 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
+    public long edgeListHeadMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
     public long mergesDeclinedByCoverage;
     /** See {@link PageManager#incrementChunkChainReadRevalidations()}: the read-path twin of {@code txPageSlotMerges}. */
@@ -1792,6 +1795,15 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Counts a vertex the commit wrote as the merge of the edge-list heads it moved and the ones a concurrent transaction moved
+   * (issue #11498): a same-record conflict avoided, where the slot merge above avoids conflicts between different records.
+   * Surfaced via {@link #getStats()}.
+   */
+  public void incrementEdgeListHeadMerges() {
+    totalEdgeListHeadMerges.incrementAndGet();
+  }
+
+  /**
    * Counts a page merge declined because the page could not PROVE that every byte this transaction wrote to it was
    * replayable by that merge (#5596). The transaction falls back to an ordinary retry, so this is never a
    * correctness problem - but a non-zero and growing value means some writer is dirtying a mergeable page without
@@ -2168,6 +2180,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.edgeListHeadMerges = totalEdgeListHeadMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
     stats.chunkChainReadRetries = totalChunkChainReadRetries.get();

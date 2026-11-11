@@ -56,13 +56,17 @@ class ProfilerTest {
     assertThat(json.has("edgeAppendMerges")).isTrue();
     assertThat(json.has("txPageSlotMerges")).isTrue();
     assertThat(json.has("mergesDeclinedByCoverage")).isTrue();
+    // #11498
+    assertThat(json.has("edgeListHeadMerges")).isTrue();
     // Same nesting as every other counter, which is what the Micrometer binder and Studio read.
     assertThat(json.getJSONObject("mergesDeclinedByCoverage").has("count")).isTrue();
+    assertThat(json.getJSONObject("edgeListHeadMerges").has("count")).isTrue();
 
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
     Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
     final String dump = out.toString();
-    assertThat(dump).contains("edgeAppendMerges=").contains("txPageSlotMerges=").contains("mergesDeclinedByCoverage=");
+    assertThat(dump).contains("edgeAppendMerges=").contains("txPageSlotMerges=").contains("mergesDeclinedByCoverage=")
+        .contains("edgeListHeadMerges=");
   }
 
   /**
