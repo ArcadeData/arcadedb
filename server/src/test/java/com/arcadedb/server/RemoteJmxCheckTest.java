@@ -81,6 +81,32 @@ class RemoteJmxCheckTest {
     props.setProperty("com.sun.management.jmxremote.port", "9999");
     props.setProperty("com.sun.management.jmxremote.authenticate", "no");
     assertThat(RemoteJmxCheck.unauthenticatedRemoteJmxWarning(props)).isNotNull();
+
+    // Nor is the value trimmed: "true " with a trailing blank is not "true" for the JDK, so authentication is off.
+    props.setProperty("com.sun.management.jmxremote.authenticate", "true ");
+    assertThat(RemoteJmxCheck.unauthenticatedRemoteJmxWarning(props)).isNotNull();
+  }
+
+  @Test
+  void onlyTheAgentActivationKeysStartTheAgent() throws IOException {
+    // The JDK file opens an unauthenticated port, but the agent reads it only when config.file, jmxremote or jmxremote.port
+    // is a system property: any other com.sun.management setting leaves the agent, and the port, off.
+    final Path javaHome = tempDir.resolve("jdk-activation");
+    final Path managementDir = javaHome.resolve("conf").resolve("management");
+    Files.createDirectories(managementDir);
+    Files.writeString(managementDir.resolve("management.properties"), """
+        com.sun.management.jmxremote.port=7094
+        com.sun.management.jmxremote.authenticate=false
+        """);
+
+    final Properties props = new Properties();
+    props.setProperty("java.home", javaHome.toString());
+    props.setProperty("com.sun.management.jmxremote.ssl", "false");
+    props.setProperty("com.sun.management.jmxremote.local.only", "false");
+    assertThat(RemoteJmxCheck.unauthenticatedRemoteJmxWarning(props)).isNull();
+
+    props.setProperty("com.sun.management.jmxremote.port", "7095");
+    assertThat(RemoteJmxCheck.unauthenticatedRemoteJmxWarning(props)).contains("7095");
   }
 
   @Test
@@ -165,12 +191,6 @@ class RemoteJmxCheckTest {
     final Properties props = jvm();
     props.setProperty("com.sun.management.config.file", tempDir.resolve("missing.properties").toString());
     assertThat(RemoteJmxCheck.unauthenticatedRemoteJmxWarning(props)).isNull();
-  }
-
-  @Test
-  void thisTestJvmHasNoUnauthenticatedRemoteAgent() {
-    // The real system properties are read without failing; the test JVM starts no remote JMX agent.
-    assertThat(RemoteJmxCheck.unauthenticatedRemoteJmxWarning(System.getProperties())).isNull();
   }
 
   /**

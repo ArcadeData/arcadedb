@@ -35,14 +35,20 @@ import java.util.logging.Level;
  * <p>
  * The settings are resolved the way the JDK management agent resolves them: the file named by
  * {@code com.sun.management.config.file}, or the JDK's own {@code conf/management/management.properties} when none is
- * named, overridden by the {@code com.sun.management.*} system properties. The agent is started at boot only when some
- * {@code com.sun.management.*} system property is given, and opens a network port only when a remote port is set.
+ * named, overridden by the {@code com.sun.management.*} system properties. The agent is started at boot only when one of
+ * the system properties {@code com.sun.management.config.file}, {@code com.sun.management.jmxremote} or
+ * {@code com.sun.management.jmxremote.port} is given ({@code jdk.internal.agent.Agent#getManagementProperties}), and opens
+ * a network port only when a remote port is set.
+ * <p>
+ * The check runs once, at server startup, on the boot-time configuration. An agent an operator starts later on the running
+ * process with {@code jcmd <pid> ManagementAgent.start} takes its settings from the command arguments and is not covered.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class RemoteJmxCheck {
   static final String MANAGEMENT_PREFIX = "com.sun.management.";
   static final String CONFIG_FILE       = "com.sun.management.config.file";
+  static final String JMXREMOTE         = "com.sun.management.jmxremote";
   static final String PORT              = "com.sun.management.jmxremote.port";
   static final String AUTHENTICATE      = "com.sun.management.jmxremote.authenticate";
 
@@ -54,7 +60,8 @@ final class RemoteJmxCheck {
    * without authentication, or {@code null} when it does not.
    */
   static String unauthenticatedRemoteJmxWarning(final Properties systemProperties) {
-    if (!hasManagementSetting(systemProperties))
+    if (systemProperties.getProperty(CONFIG_FILE) == null && systemProperties.getProperty(JMXREMOTE) == null
+        && systemProperties.getProperty(PORT) == null)
       return null;
 
     final Properties effective = new Properties();
@@ -75,10 +82,10 @@ final class RemoteJmxCheck {
     if (port == null || port.isBlank())
       return null;
 
-    // The JDK reads the flag with Boolean.valueOf: authentication is on when the setting is absent, and off for any value
-    // other than "true".
+    // The JDK reads the flag with Boolean.valueOf, untrimmed: authentication is on when the setting is absent, and off for
+    // any value other than "true" in any case, "true " with a trailing blank included.
     final String authenticate = effective.getProperty(AUTHENTICATE);
-    if (authenticate == null || Boolean.parseBoolean(authenticate.trim()))
+    if (authenticate == null || Boolean.parseBoolean(authenticate))
       return null;
 
     return String.format(Locale.ROOT, """
@@ -87,14 +94,7 @@ final class RemoteJmxCheck {
         included. Remove the com.sun.management.jmxremote.* settings from ARCADEDB_JMX, JAVA_OPTS and JAVA_TOOL_OPTIONS (or the \
         JMX configuration file) to switch remote JMX off \
         (local tools such as jconsole and jcmd attach without it), or enable authentication and SSL""", port.trim(),
-        authenticate.trim());
-  }
-
-  private static boolean hasManagementSetting(final Properties systemProperties) {
-    for (final String name : systemProperties.stringPropertyNames())
-      if (name.startsWith(MANAGEMENT_PREFIX))
-        return true;
-    return false;
+        authenticate);
   }
 
   private static void load(final Path file, final Properties target) {

@@ -123,10 +123,10 @@ rem Remote JMX is off by default. A remote JMX agent lets its clients invoke any
 rem execution inside the server, so it must never listen without authentication. Local tools (jconsole, VisualVM,
 rem jcmd) attach to the process without it, and the server metrics are served over HTTP. To open remote JMX, set
 rem ARCADEDB_JMX before calling this script with authentication and SSL on, for example:
-rem   set ARCADEDB_JMX=-Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998
-rem     -Dcom.sun.management.jmxremote.authenticate=true
-rem     -Dcom.sun.management.jmxremote.password.file=C:\path\to\jmxremote.password
-rem     -Dcom.sun.management.jmxremote.access.file=C:\path\to\jmxremote.access
+rem   set ARCADEDB_JMX=-Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998 ^
+rem     -Dcom.sun.management.jmxremote.authenticate=true ^
+rem     -Dcom.sun.management.jmxremote.password.file=C:\path\to\jmxremote.password ^
+rem     -Dcom.sun.management.jmxremote.access.file=C:\path\to\jmxremote.access ^
 rem     -Dcom.sun.management.jmxremote.ssl=true -Djavax.net.ssl.keyStore=... -Djavax.net.ssl.keyStorePassword=...
 rem The server logs a SEVERE message at startup when it finds a remote JMX agent with authentication disabled.
 if not defined ARCADEDB_JMX set ARCADEDB_JMX=
