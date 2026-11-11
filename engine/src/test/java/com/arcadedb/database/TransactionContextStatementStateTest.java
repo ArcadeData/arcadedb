@@ -86,6 +86,11 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("edgeAppendPoisonedPages", POISONED);
     CLASSIFICATION.put("slotRebaseByPage", POISONED);
     CLASSIFICATION.put("slotRebasePoisonedPages", POISONED);
+    // Issue #11498: the vertices whose stale read the commit judges. A statement taken back sets edgeListHeadMergeRefused, and the
+    // commit then refuses every one of them as a conflict, as addUpdatedRecord did before: the same as a poisoned page
+    CLASSIFICATION.put("staleEdgeListWrites", POISONED);
+    // Issue #11498: filled by the commit, under its lock, never by a statement
+    CLASSIFICATION.put("mergedEdgeListBases", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("attachments", DELEGATED);
     // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction

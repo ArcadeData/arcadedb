@@ -57,7 +57,8 @@ class EngineMetricsBinderTest {
     for (final String name : new String[] { "arcadedb.engine.page.cache.hits", "arcadedb.engine.page.cache.misses",
         "arcadedb.engine.pages.read", "arcadedb.engine.pages.written", "arcadedb.engine.wal.bytes.written",
         "arcadedb.engine.mvcc.conflicts", "arcadedb.engine.page.merges.edge.append", "arcadedb.engine.page.merges.slot",
-        "arcadedb.engine.page.merges.declined", "arcadedb.engine.tx.write", "arcadedb.engine.tx.read",
+        "arcadedb.engine.page.merges.declined", "arcadedb.engine.page.merges.edge.list.head", "arcadedb.engine.tx.write",
+        "arcadedb.engine.tx.read",
         "arcadedb.engine.tx.rollbacks", "arcadedb.engine.queries", "arcadedb.engine.commands",
         "arcadedb.engine.snapshot.windows.opened", "arcadedb.engine.snapshot.windows.invalidated",
         "arcadedb.engine.snapshot.preimages.captured",
@@ -136,7 +137,9 @@ class EngineMetricsBinderTest {
     new EngineMetricsBinder().bindTo(registry);
 
     for (final String name : new String[] { "arcadedb.engine.page.merges.edge.append",
-        "arcadedb.engine.page.merges.slot", "arcadedb.engine.page.merges.declined" }) {
+        "arcadedb.engine.page.merges.slot", "arcadedb.engine.page.merges.declined",
+        // #11498: the same-record twin of the slot merge, two transactions that both moved a vertex's edge-list head
+        "arcadedb.engine.page.merges.edge.list.head" }) {
       final FunctionCounter counter = registry.find(name).functionCounter();
       assertThat(counter).as(name).isNotNull();
       assertThat(Double.isNaN(counter.count())).as(name).isFalse();

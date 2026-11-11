@@ -123,6 +123,35 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   /**
+   * {@link #add} for the commit-time replay of this transaction's appends onto a chunk that concurrent appends filled meanwhile
+   * (issue #11498): an entry that does not fit makes the chunk grow by the bytes it needs, up to {@code maxSize}, instead of
+   * being refused. Growing keeps the chunk where it is, so the vertex's edge list, and the vertex, are not touched.
+   *
+   * @return false when the chunk would have to grow past {@code maxSize}
+   */
+  public boolean addGrowingUpTo(final RID edgeRID, final RID vertexRID, final int maxSize) {
+    if (add(edgeRID, vertexRID))
+      return true;
+
+    final Binary ridSerialized = database.getContext().getTemporaryBuffer1();
+    database.getSerializer().serializeValue(database, ridSerialized, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
+    database.getSerializer().serializeValue(database, ridSerialized, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
+
+    final int used = getUsed();
+    final int needed = used + ridSerialized.size();
+    if (needed > maxSize)
+      return false;
+
+    final byte[] grown = new byte[needed];
+    buffer.getByteArray(0, grown, 0, used);
+    final Binary grownBuffer = new Binary(grown);
+    grownBuffer.setAutoResizable(false);
+    this.buffer = grownBuffer;
+    this.bufferSize = needed;
+    return add(edgeRID, vertexRID);
+  }
+
+  /**
    * Appends the edge at the end of the segment in O(1) without shifting existing content.
    * Ideal for bulk import where insertion order within a segment is irrelevant.
    */

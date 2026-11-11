@@ -166,7 +166,10 @@ class Issue10305ViewSameSlotCreateDeleteTest extends TestHelper {
     a.join(60_000);
     b.join(60_000);
     assertThat(failure.get()).isNull();
-    assertThat(y.get()).as("B was handed the slot A's edge took").isEqualTo(x.get());
+    // Issue #11498: B, alone on the page with an image of it older than A's commit, used to be handed the slot A's edge took, and
+    // its insert then failed at commit or, created and deleted, left the view to tell the two apart. The allocator now checks the
+    // committed page: B gets another slot, and the view must hold what the records hold all the same
+    assertThat(y.get()).as("B is not handed the slot A's edge took").isNotEqualTo(x.get());
 
     awaitView("gv");
     assertThat(recordEdges()).containsExactly("0->1", "2->3", "2->3", "4->5");
@@ -231,7 +234,8 @@ class Issue10305ViewSameSlotCreateDeleteTest extends TestHelper {
     a.join(60_000);
     b.join(60_000);
     assertThat(failure.get()).isNull();
-    assertThat(y.get()).as("B was handed the slot A's vertex took").isEqualTo(x.get());
+    // Issue #11498: see the edge test above, B gets another slot than the one A's vertex took
+    assertThat(y.get()).as("B is not handed the slot A's vertex took").isNotEqualTo(x.get());
 
     awaitView("gv");
     assertThat(database.countType("V", true)).isEqualTo(2L);

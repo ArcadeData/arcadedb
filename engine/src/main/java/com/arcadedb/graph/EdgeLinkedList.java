@@ -461,7 +461,7 @@ public class EdgeLinkedList {
       // by concurrent appends can be resolved by replaying the append instead of retrying the whole transaction.
       final TransactionContext tx = database.getTransactionIfExists();
       if (tx != null)
-        tx.trackEdgeAppend(lastSegment.getIdentity(), edgeRID, vertexRID);
+        tx.trackEdgeAppend(lastSegment.getIdentity(), edgeRID, vertexRID, vertex.getIdentity(), direction == Vertex.DIRECTION.OUT);
     } else {
       // CHUNK FULL: the one place that already rewrites the vertex record, so promotion to the super-node
       // striped layout (#5156) costs no extra write here.
