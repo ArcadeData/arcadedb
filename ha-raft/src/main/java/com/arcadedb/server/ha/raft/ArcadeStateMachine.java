@@ -300,6 +300,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile long                      globalAppliedIndex   = -1;
   private volatile boolean                   appliedIndexLoaded   = false;
   private final    Object                    appliedIndexFileLock = new Object();
+  // Which writes of the applied-index file are fsynced (issue #11517), both guarded by appliedIndexFileLock: whether
+  // the file on disk carries a quarantine or a read floor (so the write that clears them must be durable too), and
+  // whether this instance has made one durable write yet (the file's existence is what the offline-bootstrap gate reads)
+  private          boolean                   appliedIndexFileCarriesQuarantine = false;
+  private          boolean                   appliedIndexFileWrittenDurably    = false;
   private volatile long                      lastElectionTime = 0;
   private final    long                      startTime        = System.currentTimeMillis();
   // Tracks the previous leader so leader-change logs can show "X -> Y" instead of just "Y".
@@ -2902,6 +2907,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Could not persist the columnar recovery set of every open database at index %d; not authorising log purge", currentIndex);
       return RaftLog.INVALID_LOG_INDEX;
     }
+
+    // A position at or past the marker goes to disk before the marker does (issue #11517). The per-entry writes of the
+    // applied-index file are not fsynced, so a power loss could otherwise leave an older position behind, which the
+    // restart's snapshot-gap check reads as a gap below the marker and answers with a full resync from the leader. A
+    // later unsynced write can still leave the file empty, which reads as nothing persisted and trusts the marker. Not a
+    // condition of the checkpoint: the marker's correctness does not depend on this file.
+    syncAppliedIndexFileBeforeMarker();
 
     if (!registerSnapshotMarker(term, currentIndex)) {
       LogManager.instance().log(this, Level.WARNING,
@@ -8548,7 +8560,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         for (final String dbName : server.getDatabaseNames())
           if (!excluded.contains(dbName))
             appliedIndexByDb.put(dbName, index);
-      persistAppliedIndexFile();
+      // A resync's position is rare and what the next reinitialize() compares the marker against (issue #11517)
+      persistAppliedIndexFile(true);
     }
   }
 
@@ -8584,6 +8597,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
               restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
               restorePersistedFloors(json.getJSONObject("floors", new JSONObject()));
+              // The write that clears what was restored must be durable, or a power loss brings it back (issue #11517)
+              appliedIndexFileCarriesQuarantine = !divergedDatabases.isEmpty() || !staleDatabaseAppliedFloors.isEmpty();
             } else
               // Legacy format: a single plain number is the global Raft-log position.
               globalAppliedIndex = Long.parseLong(content);
@@ -8682,8 +8697,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The per-database map is tiny (one entry per co-located database) and the small JSON it allocates
    * is dominated by the {@code createDirectories} + {@code writeString} + atomic {@code move} syscalls
    * that already ran every apply, so the extra allocation is negligible on the apply path.
+   * <p>
+   * <b>Which writes are fsynced (issue #11517).</b> The rename is atomic against a process crash, not against a power
+   * loss: without an fsync of the content and of the directory the file can come back empty (a Jepsen LazyFS run found it
+   * at 0 bytes) or as an older copy. An fsync per write would put two fsyncs per Raft entry on the apply thread, so only
+   * the writes a restart must not lose are durable, through {@link FileUtils#atomicWriteFile(File, byte[])}:
+   * <ul>
+   *   <li>every write while a quarantine or a read floor stands, and the write that clears the last of them. Every write
+   *   carries the whole quarantine, and an unsynced rename over the durable copy can leave an empty file in its place, so
+   *   one durable mark is not enough. Once the cleared state is durable, what a later unsynced write can lose is the
+   *   position alone;</li>
+   *   <li>the first write of this instance, so the file's existence, which {@link #hasNeverAppliedApplicationEntry()}
+   *   reads, survives;</li>
+   *   <li>{@code forceSync}: the positions recorded by a snapshot install, a resync and the operator's accept, and the write
+   *   {@link #takeSnapshot()} makes before its marker.</li>
+   * </ul>
+   * Every other write - the per-entry position of a healthy node - stays best effort. What a power loss leaves of it is an
+   * older position, which only makes {@link #reinitialize()} resync or re-verify more than it needed to, or an empty or
+   * torn file, which {@link #ensureAppliedIndexLoaded()} reads as nothing persisted (-1, the marker is trusted) while its
+   * existence still keeps the offline-bootstrap gate closed.
    */
   private boolean persistAppliedIndexFile() {
+    return persistAppliedIndexFile(false);
+  }
+
+  private boolean persistAppliedIndexFile(final boolean forceSync) {
     if (closed)
       return false; // see close(): a task that outlived the shutdown must not recreate the file
     try {
@@ -8714,14 +8752,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
         json.put("floors", floors);
       }
 
-      Files.createDirectories(file.getParent());
-      final Path tmp = file.resolveSibling("applied-index.tmp");
-      Files.writeString(tmp, json.toString());
-      Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      final boolean carriesQuarantine = !divergedDatabases.isEmpty() || !staleDatabaseAppliedFloors.isEmpty();
+      if (forceSync || carriesQuarantine || appliedIndexFileCarriesQuarantine || !appliedIndexFileWrittenDurably) {
+        FileUtils.atomicWriteFile(file.toFile(), json.toString());
+        appliedIndexFileWrittenDurably = true;
+      } else {
+        Files.createDirectories(file.getParent());
+        final Path tmp = file.resolveSibling("applied-index.tmp");
+        Files.writeString(tmp, json.toString());
+        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      }
+      appliedIndexFileCarriesQuarantine = carriesQuarantine;
       return true;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Could not write persisted applied index: %s", e.getMessage());
       return false;
+    }
+  }
+
+  /**
+   * Rewrites the applied-index file with an fsync, for {@link #takeSnapshot()} (issue #11517). Nothing is written while no
+   * position was ever recorded: creating the file is what closes the offline-bootstrap gate, and a checkpoint is not an
+   * applied application entry.
+   */
+  private void syncAppliedIndexFileBeforeMarker() {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      if (globalAppliedIndex >= 0)
+        persistAppliedIndexFile(true);
     }
   }
 
@@ -9560,7 +9618,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       staleDatabaseAppliedFloors.keySet().removeIf(dbName -> !notInstalled.contains(dbName));
       divergedDatabases.keySet().removeIf(dbName -> !notInstalled.contains(dbName));
 
-      durable = persistAppliedIndexFile();
+      durable = persistAppliedIndexFile(true);
       if (!durable && !closed && !published.isEmpty())
         LogManager.instance().log(this, Level.WARNING,
             "Database(s) %s are quarantined (%s) with their read floors but could NOT be written to %s: a restart "
@@ -9799,7 +9857,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final Long floor = staleDatabaseAppliedFloors.remove(dbName);
       if (cause == null && floor == null)
         return null;
-      if (!persistAppliedIndexFile()) {
+      if (!persistAppliedIndexFile(true)) {
         if (cause != null)
           divergedDatabases.put(dbName, cause);
         if (floor != null)
@@ -9895,7 +9953,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                   appliedIndexByDb.put(dbName, accepted);
                 }
               }
-          persisted = persistAppliedIndexFile();
+          persisted = persistAppliedIndexFile(true);
         } finally {
           if (!persisted) {
             // Whatever stopped the write - a refused rename or anything thrown on the way - nothing is lifted

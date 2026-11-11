@@ -59,7 +59,7 @@ public class PostAcceptDivergedHandler extends AbstractServerHttpHandler {
 
   @Override
   protected boolean mustExecuteOnWorkerThread() {
-    // Rewrites the applied-index file (fsync-free, but still a write and an atomic rename) under the lock the apply path
+    // Rewrites the applied-index file (an fsynced write and an atomic rename, issue #11517) under the lock the apply path
     // takes.
     return true;
   }
