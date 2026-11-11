@@ -200,7 +200,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
         warnIfSingleBucketTypes(db);
         // Shared client, not one built per database (review finding on PR #7650): see RaftHAServer's
         // forwardHttpClient field javadoc.
-        return new RaftReplicatedDatabase(server, db, raft, raft.getForwardHttpClient());
+        final RaftReplicatedDatabase wrapped = new RaftReplicatedDatabase(server, db, raft, raft.getForwardHttpClient());
+        // A copy found damaged by an open after the startup scan is quarantined like one the scan found (issue #11518)
+        raft.recheckOpenedDatabase(db.getName(), db);
+        return wrapped;
       });
 
       // Re-wrap any databases that were already loaded before this plugin started

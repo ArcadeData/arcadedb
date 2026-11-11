@@ -609,4 +609,14 @@ public class Dictionary extends PaginatedComponent {
   public boolean wasHeaderPageRecreated() {
     return headerPageRecreated;
   }
+
+  /**
+   * Carries the {@link #wasHeaderPageRecreated()} fact of the instance a schema reload replaces (issue #11518). The reload
+   * builds a new instance over the same file, which counts the header page the open wrote as committed and so would forget
+   * that the names were lost: an HA node that rechecks its copy after the reload would read it as healthy.
+   */
+  public void inheritHeaderPageRecreated(final Dictionary previous) {
+    if (previous != null && previous != this && previous.getFileId() == getFileId() && previous.headerPageRecreated)
+      headerPageRecreated = true;
+  }
 }
