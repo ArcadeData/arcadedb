@@ -28,6 +28,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -204,6 +205,21 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
   }
 
   @Test
+  void anEdgeToAVertexDeletedConcurrentlyStillConflicts() throws Exception {
+    final RID a = newVertex("a");
+    final RID b = newVertex("b");
+
+    final Throwable failure = interleave(() -> vertex(a).newEdge("E", vertex(b)), NOTHING, () -> vertex(a).delete());
+
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    database.transaction(() -> {
+      assertThat(database.countType("V", false)).isEqualTo(1);
+      assertThat(database.countType("E", false)).isZero();
+      assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
+    });
+  }
+
+  @Test
   void aVertexReadBeforeAConcurrentEdgeIsMergedWhenOnlyItsEdgesChange() throws Exception {
     final RID a = newVertex("a");
     final RID b1 = newVertex("b1");
@@ -257,7 +273,9 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
     });
   }
 
+  // under a second on a laptop: a hang detector, not a latency bound
   @Test
+  @Timeout(300)
   void concurrentWritersOnSharedVerticesLoseNoEdge() throws Exception {
     final int vertices = 2_000;
     final int writers = 8;
@@ -285,7 +303,7 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
             final int[][] pairs = new int[edgesPerTransaction][];
             for (int i = 0; i < edgesPerTransaction; i++)
               pairs[i] = new int[] { random.nextInt(vertices), random.nextInt(vertices) };
-            while (true) {
+            for (int attempt = 0; ; attempt++) {
               final List<RID> created = new ArrayList<>(edgesPerTransaction);
               try {
                 database.transaction(() -> {
@@ -297,6 +315,9 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
                 break;
               } catch (final NeedRetryException e) {
                 conflictsReachingTheCaller.incrementAndGet();
+                // a transaction the merges keep refusing is a regression, not contention to wait out
+                if (attempt == MAX_CALLER_RETRIES)
+                  throw new AssertionError("a transaction still conflicts after " + MAX_CALLER_RETRIES + " retries", e);
               }
             }
           }
@@ -381,8 +402,9 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
     return failure.get();
   }
 
-  private static final Runnable NOTHING = () -> {
+  private static final Runnable NOTHING            = () -> {
   };
+  private static final int      MAX_CALLER_RETRIES = 100;
 
   private RID headOf(final RID vertex) {
     return compute(() -> ((VertexInternal) vertex(vertex)).getOutEdgesHeadChunk());

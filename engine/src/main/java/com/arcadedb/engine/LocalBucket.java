@@ -3770,13 +3770,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Tells whether {@code slot} is still a hole on the CURRENT COMMITTED version of the page, bypassing the calling
-   * transaction's own (possibly older) image of it. One record-table read, no scan: it is what makes hole reuse safe
-   * for a transaction that already modified the page and would otherwise keep offering a slot a concurrent
-   * transaction has committed into meanwhile (#5279). A page with no committed version yet (created by this
-   * transaction) has no hole to confirm.
-   */
-  /**
    * The record count and the content insertion offset of the committed version of {@code page}, when it is newer than
    * {@code page} (issue #11498), or {@code null} when it is not, or cannot be read.
    */
@@ -3796,6 +3789,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Tells whether {@code slot} is still a hole on the CURRENT COMMITTED version of the page, bypassing the calling
+   * transaction's own (possibly older) image of it. One record-table read, no scan: it is what makes hole reuse safe
+   * for a transaction that already modified the page and would otherwise keep offering a slot a concurrent
+   * transaction has committed into meanwhile (#5279). A page with no committed version yet (created by this
+   * transaction) has no hole to confirm.
+   */
   private boolean isSlotFreeInCommittedPage(final int pageNumber, final int slot) {
     try {
       final BasePage committed = database.getPageManager()
@@ -4232,14 +4232,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Reads the body (no size prefix) of the plain record held by {@code positionInPage}. The disjoint-slot merge uses it
-   * to take the final image of a slot this transaction INSERTED from the page the transaction wrote, instead of
-   * keeping a copy of every inserted record until commit (#10661).
-   *
-   * @return the body, or {@code null} when the slot is free or does not hold a plain record that fits the page (a
-   * placeholder, a chunk, a corrupted entry), which the caller turns into a refusal to merge.
-   */
-  /**
    * The bytes past the end of the page's last record, the room a record of the page can grow into by shifting the ones that follow
    * it ({@code growRecordInPage}). Holes left by shrinks and deletes are not in it. {@code 0} when it cannot be read.
    */
@@ -4251,6 +4243,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Reads the body (no size prefix) of the plain record held by {@code positionInPage}. The disjoint-slot merge uses it
+   * to take the final image of a slot this transaction INSERTED from the page the transaction wrote, instead of
+   * keeping a copy of every inserted record until commit (#10661).
+   *
+   * @return the body, or {@code null} when the slot is free or does not hold a plain record that fits the page (a
+   * placeholder, a chunk, a corrupted entry), which the caller turns into a refusal to merge.
+   */
   public byte[] readPlainRecordBody(final BasePage page, final int positionInPage) {
     try {
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);

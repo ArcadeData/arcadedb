@@ -5153,6 +5153,11 @@ public class TransactionContext implements Transaction {
       } else
         continue;
 
+      if (previousHead != null && !isClassicEdgeListHead(previousHead))
+        // the list was promoted to the striped layout (by a concurrent transaction, or by this one): a classic chunk cannot be put
+        // in front of a stripe directory, the conflict stands
+        continue;
+
       // THE NEW HEAD: this transaction's entries, in the order they were appended, in front of the list
       final MutableEdgeSegment overflow = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(committed.length));
       for (int i = 0; i < appends.size; ++i)
@@ -5303,6 +5308,14 @@ public class TransactionContext implements Transaction {
     } catch (final RecordNotFoundException e) {
       return null;
     }
+  }
+
+  /**
+   * Whether the head {@code rid} of an edge list, as this transaction holds the list, is a classic chunk: one this transaction
+   * created, or a committed one.
+   */
+  private boolean isClassicEdgeListHead(final RID rid) throws IOException {
+    return isCreatedInThisTransaction(rid) ? ownEdgeSegment(rid) != null : isClassicEdgeSegment(rid);
   }
 
   /** Whether the committed record {@code rid} is a classic edge-list chunk, the only kind a chunk can link back to. */
