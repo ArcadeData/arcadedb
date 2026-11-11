@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -413,6 +414,64 @@ class ReplicatedApplyPublicationTest {
       pageManager.endPublication();
       assertThat(pageManager.getPublicationSequence()).isEqualTo(before + 2);
     }
+
+    /** #11455: a hold is granted only with no publication open, and a caller that cannot get one in time is told so. */
+    @Test
+    void aHoldIsRefusedWhileAPublicationStaysOpen() throws Exception {
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicBoolean ran = new AtomicBoolean();
+
+      pageManager.beginPublication();
+      try {
+        assertThat(pageManager.callWithPublicationsHeld(TimeUnit.MILLISECONDS.toNanos(5), () -> ran.getAndSet(true))).isNull();
+        assertThat(ran.get()).as("the callable never runs without the hold").isFalse();
+      } finally {
+        pageManager.endPublication();
+      }
+
+      assertThat(pageManager.callWithPublicationsHeld(TimeUnit.MILLISECONDS.toNanos(5), () -> "held")).isEqualTo("held");
+    }
+
+    /** #11455: no publication starts while a hold is granted, so what the holder reads is one committed state. */
+    @Test
+    void aPublicationWaitsForTheHoldToBeReleased() throws Exception {
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final CountDownLatch holding = new CountDownLatch(1);
+      final CountDownLatch release = new CountDownLatch(1);
+      final AtomicBoolean published = new AtomicBoolean();
+
+      final Thread holder = new Thread(() -> {
+        try {
+          pageManager.callWithPublicationsHeld(TimeUnit.SECONDS.toNanos(5), () -> {
+            holding.countDown();
+            return release.await(10, TimeUnit.SECONDS);
+          });
+        } catch (final Exception e) {
+          throw new RuntimeException(e);
+        }
+      });
+      holder.start();
+      assertThat(holding.await(5, TimeUnit.SECONDS)).isTrue();
+
+      final long before = pageManager.getPublicationSequence();
+      final Thread publisher = new Thread(() -> {
+        pageManager.beginPublication();
+        published.set(true);
+        pageManager.endPublication();
+      });
+      publisher.start();
+      try {
+        publisher.join(50);
+        assertThat(published.get()).as("the publication waits for the hold").isFalse();
+        assertThat(pageManager.getPublicationSequence()).isEqualTo(before);
+      } finally {
+        release.countDown();
+        holder.join();
+        publisher.join();
+      }
+      assertThat(published.get()).isTrue();
+      assertThat(pageManager.getPublicationSequence()).isEqualTo(before + 2);
+    }
   }
 
   // Issue #11283: the "one commit" proofs of the multi-page record read redo their check under the publication lock when a
@@ -472,6 +531,49 @@ class ReplicatedApplyPublicationTest {
           pageManager.endPublication();
         closer.join();
       }
+    }
+
+    /**
+     * Nightly Load Tests after #11455: a follower applies its entries back to back, so the sequence is even only for the instants
+     * between two of them, far shorter than a validation. The wait of #11455 found one of those instants, the next apply opened
+     * during the validation, and the redo under the page-manager lock, which does not exclude an apply, found it open again: every
+     * attempt failed and the read raised "modified during read after 3 retries" on a record nobody had touched. The redo now holds
+     * the next publication off for the validation, so a read of an unchanged record is served however busy the apply is.
+     */
+    @Test
+    void aTransactionalReadIsServedWhileEntriesAreAppliedBackToBack() throws Exception {
+      final RID[] rids = createChunkedRecords("Read");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final String expected = database.lookupByRID(rids[0], true).asDocument().getString("payload");
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+
+      final Thread applier = new Thread(() -> {
+        while (!stop.get()) {
+          pageManager.beginPublication();
+          try {
+            final long until = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(200);
+            while (System.nanoTime() < until)
+              Thread.onSpinWait();
+          } finally {
+            pageManager.endPublication();
+          }
+          applied.incrementAndGet();
+        }
+      });
+      applier.start();
+      try {
+        for (int i = 0; i < 50; i++) {
+          final String[] read = new String[1];
+          database.transaction(() -> read[0] = database.lookupByRID(rids[0], true).asDocument().getString("payload"));
+          assertThat(read[0]).as("read %d served the committed record", i).isEqualTo(expected);
+        }
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the reads ran").isPositive();
+      assertThat(pageManager.getPublicationSequence() & 1).isZero();
     }
 
     @Test
