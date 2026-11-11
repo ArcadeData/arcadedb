@@ -279,7 +279,15 @@ class MaterializedViewRefreshAtomicityTest extends TestHelper {
         .isLessThanOrEqualTo(afterFirst * 2);
   }
 
+  /**
+   * The size the index files have on disk once every committed page has reached them. A commit only hands its pages to
+   * the asynchronous page flush (the WAL is what makes it durable), so without the wait the files lag the commits by
+   * whatever the flush thread has not written yet: right after the index build that is often all of it, and the
+   * "on disk to begin with" check read 0 bytes about once in fifteen runs of the fixture.
+   */
   private long indexBytesOf(final String viewName) throws Exception {
+    assertThat(((DatabaseInternal) database).getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+        .as("every committed page reached the index files before measuring them").isTrue();
     final FileManager files = ((DatabaseInternal) database).getFileManager();
     long bytes = 0;
     for (final TypeIndex index : database.getSchema().getType(viewName).getAllIndexes(false))

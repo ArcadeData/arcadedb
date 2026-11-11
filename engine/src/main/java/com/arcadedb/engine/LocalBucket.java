@@ -6421,6 +6421,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return new Binary(servedContent.clone());
     }
 
+    // The head the caller found and asked to read: a retry that re-reads the slot must find that one again
+    final long requestedHeadMarker = recordMarker;
     for (int retry = 0; retry <= maxRetries; retry++) {
       // Trace of the chunks this attempt consumed, in chain order: where each one was, at which version of its page,
       // and how long it was. Sized for the chains that exist in practice and grown only by a record that has more.
@@ -6666,6 +6668,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             throw new RecordNotFoundException("Multi-page record " + originalRID + " was deleted during read", originalRID);
           recordMarker = firstPage.readNumber(recordPositionInPage);
           recordHeaderSize = firstPage.readNumberSize(recordPositionInPage);
+          if (recordMarker != requestedHeadMarker)
+            // THE SLOT NO LONGER HOLDS THE HEAD THIS READ WAS ASKED FOR. WALKING IT AS ONE HANDED OUT THE CONTENT OF ANOTHER
+            // RECORD'S CONTINUATION CHUNK, TAKEN INTO THE SLOT OF A RECORD DELETED UNDER THE READ, AS THIS RECORD
+            return readChangedHeadSlot(originalRID, firstPage, recordPositionInPage, recordMarker, recordHeaderSize,
+                    requestedHeadMarker);
         }
         // Otherwise the head the transaction holds, which is the only one it can read: the tails are what can change
       } else
@@ -6675,6 +6682,33 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     throw new DatabaseOperationException("Failed to load multi-page record " + originalRID);
+  }
+
+  /**
+   * What a retry of {@link #loadMultiPageRecord} answers when the head slot it re-read no longer holds the head the read was
+   * asked for. The slot is resolved on the page the retry just read, as a first read of the RID resolves it in
+   * {@link #getRecordInternal(RID, boolean, boolean)}, and NOT by asking that method again: under {@code READ_COMMITTED} it
+   * would start from the page the transaction holds, find the old head there and come back here for good.
+   * <ul>
+   *   <li>a plain record: the chain collapsed back into one (#6178), which is still this record;</li>
+   *   <li>a placeholder pointer: the content is read where it points;</li>
+   *   <li>anything else - a continuation chunk or the content of a placeholder taken into a slot the delete freed, or a head
+   *   of the other kind - is not this record any more, which was deleted during the read.</li>
+   * </ul>
+   */
+  private Binary readChangedHeadSlot(final RID originalRID, final BasePage headPage, final int recordPositionInPage,
+                                     final long recordMarker, final int recordHeaderSize, final long requestedHeadMarker) {
+    final boolean placeholderContentAsked = requestedHeadMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT;
+    final int contentPosition = recordPositionInPage + recordHeaderSize;
+
+    if (recordMarker > 0)
+      return headPage.getImmutableView(contentPosition, (int) recordMarker);
+    if (placeholderContentAsked && recordMarker < RECORD_PLACEHOLDER_CONTENT)
+      return headPage.getImmutableView(contentPosition, (int) -recordMarker);
+    if (recordMarker == RECORD_PLACEHOLDER_POINTER)
+      return getRecordInternal(new RID(originalRID.getBucketId(), headPage.readLong(contentPosition)), true, false);
+
+    throw new RecordNotFoundException("Multi-page record " + originalRID + " was deleted during read", originalRID);
   }
 
   /**

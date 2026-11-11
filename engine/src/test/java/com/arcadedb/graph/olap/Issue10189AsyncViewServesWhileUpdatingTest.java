@@ -38,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -315,6 +316,46 @@ class Issue10189AsyncViewServesWhileUpdatingTest {
         .ignoreExceptionsInstanceOf(NeedRetryException.class)
         .until(() -> view.awaitReady(1, TimeUnit.SECONDS) && count() == expected);
     assertThat(plan()).contains("GAV");
+  }
+
+  /**
+   * A commit whose callback reaches a full build's watch just after it closed is refused by it and queued for the merge, without
+   * the view's monitor the publication holds. The publication dropped every queued change after closing the watch, taking it for
+   * one its scan had read, so a change committed after the scan, in neither the CSR nor the watch, was lost while the view
+   * reported READY (the flaky {@code Issue10491ViewVertexTypeAttachedAfterBuildTest} and {@code Issue8378GAVBuildRacesCommitsTest}).
+   * The hook commits from inside that window, on another thread, and waits for its callback to have run.
+   */
+  @Test
+  void aCommitRefusedByTheWatchOfAPublishingBuildReachesTheView() throws Exception {
+    final GraphAnalyticalView view = createView();
+    final AtomicBoolean fired = new AtomicBoolean();
+    final AtomicBoolean committed = new AtomicBoolean();
+    view.setAfterBuildWatchClosedForTest(() -> {
+      if (!fired.compareAndSet(false, true))
+        return;
+      final Thread writer = new Thread(() -> {
+        addEdge(0, 10);
+        committed.set(true);
+      });
+      writer.start();
+      try {
+        writer.join(TimeUnit.SECONDS.toMillis(30));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    try {
+      view.buildAsync();
+      assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      view.setAfterBuildWatchClosedForTest(null);
+    }
+    assertThat(fired.get()).as("the build published through the hook").isTrue();
+    assertThat(committed.get()).as("the commit ran inside the publication window").isTrue();
+
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(plan()).contains("GAV");
+    assertThat(count()).as("the view holds the edge committed while the build published").isEqualTo(countOnRecords());
   }
 
   @Test

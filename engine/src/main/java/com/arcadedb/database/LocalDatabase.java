@@ -4528,14 +4528,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // THE SAME FOR THE BM25 CORPUS COUNTERS (ISSUE #10133): THE SCHEMA HOLDS THE PAIR OF ITS LAST SAVE, THE REPLAY RESTORES
     // EVERYTHING COMMITTED AFTER IT. THE DRIFT CHECK ONLY COMPARES DOCUMENT COUNTS, SO A WORKLOAD THAT LEFT THE COUNT WHERE IT WAS
     // (A DOCUMENT REPLACED BY A LONGER ONE) WOULD KEEP THE OLD LENGTH FOREVER: THE FIRST SEARCH RESCANS UNCONDITIONALLY INSTEAD
-    int bm25Indexes = 0;
-    for (final Index index : schema.getIndexes()) {
-      final FullTextIndexMetadata ftMetadata = LSMTreeFullTextIndex.metadataOf(index);
-      if (ftMetadata != null && ftMetadata.isBM25()) {
-        ftMetadata.requireRescan();
-        ++bm25Indexes;
-      }
-    }
+    final int bm25Indexes = requireBM25Rescan();
     if (bm25Indexes > 0)
       LogManager.instance().log(this, Level.INFO,
           "The BM25 corpus counters of %d full-text index(es) of database '%s' will be recomputed by a full scan at their first search",
@@ -4554,6 +4547,30 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       beforeReplayHook.accept(this);
 
     transactionManager.checkIntegrity();
+
+    // AN INDEX CREATED JUST BEFORE THE CRASH CAN HAVE ITS HEADER PAGE IN THE WAL ONLY: THE LOAD ABOVE, WHICH RUNS BEFORE THE
+    // REPLAY, FOUND ITS FILE EMPTY AND LEFT IT OUT (#10046), AND THE REPLAY HAS JUST WRITTEN THE HEADER. LOAD THE SCHEMA AGAIN
+    // SO THIS OPEN SERVES THE INDEX - A UNIQUE ONE WOULD OTHERWISE ENFORCE NOTHING UNTIL THE NEXT OPEN. THE RELOAD CARRIES THE
+    // BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE ARE SET AGAIN
+    if (mode == ComponentFile.MODE.READ_WRITE && schema.hasUnavailableIndexCompletedSinceLoad()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "The WAL replay of database '%s' completed the file of an index the schema load found with no header page: reloading the schema",
+          null, name);
+      schema.load(mode, true, true);
+      requireBM25Rescan();
+    }
+  }
+
+  private int requireBM25Rescan() {
+    int bm25Indexes = 0;
+    for (final Index index : schema.getIndexes()) {
+      final FullTextIndexMetadata ftMetadata = LSMTreeFullTextIndex.metadataOf(index);
+      if (ftMetadata != null && ftMetadata.isBM25()) {
+        ftMetadata.requireRescan();
+        ++bm25Indexes;
+      }
+    }
+    return bm25Indexes;
   }
 
   /**

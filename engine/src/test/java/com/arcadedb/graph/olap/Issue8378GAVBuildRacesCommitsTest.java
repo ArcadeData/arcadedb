@@ -194,11 +194,28 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
     final AtomicInteger commitsDuringBuild = new AtomicInteger();
     final AtomicReference<Throwable> writerError = new AtomicReference<>();
     final AtomicBoolean writerStarted = new AtomicBoolean();
+    // A view's FIRST build arms the change listeners, and a transaction already open then reported its earlier changes to
+    // nobody: if it commits after the scan passed them, they are lost, a window BuildWatch documents as outside #8378's,
+    // which is the scan's. So the writer is held between two transactions until the listeners are armed: every
+    // transaction it runs then either committed before the scan started or is fully reported. A rebuild needs no hold,
+    // its listeners are armed already, and a transaction open across its watch opening is the case #8378 covers
+    final boolean firstBuild = GraphAnalyticalViewRegistry.get(database, "gav8378") == null;
+    final AtomicBoolean holdUntilArmed = new AtomicBoolean();
+    final AtomicBoolean writerHeld = new AtomicBoolean();
 
     final Thread writer = new Thread(() -> {
       final Random random = new Random(1);
       try {
         while (!stop.get()) {
+          if (holdUntilArmed.get()) {
+            writerHeld.set(true);
+            final GraphAnalyticalView arming = GraphAnalyticalViewRegistry.get(database, "gav8378");
+            if (arming == null || !arming.hasChangeListeners()) {
+              Thread.onSpinWait();
+              continue;
+            }
+            holdUntilArmed.set(false);
+          }
           // Looked up in the registry: a blocking build() registers the view before scanning, and returns only after
           final GraphAnalyticalView before = GraphAnalyticalViewRegistry.get(database, "gav8378");
           final boolean building = before != null && before.getStatus() == GraphAnalyticalView.Status.BUILDING;
@@ -214,6 +231,11 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
     writer.start();
     while (!writerStarted.get())
       Thread.onSpinWait();
+    if (firstBuild) {
+      holdUntilArmed.set(true);
+      while (!writerHeld.get())
+        Thread.onSpinWait();
+    }
 
     final GraphAnalyticalView view = startBuild.get();
     viewRef.set(view);
