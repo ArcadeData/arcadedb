@@ -1394,8 +1394,13 @@ public class PostgresNetworkExecutor extends Thread {
    * around a read in it costs nothing that matters.
    */
   private void beginSimpleQueryBlock() {
-    if (simpleQueryBlockContinues && !database.isTransactionActive())
+    if (!simpleQueryBlockContinues)
+      return;
+    if (!database.isTransactionActive())
       database.begin();
+    // The message ends this transaction itself, with its last statement or its first error: an HA replica runs the writes
+    // in it instead of forwarding each one to the leader, where it would commit out of reach of the rollback (issue #10040)
+    ((DatabaseInternal) database).getTransaction().setClientManaged(true);
   }
 
   /**
