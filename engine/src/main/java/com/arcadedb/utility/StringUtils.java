@@ -45,6 +45,44 @@ public class StringUtils {
   }
 
   /**
+   * The candidate {@code name} most likely misspells: the closest by case-insensitive edit distance, ties broken by the
+   * natural order, or null when even the closest differs in more than half of {@code name}'s characters. For a "did you
+   * mean" hint on a refused setting name (issues #11311, #11523).
+   */
+  public static String closestMatch(final String name, final Iterable<String> candidates) {
+    final String lowerName = name.toLowerCase(Locale.ENGLISH);
+    String closest = null;
+    int closestDistance = Integer.MAX_VALUE;
+    for (final String candidate : candidates) {
+      final int distance = editDistance(lowerName, candidate.toLowerCase(Locale.ENGLISH));
+      if (distance < closestDistance || (distance == closestDistance && candidate.compareTo(closest) < 0)) {
+        closest = candidate;
+        closestDistance = distance;
+      }
+    }
+    return closestDistance <= name.length() / 2 ? closest : null;
+  }
+
+  /** The Levenshtein distance between {@code a} and {@code b}. */
+  public static int editDistance(final String a, final String b) {
+    int[] previous = new int[b.length() + 1];
+    int[] current = new int[b.length() + 1];
+    for (int j = 0; j <= b.length(); j++)
+      previous[j] = j;
+
+    for (int i = 1; i <= a.length(); i++) {
+      current[0] = i;
+      for (int j = 1; j <= b.length(); j++)
+        current[j] = Math.min(Math.min(current[j - 1], previous[j]) + 1, previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+
+      final int[] swap = previous;
+      previous = current;
+      current = swap;
+    }
+    return previous[b.length()];
+  }
+
+  /**
    * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
    * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
    * turn eight characters of query text into a 100MB string (issue #6389).

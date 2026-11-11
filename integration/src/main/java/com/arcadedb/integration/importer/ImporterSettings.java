@@ -23,7 +23,6 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.StringUtils;
 
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -248,37 +247,10 @@ public class ImporterSettings {
     if (renamed != null)
       return "Unknown importer setting '" + name + "'. Did you mean '" + renamed + "'?";
 
-    String closest = null;
-    int closestDistance = Integer.MAX_VALUE;
-    for (final String setting : SETTINGS) {
-      final int distance = editDistance(name.toLowerCase(Locale.ENGLISH), setting.toLowerCase(Locale.ENGLISH));
-      if (distance < closestDistance || (distance == closestDistance && setting.compareTo(closest) < 0)) {
-        closest = setting;
-        closestDistance = distance;
-      }
-    }
-    if (closestDistance <= name.length() / 2)
+    final String closest = StringUtils.closestMatch(name, SETTINGS);
+    if (closest != null)
       return "Unknown importer setting '" + name + "'. Did you mean '" + closest + "'?";
     return "Unknown importer setting '" + name + "'. Supported settings: " + new TreeSet<>(SETTINGS);
-  }
-
-  /** The Levenshtein distance between {@code a} and {@code b}. */
-  private static int editDistance(final String a, final String b) {
-    int[] previous = new int[b.length() + 1];
-    int[] current = new int[b.length() + 1];
-    for (int j = 0; j <= b.length(); j++)
-      previous[j] = j;
-
-    for (int i = 1; i <= a.length(); i++) {
-      current[0] = i;
-      for (int j = 1; j <= b.length(); j++)
-        current[j] = Math.min(Math.min(current[j - 1], previous[j]) + 1, previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
-
-      final int[] swap = previous;
-      previous = current;
-      current = swap;
-    }
-    return previous[b.length()];
   }
 
   public void parseParameter(final String name, String value) {

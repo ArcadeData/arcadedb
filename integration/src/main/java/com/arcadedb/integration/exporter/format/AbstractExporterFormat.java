@@ -56,6 +56,14 @@ public abstract class AbstractExporterFormat {
   public abstract String getName();
 
   /**
+   * Whether this format honours {@code includeTypes}, {@code excludeTypes} and {@code includeRecords}. The exporter refuses
+   * them for a format that does not, which used to write the whole database and answer OK (issue #11523).
+   */
+  public boolean supportsRecordFilters() {
+    return false;
+  }
+
+  /**
    * Claims {@code exportFile} for the duration of this export, so a second export racing to the same resolved
    * target - the same explicit URL twice, or two default names resolving within one millisecond - fails outright
    * instead of interleaving its output with this writer's (issue #7644).
@@ -146,8 +154,11 @@ public abstract class AbstractExporterFormat {
   protected final void refuseExistingTarget(final File exportFile) {
     if (exportFile.exists() && !settings.overwriteFile)
       // The file that is actually in the way, not settings.file: for a 'file://' target the two differ, and the
-      // resolved path is the one an operator has to go and look at.
-      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(exportFile));
+      // resolved path is the one an operator has to go and look at. Both spellings of the switch are named: a SQL
+      // statement sets 'overwrite', the command line '-o' (issue #11523).
+      throw new ExportException(
+          "The export file '%s' already exists and 'overwrite' is false (set 'overwrite' to true, or pass -o on the command line, to replace it)".formatted(
+              exportFile));
   }
 
   /**

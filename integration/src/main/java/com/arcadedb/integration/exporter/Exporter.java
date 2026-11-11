@@ -75,6 +75,11 @@ public class Exporter {
       openDatabase();
 
       formatImplementation = createFormatImplementation();
+      if (!formatImplementation.supportsRecordFilters() && (settings.includeTypes != null || settings.excludeTypes != null
+          || settings.includeRecords != null))
+        throw new ExportException("The '" + formatImplementation.getName()
+            + "' format always exports the whole database: includeTypes, excludeTypes and includeRecords are supported by the '"
+            + JsonlExporterFormat.NAME + "' format only");
       formatImplementation.exportDatabase();
 
       long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;

@@ -168,6 +168,11 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     return NAME;
   }
 
+  @Override
+  public boolean supportsRecordFilters() {
+    return true;
+  }
+
   private void exportVertices(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : vertexTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {

@@ -46,7 +46,6 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
   public          Url                         url;
   protected       Identifier                  format    = new Identifier("jsonl");
-  protected       BooleanExpression           overwrite = BooleanExpression.FALSE;
   protected       Expression                  key;
   protected       Expression                  value;
   public final    Map<Expression, Expression> settings  = new LinkedHashMap<>();
@@ -105,8 +104,6 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
         final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
 
-        clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
-
         String formatExport = format.getStringValue();
         if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
             formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
@@ -114,7 +111,8 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
         }
         clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
 
-        // TRANSFORM SETTINGS
+        // TRANSFORM SETTINGS. 'overwrite' IS ONE OF THEM AND ITS VALUE IS READ THERE, STRICTLY; A NAME THE EXPORTER DOES NOT
+        // KNOW IS REFUSED, AND THE TARGET RESOLVED ABOVE CANNOT BE REPLACED FROM HERE (issue #11523)
         final Map<String, String> settingsToString = new HashMap<>();
         for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
           final Object executedValue = entry.getValue().execute((Identifiable) null, context);
@@ -195,7 +193,6 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     // DEFECT BackupDatabaseStatement HAD (#6080). COPY THE WHOLE STATE, NOT THE URL ALONE, SO THE COPY STAYS CORRECT
     // THE MOMENT THIS STATEMENT REACHES A PATH THAT COPIES IT
     result.format = this.format;
-    result.overwrite = this.overwrite;
     result.settings.putAll(this.settings);
     return result;
   }

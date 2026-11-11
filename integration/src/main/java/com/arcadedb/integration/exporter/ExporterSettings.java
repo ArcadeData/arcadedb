@@ -20,28 +20,60 @@ package com.arcadedb.integration.exporter;
 
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StringUtils;
 
 import java.time.LocalDateTime;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 public class ExporterSettings {
-  public       String              format;
-  public       String              databaseURL;
-  public       String              file;
-  public       boolean             overwriteFile = false;
-  public       int                 verboseLevel  = 2;
-  public       Set<String>         includeRecords;
-  public       Set<String>         includeTypes;
-  public       Set<String>         excludeTypes;
-  public final Map<String, String> options       = new HashMap<>();
+  /**
+   * Every setting {@link #parseParameter} accepts, which is what a {@code WITH} clause of {@code EXPORT DATABASE} may carry. It
+   * used to accept anything, into a free-form map nothing read back, so a misspelled setting ({@code exludeTypes}) exported
+   * everything and answered OK (issue #11523). The target file and the database are not among them: the caller fixes both,
+   * and only the command line sets them ({@link #parseParameters}).
+   */
+  public static final Set<String> SETTINGS = Set.of("format", "overwrite", "includeTypes", "excludeTypes", "includeRecords");
 
+  public String      format;
+  public String      databaseURL;
+  public String      file;
+  public boolean     overwriteFile = false;
+  public int         verboseLevel  = 2;
+  public Set<String> includeRecords;
+  public Set<String> includeTypes;
+  public Set<String> excludeTypes;
+
+  /**
+   * Parses the command line: {@code -o} is a flag with no value, every other argument is a {@code -<name> <value>} pair. A
+   * trailing {@code -o} used to be dropped, because the loop stopped one argument before the end expecting a value for every
+   * name (issue #11523).
+   */
   protected void parseParameters(final String[] args) {
     if (args != null)
-      for (int i = 0; i < args.length - 1; )
-        i += parseParameter(args[i].substring(1), args[i + 1]);
+      for (int i = 0; i < args.length; ) {
+        if (args[i].isEmpty() || args[i].charAt(0) != '-')
+          throw new IllegalArgumentException("Arguments must begin with '-', found '" + args[i] + "'");
+
+        final String name = args[i].substring(1);
+        if ("o".equals(name)) {
+          overwriteFile = true;
+          ++i;
+          continue;
+        }
+
+        if (i + 1 >= args.length)
+          throw new IllegalArgumentException("Missing value for -" + name);
+
+        final String value = args[i + 1];
+        switch (name) {
+        case "f", "file" -> file = value;
+        case "d" -> databaseURL = value;
+        default -> parseParameter(name, value);
+        }
+        i += 2;
+      }
 
     if (includeTypes != null && excludeTypes != null)
       throw new IllegalArgumentException("Both includeTypes and excludeTypes were defined, but they are mutual exclusive");
@@ -63,29 +95,34 @@ public class ExporterSettings {
     file = file.formatted(LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
   }
 
-  public int parseParameter(String name, final String value) {
+  /**
+   * Applies one of the {@link #SETTINGS}. {@code overwrite} takes its value, strictly {@code true} or {@code false}: it used to
+   * be set by its name alone, so {@code WITH overwrite = false} replaced an existing export like {@code overwrite = true}
+   * (issue #11523).
+   *
+   * @throws IllegalArgumentException for a name that is not one of the {@link #SETTINGS}, or a value the setting cannot take
+   */
+  public void parseParameter(String name, final String value) {
     name = FileUtils.getStringContent(name);
 
-    if ("format".equals(name))
-      format = value.toLowerCase(Locale.ENGLISH);
-    else if ("f".equals(name) || "file".equals(name))
-      file = value;
-    else if ("d".equals(name))
-      databaseURL = value;
-    else if ("overwrite".equals(name))
-      overwriteFile = true;
-    else if ("o".equals(name)) {
-      overwriteFile = true;
-      return 1;
-    } else if ("includeTypes".equals(name))
-      includeTypes = Set.of(value.split(","));
-    else if ("excludeTypes".equals(name))
-      excludeTypes = Set.of(value.split(","));
-    else if ("includeRecords".equals(name))
-      includeRecords = Set.of(value.split(","));
-    else
-      // ADDITIONAL OPTIONS
-      options.put(name, value);
-    return 2;
+    switch (name) {
+    case "format" -> format = value.toLowerCase(Locale.ENGLISH);
+    case "overwrite" -> {
+      try {
+        overwriteFile = StringUtils.parseStrictBoolean(value);
+      } catch (final IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid value '" + value + "' for -overwrite. Supported values are 'true' and 'false'");
+      }
+    }
+    case "includeTypes" -> includeTypes = Set.of(value.split(","));
+    case "excludeTypes" -> excludeTypes = Set.of(value.split(","));
+    case "includeRecords" -> includeRecords = Set.of(value.split(","));
+    default -> {
+      final String closest = StringUtils.closestMatch(name, SETTINGS);
+      throw new IllegalArgumentException("Unknown export setting '" + name + "'. " + (closest != null ?
+          "Did you mean '" + closest + "'?" :
+          "Supported settings: " + new TreeSet<>(SETTINGS)));
+    }
+    }
   }
 }
