@@ -352,6 +352,12 @@ public class LocalSchema implements Schema {
   private volatile    boolean                                openLoadDone;
   // Whether the running load read schema.prev.json because schema.json was missing, empty or unreadable
   private             boolean                                schemaReadFromPreviousCopy;
+  // #11514: whether this open has seen schema.json published by an atomic rename, which is what lets a write defer the flush of
+  // schema.prev.json; and whether a write did, so close() still owes it. Both guarded by the writeSchemaFile() monitor
+  private             boolean                                primaryPublishedAtomically;
+  private             boolean                                previousSchemaCopyUnsynced;
+  // #11514: the crash recovery found the copy lost (missing or not a whole schema) and could not rebuild it: the close rebuilds it
+  private             boolean                                previousSchemaCopyNeedsRebuild;
   // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
   // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
   private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
@@ -3270,6 +3276,8 @@ public class LocalSchema implements Schema {
     // committed since, so writing them back would rewind the writer's record counts (#10507)
     if (database.getMode() == ComponentFile.MODE.READ_WRITE)
       writeStatisticsFile();
+    // After the last schema write of this open: the recovery copy a write left unflushed is made durable once (#11514)
+    syncPreviousSchemaCopy();
     materializedViews.clear();
     continuousAggregates.clear();
     extensions.clear();
@@ -6399,8 +6407,25 @@ public class LocalSchema implements Schema {
       // nothing on every schema change. In between, a power failure leaves schema.prev.json holding either the
       // generation before this one or the one before that - complete either way - next to a schema.json that the
       // atomic write guarantees is complete, so the fallback it exists for is never needed in that window.
-      final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      FileUtils.atomicCopyFile(configurationFile, copy, false);
+      //
+      // #11514: AND WITHOUT ITS OWN DATA FSYNC, once this open has seen the primary published by an atomic rename. The copy
+      // is read back only when schema.json is missing, empty or unreadable, and the publication below never leaves it so:
+      // fsync'd temporary file, atomic rename, directory fsync. Flushing the copy on every DDL statement was a full device
+      // flush paid for a double fault, so it is deferred to where it is owed: close() makes it durable once
+      // (syncPreviousSchemaCopy), and an open after a crash re-secures it (securePreviousSchemaCopyAfterCrash), rebuilding
+      // it from the primary when its bytes did not reach the disk. Until this open has seen an atomic publication - its
+      // first write, or a file store that cannot rename atomically, where the primary CAN be left missing or partial - the
+      // copy is flushed as before, because then it is the one file a recovery relies on.
+      final File copy = getPreviousSchemaCopyFile();
+      if (primaryPublishedAtomically) {
+        FileUtils.atomicCopyFileUnsynced(configurationFile, copy);
+        previousSchemaCopyUnsynced = true;
+      } else {
+        FileUtils.atomicCopyFile(configurationFile, copy, false);
+        previousSchemaCopyUnsynced = false;
+      }
+      // A copy of the current primary is published: whatever the recovery could not rebuild has been replaced
+      previousSchemaCopyNeedsRebuild = false;
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.
@@ -6412,7 +6437,7 @@ public class LocalSchema implements Schema {
     // normalises the primary back onto UTF-8 - which is also what makes the recovery in readConfiguration() self-heal
     // a legacy database instead of perpetuating its charset. This replaces a FileWriter that used the JVM's DEFAULT
     // charset, which was asymmetric with the reader on any platform whose default is not UTF-8 (issue #6114).
-    FileUtils.atomicWriteFile(configurationFile, latestSchema);
+    primaryPublishedAtomically = FileUtils.atomicWriteFile(configurationFile, latestSchema);
 
     // Only after the bytes are on disk: a failed publication must not leave the in-memory version claiming a
     // generation that no file holds.
@@ -6424,6 +6449,112 @@ public class LocalSchema implements Schema {
     // update() path - must flush it too. The Cypher statement cache holds only the syntactic AST and
     // is schema-independent, so it is intentionally left untouched (same as SQL's statement cache).
     database.getCypherPlanCache().invalidate();
+  }
+
+  private File getPreviousSchemaCopyFile() {
+    return new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
+  }
+
+  /**
+   * Makes the recovery copy published by the schema writes of this open durable, once, if any of them deferred its flush
+   * (issue #11514). Called by {@link #close()}: a clean close is what lets the next open trust the copy without a recovery.
+   * Both the content and the directory entry are flushed: a write whose primary publication failed, or a process that died
+   * between the two publications, left the copy's rename without the directory fsync that normally follows it.
+   * <p>
+   * A failure is logged, never thrown, and leaves the flush owed ({@link #isPreviousSchemaCopyUnsynced()}), so the database
+   * close keeps its lock file and the next open re-secures the copy as after a crash.
+   */
+  synchronized void syncPreviousSchemaCopy() {
+    if (!previousSchemaCopyUnsynced)
+      return;
+    try {
+      final File copy = getPreviousSchemaCopyFile();
+      if (previousSchemaCopyNeedsRebuild)
+        // The recovery of this open could not rebuild a copy lost in the crash: flushing what is there would secure nothing
+        FileUtils.atomicCopyFile(configurationFile, copy);
+      else if (copy.exists())
+        syncCopyAndItsName(copy);
+      previousSchemaCopyUnsynced = false;
+      previousSchemaCopyNeedsRebuild = false;
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot flush the recovery copy '%s' of the schema of database '%s': the next open will re-secure it (%s)", e,
+          SCHEMA_PREV_FILE_NAME, database.getName(), e.getMessage());
+    }
+  }
+
+  /**
+   * Whether a schema write of this open left the recovery copy unflushed and no flush has made it durable since (issue #11514).
+   * Read by the database close after {@link #close()}: still {@code true} there means the close-time flush failed, and the lock
+   * file is kept so the next open runs the recovery that re-secures the copy.
+   */
+  public synchronized boolean isPreviousSchemaCopyUnsynced() {
+    return previousSchemaCopyUnsynced;
+  }
+
+  /**
+   * Re-secures the recovery copy at an open that follows a crash (issue #11514). The writes before the crash may have deferred
+   * its flush, so its bytes can be lost (a power failure: missing, empty, or blocks never written) or still only in the page
+   * cache (a process crash, which a later power failure can still drop). A copy that reads back as a whole schema is kept, so
+   * it still holds the generation before the current one, and flushed with its directory entry; anything else, a missing copy
+   * included, is rebuilt, flushed, from the primary.
+   * <p>
+   * Only over a primary this open read whole: one damaged or missing has been read from the copy, which is then all there is.
+   * A failure is logged, never thrown, and leaves the flush owed to the close, as {@link #syncPreviousSchemaCopy()} does.
+   * <p>
+   * Internal: public only for {@link com.arcadedb.database.LocalDatabase}'s recovery, its one caller. That recovery is what
+   * decides "after a crash", from the lock file a clean close deletes. A power failure that loses that lock file too is one
+   * where the copy can stay unflushed: still safe, since the primary is durable and the copy only covers a second fault.
+   */
+  public synchronized void securePreviousSchemaCopyAfterCrash() {
+    if (schemaReadFromPreviousCopy || !configurationFile.exists() || database.getMode() != ComponentFile.MODE.READ_WRITE)
+      return;
+
+    final File copy = getPreviousSchemaCopyFile();
+    final boolean whole = isWholeSchema(copy);
+    try {
+      if (whole)
+        syncCopyAndItsName(copy);
+      else {
+        if (copy.exists())
+          LogManager.instance().log(this, Level.WARNING,
+              "The recovery copy '%s' of the schema of database '%s' did not survive the crash: rebuilding it from '%s'", null,
+              SCHEMA_PREV_FILE_NAME, database.getName(), SCHEMA_FILE_NAME);
+        FileUtils.atomicCopyFile(configurationFile, copy);
+      }
+      previousSchemaCopyUnsynced = false;
+      previousSchemaCopyNeedsRebuild = false;
+    } catch (final IOException e) {
+      // Owed to the close, which retries the same repair: a rebuild for a copy that was lost, a flush for one that was not
+      previousSchemaCopyUnsynced = true;
+      previousSchemaCopyNeedsRebuild = !whole;
+      LogManager.instance().log(this, Level.WARNING, "Cannot secure the recovery copy '%s' of the schema of database '%s': %s", e,
+          SCHEMA_PREV_FILE_NAME, database.getName(), e.getMessage());
+    }
+  }
+
+  private static void syncCopyAndItsName(final File copy) throws IOException {
+    FileUtils.syncFile(copy);
+    FileUtils.forceDirectory(copy.toPath().toAbsolutePath().getParent());
+  }
+
+  /**
+   * Whether {@code file} reads back as a schema JSON document, as {@link #readConfiguration()} would read it, carrying the
+   * {@code schemaVersion}, {@code settings} and {@code types} every save writes and the load requires. A copy without them (a
+   * legacy file, or anything else that happens to parse) is rebuilt from the primary, which costs one copy and never loses
+   * anything the primary does not hold.
+   */
+  private boolean isWholeSchema(final File file) {
+    if (!file.exists() || file.length() == 0)
+      return false;
+    try (final FileInputStream fis = new FileInputStream(file)) {
+      final JSONObject root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
+      // A member that is there but not an object throws, which the catch below reads as "not whole" too
+      return root.has("schemaVersion") && root.getJSONObject("settings", null) != null && root.getJSONObject(TYPES, null) != null;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Schema file '%s' does not read back whole: %s", null, file, e.toString());
+      return false;
+    }
   }
 
   /**
