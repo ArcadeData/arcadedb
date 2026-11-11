@@ -18,12 +18,15 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.log.LogManager;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Properties;
+import java.util.logging.Level;
 
 /**
  * Tells whether the JVM hosting the server runs a remote JMX agent that accepts connections without authentication. A
@@ -81,7 +84,8 @@ final class RemoteJmxCheck {
     return String.format(Locale.ROOT, """
         The JVM accepts remote JMX connections on port %s without authentication (com.sun.management.jmxremote.authenticate=%s). \
         Anyone who can open a connection to that port can run code inside this server and read its memory, credentials \
-        included. Remove the com.sun.management.jmxremote.* settings from ARCADEDB_JMX and JAVA_OPTS to switch remote JMX off \
+        included. Remove the com.sun.management.jmxremote.* settings from ARCADEDB_JMX, JAVA_OPTS and JAVA_TOOL_OPTIONS (or the \
+        JMX configuration file) to switch remote JMX off \
         (local tools such as jconsole and jcmd attach without it), or enable authentication and SSL""", port.trim(),
         authenticate.trim());
   }
@@ -100,6 +104,7 @@ final class RemoteJmxCheck {
       target.load(in);
     } catch (final IOException | IllegalArgumentException e) {
       // AN UNREADABLE FILE STOPS THE JVM AGENT FROM STARTING AT ALL, SO IT OPENS NO PORT EITHER
+      LogManager.instance().log(RemoteJmxCheck.class, Level.FINE, "Cannot read the JMX configuration file '%s'", e, file);
     }
   }
 }
