@@ -78,7 +78,8 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
           }
           final MatchEdgeTraverser subtraverser = new MatchEdgeTraverser(null, sub);
           // THE NEXT SUB-ITEM STARTS FROM EVERY PATH, SO THEY ARE COLLECTED: A WHILE WALK CAN MEET EXPONENTIALLY MANY, SO
-          // THE LIST IS HELD UNDER THE ELEMENT CAP RATHER THAN UNTIL THE HEAP IS GONE (ISSUE #11501)
+          // THE LIST IS HELD UNDER THE ELEMENT CAP RATHER THAN UNTIL THE HEAP IS GONE (ISSUE #11501). ITS BYTES ARE NOT CHARGED
+          // TO THE QUERY BUDGET: THE LIST IS HANDED TO THE CALLER AS THIS HOP'S RESULT, WHICH HAS NO POINT AT WHICH TO RELEASE THEM
           if (pathsLimit == null)
             pathsLimit = OperationHeapLimit.of(iCommandContext, "paths", "MATCH while/maxDepth traversal");
           for (final ResultInternal x : subtraverser.executeTraversal(iCommandContext, sub, (Identifiable) current, 0, null)) {

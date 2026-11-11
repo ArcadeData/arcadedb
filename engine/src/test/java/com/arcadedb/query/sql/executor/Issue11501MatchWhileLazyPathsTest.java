@@ -24,13 +24,18 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue11501MatchWhileLazyPathsTest extends TestHelper {
   /** 2^(LAYERS+1)-1 paths from one start: far more than any test heap can hold as path objects. */
   private static final int LAYERS = 40;
+  private static final int HUB_DEGREE = 5_000;
+  private static final String TRACKER_PROBE = "issue11501TrackerProbe";
 
   @Override
   public void beginTest() {
@@ -56,6 +63,8 @@ class Issue11501MatchWhileLazyPathsTest extends TestHelper {
     database.command("sql", "CREATE EDGE TYPE E");
     database.command("sql", "CREATE VERTEX TYPE C");
     database.command("sql", "CREATE EDGE TYPE CE");
+    database.command("sql", "CREATE VERTEX TYPE H");
+    database.command("sql", "CREATE EDGE TYPE HE");
     database.transaction(() -> {
       // A LADDER: LAYERS + 1 LAYERS OF 2 VERTICES, EVERY VERTEX -E-> BOTH VERTICES OF THE NEXT LAYER
       MutableVertex[] previous = null;
@@ -75,6 +84,11 @@ class Issue11501MatchWhileLazyPathsTest extends TestHelper {
       final MutableVertex c1 = database.newVertex("C").set("id", 1).save();
       c0.newEdge("CE", c1).save();
       c1.newEdge("CE", c0).save();
+
+      // A HUB WITH MANY NEIGHBOURS: ITS FRAME HOLDS THEM ALL, ENOUGH TO RESERVE A SHARE OF THE HEAP BUDGET
+      final MutableVertex hub = database.newVertex("H").set("id", 0).save();
+      for (int i = 0; i < HUB_DEGREE; i++)
+        hub.newEdge("HE", database.newVertex("H").set("id", i + 1).save()).save();
     });
   }
 
@@ -157,6 +171,80 @@ class Issue11501MatchWhileLazyPathsTest extends TestHelper {
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, previousCap);
     }
+  }
+
+  /**
+   * A walk stopped by {@code LIMIT} still holds its current path and the pending neighbours of the hub: closing the result set
+   * gives that heap back to the query's share of the budget, instead of leaving it reserved until the garbage collector finds
+   * the abandoned query. Read on the query's own tracker, not on the JVM-wide budget other tests share.
+   */
+  @Test
+  void closingAWalkStoppedByLimitGivesItsHeapBack() {
+    // THE BUDGET IS ON: THE STACK OF THE WALK IS CHARGED TO IT. TestHelper PUTS THE SETTING BACK AFTER THE TEST
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L << 30);
+    final Set<QueryHeapTracker> trackers = ConcurrentHashMap.newKeySet();
+    final AtomicLong peakUsed = new AtomicLong();
+    final SQLQueryEngine sql = (SQLQueryEngine) database.getQueryEngine("sql");
+    sql.getFunctionFactory().register(new SQLFunctionAbstract(TRACKER_PROBE) {
+      @Override
+      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+          final CommandContext context) {
+        // EVALUATED AT EVERY VERTEX THE WALK EXPANDS FROM: WHAT THE QUERY HOLDS WHILE THE WALK IS IN FLIGHT
+        final QueryHeapTracker tracker = context.getQueryHeapTracker();
+        trackers.add(tracker);
+        peakUsed.accumulateAndGet(tracker.getUsedBytes(), Math::max);
+        return true;
+      }
+
+      @Override
+      public String getSyntax() {
+        return TRACKER_PROBE + "()";
+      }
+    });
+    try {
+      try (final ResultSet rs = database.query("sql",
+          "MATCH {type: H, where: (id = 0), as: a}.out('HE'){while: (" + TRACKER_PROBE + "()), as: b} RETURN b.id AS id LIMIT 1")) {
+        // THE START ITSELF IS THE FIRST PATH: THE WHILE CONDITION WAS TAKEN, NOT DROPPED (A SINGLE HOP WOULD START AT A NEIGHBOUR)
+        assertThat(rs.next().<Integer>getProperty("id")).isEqualTo(0);
+      }
+      assertThat(trackers).hasSize(1);
+      // THE CONTROL: THE WALK DID CHARGE THE HUB'S PENDING NEIGHBOURS, SO THE ASSERTIONS BELOW CANNOT PASS ON A WALK THAT NEVER
+      // CHARGED ANYTHING
+      assertThat(peakUsed.get()).as("the walk held the hub's pending neighbours").isGreaterThanOrEqualTo((long) HUB_DEGREE * 64);
+      final QueryHeapTracker tracker = trackers.iterator().next();
+      assertThat(tracker.getUsedBytes()).as("closing the ResultSet gave the walk's heap back").isZero();
+      assertThat(tracker.getReservedBytes()).as("and its share of the shared budget with it").isZero();
+    } finally {
+      sql.getFunctionFactory().unregister(TRACKER_PROBE);
+    }
+  }
+
+  /**
+   * A {@code where:} or {@code while:} whose parenthesized value is not a comparison - a function call, a bare property - was
+   * dropped by the parser: the filter filtered nothing and the while item ran as a single hop. Both are now tested as
+   * {@code <value> = true}, as a SQL {@code WHERE fn()} is.
+   */
+  @Test
+  void aWhereOrWhileThatIsAPlainExpressionIsNotDropped() {
+    database.transaction(() -> database.command("sql", "UPDATE C SET flag = (id = 1)"));
+
+    // where: (property): ONLY c1 HAS flag = true
+    assertThat(ids("MATCH {type: C, where: (flag), as: b} RETURN b.id AS id")).containsExactly(1);
+    // where: (function call)
+    assertThat(ids("MATCH {type: C, where: (ifnull(flag, false)), as: b} RETURN b.id AS id")).containsExactly(1);
+    // while: (function call): c0 HAS flag = false, SO ONLY THE START IS RETURNED. A DROPPED WHILE WOULD ANSWER THE SINGLE HOP [1]
+    assertThat(ids("MATCH {type: C, where: (id = 0), as: a}.out('CE'){while: (ifnull(flag, true)), as: b} RETURN b.id AS id"))
+        .containsExactly(0);
+    // while: (property): c0 HAS flag = false, SO ONLY THE START IS RETURNED, NOT EXPANDED
+    assertThat(ids("MATCH {type: C, where: (id = 0), as: a}.out('CE'){while: (flag), as: b} RETURN b.id AS id")).containsExactly(0);
+  }
+
+  private List<Integer> ids(final String query) {
+    final List<Integer> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", query)) {
+      rs.stream().forEach(r -> ids.add(r.getProperty("id")));
+    }
+    return ids;
   }
 
   /**

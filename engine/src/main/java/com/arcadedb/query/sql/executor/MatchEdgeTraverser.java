@@ -84,6 +84,16 @@ public class MatchEdgeTraverser {
     return result;
   }
 
+  /**
+   * Gives back the heap a {@code while:}/{@code maxDepth:} walk still holds: one stopped before its end (a {@code LIMIT}, a
+   * closed result set) holds its current path, which nothing else would release before the query context is collected.
+   * Idempotent.
+   */
+  public void close() {
+    if (downstream instanceof DepthFirstPaths paths)
+      paths.release();
+  }
+
   protected boolean equals(Object prevValue, Identifiable nextElement) {
     if (prevValue instanceof Result result) {
       prevValue = result.getElement().orElse(null);
