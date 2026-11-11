@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ErrorCategory;
@@ -304,21 +305,37 @@ class Issue11497SearchBuildHeapGateTest {
         assertThat(index.getStats().get("searchRebuildsWithReducedCache")).isEqualTo(1L);
         assertThat(index.getStats().get("searchRebuildsRefusedForMemory")).isEqualTo(1L);
 
-        // A short reclaim: the full build fits only by giving up 1,164 MB of page cache, and the cache of a test JVM holds
-        // nowhere near that, so the reclaim delivers less than it was asked for. The build is judged again against what was
-        // delivered - 1,500 MB at 25% leaves room for about 73,000 cached vectors beside the graph, under the floor, and it
-        // would take some 320 MB actually freed to change that - and refused, where it used to proceed "on heap it was not
-        // actually given"
+        // A short reclaim: the full build fits only by giving up about 1,040 MB of page cache, and the cache of a test JVM
+        // holds nowhere near that, so the reclaim delivers less than it was asked for. The build is judged again against what
+        // was delivered - with nothing delivered, 1,500 MB at 25% leaves room for about 73,000 cached vectors beside the graph,
+        // under the floor, so it is refused; some 320 MB delivered would make it a reduced-cache build instead - where it used
+        // to proceed with its full cache "on heap it was not actually given"
         final long shortAvailable = 1_500 * MB;
         final long claimedReclaimable = 2_774 * MB;
         final long fullEstimate = VectorHeapBudget.estimateRebuildHeapBytes(148_727, 768, 160_000, false);
         assertThat(VectorHeapBudget.reclaimNeededFor(fullEstimate, 25, shortAvailable, claimedReclaimable))
             .as("precondition: the full build fits only with the claimed reclaim").isBetween(1_000 * MB, 1_200 * MB);
-        assertThat(((DatabaseInternal) db).getPageManager().getReadCacheRAM()).as("precondition: the real cache cannot deliver it").isLessThan(300 * MB);
-        final Throwable refusedOnShortReclaim = catchThrowable(
-            () -> index.fitSearchBuildToHeap(148_727, shortAvailable, claimedReclaimable));
-        assertThat(refusedOnShortReclaim).isInstanceOf(VectorGraphBuildRefusedException.class);
-        assertThat(index.getStats().get("searchRebuildsRefusedForMemory")).isEqualTo(2L);
+        // What the reclaim really delivers depends on what the process-wide cache holds, which other tests of the same JVM
+        // decide, so the verdict is checked against what it delivered rather than against an assumption about the cache
+        final PageManager pageManager = ((DatabaseInternal) db).getPageManager();
+        final long cacheBefore = pageManager.getReadCacheRAM();
+        final int[] shortReclaimCap = new int[1];
+        final Throwable outcome = catchThrowable(
+            () -> shortReclaimCap[0] = index.fitSearchBuildToHeap(148_727, shortAvailable, claimedReclaimable));
+        final long delivered = Math.max(0L, cacheBefore - pageManager.getReadCacheRAM());
+        assertThat(delivered).as("precondition: no test cache holds the 1 GB asked for, so the reclaim falls short")
+            .isLessThan(1_000 * MB);
+
+        // Judged against the delivered bytes, never the claimed ones: on the claim the full cache fitted (cap 0), which is
+        // what the build used to run with "on heap it was not actually given"
+        final long fitsOnDelivered = VectorHeapBudget.largestBuildCacheThatFits(148_727, 768, 25, shortAvailable, delivered);
+        if (fitsOnDelivered < 100_000) {
+          assertThat(outcome).isInstanceOf(VectorGraphBuildRefusedException.class);
+          assertThat(index.getStats().get("searchRebuildsRefusedForMemory")).isEqualTo(2L);
+        } else {
+          assertThat(outcome).isNull();
+          assertThat(shortReclaimCap[0]).as("cut to what the delivered bytes hold").isEqualTo((int) Math.min(160_000, fitsOnDelivered));
+        }
       } finally {
         db.drop();
       }
