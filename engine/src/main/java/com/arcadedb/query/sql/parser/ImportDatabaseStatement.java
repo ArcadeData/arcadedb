@@ -113,7 +113,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
           final Object valueResult = entry.getValue().execute((Identifiable) null, context);
           final String valueStr = valueResult != null ? valueResult.toString() : entry.getValue().toString();
-          settingsToString.put(entry.getKey().toString(), valueStr);
+          settingsToString.put(settingName(entry.getKey()), valueStr);
         }
 
         clazz.getMethod("setSettings", Map.class).invoke(importer, settingsToString);
