@@ -1126,7 +1126,7 @@ public enum GlobalConfiguration {
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
       and DISTINCT in heap, the result of a LET subquery or of one written inline in an expression (a projection, a function argument, \
       a SET value, a CREATE EDGE endpoint: its bytes are charged to the budget while the list is built, and given back when it is returned) and the rows of a user defined SQL function (against this cap only: no bytes are charged for \
-      the body of a function), the records a MATCH prefetches and the \
+      the body of a function), the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
       values an aggregate that keeps them holds, like list(), set(), percentile() or the ts.* windows; in OpenCypher also the rows \
       a Cartesian product or a hash join buffers, UNION, collect(), and the eager materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \

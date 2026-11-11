@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -280,67 +281,232 @@ public class MatchEdgeTraverser {
 
     } else { // in this case also zero level (starting point) is considered and traversal depth is
       // given by the while condition
-      result = new ArrayList<>();
 
       // A null starting point means a previous optional segment produced no match: there is nothing to traverse from and no
       // record to evaluate the zero-depth filters against. Return empty (as the non-while branch does) so the optional handling
       // preserves the base row with null aliases instead of hitting an NPE while resolving filters such as @rid. Issue #4919.
       if (startingPoint == null)
-        return result;
+        return Collections.emptyList();
 
-      iCommandContext.setVariable("depth", depth);
-      final Object previousMatch = iCommandContext.getVariable("currentMatch");
-      iCommandContext.setVariable("currentMatch", startingPoint);
-      final Object previousMatched = iCommandContext.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE);
-      iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, sourceRecord);
-
-      try {
-        if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(className, startingPoint) && matchesCluster(
-            clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
-          final ResultInternal rs = new ResultInternal(startingPoint.getRecord());
-          // set traversal depth in the metadata
-          rs.setMetadata("$depth", depth);
-          // set traversal path in the metadata
-          rs.setMetadata("$matchPath", pathToHere == null ? Collections.emptyList() : pathToHere);
-          // add the result to the list
-          ((List) result).add(rs);
-        }
-
-        if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(startingPoint,
-            iCommandContext))) {
-
-          final Iterable<ResultInternal> queryResult = traversePatternEdge(startingPoint, iCommandContext);
-
-          for (final ResultInternal origin : queryResult) {
-            //          if(origin.equals(startingPoint)){
-            //            continue;
-            //          }
-            // TODO consider break strategies (eg. re-traverse nodes)
-
-            final List<Identifiable> newPath = new ArrayList<>();
-            if (pathToHere != null) {
-              newPath.addAll(pathToHere);
-            }
-
-            final Document elem = origin.toElement();
-            newPath.add(elem.getIdentity());
-
-            final Iterable<ResultInternal> subResult = executeTraversal(iCommandContext, item, elem, depth + 1, newPath);
-            if (subResult instanceof Collection<? extends ResultInternal> collection) {
-              ((List) result).addAll(collection);
-            } else {
-              for (final ResultInternal i : subResult) {
-                ((List) result).add(i);
-              }
-            }
-          }
-        }
-      } finally {
-        iCommandContext.setVariable("currentMatch", previousMatch);
-        iCommandContext.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, previousMatched);
-      }
+      // STREAMED, NOT COLLECTED: THE NUMBER OF PATHS IS EXPONENTIAL IN THE DEPTH, SO A LIST OF THEM IS UNBOUNDED BY ANYTHING
+      // BUT THE HEAP, AND LIMIT COULD NOT STOP IT (ISSUE #11501)
+      final WhereClause theFilter = filter;
+      final WhereClause theWhileCondition = whileCondition;
+      final Integer theMaxDepth = maxDepth;
+      final String theClassName = className;
+      final Integer theClusterId = clusterId;
+      final Rid theTargetRid = targetRid;
+      result = () -> new DepthFirstPaths(iCommandContext, startingPoint, depth, pathToHere, theFilter, theWhileCondition,
+          theMaxDepth, theClassName, theClusterId, theTargetRid);
     }
     return result;
+  }
+
+  /**
+   * The paths of a {@code while:}/{@code maxDepth:} item, produced one at a time in depth-first pre-order: a vertex, then the
+   * paths through each of its neighbours in the order the pattern edge returns them. The order and the {@code $depth} /
+   * {@code $matchPath} of every path are the ones the recursive walk this replaces collected into a list (issue #11501).
+   * <p>
+   * The walk keeps an explicit stack, one frame per vertex of the current path holding the neighbours it has still to
+   * descend into, so what it holds is the current path and its pending neighbours, not every path met: {@code LIMIT} stops
+   * it, and a cycle under {@code while: (true)} is an endless stream rather than a {@code StackOverflowError}. What the stack
+   * holds is counted against {@link GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP} and charged to the query's
+   * heap budget, and the command deadline is checked at every vertex reached, since a filter that rejects every vertex keeps
+   * the whole walk inside a single {@link #hasNext()}.
+   */
+  private final class DepthFirstPaths implements Iterator<ResultInternal> {
+    /**
+     * What one vertex held by the stack costs the heap: the {@link ResultInternal} the pattern edge wrapped it in, its slot
+     * in the neighbour list, and the header of the vertex record it points at.
+     */
+    private static final int ENTRY_BYTES = 96;
+
+    private final CommandContext       context;
+    private final List<Identifiable>   pathToHere;
+    private final int                  startDepth;
+    private final WhereClause          filter;
+    private final WhereClause          whileCondition;
+    private final Integer              maxDepth;
+    private final String               className;
+    private final Integer              clusterId;
+    private final Rid                  targetRid;
+    private final WorkGuard            guard;
+    private       OperationHeapLimit   heapLimit;
+    /** The vertex of each frame: frame {@code i} is at depth {@code startDepth + i}. */
+    private       Identifiable[]       vertices  = new Identifiable[8];
+    /** The neighbours of each frame's vertex still to descend into, {@code null} when the vertex is not expanded. */
+    private       Iterator<ResultInternal>[] neighbours = new Iterator[8];
+    private       int                  size;
+    /** Vertices the stack holds: one per frame plus the neighbours still pending in it. */
+    private       long                 held;
+    private       Identifiable         start;
+    private       ResultInternal       nextPath;
+
+    private DepthFirstPaths(final CommandContext context, final Identifiable start, final int startDepth,
+        final List<Identifiable> pathToHere, final WhereClause filter, final WhereClause whileCondition, final Integer maxDepth,
+        final String className, final Integer clusterId, final Rid targetRid) {
+      this.context = context;
+      this.start = start;
+      this.startDepth = startDepth;
+      this.pathToHere = pathToHere;
+      this.filter = filter;
+      this.whileCondition = whileCondition;
+      this.maxDepth = maxDepth;
+      this.className = className;
+      this.clusterId = clusterId;
+      this.targetRid = targetRid;
+      this.guard = WorkGuard.forCommandDeadline(context);
+    }
+
+    @Override
+    public boolean hasNext() {
+      if (nextPath == null)
+        fetchNext();
+      return nextPath != null;
+    }
+
+    @Override
+    public ResultInternal next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final ResultInternal path = nextPath;
+      nextPath = null;
+      return path;
+    }
+
+    private void fetchNext() {
+      try {
+        while (nextPath == null) {
+          if (start != null) {
+            final Identifiable first = start;
+            start = null;
+            nextPath = visit(first);
+            continue;
+          }
+
+          if (size == 0)
+            return;
+
+          final Iterator<ResultInternal> pending = neighbours[size - 1];
+          if (pending != null && pending.hasNext()) {
+            final ResultInternal neighbour = pending.next();
+            hold(-1);
+            nextPath = visit(neighbour.toElement());
+          } else
+            pop();
+        }
+      } catch (final RuntimeException | Error e) {
+        // THE WALK IS ABANDONED: GIVE THE HEAP BACK NOW RATHER THAN WHEN THE PLAN IS COLLECTED
+        release();
+        throw e;
+      }
+    }
+
+    /**
+     * Pushes {@code vertex} as the frame one level below the current top, expanding it when the depth bound and the
+     * {@code while:} condition allow, and returns its path when it passes the item's filters.
+     */
+    private ResultInternal visit(final Identifiable vertex) {
+      guard.check();
+
+      final int depth = startDepth + size;
+      final Object previousDepth = context.getVariable("depth");
+      final Object previousMatch = context.getVariable("currentMatch");
+      final Object previousMatched = context.getVariable(MatchBindMatchedStep.MATCHED_VARIABLE);
+      context.setVariable("depth", depth);
+      context.setVariable("currentMatch", vertex);
+      context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, sourceRecord);
+      try {
+        ResultInternal path = null;
+        if (matchesFilters(context, filter, vertex) && matchesClass(className, vertex) && matchesCluster(clusterId, vertex)
+            && matchesRid(context, targetRid, vertex)) {
+          path = new ResultInternal(vertex.getRecord());
+          path.setMetadata("$depth", depth);
+          path.setMetadata("$matchPath", pathTo(vertex));
+        }
+
+        Iterator<ResultInternal> pending = null;
+        if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(vertex, context))) {
+          final Iterable<ResultInternal> expanded = traversePatternEdge(vertex, context);
+          final Collection<ResultInternal> candidates;
+          if (expanded instanceof Collection<ResultInternal> collection)
+            candidates = collection;
+          else {
+            candidates = new ArrayList<>();
+            for (final ResultInternal candidate : expanded)
+              candidates.add(candidate);
+          }
+          if (!candidates.isEmpty()) {
+            hold(candidates.size());
+            pending = candidates.iterator();
+          }
+        }
+
+        push(vertex, pending);
+        return path;
+      } finally {
+        context.setVariable("depth", previousDepth);
+        context.setVariable("currentMatch", previousMatch);
+        context.setVariable(MatchBindMatchedStep.MATCHED_VARIABLE, previousMatched);
+      }
+    }
+
+    /**
+     * The vertices from the item's starting point to {@code vertex}, the starting point excluded and {@code vertex}
+     * included, after {@link #pathToHere}: the vertices of frames 1..top, then {@code vertex}, which is not pushed yet.
+     */
+    private List<Identifiable> pathTo(final Identifiable vertex) {
+      if (size == 0)
+        return pathToHere == null ? Collections.emptyList() : pathToHere;
+
+      final List<Identifiable> path = new ArrayList<>((pathToHere == null ? 0 : pathToHere.size()) + size);
+      if (pathToHere != null)
+        path.addAll(pathToHere);
+      for (int i = 1; i < size; i++)
+        path.add(vertices[i].getIdentity());
+      path.add(vertex.getIdentity());
+      return path;
+    }
+
+    private void push(final Identifiable vertex, final Iterator<ResultInternal> pending) {
+      if (size == vertices.length) {
+        vertices = Arrays.copyOf(vertices, size * 2);
+        neighbours = Arrays.copyOf(neighbours, size * 2);
+      }
+      vertices[size] = vertex;
+      neighbours[size] = pending;
+      ++size;
+      hold(1);
+    }
+
+    private void pop() {
+      --size;
+      vertices[size] = null;
+      neighbours[size] = null;
+      hold(-1);
+      if (size == 0)
+        // EXHAUSTED: NOTHING IS HELD ANY MORE
+        release();
+    }
+
+    /** Accounts {@code delta} more vertices held by the stack against the element cap and the query's heap budget. */
+    private void hold(final long delta) {
+      if (delta == 0)
+        return;
+      if (heapLimit == null)
+        heapLimit = OperationHeapLimit.of(context, "vertices", "MATCH while/maxDepth traversal");
+      held += delta;
+      if (delta > 0) {
+        heapLimit.check(held);
+        heapLimit.charge(delta * ENTRY_BYTES);
+      } else
+        heapLimit.release(-delta * ENTRY_BYTES);
+    }
+
+    private void release() {
+      if (heapLimit != null)
+        heapLimit.release();
+    }
   }
 
   protected WhereClause getTargetFilter(final MatchPathItem item) {

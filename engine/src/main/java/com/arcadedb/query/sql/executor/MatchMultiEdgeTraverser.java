@@ -59,6 +59,7 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
     List<Object> nextStep = new ArrayList<>();
     nextStep.add(startingPoint);
 
+    OperationHeapLimit pathsLimit = null;
     final Object oldCurrent = iCommandContext.getVariable("current");
     for (final MatchPathItem sub : item.getItems()) {
       final List<ResultInternal> rightSide = new ArrayList<>();
@@ -76,7 +77,14 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
             current = result1.getElement().orElse(null);
           }
           final MatchEdgeTraverser subtraverser = new MatchEdgeTraverser(null, sub);
-          subtraverser.executeTraversal(iCommandContext, sub, (Identifiable) current, 0, null).forEach(x -> rightSide.add(x));
+          // THE NEXT SUB-ITEM STARTS FROM EVERY PATH, SO THEY ARE COLLECTED: A WHILE WALK CAN MEET EXPONENTIALLY MANY, SO
+          // THE LIST IS HELD UNDER THE ELEMENT CAP RATHER THAN UNTIL THE HEAP IS GONE (ISSUE #11501)
+          if (pathsLimit == null)
+            pathsLimit = OperationHeapLimit.of(iCommandContext, "paths", "MATCH while/maxDepth traversal");
+          for (final ResultInternal x : subtraverser.executeTraversal(iCommandContext, sub, (Identifiable) current, 0, null)) {
+            rightSide.add(x);
+            pathsLimit.check(rightSide.size());
+          }
 
         } else {
           iCommandContext.setVariable("current", o);
