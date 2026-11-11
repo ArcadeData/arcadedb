@@ -175,6 +175,16 @@ class Issue11523ExportOverwriteSettingTest {
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid value 'yes' for -overwrite");
     assertThatThrownBy(() -> parse("-format", "jsonl", "-f"))//
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Missing value for -f");
+    // AN OPTION IN THE VALUE POSITION IS THE NEXT OPTION, NOT A FILE NAMED '-o' OR A TYPE NAMED '-o'
+    assertThatThrownBy(() -> parse("-format", "jsonl", "-f", "-o"))//
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Missing value for -f");
+    assertThatThrownBy(() -> parse("-format", "jsonl", "-includeTypes", "-o"))//
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Missing value for -includeTypes");
+    assertThatThrownBy(() -> parse("-f", "-format", "jsonl"))//
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Missing value for -f");
+    // A VALUE THAT MERELY BEGINS WITH '-' IS STILL A VALUE
+    assertThat(parse("-format", "jsonl", "-f", "-backup.jsonl.tgz").file).isEqualTo("-backup.jsonl.tgz");
+
     assertThatThrownBy(() -> parse("-format", "jsonl", "-exludeTypes", "A"))//
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Did you mean 'excludeTypes'?");
     assertThatThrownBy(() -> parse("-format", "jsonl", "x.jsonl.tgz"))//

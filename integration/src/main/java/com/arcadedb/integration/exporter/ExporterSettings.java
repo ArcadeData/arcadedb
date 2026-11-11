@@ -63,7 +63,9 @@ public class ExporterSettings {
           continue;
         }
 
-        if (i + 1 >= args.length)
+        // A VALUE THAT IS ONE OF THE OPTIONS IS THE NEXT OPTION, NOT A VALUE: '-f -o' WOULD OTHERWISE EXPORT TO A FILE NAMED
+        // '-o' WITHOUT OVERWRITE. ONLY A RECOGNIZED OPTION, SO A VALUE THAT MERELY BEGINS WITH '-' IS STILL A VALUE
+        if (i + 1 >= args.length || isOption(args[i + 1]))
           throw new IllegalArgumentException("Missing value for -" + name);
 
         final String value = args[i + 1];
@@ -93,6 +95,17 @@ public class ExporterSettings {
       }
 
     file = file.formatted(LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
+  }
+
+  /** Whether {@code arg} is a command-line option {@link #parseParameters} recognizes. */
+  private static boolean isOption(final String arg) {
+    if (arg.length() < 2 || arg.charAt(0) != '-')
+      return false;
+    final String name = arg.substring(1);
+    return switch (name) {
+      case "o", "f", "file", "d" -> true;
+      default -> SETTINGS.contains(name);
+    };
   }
 
   /**
