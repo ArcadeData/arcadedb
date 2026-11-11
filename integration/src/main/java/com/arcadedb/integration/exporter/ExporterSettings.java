@@ -23,6 +23,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
@@ -101,6 +102,21 @@ public class ExporterSettings {
     file = file.formatted(LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
   }
 
+  /**
+   * The entries of a comma-separated list, trimmed, empty ones dropped. {@code Set.of(value.split(","))} refused a repeated
+   * entry ({@code A,A}) with a bare "duplicate element", and kept the blank after a comma, so {@code 'A, B'} filtered on
+   * {@code " B"} and silently exported nothing of type B.
+   */
+  private static Set<String> parseList(final String value) {
+    final Set<String> entries = new HashSet<>();
+    for (final String entry : value.split(",")) {
+      final String trimmed = entry.trim();
+      if (!trimmed.isEmpty())
+        entries.add(trimmed);
+    }
+    return entries;
+  }
+
   /** Whether {@code arg} is a command-line option {@link #parseParameters} recognizes. */
   private static boolean isOption(final String arg) {
     if (arg.length() < 2 || arg.charAt(0) != '-')
@@ -131,9 +147,9 @@ public class ExporterSettings {
         throw new IllegalArgumentException("Invalid value '" + value + "' for -overwrite. Supported values are 'true' and 'false'");
       }
     }
-    case "includeTypes" -> includeTypes = Set.of(value.split(","));
-    case "excludeTypes" -> excludeTypes = Set.of(value.split(","));
-    case "includeRecords" -> includeRecords = Set.of(value.split(","));
+    case "includeTypes" -> includeTypes = parseList(value);
+    case "excludeTypes" -> excludeTypes = parseList(value);
+    case "includeRecords" -> includeRecords = parseList(value);
     // THE FIELD THE CONSOLE LOGGER IS BUILT FROM: IT WAS NEVER SETTABLE, THE NAME WENT INTO THE MAP NOTHING READ. THE PYTHON
     // BINDINGS SEND IT ON EVERY EXPORT, SO REFUSING IT WOULD BREAK THEM; APPLYING IT IS WHAT THEY ALWAYS ASKED FOR
     case "verboseLevel" -> {

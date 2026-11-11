@@ -198,6 +198,10 @@ class Issue11523ExportOverwriteSettingTest {
     assertThat(settings.databaseURL).isEqualTo("target/db");
     assertThat(settings.includeTypes).containsExactlyInAnyOrder("A", "B");
 
+    // A REPEATED ENTRY USED TO THROW "duplicate element", AND THE BLANK AFTER A COMMA WAS KEPT AS PART OF THE NAME
+    assertThat(parse("-format", "jsonl", "-includeTypes", "A, B,A,").includeTypes).containsExactlyInAnyOrder("A", "B");
+    assertThat(parse("-format", "jsonl", "-includeRecords", "#1:0 , #1:1").includeRecords).containsExactlyInAnyOrder("#1:0", "#1:1");
+
     assertThatThrownBy(() -> parse("-format", "jsonl", "-overwrite", "yes"))//
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid value 'yes' for -overwrite");
     assertThatThrownBy(() -> parse("-format", "jsonl", "-f"))//
