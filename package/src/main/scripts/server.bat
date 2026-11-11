@@ -119,12 +119,17 @@ rem never appended to, so a GC choice parked in JAVA_OPTS disappears the moment 
 rem The Docker image sets this to ZGC; a bare distribution leaves it empty and keeps the JVM default.
 if not defined ARCADEDB_OPTS_GC set ARCADEDB_OPTS_GC=
 
-set ARCADEDB_JMX=-Dcom.sun.management.jmxremote=true ^
-  -Dcom.sun.management.jmxremote.local.only=false ^
-  -Dcom.sun.management.jmxremote.authenticate=false ^
-  -Dcom.sun.management.jmxremote.ssl=false ^
-  -Dcom.sun.management.jmxremote.port=9999 ^
-  -Dcom.sun.management.jmxremote.rmi.port=9998
+rem Remote JMX is off by default. A remote JMX agent lets its clients invoke any MBean of the JVM, which is code
+rem execution inside the server, so it must never listen without authentication. Local tools (jconsole, VisualVM,
+rem jcmd) attach to the process without it, and the server metrics are served over HTTP. To open remote JMX, set
+rem ARCADEDB_JMX before calling this script with authentication and SSL on, for example:
+rem   set ARCADEDB_JMX=-Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998
+rem     -Dcom.sun.management.jmxremote.authenticate=true
+rem     -Dcom.sun.management.jmxremote.password.file=C:\path\to\jmxremote.password
+rem     -Dcom.sun.management.jmxremote.access.file=C:\path\to\jmxremote.access
+rem     -Dcom.sun.management.jmxremote.ssl=true -Djavax.net.ssl.keyStore=... -Djavax.net.ssl.keyStorePassword=...
+rem The server logs a SEVERE message at startup when it finds a remote JMX agent with authentication disabled.
+if not defined ARCADEDB_JMX set ARCADEDB_JMX=
 
 rem TO DEBUG ARCADEDB SERVER RUN IT WITH THESE OPTIONS:
 rem -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1044

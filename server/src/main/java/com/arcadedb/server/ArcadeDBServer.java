@@ -641,6 +641,13 @@ public class ArcadeDBServer {
         pluginManager != null && !pluginManager.getPluginNames().isEmpty() ?
             pluginManager.getPluginNames() : getAllPluginNames());
 
+    // A REMOTE JMX AGENT WITHOUT AUTHENTICATION HANDS THIS PROCESS TO WHOEVER REACHES ITS PORT: SAY SO IN EVERY MODE
+    final String jmxWarning = RemoteJmxCheck.unauthenticatedRemoteJmxWarning(System.getProperties());
+    if (jmxWarning != null) {
+      LogManager.instance().log(this, Level.SEVERE, jmxWarning);
+      getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "Security", null, jmxWarning);
+    }
+
     // IN PRODUCTION MODE, APPLY SAFE DEFAULTS.
     // arcadedb.server.mode is SCOPE.SERVER, so it is authoritative in THIS server's configuration and only
     // incidentally in the process-wide enum, which nothing but a -D or an environment variable ever writes: a

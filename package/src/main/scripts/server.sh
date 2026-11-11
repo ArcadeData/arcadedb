@@ -128,14 +128,16 @@ if [ -z "$JAVA_OPTS_SCRIPT" ]; then
         --enable-native-access=ALL-UNNAMED"
 fi
 
-if [ -z "$ARCADEDB_JMX" ]; then
-  ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
-        -Dcom.sun.management.jmxremote.local.only=false \
-        -Dcom.sun.management.jmxremote.authenticate=false \
-        -Dcom.sun.management.jmxremote.ssl=false \
-        -Dcom.sun.management.jmxremote.port=9999 \
-        -Dcom.sun.management.jmxremote.rmi.port=9998"
-fi
+# Remote JMX is off by default. A remote JMX agent lets its clients invoke any MBean of the JVM, which is code execution
+# inside the server, so it must never listen without authentication. Local tools (jconsole, VisualVM, jcmd) attach to
+# the process without it, and the server metrics are served over HTTP. To open remote JMX, pass the flags in
+# ARCADEDB_JMX with authentication and SSL on, for example:
+#   ARCADEDB_JMX="-Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998 \
+#     -Dcom.sun.management.jmxremote.authenticate=true \
+#     -Dcom.sun.management.jmxremote.password.file=/path/to/jmxremote.password \
+#     -Dcom.sun.management.jmxremote.access.file=/path/to/jmxremote.access \
+#     -Dcom.sun.management.jmxremote.ssl=true -Djavax.net.ssl.keyStore=... -Djavax.net.ssl.keyStorePassword=..."
+# The server logs a SEVERE message at startup when it finds a remote JMX agent with authentication disabled.
 
 echo $$ >$ARCADEDB_PID
 

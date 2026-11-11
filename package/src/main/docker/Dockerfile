@@ -36,12 +36,8 @@ ENV ARCADEDB_OPTS_GC="-XX:+UseZGC"
 # works from a 512Mi sandbox up to a multi-GB production node.
 ENV ARCADEDB_OPTS_MEMORY="-XX:MaxRAMPercentage=75"
 
-ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
-    -Dcom.sun.management.jmxremote.local.only=false \
-    -Dcom.sun.management.jmxremote.authenticate=false \
-    -Dcom.sun.management.jmxremote.ssl=false \
-    -Dcom.sun.management.jmxremote.port=9999 \
-    -Dcom.sun.management.jmxremote.rmi.port=9998"
+# Remote JMX is off: an agent without authentication is code execution for whoever reaches its port. Pass the flags in
+# ARCADEDB_JMX (with authentication and SSL on, see bin/server.sh) and publish the ports yourself to open it.
 
 RUN apk -U upgrade && rm -rf /var/cache/apk/*
 
@@ -91,9 +87,5 @@ EXPOSE 27017
 
 # gRPC service
 EXPOSE 50051
-
-# JMX for monitoring
-EXPOSE 9999
-EXPOSE 9998
 
 CMD ["./bin/server.sh"]
