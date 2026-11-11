@@ -34,7 +34,11 @@ public class ExporterSettings {
    * everything and answered OK (issue #11523). The target file and the database are not among them: the caller fixes both,
    * and only the command line sets them ({@link #parseParameters}).
    */
-  public static final Set<String> SETTINGS = Set.of("format", "overwrite", "includeTypes", "excludeTypes", "includeRecords");
+  public static final Set<String> SETTINGS = Set.of("format", "overwrite", "includeTypes", "excludeTypes", "includeRecords",
+      "verboseLevel");
+
+  /** The most verbose level the console logger distinguishes. */
+  public static final int MAX_VERBOSE_LEVEL = 3;
 
   public String      format;
   public String      databaseURL;
@@ -130,6 +134,20 @@ public class ExporterSettings {
     case "includeTypes" -> includeTypes = Set.of(value.split(","));
     case "excludeTypes" -> excludeTypes = Set.of(value.split(","));
     case "includeRecords" -> includeRecords = Set.of(value.split(","));
+    // THE FIELD THE CONSOLE LOGGER IS BUILT FROM: IT WAS NEVER SETTABLE, THE NAME WENT INTO THE MAP NOTHING READ. THE PYTHON
+    // BINDINGS SEND IT ON EVERY EXPORT, SO REFUSING IT WOULD BREAK THEM; APPLYING IT IS WHAT THEY ALWAYS ASKED FOR
+    case "verboseLevel" -> {
+      int level;
+      try {
+        level = Integer.parseInt(value.trim());
+      } catch (final NumberFormatException e) {
+        level = -1;
+      }
+      if (level < 0 || level > MAX_VERBOSE_LEVEL)
+        throw new IllegalArgumentException(
+            "Invalid value '" + value + "' for -verboseLevel. Supported values are 0 to " + MAX_VERBOSE_LEVEL);
+      verboseLevel = level;
+    }
     default -> {
       final String closest = StringUtils.closestMatch(name, SETTINGS);
       throw new IllegalArgumentException("Unknown export setting '" + name + "'. " + (closest != null ?

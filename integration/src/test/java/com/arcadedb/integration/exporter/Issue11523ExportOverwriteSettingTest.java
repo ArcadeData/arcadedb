@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Map;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
 
@@ -134,6 +135,32 @@ class Issue11523ExportOverwriteSettingTest {
           .hasStackTraceContaining("Unknown export setting 'o'");
 
       assertThat(exportFile.exists()).isFalse();
+    }
+  }
+
+  /**
+   * The Python bindings drive the {@code Exporter} API directly and put {@code verboseLevel} in the settings map on every call:
+   * an allow-list without it would refuse every default {@code export_database}. It is the level the console logger is built
+   * from, and it now applies instead of being dropped.
+   */
+  @Test
+  void theSettingsTheBindingsSendAreAcceptedAndApplied() throws IOException {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      createPeople(database, "Ann", "Bob");
+
+      final Exporter exporter = new Exporter(database, "exports/" + exportName);
+      exporter.setFormat("jsonl");
+      exporter.setOverwrite(true);
+      exporter.setSettings(Map.of("includeTypes", "Person", "verboseLevel", "1"));
+      assertThat(exporter.settings.verboseLevel).isEqualTo(1);
+
+      exporter.exportDatabase();
+      assertThat(exportedContent()).contains("Ann").contains("Bob");
+
+      for (final String level : new String[] { "-1", "4", "loud", "" })
+        assertThatThrownBy(() -> new Exporter(database, "exports/" + exportName).setSettings(Map.of("verboseLevel", level)))//
+            .as("verboseLevel = '%s'", level)//
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid value '" + level + "' for -verboseLevel");
     }
   }
 
