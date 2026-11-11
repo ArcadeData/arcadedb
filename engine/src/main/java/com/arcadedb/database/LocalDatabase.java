@@ -4549,6 +4549,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // TREATED AS UNSYNCED UNTIL THE FIRST SUCCESSFUL SYNC
     fileManager.markAllFilesUnsynced();
 
+    // #11514: THE SAME HOLDS FOR schema.prev.json, WHOSE FLUSH A SCHEMA WRITE DEFERS TO THE CLOSE THE CRASH SKIPPED
+    schema.securePreviousSchemaCopyAfterCrash();
+
     final Consumer<LocalDatabase> beforeReplayHook = TEST_BEFORE_RECOVERY_REPLAY_HOOK;
     if (beforeReplayHook != null)
       beforeReplayHook.accept(this);
