@@ -25,7 +25,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.CauseChain;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.schema.Type;
@@ -134,10 +133,9 @@ class Issue11497SearchBuildHeapGateTest {
         assertThat(CauseChain.contains(refusedBySql, VectorGraphBuildRefusedException.class)).isTrue();
         assertThat(ErrorCategory.of(refusedBySql)).isEqualTo(ErrorCategory.RETRY);
         // The HTTP handler answers 503 for a QueryHeapBudgetExceededException found on the exception itself or one generic
-        // wrapper (CommandExecutionException, TransactionException) down, and no deeper: the refusal must be there
-        assertThat(refusedBySql instanceof VectorGraphBuildRefusedException
-            || (refusedBySql instanceof CommandExecutionException && refusedBySql.getCause() instanceof VectorGraphBuildRefusedException))
-            .as("the refusal must reach the HTTP status mapping, got %s", refusedBySql).isTrue();
+        // wrapper (CommandExecutionException, TransactionException) down, and no deeper: the SQL path delivers it unwrapped,
+        // so the one level the server's auto-commit wrapper may add still reaches it (Issue6201ErrorStatusParityTest)
+        assertThat(refusedBySql).as("the refusal must reach the HTTP status mapping").isInstanceOf(VectorGraphBuildRefusedException.class);
 
         // The heap has room again: the query is its own retry, and gets the whole corpus, not a part of it
         index.pinSearchBuildHeapReadingForTest(-1L, -1L);
