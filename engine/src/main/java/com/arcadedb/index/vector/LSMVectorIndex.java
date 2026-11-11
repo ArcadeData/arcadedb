@@ -6168,7 +6168,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 indexName, t.toString());
         } finally {
           try {
-            endSearchRebuildOwnership(alsoClearPersistedGraphLatch);
+            // A refusal by the heap gate leaves persistedGraphUnresolved SET (issue #11497): the gate refused before the
+            // build cleared it, so nothing about the on-disk graph was settled, and the question is still open for the next
+            // search. Cleared, it would close the door on ensureGraphAvailable() for a session that wrote before it searched
+            // (graphState already MUTABLE): the PQ path, which reaches the build through ensureGraphAvailable() alone, would
+            // then answer from the delta buffer only - the incomplete result the refusal exists to avoid
+            endSearchRebuildOwnership(alsoClearPersistedGraphLatch && !(failure.get() instanceof VectorGraphBuildRefusedException));
           } finally {
             if (searchBuildThread == Thread.currentThread())
               searchBuildThread = null;
@@ -14871,6 +14876,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   boolean graphBuildLockHeldForTest() {
     return graphBuildLock.isLocked();
+  }
+
+  /**
+   * Test-only hook: whether {@link #ensureGraphAvailable(WorkGuard)} still has work to do, i.e. whether the next search of
+   * any kind goes back to the persisted graph or to a build instead of answering from the delta buffer (issue #11497).
+   */
+  boolean graphNotYetMaterialisedForTest() {
+    return graphNotYetMaterialised();
   }
 
   /**

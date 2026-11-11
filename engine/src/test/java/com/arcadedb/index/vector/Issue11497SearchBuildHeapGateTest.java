@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.schema.Type;
@@ -131,6 +132,11 @@ class Issue11497SearchBuildHeapGateTest {
         });
         assertThat(CauseChain.contains(refusedBySql, VectorGraphBuildRefusedException.class)).isTrue();
         assertThat(ErrorCategory.of(refusedBySql)).isEqualTo(ErrorCategory.RETRY);
+        // The HTTP handler answers 503 for a QueryHeapBudgetExceededException found on the exception itself or one generic
+        // wrapper (CommandExecutionException, TransactionException) down, and no deeper: the refusal must be there
+        assertThat(refusedBySql instanceof VectorGraphBuildRefusedException
+            || (refusedBySql instanceof CommandExecutionException && refusedBySql.getCause() instanceof VectorGraphBuildRefusedException))
+            .as("the refusal must reach the HTTP status mapping, got %s", refusedBySql).isTrue();
 
         // The heap has room again: the query is its own retry, and gets the whole corpus, not a part of it
         index.pinSearchBuildHeapReadingForTest(-1L, -1L);
@@ -141,6 +147,48 @@ class Issue11497SearchBuildHeapGateTest {
         assertThat(index.getStats().get("searchRebuildsWithoutPermit"))
             .as("the refused builds must have handed their permit back").isZero();
         assertThat(index.getStats().get("searchRebuildsRefusedForMemory")).isEqualTo(3L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
+   * A refusal settles nothing about the graph on disk, so it must leave the question open for the next search (PR #11499
+   * review). In a session that wrote before it searched, {@code graphState} is already MUTABLE, and once the latch is
+   * cleared the only thing left saying "no graph yet" is {@code ensureGraphAvailable()}'s own latch: the approximate (PQ)
+   * search reaches the build through that method alone, and would answer from the delta buffer, which holds just the
+   * vectors written since the reopen.
+   */
+  @Test
+  void aRefusalInASessionThatWroteFirstLeavesTheGraphUnresolved() {
+    populateAndCrashWithoutPersistingAGraph(0);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        // One write before any search: the index leaves LOADING for MUTABLE with no graph resident
+        db.transaction(() -> db.newDocument("Doc").set("id", NUM_VECTORS).set("vector", embedding(NUM_VECTORS)).save());
+        assertThat(index.getStats().get("graphState")).as("precondition: the write made the index MUTABLE")
+            .isEqualTo((long) LSMVectorIndex.GraphState.MUTABLE.ordinal());
+        assertThat(index.graphNotYetMaterialisedForTest()).as("precondition: no graph resolved yet").isTrue();
+
+        index.pinSearchBuildHeapReadingForTest(MB, 0L);
+        assertThat(catchThrowable(() -> index.findNeighborsFromVector(embedding(7), 5, 64)))
+            .isInstanceOf(VectorGraphBuildRefusedException.class);
+
+        assertThat(index.graphNotYetMaterialisedForTest())
+            .as("a refused build must leave the graph unresolved, or the next PQ search answers from the delta buffer alone")
+            .isTrue();
+
+        // And the question is answered once the heap has room: the whole corpus, the new vector included
+        index.pinSearchBuildHeapReadingForTest(-1L, -1L);
+        final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(7), 5, 64);
+        assertThat(results.getFirst().getFirst()).isEqualTo(ridOf(db, 7));
+        assertThat(index.graphNotYetMaterialisedForTest()).isFalse();
+        assertThat(index.getStats().get("graphNodeCount") + index.getStats().get("deltaVectorsCount"))
+            .as("every vector is searchable").isGreaterThanOrEqualTo(NUM_VECTORS + 1L);
       } finally {
         db.drop();
       }
@@ -255,6 +303,22 @@ class Issue11497SearchBuildHeapGateTest {
             25, available, 0L)).as("and it is the largest cache that does").isEqualTo(-1L);
         assertThat(index.getStats().get("searchRebuildsWithReducedCache")).isEqualTo(1L);
         assertThat(index.getStats().get("searchRebuildsRefusedForMemory")).isEqualTo(1L);
+
+        // A short reclaim: the full build fits only by giving up 1,164 MB of page cache, and the cache of a test JVM holds
+        // nowhere near that, so the reclaim delivers less than it was asked for. The build is judged again against what was
+        // delivered - 1,500 MB at 25% leaves room for about 73,000 cached vectors beside the graph, under the floor, and it
+        // would take some 320 MB actually freed to change that - and refused, where it used to proceed "on heap it was not
+        // actually given"
+        final long shortAvailable = 1_500 * MB;
+        final long claimedReclaimable = 2_774 * MB;
+        final long fullEstimate = VectorHeapBudget.estimateRebuildHeapBytes(148_727, 768, 160_000, false);
+        assertThat(VectorHeapBudget.reclaimNeededFor(fullEstimate, 25, shortAvailable, claimedReclaimable))
+            .as("precondition: the full build fits only with the claimed reclaim").isBetween(1_000 * MB, 1_200 * MB);
+        assertThat(((DatabaseInternal) db).getPageManager().getReadCacheRAM()).as("precondition: the real cache cannot deliver it").isLessThan(300 * MB);
+        final Throwable refusedOnShortReclaim = catchThrowable(
+            () -> index.fitSearchBuildToHeap(148_727, shortAvailable, claimedReclaimable));
+        assertThat(refusedOnShortReclaim).isInstanceOf(VectorGraphBuildRefusedException.class);
+        assertThat(index.getStats().get("searchRebuildsRefusedForMemory")).isEqualTo(2L);
       } finally {
         db.drop();
       }
