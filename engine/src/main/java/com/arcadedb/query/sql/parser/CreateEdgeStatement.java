@@ -110,9 +110,6 @@ public class CreateEdgeStatement extends Statement {
     builder.append(" TO ");
     rightExpression.toString(params, builder);
 
-    if (unidirectional)
-      builder.append(" UNIDIRECTIONAL");
-
     if (ifNotExists)
       builder.append(" IF NOT EXISTS");
 
@@ -120,6 +117,9 @@ public class CreateEdgeStatement extends Statement {
       builder.append(" ");
       body.toString(params, builder);
     }
+
+    if (unidirectional)
+      builder.append(" UNIDIRECTIONAL");
   }
 
   @Override
