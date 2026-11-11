@@ -94,6 +94,25 @@ class Issue7124ChunkSizeErrorMessageTest {
   }
 
   @Test
+  void writeStringNamesTheRealSetting() {
+    assertThatThrownBy(() -> channel.writeString("a".repeat(MAX_CHUNK_SIZE + 1))).isInstanceOf(IOException.class)
+        .hasMessageContaining(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE.getKey())
+        .hasMessageNotContaining(PHANTOM_SETTING);
+  }
+
+  @Test
+  void readStringNamesTheRealSetting() throws Exception {
+    final DataOutputStream header = new DataOutputStream(outputBuffer);
+    header.writeInt(MAX_CHUNK_SIZE + 1);
+    header.flush();
+    channel.setInput(new ByteArrayInputStream(outputBuffer.toByteArray()));
+
+    assertThatThrownBy(() -> channel.readString()).isInstanceOf(IOException.class)
+        .hasMessageContaining(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE.getKey())
+        .hasMessageNotContaining(PHANTOM_SETTING);
+  }
+
+  @Test
   void theRealSettingIsTheOneTheChannelsActuallyRead() {
     // PINS THE CLAIM THE MESSAGES MAKE: IF THE CHANNELS EVER STOP SOURCING maxChunkSize FROM THIS SETTING, THE
     // MESSAGES GO STALE AGAIN AND THIS ASSERTION IS THE ONE THAT SAYS SO.

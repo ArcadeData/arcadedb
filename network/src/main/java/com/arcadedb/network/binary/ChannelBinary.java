@@ -119,6 +119,8 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     if (len < 0)
       return null;
 
+    checkMaxReadChunkSize(len);
+
     final byte[] tmp = new byte[len];
     in.readFully(tmp);
 
@@ -133,11 +135,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
 
   public byte[] readBytes() throws IOException {
     final int len = in.readInt();
-    if (len > maxChunkSize) {
-      throw new IOException(
-          "Impossible to read a chunk of length:" + len + " max allowed chunk length:" + maxChunkSize + ". See the '"
-              + MAX_CHUNK_SIZE_SETTING + "' setting");
-    }
+    checkMaxReadChunkSize(len);
     updateMetricReceivedBytes(Binary.INT_SERIALIZED_SIZE + len);
 
     if (len < 0)
@@ -207,7 +205,12 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       out.writeInt(-1);
       updateMetricTransmittedBytes(Binary.INT_SERIALIZED_SIZE);
     } else {
+      // Avoid allocating a huge temporary byte[] when rejecting an oversized string; every UTF-16 char encodes to at most 3 UTF-8 bytes
+      if (maxChunkSize < 0 || iContent.length() > maxChunkSize / 3)
+        checkMaxWriteChunkSize(utf8ByteLength(iContent));
+
       final byte[] buffer = iContent.getBytes(StandardCharsets.UTF_8);
+      checkMaxWriteChunkSize(buffer.length);
       out.writeInt(buffer.length);
       out.write(buffer, 0, buffer.length);
       updateMetricTransmittedBytes(Binary.INT_SERIALIZED_SIZE + buffer.length);
@@ -225,10 +228,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       out.writeInt(-1);
       updateMetricTransmittedBytes(Binary.INT_SERIALIZED_SIZE);
     } else {
-      if (iLength > maxChunkSize) {
-        throw new IOException("Impossible to write a chunk of " + iLength + " bytes. Max allowed chunk is " + maxChunkSize
-            + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
-      }
+      checkMaxWriteChunkSize(iLength);
 
       out.writeInt(iLength);
       out.write(iContent, 0, iLength);
@@ -240,10 +240,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
   public ChannelBinary writeBytes(final byte[] content) throws IOException {
     if (content != null) {
       final int length = content.length;
-      if (length > maxChunkSize) {
-        throw new IOException("Impossible to write a chunk of " + length + " bytes. Max allowed chunk is " + maxChunkSize
-            + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
-      }
+      checkMaxWriteChunkSize(length);
 
       out.write(content, 0, length);
       updateMetricTransmittedBytes(length);
@@ -331,13 +328,44 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
   public ChannelBinary writeBuffer(final ByteBuffer buffer) throws IOException {
     final int length = buffer.limit();
 
-    if (length > maxChunkSize)
-      throw new IOException("Impossible to write a chunk of " + length + " bytes max allowed chunk is " + maxChunkSize
-          + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
+    checkMaxWriteChunkSize(length);
 
     out.write(buffer.array(), buffer.arrayOffset(), length);
     updateMetricTransmittedBytes(length);
 
     return this;
+  }
+
+  private void checkMaxReadChunkSize(final int length) throws IOException {
+    if (length > maxChunkSize)
+      throw new IOException(
+          "Impossible to read a chunk of length:" + length + " max allowed chunk length:" + maxChunkSize + ". See the '"
+              + MAX_CHUNK_SIZE_SETTING + "' setting");
+  }
+
+  private void checkMaxWriteChunkSize(final long length) throws IOException {
+    if (length > maxChunkSize)
+      throw new IOException("Impossible to write a chunk of " + length + " bytes. Max allowed chunk is " + maxChunkSize
+          + " bytes. See the '" + MAX_CHUNK_SIZE_SETTING + "' setting");
+  }
+
+  private static long utf8ByteLength(final String s) {
+    long bytes = 0;
+    final int len = s.length();
+    for (int i = 0; i < len; i++) {
+      final char c = s.charAt(i);
+      if (c < 0x80)
+        bytes++;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c) && i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+        bytes += 4;
+        i++;
+      } else if (Character.isSurrogate(c))
+        bytes++;
+      else
+        bytes += 3;
+    }
+    return bytes;
   }
 }

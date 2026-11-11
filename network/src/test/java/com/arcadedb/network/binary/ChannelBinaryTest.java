@@ -325,6 +325,72 @@ class ChannelBinaryTest {
   }
 
   @Test
+  void writeStringExceedsMaxChunkSize() {
+    final String largeString = "a".repeat(2 * 1024 * 1024); // 2MB > 1MB max
+    assertThatThrownBy(() -> channel.writeString(largeString))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Impossible to write a chunk");
+    assertThat(outputBuffer.size()).isZero();
+  }
+
+  @Test
+  void readStringExceedsMaxChunkSize() throws Exception {
+    final DataOutputStream dos = new DataOutputStream(outputBuffer);
+    dos.writeInt(2 * 1024 * 1024); // Header only: fails before allocation or reading payload
+    dos.flush();
+
+    setupInputFromOutput();
+
+    assertThatThrownBy(() -> channel.readString())
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Impossible to read a chunk");
+  }
+
+  @Test
+  void readStringRejectsMaxIntLengthBeforeAllocation() throws Exception {
+    final DataOutputStream dos = new DataOutputStream(outputBuffer);
+    dos.writeInt(Integer.MAX_VALUE);
+    dos.flush();
+
+    setupInputFromOutput();
+
+    assertThatThrownBy(() -> channel.readString())
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Impossible to read a chunk");
+  }
+
+  @Test
+  void writeAndReadStringAtExactMaxChunkSize() throws Exception {
+    final String exactLimit = "a".repeat(1024 * 1024);
+    channel.writeString(exactLimit);
+    channel.flush();
+
+    setupInputFromOutput();
+    assertThat(channel.readString()).isEqualTo(exactLimit);
+  }
+
+  @Test
+  void writeStringRejectsMultiByteUtf8ExceedingMaxChunkSize() {
+    // 524,288 chars <= 1MB char count, but 1,572,864 UTF-8 bytes > 1MB byte limit
+    final String multiByte = "中".repeat(1024 * 1024 / 2);
+    assertThatThrownBy(() -> channel.writeString(multiByte))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Impossible to write a chunk of 1572864 bytes");
+    assertThat(outputBuffer.size()).isZero();
+  }
+
+  @Test
+  void writeAndReadMultiByteUtf8AtExactMaxChunkSize() throws Exception {
+    // 349,525 * 3 + 1 = 1,048,576 exact UTF-8 bytes
+    final String exactUtf8Limit = "中".repeat((1024 * 1024) / 3) + "a";
+    channel.writeString(exactUtf8Limit);
+    channel.flush();
+
+    setupInputFromOutput();
+    assertThat(channel.readString()).isEqualTo(exactUtf8Limit);
+  }
+
+  @Test
   void closeChannel() throws Exception {
     channel.writeByte((byte) 1);
     channel.close();
