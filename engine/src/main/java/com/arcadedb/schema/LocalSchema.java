@@ -356,6 +356,8 @@ public class LocalSchema implements Schema {
   // schema.prev.json; and whether a write did, so close() still owes it. Both guarded by the writeSchemaFile() monitor
   private             boolean                                primaryPublishedAtomically;
   private             boolean                                previousSchemaCopyUnsynced;
+  // #11514: the crash recovery found the copy lost (missing or not a whole schema) and could not rebuild it: the close rebuilds it
+  private             boolean                                previousSchemaCopyNeedsRebuild;
   // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
   // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
   private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
@@ -6389,6 +6391,8 @@ public class LocalSchema implements Schema {
         FileUtils.atomicCopyFile(configurationFile, copy, false);
         previousSchemaCopyUnsynced = false;
       }
+      // A copy of the current primary is published: whatever the recovery could not rebuild has been replaced
+      previousSchemaCopyNeedsRebuild = false;
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.
@@ -6432,9 +6436,13 @@ public class LocalSchema implements Schema {
       return;
     try {
       final File copy = getPreviousSchemaCopyFile();
-      if (copy.exists())
+      if (previousSchemaCopyNeedsRebuild)
+        // The recovery of this open could not rebuild a copy lost in the crash: flushing what is there would secure nothing
+        FileUtils.atomicCopyFile(configurationFile, copy);
+      else if (copy.exists())
         syncCopyAndItsName(copy);
       previousSchemaCopyUnsynced = false;
+      previousSchemaCopyNeedsRebuild = false;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot flush the recovery copy '%s' of the schema of database '%s': the next open will re-secure it (%s)", e,
@@ -6470,8 +6478,9 @@ public class LocalSchema implements Schema {
       return;
 
     final File copy = getPreviousSchemaCopyFile();
+    final boolean whole = isWholeSchema(copy);
     try {
-      if (isWholeSchema(copy))
+      if (whole)
         syncCopyAndItsName(copy);
       else {
         if (copy.exists())
@@ -6481,8 +6490,11 @@ public class LocalSchema implements Schema {
         FileUtils.atomicCopyFile(configurationFile, copy);
       }
       previousSchemaCopyUnsynced = false;
+      previousSchemaCopyNeedsRebuild = false;
     } catch (final IOException e) {
+      // Owed to the close, which retries the same repair: a rebuild for a copy that was lost, a flush for one that was not
       previousSchemaCopyUnsynced = true;
+      previousSchemaCopyNeedsRebuild = !whole;
       LogManager.instance().log(this, Level.WARNING, "Cannot secure the recovery copy '%s' of the schema of database '%s': %s", e,
           SCHEMA_PREV_FILE_NAME, database.getName(), e.getMessage());
     }

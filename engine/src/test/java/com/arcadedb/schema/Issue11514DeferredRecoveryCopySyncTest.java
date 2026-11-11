@@ -222,6 +222,28 @@ class Issue11514DeferredRecoveryCopySyncTest extends TestHelper {
     database = factory.open();
   }
 
+  @Test
+  void aCopyTheRecoveryCouldNotRebuildIsRebuiltByTheClose() throws Exception {
+    database.getSchema().createDocumentType("Warm");
+    database.getSchema().createDocumentType("A");
+    crashAndLoseTheRecoveryCopy(null);
+    final Path lockFile = Path.of(getDatabasePath()).toAbsolutePath().resolve(NodeLocalFiles.DATABASE_LOCK_FILE_NAME);
+
+    // Lost in the crash, and in the way of its own rebuild: a directory under its name makes the recovery's rebuild fail
+    Files.delete(prevFile());
+    Files.createDirectory(prevFile());
+    database = factory.open();
+    assertThat(((LocalSchema) database.getSchema().getEmbedded()).isPreviousSchemaCopyUnsynced()).isTrue();
+
+    // Missing by the close: flushing what is there would secure nothing, the close has to rebuild it
+    Files.delete(prevFile());
+    database.close();
+
+    assertThat(Files.readString(prevFile())).isEqualTo(Files.readString(schemaFile()));
+    assertThat(lockFile).doesNotExist();
+    database = factory.open();
+  }
+
   /**
    * Simulates a crash after which {@code schema.prev.json} holds {@code prevContent} ({@code null}: left as it was). The kill
    * runs the schema close too, so fsync is off meanwhile: the copy reaches the recovery with its flush still owed.
