@@ -27,7 +27,6 @@ import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
-import com.arcadedb.graphql.parser.TokenMgrException;
 import com.arcadedb.graphql.parser.TypeSystemDefinition;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.OperationType;
@@ -98,7 +97,9 @@ public class GraphQLQueryEngine implements QueryEngine {
           ops.add(OperationType.SCHEMA);
       if (!ops.isEmpty())
         return new Classification(ops, null);
-    } catch (final ParseException | TokenMgrException e) {
+    } catch (final ParseException | RuntimeException e) {
+      // RuntimeException covers TokenMgrException and anything else the parse can raise: a NumberFormatException out of an
+      // integer literal escaped this classification before #11451, so analyze() threw where a syntax error classifies.
       // Cannot classify: assume the worst so an idempotency gate denies rather than admits. Execution
       // still re-parses and reports the real syntax error; this only changes the answer given to a
       // caller asking "is this read-only?" before execution runs. TokenMgrException (unchecked) is the

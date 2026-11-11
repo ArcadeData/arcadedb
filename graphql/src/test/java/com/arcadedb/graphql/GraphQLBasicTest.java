@@ -133,7 +133,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
       final String types = """
           type Query {
             bookById(id: String): Book
-            books(where: String!): [Book!]!
+            books(where: String): [Book!]!
           }
 
           type Book {
@@ -175,7 +175,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
       final String types = """
           type Query {
             bookById(id: String): Book
-            books(where: String!): [Book!]!
+            books(where: String): [Book!]!
             addresses(firstName: String): [Author]
           }
 
@@ -222,7 +222,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
       final String types = """
           type Query {
             bookById(id: String): Book
-            books(where: String!): [Book!]!
+            books(where: String): [Book!]!
           }
 
           type Book {

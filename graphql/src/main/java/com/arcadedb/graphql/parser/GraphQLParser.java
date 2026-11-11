@@ -1161,7 +1161,7 @@ if (jjtc000) {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case INTEGER_LITERAL:{
         //TODO class hierarchy here instead?
-
+        
                 jjtn000.intValue = IntValue();
         break;
         }
@@ -1169,6 +1169,7 @@ if (jjtc000) {
         jjtn000.floatValue = FloatValue();
         break;
         }
+      case BLOCK_STRING_LITERAL:
       case STRING_LITERAL:{
         jjtn000.stringValue = StringValue();
         break;
@@ -1176,6 +1177,10 @@ if (jjtc000) {
       case TRUE:
       case FALSE:{
         jjtn000.booleanValue = BooleanValue();
+        break;
+        }
+      case NULL:{
+        jjtn000.nullValue = NullValue();
         break;
         }
       case FRAGMENT:
@@ -1254,6 +1259,7 @@ if (jjtc000) {
         jjtn000.floatValue = FloatValue();
         break;
         }
+      case BLOCK_STRING_LITERAL:
       case STRING_LITERAL:{
         jjtn000.stringValue = StringValue();
         break;
@@ -1261,6 +1267,10 @@ if (jjtc000) {
       case TRUE:
       case FALSE:{
         jjtn000.booleanValue = BooleanValue();
+        break;
+        }
+      case NULL:{
+        jjtn000.nullValue = NullValue();
         break;
         }
       case FRAGMENT:
@@ -1392,8 +1402,10 @@ if (jjtc000) {
         case DIRECTIVE:
         case TRUE:
         case FALSE:
+        case NULL:
         case INTEGER_LITERAL:
         case FLOAT_LITERAL:
+        case BLOCK_STRING_LITERAL:
         case STRING_LITERAL:
         case NAME_LITERAL:{
           break;
@@ -1465,8 +1477,10 @@ if (jjtc000) {
         case DIRECTIVE:
         case TRUE:
         case FALSE:
+        case NULL:
         case INTEGER_LITERAL:
         case FLOAT_LITERAL:
+        case BLOCK_STRING_LITERAL:
         case STRING_LITERAL:
         case NAME_LITERAL:{
           break;
@@ -3142,6 +3156,29 @@ if (jjtc000) {
     throw new IllegalStateException ("Missing return statement in function");
 }
 
+// The null literal (spec section 2.9.5). <NULL> is not a token Name accepts, so it can never be read as an enum value (#11451).
+  final public NullValue NullValue() throws ParseException {/*@bgen(jjtree) NullValue */
+  NullValue jjtn000 = new NullValue(JJTNULLVALUE);
+  boolean jjtc000 = true;
+  jjtree.openNodeScope(jjtn000);
+  jjtn000.jjtSetFirstToken(getToken(1));
+    try {
+      jj_consume_token(NULL);
+jjtree.closeNodeScope(jjtn000, true);
+             jjtc000 = false;
+             jjtn000.jjtSetLastToken(getToken(0));
+{if ("" != null) return jjtn000;}
+    } finally {
+if (jjtc000) {
+        jjtree.closeNodeScope(jjtn000, true);
+        jjtn000.jjtSetLastToken(getToken(0));
+      }
+    }
+    throw new IllegalStateException ("Missing return statement in function");
+}
+
+// The literal keeps its digits: an integer is not an Int until the type of the argument it is written for says so, and a Long
+// or an ID argument takes values Integer.parseInt refuses. IntValue answers the narrowest Java type that holds it (#11451).
   final public IntValue IntValue() throws ParseException {/*@bgen(jjtree) IntValue */
     IntValue jjtn000 = new IntValue(JJTINTVALUE);
     boolean jjtc000 = true;
@@ -3155,7 +3192,7 @@ if (jjtc000) {
 jjtree.closeNodeScope(jjtn000, true);
                                   jjtc000 = false;
                                   jjtn000.jjtSetLastToken(getToken(0));
-jjtn000.val = Integer.parseInt(literal.image);
+jjtn000.image = literal.image;
         {if ("" != null) return jjtn000;}
     } finally {
 if (jjtc000) {
@@ -3200,10 +3237,23 @@ if (jjtc000) {
     int column = column();
     Token literal;
     try {
-      literal = jj_consume_token(STRING_LITERAL);
+      switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
+      case STRING_LITERAL:{
+        literal = jj_consume_token(STRING_LITERAL);
+        break;
+        }
+      case BLOCK_STRING_LITERAL:{
+        literal = jj_consume_token(BLOCK_STRING_LITERAL);
+        break;
+        }
+      default:
+        jj_la1[61] = jj_gen;
+        jj_consume_token(-1);
+        throw new ParseException();
+      }
 jjtree.closeNodeScope(jjtn000, true);
-                                 jjtc000 = false;
-                                 jjtn000.jjtSetLastToken(getToken(0));
+                                                                        jjtc000 = false;
+                                                                        jjtn000.jjtSetLastToken(getToken(0));
 jjtn000.val = literal.image;
         {if ("" != null) return jjtn000;}
     } finally {
@@ -3233,7 +3283,7 @@ jjtn000.query = true;
         break;
         }
       default:
-        jj_la1[61] = jj_gen;
+        jj_la1[62] = jj_gen;
         jj_consume_token(-1);
         throw new ParseException();
       }
@@ -3258,7 +3308,7 @@ if (jjtc000) {
   public Token jj_nt;
   private int jj_ntk;
   private int jj_gen;
-  final private int[] jj_la1 = new int[62];
+  final private int[] jj_la1 = new int[63];
   static private int[] jj_la1_0;
   static private int[] jj_la1_1;
   static {
@@ -3266,10 +3316,10 @@ if (jjtc000) {
 	   jj_la1_init_1();
 	}
 	private static void jj_la1_init_0() {
-	   jj_la1_0 = new int[] {0xfbf82000,0xfbf82000,0xfff80000,0x20,0x400,0x302000,0x10,0x200,0xfff80080,0x100,0xfff82400,0xfff80080,0x20,0x400,0x2000,0x20,0x400,0x2000,0xfff80000,0x400,0x0,0x400,0x400,0xfff80000,0xfff82800,0xfff82810,0xfff82800,0xfff82810,0xfff80000,0xfff80000,0x400,0x20,0x8,0xfff80800,0x8,0xfbc00000,0x400,0x300000,0x3b800000,0x400,0x4000000,0x400,0xfff80000,0xfff80000,0x20,0x400,0xfff80000,0x200,0x400,0x400,0xfff80000,0x400,0x4000,0x400,0xfff80000,0x400,0x400,0xfff80000,0x20,0x4000,0x0,0x300000,};
+	   jj_la1_0 = new int[] {0xfbf82000,0xfbf82000,0xfff80000,0x20,0x400,0x302000,0x10,0x200,0xfff80080,0x100,0xfff82400,0xfff80080,0x20,0x400,0x2000,0x20,0x400,0x2000,0xfff80000,0x400,0x0,0x400,0x400,0xfff80000,0xfff82800,0xfff82810,0xfff82800,0xfff82810,0xfff80000,0xfff80000,0x400,0x20,0x8,0xfff80800,0x8,0xfbc00000,0x400,0x300000,0x3b800000,0x400,0x4000000,0x400,0xfff80000,0xfff80000,0x20,0x400,0xfff80000,0x200,0x400,0x400,0xfff80000,0x400,0x4000,0x400,0xfff80000,0x400,0x400,0xfff80000,0x20,0x4000,0x0,0x0,0x300000,};
 	}
 	private static void jj_la1_init_1() {
-	   jj_la1_1 = new int[] {0x0,0x0,0x100000,0x0,0x0,0x0,0x0,0x0,0x100000,0x0,0x100008,0x100000,0x0,0x0,0x0,0x0,0x0,0x0,0x100000,0x0,0x8,0x0,0x0,0x100000,0x1e0003,0x1e0003,0x1e0003,0x1e0003,0x100000,0x100000,0x0,0x0,0x0,0x100000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x100000,0x100000,0x0,0x0,0x100000,0x0,0x0,0x0,0x100000,0x0,0x0,0x0,0x100000,0x0,0x0,0x100000,0x0,0x0,0x3,0x0,};
+	   jj_la1_1 = new int[] {0x0,0x0,0x200000,0x0,0x0,0x0,0x0,0x0,0x200000,0x0,0x200008,0x200000,0x0,0x0,0x0,0x0,0x0,0x0,0x200000,0x0,0x8,0x0,0x0,0x200000,0x3e0007,0x3e0007,0x3e0007,0x3e0007,0x200000,0x200000,0x0,0x0,0x0,0x200000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x200000,0x200000,0x0,0x0,0x200000,0x0,0x0,0x0,0x200000,0x0,0x0,0x0,0x200000,0x0,0x0,0x200000,0x0,0x0,0x3,0x180000,0x0,};
 	}
 
   /**
@@ -3281,7 +3331,7 @@ if (jjtc000) {
 	 token = new Token();
 	 jj_ntk = -1;
 	 jj_gen = 0;
-	 for (int i = 0; i < 62; i++) jj_la1[i] = -1;
+	 for (int i = 0; i < 63; i++) jj_la1[i] = -1;
   }
 
   /**
@@ -3293,7 +3343,7 @@ if (jjtc000) {
 	 token = new Token();
 	 jj_ntk = -1;
 	 jj_gen = 0;
-   for (int i = 0; i < 62; i++)
+   for (int i = 0; i < 63; i++)
      jj_la1[i] = -1;
   }
 
@@ -3306,7 +3356,7 @@ if (jjtc000) {
 	 token = new Token();
 	 jj_ntk = -1;
 	 jj_gen = 0;
-	 for (int i = 0; i < 62; i++) jj_la1[i] = -1;
+	 for (int i = 0; i < 63; i++) jj_la1[i] = -1;
   }
 
   /**
@@ -3318,7 +3368,7 @@ if (jjtc000) {
 	 token = new Token();
 	 jj_ntk = -1;
 	 jj_gen = 0;
-	 for (int i = 0; i < 62; i++) jj_la1[i] = -1;
+	 for (int i = 0; i < 63; i++) jj_la1[i] = -1;
   }
 
   private Token jj_consume_token(final int kind) throws ParseException {
@@ -3389,12 +3439,12 @@ if (jjtc000) {
    */
   public ParseException generateParseException() {
     jj_expentries.clear();
-    boolean[] la1tokens = new boolean[53];
+    boolean[] la1tokens = new boolean[54];
     if (jj_kind >= 0) {
       la1tokens[jj_kind] = true;
       jj_kind = -1;
     }
-    for (int i = 0; i < 62; i++) {
+    for (int i = 0; i < 63; i++) {
       if (jj_la1[i] == jj_gen) {
         for (int j = 0; j < 32; j++) {
           if ((jj_la1_0[i] & (1<<j)) != 0) {
@@ -3406,7 +3456,7 @@ if (jjtc000) {
         }
       }
     }
-    for (int i = 0; i < 53; i++) {
+    for (int i = 0; i < 54; i++) {
       if (la1tokens[i]) {
         jj_expentry = new int[1];
         jj_expentry[0] = i;

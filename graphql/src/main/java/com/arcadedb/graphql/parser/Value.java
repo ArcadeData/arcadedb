@@ -24,6 +24,7 @@ public class Value extends SimpleNode {
   protected FloatValue   floatValue;
   protected StringValue  stringValue;
   protected BooleanValue booleanValue;
+  protected NullValue    nullValue;
   protected EnumValue    enumValue;
   protected ListValue    listValue;
   protected ObjectValue  objectValue;
@@ -48,6 +49,8 @@ public class Value extends SimpleNode {
       return stringValue;
     else if (booleanValue != null)
       return booleanValue;
+    else if (nullValue != null)
+      return nullValue;
     else if (enumValue != null)
       return enumValue;
 

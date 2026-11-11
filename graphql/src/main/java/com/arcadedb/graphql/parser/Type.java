@@ -40,6 +40,24 @@ public class Type extends SimpleNode {
     return bang;
   }
 
+  /**
+   * Whether the type is non-null, a named one ({@code String!}) or a list ({@code [String]!}): the grammar puts the bang of a
+   * list on the {@link ListType}, so {@link #isBang()} alone answers false for {@code [String]!} (issue #11447).
+   */
+  public boolean isNonNull() {
+    return bang || (listType != null && listType.isBang());
+  }
+
+  /** The type as written in a schema, e.g. {@code [String!]!}, for the messages that name it. */
+  @Override
+  public String toString() {
+    if (typeName != null)
+      return typeName.getName() + (bang ? "!" : "");
+    if (listType != null)
+      return "[" + listType.getType() + "]" + (listType.isBang() ? "!" : "");
+    return super.toString();
+  }
+
 
   public String treeToString(final String prefix) {
     return prefix + "Type{" + (typeName != null ? typeName.getName() : listType.getType().getTypeName().getName()) + "}";

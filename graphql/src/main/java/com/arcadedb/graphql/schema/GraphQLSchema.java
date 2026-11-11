@@ -36,7 +36,10 @@ import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.GraphQLParserTreeConstants;
 import com.arcadedb.graphql.parser.InputValueDefinition;
 import com.arcadedb.graphql.parser.ListType;
+import com.arcadedb.graphql.parser.ListValueWithVariable;
+import com.arcadedb.graphql.parser.ObjectFieldWithValue;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
+import com.arcadedb.graphql.parser.ObjectValueWithVariable;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.parser.Selection;
@@ -82,7 +85,8 @@ public class GraphQLSchema {
    * for the same reason (#8756).
    * <p>
    * These custom scalars are descriptive: they tell a client what the result serializes, and this module applies no
-   * coercion of its own for them, neither to a result value nor to an argument.
+   * coercion of its own for them, neither to a result value nor to an argument. The one check is the width of a {@code Long}
+   * input value, which an integer literal of more than 64 bits exceeds (#11451).
    */
   private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long", "JSON", "BigDecimal" };
   private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);
@@ -197,7 +201,6 @@ public class GraphQLSchema {
     SelectionSet projection = null;
     ObjectTypeDefinition returnType = null;
     FieldDefinition typeDefinition = null;
-    final Set<String> typeArgumentNames = new HashSet<>();
 
     final Map<String, Object> variables = resolveVariables(op, parameters);
     // BOUND TO THE VARIABLES BEFORE ANYTHING IS EXPANDED: THE if ARGUMENT OF @skip AND @include CAN REFERENCE THEM
@@ -238,11 +241,6 @@ public class GraphQLSchema {
           if (queryName.equals(f.getName())) {
             typeDefinition = f;
             returnType = registry.getTypeFromField(f);
-            // THE ARGUMENTS DEFINITION IS OPTIONAL IN THE GRAMMAR: A FIELD DECLARED WITHOUT A PARAMETER LIST
-            // (E.G. `allBooks: [Book]`) LEAVES IT NULL. SEE ISSUE #6835
-            if (f.getArgumentsDefinition() != null)
-              for (final InputValueDefinition d : f.getArgumentsDefinition().getInputValueDefinitions())
-                typeArgumentNames.add(d.getName().getValue());
             if (returnType != null)
               from = returnType.getName();
           }
@@ -272,7 +270,7 @@ public class GraphQLSchema {
       projection = operationSelectionSet;
 
       final Map<String, Object> boundParameters = new HashMap<>();
-      final String where = buildWhereClause(queryArguments, typeArgumentNames, variables, boundParameters);
+      final String where = buildWhereClause(queryArguments, typeDefinition, variables, boundParameters);
 
       String query = "select from " + from;
       if (!where.isEmpty())
@@ -323,43 +321,48 @@ public class GraphQLSchema {
    * enough for a text the module does not control: a predicate that closes them and opens new ones ({@code a > 1) or (b < 2})
    * balances the wrapping. So the predicate must first parse as a complete condition on its own, which is exactly the
    * guarantee that, wrapped, it is one operand.
+   * <p>
+   * The terms come from the arguments coerced by {@link #coerceArguments}, the same ones a native-query directive binds: an
+   * argument the operation does not provide takes its declared default, so a default filters here exactly as it does in the
+   * directive's statement, and a non-null argument without a value is refused instead of dropping its term and returning
+   * every record of the type (issue #11447). An omitted nullable argument without a default adds no term, which is what it
+   * always meant on this path.
    */
-  private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames,
+  private String buildWhereClause(final Arguments queryArguments, final FieldDefinition field,
       final Map<String, Object> variables, final Map<String, Object> boundParameters) {
-    final List<String> terms = new ArrayList<>();
-
     if (queryArguments != null)
       for (final Argument queryArgument : queryArguments.getList()) {
-        final String argName = queryArgument.getName();
-        if (!typeArgumentNames.contains(argName))
-          throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
-
         final ValueWithVariable argument = queryArgument.getValueWithVariable();
-
-        if ("where".equals(argName) && argument != null && argument.getValue() instanceof VariableLiteral variable)
+        if ("where".equals(queryArgument.getName()) && argument != null && argument.getValue() instanceof VariableLiteral variable)
           throw new CommandParsingException("The reserved 'where' argument is interpolated into the statement verbatim, "
               + "so it cannot be filled from the variable '$" + variable.getName()
               + "': use a @sql directive with a bound parameter for a predicate that has to vary at runtime");
-
-        final Object argValue = resolveValue(argument, variables);
-
-        if ("where".equals(argName)) {
-          final String predicate = String.valueOf(argValue);
-          if (predicate.contains(BOUND_PARAMETER_PREFIX))
-            throw new CommandParsingException("The 'where' predicate cannot name a parameter starting with '"
-                + BOUND_PARAMETER_PREFIX + "': that prefix is reserved for the parameters bound for the other arguments");
-          try {
-            new SQLAntlrParser(database).parseCondition(predicate);
-          } catch (final CommandSQLParsingException e) {
-            throw new CommandParsingException("The 'where' predicate '" + predicate + "' is not a complete SQL condition", e);
-          }
-          terms.add(predicate);
-        } else {
-          final String parameterName = BOUND_PARAMETER_PREFIX + boundParameters.size();
-          boundParameters.put(parameterName, argValue);
-          terms.add(argName + " = :" + parameterName);
-        }
       }
+
+    final List<String> terms = new ArrayList<>();
+    for (final Map.Entry<String, Object> coerced : coerceArguments(queryArguments, field, variables, false).entrySet()) {
+      final String argName = coerced.getKey();
+      final Object argValue = coerced.getValue();
+      if ("where".equals(argName)) {
+        if (argValue == null)
+          // an explicit null predicate is no predicate: String.valueOf() would turn it into the condition text "null"
+          continue;
+        final String predicate = argValue.toString();
+        if (predicate.contains(BOUND_PARAMETER_PREFIX))
+          throw new CommandParsingException("The 'where' predicate cannot name a parameter starting with '"
+              + BOUND_PARAMETER_PREFIX + "': that prefix is reserved for the parameters bound for the other arguments");
+        try {
+          new SQLAntlrParser(database).parseCondition(predicate);
+        } catch (final CommandSQLParsingException e) {
+          throw new CommandParsingException("The 'where' predicate '" + predicate + "' is not a complete SQL condition", e);
+        }
+        terms.add(predicate);
+      } else {
+        final String parameterName = BOUND_PARAMETER_PREFIX + boundParameters.size();
+        boundParameters.put(parameterName, argValue);
+        terms.add(argName + " = :" + parameterName);
+      }
+    }
 
     final StringBuilder where = new StringBuilder();
     for (final String term : terms) {
@@ -389,7 +392,7 @@ public class GraphQLSchema {
         continue;
 
       final String name = literal.getName();
-      final boolean nonNull = definition.getType() != null && definition.getType().isBang();
+      final boolean nonNull = definition.getType() != null && definition.getType().isNonNull();
 
       if (parameters != null && parameters.containsKey(name)) {
         final Object parameterValue = parameters.get(name);
@@ -407,6 +410,9 @@ public class GraphQLSchema {
           throw new CommandParsingException(
               "Default value of GraphQL variable '$" + name + "' is not a scalar: list and object default values are not supported");
         final Object value = defaultValue.getValue();
+        // the specification forbids a null default for a non-null variable, which could never be satisfied by it (#11451)
+        if (value == null && nonNull)
+          throw new CommandParsingException("GraphQL variable '$" + name + "' is declared as non-null but its default value is null");
         checkDeclaredType(name, definition, value, "declared as its default");
         variables.put(name, value);
         continue;
@@ -459,19 +465,132 @@ public class GraphQLSchema {
       return;
 
     final String declared = typeName.getName();
-    final boolean valid = switch (declared) {
+    if (!isValueOf(declared, value))
+      throw new CommandParsingException(
+          "GraphQL variable '$" + name + "' is declared as " + declared + " but a " + value.getClass().getSimpleName()
+              + " value was " + origin);
+  }
+
+  /**
+   * Whether a non-null value is one the scalar named {@code declared} can hold, with the rules of {@link #checkDeclaredType}.
+   * {@code Long} is checked for its width only: it is the one custom scalar a number can overflow, and an integer literal wider
+   * than 64 bits is the only value of the document that can do it (issue #11451).
+   */
+  private static boolean isValueOf(final String declared, final Object value) {
+    return switch (declared) {
       case "Int" -> isInteger(value);
+      case "Long" -> !(value instanceof BigInteger b) || b.bitLength() < Long.SIZE;
       case "Float" -> value instanceof Number && isFinite(value);
       case "Boolean" -> value instanceof Boolean;
       case "String" -> value instanceof String;
       case "ID" -> value instanceof String || isIntegral(value);
       default -> true;
     };
+  }
 
-    if (!valid)
+  /**
+   * The values of the arguments of {@code field}, coerced as the specification's CoerceArgumentValues() does, for both ways a
+   * Query field is answered - the plain {@code select} built from the arguments and the statement of a native-query directive -
+   * so the two cannot drift apart again (issues #11098 and #11447):
+   * <ul>
+   *   <li>an argument the field does not declare is refused;</li>
+   *   <li>an argument the operation does not provide - omitted, or bound to a variable the caller gave no value - takes the
+   *   default the field declares;</li>
+   *   <li>a non-null argument with neither a value nor a default, or given null, is refused;</li>
+   *   <li>a literal is checked against the declared scalar, so an integer literal beyond 32 bits is refused for an {@code Int}
+   *   and taken by a {@code Long} or an {@code ID} (issue #11451). A variable is checked against the type of its own
+   *   declaration instead, by {@link #resolveVariables}.</li>
+   * </ul>
+   * An argument still without a value is left out, or bound to null when {@code bindOmittedAsNull} is set: a directive's
+   * statement reads each declared argument as a parameter, and a parameter with no value is refused rather than read as null.
+   * The written arguments come first, in document order.
+   */
+  private static Map<String, Object> coerceArguments(final Arguments queryArguments, final FieldDefinition field,
+      final Map<String, Object> variables, final boolean bindOmittedAsNull) {
+    final List<InputValueDefinition> declared = field != null && field.getArgumentsDefinition() != null ?
+        field.getArgumentsDefinition().getInputValueDefinitions() :
+        Collections.emptyList();
+
+    final Map<String, Object> coerced = new LinkedHashMap<>();
+    if (queryArguments != null)
+      for (final Argument queryArgument : queryArguments.getList()) {
+        final String name = queryArgument.getName();
+        final InputValueDefinition definition = declaredArgument(declared, name);
+        if (definition == null)
+          throw new CommandParsingException("Parameter '" + name + "' not defined in query");
+
+        final ValueWithVariable argument = queryArgument.getValueWithVariable();
+        final AbstractValue written = argument != null ? argument.getValue() : null;
+        // AN ARGUMENT BOUND TO A VARIABLE THE CALLER DID NOT PROVIDE IS NOT PROVIDED EITHER (ISSUE #11098)
+        if (written instanceof VariableLiteral variable && variables instanceof CoercedVariables coercedVariables
+            && coercedVariables.omitted.contains(variable.getName()))
+          continue;
+
+        final Object value = resolveValue(argument, variables);
+        checkArgument(field, definition, value, !(written instanceof VariableLiteral));
+        coerced.put(name, value);
+      }
+
+    for (final InputValueDefinition definition : declared) {
+      final String name = definition.getName().getValue();
+      if (coerced.containsKey(name))
+        continue;
+
+      if (definition.getDefaultValue() != null) {
+        final Object value = defaultValueOf(definition.getDefaultValue().getValue());
+        if (value == UNSUPPORTED_DEFAULT)
+          // an object default is not supported: the argument stays unbound, which only a statement that reads it refuses
+          continue;
+        checkArgument(field, definition, value, true);
+        coerced.put(name, value);
+      } else if (definition.getType() != null && definition.getType().isNonNull())
+        throw new CommandParsingException(
+            "GraphQL argument '" + name + "' of field '" + field.getName() + "' is declared as " + definition.getType()
+                + " but no value was provided");
+      else if (bindOmittedAsNull)
+        coerced.put(name, null);
+    }
+    return coerced;
+  }
+
+  private static InputValueDefinition declaredArgument(final List<InputValueDefinition> declared, final String name) {
+    for (final InputValueDefinition definition : declared)
+      if (name.equals(definition.getName().getValue()))
+        return definition;
+    return null;
+  }
+
+  /**
+   * Refuses null for a non-null argument, and a literal the declared scalar cannot hold. A list type is not checked element by
+   * element, and a type this module does not model passes through, as for the variables (see {@link #checkDeclaredType}).
+   */
+  private static void checkArgument(final FieldDefinition field, final InputValueDefinition definition, final Object value,
+      final boolean literal) {
+    final com.arcadedb.graphql.parser.Type type = definition.getType();
+    if (type == null)
+      return;
+
+    final String name = definition.getName().getValue();
+    if (value == null) {
+      if (type.isNonNull())
+        throw new CommandParsingException(
+            "GraphQL argument '" + name + "' of field '" + field.getName() + "' is declared as " + type + " but null was provided");
+      return;
+    }
+
+    if (literal && type.getTypeName() != null && !isValueOf(type.getTypeName().getName(), value))
       throw new CommandParsingException(
-          "GraphQL variable '$" + name + "' is declared as " + declared + " but a " + value.getClass().getSimpleName()
-              + " value was " + origin);
+          "GraphQL argument '" + name + "' of field '" + field.getName() + "' is declared as " + type + ", which cannot represent "
+              + "the literal " + value + scalarRange(type.getTypeName().getName()));
+  }
+
+  /** Why an integer literal does not fit the scalar, for the scalars with a range. */
+  private static String scalarRange(final String declared) {
+    return switch (declared) {
+      case "Int" -> ": an Int is a signed 32-bit integer, declare the argument as Long or ID for a wider value";
+      case "Long" -> ": a Long is a signed 64-bit integer";
+      default -> "";
+    };
   }
 
   /**
@@ -509,7 +628,10 @@ public class GraphQLSchema {
   }
 
   /**
-   * Resolves an argument value, substituting the operation's variable values for a {@code $variable} reference.
+   * Resolves an argument value, substituting the operation's variable values for a {@code $variable} reference. A list literal
+   * resolves to a list of the values of its items and an object literal to a map of the values of its fields, the variables in
+   * them included: their nodes used to reach the statement as they were, so a list literal bound to {@code in :names} matched
+   * nothing (issue #11451).
    */
   static Object resolveValue(final ValueWithVariable valueWithVariable, final Map<String, Object> variables) {
     final AbstractValue value = valueWithVariable != null ? valueWithVariable.getValue() : null;
@@ -518,6 +640,18 @@ public class GraphQLSchema {
       if (variables == null || !variables.containsKey(name))
         throw new CommandParsingException("GraphQL variable '$" + name + "' is not declared by the operation");
       return variables.get(name);
+    }
+    if (value instanceof ListValueWithVariable list) {
+      final List<Object> items = new ArrayList<>(list.getValues().size());
+      for (final ValueWithVariable item : list.getValues())
+        items.add(resolveValue(item, variables));
+      return items;
+    }
+    if (value instanceof ObjectValueWithVariable object) {
+      final Map<String, Object> fields = new LinkedHashMap<>(object.getValues().size() * 2);
+      for (final ObjectFieldWithValue field : object.getValues())
+        fields.put(field.getName(), resolveValue(field.getValueWithVariable(), variables));
+      return fields;
     }
     return value != null ? value.getValue() : null;
   }
@@ -539,7 +673,7 @@ public class GraphQLSchema {
         final Object statementValue = resolveValue(argument.getValueWithVariable(), null);
         statement = statementValue != null ? statementValue.toString() : null;
 
-        arguments = withOmittedArguments(getArguments(selection.getArguments(), variables), field);
+        arguments = coerceArguments(selection.getArguments(), field, variables, true);
         projection = selectionSet;
       }
     }
@@ -547,36 +681,11 @@ public class GraphQLSchema {
     if (statement == null)
       throw new CommandParsingException(language.toUpperCase(Locale.ROOT) + " directive has no `statement` argument");
 
-    final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
+    final ResultSet resultSet =
+        arguments != null && !arguments.isEmpty() ? database.query(language, statement, arguments) : database.query(language, statement);
 
     return new GraphQLResultSet(this, registry, resultSet, projection != null ? projection.getSelections() : null, returnType, variables,
         fragments);
-  }
-
-  /**
-   * Binds every argument the field declares and the operation omitted: to its default value, or to null, which is what an
-   * omitted nullable argument means in GraphQL. The statement of the directive reads each one as a parameter, and a parameter
-   * with no value is refused rather than read as null (issue #11098).
-   */
-  private static Map<String, Object> withOmittedArguments(Map<String, Object> arguments, final FieldDefinition field) {
-    if (field == null || field.getArgumentsDefinition() == null)
-      return arguments;
-    for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions()) {
-      final String name = definition.getName().getValue();
-      if (arguments != null && arguments.containsKey(name))
-        continue;
-      Object value = null;
-      if (definition.getDefaultValue() != null) {
-        value = defaultValueOf(definition.getDefaultValue().getValue());
-        if (value == UNSUPPORTED_DEFAULT)
-          // an object default is not supported: the argument stays unbound, which only a statement that reads it refuses
-          continue;
-      }
-      if (arguments == null)
-        arguments = new HashMap<>();
-      arguments.put(name, value);
-    }
-    return arguments;
   }
 
   /** The Java value of a declared default: a scalar, or a list of them, or {@link #UNSUPPORTED_DEFAULT} for an object. */

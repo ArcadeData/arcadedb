@@ -31,5 +31,9 @@ public class ObjectFieldWithValue extends SimpleNode {
     return name != null ? name.value : null;
   }
 
+  public ValueWithVariable getValueWithVariable() {
+    return value;
+  }
+
 }
 /* ParserGeneratorCC - OriginalChecksum=d85f205267573b6f9cb2631f3b734388 (do not edit this line) */

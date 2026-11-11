@@ -82,7 +82,7 @@ class MissingObjectRefusalCensusTest {
       Map.entry("query/sql/method/conversion/SQLMethodConvert#execute",
           "a data type keyword the argument of convert() spells wrong, refused as the statement's own mistake, not a schema object"),
       Map.entry("graphql/schema/GraphQLFragments#getDefinition", "a fragment the GraphQL document uses and does not define: invalid document"),
-      Map.entry("graphql/schema/GraphQLSchema#buildWhereClause", "an argument the GraphQL query does not declare: invalid document"),
+      Map.entry("graphql/schema/GraphQLSchema#coerceArguments", "an argument the GraphQL query does not declare: invalid document"),
       Map.entry("graphql/schema/GraphQLSchema#executeQuery", "a GraphQL query whose definition names no target type: invalid document"),
       Map.entry("redis/query/RedisQueryEngine#executeSingleCommandInternal",
           "a command Redis does not have, which Redis itself refuses as a command it cannot read (ERR unknown command)"),

@@ -29,6 +29,10 @@ public class ObjectValueWithVariable extends AbstractValue {
     super(id);
   }
 
+  public List<ObjectFieldWithValue> getValues() {
+    return values;
+  }
+
   @Override
   public Object getValue() {
     return values;

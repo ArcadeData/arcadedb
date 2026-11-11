@@ -34,6 +34,10 @@ public class ListValueWithVariable extends AbstractValue {
     return values;
   }
 
+  public List<ValueWithVariable> getValues() {
+    return values;
+  }
+
 
   @Override
   public String toString() {
