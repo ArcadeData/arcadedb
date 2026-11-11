@@ -205,6 +205,46 @@ final class VectorHeapBudget {
   }
 
   /**
+   * The largest build cache a from-scratch build of {@code nodes} vectors can run with and still fit {@code percent} of the
+   * available heap once every reclaimable byte is handed over, i.e. the cache for which
+   * {@link #estimateRebuildHeapBytes}{@code (nodes, dimensions, cache, false)} is one {@link #reclaimNeededFor} admits
+   * (issue #11497).
+   * <p>
+   * The build cache is the one term of the estimate a build can do without: a vector it does not hold is read back from
+   * the pages it is stored in, which costs the build time, while the graph being built has to be held whole. So when the
+   * full estimate does not fit, the question worth asking before refusing the build is whether the graph does, with the
+   * cache cut down to what is left beside it.
+   *
+   * @param nodes            number of vectors the build will walk
+   * @param dimensions       vector width
+   * @param percent          share of available heap the build may occupy, clamped as in {@link #reclaimNeededFor}
+   * @param availableHeap    {@link #availableHeapBytes()}, or a pinned figure in a test
+   * @param reclaimableBytes evictable bytes the {@code availableHeap} reading counts as live - the page read cache
+   *
+   * @return the cache capacity in vectors, {@link Long#MAX_VALUE} when the gate is disabled ({@code percent <= 0}) or
+   * there is nothing to build, or {@code -1} when the graph alone does not fit
+   */
+  static long largestBuildCacheThatFits(final long nodes, final int dimensions, final int percent,
+      final long availableHeap, final long reclaimableBytes) {
+    if (percent <= 0 || nodes <= 0)
+      return Long.MAX_VALUE;
+
+    final long available = Math.max(0L, availableHeap);
+    final long reclaimable = Math.max(0L, reclaimableBytes);
+    // Saturated: two readings near Long.MAX_VALUE cannot be produced by a real heap, but a wrapped sum would read as no
+    // room at all and refuse every build
+    final long total = available > Long.MAX_VALUE - reclaimable ? Long.MAX_VALUE : available + reclaimable;
+    // Rounded down, exactly as budgetBytes() rounds, so the estimate of the cache answered here is never one that
+    // reclaimNeededFor() then judges a byte short
+    final long budget = total / 100 * Math.min(percent, 90);
+
+    final long graphBytes = estimateRebuildHeapBytes(nodes, dimensions, 0L, false);
+    if (graphBytes > budget)
+      return -1L;
+    return (budget - graphBytes) / bytesPerCachedVector(dimensions);
+  }
+
+  /**
    * The share of {@link #availableHeapBytes()} a caller is allowed to claim.
    *
    * @param percent share to claim, clamped into {@code [0, 90]}: a build is never allowed to plan on the whole

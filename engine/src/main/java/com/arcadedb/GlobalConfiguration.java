@@ -1775,8 +1775,14 @@ public enum GlobalConfiguration {
       mutation-threshold or inactivity trigger retries it, and pending vectors stay exactly searchable through the \
       in-memory delta buffer meanwhile, so the cost of deferring is a longer delta scan per query rather than \
       wrong or missing results. The estimate is deliberately coarse, so the default is generous: it refuses only \
-      when a rebuild is confidently too large, not whenever one looks tight. Applies to online rebuilds only - a \
-      first build, a rebuild on close, an explicit REBUILD INDEX and a COMPACT INDEX are never declined. \
+      when a rebuild is confidently too large, not whenever one looks tight. A first build in the background, a \
+      rebuild on close, an explicit \
+      REBUILD INDEX and a COMPACT INDEX are never declined. The build a QUERY needs because the index has no usable \
+      graph is judged against the same share, with the estimate of a build that has no old graph to keep: it gives up \
+      page cache, then runs with a smaller build cache (slower, same graph), and when even the graph alone does not \
+      fit, the query fails with a retryable VectorGraphBuildRefusedException (503 on HTTP) instead of building on a \
+      heap that full, which is what ends in an OutOfMemoryError that stops the whole server. It is never answered from \
+      the pending vectors alone, which would be an incomplete result presented as a complete one. \
       Set to 0 to disable the gate and restore the attempt-and-hope behaviour. Values above 90 are clamped to 90: \
       a rebuild is never allowed to plan on the whole heap, since the request, I/O and GC threads need some too.""",
       Integer.class, 90),
