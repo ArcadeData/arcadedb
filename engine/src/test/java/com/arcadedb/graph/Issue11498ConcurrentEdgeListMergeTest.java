@@ -205,6 +205,65 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
   }
 
   @Test
+  void aCommitRefusedAfterTheMergeLeavesNothingBehind() throws Exception {
+    final RID a = newVertex("a");
+    final RID b1 = newVertex("b1");
+    final RID b2 = newVertex("b2");
+    final RID doc = compute(() -> database.newDocument("Doc").set("n", 0).save().getIdentity());
+
+    // the head of a's list merges, then the same document written by both refuses the commit: what the merge prepared is dropped
+    final Throwable failure = interleave(() -> {
+      vertex(a).newEdge("E", vertex(b1));
+      doc.asDocument(true).modify().set("n", 1).save();
+    }, NOTHING, () -> {
+      vertex(a).newEdge("E", vertex(b2));
+      doc.asDocument(true).modify().set("n", 2).save();
+    });
+
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    database.transaction(() -> {
+      assertThat(neighbours(a, Vertex.DIRECTION.OUT)).containsExactly(b2);
+      assertThat(neighbours(b1, Vertex.DIRECTION.IN)).isEmpty();
+      assertThat(database.countType("E", false)).isEqualTo(1);
+      assertThat(doc.asDocument(true).getInteger("n")).isEqualTo(2);
+    });
+
+    // and the same work committed again finds a consistent list
+    database.transaction(() -> {
+      vertex(a).newEdge("E", vertex(b1));
+      doc.asDocument(true).modify().set("n", 1).save();
+    });
+    database.transaction(() -> assertThat(neighbours(a, Vertex.DIRECTION.OUT)).containsExactlyInAnyOrder(b1, b2));
+  }
+
+  @Test
+  void appendsOnAPageTheTransactionCreatedAChunkOnAreReplayed() throws Exception {
+    final RID a = newVertex("a");
+    final RID fresh = newVertex("fresh");
+    final RID t0 = newVertex("t0");
+    final RID t1 = newVertex("t1");
+    final RID t2 = newVertex("t2");
+    final RID t3 = newVertex("t3");
+    database.transaction(() -> vertex(a).newEdge("E", vertex(t0)));
+    final long mergesBefore = stats().edgeAppendMerges;
+
+    // the first transaction appends to a's chunk and creates the first chunk of another vertex, on the same page of the edge
+    // bucket: the page is out of the edge-append merge, so the append is a slot rewrite, and the concurrent append to the same
+    // chunk used to be a conflict on the same record
+    final Throwable failure = interleave(() -> {
+      vertex(a).newEdge("E", vertex(t1));
+      vertex(fresh).newEdge("E", vertex(t2));
+    }, NOTHING, () -> vertex(a).newEdge("E", vertex(t3)));
+
+    assertThat(failure).isNull();
+    assertThat(stats().edgeAppendMerges).isGreaterThan(mergesBefore);
+    database.transaction(() -> {
+      assertThat(neighbours(a, Vertex.DIRECTION.OUT)).containsExactlyInAnyOrder(t0, t1, t3);
+      assertThat(neighbours(fresh, Vertex.DIRECTION.OUT)).containsExactly(t2);
+    });
+  }
+
+  @Test
   void anEdgeToAVertexDeletedConcurrentlyStillConflicts() throws Exception {
     final RID a = newVertex("a");
     final RID b = newVertex("b");
