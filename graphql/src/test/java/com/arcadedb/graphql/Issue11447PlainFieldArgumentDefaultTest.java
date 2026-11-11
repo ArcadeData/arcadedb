@@ -50,6 +50,9 @@ class Issue11447PlainFieldArgumentDefaultTest extends AbstractGraphQLTest {
           booksByRequiredNameDirective(name: String!): [Book] @sql(statement: "select from Book where name = :name")
           booksByNames(name: [String!]): [Book]
           booksByRequiredNames(name: [String]!): [Book]
+          booksByRequiredNonNullNames(name: [String!]!): [Book]
+          booksByRequiredNestedNames(name: [[String]]!): [Book]
+          booksByNestedRequiredNames(name: [[String]!]): [Book]
           booksByFilter(filter: BookFilter = { name: "Mr. brain" }): [Book]
         }
 
@@ -155,6 +158,12 @@ class Issue11447PlainFieldArgumentDefaultTest extends AbstractGraphQLTest {
           .contains("Harry Potter and the Philosopher's Stone");
       assertThatThrownBy(() -> names(database, "{ booksByRequiredNames { name } }", Map.of()))
           .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
+      assertThatThrownBy(() -> names(database, "{ booksByRequiredNonNullNames { name } }", Map.of()))
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
+      assertThatThrownBy(() -> names(database, "{ booksByRequiredNestedNames { name } }", Map.of()))
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("'name'");
+      // [[String]!] is a nullable list whose items are non-null lists: it may be omitted
+      assertThat(names(database, "{ booksByNestedRequiredNames { name } }", Map.of())).contains("Mr. brain");
       return null;
     });
   }
