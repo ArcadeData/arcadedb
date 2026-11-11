@@ -416,7 +416,11 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
         rids[i] = database.newVertex("V").set("name", "v" + i).save().getIdentity();
     });
 
-    final Set<RID> live = ConcurrentHashMap.newKeySet();
+    // the creates minus the deletes committed on each RID, the RIDs at zero removed. Not a set of live edges: a deleted edge's slot is
+    // reused by an edge another writer creates, and that writer can record its create before the deleting writer records its delete,
+    // which a set would turn into a missing live edge. The commits of one RID alternate create and delete, so the sum ends at 1 for a
+    // live edge and 0 for a deleted one whatever order the writers record them in
+    final ConcurrentHashMap<RID, Integer> net = new ConcurrentHashMap<>();
     final List<Throwable> errors = new CopyOnWriteArrayList<>();
     final CountDownLatch start = new CountDownLatch(1);
     final List<Thread> threads = new ArrayList<>();
@@ -448,8 +452,10 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
                     edge.asEdge(true).delete();
                 });
                 mine.addAll(created);
-                live.addAll(created);
-                toDelete.forEach(live::remove);
+                for (final RID edge : created)
+                  net.merge(edge, 1, Issue11498ConcurrentEdgeListMergeTest::sumOrRemove);
+                for (final RID edge : toDelete)
+                  net.merge(edge, -1, Issue11498ConcurrentEdgeListMergeTest::sumOrRemove);
                 break;
               } catch (final NeedRetryException e) {
                 if (attempt == MAX_CALLER_RETRIES)
@@ -471,6 +477,9 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
     if (!errors.isEmpty())
       throw new AssertionError(errors.size() + " writer(s) failed, first: " + errors.getFirst(), errors.getFirst());
 
+    assertThat(net.values()).as("net creates of each RID still recorded").containsOnly(1);
+    final Set<RID> live = new HashSet<>(net.keySet());
+    assertThat(live).hasSize(writers * transactionsPerWriter * edgesPerTransaction - writers * (transactionsPerWriter / 2) * 10);
     assertEdgeListsHold(rids, live);
 
     // a crash: the database is opened again from what the WAL holds
@@ -478,6 +487,11 @@ class Issue11498ConcurrentEdgeListMergeTest extends TestHelper {
     database.close();
     database = factory.open();
     assertEdgeListsHold(rids, live);
+  }
+
+  private static Integer sumOrRemove(final Integer current, final Integer delta) {
+    final int sum = current + delta;
+    return sum == 0 ? null : sum;
   }
 
   /** Every edge of {@code edges} is in the OUT list of its source and the IN list of its destination, once, and no other is. */

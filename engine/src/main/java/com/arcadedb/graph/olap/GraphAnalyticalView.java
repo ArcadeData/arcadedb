@@ -496,9 +496,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // swap: it is checked against what the scan read, as a full build's is, by keeping this watch as the base watch of the
   // CSR the compaction publishes. Written under synchronized(this), read without it by the record listeners.
   private volatile BuildWatch    compactionWatch;
-  // Test-only: see setBeforeBuildScanForTest() and setAfterBuildWatchOpenedForTest()
+  // Test-only: see setBeforeBuildScanForTest(), setAfterBuildWatchOpenedForTest() and setAfterBuildWatchClosedForTest()
   private volatile Runnable      beforeBuildScanForTest;
   private volatile Runnable      afterBuildWatchOpenedForTest;
+  private volatile Runnable      afterBuildWatchClosedForTest;
   // Test-only: see setBeforeDiskRestoreForTest()
   private volatile Runnable      beforeDiskRestoreForTest;
   // SHUTDOWN_AWAIT_MS, shortened only by setShutdownAwaitMsForTest()
@@ -784,12 +785,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final String[] builtVertexTypes, final String[] builtEdgeTypes, final BuildWatch watch) {
     // Before the watch is cleared: a commit callback that finds no watch then sees this publication counted
     ++baseReplacements;
+    // A change still queued for the asynchronous merge is in this scan, which started after it committed, or it was
+    // buffered in this watch and is re-applied below (issue #10189). Dropped BEFORE the watch closes: a change the closed
+    // watch refuses is queued by its commit callback without this instance's monitor, and one queued between the close and
+    // the discard was dropped with the others although the scan, which it committed after, never read it
+    discardQueuedAsyncDeltas();
     final List<TxDelta> buffered = watch.close();
+    final Runnable afterClosed = afterBuildWatchClosedForTest;
+    if (afterClosed != null)
+      afterClosed.run();
     if (buildWatch == watch)
       buildWatch = null;
-    // A change still queued for the asynchronous merge is in this scan, which started after it committed, or it was
-    // buffered in this watch and is re-applied below (issue #10189)
-    discardQueuedAsyncDeltas();
 
     Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, builtVertexTypes, builtEdgeTypes, propertyFilter,
         edgePropertyFilter);
@@ -5585,6 +5591,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Test-only hook: releases the permits taken by {@link #acquireAllBuildPermitsForTest()}. */
   static void releaseAllBuildPermitsForTest() {
     BUILD_PERMITS.release(MAX_CONCURRENT_BUILDS);
+  }
+
+  /**
+   * Test-only hook: run by a full build's publication right after its watch closed, under this instance's monitor, while the
+   * watch is still the one a commit callback finds.
+   */
+  void setAfterBuildWatchClosedForTest(final Runnable hook) {
+    this.afterBuildWatchClosedForTest = hook;
   }
 
   /** Test-only hook: run by a full build right before its scan starts, outside this instance's monitor. */

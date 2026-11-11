@@ -655,6 +655,20 @@ public class LocalSchema implements Schema {
         if (file != null)
           if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
             loadedDictionary = (Dictionary) componentFactory.createComponent(file, mode);
+            // On a reload of a live database the new instance counted its pages from the file, which lags a commit
+            // until the flush thread writes the page (see Dictionary.reload()): a committed page still queued is
+            // invisible to it. Take the committed count of the instance it replaces BEFORE anything reads the names
+            // or decides that the header page is missing, or the names on that page are silently dropped (a new name
+            // then reuses their ids) and, for page 0 of a young database, createHeaderPageIfMissing() writes a fresh
+            // page 0 over the committed one and fails its commit with a ConcurrentModificationException. The barrier
+            // carries the rest over later (see the carryOverFrom() call there), which is too late for the dictionary.
+            if (previousDictionary != null && previousDictionary != loadedDictionary
+                && previousDictionary.getFileId() == loadedDictionary.getFileId()
+                && previousDictionary.getName().equals(loadedDictionary.getName())
+                && previousDictionary.getCommittedPageCount() > loadedDictionary.getCommittedPageCount()) {
+              loadedDictionary.carryOverFrom(previousDictionary);
+              loadedDictionary.reload();
+            }
             registerFile(loadedDictionary);
             // Swapped in at once rather than nulled first: both instances front the same file, and a reader
             // serializing a record in the meantime needs one.
@@ -1757,6 +1771,25 @@ public class LocalSchema implements Schema {
   Map<String, JSONObject> getUnavailableIndexDefinitions(final String typeName) {
     final Map<String, JSONObject> definitions = unavailableIndexDefinitions.get(typeName);
     return definitions != null ? definitions : Map.of();
+  }
+
+  /**
+   * True when a bucket index the last load left out for a missing header page (issue #10046) now has a page in its file. The
+   * schema of a crashed database is loaded before the WAL replay, so an index created just before the crash, whose header page
+   * the WAL holds but the asynchronous flush never wrote, is found headerless by that load and completed by the replay.
+   */
+  public boolean hasUnavailableIndexCompletedSinceLoad() {
+    for (final Map<String, JSONObject> definitions : unavailableIndexDefinitions.values())
+      for (final String fileName : definitions.keySet()) {
+        final ComponentFile file = database.getFileManager().getFileByComponentName(fileName);
+        try {
+          if (file != null && file.getSize() > 0)
+            return true;
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.WARNING, "Cannot read the size of index file '%s'", e, fileName);
+        }
+      }
+    return false;
   }
 
   /**
