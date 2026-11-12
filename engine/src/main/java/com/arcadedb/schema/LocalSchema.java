@@ -1826,11 +1826,16 @@ public class LocalSchema implements Schema {
     unavailableIndexes.computeIfAbsent(typeName, k -> new TreeMap<>()).put(indexName, indexJSON.copy());
     refusedIndexFiles.add(indexName);
 
+    // A UNIQUE one says so: nothing refuses a duplicate key until the definition is corrected, and no re-install from a cluster can
+    // correct it (getUnavailableUniqueIndexNames() leaves it out for that reason)
+    final String unenforced = indexJSON.getBoolean("unique", false) ?
+        " Its UNIQUE constraint on " + indexJSON.getJSONArray("properties", new JSONArray()) + " is NOT enforced meanwhile." :
+        "";
     LogManager.instance().log(this, Level.SEVERE,
         "Index '%s' of type '%s' is unavailable: its definition in schema.json is refused (%s). Queries on the type scan instead of "
-            + "using it. Its definition and its file are kept: correct the definition in schema.json and reopen the database, or "
+            + "using it.%s Its definition and its file are kept: correct the definition in schema.json and reopen the database, or "
             + "create an index on the same properties again with 'CREATE INDEX'", null, indexName, typeName,
-        Objects.requireNonNullElse(reasonOf(reason), reason.getClass().getSimpleName()));
+        Objects.requireNonNullElse(reasonOf(reason), reason.getClass().getSimpleName()), unenforced);
   }
 
   /**
@@ -1870,18 +1875,23 @@ public class LocalSchema implements Schema {
    * that no index on the same properties has replaced since. A unique index in that state enforces nothing: the node that
    * loaded it accepts duplicates a healthy peer would refuse, and no local step can tell a half-arrived compaction file
    * from one a power loss emptied. An HA node reads this to re-install the database from its cluster.
+   * <p>
+   * Not a definition the load refused (issue #11568): what is wrong there is the definition, which the cluster holds too, so a
+   * re-install would bring it back refused and quarantine the node again for good. The load reports it as the configuration
+   * error it is instead, naming the constraint it leaves unenforced.
    */
   public List<String> getUnavailableUniqueIndexNames() {
     final Map<String, Map<String, JSONObject>> unavailable = unavailableIndexDefinitions;
     if (unavailable.isEmpty())
       return List.of();
+    final Set<String> refused = refusedIndexDefinitionFiles;
 
     final List<String> names = new ArrayList<>();
     for (final Map.Entry<String, Map<String, JSONObject>> typeEntry : unavailable.entrySet()) {
       final LocalDocumentType type = existsType(typeEntry.getKey()) ? getType(typeEntry.getKey()) : null;
       for (final Map.Entry<String, JSONObject> entry : typeEntry.getValue().entrySet()) {
         final JSONObject definition = entry.getValue();
-        if (!definition.getBoolean("unique", false))
+        if (!definition.getBoolean("unique", false) || refused.contains(entry.getKey()))
           continue;
         final List<String> properties = definition.getJSONArray("properties", new JSONArray()).toListOfStrings();
         // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again
