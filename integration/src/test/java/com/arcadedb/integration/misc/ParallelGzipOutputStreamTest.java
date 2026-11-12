@@ -63,6 +63,23 @@ class ParallelGzipOutputStreamTest {
         }
   }
 
+  /**
+   * Random bytes do not compress: every chunk comes out a little LARGER than it went in, which is the case the output
+   * buffer bound exists for. Well past the {@code threads * 2} chunks in flight, so the backpressure drains run too.
+   */
+  @Test
+  void incompressibleInputFarPastTheInFlightBoundReadsBack() throws Exception {
+    final byte[] input = new byte[40 * SMALL_CHUNK + 333];
+    new Random(10).nextBytes(input);
+    for (final int level : new int[] { 0, 1, 9 }) {
+      final byte[] gzip = parallelGzip(input, level, 2, SMALL_CHUNK);
+      final String as = "incompressible, level " + level;
+      assertThat(gzip.length).as(as).isGreaterThan(input.length);
+      assertThat(gunzip(gzip)).as(as).isEqualTo(input);
+      assertSingleMember(gzip, input, as);
+    }
+  }
+
   @Test
   void writingOneByteAtATimeWritesTheSameFileAsBulkWrites() throws Exception {
     final byte[] input = text(7 * SMALL_CHUNK + 5, 1);
