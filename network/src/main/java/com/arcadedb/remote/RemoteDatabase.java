@@ -488,6 +488,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final NeedRetryException e) {
       throw e;
+    } catch (final TransactionException e) {
+      // THE ONE THROWN ABOVE, WITH THE MAPPED FAILURE AS ITS CAUSE: NOT WRAPPED A SECOND TIME BY THE GENERIC CLAUSE (ISSUE #11387)
+      throw e;
     } catch (final IOException e) {
       // A connection that could not even be established proves the begin never reached the server, the verdict gRPC's
       // UNAVAILABLE carries on the same call: retryable as well (issue #8617). Any other transport failure may have
@@ -527,6 +530,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
 
+        // A 503 page from a hop in front of the server (issue #11387) does not prove the commit did not land: the hop may have
+        // forwarded it. Not retried and not rolled back, like any outcome that may have landed
+        if (detail instanceof RemoteIntermediaryRefusalException)
+          throw new TransactionException(
+              "Error on transaction commit: a hop in front of the server answered 503, so the commit may have been applied", detail);
+
         // Issue #8618: the server ANSWERED, so nothing of this commit is still running on it, and it may still hold the
         // session. A refusal issued before the handler ran (the 503 of a node installing a snapshot) left the
         // transaction open, and a server that predates the fix keeps the session of a commit that failed inside the
@@ -553,7 +562,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       }
       captureResponseHeaders(response);
       committed = true;
-    } catch (final NeedRetryException | DuplicatedKeyException e) {
+    } catch (final NeedRetryException | DuplicatedKeyException | TransactionException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
@@ -590,6 +599,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         throw new TransactionException("Error on transaction rollback", detail);
       }
       captureResponseHeaders(response);
+    } catch (final TransactionException e) {
+      // THE ONE THROWN ABOVE, WITH THE MAPPED FAILURE AS ITS CAUSE: NOT WRAPPED A SECOND TIME BY THE GENERIC CLAUSE (ISSUE #11387)
+      throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     } finally {
@@ -1076,6 +1088,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
+   * {@link #asRuntime} for a request that may write. A proxy's 503 page may come after the proxy forwarded the request
+   * (issue #11387), so it is no proof the write did not run: it is raised as a {@link RemoteException}, which no retry loop
+   * ({@code transaction()} included) runs again, instead of the retryable type a read keeps. The server's own 503 keeps its
+   * type: it is sent only for a request refused before it ran.
+   */
+  private static RuntimeException asRuntimeForAWrite(final Exception mapped, final String operation) {
+    if (mapped instanceof RemoteIntermediaryRefusalException)
+      return new RemoteException("Error on executing " + operation + ": a hop in front of the server answered 503 (" + mapped.getMessage()
+          + "), possibly after forwarding the request, so the server may already have applied it", mapped);
+    return asRuntime(mapped, operation);
+  }
+
+  /**
    * The result set over a streamed body: rows converted as the buffered encoding converts them, and an in-band
    * {@code error} line rebuilt into the typed exception the buffered encoding would have raised (issue #8874).
    */
@@ -1136,7 +1161,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         final String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
         body.close();
         body = null;
-        throw asRuntime(manageException(response.statusCode(), errorBody, command), "streamed " + operation);
+        final Exception mapped = manageException(response.statusCode(), errorBody, command);
+        throw isReplayable("POST", operation) ? asRuntime(mapped, "streamed " + operation) :
+            asRuntimeForAWrite(mapped, "streamed " + operation);
       }
 
       // A server that predates #7306 ignores the Accept header and answers the buffered envelope with a 200.
@@ -1306,10 +1333,16 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         return new TimeSeriesWriteSummary(points.size(), points.size(), 0, List.of(), List.of(), List.of());
 
       if (response.statusCode() == 400) {
-        final JSONObject error = new JSONObject(response.body());
         // A partial write and a rejected request share the 400. The counts are what tells them apart: a
-        // rejected request (empty body, missing database) carries none.
-        if (error.has("written") && error.has("dropped"))
+        // rejected request (empty body, missing database) carries none. A body that is not JSON (a proxy's
+        // error page, issue #11387) carries none either, and goes to manageException with its status code
+        JSONObject error = null;
+        try {
+          error = new JSONObject(response.body());
+        } catch (final JSONException e) {
+          // NOT THE SERVER'S ANSWER: MAPPED ON THE STATUS CODE BELOW
+        }
+        if (error != null && error.has("written") && error.has("dropped"))
           return new TimeSeriesWriteSummary(points.size(), error.getLong("written"), error.getLong("dropped"),
               stringList(error.getJSONArray("unknownTypes", null)), stringList(error.getJSONArray("nonTimeSeriesTypes", null)),
               stringList(error.getJSONArray("unavailableTypes", null)),
@@ -1317,7 +1350,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       }
 
       // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
-      throw asRuntime(manageException(response, "ts write"), "time series write");
+      throw asRuntimeForAWrite(manageException(response, "ts write"), "time series write");
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);
@@ -1700,10 +1733,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // server too old to stream, on its way to being unreachable.
       try (final InputStream in = response.body()) {
         final String body = new String(in.readAllBytes(), DatabaseFactory.getDefaultCharset());
+        // A failed status is no proof of an old server: the server's own refusals and a proxy's error page (issue
+        // #11387) arrive without the streaming encoding too. Mapped as the buffered batch path maps them, so the
+        // status and the server's type survive, and a page that is not JSON reaches the message bounded
         if (response.statusCode() != 200)
-          throw new DatabaseOperationException(
-              "Error on batch import (server did not honour the streaming encoding, HTTP " + response.statusCode()
-                  + "): " + body);
+          throw new DatabaseOperationException("Error on batch import (HTTP " + response.statusCode() + ")",
+              manageException(response.statusCode(), body, "batch import"));
         return new JSONObject(body);
       }
     }

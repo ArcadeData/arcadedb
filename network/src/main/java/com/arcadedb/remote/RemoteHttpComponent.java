@@ -92,6 +92,8 @@ public class RemoteHttpComponent extends RWLockContext {
   public static final  int    DEFAULT_PORT       = 2480;
   private static final String charset            = "UTF-8";
   private static final String RETRY_AFTER_HEADER = "Retry-After";
+  // HOW MUCH OF AN ERROR BODY THAT IS NOT JSON (A PROXY'S ERROR PAGE) GOES INTO THE EXCEPTION AND THE LOG (ISSUE #11387)
+  static final         int    NON_JSON_BODY_EXCERPT_MAX = 256;
   /**
    * The server's refusal of a request it did not run, with the back-off in {@code exceptionArgs}. Matched by name: the
    * class lives in the server module, which this client does not depend on.
@@ -695,6 +697,18 @@ public class RemoteHttpComponent extends RWLockContext {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
+        // A 503 page from a hop in front of the server may come after the hop forwarded the request (issue #11387): retried
+        // only where a transport failure after sending would be. That is the rule of the IO clause above: a replayable request
+        // anywhere, a write only on a strategy that never leaves this server, with the request id it answers a replay from
+        if (e instanceof RemoteIntermediaryRefusalException) {
+          mayHaveBeenSent = true;
+          if (!replayable && !((connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) && requestId != null
+              && instancesAtStart.containsKey(server)))
+            throw new RemoteException("Error on executing remote operation '" + messageLabel + "' on server " + server
+                + ": a hop in front of the server answered 503 (" + e.getMessage()
+                + "), possibly after forwarding the request, so the server may already have applied it. It is not sent again,"
+                + " because a replay could apply it twice", e);
+        }
         // Transient server-side condition (election in progress, snapshot install) - retry the SAME
         // server after a delay. Bounded by the election budget only, never by maxRetry, so the FIXED
         // strategy's maxRetry of 1 does not reduce this to a single attempt.
@@ -1302,6 +1316,8 @@ public class RemoteHttpComponent extends RWLockContext {
     String reason = null;
     String exception = null;
     String exceptionArgs = null;
+    // A bounded excerpt of a body that is not JSON, null when the body was JSON or empty (issue #11387)
+    String unparsedBody = null;
     final String responsePayload = responseBody;
 
     try {
@@ -1313,11 +1329,18 @@ public class RemoteHttpComponent extends RWLockContext {
         exceptionArgs = jsonResponse.has("exceptionArgs") ? jsonResponse.getString("exceptionArgs") : null;
       }
     } catch (final Exception e) {
-      // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
+      // A BODY THAT IS NOT JSON (ISSUE #11387) IS NOT ONE OF THE SERVER'S OWN ANSWERS BUT A HOP'S IN FRONT OF IT: AN INGRESS, A LOAD
+      // BALANCER OR A SIDECAR ANSWERING A 502/503/504 WITH AN HTML OR PLAIN-TEXT PAGE. THE PARSER'S EXCEPTION USED TO BE RETURNED
+      // HERE, WHICH LOST THE STATUS CODE AND SKIPPED THE 503 -> NeedRetryException CONTRACT BELOW. NOTHING IN THE BODY IS USED: THE
+      // MAPPING FALLS THROUGH ON THE STATUS CODE ALONE, AND THE EXCEPTION CARRIES A BOUNDED EXCERPT OF THE BODY FOR DIAGNOSIS
+      reason = null;
+      detail = null;
+      exception = null;
+      exceptionArgs = null;
+      unparsedBody = bodyExcerpt(responsePayload);
       LogManager.instance()
-          .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload,
-              e.toString());
-      return e;
+          .log(this, Level.FINE, "Error answer to '%s' is not JSON (httpErrorCode=%d body=%s): %s", null, operation, statusCode,
+              unparsedBody, e.getClass().getSimpleName());
     }
 
     if (exception != null) {
@@ -1451,7 +1474,11 @@ public class RemoteHttpComponent extends RWLockContext {
     if (statusCode == 503) {
       final String message = detail != null && !detail.isEmpty() ? detail :
           reason != null ? reason : "Server temporarily unavailable, please retry";
-      return new NeedRetryException(message);
+      // A PAGE THE SERVER DID NOT WRITE DOES NOT CARRY ITS "REFUSED BEFORE RUNNING" GUARANTEE: ITS OWN TYPE, SO A WRITE IS NOT
+      // REPLAYED ON IT (ISSUE #11387)
+      return unparsedBody != null ?
+          new RemoteIntermediaryRefusalException(message + " (httpErrorCode=503 body=" + unparsedBody + ")") :
+          new NeedRetryException(message);
     }
 
     final String httpErrorDescription = statusCode == 400 ? "Bad Request" :
@@ -1491,10 +1518,42 @@ public class RemoteHttpComponent extends RWLockContext {
       envelope.append(" reason=").append(reason);
     if (detail != null && !detail.isEmpty() && !detail.equals(explanation))
       envelope.append(" detail=").append(detail);
-    envelope.append(" exception=").append(exception).append(')');
+    envelope.append(" exception=").append(exception);
+    if (unparsedBody != null)
+      envelope.append(" body=").append(unparsedBody);
+    envelope.append(')');
 
     return new RemoteException(
         "Error on executing remote command '" + operation + "'" + (promoted ? ": " + explanation : "") + envelope);
+  }
+
+  /**
+   * The first {@link #NON_JSON_BODY_EXCERPT_MAX} characters of an error body that is not JSON, with its whitespace collapsed so
+   * a multi-line HTML page stays on one line of the message and the log (issue #11387). It goes into the exception message,
+   * so an application that shows that message to its own users shows this text too: a proxy's page can name internal hosts
+   * or request ids.
+   */
+  static String bodyExcerpt(final String body) {
+    if (body == null)
+      return "";
+    final int length = body.length();
+    final StringBuilder excerpt = new StringBuilder(Math.min(length, NON_JSON_BODY_EXCERPT_MAX) + 3);
+    boolean pendingSpace = false;
+    for (int i = 0; i < length; i++) {
+      final char c = body.charAt(i);
+      if (Character.isWhitespace(c) || Character.isISOControl(c)) {
+        pendingSpace = excerpt.length() > 0;
+        continue;
+      }
+      if (pendingSpace) {
+        excerpt.append(' ');
+        pendingSpace = false;
+      }
+      if (excerpt.length() >= NON_JSON_BODY_EXCERPT_MAX)
+        return excerpt.append("...").toString();
+      excerpt.append(c);
+    }
+    return excerpt.toString();
   }
 
   /** A cluster configuration read in full: only this, never a part of it, is published. */
