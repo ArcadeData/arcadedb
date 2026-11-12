@@ -48,7 +48,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.serializer.json.NonFiniteNumbers;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
@@ -59,7 +58,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
-import java.util.zip.GZIPOutputStream;
 
 public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";
@@ -99,7 +97,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       exportFile = new File(settings.file);
 
     final File lock = claimExportFile(exportFile);
-    try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
+    try (final OutputStreamWriter fileWriter = new OutputStreamWriter(openCompressedOutput(exportFile),
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 

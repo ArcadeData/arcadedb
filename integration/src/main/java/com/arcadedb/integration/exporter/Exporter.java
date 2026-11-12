@@ -68,6 +68,23 @@ public class Exporter {
     return this;
   }
 
+  /** Deflate level of the export file, 0 (stored, no compression) to 9 (smallest). The default is 6. */
+  public Exporter setCompressionLevel(final int compressionLevel) {
+    settings.compressionLevel = ExporterSettings.checkIntSetting("compressionLevel", String.valueOf(compressionLevel),
+        compressionLevel, 0, 9);
+    return this;
+  }
+
+  /**
+   * Compression threads: -1 (the default) automatic, 0 the single-threaded {@code GZIPOutputStream}, N a pool of N. Every
+   * value writes one standard gzip member.
+   */
+  public Exporter setCompressionThreads(final int compressionThreads) {
+    settings.compressionThreads = ExporterSettings.checkIntSetting("compressionThreads", String.valueOf(compressionThreads),
+        compressionThreads, -1, ExporterSettings.MAX_COMPRESSION_THREADS);
+    return this;
+  }
+
   public Map<String, Object> exportDatabase() {
     try {
       startExporting();

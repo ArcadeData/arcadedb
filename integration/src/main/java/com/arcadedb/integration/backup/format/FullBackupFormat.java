@@ -35,6 +35,7 @@ import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.backup.IoThrottler;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.misc.ParallelDeflater;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
@@ -737,16 +738,15 @@ public class FullBackupFormat extends AbstractBackupFormat {
   }
 
   /**
-   * The automatic thread count: half the available processors, capped at 8, never below 1. A backup runs alongside the
-   * live workload it is already throttling through the flush suspension, so claiming every core would buy the backup's
-   * own speed with the writers' CPU. The cap matters because scaling is close to linear - without it a 64-core machine
-   * would put 32 threads on a job that saturates the disk long before that.
+   * The automatic thread count, {@link ParallelDeflater#autoThreads}: half the available processors, capped at 8, never
+   * below 1. A backup runs alongside the live workload it is already throttling through the flush suspension, so claiming
+   * every core would buy the backup's own speed with the writers' CPU. The export sizes its pool the same way (#11539).
    * <p>
    * Package-private and taking the core count as an argument so the boundaries can be pinned by a test rather than
    * depending on whatever the machine running the suite happens to have.
    */
   static int autoCompressionThreads(final int availableProcessors) {
-    return Math.max(1, Math.min(availableProcessors / 2, 8));
+    return ParallelDeflater.autoThreads(availableProcessors);
   }
 
   /**

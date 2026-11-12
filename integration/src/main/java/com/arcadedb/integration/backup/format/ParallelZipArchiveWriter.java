@@ -18,8 +18,9 @@
  */
 package com.arcadedb.integration.backup.format;
 
-import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.IoThrottler;
+import com.arcadedb.integration.misc.ParallelDeflater;
+import com.arcadedb.integration.misc.ParallelGzipOutputStream;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -31,19 +32,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
-import java.util.zip.Deflater;
 
 /**
  * Multi-threaded ZIP writer for the full backup (issue #6072, phase 1).
@@ -58,12 +49,10 @@ import java.util.zip.Deflater;
  * <p>
  * <b>How the parallelism works.</b> Splitting the archive by entry would not help - a database is often a handful of
  * very large files, sometimes a single dominant one - so the split is <i>inside</i> each entry. The reader thread cuts
- * the file into fixed-size chunks and hands them to a worker pool; every chunk is deflated by its own
- * {@link Deflater} and terminated with {@link Deflater#SYNC_FLUSH}, which ends it on a byte boundary with a non-final
- * empty stored block. Deflate streams ended that way concatenate, so the writer thread simply appends the compressed
- * chunks back in order and closes the entry with one final empty stored block. This is the same construction pigz uses
- * for parallel gzip. The only cost is that each chunk starts from an empty dictionary: at the 1 MB default chunk size
- * that is well under 1% of ratio, and it is measured rather than assumed by the benchmark in
+ * the file into fixed-size chunks and hands them to a {@link ParallelDeflater}, which deflates each one on a worker and
+ * gives them back in order as one deflate stream (the construction pigz uses for parallel gzip, shared since #11539 with
+ * the export's {@link ParallelGzipOutputStream}). The only cost is that each chunk starts from an empty dictionary: at the
+ * 1 MB default chunk size that is well under 1% of ratio, and it is measured rather than assumed by the benchmark in
  * {@code BackupCompressionBenchmark}.
  * <p>
  * <b>Sizes are not known when the entry header is written</b>, since the compressed size only exists once the last
@@ -80,20 +69,15 @@ import java.util.zip.Deflater;
  * {@code ZipInputStream}, {@code ZipFile}, Info-ZIP {@code unzip -t} and Python's {@code zipfile} - with a 4 GB entry
  * as well as small ones.
  * <p>
- * <b>Concurrency.</b> Per the {@code engine-concurrency} skill this never touches {@code ForkJoinPool.commonPool()}.
- * It uses a dedicated {@link ThreadPoolExecutor} whose lifetime is exactly one backup: a backup is a rare, bursty
- * operation, so a permanently resident pool would hold idle threads for the 99.99% of the time no backup is running,
- * and there is no steady-state pool for {@code PoolMetrics} to report on. Saturation is handled by construction rather
- * than by a rejection policy: the reader keeps at most {@code threads * 2} chunks in flight, which both bounds peak
- * heap (that many input plus output buffers, ~32 MB of buffers at 8 threads - the benchmark's ~45 MB figure is the
- * process heap, this on top of its baseline) and applies backpressure to the reader, so the queue
- * cannot fill and the caller-runs policy installed as a backstop never has to fire.
+ * <b>Concurrency.</b> The pool, its lifetime (exactly one backup) and its saturation policy are the
+ * {@link ParallelDeflater}'s: at most {@code threads * 2} chunks in flight, ~32 MB of buffers at 8 threads - the
+ * benchmark's ~45 MB figure is the process heap, this on top of its baseline.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ParallelZipArchiveWriter implements BackupArchiveWriter {
   /** Default size of the unit of work handed to a compression thread. */
-  public static final int DEFAULT_CHUNK_SIZE = 1024 * 1024;
+  public static final int DEFAULT_CHUNK_SIZE = ParallelDeflater.DEFAULT_CHUNK_SIZE;
 
   // ZIP FORMAT CONSTANTS - APPNOTE.TXT 6.3.x, SAME VALUES java.util.zip USES INTERNALLY
   private static final long LOCSIG           = 0x04034b50L;
@@ -110,36 +94,15 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
   private static final int  VERSION_DEFLATE  = 20;
   private static final int  VERSION_ZIP64    = 45;
 
-  /** Final empty stored block: BFINAL=1, BTYPE=stored, LEN=0, NLEN=~0. Terminates a chunked deflate stream. */
-  private static final byte[] FINAL_EMPTY_BLOCK   = { 0x01, 0x00, 0x00, (byte) 0xFF, (byte) 0xFF };
-  /** Canonical deflate encoding of an empty input: one final fixed-Huffman block holding only the end-of-block code. */
-  private static final byte[] EMPTY_DEFLATE_STREAM = { 0x03, 0x00 };
-
   private record CentralEntry(byte[] name, int dosTime, long crc, long compressedSize, long uncompressedSize,
                               long localHeaderOffset) {
   }
 
-  /** A chunk on its way back to the writer thread, carrying the two buffers so both can be recycled. */
-  private record CompressedChunk(byte[] input, byte[] output, int outputLength) {
-  }
-
-  private final OutputStream                    out;
-  private final int                             compressionLevel;
-  private final int                             chunkSize;
-  private final int                             outputBufferSize;
-  private final int                             maxChunksInFlight;
-  private final IoThrottler                     throttler;
-  private final ThreadPoolExecutor              executor;
-  // THREAD CONFINEMENT, AND THE REASON THE TWO KINDS OF POOL ARE DIFFERENT TYPES: THE BUFFER POOLS ARE TOUCHED ONLY BY
-  // THE SINGLE THREAD THAT CALLS addFile - IT TAKES A BUFFER BEFORE SUBMITTING A CHUNK AND PUTS IT BACK IN drainChunk,
-  // NEVER FROM A WORKER - SO A PLAIN ArrayDeque IS CORRECT AND CHEAPER. THE DEFLATERS ARE THE OPPOSITE: WORKERS TAKE
-  // AND RETURN THEM, SO THAT ONE HAS TO BE CONCURRENT. DO NOT "FIX" THE ArrayDeques INTO CONCURRENT COLLECTIONS, AND
-  // DO NOT START TOUCHING THEM FROM A WORKER - THE CONFINEMENT IS THE INVARIANT, NOT THE COLLECTION TYPE
-  private final ConcurrentLinkedQueue<Deflater> deflaterPool     = new ConcurrentLinkedQueue<>();
-  private final ArrayDeque<byte[]>              inputBufferPool  = new ArrayDeque<>();
-  private final ArrayDeque<byte[]>              outputBufferPool = new ArrayDeque<>();
-  private final List<CentralEntry>              entries          = new ArrayList<>();
-  private final byte[]                          numberBuffer     = new byte[8];
+  private final OutputStream       out;
+  private final IoThrottler        throttler;
+  private final ParallelDeflater   deflater;
+  private final List<CentralEntry> entries      = new ArrayList<>();
+  private final byte[]             numberBuffer = new byte[8];
 
   private long    written = 0L;
   private boolean closed  = false;
@@ -151,28 +114,13 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
 
   public ParallelZipArchiveWriter(final OutputStream out, final int compressionLevel, final int threads,
       final IoThrottler throttler, final int chunkSize) {
-    if (threads < 1)
-      throw new IllegalArgumentException("At least one compression thread is required");
-    if (chunkSize < 1024)
-      throw new IllegalArgumentException("Chunk size must be at least 1KB");
-
     // THE COMPRESSED CHUNKS ARE WRITTEN IN ONE CALL EACH AND GO STRAIGHT THROUGH (BufferedOutputStream BYPASSES ITS
     // BUFFER FOR A WRITE AT LEAST AS LARGE AS IT), SO THIS ONLY COALESCES THE HANDFUL OF 2-TO-8 BYTE HEADER FIELDS
     // PER ENTRY, WHICH WOULD OTHERWISE BE ONE WRITE EACH ON A DATABASE WITH THOUSANDS OF FILES
     this.out = new BufferedOutputStream(out, 8192);
-    this.compressionLevel = compressionLevel;
-    this.chunkSize = chunkSize;
-    this.outputBufferSize = deflateBound(chunkSize);
-    this.maxChunksInFlight = threads * 2;
     this.throttler = throttler;
-
-    final AtomicInteger threadId = new AtomicInteger();
-    this.executor = new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
-        new ArrayBlockingQueue<>(maxChunksInFlight), r -> {
-      final Thread t = new Thread(r, "arcadedb-backup-compressor-" + threadId.incrementAndGet());
-      t.setDaemon(true);
-      return t;
-    }, new ThreadPoolExecutor.CallerRunsPolicy());
+    this.deflater = new ParallelDeflater(compressionLevel, threads, chunkSize, "arcadedb-backup-compressor",
+        "the backup archive");
   }
 
   @Override
@@ -194,17 +142,16 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
     writeLocalFileHeader(nameBytes, dosTime);
 
     final CRC32 crc = new CRC32();
-    final ArrayDeque<Future<CompressedChunk>> inFlight = new ArrayDeque<>();
 
     long uncompressedSize = 0L;
     long compressedSize = 0L;
     try {
       try (final InputStream in = input) {
         while (true) {
-          final byte[] chunk = acquireInputBuffer();
-          final int read = in.readNBytes(chunk, 0, chunkSize);
+          final byte[] chunk = deflater.acquireInputBuffer();
+          final int read = in.readNBytes(chunk, 0, deflater.getChunkSize());
           if (read <= 0) {
-            inputBufferPool.push(chunk);
+            deflater.recycle(chunk);
             break;
           }
 
@@ -212,26 +159,24 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
           crc.update(chunk, 0, read);
           uncompressedSize += read;
 
-          inFlight.add(submitChunk(chunk, read));
-
-          while (inFlight.size() >= maxChunksInFlight)
-            compressedSize += drainChunk(inFlight.poll());
+          compressedSize += deflater.submit(chunk, read, out);
         }
       }
 
-      while (!inFlight.isEmpty())
-        compressedSize += drainChunk(inFlight.poll());
+      compressedSize += deflater.drainAll(out);
     } finally {
-      for (final Future<CompressedChunk> pending : inFlight)
-        pending.cancel(true);
+      deflater.cancelPending();
+      // THE DEFLATER WRITES THE CHUNKS STRAIGHT TO 'out': ACCOUNT FOR THEM SO 'written' STAYS THE ARCHIVE OFFSET THE
+      // CENTRAL DIRECTORY NEEDS. ON A FAILURE THE ARCHIVE IS ABORTED, SO THE OFFSET NO LONGER MATTERS
+      written += compressedSize;
     }
 
     if (uncompressedSize == 0) {
-      writeRaw(EMPTY_DEFLATE_STREAM);
-      compressedSize += EMPTY_DEFLATE_STREAM.length;
+      writeRaw(ParallelDeflater.EMPTY_DEFLATE_STREAM);
+      compressedSize += ParallelDeflater.EMPTY_DEFLATE_STREAM.length;
     } else {
-      writeRaw(FINAL_EMPTY_BLOCK);
-      compressedSize += FINAL_EMPTY_BLOCK.length;
+      writeRaw(ParallelDeflater.FINAL_EMPTY_BLOCK);
+      compressedSize += ParallelDeflater.FINAL_EMPTY_BLOCK.length;
     }
 
     writeDataDescriptor(crc.getValue(), compressedSize, uncompressedSize);
@@ -264,123 +209,9 @@ public class ParallelZipArchiveWriter implements BackupArchiveWriter {
     release();
   }
 
-  /**
-   * Gives back the pool threads and the native memory the deflaters hold. Never throws.
-   * <p>
-   * The wait matters on the abort path: a worker interrupted mid-chunk still returns its {@link Deflater} to the pool
-   * in its own {@code finally}, so draining the pool without waiting would race with that and leave one deflater for
-   * the JDK's cleaner to reclaim instead of freeing it here. Chunks are at most a megabyte, so termination is prompt;
-   * the timeout only exists so a pathological case degrades to deferred reclamation rather than a hang.
-   */
+  /** Gives back the pool threads and the native memory the deflaters hold. Never throws. */
   private void release() {
-    executor.shutdownNow();
-    try {
-      executor.awaitTermination(10, TimeUnit.SECONDS);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
-    for (Deflater deflater = deflaterPool.poll(); deflater != null; deflater = deflaterPool.poll())
-      deflater.end();
-  }
-
-  // ------------------------------------------------------------------------------------------------- COMPRESSION
-
-  private Future<CompressedChunk> submitChunk(final byte[] input, final int inputLength) {
-    final byte[] output = acquireOutputBuffer();
-    return executor.submit(new DeflateChunk(input, inputLength, output));
-  }
-
-  private long drainChunk(final Future<CompressedChunk> future) throws IOException {
-    final CompressedChunk chunk;
-    try {
-      chunk = future.get();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new BackupException("Interrupted while compressing the backup archive", e);
-    } catch (final ExecutionException e) {
-      final Throwable cause = e.getCause();
-      if (cause instanceof IOException ioException)
-        throw ioException;
-      throw new BackupException("Error while compressing the backup archive", cause);
-    }
-
-    writeRaw(chunk.output(), 0, chunk.outputLength());
-
-    inputBufferPool.push(chunk.input());
-    if (chunk.output().length == outputBufferSize)
-      outputBufferPool.push(chunk.output());
-
-    return chunk.outputLength();
-  }
-
-  private final class DeflateChunk implements Callable<CompressedChunk> {
-    private final byte[] input;
-    private final int    inputLength;
-    private       byte[] output;
-
-    private DeflateChunk(final byte[] input, final int inputLength, final byte[] output) {
-      this.input = input;
-      this.inputLength = inputLength;
-      this.output = output;
-    }
-
-    @Override
-    public CompressedChunk call() {
-      final Deflater deflater = acquireDeflater();
-      try {
-        deflater.setInput(input, 0, inputLength);
-
-        int produced = 0;
-        while (true) {
-          if (produced == output.length) {
-            final byte[] larger = new byte[output.length + (output.length >> 1)];
-            System.arraycopy(output, 0, larger, 0, produced);
-            output = larger;
-          }
-          final int available = output.length - produced;
-          // SYNC_FLUSH ENDS THE CHUNK ON A BYTE BOUNDARY WITH A NON-FINAL EMPTY STORED BLOCK, WHICH IS WHAT MAKES
-          // THE INDEPENDENTLY COMPRESSED CHUNKS CONCATENABLE INTO ONE VALID DEFLATE STREAM
-          final int n = deflater.deflate(output, produced, available, Deflater.SYNC_FLUSH);
-          produced += n;
-          if (n < available)
-            break;
-        }
-        return new CompressedChunk(input, output, produced);
-      } finally {
-        releaseDeflater(deflater);
-      }
-    }
-  }
-
-  private Deflater acquireDeflater() {
-    final Deflater deflater = deflaterPool.poll();
-    if (deflater == null)
-      // nowrap=true: RAW DEFLATE, NO ZLIB HEADER, WHICH IS WHAT A ZIP ENTRY STORES
-      return new Deflater(compressionLevel, true);
-    deflater.reset();
-    return deflater;
-  }
-
-  private void releaseDeflater(final Deflater deflater) {
-    deflaterPool.offer(deflater);
-  }
-
-  private byte[] acquireInputBuffer() {
-    final byte[] buffer = inputBufferPool.poll();
-    return buffer != null ? buffer : new byte[chunkSize];
-  }
-
-  private byte[] acquireOutputBuffer() {
-    final byte[] buffer = outputBufferPool.poll();
-    return buffer != null ? buffer : new byte[outputBufferSize];
-  }
-
-  /**
-   * zlib's {@code deflateBound}: the largest output deflate can produce for an input of {@code n} bytes, when it falls
-   * back to stored blocks because the data is incompressible. The extra 128 bytes cover the trailing SYNC_FLUSH marker.
-   */
-  private static int deflateBound(final int n) {
-    return n + (n >> 12) + (n >> 14) + (n >> 25) + 13 + 128;
+    deflater.close();
   }
 
   // ------------------------------------------------------------------------------------------------ ZIP CONTAINER

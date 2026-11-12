@@ -29,8 +29,7 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.util.zip.GZIPOutputStream;
+import java.io.OutputStream;
 
 public class GraphMLExporterFormat extends AbstractExporterFormat {
   public static final String     NAME       = "graphml";
@@ -64,11 +63,9 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
     final File lock = claimExportFile(exportFile);
     try {
       final ArcadeGraph graph = ArcadeGraph.open(database);
-      try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
-        try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
-          // ArcadeDB's writer, not TinkerPop's: a value GraphML has no type for keeps its type (issue #10202)
-          new ArcadeGraphMLWriter().writeGraph(out, graph);
-        }
+      try (final OutputStream out = openCompressedOutput(exportFile)) {
+        // ArcadeDB's writer, not TinkerPop's: a value GraphML has no type for keeps its type (issue #10202)
+        new ArcadeGraphMLWriter().writeGraph(out, graph);
       }
     } finally {
       releaseExportFile(lock);
