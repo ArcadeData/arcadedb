@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
@@ -35,6 +34,10 @@ import java.util.logging.Level;
 public class MaterializedViewRefresher {
 
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
+    // A per-record view passes the request through its pending delta (issue #11475): the pass that drains it, this caller's or
+    // the running owner's next one, then rewrites the whole view instead of only the records changed meanwhile
+    if (view.isPerRecord())
+      view.requestFullPass(false);
     refresh(database, view, false);
   }
 
@@ -64,26 +67,64 @@ public class MaterializedViewRefresher {
         return;
     }
 
-    runOwnedPasses(database, view, mayHandOffFurtherPasses);
+    runOwnedPasses(database, view, mayHandOffFurtherPasses, false);
   }
 
-  /** Makes the passes of a refresh whose ownership the caller already holds, and gives the ownership back when none is owed. */
+  /**
+   * Makes the passes of a refresh whose ownership the caller already holds, and gives the ownership back when none is owed.
+   *
+   * @param onScheduler whether the caller is the scheduler task a hand-off queued, which makes the recovery full pass of a
+   *                    per-record view itself instead of handing it off again
+   */
   private static void runOwnedPasses(final Database database, final MaterializedViewImpl view,
-      final boolean mayHandOffFurtherPasses) {
+      final boolean mayHandOffFurtherPasses, final boolean onScheduler) {
+    // Set when an ALTER replaced this instance: the passes still owed are made on the registered one, AFTER the try, so a failure
+    // of theirs is handled once, by the registered view's own passes, and never again here, by an instance already given back
+    boolean replaced = false;
     try {
       do {
+        if (view.current() != view) {
+          replaced = true;
+          break;
+        }
+        MaterializedViewImpl.PendingDelta delta = view.isPerRecord() ? view.drainPendingDelta() : null;
+        if (delta != null && delta.recovery() && mayHandOffFurtherPasses && !onScheduler) {
+          // The full pass a failed pass owes (issue #11475) rewrites the whole view, and the commit that found it pending owes
+          // its client nothing of that cost: the request goes back and the scheduler makes it. Until it succeeds the view says
+          // STALE, persisted, because the records the failed pass drained are not in it.
+          view.requestFullPass(true);
+          view.setStatus(MaterializedViewStatus.STALE);
+          persistStatus(database, view.getName(), view.getStatus());
+          if (handOffFurtherPasses(database, view))
+            return;
+          // the scheduler cannot take it: this thread keeps the pass, as it did before the hand-off existed
+          delta = view.drainPendingDelta();
+        }
+
         // #11019: a pass that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
         final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(view.getStatus());
         view.setStatus(MaterializedViewStatus.BUILDING);
         final long startNs = System.nanoTime();
 
-        refreshOnce(database, view);
+        if (delta != null)
+          perRecordPass(database, view, delta);
+        else
+          refreshOnce(database, view);
 
         view.recordRefreshSuccess((System.nanoTime() - startNs) / 1_000_000);
         view.updateLastRefreshTime();
         view.setStatus(MaterializedViewStatus.VALID);
         if (persistedStatusIsStale)
           persistStatus(database, view.getName(), view.getStatus());
+
+        // A whole-view pass that read its guard before an ALTER replaced the view, and wrote after the whole ALTER ran, committed
+        // rows without the source link the upgraded view matches by (issue #11475). The ALTER registered its replacement before
+        // its own pass started, so either this pass committed first and that pass deleted its rows, or it is seen here and the
+        // full pass passed on deletes them
+        if (delta == null && view.current() != view) {
+          replaced = true;
+          break;
+        }
       } while (view.finishRefreshPassAndCheckPending() && !(mayHandOffFurtherPasses && handOffFurtherPasses(database, view)));
 
     } catch (final Throwable e) {
@@ -94,6 +135,11 @@ public class MaterializedViewRefresher {
       // having done nothing, so the view silently froze at its last successful snapshot. The pass is still
       // reported as failed and the Error still propagates to the caller; what changes is that the next one can run.
       view.recordRefreshError();
+      // A per-record pass that failed took its records out of the pending delta and wrote none of them: only a full pass
+      // repairs that, so it is asked for here, before the ownership is released, and the next pass of any trigger makes it.
+      // Without it the next commit's delta pass ended VALID over a view still missing the failed pass's records (#11475).
+      if (view.isPerRecord())
+        view.requestFullPass(true);
       view.setStatus(MaterializedViewStatus.ERROR);
       persistStatus(database, view.getName(), view.getStatus());
       // Ownership is released here rather than in a finally: the success path already released it,
@@ -112,6 +158,38 @@ public class MaterializedViewRefresher {
             null, view.getName());
       throw e;
     }
+
+    if (replaced)
+      passToReplacement(database, view, mayHandOffFurtherPasses);
+  }
+
+  /**
+   * An ALTER replaced the view whose refresh the caller owns (issue #11475): the passes it still owes are made on the registered
+   * instance, never on this one, whose pass is the one of the mode and shape the view had before (a legacy view's whole-view
+   * rewrite drops the source link from every row of the upgraded view). Ownership of the replaced instance is given back first,
+   * discarding what it had pending: every commit that asked for it is covered by the full pass asked for here, and a request
+   * that reaches it later owns it again and is passed on the same way.
+   */
+  private static void passToReplacement(final Database database, final MaterializedViewImpl replaced,
+      final boolean mayHandOffFurtherPasses) {
+    replaced.endRefresh();
+    final MaterializedViewImpl current = replaced.current();
+    if (current.isPerRecord())
+      current.requestFullPass(false);
+    refresh(database, current, mayHandOffFurtherPasses);
+  }
+
+  /**
+   * One pass of a per-record view (issue #11475) over the delta drained at its start, so everything appended before that point is
+   * covered by the pass and everything appended while it runs stays pending for the next one. A full mark makes it a full pass,
+   * otherwise only the drained records are re-evaluated; with neither there is nothing to write.
+   */
+  private static void perRecordPass(final Database database, final MaterializedViewImpl view,
+      final MaterializedViewImpl.PendingDelta delta) {
+    if (delta.full())
+      MaterializedViewPerRecordRefresher.fullPass(database, view);
+    else if (delta.rids().size() > 0)
+      MaterializedViewPerRecordRefresher.deltaPass(database, view, delta.rids());
   }
 
   /**
@@ -131,7 +209,7 @@ public class MaterializedViewRefresher {
       try {
         // true: one pass, then back to the end of the scheduler's queue if more are owed, so the periodic ticks of this
         // database's other views interleave instead of waiting for as long as writers keep requesting passes (issue #11470)
-        runOwnedPasses(database, view, true);
+        runOwnedPasses(database, view, true, true);
       } catch (final Throwable e) {
         // runOwnedPasses() has already marked the view ERROR and logged it; there is no caller left to rethrow to
         view.setStatus(MaterializedViewStatus.STALE);
@@ -224,6 +302,12 @@ public class MaterializedViewRefresher {
 
   private static void writeSnapshot(final Database database, final MaterializedViewImpl view, final String backingTypeName) {
     database.transaction(() -> {
+      // A whole-view rewrite that an ALTER upgrading the view to per-record overtook (a retry after a conflict with the upgrade's
+      // own pass) writes nothing: it would drop the source link from every row (issue #11475). Nothing is lost: the commits that
+      // asked for it landed before the ALTER, whose full pass covers them, and its owner passes any further request on
+      final MaterializedViewImpl current = view.current();
+      if (current != view && current.isPerRecord())
+        return;
       final RecordIdentities previousSnapshot = collectIdentities(database, backingTypeName);
       int reused = 0;
 
@@ -231,7 +315,7 @@ public class MaterializedViewRefresher {
       try (final ResultSet rs = database.query("sql", view.getQuery())) {
         while (rs.hasNext()) {
           final Result result = rs.next();
-          final MutableDocument doc = reused < previousSnapshot.size ?
+          final MutableDocument doc = reused < previousSnapshot.size() ?
               ((Document) database.lookupByRID(previousSnapshot.get(reused++), true)).modify() :
               database.newDocument(backingTypeName);
           // The row comes from the defining query, not from the reused record: no stale-read refusal (#8610)
@@ -242,13 +326,13 @@ public class MaterializedViewRefresher {
       }
 
       // Whatever the new snapshot did not need
-      for (int i = reused; i < previousSnapshot.size; i++)
+      for (int i = reused; i < previousSnapshot.size(); i++)
         database.lookupByRID(previousSnapshot.get(i), true).delete();
     }, false);
   }
 
   /** Copies one query row onto a document, dropping any property the row does not carry. */
-  private static void applyRow(final MutableDocument doc, final Result row) {
+  static void applyRow(final MutableDocument doc, final Result row) {
     // A reused document still holds the columns of the row it used to carry, and whatever this row does not
     // reproduce has to go. Snapshot the names first: getPropertyNames() is a live view of the document, so both
     // the writes below and the removals after would otherwise mutate what is being iterated. A newly created
@@ -281,42 +365,5 @@ public class MaterializedViewRefresher {
       return true;
     });
     return identities;
-  }
-
-  /**
-   * The previous snapshot's record identities, held as the two primitives a {@link RID} is made of rather than as a
-   * {@code List<RID>}.
-   * <p>
-   * This is allocated on every refresh of every view and is proportional to the view's size, and a boxed RID per row
-   * costs several times what the pair of primitives does - a reference plus an object header plus the same two
-   * fields, against 12 bytes. Identities are rebuilt one at a time as the rewrite consumes them, so at most one is
-   * ever live, and each is handed straight to {@code lookupByRID} rather than to {@code RID.asDocument()}: the
-   * latter resolves the database from the thread's {@link com.arcadedb.database.DatabaseContext}, which this refresh
-   * has no reason to depend on.
-   */
-  private static final class RecordIdentities {
-    private int[] bucketIds;
-    private long[] positions;
-    private int   size;
-
-    private RecordIdentities(final int initialCapacity) {
-      this.bucketIds = new int[initialCapacity];
-      this.positions = new long[initialCapacity];
-    }
-
-    private void add(final RID rid) {
-      if (size == bucketIds.length) {
-        final int grown = size + (size >> 1) + 1;
-        bucketIds = Arrays.copyOf(bucketIds, grown);
-        positions = Arrays.copyOf(positions, grown);
-      }
-      bucketIds[size] = rid.getBucketId();
-      positions[size] = rid.getPosition();
-      ++size;
-    }
-
-    private RID get(final int index) {
-      return new RID(bucketIds[index], positions[index]);
-    }
   }
 }

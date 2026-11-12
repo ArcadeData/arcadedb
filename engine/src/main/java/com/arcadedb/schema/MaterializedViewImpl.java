@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.serializer.json.JSONArray;
@@ -51,6 +52,35 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   private volatile long lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private volatile MaterializedViewChangeListener changeListener;
+  /**
+   * The rows carry a {@code _sourceRID} link to the source record they were computed from, indexed UNIQUE (issue #11475). Decided
+   * once, when the link is created, and persisted: it is not recomputed from the query at load.
+   */
+  private volatile boolean perRecord;
+  /**
+   * The derived queries of a per-record view (issue #11475), each built on first use and tagged with the defining query it was
+   * built from: a build that raced a change of the defining query stores a tag that no longer matches, and the next reader
+   * rebuilds instead of running the stale text. Null until first use and after {@link #invalidateDerivedQuery()}.
+   */
+  private volatile DerivedQuery derivedQuery;
+  private volatile DerivedQuery derivedRidListQuery;
+  /**
+   * The view an ALTER registered in place of this one (issue #11475), or null while this one is registered. An after-commit
+   * callback captured against this instance by a transaction still open across the ALTER follows it, see {@link #current()}.
+   */
+  private volatile MaterializedViewImpl successor;
+  /**
+   * The source records committed since the last per-record pass drained them, or the mark that the next pass must be a full one
+   * (issue #11475). Appended by the after-commit callback of every committing transaction BEFORE it tries to begin the refresh,
+   * drained by the refresh owner at the start of each pass: a RID appended while a pass runs is therefore drained by the next
+   * pass of the same owner, never lost between the two. Guarded by {@link #pendingDeltaLock}; held for a copy or a swap only.
+   */
+  private final Object           pendingDeltaLock = new Object();
+  private       RecordIdentities pendingRids;
+  /** The raw size past which {@link #pendingRids} is counted next: the listener's doubling guard, so an append does not re-sort. */
+  private       int              pendingNextCountAt;
+  private       boolean          pendingFull;
+  private       boolean          pendingRecovery;
   private final AtomicInteger refreshState = new AtomicInteger(REFRESH_IDLE);
 
   // Runtime metrics (not persisted)
@@ -143,6 +173,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
       renamed.add(sourceTypeName.equals(oldName) ? newName : sourceTypeName);
     sourceTypeNames = List.copyOf(renamed);
     query = newQuery;
+    invalidateDerivedQuery();
   }
 
   /** Refuses the drop of its backing type and of every source type (issue #10096). */
@@ -209,6 +240,165 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     final Set<String> merged = new LinkedHashSet<>(sourceTypeNames);
     if (merged.addAll(typeNames))
       sourceTypeNames = List.copyOf(merged);
+  }
+
+  public boolean isPerRecord() {
+    return perRecord;
+  }
+
+  void setPerRecord(final boolean perRecord) {
+    this.perRecord = perRecord;
+  }
+
+  /**
+   * The query a per-record pass runs: the defining query with {@code @rid AS _sourceRID} added to its projection. Built from the
+   * parsed statement once and cached until the defining query changes.
+   *
+   * @param forRidList whether the FROM target is the list of changed records, bound to the parameter
+   *                   {@link MaterializedViewPerRecordRefresher#RIDS_PARAMETER} (the delta pass), rather than the source type (the
+   *                   full pass). The RID-list variant also keeps only records of the source type or a subtype
+   */
+  String derivedQuery(final boolean forRidList) {
+    final String current = query;
+    final DerivedQuery cached = forRidList ? derivedRidListQuery : derivedQuery;
+    if (cached != null && cached.from() == current)
+      return cached.text();
+    final DerivedQuery built = new DerivedQuery(current, MaterializedViewPerRecordRefresher.buildDerivedQuery(database, current, forRidList));
+    if (forRidList)
+      derivedRidListQuery = built;
+    else
+      derivedQuery = built;
+    return built.text();
+  }
+
+  /** Records that {@code replacement} is registered in place of this view. Called by the ALTER that built it, under the write lock. */
+  void replacedBy(final MaterializedViewImpl replacement) {
+    successor = replacement;
+  }
+
+  /**
+   * The registered view this instance stands for: itself, or the latest replacement an ALTER registered in its place (issue
+   * #11475). One volatile read when no ALTER happened, so the commit path of an unaltered view pays nothing more.
+   */
+  MaterializedViewImpl current() {
+    MaterializedViewImpl view = this;
+    MaterializedViewImpl next;
+    while ((next = view.successor) != null)
+      view = next;
+    return view;
+  }
+
+  void invalidateDerivedQuery() {
+    derivedQuery = null;
+    derivedRidListQuery = null;
+  }
+
+  /** A derived query and the defining query it was built from, compared by identity: the defining query is replaced, never mutated. */
+  private record DerivedQuery(String from, String text) {
+  }
+
+  /**
+   * What {@link #drainPendingDelta()} took: the changed source records ({@code rids}, always an instance the caller may sort, empty
+   * when none), or {@code full} when the next pass must rewrite the whole view, for {@code recovery} after a failed pass or otherwise
+   * because a full pass was asked for.
+   */
+  record PendingDelta(RecordIdentities rids, boolean full, boolean recovery) {
+  }
+
+
+  /**
+   * Adds the source records a committed transaction changed to the view's pending delta. Called after the commit and before the
+   * caller tries to begin the refresh, so whichever pass drains them reads a state that includes that commit. Nothing is added
+   * while a full pass is pending: that pass drains the mark before running its query, so it covers these records too. The records
+   * are copied: the caller keeps {@code rids}.
+   */
+  void appendPendingDelta(final RecordIdentities rids) {
+    appendPendingDelta(rids, false);
+  }
+
+  /**
+   * As {@link #appendPendingDelta(RecordIdentities)}, but hands {@code rids} over: when nothing is pending it becomes the pending
+   * delta itself instead of being copied, so the caller must never read or change it again. The after-commit callback of a
+   * transaction, whose buffer dies with it, is that caller.
+   */
+  void adoptPendingDelta(final RecordIdentities rids) {
+    appendPendingDelta(rids, true);
+  }
+
+  private void appendPendingDelta(final RecordIdentities rids, final boolean adopt) {
+    if (rids.size() == 0)
+      return;
+    final int maxDelta = maxPerRecordDelta();
+    synchronized (pendingDeltaLock) {
+      if (pendingFull)
+        return;
+      if (pendingRids == null) {
+        if (adopt)
+          pendingRids = rids;
+        else {
+          pendingRids = new RecordIdentities(rids.size());
+          pendingRids.addAll(rids);
+        }
+        pendingNextCountAt = maxDelta;
+      } else
+        pendingRids.addAll(rids);
+      // The raw list repeats the records changed more than once: only the distinct ones count against the cap. They are counted
+      // when the raw size passes the cap and then only once it has doubled since the last count, as the transaction buffer does,
+      // so appends near the cap do not each re-sort the whole list while holding the lock. The drain makes the final count
+      if (pendingRids.size() <= pendingNextCountAt)
+        return;
+      pendingRids.sortAndDeduplicate();
+      if (pendingRids.size() > maxDelta) {
+        pendingFull = true;
+        pendingRids = null;
+      } else
+        pendingNextCountAt = Math.max(maxDelta, pendingRids.size() * 2);
+    }
+  }
+
+  /** The cap on the distinct source records one pass of a per-record view re-evaluates, read from the database's configuration. */
+  int maxPerRecordDelta() {
+    return Math.max(1, database.getConfiguration().getValueAsInteger(GlobalConfiguration.MATERIALIZED_VIEW_PER_RECORD_MAX_DELTA));
+  }
+
+  /**
+   * Marks the next pass as a full one, dropping the pending records it covers.
+   *
+   * @param recovery whether a failed pass asks for it (its drained records are gone) rather than a manual, periodic or overflow
+   *                 request; sticky until drained
+   */
+  void requestFullPass(final boolean recovery) {
+    synchronized (pendingDeltaLock) {
+      pendingFull = true;
+      pendingRecovery |= recovery;
+      pendingRids = null;
+    }
+  }
+
+  /**
+   * Takes the pending delta and clears it, atomically with respect to {@link #appendPendingDelta} and {@link #requestFullPass}. The
+   * doubling guard of the appends can leave more distinct records pending than the cap: they are counted here, and past the cap
+   * the pass is a full one, so no pass re-evaluates more than the cap one record at a time.
+   */
+  PendingDelta drainPendingDelta() {
+    final int maxDelta = maxPerRecordDelta();
+    synchronized (pendingDeltaLock) {
+      if (!pendingFull && pendingRids == null)
+        return new PendingDelta(new RecordIdentities(1), false, false);
+      if (!pendingFull && pendingRids.size() > maxDelta) {
+        pendingRids.sortAndDeduplicate();
+        if (pendingRids.size() > maxDelta) {
+          pendingFull = true;
+          pendingRids = null;
+        }
+      }
+      final PendingDelta drained = new PendingDelta(pendingRids != null ? pendingRids : new RecordIdentities(1), pendingFull,
+          pendingRecovery);
+      pendingRids = null;
+      pendingFull = false;
+      pendingRecovery = false;
+      return drained;
+    }
   }
 
   public void setStatus(final MaterializedViewStatus status) {
@@ -370,6 +560,17 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
         newMode, simpleQuery, newInterval);
     copy.lastRefreshTime = this.lastRefreshTime;
     copy.status = this.status;
+    // The rows keep their link whatever the new mode (issue #11475); the derived query is rebuilt by the copy on first use
+    copy.perRecord = this.perRecord;
+    // What this view still owes goes with it: a full pass owed after a failed pass, dropped here, let the copy's next delta pass
+    // end VALID over the records the failure lost. Copied, not drained: a pass of this instance still running drains its own.
+    // A copy that is no longer INCREMENTAL keeps it until its next full REFRESH, which drains it
+    synchronized (pendingDeltaLock) {
+      if (pendingFull)
+        copy.requestFullPass(pendingRecovery);
+      else if (pendingRids != null)
+        copy.appendPendingDelta(pendingRids);
+    }
     return copy;
   }
 
@@ -394,6 +595,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     json.put("refreshInterval", refreshInterval);
     json.put("lastRefreshTime", lastRefreshTime);
     json.put("status", status.name());
+    json.put("perRecord", perRecord);
     final JSONArray srcTypes = new JSONArray();
     for (final String src : sourceTypeNames)
       srcTypes.put(src);
@@ -422,6 +624,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
         json.getLong("refreshInterval", 0));
     view.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     view.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
+    view.perRecord = json.getBoolean("perRecord", false);
     return view;
   }
 
@@ -443,6 +646,6 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   @Override
   public String toString() {
     return "MaterializedView{name='" + name + "', refreshMode=" + refreshMode +
-        ", status=" + status + ", simpleQuery=" + simpleQuery + '}';
+        ", status=" + status + ", simpleQuery=" + simpleQuery + ", perRecord=" + perRecord + '}';
   }
 }

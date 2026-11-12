@@ -20,12 +20,15 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
  * Determines if a defining query is "simple" (eligible for per-record incremental refresh).
@@ -73,5 +76,50 @@ public class MaterializedViewQueryClassifier {
       // If parsing fails, treat as complex query to be safe
       return false;
     }
+  }
+
+  /**
+   * Determines if each source record maps to at most one view row, independent of every other record: a simple single-type
+   * SELECT with no ORDER BY, SKIP, LIMIT, LET, UNWIND, FACETS, DISTINCT, EXPAND or subquery, and no projection named like the
+   * reserved {@code _sourceRID} column. Such a view can be refreshed per changed source record.
+   */
+  public static boolean isPerRecord(final String sql, final Database database) {
+    try {
+      if (!isSimple(sql, database))
+        return false;
+
+      final SelectStatement select = (SelectStatement) ((DatabaseInternal) database).getStatementCache().get(sql);
+      if (select.getOrderBy() != null || select.getLimit() != null || select.getSkip() != null || select.getLetClause() != null
+          || select.getUnwind() != null || select.getFacets() != null)
+        return false;
+
+      final Projection projection = select.getProjection();
+      if (projection != null) {
+        if (projection.isDistinct())
+          return false;
+        if (projection.getItems() != null)
+          for (final ProjectionItem item : projection.getItems()) {
+            if (item.isExpand())
+              return false;
+            if (item.getAlias() != null && "_sourceRID".equalsIgnoreCase(item.getAlias().getStringValue()))
+              return false;
+          }
+      }
+
+      if (MaterializedViewSources.of(database, sql).typeNames().size() != 1)
+        return false;
+
+      // a subquery over the same type passes the type count, so count the select statements of the whole tree
+      return countSelects(new SQLAntlrParser(database).parseWithTree(sql).tree()) <= 1;
+    } catch (final Exception e) {
+      return false;
+    }
+  }
+
+  private static int countSelects(final ParseTree node) {
+    int count = node instanceof SQLParser.SelectStatementContext ? 1 : 0;
+    for (int i = 0; i < node.getChildCount(); i++)
+      count += countSelects(node.getChild(i));
+    return count;
   }
 }

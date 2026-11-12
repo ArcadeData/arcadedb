@@ -285,6 +285,10 @@ public enum GlobalConfiguration {
       "Default page size in bytes for new plain LSM-tree indexes (not full-text, geo or vector ones) created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB. In a cluster, keep it identical on all the servers",
       Integer.class, 262_144),
 
+  MATERIALIZED_VIEW_PER_RECORD_MAX_DELTA("arcadedb.materializedViewPerRecordMaxDelta", SCOPE.DATABASE,
+      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Default 10000",
+      Integer.class, 10_000),
+
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Existing buckets keep their page size. Minimum is 5130 bytes. Matches the LSM-index default (256KB)",
       Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
