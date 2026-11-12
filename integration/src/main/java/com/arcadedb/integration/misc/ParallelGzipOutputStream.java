@@ -54,8 +54,7 @@ public final class ParallelGzipOutputStream extends OutputStream {
 
   private final OutputStream     out;
   private final ParallelDeflater deflater;
-  private final CRC32            crc     = new CRC32();
-  private final byte[]           trailer = new byte[8];
+  private final CRC32            crc = new CRC32();
   private       byte[]           chunk;
   private       int              position;
   private       long             totalIn;
@@ -171,6 +170,7 @@ public final class ParallelGzipOutputStream extends OutputStream {
 
     // RFC 1952: CRC-32, THEN THE INPUT SIZE MODULO 2^32, BOTH LITTLE ENDIAN
     final long crcValue = crc.getValue();
+    final byte[] trailer = new byte[8];
     for (int i = 0; i < 4; i++) {
       trailer[i] = (byte) (crcValue >>> (i * 8));
       trailer[4 + i] = (byte) (totalIn >>> (i * 8));
