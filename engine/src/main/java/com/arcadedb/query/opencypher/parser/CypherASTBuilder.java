@@ -1364,6 +1364,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse IN TRANSACTIONS parameters
     boolean inTransactions = false;
     Expression batchSize = null;
+    SubqueryClause.OnError onError = SubqueryClause.OnError.FAIL;
+    String reportStatusVariable = null;
     final Cypher25Parser.SubqueryInTransactionsParametersContext txParams = ctx.subqueryInTransactionsParameters();
     if (txParams != null) {
       inTransactions = true;
@@ -1373,9 +1375,24 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (batchCtx.expression() != null)
           batchSize = expressionBuilder.parseExpression(batchCtx.expression());
       }
+      // ON ERROR CONTINUE | BREAK | FAIL, and the mode after THEN of ON ERROR RETRY, whose retries are not run (issue #11595)
+      if (txParams.subqueryInTransactionsErrorParameters() != null && !txParams.subqueryInTransactionsErrorParameters().isEmpty()) {
+        final Cypher25Parser.SubqueryInTransactionsErrorParametersContext errorCtx =
+            txParams.subqueryInTransactionsErrorParameters(0);
+        if (errorCtx.CONTINUE() != null)
+          onError = SubqueryClause.OnError.CONTINUE;
+        else if (errorCtx.BREAK() != null)
+          onError = SubqueryClause.OnError.BREAK;
+      }
+      if (txParams.subqueryInTransactionsReportParameters() != null && !txParams.subqueryInTransactionsReportParameters().isEmpty()) {
+        reportStatusVariable = stripBackticks(txParams.subqueryInTransactionsReportParameters(0).variable().getText());
+        if (onError == SubqueryClause.OnError.FAIL)
+          throw new CommandParsingException(
+              "REPORT STATUS can only be used when specifying ON ERROR CONTINUE or ON ERROR BREAK");
+      }
     }
 
-    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize);
+    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize, onError, reportStatusVariable);
   }
 
   @Override

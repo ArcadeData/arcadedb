@@ -42,11 +42,23 @@ import java.util.List;
 public class SubqueryClause {
   private static final int DEFAULT_BATCH_SIZE = 1000;
 
+  /**
+   * What a failed batch of {@code IN TRANSACTIONS} does (issue #11595): {@code FAIL} rolls back and fails the statement,
+   * {@code CONTINUE} rolls back the batch and runs the next ones, {@code BREAK} rolls back the batch and runs no more. Under
+   * {@code CONTINUE} and {@code BREAK} the statement succeeds, and the rows of a batch that did not commit carry null for
+   * what the subquery returns.
+   */
+  public enum OnError {
+    FAIL, CONTINUE, BREAK
+  }
+
   private final CypherStatement innerStatement;
   private final List<String> scopeVariables; // for CALL (x, y) { ... } syntax, null if not specified
   private final boolean optional;
   private final boolean inTransactions;
   private final Expression batchSize; // null = default (1000)
+  private final OnError    onError;
+  private final String     reportStatusVariable; // REPORT STATUS AS s, null if not specified
 
   public SubqueryClause(final CypherStatement innerStatement, final List<String> scopeVariables,
                          final boolean optional) {
@@ -55,11 +67,19 @@ public class SubqueryClause {
 
   public SubqueryClause(final CypherStatement innerStatement, final List<String> scopeVariables,
                          final boolean optional, final boolean inTransactions, final Expression batchSize) {
+    this(innerStatement, scopeVariables, optional, inTransactions, batchSize, OnError.FAIL, null);
+  }
+
+  public SubqueryClause(final CypherStatement innerStatement, final List<String> scopeVariables,
+                         final boolean optional, final boolean inTransactions, final Expression batchSize,
+                         final OnError onError, final String reportStatusVariable) {
     this.innerStatement = innerStatement;
     this.scopeVariables = scopeVariables;
     this.optional = optional;
     this.inTransactions = inTransactions;
     this.batchSize = batchSize;
+    this.onError = onError;
+    this.reportStatusVariable = reportStatusVariable;
   }
 
   public CypherStatement getInnerStatement() {
@@ -86,6 +106,15 @@ public class SubqueryClause {
     return DEFAULT_BATCH_SIZE;
   }
 
+  public OnError getOnError() {
+    return onError;
+  }
+
+  /** The variable {@code REPORT STATUS AS} binds to each row's inner transaction status, or null. */
+  public String getReportStatusVariable() {
+    return reportStatusVariable;
+  }
+
   @Override
   public String toString() {
     final StringBuilder sb = new StringBuilder();
@@ -102,6 +131,10 @@ public class SubqueryClause {
       sb.append(" IN TRANSACTIONS");
       if (batchSize != null)
         sb.append(" OF ").append(batchSize.getText()).append(" ROWS");
+      if (onError != OnError.FAIL)
+        sb.append(" ON ERROR ").append(onError);
+      if (reportStatusVariable != null)
+        sb.append(" REPORT STATUS AS ").append(reportStatusVariable);
     }
     return sb.toString();
   }
