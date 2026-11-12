@@ -262,7 +262,8 @@ public final class ChaosRunner {
    * A leader known by every node and equal row counts do not say how far behind a follower still is in Raft terms: the next fault
    * would land on a cluster whose only other voter is still catching up. A follower whose indexes cannot be read is never taken
    * for caught up, and neither is any follower while no leader is known: there is then no commit index to measure against
-   * (issue #11443), and the wait goes on until a leader answers or {@code catchUpTimeout} runs out.
+   * (issue #11443), and the wait goes on until a leader answers or {@code catchUpTimeout} runs out. The same holds while the leader's
+   * own position does not say it is ready to lead (issue #11566): see {@link #head}.
    */
   private void awaitFollowersCaughtUp(final int step, final Fault fault) throws InterruptedException {
     Duration waited = Duration.ZERO;
@@ -286,13 +287,31 @@ public final class ChaosRunner {
   }
 
   /**
-   * The commit index the followers are measured against: the leader's, or {@code null} when no leader is known or the leader's
-   * indexes cannot be read. A follower reports its own Ratis last-committed index, clamped to the entries it knows committed
-   * (issue #11443): when a leader dies before telling the survivors it advanced, every one of them reports a commit below the one
-   * the next leader will reach, so the highest follower commit is no authority to declare catch-up against.
+   * The commit index the followers are measured against: the leader's, or {@code null} when no leader is known, the leader's
+   * indexes cannot be read, or the leader's position does not say it is ready to lead. A follower reports its own Ratis
+   * last-committed index, clamped to the entries it knows committed (issue #11443): when a leader dies before telling the survivors
+   * it advanced, every one of them reports a commit below the one the next leader will reach, so the highest follower commit is no
+   * authority to declare catch-up against.
+   * <p>
+   * Nor is the named leader's position unless that same position says it leads and is ready to (issue #11566). The positions are
+   * read before {@code findLeader()}, so the node it names may have been a follower when its position was taken, with a commit
+   * clamped as above; and a freshly elected leader has not committed the entries of earlier terms until it commits one of its own,
+   * which is what Ratis' leader readiness waits for. In both windows a follower missing those entries would read lag ~0.
    */
   private static NodeControl.RaftPosition head(final NodeControl.RaftPosition[] positions, final int leader) {
-    return leader >= 0 && leader < positions.length ? positions[leader] : null;
+    if (leader < 0 || leader >= positions.length)
+      return null;
+    final NodeControl.RaftPosition position = positions[leader];
+    return position != null && position.leaderReady() ? position : null;
+  }
+
+  /** Why {@link #head} found no commit to measure against, for the wait's diagnostics. */
+  private static String noHeadReason(final NodeControl.RaftPosition[] positions, final int leader) {
+    if (leader < 0 || leader >= positions.length)
+      return "no leader known";
+    if (positions[leader] == null)
+      return "leader node " + leader + " indexes unreadable";
+    return "leader node " + leader + " not ready (its position was read before it led, or before it committed an entry of its term)";
   }
 
   /** The highest commit index any node reports, for the diagnostics only: see {@link #head}. */
@@ -306,14 +325,14 @@ public final class ChaosRunner {
 
   /**
    * The live followers further behind the leader's commit than allowed, as {@code node N lag=L}; empty when none is. Never empty
-   * while no leader is known or the leader's indexes cannot be read: the step waits for a leader to measure against, and the lag
+   * while {@link #head} has no commit to measure against: the step waits for a leader to measure against, and the lag
    * behind the highest reported commit is listed alongside for the failure message.
    */
   private String followersBehind(final NodeControl.RaftPosition[] positions, final int leader) {
     NodeControl.RaftPosition head = head(positions, leader);
     final StringBuilder behind = new StringBuilder();
     if (head == null) {
-      behind.append(leader < 0 ? "no leader known" : "leader node " + leader + " indexes unreadable");
+      behind.append(noHeadReason(positions, leader));
       head = highestCommit(positions);
     }
     for (int node = 0; node < config.nodes(); node++) {

@@ -610,4 +610,54 @@ class ChaosRunnerTest {
     assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
     assertThat(result.message()).contains("leader node 0 indexes unreadable");
   }
+
+  /**
+   * Issue #11566, first window: node 0's position was read while node 1 still led, so its commit is a follower's, clamped to what it
+   * knew committed, and {@code findLeader()} names node 0 only afterwards. Every node reads applied=commit=964000, node 2 included,
+   * although node 2 lacks the 36000 entries node 0 will commit: measured against that commit it would read lag 0.
+   */
+  @Test
+  void positionReadBeforeTheNodeLedIsNeverTheAuthority() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT30S", "chaos.maxSteps", "1"));
+    for (int node = 0; node < 5; node++) {
+      harness.control().lag[node] = 36_000;
+      harness.control().commitLag[node] = 36_000;
+    }
+    harness.control().readsBeforeCaughtUp = 2;
+    harness.control().previousLeader = 1;
+    harness.control().previousLeaderUntilRead = 2;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    assertThat(harness.control().positionReads).as("node 0 is named leader from read 1, but its own position says so only from read 3")
+        .isEqualTo(3);
+  }
+
+  /**
+   * Issue #11566, second window: node 0 has just been elected and has not committed an entry of its term, so its commit index sits
+   * below the entries of earlier terms it will commit with that first entry. Its position says leader, not leader-ready.
+   */
+  @Test
+  void freshLeaderIsNotTheAuthorityBeforeItCommitsInItsTerm() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT30S", "chaos.maxSteps", "1"));
+    for (int node = 0; node < 5; node++) {
+      harness.control().lag[node] = 36_000;
+      harness.control().commitLag[node] = 36_000;
+    }
+    harness.control().readsBeforeCaughtUp = 2;
+    harness.control().leaderReadyFromRead = 3;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    assertThat(harness.control().positionReads).as("every node level from read 1, but node 0 ready to lead only from read 3")
+        .isEqualTo(3);
+  }
+
+  @Test
+  void leaderThatNeverBecomesReadyIsAnAvailabilityFailureNamingIt() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT2S", "chaos.maxSteps", "1"));
+    harness.control().leaderReadyFromRead = Integer.MAX_VALUE;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("leader node 0 not ready").contains("catch up")
+        .contains("no leader commit to measure against");
+  }
 }

@@ -33,8 +33,13 @@ public interface NodeControl {
   record InPlaceRestarts(int recovered, int reformatted) {
   }
 
-  /** A node's Raft indexes from {@code GET /api/v1/cluster}: what it has applied and what it knows to be committed. */
-  record RaftPosition(long applied, long commit) {
+  /**
+   * A node's Raft indexes from {@code GET /api/v1/cluster}: what it has applied and what it knows to be committed, and whether the
+   * same answer says it leads and is ready to (its {@code leaderReady}, issue #11566). A leader is ready once it has committed an
+   * entry of its own term, which commits every earlier entry a quorum holds: before that, or on a node read while it was still a
+   * follower, the commit is clamped below the entries the leader will commit, and is no authority to measure followers against.
+   */
+  record RaftPosition(long applied, long commit, boolean leaderReady) {
   }
 
   /**

@@ -78,6 +78,14 @@ final class FakeNodeControl implements NodeControl {
    * and knows committed every entry and only applies them late.
    */
   final long[]           commitLag        = new long[5];
+  /**
+   * The node whose position says it leads, ready, up to read {@code previousLeaderUntilRead} (-1 for none): the positions were read
+   * before the leadership moved to {@link #leader}, which {@link #findLeader()} names all along (issue #11566).
+   */
+  int                    previousLeader   = -1;
+  int                    previousLeaderUntilRead;
+  /** {@link #leader}'s position says it is ready to lead only from this read on, as for a leader with no commit in its term yet. */
+  int                    leaderReadyFromRead = 0;
 
   private void log(final String call) {
     if (failure != null)
@@ -187,11 +195,13 @@ final class FakeNodeControl implements NodeControl {
         Thread.currentThread().interrupt();
       }
     final boolean lagging = readsBeforeCaughtUp-- > 0;
+    final int readyLeader = previousLeader >= 0 && positionReads <= previousLeaderUntilRead ? previousLeader :
+        positionReads >= leaderReadyFromRead ? leader : -1;
     final RaftPosition[] positions = new RaftPosition[5];
     for (int node = 0; node < positions.length; node++)
       positions[node] = node == unreadablePositionOfNode ?
           null :
-          new RaftPosition(1_000_000 - (lagging ? lag[node] : 0), 1_000_000 - (lagging ? commitLag[node] : 0));
+          new RaftPosition(1_000_000 - (lagging ? lag[node] : 0), 1_000_000 - (lagging ? commitLag[node] : 0), node == readyLeader);
     return positions;
   }
 
