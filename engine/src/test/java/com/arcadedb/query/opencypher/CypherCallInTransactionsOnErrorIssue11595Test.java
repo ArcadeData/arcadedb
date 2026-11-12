@@ -130,6 +130,14 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
         .hasMessageContaining("REPORT STATUS");
   }
 
+  @Test
+  void onErrorRetryIsRefusedRatherThanRunWithoutItsRetries() {
+    for (final String clause : new String[] { "ON ERROR RETRY THEN CONTINUE", "ON ERROR RETRY FOR 5 SECONDS THEN BREAK",
+        "ON ERROR RETRY" })
+      assertThatThrownBy(() -> database.command("opencypher", BODY + clause)).as(clause).hasMessageContaining("ON ERROR RETRY");
+    assertThat(countX()).isEqualTo(1L);
+  }
+
   private long countX() {
     return countLabel("X");
   }

@@ -1375,10 +1375,16 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (batchCtx.expression() != null)
           batchSize = expressionBuilder.parseExpression(batchCtx.expression());
       }
-      // ON ERROR CONTINUE | BREAK | FAIL, and the mode after THEN of ON ERROR RETRY, whose retries are not run (issue #11595)
+      // ON ERROR CONTINUE | BREAK | FAIL (issue #11595)
       if (txParams.subqueryInTransactionsErrorParameters() != null && !txParams.subqueryInTransactionsErrorParameters().isEmpty()) {
         final Cypher25Parser.SubqueryInTransactionsErrorParametersContext errorCtx =
             txParams.subqueryInTransactionsErrorParameters(0);
+        // ON ERROR RETRY runs a batch that failed with a transient error again before its THEN mode applies. The retries are not
+        // implemented, and the THEN mode alone would skip under THEN CONTINUE, at the first transient error, a batch the statement
+        // asked to be retried: refused rather than answered with what it did not ask for
+        if (errorCtx.RETRY() != null)
+          throw new FeatureNotImplementedException(
+              "ON ERROR RETRY in CALL { ... } IN TRANSACTIONS is not supported: use ON ERROR CONTINUE, BREAK or FAIL");
         if (errorCtx.CONTINUE() != null)
           onError = SubqueryClause.OnError.CONTINUE;
         else if (errorCtx.BREAK() != null)
