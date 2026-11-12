@@ -23,11 +23,15 @@ import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.misc.ParallelDeflater;
+import com.arcadedb.integration.misc.ParallelGzipOutputStream;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DateUtils;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.time.ZoneId;
@@ -61,6 +65,33 @@ public abstract class AbstractExporterFormat {
    */
   public boolean supportsRecordFilters() {
     return false;
+  }
+
+  /**
+   * Opens {@code exportFile} for writing through gzip at the {@code compressionLevel} and {@code compressionThreads} the
+   * settings name (issue #11539). It used to be a {@code GZIPOutputStream} at the default level in every format, deflating on
+   * the thread that formats the records, which was about 90% of the time of an export; with a pool the records are formatted
+   * while earlier chunks are compressed, and the file is still one standard gzip member, at the same ratio for the same level.
+   */
+  protected final OutputStream openCompressedOutput(final File exportFile) throws IOException {
+    final int threads = resolveCompressionThreads();
+    logger.logLine(1, "Compressing the export at level %d, %s", settings.compressionLevel,
+        threads > 0 ? threads + " thread(s)" : "single threaded");
+
+    final FileOutputStream fileOut = new FileOutputStream(exportFile);
+    try {
+      return ParallelGzipOutputStream.open(fileOut, settings.compressionLevel, threads);
+    } catch (final IOException | RuntimeException e) {
+      fileOut.close();
+      throw e;
+    }
+  }
+
+  /** {@code compressionThreads}, with -1 resolved to {@link ParallelDeflater#autoThreads} of this machine. */
+  protected final int resolveCompressionThreads() {
+    return settings.compressionThreads >= 0 ?
+        settings.compressionThreads :
+        ParallelDeflater.autoThreads(Runtime.getRuntime().availableProcessors());
   }
 
   /**

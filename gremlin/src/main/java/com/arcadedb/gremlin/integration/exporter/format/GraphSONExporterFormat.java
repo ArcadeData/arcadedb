@@ -30,8 +30,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.util.zip.GZIPOutputStream;
+import java.io.OutputStream;
 
 public class GraphSONExporterFormat extends AbstractExporterFormat {
   public static final String     NAME       = "graphson";
@@ -65,12 +64,10 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
     final File lock = claimExportFile(exportFile);
     try {
       final ArcadeGraph graph = ArcadeGraph.open(database);
-      try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
-        try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
-          // TinkerPop's gx types and ArcadeDB's own: without them the typed writer refused the whole export at the first Byte,
-          // Short, BigDecimal, date or byte[] value (issue #10202)
-          graph.io(IoCore.graphson()).writer().mapper(ArcadeGraphSONValuesModule.mapper(graph)).create().writeGraph(out, graph);
-        }
+      try (final OutputStream out = openCompressedOutput(exportFile)) {
+        // TinkerPop's gx types and ArcadeDB's own: without them the typed writer refused the whole export at the first Byte,
+        // Short, BigDecimal, date or byte[] value (issue #10202)
+        graph.io(IoCore.graphson()).writer().mapper(ArcadeGraphSONValuesModule.mapper(graph)).create().writeGraph(out, graph);
       }
     } finally {
       releaseExportFile(lock);

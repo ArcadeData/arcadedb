@@ -36,10 +36,21 @@ public class ExporterSettings {
    * and only the command line sets them ({@link #parseParameters}).
    */
   public static final Set<String> SETTINGS = Set.of("format", "overwrite", "includeTypes", "excludeTypes", "includeRecords",
-      "verboseLevel");
+      "verboseLevel", "compressionLevel", "compressionThreads");
 
   /** The most verbose level the console logger distinguishes. */
   public static final int MAX_VERBOSE_LEVEL = 3;
+
+  /**
+   * The deflate level of an export unless {@code compressionLevel} says otherwise: 6, the level every export was written at
+   * before it could be set ({@code Deflater.DEFAULT_COMPRESSION}), so the file of an export that sets nothing keeps its size.
+   * Unlike a backup (level 1), an export is a portable dump that is often kept or moved, and since #11539 the cost of the
+   * level is spread over {@link #compressionThreads} threads instead of being paid on the thread that formats the records.
+   */
+  public static final int DEFAULT_COMPRESSION_LEVEL = 6;
+
+  /** The same bound as the backup's {@code compressionThreads}: the point is to bound the pool, not to be useful up there. */
+  public static final int MAX_COMPRESSION_THREADS = 256;
 
   public String      format;
   public String      databaseURL;
@@ -49,6 +60,14 @@ public class ExporterSettings {
   public Set<String> includeRecords;
   public Set<String> includeTypes;
   public Set<String> excludeTypes;
+  /** Deflate level of the export file, 0 (stored, no compression) to 9 (smallest). */
+  public int         compressionLevel   = DEFAULT_COMPRESSION_LEVEL;
+  /**
+   * Compression threads: -1 (the default) automatic, half the available processors capped at 8; 0 the JDK's single-threaded
+   * {@code GZIPOutputStream} on the thread that formats the records; N a pool of N. Every value writes one standard gzip
+   * member that every gzip reader and the importer read.
+   */
+  public int         compressionThreads = -1;
 
   /**
    * Parses the command line: {@code -o} is a flag with no value, every other argument is a {@code -<name> <value>} pair. A
@@ -120,6 +139,25 @@ public class ExporterSettings {
     return entries;
   }
 
+  /** An integer setting within {@code [min, max]}, refused with the range when it is not one. */
+  private static int parseIntSetting(final String name, final String value, final int min, final int max) {
+    int parsed;
+    try {
+      parsed = Integer.parseInt(value.trim());
+    } catch (final NumberFormatException e) {
+      parsed = min - 1;
+    }
+    return checkIntSetting(name, value, parsed, min, max);
+  }
+
+  /** Refuses {@code value} (as {@code text}) for {@code name} unless it is within {@code [min, max]}. */
+  static int checkIntSetting(final String name, final String text, final int value, final int min, final int max) {
+    if (value < min || value > max)
+      throw new IllegalArgumentException(
+          "Invalid value '" + text + "' for -" + name + ". Supported values are " + min + " to " + max);
+    return value;
+  }
+
   /** Whether {@code arg} is a command-line option {@link #parseParameters} recognizes. */
   private static boolean isOption(final String arg) {
     if (arg.length() < 2 || arg.charAt(0) != '-')
@@ -155,18 +193,9 @@ public class ExporterSettings {
     case "includeRecords" -> includeRecords = parseList(name, value);
     // THE FIELD THE CONSOLE LOGGER IS BUILT FROM: IT WAS NEVER SETTABLE, THE NAME WENT INTO THE MAP NOTHING READ. THE PYTHON
     // BINDINGS SEND IT ON EVERY EXPORT, SO REFUSING IT WOULD BREAK THEM; APPLYING IT IS WHAT THEY ALWAYS ASKED FOR
-    case "verboseLevel" -> {
-      int level;
-      try {
-        level = Integer.parseInt(value.trim());
-      } catch (final NumberFormatException e) {
-        level = -1;
-      }
-      if (level < 0 || level > MAX_VERBOSE_LEVEL)
-        throw new IllegalArgumentException(
-            "Invalid value '" + value + "' for -verboseLevel. Supported values are 0 to " + MAX_VERBOSE_LEVEL);
-      verboseLevel = level;
-    }
+    case "verboseLevel" -> verboseLevel = parseIntSetting(name, value, 0, MAX_VERBOSE_LEVEL);
+    case "compressionLevel" -> compressionLevel = parseIntSetting(name, value, 0, 9);
+    case "compressionThreads" -> compressionThreads = parseIntSetting(name, value, -1, MAX_COMPRESSION_THREADS);
     default -> {
       final String closest = StringUtils.closestMatch(name, SETTINGS);
       throw new IllegalArgumentException("Unknown export setting '" + name + "'. " + (closest != null ?
