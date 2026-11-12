@@ -3660,13 +3660,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // and a catch-up match read concurrently must be judged against the boundary, not against the old join.
       runtimeJoinDetector.onSnapshotInstalledFromLeader(snapshotIndex);
 
-      // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
-      // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
-      // registerSnapshotMarker() writes the empty marker file and updates the latest-snapshot
-      // reference; see its javadoc for why a file-less, null-digest marker is safe for ArcadeDB.
-      if (!registerSnapshotMarker(snapshotTerm, snapshotIndex))
-        throw new IOException("Failed to register snapshot marker at index " + snapshotIndex);
-
       // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
       // knows which log entries have been consumed by this install. A full state-machine install
       // brings EVERY present database to the snapshot point, so record the snapshot index for each
@@ -3676,6 +3669,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // replaying this node's pre-install log, and it checks the boundary and moves the applied positions under the
       // same lock, so a stale entry either lands entirely before the seed (which then moves the positions forward) or
       // sees the boundary and leaves them alone - never checks before and writes after.
+      // BEFORE the snapshot marker (issue #11531): the marker authorises Ratis to purge the log up to snapshotIndex, so the
+      // quarantine and the read floor of every database this install gave up on must already be on disk by then.
+      final boolean durable;
       synchronized (appliedPositionLock) {
         recordInstalledRaftBoundary(snapshotIndex);
         lastAppliedIndex.set(snapshotIndex);
@@ -3687,8 +3683,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
         // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
         // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
-        completeSnapshotInstall(snapshotIndex, notInstalled, leaderMissing);
+        durable = completeSnapshotInstall(snapshotIndex, notInstalled, leaderMissing);
       }
+      // A quarantine that lives in memory alone is gone after a restart, and once the marker below is registered Ratis
+      // purges the log up to it: a database this install gave up on would come back ready, unclamped, with nothing left
+      // to replay into it (issue #11531). So the install fails before the marker, Ratis neither records the boundary nor
+      // purges, and it re-drives the install. The quarantine stays in force in memory meanwhile. An install that gave up
+      // on nothing publishes no quarantine and is not failed: a position that did not reach disk leaves the marker ahead
+      // of the persisted one, which the restart's snapshot-gap check answers with a resync (issue #6111).
+      if (!durable && !notInstalled.isEmpty())
+        throw new IOException("Snapshot install could not persist the quarantine of database(s) " + notInstalled
+            + " it could not reinstall to " + getAppliedIndexFile() + "; not registering the snapshot marker at index "
+            + snapshotIndex + " (issue #11531)");
+
+      // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
+      // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
+      // registerSnapshotMarker() writes the empty marker file and updates the latest-snapshot
+      // reference; see its javadoc for why a file-less, null-digest marker is safe for ArcadeDB.
+      if (!registerSnapshotMarker(snapshotTerm, snapshotIndex))
+        throw new IOException("Failed to register snapshot marker at index " + snapshotIndex);
+
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
@@ -9660,9 +9674,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Same, except that the databases in {@code notRefreshed} - kept by the install without being refreshed, the ones the
    * leader does not hold (issue #8588) - keep their own applied position too. Unlike {@code notInstalled} they are not
    * quarantined and get no read floor: the leader has no committed state for them to be behind.
+   *
+   * @return whether the settled state reached disk (issue #11531)
    */
-  void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled, final Set<String> notRefreshed) {
-    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true, notRefreshed);
+  boolean completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled, final Set<String> notRefreshed) {
+    return settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true, notRefreshed);
   }
 
   /**
