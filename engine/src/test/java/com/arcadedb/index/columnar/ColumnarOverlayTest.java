@@ -460,4 +460,38 @@ class ColumnarOverlayTest {
     assertThat(failures.get()).isZero();
     assertThat(checkedViews.get()).isPositive();
   }
+
+  @Test
+  void doubleBoundsHandleNegativeValuesAndExcludeNaN() {
+    buffer.clear();
+    values.present[0] = true;
+    values.ordinal[0] = 1;
+    values.present[1] = false;
+    values.present[2] = false;
+    values.present[3] = true;
+
+    // Slot 1: -10.0
+    values.doubles[3] = -10.0;
+    buffer.put(1, values);
+
+    // Slot 2: -1.0
+    values.doubles[3] = -1.0;
+    buffer.put(2, values);
+
+    // Slot 3: Double.NaN
+    values.doubles[3] = Double.NaN;
+    buffer.put(3, values);
+
+    // Slot 4: -0.0
+    values.doubles[3] = -0.0;
+    buffer.put(4, values);
+
+    final OverlayPageBlock blk = OverlayPageBlock.build(0, MRP, COLUMNS, 1, buffer);
+    overlay.replacePage(blk);
+    final ColumnarSegmentView view = overlay.publish();
+
+    assertThat(Double.longBitsToDouble(view.minLong("score"))).isEqualTo(-10.0);
+    assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(view.maxLong("score"))))
+        .isEqualTo(Double.doubleToRawLongBits(-0.0));
+  }
 }

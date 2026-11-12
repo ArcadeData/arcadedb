@@ -243,7 +243,7 @@ final class SegmentWriter implements AutoCloseable {
       if (present) {
         if (Double.compare(v, minDouble[k]) < 0)
           minDouble[k] = v;
-        if (Double.compare(v, maxDouble[k]) > 0)
+        if (!Double.isNaN(v) && Double.compare(v, maxDouble[k]) > 0)
           maxDouble[k] = v;
       }
     }

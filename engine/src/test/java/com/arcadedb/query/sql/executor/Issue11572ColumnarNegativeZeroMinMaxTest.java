@@ -185,4 +185,32 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
       assertThat(Double.doubleToRawLongBits(max)).isEqualTo(Double.doubleToRawLongBits(-0.0d));
     }
   }
+
+  @Test
+  void negativeBoundsAndZeroPreservationInColumnar() {
+    database.command("sql", "CREATE DOCUMENT TYPE BoundItem");
+    database.command("sql", "CREATE PROPERTY BoundItem.val DOUBLE");
+    database.command("sql", "CREATE INDEX ON BoundItem (val) COLUMNAR");
+    FacetOracle.awaitCaughtUp(database);
+
+    database.transaction(() -> {
+      database.newDocument("BoundItem").set("val", -10.0d).save();
+      database.newDocument("BoundItem").set("val", -1.0d).save();
+      database.newDocument("BoundItem").set("val", 5.0d).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    for (final boolean accelerated : new boolean[] { false, true }) {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, accelerated);
+
+      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS mn, max(val) AS mx FROM BoundItem")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result res = rs.next();
+        final double min = res.getProperty("mn");
+        final double max = res.getProperty("mx");
+        assertThat(min).isEqualTo(-10.0d);
+        assertThat(max).isEqualTo(5.0d);
+      }
+    }
+  }
 }
