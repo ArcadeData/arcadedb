@@ -20,6 +20,7 @@ package com.arcadedb.integration.exporter;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -162,6 +163,45 @@ class Issue11523ExportOverwriteSettingTest {
             .as("verboseLevel = '%s'", level)//
             .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid value '" + level + "' for -verboseLevel");
     }
+  }
+
+  /**
+   * A lightweight edge lives in its source vertex, so the walk that finds it ran over the SELECTED vertex types only:
+   * {@code includeTypes = 'Follows'} (the edge type alone) found no vertex to walk and exported no edge, while a regular edge
+   * type listed the same way exported all of its edges. Both are selected by their own type now.
+   */
+  @Test
+  void lightweightEdgesAreSelectedByTheirOwnTypeLikeRegularEdges() throws IOException {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      database.transaction(() -> {
+        database.getSchema().buildVertexType().withName("Person").create();
+        database.getSchema().buildEdgeType().withName("Follows").withLightweight(true).create();
+        database.getSchema().buildEdgeType().withName("Rated").create();
+
+        final MutableVertex a = database.newVertex("Person").set("name", "Ann").save();
+        final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+        a.newEdge("Follows", b);
+        b.newEdge("Follows", a);
+        a.newEdge("Rated", b, "stars", 5);
+      });
+
+      assertThat(exportEdgeLines(database, "includeTypes = 'Follows'")).as("the lightweight edge type alone").isEqualTo(2);
+      assertThat(exportEdgeLines(database, "includeTypes = 'Rated'")).as("the regular edge type alone").isEqualTo(1);
+      assertThat(exportEdgeLines(database, "includeTypes = 'Follows,Rated'")).isEqualTo(3);
+      assertThat(exportEdgeLines(database, "excludeTypes = 'Person'")).as("the vertex type excluded, the edges kept").isEqualTo(3);
+      assertThat(exportEdgeLines(database, "excludeTypes = 'Follows'")).isEqualTo(1);
+      assertThat(exportEdgeLines(database, "includeTypes = 'Person'")).as("no edge type selected").isZero();
+      assertThat(exportEdgeLines(database, null)).as("no filter").isEqualTo(3);
+    }
+  }
+
+  private int exportEdgeLines(final Database database, final String with) throws IOException {
+    database.command("sql", "EXPORT DATABASE file://" + exportName + " WITH overwrite = true" + (with != null ? ", " + with : ""));
+    int edges = 0;
+    for (final String line : exportedContent().split("\n"))
+      if (line.startsWith("{\"t\":\"e\""))
+        ++edges;
+    return edges;
   }
 
   @Test
