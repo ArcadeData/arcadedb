@@ -313,6 +313,34 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
     assertThat(database.getSchema().getEmbedded().getUnavailableUniqueIndexNames()).hasSize(1);
   }
 
+  @Test
+  void aRefusedUniqueDefinitionOfOneBucketIsReportedAlthoughTheOtherBucketsLoad() throws IOException {
+    database.command("sqlscript", """
+        CREATE DOCUMENT TYPE Multi BUCKETS 2;
+        CREATE PROPERTY Multi.code STRING;
+        CREATE INDEX ON Multi (code) UNIQUE;""");
+    database.close();
+
+    // one of the two bucket indexes refused: the type index of the other one still loads, incomplete
+    final JSONObject schema = new JSONObject(readSchemaFile());
+    final JSONObject indexes = schema.getJSONObject("types").getJSONObject("Multi").getJSONObject("indexes");
+    assertThat(indexes.length()).isEqualTo(2);
+    indexes.getJSONObject(indexes.keySet().iterator().next()).put("nullStrategy", "NOT_A_STRATEGY");
+    Files.writeString(schemaFile().toPath(), schema.toString(), StandardCharsets.UTF_8);
+
+    database = factory.open();
+    final TypeIndex incomplete = (TypeIndex) database.getSchema().getIndexByName("Multi[code]");
+    assertThat(incomplete.isValid()).as("the type index of the bucket that loaded covers only its own bucket").isFalse();
+    assertThat(database.getSchema().getEmbedded().getUnavailableUniqueIndexNames())
+        .as("an incomplete type index does not stand in for the refused one").hasSize(1);
+
+    // corrected, or the integrity check after every test reports the incomplete index this test builds on purpose
+    database.close();
+    tamperSchemaFile("\"nullStrategy\":\"NOT_A_STRATEGY\"", "\"nullStrategy\":\"SKIP\"");
+    database = factory.open();
+    assertThat(((TypeIndex) database.getSchema().getIndexByName("Multi[code]")).isValid()).isTrue();
+  }
+
   private String vectorIndexEntryName() throws IOException {
     return new JSONObject(readSchemaFile()).getJSONObject("types").getJSONObject("Vec").getJSONObject("indexes").keySet().iterator()
         .next();

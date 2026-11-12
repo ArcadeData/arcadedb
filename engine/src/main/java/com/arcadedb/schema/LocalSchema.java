@@ -1902,13 +1902,21 @@ public class LocalSchema implements Schema {
         if (!definition.getBoolean("unique", false))
           continue;
         final List<String> properties = definition.getJSONArray("properties", new JSONArray()).toListOfStrings();
-        // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again
-        if (type != null && !properties.isEmpty() && !type.getIndexesByProperties(properties).isEmpty())
+        // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again. A VALID one only: the type
+        // index the other buckets of a multi-bucket type still load is there too, incomplete, and enforces nothing on this bucket
+        if (type != null && !properties.isEmpty() && hasValidIndex(type.getIndexesByProperties(properties)))
           continue;
         names.add(entry.getKey());
       }
     }
     return names;
+  }
+
+  private static boolean hasValidIndex(final List<TypeIndex> indexes) {
+    for (final TypeIndex index : indexes)
+      if (index.isValid())
+        return true;
+    return false;
   }
 
   /**
