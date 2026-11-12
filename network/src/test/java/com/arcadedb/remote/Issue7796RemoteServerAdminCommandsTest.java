@@ -336,7 +336,7 @@ class Issue7796RemoteServerAdminCommandsTest {
 
     ScriptedServer(final String... responses) throws IOException {
       script.addAll(List.of(responses));
-      socket = new ServerSocket(0);
+      socket = LoopbackStubListener.bind();
       final Thread t = new Thread(() -> {
         while (!socket.isClosed()) {
           try (final Socket client = socket.accept()) {

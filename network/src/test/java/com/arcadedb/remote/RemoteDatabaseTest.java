@@ -470,7 +470,7 @@ class RemoteDatabaseTest {
    * httpCommand() and must capture response headers on their own.
    */
   private void withHttpServer(final List<StubResponse> responses, final ServerAction action) throws Exception {
-    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+    try (final ServerSocket serverSocket = LoopbackStubListener.bind()) {
       final int port = serverSocket.getLocalPort();
 
       final Thread serverThread = new Thread(() -> {

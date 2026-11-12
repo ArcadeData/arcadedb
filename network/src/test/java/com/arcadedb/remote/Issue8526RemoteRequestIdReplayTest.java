@@ -210,7 +210,7 @@ class Issue8526RemoteRequestIdReplayTest {
     ScriptedServer(final int port, final boolean advertise, final String... script) throws IOException {
       this.advertise = advertise;
       this.script = List.of(script);
-      socket = new ServerSocket(port);
+      socket = LoopbackStubListener.bind(port);
       final Thread t = new Thread(() -> {
         while (!socket.isClosed()) {
           try (final Socket client = socket.accept()) {
