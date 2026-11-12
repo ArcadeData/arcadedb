@@ -488,6 +488,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final NeedRetryException e) {
       throw e;
+    } catch (final TransactionException e) {
+      // THE ONE THROWN ABOVE, WITH THE MAPPED FAILURE AS ITS CAUSE: NOT WRAPPED A SECOND TIME BY THE GENERIC CLAUSE (ISSUE #11387)
+      throw e;
     } catch (final IOException e) {
       // A connection that could not even be established proves the begin never reached the server, the verdict gRPC's
       // UNAVAILABLE carries on the same call: retryable as well (issue #8617). Any other transport failure may have
@@ -553,7 +556,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       }
       captureResponseHeaders(response);
       committed = true;
-    } catch (final NeedRetryException | DuplicatedKeyException e) {
+    } catch (final NeedRetryException | DuplicatedKeyException | TransactionException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
@@ -590,6 +593,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         throw new TransactionException("Error on transaction rollback", detail);
       }
       captureResponseHeaders(response);
+    } catch (final TransactionException e) {
+      // THE ONE THROWN ABOVE, WITH THE MAPPED FAILURE AS ITS CAUSE: NOT WRAPPED A SECOND TIME BY THE GENERIC CLAUSE (ISSUE #11387)
+      throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     } finally {
@@ -1306,10 +1312,16 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         return new TimeSeriesWriteSummary(points.size(), points.size(), 0, List.of(), List.of(), List.of());
 
       if (response.statusCode() == 400) {
-        final JSONObject error = new JSONObject(response.body());
         // A partial write and a rejected request share the 400. The counts are what tells them apart: a
-        // rejected request (empty body, missing database) carries none.
-        if (error.has("written") && error.has("dropped"))
+        // rejected request (empty body, missing database) carries none. A body that is not JSON (a proxy's
+        // error page, issue #11387) carries none either, and goes to manageException with its status code
+        JSONObject error = null;
+        try {
+          error = new JSONObject(response.body());
+        } catch (final JSONException e) {
+          // NOT THE SERVER'S ANSWER: MAPPED ON THE STATUS CODE BELOW
+        }
+        if (error != null && error.has("written") && error.has("dropped"))
           return new TimeSeriesWriteSummary(points.size(), error.getLong("written"), error.getLong("dropped"),
               stringList(error.getJSONArray("unknownTypes", null)), stringList(error.getJSONArray("nonTimeSeriesTypes", null)),
               stringList(error.getJSONArray("unavailableTypes", null)),
@@ -1700,10 +1712,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // server too old to stream, on its way to being unreachable.
       try (final InputStream in = response.body()) {
         final String body = new String(in.readAllBytes(), DatabaseFactory.getDefaultCharset());
+        // A failed status is no proof of an old server: the server's own refusals and a proxy's error page (issue
+        // #11387) arrive without the streaming encoding too. Mapped as the buffered batch path maps them, so the
+        // status and the server's type survive, and a page that is not JSON reaches the message bounded
         if (response.statusCode() != 200)
-          throw new DatabaseOperationException(
-              "Error on batch import (server did not honour the streaming encoding, HTTP " + response.statusCode()
-                  + "): " + body);
+          throw new DatabaseOperationException("Error on batch import (HTTP " + response.statusCode() + ")",
+              manageException(response.statusCode(), body, "batch import"));
         return new JSONObject(body);
       }
     }

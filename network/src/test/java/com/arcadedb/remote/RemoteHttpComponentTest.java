@@ -724,8 +724,9 @@ class RemoteHttpComponentTest {
     final HttpResponse<String> response = createMockResponse(500, "not valid json {{{");
     final Exception result = component.manageException(response, "test");
 
-    // When JSON parsing fails, it returns the parsing exception
-    assertThat(result).isNotNull();
+    // A body that is not JSON is mapped on the status code, never returned as the parser's exception (issue #11387)
+    assertThat(result).isExactlyInstanceOf(RemoteException.class);
+    assertThat(result.getMessage()).contains("httpErrorCode=500").contains("not valid json {{{");
   }
 
   @Test
