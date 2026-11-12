@@ -1790,8 +1790,9 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * The columns the statement declares, or none when it declares none it can name without running: a write with no RETURN, a
-   * CALL of a procedure the engine does not know without an explicit YIELD, or a statement the cached parse cannot give back (it ran, so that would only be a statement the engine
-   * reads differently from the Cypher parser, which is no reason to fail a query that succeeded).
+   * CALL of a procedure the engine does not know without an explicit YIELD, or a statement the cached parse cannot give back (it
+   * ran, so that would only be a statement the engine reads differently from the Cypher parser, which is no reason to fail a
+   * query that succeeded).
    */
   private List<String> declaredFieldNames(final String query) {
     try {

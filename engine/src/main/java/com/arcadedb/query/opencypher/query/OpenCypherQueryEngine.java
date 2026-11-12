@@ -44,18 +44,17 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.InternalVariables;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ConditionalStatement;
+import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
-import com.arcadedb.query.opencypher.ast.ReturnClause;
-import com.arcadedb.query.opencypher.InternalVariables;
-import com.arcadedb.query.opencypher.ast.CallClause;
-import com.arcadedb.query.opencypher.ast.ClauseEntry;
-import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
@@ -63,6 +62,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
@@ -474,6 +474,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       case UNWIND -> bind(((UnwindClause) entry.getTypedClause()).getVariable(), scope);
       case LOAD_CSV -> bind(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope);
       case CALL -> {
+        // An in-query CALL with no YIELD is a side-effect call: it binds nothing
         final CallClause call = entry.getTypedClause();
         if (call.hasYield()) {
           final List<String> yielded = yieldedFields(call);

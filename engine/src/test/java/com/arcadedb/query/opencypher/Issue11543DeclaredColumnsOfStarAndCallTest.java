@@ -22,9 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
