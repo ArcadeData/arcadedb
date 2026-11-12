@@ -88,7 +88,13 @@ public class DateFields extends AbstractDateFunction {
     final DateTimeFormatter formatter = getFormatter(format);
     // A text that names an offset or a zone is the instant it names (issue #10596): its own offset when no zone is asked for, the
     // zone asked for otherwise. One that names none is read in `zoneId`, as it always was
-    final ZonedDateTime parsed = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, zoneId);
+    final ZonedDateTime parsed;
+    try {
+      parsed = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, zoneId);
+    } catch (final DateTimeException e) {
+      // A text the format does not read is the caller's argument, not a server fault (issue #11589)
+      throw new IllegalArgumentException("Cannot read '" + dateStr + "' as a date: " + e.getMessage(), e);
+    }
     final ZonedDateTime dateTime = timezoneStr != null ? parsed.withZoneSameInstant(zoneId) : parsed;
 
     final Map<String, Object> fields = new HashMap<>();
