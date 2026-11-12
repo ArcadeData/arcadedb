@@ -60,10 +60,14 @@ public final class ReturnScope {
    * RETURN, in place, so every execution path (projection, DISTINCT, the aggregations and their grouping keys) sees ordinary
    * items. A bare {@code RETURN *} is left alone. Each branch of a UNION is expanded on its own.
    * <p>
-   * A variable an explicit item also projects is not repeated: the explicit item answers it. When the scope cannot be read
-   * without running (it passes through a procedure the engine does not know, or a subquery whose own {@code RETURN *} scope
-   * is not known), the star is kept and the projection resolves it at run time; an aggregation cannot group by a key unknown
-   * at planning time, so that case is refused rather than answered without its grouping keys.
+   * An explicit item named like a variable the star stands for ({@code RETURN *, z.i AS z}) is a column defined twice, refused
+   * the way Neo4j refuses it. When the scope cannot be read without running (it passes through a procedure the engine does
+   * not know, or a subquery whose own {@code RETURN *} scope is not known), the star is kept and the projection resolves it
+   * at run time; an aggregation cannot group by a key unknown at planning time, so that case is refused rather than answered
+   * without its grouping keys.
+   * <p>
+   * The statement is changed in place, once, by the parse that builds it, before the statement cache keeps it. It is also
+   * idempotent: an expanded RETURN has no star left, so a second call finds nothing to do.
    */
   public static void expandStarMixedWithItems(final CypherStatement statement) {
     if (statement instanceof UnionStatement union) {
@@ -101,12 +105,13 @@ public final class ReturnScope {
         explicit.add(item.getOutputName());
 
     final List<ReturnClause.ReturnItem> expanded = new ArrayList<>(scope.size());
-    for (final String variable : scope)
-      if (!explicit.contains(variable)) {
-        final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(new VariableExpression(variable), null);
-        item.setExpressionText(variable);
-        expanded.add(item);
-      }
+    for (final String variable : scope) {
+      if (explicit.contains(variable))
+        throw new CommandParsingException("ColumnNameConflict: Column name '" + variable + "' is defined more than once");
+      final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(new VariableExpression(variable), null);
+      item.setExpressionText(variable);
+      expanded.add(item);
+    }
 
     items.remove(starIndex);
     items.addAll(starIndex, expanded);

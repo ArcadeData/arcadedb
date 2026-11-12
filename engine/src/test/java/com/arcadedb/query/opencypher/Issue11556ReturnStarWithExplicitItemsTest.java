@@ -165,6 +165,15 @@ class Issue11556ReturnStarWithExplicitItemsTest extends TestHelper {
     assertThat(rows.stream().map(r -> r.<Integer>getProperty("i")).toList()).containsExactlyInAnyOrder(1, 2);
   }
 
+  /** An item named like a variable the star already returns defines that column twice, which Neo4j refuses too. */
+  @Test
+  void anItemNamedLikeAVariableOfTheStarIsAColumnConflict() {
+    assertThatThrownBy(() -> rows("MATCH (z:A) RETURN *, z.i AS z")).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("ColumnNameConflict").hasMessageContaining("'z'");
+    assertThatThrownBy(() -> rows("MATCH (z:A) RETURN *, z")).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("ColumnNameConflict");
+  }
+
   /** What a zero-row result announces (#11543) is what a row of the same statement carries, item after the star included. */
   @ParameterizedTest
   @ValueSource(strings = {
