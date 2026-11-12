@@ -675,6 +675,8 @@ public class LocalSchema implements Schema {
               loadedDictionary.carryOverFrom(previousDictionary);
               loadedDictionary.reload();
             }
+            // A copy whose dictionary the open found emptied stays reported as such across the reload (issue #11518)
+            loadedDictionary.inheritHeaderPageRecreated(previousDictionary);
             registerFile(loadedDictionary);
             // Swapped in at once rather than nulled first: both instances front the same file, and a reader
             // serializing a record in the meantime needs one.

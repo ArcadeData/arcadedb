@@ -27,11 +27,13 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.PeerRequest;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
 
@@ -758,7 +760,17 @@ public final class SnapshotInstaller {
         // it still rolls the install back like a snapshot that does not open: a volume that cannot take a small file will
         // not survive the reopen either, and the backup keeps a copy whose projection matches its files.
         prepareColumnarProjection(dbPath);
-        server.reopenDatabaseUnderSnapshotRecovery(databaseName);
+        final ServerDatabase reopened = server.reopenDatabaseUnderSnapshotRecovery(databaseName);
+        // A copy that opens can still be one the node must not serve (issue #11518): a unique index whose file has no header
+        // page, or a dictionary found empty while the schema declares types. Refused like a copy that does not open, so the
+        // previous copy is restored and the caller keeps any quarantine standing: every install path lifts it on success,
+        // and the database is not reopened through a path that would re-check it while it is being replaced.
+        final LocalCopyDamage damage = LocalCopyDamage.of(reopened);
+        if (damage != null) {
+          closeLocalDatabaseIfOpen(server, databaseName);
+          throw new DatabaseOperationException(
+              "the installed copy of database '" + databaseName + "' opened, but " + damage.describe());
+        }
       } catch (final RuntimeException openEx) {
         // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
         // previous local copy and reopen it so the node is never left with a closed database.
@@ -987,7 +999,16 @@ public final class SnapshotInstaller {
       // (best effort) and leave the database absent rather than registered-but-broken.
       publishStaging(staging, dbPath);
       try {
-        server.getDatabaseForOperator(databaseName);
+        final ServerDatabase opened = server.getDatabaseForOperator(databaseName);
+        // The read-only validation cannot see an emptied dictionary (only a writable open recreates its header page), and the
+        // open hook of a running node leaves a database being acquired to this path (issue #11518): a damaged copy is
+        // refused like one that does not open, so the database stays absent and the next reconcile acquires it again.
+        final LocalCopyDamage damage = LocalCopyDamage.of(opened);
+        if (damage != null) {
+          closeLocalDatabaseIfOpen(server, databaseName);
+          throw new DatabaseOperationException(
+              "the acquired copy of database '" + databaseName + "' opened, but " + damage.describe());
+        }
       } catch (final RuntimeException openEx) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Acquired snapshot for new database '%s' was validated but failed to open after publish; removing it "

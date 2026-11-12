@@ -600,6 +600,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
+  // The local-copy damages already reported on a sole voter (issue #11518), keyed "<database>\0<cause>": the recheck runs on
+  // every reopen and every schema reload, and a sole voter cannot repair the copy, so the SEVERE report is made once
+  private final Set<String> soleVoterDamageReported = ConcurrentHashMap.newKeySet();
+
   /**
    * The databases on which this node, as leader, is running an operation that must not interleave with a replica's
    * transaction: a DDL (issue #7438), or the drop or reinstall of the database. Counted rather than flagged, since
@@ -4725,6 +4729,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
         if (refusal != null)
           loadSchemaInFull(schema, decoded, entryIndex, refusal);
+
+        // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
+        // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
+        quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
       }
 
     } catch (final IOException e) {
@@ -10283,29 +10291,80 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final String dbName : srv.getDatabaseNames()) {
       if (ArcadeDBServer.isReservedDatabaseName(dbName))
         continue;
-      final boolean incomplete;
-      final List<String> unavailableUnique;
-      final boolean dictionaryLost;
+      final ServerDatabase db;
       try {
-        final ServerDatabase db = srv.getDatabase(dbName, false, false);
-        incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
-        unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
-        dictionaryLost = db != null && db.getEmbedded().getSchema().getEmbedded().isDictionaryLostForExistingTypes();
+        db = srv.getDatabase(dbName, false, false);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
             e.getMessage());
         continue;
       }
-      if (incomplete) {
-        if (quarantineAfterIncompleteRecovery(dbName))
-          quarantined.add(dbName);
-      } else if (dictionaryLost) {
-        if (quarantineAfterEmptiedDictionary(dbName))
-          quarantined.add(dbName);
-      } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
+      if (quarantineIfLocalCopyDamaged(dbName, db))
         quarantined.add(dbName);
     }
     return quarantined;
+  }
+
+  /**
+   * Quarantines {@code dbName} when its local copy carries one of the damages {@link LocalCopyDamage} reads (issues #11250,
+   * #11258), through the same decisions as the startup scan: the three {@code quarantineAfter*} methods below, so the
+   * quarantine, the resync, the leadership hand-off and the sole-voter exception are the ones startup takes.
+   * <p>
+   * The startup scan is not the only time a copy can turn up damaged (issue #11518): a database closed for idleness and reopened,
+   * one opened lazily after the scan, and a replicated schema entry's reload all read the files again, and the scan never saw
+   * what they found. {@link #recheckOpenedDatabase} and {@link #applySchemaEntry} call this for those.
+   * <p>
+   * A database already quarantined is left alone: the resync that will lift the quarantine replaces the copy anyway. On a
+   * sole voter the damage is reported once per database and cause rather than on every reload, since nothing can repair it
+   * there and a schema entry reloads the schema each time; a clean read forgets the report, so a damage that comes back is
+   * reported again.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineIfLocalCopyDamaged(final String dbName, final DatabaseInternal db) {
+    if (dbName == null || db == null || isDatabaseDiverged(dbName))
+      return false;
+    final LocalCopyDamage damage;
+    try {
+      damage = LocalCopyDamage.of(db);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
+          e.getMessage());
+      return false;
+    }
+    if (damage == null) {
+      if (!soleVoterDamageReported.isEmpty())
+        soleVoterDamageReported.removeIf(key -> key.startsWith(dbName + '\0'));
+      return false;
+    }
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+    if (raftHA.isSoleVoter() && !soleVoterDamageReported.add(dbName + '\0' + damage.cause()))
+      return false;
+    return switch (damage.cause()) {
+      case LOCAL_RECOVERY_INCOMPLETE -> quarantineAfterIncompleteRecovery(dbName);
+      case EMPTY_DICTIONARY -> quarantineAfterEmptiedDictionary(dbName);
+      default -> quarantineAfterUnavailableUniqueIndex(dbName, damage.uniqueIndexNames());
+    };
+  }
+
+  /**
+   * The open-time half of issue #11518: {@code RaftHAServer} calls this for every database the server opens once the Raft
+   * server is running - a database closed for idleness and reopened by a request, one opened lazily after the startup scan,
+   * one {@link #databaseFor} reopens for an entry. Before, only the startup scan read the damage, so a copy found damaged by
+   * any later open served queries and stayed electable.
+   * <p>
+   * Not for a database being replaced by a snapshot install ({@link #databasesBeingReplaced}): the install validates the
+   * copy it reopens itself ({@code SnapshotInstaller.swapAndReopen}) and rolls a damaged one back, and every install path
+   * lifts the quarantine on success, which would erase one raised here.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean recheckOpenedDatabase(final String dbName, final DatabaseInternal db) {
+    if (dbName == null || ArcadeDBServer.isReservedDatabaseName(dbName) || databasesBeingReplaced.containsKey(dbName))
+      return false;
+    return quarantineIfLocalCopyDamaged(dbName, db);
   }
 
   /**

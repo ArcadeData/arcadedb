@@ -22,6 +22,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -4020,6 +4021,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /**
+   * Called by the database wrapper for every database the server opens (issue #11518), so a copy found damaged by an open
+   * after the startup scan is quarantined like one found by the scan. Before the Raft server is built, the scan in
+   * {@link #start()} covers the databases already open, and a node shutting down quarantines nothing.
+   */
+  void recheckOpenedDatabase(final String databaseName, final DatabaseInternal database) {
+    final ArcadeStateMachine sm = getStateMachine();
+    if (raftServer == null || shutdownRequested || sm == null)
+      return;
+    try {
+      sm.recheckOpenedDatabase(databaseName, database);
+    } catch (final RuntimeException e) {
+      // The open itself must not fail for the check: the database is served either way, which is what it was before
+      LogManager.instance().log(this, Level.WARNING, "Cannot check the local copy of database '%s' after its open: %s", e,
+          databaseName, e.getMessage());
+    }
   }
 
   /** The bootstrap election, or {@code null} before the Raft server has started. */
