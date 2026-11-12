@@ -468,7 +468,7 @@ public final class OptionalMatchAntiJoinRewriter {
 
   private static boolean returnsStar(final SimpleCypherStatement statement) {
     final ReturnClause returnClause = statement.getReturnClause();
-    return returnClause == null || returnClause.isReturnAll();
+    return returnClause == null || returnClause.hasStar();
   }
 
   private static WithClause filter(final BooleanExpression condition) {

@@ -211,6 +211,9 @@ public class Cypher25AntlrParser {
       final CypherStatement statement = astBuilder.visitStatement(statementContext);
 
       CypherSemanticValidator.validate(statement);
+      // After validation too, which reports what the query wrote; the star of RETURN *, expr AS alias becomes the variables it
+      // stands for, so no execution path has to know a star can share a RETURN with other items (issue #11556)
+      ReturnScope.expandStarMixedWithItems(statement);
 
       // After validation, so that an error names the query as written (issue #9598)
       return new ParsedTree(new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query),

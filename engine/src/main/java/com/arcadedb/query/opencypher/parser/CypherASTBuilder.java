@@ -1521,28 +1521,26 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Cypher25Parser.ReturnBodyContext body = ctx.returnBody();
     final List<ReturnClause.ReturnItem> items = new ArrayList<>();
 
-    if (body.returnItems().TIMES() != null) {
-      // RETURN *
+    if (body.returnItems().TIMES() != null)
+      // RETURN * - the variables in scope, followed by the explicit items of "RETURN *, expr AS alias" (issue #11556)
       items.add(ReturnClause.ReturnItem.star());
-    } else {
-      for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
-        // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
-        // A pattern nested inside a function-style exists(pattern) predicate is allowed: it evaluates
-        // to a boolean, not a projected path (issue #4993).
-        final Cypher25Parser.PatternExpressionContext patternInReturn = findPatternExpressionRecursive(itemCtx.expression());
-        if (patternInReturn != null && !isArgumentOfExistsFunction(patternInReturn))
-          throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
-        final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
-        final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
-        final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
-        // When no alias, preserve original text from the query (whitespace and case)
-        if (alias == null)
-          item.setOriginalText(getOriginalText(itemCtx.expression()));
-        // Canonical text, recorded for aliased items too, so ORDER BY can tell whether it repeats
-        // this projected expression (issue #5283)
-        item.setExpressionText(itemCtx.expression().getText());
-        items.add(item);
-      }
+    for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
+      // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
+      // A pattern nested inside a function-style exists(pattern) predicate is allowed: it evaluates
+      // to a boolean, not a projected path (issue #4993).
+      final Cypher25Parser.PatternExpressionContext patternInReturn = findPatternExpressionRecursive(itemCtx.expression());
+      if (patternInReturn != null && !isArgumentOfExistsFunction(patternInReturn))
+        throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
+      final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
+      final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
+      final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
+      // When no alias, preserve original text from the query (whitespace and case)
+      if (alias == null)
+        item.setOriginalText(getOriginalText(itemCtx.expression()));
+      // Canonical text, recorded for aliased items too, so ORDER BY can tell whether it repeats
+      // this projected expression (issue #5283)
+      item.setExpressionText(itemCtx.expression().getText());
+      items.add(item);
     }
 
     final boolean distinct = body.DISTINCT() != null;

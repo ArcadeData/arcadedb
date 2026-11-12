@@ -708,7 +708,12 @@ public class CypherSemanticValidator {
               checkExpressionScope(item.getExpression(), scope);
             // Validate ORDER BY scope
             if (statement.getOrderByClause() != null) {
-              if (statement.getReturnClause().isDistinct()) {
+              if (hasStar(statement.getReturnClause().getReturnItems())) {
+                // RETURN *, ... projects every variable in scope, so even a DISTINCT or an aggregating one keeps them
+                // all as columns (grouping keys for the aggregation): its ORDER BY sees the scope plus the extra
+                // aliases, the rule WITH *, ... applies above (issue #11556)
+                validatePlainOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause(), scope);
+              } else if (statement.getReturnClause().isDistinct()) {
                 // After DISTINCT, ORDER BY can only reference returned columns
                 validateCollapsedOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause(), false);
               } else if (statement.getReturnClause().hasAggregations()) {
@@ -748,7 +753,13 @@ public class CypherSemanticValidator {
             final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
             if (innerReturn != null)
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
-                if (item.getAlias() != null)
+                if (item.isStar()) {
+                  // The star exports the variables in scope at the inner RETURN, when they are known without running
+                  // (issue #11556: CALL { UNWIND [5] AS k RETURN *, k * 2 AS d } exports k as well as d)
+                  final Set<String> exported = ReturnScope.scopeAtReturn(subqueryClause.getInnerStatement());
+                  if (exported != null)
+                    scope.addAll(exported);
+                } else if (item.getAlias() != null)
                   scope.add(item.getAlias());
                 else if (item.getExpression() instanceof VariableExpression)
                   scope.add(((VariableExpression) item.getExpression()).getVariableName());
@@ -1073,6 +1084,13 @@ public class CypherSemanticValidator {
       if (item.getExpressionAST() != null)
         checkExpressionScope(item.getExpressionAST(), orderByScope);
     }
+  }
+
+  private static boolean hasStar(final List<ReturnClause.ReturnItem> items) {
+    for (final ReturnClause.ReturnItem item : items)
+      if (item.isStar())
+        return true;
+    return false;
   }
 
   private void checkExpressionScope(final Expression expr, final Set<String> scope) {
