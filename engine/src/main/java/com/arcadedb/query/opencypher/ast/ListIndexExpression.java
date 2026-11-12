@@ -27,6 +27,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.Collection;
 import java.util.Map;
@@ -94,18 +95,18 @@ public class ListIndexExpression implements PropertyReadExpression {
     // low 32 bits and wrapped [1,2,3][4294967296] round to the first element (issue #11626)
     final int index;
     if (indexValue instanceof Long || indexValue instanceof Integer)
-      index = Math.clamp(((Number) indexValue).longValue(), Integer.MIN_VALUE, Integer.MAX_VALUE);
+      index = NumberUtils.saturateToInt((Number) indexValue);
     else if (indexValue instanceof Double || indexValue instanceof Float) {
       // Float indices are a type error for lists in Cypher
       if (isListLike)
         throw new TypeMismatchException("TypeError: list index must be an integer, got FLOAT");
-      index = Math.clamp(((Number) indexValue).longValue(), Integer.MIN_VALUE, Integer.MAX_VALUE);
+      index = NumberUtils.saturateToInt((Number) indexValue);
     } else if (indexValue instanceof Boolean) {
       if (isListLike)
         throw new TypeMismatchException("TypeError: list index must be an integer, got BOOLEAN");
       return null;
     } else if (indexValue instanceof Number)
-      index = Math.clamp(((Number) indexValue).longValue(), Integer.MIN_VALUE, Integer.MAX_VALUE);
+      index = NumberUtils.saturateToInt((Number) indexValue);
     else {
       if (isListLike)
         throw new TypeMismatchException("TypeError: list index must be an integer, got " + CypherFunctionHelper.cypherTypeName(indexValue));

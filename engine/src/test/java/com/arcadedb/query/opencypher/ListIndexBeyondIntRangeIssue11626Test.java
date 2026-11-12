@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 
@@ -41,6 +43,9 @@ class ListIndexBeyondIntRangeIssue11626Test extends TestHelper {
       assertThat(cypher("RETURN [1, 2, 3][" + index + "] AS r", Map.of())).as(index).isNull();
     assertThat(cypher("RETURN [1, 2, 3][$i] AS r", Map.of("i", 4294967296L))).isNull();
     assertThat(cypher("RETURN $l[$i] AS r", Map.of("l", List.of(1, 2, 3), "i", -4294967296L))).isNull();
+    // an arbitrary-precision index beyond the long range too: its longValue() keeps only the low 64 bits
+    assertThat(cypher("RETURN [1, 2, 3][$i] AS r", Map.of("i", new BigInteger("18446744073709551616")))).isNull();
+    assertThat(cypher("RETURN [1, 2, 3][$i] AS r", Map.of("i", new BigDecimal("9223372036854775808")))).isNull();
     // in range, and from the end, unchanged
     assertThat(cypher("RETURN [1, 2, 3][2] AS r", Map.of())).isEqualTo(3L);
     assertThat(cypher("RETURN [1, 2, 3][-3] AS r", Map.of())).isEqualTo(1L);
@@ -54,6 +59,8 @@ class ListIndexBeyondIntRangeIssue11626Test extends TestHelper {
     assertThat(cypher("RETURN [1, 2, 3][-4294967295..] AS r", Map.of())).isEqualTo(List.of(1L, 2L, 3L));
     assertThat(cypher("RETURN [1, 2, 3][4294967296..] AS r", Map.of())).isEqualTo(List.of());
     assertThat(cypher("RETURN 'abc'[1..9223372036854775807] AS r", Map.of())).isEqualTo("bc");
+    assertThat(cypher("RETURN [1, 2, 3][..$to] AS r", Map.of("to", new BigDecimal("9223372036854775808")))).isEqualTo(
+        List.of(1L, 2L, 3L));
   }
 
   @Test
