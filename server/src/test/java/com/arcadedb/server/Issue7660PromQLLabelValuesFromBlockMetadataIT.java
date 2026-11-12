@@ -34,8 +34,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -70,7 +68,7 @@ class Issue7660PromQLLabelValuesFromBlockMetadataIT extends BaseGraphServerTest 
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, LOOPBACK);
-    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(freePort()));
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(allocateFreePorts(1)[0]));
   }
 
   /**
@@ -237,14 +235,5 @@ class Issue7660PromQLLabelValuesFromBlockMetadataIT extends BaseGraphServerTest 
     while ((read = is.read(buffer)) != -1)
       baos.write(buffer, 0, read);
     return baos.toString(StandardCharsets.UTF_8);
-  }
-
-  /** An ephemeral port the OS has just handed out, released again immediately so the server can take it. */
-  private static int freePort() {
-    try (final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName(LOOPBACK))) {
-      return socket.getLocalPort();
-    } catch (final IOException e) {
-      throw new RuntimeException("Cannot reserve a free port for the test server", e);
-    }
   }
 }

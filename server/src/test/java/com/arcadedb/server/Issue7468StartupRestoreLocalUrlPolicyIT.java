@@ -34,7 +34,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,7 +92,7 @@ class Issue7468StartupRestoreLocalUrlPolicyIT extends BaseGraphServerTest {
     // A dedicated port rather than the shared 2480-2489 range: this class needs its own server to be the one
     // answering, and a neighbouring listener would turn a policy assertion into an unrelated wall of red.
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, LOOPBACK);
-    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(freePort()));
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(allocateFreePorts(1)[0]));
   }
 
   @AfterEach
@@ -225,15 +224,6 @@ class Issue7468StartupRestoreLocalUrlPolicyIT extends BaseGraphServerTest {
       return server;
     } catch (final IOException e) {
       throw new RuntimeException("Cannot serve the test archive", e);
-    }
-  }
-
-  /** An ephemeral port the OS has just handed out, released again immediately so the server can take it. */
-  private static int freePort() {
-    try (final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName(LOOPBACK))) {
-      return socket.getLocalPort();
-    } catch (final IOException e) {
-      throw new RuntimeException("Cannot reserve a free port for the test server", e);
     }
   }
 }

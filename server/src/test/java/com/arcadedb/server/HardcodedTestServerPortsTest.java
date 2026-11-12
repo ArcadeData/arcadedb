@@ -79,6 +79,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * connection the test's client makes to {@code 127.0.0.1}. A stub HTTP server of the {@code network} tests was answered
  * that way with a stranger's {@code 404} during a parallel build (issue #11538). The scan flags a one-argument
  * {@code new ServerSocket(...)} whose variable the same source then {@code accept()}s on.
+ * <p>
+ * <b>A released probe must not be handed to a port setting</b> (issue #11561). The scan follows the number a
+ * {@code try (ServerSocket probe = new ServerSocket(0...))} reads back - into a variable, or out of a helper that does
+ * nothing but return it ({@code freePort()}) and into whatever variable takes that helper's result - and flags any
+ * statement that hands it to a {@code *_PORT} setting. The same number given to a client, as a refusing address, is
+ * the third shape above and is left alone.
  */
 class HardcodedTestServerPortsTest {
 
@@ -117,6 +123,29 @@ class HardcodedTestServerPortsTest {
    * to. Only an offender when that variable is also {@code accept()}ed on, see {@link #acceptsOn(String, String)}.
    */
   private static final Pattern WILDCARD_LISTENER = Pattern.compile("\\b(\\w+)\\s*=\\s*new\\s+ServerSocket\\(\\s*[^,()\\s][^,()]*\\)");
+
+  /**
+   * {@code int freePort() { try (ServerSocket s = new ServerSocket(0...)) { return s.getLocalPort(); } }}: a helper whose
+   * only result is a port it has already released. Captures the helper's name.
+   */
+  private static final Pattern RELEASED_PROBE_HELPER = Pattern.compile(
+      "\\b(\\w+)\\(\\s*\\)\\s*(?:throws\\s+[\\w.,\\s]+)?\\{\\s*try\\s*\\(\\s*(?:final\\s+)?ServerSocket\\s+(\\w+)\\s*=\\s*"
+          + "new\\s+ServerSocket\\(\\s*0\\b[^;{]*\\)\\s*\\)\\s*\\{\\s*return\\s+\\2\\s*\\.\\s*getLocalPort\\(\\s*\\)\\s*;");
+
+  /**
+   * {@code try (ServerSocket probe = new ServerSocket(0...)) { port = probe.getLocalPort(); }}: a variable that holds a port
+   * the try has released by the time anything reads it. Captures the variable.
+   */
+  private static final Pattern RELEASED_PROBE_VARIABLE = Pattern.compile(
+      "\\btry\\s*\\(\\s*(?:final\\s+)?ServerSocket\\s+(\\w+)\\s*=\\s*new\\s+ServerSocket\\(\\s*0\\b[^;{]*\\)\\s*\\)\\s*\\{\\s*"
+          + "(\\w+)\\s*=\\s*\\1\\s*\\.\\s*getLocalPort\\(\\s*\\)\\s*;");
+
+  /**
+   * A statement that hands a value to a port setting: {@code setValue(GRPC_PORT.getKey(), ...)},
+   * {@code BOLT_PORT.setValue(...)}. A statement that only reads the setting, {@code BOLT_PORT.getDefValue()}, is not one.
+   */
+  private static final Pattern PORT_SETTING_STATEMENT = Pattern.compile(
+      "[^;{}]*\\b(?:[A-Z][A-Z0-9_]*_PORT\\b[^;{}]*\\bsetValue\\s*\\(|setValue\\s*\\([^;{}]*\\b[A-Z][A-Z0-9_]*_PORT\\b)[^;{}]*;");
 
   /** A class that starts an ArcadeDB server, directly or through one of the fixture bases. */
   private static final Pattern STARTS_SERVER = Pattern.compile(
@@ -194,6 +223,23 @@ class HardcodedTestServerPortsTest {
     sources.put("a/WildcardStubInTry.java", """
         class WildcardStubInTry {
           @Test void t() { try (final ServerSocket serverSocket = new ServerSocket(0)) { serverSocket.accept(); } } }""");
+    sources.put("a/ReleasedProbeHelper.java", """
+        class ReleasedProbeHelper {
+          @Test void t() { c.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(freePort())); }
+          private static int freePort() throws IOException {
+            try (final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) { return socket.getLocalPort(); } } }""");
+    sources.put("a/ReleasedProbeHelperVariable.java", """
+        class ReleasedProbeHelperVariable {
+          @BeforeEach void setUp() { port = findFreePort(); GlobalConfiguration.BOLT_PORT.setValue(port); }
+          @Test void t() { assertThat(port).isNotEqualTo(GlobalConfiguration.BOLT_PORT.getDefValue()); }
+          private static int findFreePort() {
+            try (final ServerSocket socket = new ServerSocket(0)) { return socket.getLocalPort(); } catch (IOException e) { throw e; } } }""");
+    sources.put("a/ReleasedProbeVariable.java", """
+        class ReleasedProbeVariable {
+          @Test void t() {
+            final int freePort;
+            try (final ServerSocket probe = new ServerSocket(0)) { freePort = probe.getLocalPort(); }
+            config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(freePort)); } }""");
     sources.put("a/RatisPort.java", """
         class RatisPort {
           private static final int BASE_PORT = 19860;
@@ -225,6 +271,18 @@ class HardcodedTestServerPortsTest {
             try (final ServerSocket stub = LoopbackStubListener.bind()) { stub.accept(); }
             try (final ServerSocket probe = new ServerSocket(0)) { closedPort = probe.getLocalPort(); }
           } }""");
+    // A released probe whose number only a client dials, as an address that must refuse the connection.
+    sources.put("b/RefusingAddress.java", """
+        class RefusingAddress {
+          @Test void t() {
+            final int closed;
+            try (final ServerSocket probe = new ServerSocket(0)) { closed = probe.getLocalPort(); }
+            dial("127.0.0.1:" + closed);
+            c.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, allocateFreePorts(1)[0]);
+            dial("localhost:" + closedPort());
+          }
+          private static int closedPort() throws Exception {
+            try (final ServerSocket socket = new ServerSocket(0)) { return socket.getLocalPort(); } } }""");
     // The fixture's own helper, and a bare start() outside a Raft fixture, where nothing was patched to lose.
     sources.put("b/RaftRestart.java", """
         class RaftRestart extends BaseRaftHATest { @Test void t() { getServer(1).stop(); startServer(1); } }""");
@@ -237,7 +295,8 @@ class HardcodedTestServerPortsTest {
 
     final List<String> offenders = offenders(sources);
     for (final String name : List.of("IndexUrl", "HttpsIndexUrl", "LiteralUrl", "LiteralSetting", "ConstantSetting", "BasePlusIndex",
-        "GremlinDriverPort", "RatisPort", "WildcardStub", "WildcardStubInTry", "BareRaftRestart", "BareRaftRestartOfLeader",
+        "GremlinDriverPort", "RatisPort", "WildcardStub", "WildcardStubInTry", "ReleasedProbeHelper", "ReleasedProbeHelperVariable",
+        "ReleasedProbeVariable", "BareRaftRestart", "BareRaftRestartOfLeader",
         "AliasedRaftRestart", "VarAliasedRaftRestart", "IndirectRaftRestart"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
@@ -299,8 +358,51 @@ class HardcodedTestServerPortsTest {
         if (acceptsOn(wildcard.group(1), source))
           offenders.add(location(name, source, wildcard.start()) + ": accepts connections on a listener bound to the wildcard "
               + "address, which a stranger binding 127.0.0.1 on the same port can answer for; bind the address the client dials");
+
+      reportReleasedProbesHandedToAPortSetting(offenders, name, source);
     }
     return offenders;
+  }
+
+  /**
+   * A port read from a {@code new ServerSocket(0...)} that is closed again, then handed to a {@code *_PORT} setting: the
+   * listener binds it later, after the port has gone back to the ephemeral range where any outgoing connection on the
+   * machine can be given it (issue #11561). A tripwire, not a data-flow analysis: it follows the number through one
+   * helper and one variable by name, which is every shape the tests have used.
+   */
+  private static void reportReleasedProbesHandedToAPortSetting(final List<String> offenders, final String name, final String source) {
+    final List<Pattern> released = new ArrayList<>();
+    final Matcher helper = RELEASED_PROBE_HELPER.matcher(source);
+    while (helper.find()) {
+      final String method = helper.group(1);
+      released.add(Pattern.compile("\\b" + Pattern.quote(method) + "\\(\\s*\\)"));
+      // The variable a caller stores the helper's result in carries the same released port.
+      final Matcher caller = Pattern.compile("\\b(\\w+)\\s*=\\s*" + Pattern.quote(method) + "\\(\\s*\\)").matcher(source);
+      while (caller.find())
+        released.add(Pattern.compile("\\b" + Pattern.quote(caller.group(1)) + "\\b(?!\\s*\\()"));
+    }
+    final Matcher variable = RELEASED_PROBE_VARIABLE.matcher(source);
+    while (variable.find())
+      released.add(Pattern.compile("\\b" + Pattern.quote(variable.group(2)) + "\\b(?!\\s*\\()"));
+    if (released.isEmpty())
+      return;
+
+    final Matcher statement = PORT_SETTING_STATEMENT.matcher(source);
+    while (statement.find())
+      for (final Pattern port : released)
+        if (port.matcher(statement.group()).find()) {
+          offenders.add(location(name, source, statement.start() + leadingWhitespace(statement.group()))
+              + ": hands a port probed with new ServerSocket(0) and released to a listener setting, which binds it after it is "
+              + "back in the ephemeral range; draw it from StaticBaseServerTest.allocateFreePorts instead");
+          break;
+        }
+  }
+
+  private static int leadingWhitespace(final String text) {
+    int i = 0;
+    while (i < text.length() && Character.isWhitespace(text.charAt(i)))
+      i++;
+    return i;
   }
 
   /**
