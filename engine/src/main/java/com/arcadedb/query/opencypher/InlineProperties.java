@@ -37,10 +37,13 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
+import java.lang.reflect.Array;
 import java.math.BigInteger;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -288,7 +291,35 @@ public final class InlineProperties {
       return true;
     if (expected instanceof CypherTemporalValue wanted)
       return temporalEqual(actual, wanted);
-    return actual instanceof Number a && expected instanceof Number b && numbersEqual(a, b);
+    if (actual instanceof Number a && expected instanceof Number b)
+      return numbersEqual(a, b);
+    if (actual instanceof byte[] a && expected instanceof byte[] b)
+      return Arrays.equals(a, b);
+    return isSequence(actual) && isSequence(expected) && sequencesEqual(actual, expected);
+  }
+
+  /** A list, or an array that is not the BINARY {@code byte[]}: what {@code =} compares element by element. */
+  private static boolean isSequence(final Object value) {
+    return value instanceof List || value.getClass().isArray() && !(value instanceof byte[]);
+  }
+
+  /**
+   * Two sequences compare as {@code =} compares two lists: same length, each element equal by this same rule. A list of
+   * {@code Long} (a literal) therefore matches the list of {@code Integer} a parameter carries, and a stored
+   * {@code long[]} or {@code double[]} (a numeric array nested in an HTTP parameter) matches either; through
+   * {@code equals} none of them did, so MERGE created a node per run (issue #11575).
+   */
+  private static boolean sequencesEqual(final Object actual, final Object expected) {
+    final int size = actual instanceof List<?> list ? list.size() : Array.getLength(actual);
+    if (size != (expected instanceof List<?> list ? list.size() : Array.getLength(expected)))
+      return false;
+    for (int i = 0; i < size; i++) {
+      final Object a = actual instanceof List<?> list ? list.get(i) : Array.get(actual, i);
+      final Object b = expected instanceof List<?> list ? list.get(i) : Array.get(expected, i);
+      if (!matchesResolvedValue(a, b))
+        return false;
+    }
+    return true;
   }
 
   /**
