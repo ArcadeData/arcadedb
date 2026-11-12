@@ -271,7 +271,11 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     return built.text();
   }
 
-  /** Records that {@code replacement} is registered in place of this view. Called by the ALTER that built it, under the write lock. */
+  /**
+   * Records that {@code replacement} is registered in place of this view, or with null that this view is registered again. Called by
+   * the ALTER that built the replacement, under the write lock, and by a schema restore, which also clears it when it reinstates
+   * this view after its replacement failed to install.
+   */
   void replacedBy(final MaterializedViewImpl replacement) {
     successor = replacement;
   }
@@ -372,6 +376,13 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
       pendingFull = true;
       pendingRecovery |= recovery;
       pendingRids = null;
+    }
+  }
+
+  /** Whether a recovery full pass is pending, not yet drained by any pass. */
+  boolean owesRecoveryPass() {
+    synchronized (pendingDeltaLock) {
+      return pendingRecovery;
     }
   }
 

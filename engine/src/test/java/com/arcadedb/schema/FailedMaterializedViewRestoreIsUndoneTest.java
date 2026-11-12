@@ -97,6 +97,9 @@ class FailedMaterializedViewRestoreIsUndoneTest {
       assertThat(current)
           .as("the view the replacement displaced is put back, rather than the half-installed one being kept")
           .isSameAs(installed);
+      assertThat(current.current())
+          .as("and it no longer forwards its commits to the replacement that failed to install (issue #11475)")
+          .isSameAs(installed);
       assertThat(current.getChangeListener())
           .as("and it is refreshed again: its listeners were taken down to make room for a replacement that never "
               + "arrived")

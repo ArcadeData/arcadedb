@@ -5410,6 +5410,8 @@ public class LocalSchema implements Schema {
     // On a schema-file read, always clear and re-populate to keep in sync - taking the refresh resources of every
     // view down first, for the reason the trigger sweep above does: an INCREMENTAL view holds listeners on its
     // source types and a PERIODIC one holds a scheduled task, and neither goes away with the map entry.
+    // The instances the sweep forgets are kept until their replacement is registered: see replacedBy below
+    final Map<String, MaterializedViewImpl> sweptViews = replaceExisting && stage == null ? new HashMap<>(materializedViews) : Map.of();
     if (replaceExisting) {
       if (stage == null)
         for (final String viewName : new ArrayList<>(materializedViews.keySet()))
@@ -5423,6 +5425,8 @@ public class LocalSchema implements Schema {
         // can be undone rather than left as the registered view. Null on the replace path, where the sweep above
         // has already emptied the map.
         final MaterializedViewImpl replaced = viewTarget.get(viewName);
+        // The live instance this one takes the place of, on either path (none when staged: publishStagedMembers links those)
+        final MaterializedViewImpl predecessor = stage != null ? null : replaced != null ? replaced : sweptViews.get(viewName);
 
         try {
           final JSONObject viewDef = mvJSON.getJSONObject(viewName);
@@ -5435,6 +5439,11 @@ public class LocalSchema implements Schema {
           if (stage == null)
             unregisterMaterializedViewRefresh(viewName);
 
+          // A transaction open across the restore captured its changes against the instance replaced here, as across an ALTER
+          // (issue #11475): its commit, and a pass of that instance still running, follow this link to the registered view instead
+          // of refreshing an instance nothing else refreshes, whose failure would leave its recovery where no pass reads it
+          if (predecessor != null)
+            predecessor.replacedBy(view);
           viewTarget.put(viewName, view);
 
           // Staged: installed by publishStagedMembers().
@@ -5466,6 +5475,11 @@ public class LocalSchema implements Schema {
           }
 
           unregisterMaterializedViewRefresh(viewName);
+
+          // The link to the instance being thrown away goes with it: the reinstated one is its own registered view again, and a
+          // swept one with no replacement refreshes itself, as before the restore
+          if (predecessor != null)
+            predecessor.replacedBy(null);
 
           if (replaced != null) {
             materializedViews.put(viewName, replaced);
@@ -5614,6 +5628,14 @@ public class LocalSchema implements Schema {
         LogManager.instance().log(this, Level.SEVERE, "Error releasing materialized view '%s': %s", e, viewName,
             e.getMessage() != null ? e.getMessage() : e.toString());
       }
+    // Each replaced instance follows its successor, as in the restore that does not stage (issue #11475), linked before the
+    // successor is published
+    final Map<String, MaterializedViewImpl> previousViews = new HashMap<>(materializedViews);
+    for (final Map.Entry<String, MaterializedViewImpl> entry : stage.materializedViews.entrySet()) {
+      final MaterializedViewImpl previous = previousViews.get(entry.getKey());
+      if (previous != null)
+        previous.replacedBy(entry.getValue());
+    }
     materializedViews.clear();
     materializedViews.putAll(stage.materializedViews);
 
@@ -5651,6 +5673,9 @@ public class LocalSchema implements Schema {
             e.getMessage() != null ? e.getMessage() : e.toString());
         unregisterMaterializedViewRefresh(view.getName());
         materializedViews.remove(view.getName());
+        final MaterializedViewImpl previous = previousViews.get(view.getName());
+        if (previous != null)
+          previous.replacedBy(null);
       }
     }
   }

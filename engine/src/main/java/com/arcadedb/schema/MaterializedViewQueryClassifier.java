@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.List;
+
 /**
  * Determines if a defining query is "simple" (eligible for per-record incremental refresh).
  * Simple queries have: single type in FROM, no GROUP BY, no aggregate functions,
@@ -80,7 +82,7 @@ public class MaterializedViewQueryClassifier {
 
   /**
    * Determines if each source record maps to at most one view row, independent of every other record: a simple single-type
-   * SELECT with no ORDER BY, SKIP, LIMIT, LET, UNWIND, FACETS, DISTINCT, EXPAND or subquery, and no projection named like the
+   * SELECT with no ORDER BY, SKIP, LIMIT, LET, UNWIND, FACETS, DISTINCT, EXPAND or subquery, and no output column named like the
    * reserved {@code _sourceRID} column. Such a view can be refreshed per changed source record.
    */
   public static boolean isPerRecord(final String sql, final Database database) {
@@ -94,6 +96,8 @@ public class MaterializedViewQueryClassifier {
         return false;
 
       final Projection projection = select.getProjection();
+      // No projection (SELECT FROM X) returns the whole record, as * does
+      boolean wholeRecord = projection == null || projection.getItems() == null || projection.getItems().isEmpty();
       if (projection != null) {
         if (projection.isDistinct())
           return false;
@@ -101,12 +105,23 @@ public class MaterializedViewQueryClassifier {
           for (final ProjectionItem item : projection.getItems()) {
             if (item.isExpand())
               return false;
-            if (item.getAlias() != null && "_sourceRID".equalsIgnoreCase(item.getAlias().getStringValue()))
+            if (item.isAll()) {
+              wholeRecord = true;
+              continue;
+            }
+            // The OUTPUT name, alias or not (SELECT _sourceRID FROM X names its column too): the derived query adds a column of
+            // that name, and the two would collide
+            if (MaterializedViewPerRecordRefresher.SOURCE_RID.equalsIgnoreCase(item.getProjectionAliasAsString()))
               return false;
           }
       }
 
-      if (MaterializedViewSources.of(database, sql).typeNames().size() != 1)
+      final List<String> sourceTypes = MaterializedViewSources.of(database, sql).typeNames();
+      if (sourceTypes.size() != 1)
+        return false;
+
+      // A whole record carries every property its type declares, so the same collision comes from the schema
+      if (wholeRecord && declaresSourceRid(database.getSchema(), sourceTypes.getFirst()))
         return false;
 
       // a subquery over the same type passes the type count, so count the select statements of the whole tree
@@ -114,6 +129,24 @@ public class MaterializedViewQueryClassifier {
     } catch (final Exception e) {
       return false;
     }
+  }
+
+  /**
+   * Whether the type, a supertype or a subtype (whose records {@code SELECT FROM} the type returns too) declares a property named
+   * like the reserved column, in any case. Read at DDL time only. A schemaless record can still carry one undeclared: no static
+   * reading of the schema can see that.
+   */
+  private static boolean declaresSourceRid(final Schema schema, final String typeName) {
+    if (!schema.existsType(typeName))
+      return false;
+    final DocumentType type = schema.getType(typeName);
+    for (final String name : type.getPolymorphicPropertyNames())
+      if (MaterializedViewPerRecordRefresher.SOURCE_RID.equalsIgnoreCase(name))
+        return true;
+    for (final DocumentType subType : type.getSubTypes())
+      if (declaresSourceRid(schema, subType.getName()))
+        return true;
+    return false;
   }
 
   private static int countSelects(final ParseTree node) {

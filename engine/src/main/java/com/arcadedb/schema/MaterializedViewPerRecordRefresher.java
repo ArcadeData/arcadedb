@@ -101,6 +101,9 @@ final class MaterializedViewPerRecordRefresher {
       if (select.getTarget() == null || select.getTarget().getItem() == null || select.getTarget().getItem().getIdentifier() == null)
         throw new SchemaException("The defining query of a per-record materialized view does not read one type: " + query);
       final String sourceType = select.getTarget().getItem().getIdentifier().getStringValue();
+      // Built as text, and safe to: the WHERE is the parsed statement's own, rendered back; the type name is a parsed identifier,
+      // put inside a quoted string with its backslashes and quotes escaped, so it cannot close the string; and the RIDs are not
+      // in the text at all, but bound to the parameter at each pass. The result is parsed again just below
       final StringBuilder shape = new StringBuilder("SELECT FROM :").append(RIDS_PARAMETER).append(" WHERE ");
       if (select.getWhereClause() != null)
         shape.append('(').append(select.getWhereClause()).append(") AND ");

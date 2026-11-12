@@ -216,6 +216,87 @@ class RaftReplicationMaterializedViewIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * A successful ALTER ... REFRESH INCREMENTAL of a view created without the source link (issue #11475): its upgrade pass writes
+   * the link on every existing row inside the schema frame of the ALTER, and those rows must reach every follower with the flag
+   * and the index. A follower holding the index over rows without the link would, once promoted, match no row by it and duplicate
+   * every row its first delta pass touched.
+   */
+  @Test
+  void successfulUpgradeReplicatesTheLinkOnEveryRow() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("Expected to find a Raft leader").isGreaterThanOrEqualTo(0);
+    final String query = "SELECT name, age FROM RaftPerson WHERE age >= 18";
+
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().createDocumentType("RaftPerson");
+      db.transaction(() -> {
+        for (int i = 0; i < 20; i++)
+          db.newDocument("RaftPerson").set("name", "p" + i).set("age", 10 + i).save();
+      });
+      db.getSchema().buildMaterializedView().withName("RaftAdults").withQuery(query)
+          .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create();
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      assertThat(linkedRows(server))
+          .as("server %d starts with rows that carry no link", server).isEqualTo(-1L);
+    }
+
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().alterMaterializedView("RaftAdults", MaterializedViewRefreshMode.INCREMENTAL, 0);
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    final long expected = withResyncRetry(leaderIndex, db -> count(db, "SELECT count(*) AS c FROM (" + query + ")"));
+    assertThat(expected).isEqualTo(12L);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      final boolean perRecord = withResyncRetry(server,
+          db -> ((MaterializedViewImpl) db.getSchema().getMaterializedView("RaftAdults")).isPerRecord());
+      assertThat(perRecord).as("server %d has the per-record flag", server).isTrue();
+      assertThat(indexed(server))
+          .as("server %d has the UNIQUE index on the source link", server).isTrue();
+      assertThat(viewRowCount(server))
+          .as("server %d holds every row once", server).isEqualTo(expected);
+      assertThat(linkedRows(server))
+          .as("server %d holds the link the upgrade pass wrote on every row", server).isEqualTo(expected);
+    }
+
+    // The first delta pass after the upgrade matches the rows by the link on every node: no row is duplicated anywhere
+    withResyncRetry(leaderIndex, db -> {
+      db.transaction(() -> db.command("sql", "UPDATE RaftPerson SET age = 60 WHERE name = 'p1'"));
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      assertThat(viewRowCount(server))
+          .as("server %d gained only p1", server).isEqualTo(expected + 1);
+      assertThat(linkedRows(server))
+          .as("server %d holds every row linked", server).isEqualTo(expected + 1);
+    }
+  }
+
+  private long linkedRows(final int server) {
+    return withResyncRetry(server, RaftReplicationMaterializedViewIT::linkedRowCount);
+  }
+
+  private boolean indexed(final int server) {
+    return withResyncRetry(server, RaftReplicationMaterializedViewIT::hasSourceIndex);
+  }
+
+  /** count(@rid), not count(*): the ground truth of a scan, not the cached bucket counter. */
+  private long viewRowCount(final int server) {
+    return withResyncRetry(server, db -> count(db, "SELECT count(@rid) AS c FROM RaftAdults"));
+  }
+
   private static boolean hasSourceIndex(final Database database) {
     for (final Index index : database.getSchema().getType("RaftAdults").getAllIndexes(false))
       if (index.isUnique() && index.getPropertyNames().equals(List.of("_sourceRID")))

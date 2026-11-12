@@ -21,14 +21,18 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -421,6 +425,212 @@ class MaterializedViewPerRecordAlterTest extends TestHelper {
     assertThat(view("Adults").getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
 
     database.transaction(() -> database.command("sql", "UPDATE Person SET age = 67 WHERE name = 'a7'"));
+    assertViewMatchesQuery();
+  }
+
+  /**
+   * An ALTER that replaces a per-record view while the old instance's delta pass runs, after that pass drained its records and
+   * before it fails: the replacement was copied with nothing pending, so the full pass the failure owes must reach it. Asked of
+   * the replaced instance only, the replacement's next delta pass ended VALID with the failed pass's records stale.
+   */
+  @Test
+  void aDeltaPassThatFailsAfterAnAlterReplacedItsViewLeavesTheReplacementOwingAFullPass() {
+    createPersons(20);
+    createView("Adults", ADULTS_QUERY, MaterializedViewRefreshMode.INCREMENTAL);
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final MaterializedViewImpl registered = view("Adults");
+    final AtomicReference<Throwable> alterFailure = new AtomicReference<>();
+    final AtomicBoolean armed = new AtomicBoolean(true);
+    final MaterializedViewImpl replaced = new MaterializedViewImpl(database, registered.getName(), registered.getQuery(),
+        registered.getBackingTypeName(), registered.getSourceTypeNames(), registered.getRefreshMode(), registered.isSimpleQuery(),
+        registered.getRefreshInterval()) {
+      @Override
+      String derivedQuery(final boolean forRidList) {
+        // Read by the delta pass after the drain and before its transaction: the whole ALTER runs here
+        if (forRidList && armed.compareAndSet(true, false)) {
+          final Thread alterThread = new Thread(() -> {
+            try {
+              alter("Adults", "INCREMENTAL");
+            } catch (final Throwable e) {
+              alterFailure.set(e);
+            }
+          }, "mv-alter-during-delta-pass");
+          alterThread.start();
+          try {
+            alterThread.join(60_000);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+          }
+        }
+        return super.derivedQuery(forRidList);
+      }
+    };
+    replaced.setPerRecord(true);
+    // The registered instance is swapped for the instrumented one, with no listener: the change below reaches the view only
+    // through the delta driven by hand, as the commit's callback hands it over
+    MaterializedViewBuilder.unregisterListeners(schema, registered);
+    synchronized (schema) {
+      schema.materializedViews.put("Adults", replaced);
+    }
+    database.transaction(() -> database.command("sql", "UPDATE Person SET age = 50 WHERE name = 'a1'"));
+    final RecordIdentities changed = new RecordIdentities(1);
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Person WHERE name = 'a1'")) {
+      changed.add(rs.next().getIdentity().get());
+    }
+    replaced.appendPendingDelta(changed);
+
+    failNextPassOf("Adults", () -> assertThatThrownBy(() -> MaterializedViewRefresher.refreshAfterCommit(database, replaced))
+        .hasStackTraceContaining("simulated failure part way through the refresh"));
+
+    assertThat(armed.get()).as("the ALTER ran inside the delta pass").isFalse();
+    assertThat(alterFailure.get()).isNull();
+    final MaterializedViewImpl replacement = view("Adults");
+    assertThat(replacement).isNotSameAs(replaced);
+    assertThat(replacement.getStatus()).as("the replacement owes the failed pass's records").isEqualTo(MaterializedViewStatus.STALE.name());
+    assertThat(viewRows("Adults")).doesNotContain("a1/50");
+
+    // The next commit's pass on the replacement must be the recovery full pass, not a delta pass over a2 alone
+    database.transaction(() -> database.command("sql", "UPDATE Person SET age = 51 WHERE name = 'a2'"));
+    Awaitility.await("the replacement ends VALID").atMost(30, TimeUnit.SECONDS)
+        .until(() -> MaterializedViewStatus.VALID.name().equals(view("Adults").getStatus()));
+    assertEveryRowIsLinked("Adults");
+    assertThat(viewRows("Adults")).contains("a1/50", "a2/51");
+    assertViewMatchesQuery();
+  }
+
+  /**
+   * The other side of the hand-over above: the registered view is asked for the recovery full pass while its own delta pass runs.
+   * That pass does not cover the failed records, so it must not end VALID; the further pass it is asked for makes the recovery.
+   */
+  @Test
+  void aPassRunningWhenARecoveryIsHandedToItDoesNotEndValid() {
+    createPersons(20);
+    createView("Adults", ADULTS_QUERY, MaterializedViewRefreshMode.INCREMENTAL);
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final MaterializedViewImpl registered = view("Adults");
+    final AtomicBoolean armed = new AtomicBoolean(true);
+    final AtomicBoolean validWhileOwingRecovery = new AtomicBoolean();
+    final MaterializedViewImpl running = new MaterializedViewImpl(database, registered.getName(), registered.getQuery(),
+        registered.getBackingTypeName(), registered.getSourceTypeNames(), registered.getRefreshMode(), registered.isSimpleQuery(),
+        registered.getRefreshInterval()) {
+      @Override
+      String derivedQuery(final boolean forRidList) {
+        // What the failure path of a replaced instance does to the registered view, while this pass runs
+        if (forRidList && armed.compareAndSet(true, false)) {
+          requestFullPass(true);
+          assertThat(markRefreshPendingIfRunning()).isTrue();
+        }
+        return super.derivedQuery(forRidList);
+      }
+
+      @Override
+      public void setStatus(final MaterializedViewStatus status) {
+        if (status == MaterializedViewStatus.VALID && owesRecoveryPass())
+          validWhileOwingRecovery.set(true);
+        super.setStatus(status);
+      }
+    };
+    running.setPerRecord(true);
+    MaterializedViewBuilder.unregisterListeners(schema, registered);
+    synchronized (schema) {
+      schema.materializedViews.put("Adults", running);
+    }
+    database.transaction(() -> database.command("sql", "UPDATE Person SET age = 52 WHERE name = 'a3'"));
+    final RecordIdentities changed = new RecordIdentities(1);
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Person WHERE name = 'a3'")) {
+      changed.add(rs.next().getIdentity().get());
+    }
+    running.appendPendingDelta(changed);
+
+    MaterializedViewRefresher.refreshAfterCommit(database, running);
+
+    Awaitility.await("the recovery full pass ends VALID").atMost(30, TimeUnit.SECONDS)
+        .until(() -> MaterializedViewStatus.VALID.name().equals(running.getStatus()));
+    assertThat(armed.get()).as("the recovery was handed over during the delta pass").isFalse();
+    assertThat(validWhileOwingRecovery.get()).as("no pass ended VALID while the recovery was owed").isFalse();
+    assertViewMatchesQuery();
+  }
+
+  /**
+   * A schema restore replaces a view object as an ALTER does, without being an ALTER: an import of a schema naming the view
+   * here, and under HA every replica applying a schema entry by reloading. A transaction that captured changes against the old
+   * object and commits after the restore must refresh the registered view; run on the old object, a failed pass left the full
+   * pass it owes on an object nobody refreshes, and the registered view ended VALID without the failed records.
+   */
+  @Test
+  void aTransactionOpenAcrossASchemaImportRefreshesTheRegisteredView() throws Exception {
+    createPersons(20);
+    createView("Adults", ADULTS_QUERY, MaterializedViewRefreshMode.INCREMENTAL);
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final JSONObject imported = new JSONObject().put("materializedViews", new JSONObject().put("Adults", view("Adults").toJSON()));
+    commitAcrossASchemaRestoreRefreshesTheRegisteredView(
+        () -> assertThat(schema.restoreSchemaMembersFromJSON(imported, LocalSchema.SchemaMemberSource.IMPORTED_FILE)).isZero());
+  }
+
+  /** The same, through the full reload of the schema file a replica runs when it applies a schema entry in full. */
+  @Test
+  void aTransactionOpenAcrossASchemaReloadRefreshesTheRegisteredView() throws Exception {
+    createPersons(20);
+    createView("Adults", ADULTS_QUERY, MaterializedViewRefreshMode.INCREMENTAL);
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    commitAcrossASchemaRestoreRefreshesTheRegisteredView(() -> {
+      try {
+        schema.load(ComponentFile.MODE.READ_WRITE, true);
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    });
+  }
+
+  private void commitAcrossASchemaRestoreRefreshesTheRegisteredView(final Runnable restore) throws Exception {
+    final MaterializedViewImpl before = view("Adults");
+
+    final CountDownLatch captured = new CountDownLatch(1);
+    final CountDownLatch restored = new CountDownLatch(1);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread writer = new Thread(() -> {
+      try {
+        database.begin();
+        database.command("sql", "UPDATE Person SET age = 50 WHERE name = 'a1'");
+        captured.countDown();
+        assertThat(restored.await(30, TimeUnit.SECONDS)).isTrue();
+        database.commit();
+      } catch (final Throwable e) {
+        failure.set(e);
+        captured.countDown();
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+    }, "mv-import-writer");
+    writer.start();
+    assertThat(captured.await(30, TimeUnit.SECONDS)).isTrue();
+    try {
+      restore.run();
+    } finally {
+      restored.countDown();
+    }
+    final MaterializedViewImpl after = view("Adults");
+    assertThat(after).isNotSameAs(before);
+
+    failNextPassOf("Adults", () -> {
+      try {
+        writer.join(60_000);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException(e);
+      }
+    });
+    assertThat(writer.isAlive()).isFalse();
+    assertThat(failure.get()).isNull();
+    assertThat(after.getStatus()).as("the registered view made the failed pass, so it owes the recovery")
+        .isNotEqualTo(MaterializedViewStatus.VALID.name());
+
+    database.transaction(() -> database.command("sql", "UPDATE Person SET age = 51 WHERE name = 'a2'"));
+    Awaitility.await("the registered view ends VALID").atMost(30, TimeUnit.SECONDS)
+        .until(() -> MaterializedViewStatus.VALID.name().equals(view("Adults").getStatus()));
+    assertEveryRowIsLinked("Adults");
+    assertThat(viewRows("Adults")).contains("a1/50", "a2/51");
     assertViewMatchesQuery();
   }
 

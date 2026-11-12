@@ -113,9 +113,15 @@ public class MaterializedViewRefresher {
 
         view.recordRefreshSuccess((System.nanoTime() - startNs) / 1_000_000);
         view.updateLastRefreshTime();
-        view.setStatus(MaterializedViewStatus.VALID);
-        if (persistedStatusIsStale)
-          persistStatus(database, view.getName(), view.getStatus());
+        // A replaced instance whose pass failed while this one ran asked it for the recovery full pass (issue #11475): this pass
+        // did not cover those records, so it does not end VALID; the further pass it was asked for makes the recovery
+        if (view.isPerRecord() && view.owesRecoveryPass())
+          view.setStatus(MaterializedViewStatus.STALE);
+        else {
+          view.setStatus(MaterializedViewStatus.VALID);
+          if (persistedStatusIsStale)
+            persistStatus(database, view.getName(), view.getStatus());
+        }
 
         // A whole-view pass that read its guard before an ALTER replaced the view, and wrote after the whole ALTER ran, committed
         // rows without the source link the upgraded view matches by (issue #11475). The ALTER registered its replacement before
@@ -141,7 +147,17 @@ public class MaterializedViewRefresher {
       if (view.isPerRecord())
         view.requestFullPass(true);
       view.setStatus(MaterializedViewStatus.ERROR);
-      persistStatus(database, view.getName(), view.getStatus());
+      // An ALTER that replaced this instance while the pass ran copied only what was still pending, not what the pass had drained:
+      // the full pass is owed by the registered view too, or its next delta pass ends VALID over the records this one failed to
+      // write. Only its flags are touched, never its ownership; a pass of it running now is asked to make one more, which drains
+      // the request. Set before the save below, so the status stored is the registered view's
+      final MaterializedViewImpl current = view.current();
+      if (current != view && current.isPerRecord()) {
+        current.requestFullPass(true);
+        current.setStatus(MaterializedViewStatus.STALE);
+        current.markRefreshPendingIfRunning();
+      }
+      persistStatus(database, view.getName(), current.getStatus());
       // Ownership is released here rather than in a finally: the success path already released it,
       // atomically with the check for a pending request. This release is a CAS too, so a request
       // registered during the failing pass is discarded deliberately rather than clobbered - the

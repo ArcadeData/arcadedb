@@ -60,12 +60,39 @@ class MaterializedViewPerRecordClassifierTest extends TestHelper {
       "SELECT name, (SELECT count(*) FROM Other) AS c FROM User",
       "SELECT name FROM User WHERE id IN (SELECT id FROM User)",
       "SELECT name AS _sourceRID FROM User",
+      // the output name of a projection without an alias is its own: the derived query would carry two _sourceRID columns, and the
+      // injected record id would overwrite the value the query asked for
+      "SELECT _sourceRID FROM User",
+      "SELECT name, _SOURCERID FROM User",
       // FACETS adds a facet result computed over every matching record, so a row is no longer a function of one source record
       "SELECT name FROM User FACETS f: name TERMS TOP 10" })
   void rejectedByThePerRecordGuards(final String sql) {
     // simple, so the rejection can only come from a guard of isPerRecord itself
     assertThat(MaterializedViewQueryClassifier.isSimple(sql, database)).as("isSimple: " + sql).isTrue();
     assertThat(MaterializedViewQueryClassifier.isPerRecord(sql, database)).as(sql).isFalse();
+  }
+
+  /**
+   * A whole-record projection of a type that declares a {@code _sourceRID} property returns that property as a column: the derived
+   * query adds its own, and one of the two is lost. The type, a supertype or a subtype (whose records {@code SELECT FROM} returns
+   * too) declaring it is enough; an explicit projection of the other columns stays per-record.
+   */
+  @Test
+  void wholeRecordProjectionOfATypeDeclaringTheReservedNameIsRejected() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Linked").createProperty("_sourceRID", Type.LINK);
+      database.getSchema().createDocumentType("LinkedChild").addSuperType("Linked");
+      database.getSchema().createDocumentType("Parent");
+      database.getSchema().createDocumentType("Child").addSuperType("Parent");
+      database.getSchema().getType("Child").createProperty("_sourcerid", Type.STRING);
+    });
+    for (final String sql : new String[] { "SELECT FROM Linked", "SELECT * FROM Linked", "SELECT name, * FROM Linked",
+        "SELECT FROM LinkedChild", "SELECT * FROM Parent" })
+      assertThat(MaterializedViewQueryClassifier.isPerRecord(sql, database)).as(sql).isFalse();
+
+    for (final String sql : new String[] { "SELECT name FROM Linked", "SELECT FROM User", "SELECT * FROM Other",
+        "SELECT name FROM Parent" })
+      assertThat(MaterializedViewQueryClassifier.isPerRecord(sql, database)).as(sql).isTrue();
   }
 
   @ParameterizedTest
