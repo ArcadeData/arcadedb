@@ -21,7 +21,10 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -104,6 +107,11 @@ class Issue11019RefreshStatusPersistedTest extends TestHelper {
 
     reopenDatabase();
 
+    // The open hands the per-record view its recovery full pass (issue #11550), which meets the same duplicate: it is still STALE
+    // once that pass has failed, never VALID
+    final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("mv");
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+        .until(() -> view.getErrorCount() > 0 && "STALE".equals(viewStatus()));
     assertThat(viewStatus()).isEqualTo("STALE");
   }
 

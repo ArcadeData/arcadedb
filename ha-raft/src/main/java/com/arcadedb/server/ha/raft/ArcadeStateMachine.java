@@ -3273,6 +3273,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final boolean sameLeaderNotifiedAgain = newLeaderId.equals(prevId) && (currentTerm < 0 || currentTerm <= prevTerm);
     final boolean followingANewLeader = !newLeaderId.equals(raftHA.getLocalPeerId()) && !sameLeaderNotifiedAgain;
 
+    // Issue #11550: the pending deltas of the per-record materialized views died with the previous leader, so the commits whose
+    // pass had not run are in the source types and not in the views. The refresh is the leader's (issue #11031): this one owes
+    // every such view a recovery full pass. Not on a re-notification of the same leader in the same term: nothing was lost then
+    if (newLeaderId.equals(raftHA.getLocalPeerId()) && !sameLeaderNotifiedAgain) {
+      try {
+        lifecycleExecutor.submit(() -> recoverMaterializedViewsAsNewLeader(raftHA));
+      } catch (final RejectedExecutionException ree) {
+        HALog.log(this, HALog.BASIC, "Cannot schedule the materialized view recovery on the leader change: executor is shut down");
+      }
+    }
+
     if (needsSnapshotDownload.compareAndSet(true, false)) {
       LogManager.instance().log(this, Level.INFO,
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
@@ -3290,6 +3301,52 @@ public class ArcadeStateMachine extends BaseStateMachine {
         lifecycleExecutor.submit(() -> retryUnfilledSnapshotGap(true));
       } catch (final RejectedExecutionException ree) {
         HALog.log(this, HALog.BASIC, "Cannot schedule the resync retry on the leader change: executor is shut down");
+      }
+    }
+  }
+
+  /**
+   * Hands the recovery full pass of every per-record materialized view of every open database to that database's scheduler
+   * thread (issue #11550), once this leader is READY: Ratis reports that only after it has applied every entry committed before
+   * its term, so the passes read every source change the previous leader committed. The passes themselves do not run here, so
+   * this executor waits for the readiness only. A database being replaced with a peer's copy is skipped: the leadership is handed
+   * on in that case, and the next leader recovers it.
+   */
+  private void recoverMaterializedViewsAsNewLeader(final RaftHAServer raftHA) {
+    try {
+      if (!raftHA.awaitApplied(raftHA::isLeaderReady, raftHA.getQuorumTimeout())) {
+        if (raftHA.isLeader())
+          LogManager.instance().log(this, Level.WARNING,
+              "This leader did not become ready within %d ms: the per-record materialized views are not recovered and may miss "
+                  + "commits of the previous leader; run REFRESH MATERIALIZED VIEW on them (issue #11550)",
+              raftHA.getQuorumTimeout());
+        return;
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return;
+    }
+
+    final ArcadeDBServer srv = this.server;
+    if (srv == null)
+      return;
+    for (final String dbName : srv.getDatabaseNames()) {
+      if (ArcadeDBServer.isReservedDatabaseName(dbName) || databasesBeingReplaced.containsKey(dbName))
+        continue;
+      try {
+        // Never loads one: only the open databases are recovered. One this leader opens later (lazy load, idle close) is not,
+        // tracked as issue #11555
+        final ServerDatabase db = srv.getDatabase(dbName, false, false);
+        if (db == null || !db.isOpen())
+          continue;
+        final int views = db.getSchema().getEmbedded().recoverPerRecordMaterializedViews();
+        if (views > 0)
+          LogManager.instance().log(this, Level.INFO,
+              "Leader recovery of database '%s': %d per-record materialized view(s) handed a full pass", dbName, views);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Leader recovery of the materialized views of database '%s' failed: run REFRESH MATERIALIZED VIEW on its per-record "
+                + "views (issue #11550): %s", e, dbName, e.getMessage());
       }
     }
   }

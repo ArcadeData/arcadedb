@@ -1601,15 +1601,24 @@ public class LocalSchema implements Schema {
    * index of a bucket that exists (a manual index is named by its creator). Not on an HA node, where the files of an index being
    * created by the leader can arrive before its schema entry.
    */
+  /**
+   * Whether this database is served by a node of an HA cluster: the server says so through the open
+   * ({@code DatabaseFactory.setReplicatedNode}), and the settings are read too, on the rule the HA plugin starts on (the flag, or
+   * a server list alone), for a node configured JVM-wide.
+   */
+  private boolean isReplicatedNode() {
+    if (database.getEmbedded() instanceof LocalDatabase local && local.isReplicatedNode())
+      return true;
+    final ContextConfiguration configuration = database.getConfiguration();
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled();
+  }
+
   private void sweepOrphanBucketIndexFiles() {
     // A follower restarted in the middle of a chunked compaction holds the delivered files of the new index before the entry
     // that names them (issue #11240). The server says so through the open (DatabaseFactory.setReplicatedNode): the database's
     // configuration alone cannot, its configuration.json replaces what the opener put there. The settings are read too, on the
     // rule the HA plugin starts on (the flag, or a server list alone), for a node configured JVM-wide
-    if (database.getEmbedded() instanceof LocalDatabase local && local.isReplicatedNode())
-      return;
-    final ContextConfiguration configuration = database.getConfiguration();
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled())
+    if (isReplicatedNode())
       return;
 
     // The FILES, not the index map: the previous file of an index that never compacted is named after the index, and the live
@@ -2840,6 +2849,48 @@ public class LocalSchema implements Schema {
     if (view == null)
       throw new SchemaException("Materialized view '" + viewName + "' not found");
     return view;
+  }
+
+  /**
+   * The recovery an open owes the per-record materialized views (issue #11550), called once the open has replayed the WAL. Their
+   * pending delta and recovery mark live in memory only, so a view persisted VALID by a process that crashed may be missing the
+   * commits whose pass had not run yet: after an unclean shutdown every per-record view gets the recovery full pass, otherwise
+   * only the ones the load found owing it (persisted non-VALID). The passes run on the scheduler thread, so the open does not wait
+   * on them. Not on an HA node, where the refresh is the leader's (issue #11031) and the open happens before the node knows
+   * whether it leads: there the leader runs {@link #recoverPerRecordMaterializedViews()} when it takes the leadership.
+   *
+   * @param uncleanShutdown whether the open found the database not closed properly
+   */
+  public void recoverPerRecordMaterializedViewsAfterOpen(final boolean uncleanShutdown) {
+    if (database.getMode() != ComponentFile.MODE.READ_WRITE || isReplicatedNode())
+      return;
+    recoverPerRecordMaterializedViews(uncleanShutdown);
+  }
+
+  /**
+   * Hands the recovery full pass of every per-record materialized view to the scheduler thread (issue #11550): what a node that
+   * has just become the leader of an HA cluster owes the views, whose pending deltas died with the previous leader. Each view
+   * says STALE until its pass ends. Returns the number of views asked.
+   */
+  public int recoverPerRecordMaterializedViews() {
+    return recoverPerRecordMaterializedViews(true);
+  }
+
+  private int recoverPerRecordMaterializedViews(final boolean everyView) {
+    int asked = 0;
+    for (final MaterializedView v : getMaterializedViews()) {
+      final MaterializedViewImpl view = (MaterializedViewImpl) v;
+      if (!view.isPerRecord() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
+        continue;
+      if (!everyView && !view.owesRecoveryPass())
+        continue;
+      if (!MaterializedViewRefresher.recoverInBackground(database, view))
+        LogManager.instance().log(this, Level.WARNING,
+            "The recovery pass of materialized view '%s' could not be scheduled: the next refresh of any trigger makes it",
+            view.getName());
+      ++asked;
+    }
+    return asked;
   }
 
   @Override
