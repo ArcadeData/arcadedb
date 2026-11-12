@@ -763,6 +763,15 @@ public class FileManager {
       files.add(null);
   }
 
+  /**
+   * Whether {@code file} is the placeholder {@link #newFileId()} puts in the slot it reserves, rather than a file. A slot stays
+   * reserved, with no file behind it, when the component that asked for it fails to open its file - the loser of two
+   * transactions creating the same super-node stripe bucket at once (issue #11593).
+   */
+  public static boolean isReservedSlot(final ComponentFile file) {
+    return file == RESERVED_SLOT;
+  }
+
   public synchronized int newFileId() {
 //    // LOOK FOR AN HOLE
 //    for (int i = 0; i < files.size(); ++i) {
