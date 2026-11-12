@@ -112,14 +112,15 @@ EXPOSE 7687
 # gRPC service
 EXPOSE 50051
 
-# The BusyBox shell above is for healthchecks and `docker exec`, not for the entrypoint: this
-# is an exec-form ENTRYPOINT invoking the static binary directly. The binary is itself the
-# "java" replacement (a GraalVM native-image executable), so JVM-style -D flags are passed straight on its own command line rather than through a JAVA_OPTS-consuming
-# wrapper script - there is no such script in this image, unlike the JVM-based
-# package/src/main/docker/Dockerfile, which relies on bin/server.sh reading $JAVA_OPTS.
-# `docker run <image> -Darcadedb.server.rootPassword=... -Dfoo=bar` appends those args after this
-# ENTRYPOINT array (standard Docker ENTRYPOINT+CMD concatenation) - see docs/native-image.md for
-# a full worked `docker run` example, including how to set the root password without a shell.
+# The BusyBox shell above is for healthchecks and `docker exec`, not for the entrypoint: this is
+# an exec-form ENTRYPOINT invoking the static binary directly. The binary is itself the "java"
+# replacement (a GraalVM native-image executable), so JVM-style -D flags are passed straight on
+# its own command line rather than through a JAVA_OPTS-consuming wrapper script - there is no such
+# script in this image, unlike the JVM-based package/src/main/docker/Dockerfile, which relies on
+# bin/server.sh reading $JAVA_OPTS. `docker run <image> -Darcadedb.server.rootPassword=...
+# -Dfoo=bar` appends those args after this ENTRYPOINT array (standard Docker ENTRYPOINT+CMD
+# concatenation) - see docs/native-image.md for a full worked `docker run` example, including how
+# to set the root password without a wrapper script.
 # -Duser.home: UID 1000 has no /etc/passwd entry in either base, so the JVM cannot look its home
 # directory up and would leave user.home unusable (the `%h` of a log file pattern resolves through it).
 ENTRYPOINT ["/home/arcadedb/bin/arcadedb", \
