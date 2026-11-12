@@ -70,7 +70,7 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 # Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run,
 # plus a few applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it
 # needs no libc here. It is a separate, unmodified executable in the image, not linked into
-# ArcadeDB (GPL-2.0, see ATTRIBUTIONS.md). The ENTRYPOINT below stays exec-form: there is still
+# ArcadeDB. The ENTRYPOINT below stays exec-form: there is still
 # no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
 COPY --from=dirs /bbx/bin/ /bin/
 COPY --from=dirs --chown=1000:1000 /skel/ /home/arcadedb/
