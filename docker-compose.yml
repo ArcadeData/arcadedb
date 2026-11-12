@@ -49,7 +49,8 @@ services:
       - arcade_log_vol:/home/arcadedb/log
     # /api/v1/ready is the server's own unauthenticated readiness endpoint. Without a healthcheck a
     # crash-looping container under `restart: always` still reports as "running". wget comes from the
-    # BusyBox base image, so no extra tooling is needed.
+    # BusyBox base image, so no extra tooling is needed. The `-native` images ship a static BusyBox
+    # for the same reason (#11546), so the same healthcheck works there.
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:2480/api/v1/ready || exit 1"]
       interval: 10s

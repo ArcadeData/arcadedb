@@ -29,7 +29,8 @@
 #
 # distroless/base-debian12 provides glibc, libssl and a CA-certificate bundle already baked in -
 # no separate ca-certificates COPY needed here, unlike Dockerfile.native.scratch - but no shell
-# and no package manager: the same "no JAVA_OPTS wrapper script" constraint documented in
+# of its own and no package manager, so a static BusyBox (sh, wget) is copied in below (#11546). The entrypoint is still
+# exec-form: the same "no JAVA_OPTS wrapper script" constraint documented in
 # Dockerfile.native.scratch's ENTRYPOINT comment applies here too.
 #
 # Runs as 1000:1000 (see `USER` below), the UID/GID of the JVM image's `arcadedb` user and of the
@@ -45,14 +46,16 @@
 # digest with:
 #   docker buildx imagetools inspect gcr.io/distroless/base-debian12:latest --format '{{.Manifest.Digest}}'
 #
-# Tiny builder stage: distroless/base has no shell/mkdir/chown to create the VOLUME directories
+# Tiny builder stage (also the source of the static BusyBox): distroless/base has no shell/mkdir/chown to create the VOLUME directories
 # below owned by the 1000:1000 runtime user, so pre-create them here and COPY the resulting tree
 # in. Docker initializes an anonymous volume with the ownership of the image directory it is
 # mounted on, so these directories decide who can write a fresh volume. Pinned by digest,
 # matching the base image's own pin above.
 FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
 RUN mkdir -p /skel/bin /skel/config /skel/databases /skel/backups /skel/replication /skel/log && \
-    chown -R 1000:1000 /skel
+    chown -R 1000:1000 /skel && \
+    mkdir -p /bbx/bin && cp /bin/busybox /bbx/bin/busybox && \
+    for applet in sh wget ls cat tail grep ps du df; do ln -s busybox "/bbx/bin/$applet"; done
 
 FROM gcr.io/distroless/base-debian12:latest@sha256:fabbf1c0c357a3d42550111351daed089b20a2c954df13ee2fcff60602515e84
 
@@ -63,6 +66,11 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 #   ./arcadedb -> the linux/arm64 mostly-static binary, from artifact arcadedb-native-linux-arm64
 #   ./config   -> config templates from package/src/main/config, with the JVM
 #                 assemblies' include set
+# Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run, plus a few
+# applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it needs no libc here. It is a
+# separate, unmodified executable in the image, not linked into ArcadeDB (GPL-2.0, see ATTRIBUTIONS.md). The
+# ENTRYPOINT below stays exec-form: there is still no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
+COPY --from=dirs /bbx/bin/ /bin/
 COPY --from=dirs --chown=1000:1000 /skel/ /home/arcadedb/
 COPY --chown=1000:1000 config /home/arcadedb/config
 COPY --chown=1000:1000 --chmod=0755 arcadedb /home/arcadedb/bin/arcadedb
@@ -92,7 +100,7 @@ EXPOSE 7687
 # gRPC service
 EXPOSE 50051
 
-# distroless/base has no shell either, so the same exec-form, no-wrapper-script constraints as
+# The shell is not used by the entrypoint, so the same exec-form, no-wrapper-script constraints as
 # Dockerfile.native.scratch's ENTRYPOINT apply here (see its comment for the full rationale).
 # The image already runs as 1000:1000 (see `USER` above), so no --user override is required at
 # `docker run` time. See docs/native-image.md for a full worked example.

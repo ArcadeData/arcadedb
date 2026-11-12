@@ -458,7 +458,8 @@ class PackagingManifestsTest {
   }
 
   /**
-   * The JVM images plus the two native ones. The native bases have no shell and no launcher script, so
+   * The JVM images plus the two native ones. The native images have no launcher script (their only shell is a
+   * BusyBox for healthchecks, #11546), so
    * they carry no heap or GC variables to check - but they publish the same ports, so the port checks
    * apply to them too.
    */

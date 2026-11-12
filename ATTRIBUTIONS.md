@@ -300,6 +300,14 @@ Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-
 licensed under the SIL Open Font License 1.1 (https://openfontlicense.org/) and the CSS under MIT. Full terms:
 https://fontawesome.com/license/free. Both are shipped unmodified.
 
+### Docker Image Content (Native Images)
+
+| Component | Version | License | Where | Source |
+|-----------|---------|---------|-------|--------|
+| BusyBox (static, musl) | 1.37.0 | GPL-2.0-only | `/bin/busybox` and applet symlinks (`sh`, `wget`, `ls`, `cat`, `tail`, `grep`, `ps`, `du`, `df`) in the native Docker images (`Dockerfile.native.scratch`, `Dockerfile.native.distroless`) | https://busybox.net/downloads/busybox-1.37.0.tar.bz2 |
+
+BusyBox is copied unmodified from the `busybox:1.37.0-musl` Docker image as a separate executable, so the healthcheck and `docker exec` work in an image with no other shell. It is not linked into, loaded by, or distributed as part of ArcadeDB's own code, which stays Apache 2.0; it is mere aggregation in the image filesystem, the same as the BusyBox in the Alpine-based JVM image.
+
 ### Transitive Dependencies Found by the #5651 License Audit
 
 Not declared directly in any module's `pom.xml`; pulled in transitively and missing from this
