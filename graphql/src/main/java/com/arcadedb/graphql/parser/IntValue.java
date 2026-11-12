@@ -19,6 +19,8 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import com.arcadedb.exception.CommandParsingException;
+
 import java.math.BigInteger;
 
 /**
@@ -29,6 +31,12 @@ import java.math.BigInteger;
  * {@code NumberFormatException} whatever the argument (issue #11451).
  */
 public class IntValue extends AbstractValue {
+  /**
+   * The longest integer literal taken, in digits: a signed 128-bit value has at most 39, far beyond the 64 bits of the widest
+   * numeric scalar ({@code Long}), and an {@code ID} that wide is written as a string anyway.
+   */
+  static final int MAX_DIGITS = 39;
+
   protected String image;
 
   /** Memoised result of {@link #getValue()}: an immutable boxed number, so the unsynchronised publication is a benign race. */
@@ -58,6 +66,10 @@ public class IntValue extends AbstractValue {
   static Object parse(final String literal) {
     final int digits = literal.length() - (literal.charAt(0) == '-' ? 1 : 0);
     // 18 DIGITS ALWAYS FIT A LONG, 19 MAY NOT: ONLY THE RARE WIDER LITERAL PAYS FOR A BigInteger
+    if (digits > MAX_DIGITS)
+      // BigInteger PARSING IS SUPERLINEAR IN THE DIGITS: A DOCUMENT OF DIGITS MUST NOT BUY THAT CPU, AND NO SCALAR NEEDS IT
+      throw new CommandParsingException(
+          "GraphQL integer literal of " + digits + " digits exceeds the " + MAX_DIGITS + " digits any argument type can take");
     if (digits <= 18) {
       final long value = Long.parseLong(literal);
       if (value == (int) value)

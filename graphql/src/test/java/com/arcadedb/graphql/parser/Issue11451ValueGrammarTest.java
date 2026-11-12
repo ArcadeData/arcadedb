@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graphql.parser;
 
+import com.arcadedb.exception.CommandParsingException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -100,6 +101,22 @@ class Issue11451ValueGrammarTest {
     final Map<String, AbstractValue> escaped = arguments("{ f(a: \"\"\"x\\\"\"\"\"\"\" b: \"\"\"y\"\"\") }");
     assertThat(escaped.get("a").getValue()).isEqualTo("x\"\"\"");
     assertThat(escaped.get("b").getValue()).isEqualTo("y");
+  }
+
+  @Test
+  void numberLiteralsLongerThanAnyScalarCanTakeAreRefusedBeforeTheyAreParsed() throws Exception {
+    // the widest literal taken is a signed 128-bit value
+    final String widest = "1".repeat(IntValue.MAX_DIGITS);
+    assertThat(arguments("{ f(a: " + widest + ") }").get("a").getValue()).isEqualTo(new BigInteger(widest));
+    assertThat(arguments("{ f(a: -" + widest + ") }").get("a").getValue()).isEqualTo(new BigInteger("-" + widest));
+
+    // a document of digits must not buy the superlinear cost of BigInteger and BigDecimal parsing
+    final AbstractValue tooWide = arguments("{ f(a: " + "9".repeat(100_000) + ") }").get("a");
+    assertThatThrownBy(tooWide::getValue).isInstanceOf(CommandParsingException.class).hasMessageContaining("100000 digits");
+
+    final AbstractValue tooLongFloat = arguments("{ f(a: 1." + "5".repeat(100_000) + ") }").get("a");
+    assertThatThrownBy(tooLongFloat::getValue).isInstanceOf(CommandParsingException.class).hasMessageContaining("Float");
+    assertThat(arguments("{ f(a: 1.5e308) }").get("a").getValue()).isEqualTo(new BigDecimal("1.5e308"));
   }
 
   @Test
