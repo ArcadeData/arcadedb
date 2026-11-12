@@ -1148,7 +1148,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         final String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
         body.close();
         body = null;
-        throw asRuntime(manageException(response.statusCode(), errorBody, command), "streamed " + operation);
+        final Exception mapped = manageException(response.statusCode(), errorBody, command);
+        // A proxy's 503 page may come after it forwarded the request (issue #11387): a streamed write is not handed to a retry
+        // loop as retryable, for the reason httpCommand refuses to resend one on it
+        if (mapped instanceof RemoteIntermediaryRefusalException && !isReplayable("POST", operation))
+          throw new RemoteException("Error on executing streamed " + operation + ": a hop in front of the server answered 503 ("
+              + mapped.getMessage() + "), possibly after forwarding the request, so the server may already have applied it", mapped);
+        throw asRuntime(mapped, "streamed " + operation);
       }
 
       // A server that predates #7306 ignores the Accept header and answers the buffered envelope with a 200.

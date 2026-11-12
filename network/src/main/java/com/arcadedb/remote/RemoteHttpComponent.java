@@ -698,10 +698,12 @@ public class RemoteHttpComponent extends RWLockContext {
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
         // A 503 page from a hop in front of the server may come after the hop forwarded the request (issue #11387): retried
-        // only where a transport failure after sending would be, with the request id the server answers a replay from
+        // only where a transport failure after sending would be. That is the rule of the IO clause above: a replayable request
+        // anywhere, a write only on a strategy that never leaves this server, with the request id it answers a replay from
         if (e instanceof RemoteIntermediaryRefusalException) {
           mayHaveBeenSent = true;
-          if (!replayable && !(requestId != null && instancesAtStart.containsKey(server)))
+          if (!replayable && !((connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) && requestId != null
+              && instancesAtStart.containsKey(server)))
             throw new RemoteException("Error on executing remote operation '" + messageLabel + "' on server " + server
                 + ": a hop in front of the server answered 503 (" + e.getMessage()
                 + "), possibly after forwarding the request, so the server may already have applied it. It is not sent again,"
@@ -1527,7 +1529,9 @@ public class RemoteHttpComponent extends RWLockContext {
 
   /**
    * The first {@link #NON_JSON_BODY_EXCERPT_MAX} characters of an error body that is not JSON, with its whitespace collapsed so
-   * a multi-line HTML page stays on one line of the message and the log (issue #11387).
+   * a multi-line HTML page stays on one line of the message and the log (issue #11387). It goes into the exception message,
+   * so an application that shows that message to its own users shows this text too: a proxy's page can name internal hosts
+   * or request ids.
    */
   static String bodyExcerpt(final String body) {
     if (body == null)

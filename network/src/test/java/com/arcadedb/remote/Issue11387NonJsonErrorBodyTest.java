@@ -168,6 +168,55 @@ class Issue11387NonJsonErrorBodyTest {
     assertThat(proxy.requestsTo("/api/v1/command/db")).isEqualTo(1);
   }
 
+  /**
+   * The request id lets the server answer a replay from its cache, but only the server that holds the entry: the write is
+   * resent on a proxy's 503 page only on a strategy that never fails over, the rule a transport failure after sending follows.
+   */
+  @Test
+  void aReplayProtectedWriteIsResentOnAProxys503PageOnlyOnTheFixedStrategy() throws IOException {
+    proxy = new ProxyNode(503, HTML_503);
+    proxy.advertiseReplayProtection();
+    database = connect(proxy);
+    // the first answer tells the client which server process holds the replay cache
+    assertThatThrownBy(() -> database.query("sql", "select 1")).isInstanceOf(NeedRetryException.class);
+
+    assertThatThrownBy(() -> database.command("sql", "insert into V set a = 1")).isExactlyInstanceOf(RemoteException.class)
+        .hasMessageContaining("may already have applied it");
+    assertThat(proxy.requestsTo("/api/v1/command/db")).as("a strategy that may fail over: not resent").isEqualTo(1);
+
+    database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    assertThatThrownBy(() -> database.command("sql", "insert into V set a = 1"))
+        .isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
+    assertThat(proxy.requestsTo("/api/v1/command/db")).as("FIXED: resent with its id, up to the election budget").isEqualTo(1 + 4);
+  }
+
+  /** A streamed write answered with a proxy's 503 page is not handed to transaction()'s retry loop as retryable. */
+  @Test
+  void aStreamedWriteInATransactionAnsweredWithAProxys503PageIsNotReplayed() throws IOException {
+    proxy = new ProxyNode(503, HTML_503);
+    proxy.beginOpensASession();
+    database = connect(proxy);
+
+    final AtomicInteger executions = new AtomicInteger();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      executions.incrementAndGet();
+      database.commandStream("sql", "update V set a = 2 batch 10", Map.of());
+    }, false, 3)).isExactlyInstanceOf(RemoteException.class).hasMessageContaining("may already have applied it");
+
+    assertThat(executions.get()).isEqualTo(1);
+    assertThat(proxy.requestsTo("/api/v1/command/db")).isEqualTo(1);
+  }
+
+  /** A streamed read is safe to repeat: it keeps the retryable type. */
+  @Test
+  void aStreamedReadAnsweredWithAProxys503PageStaysRetryable() throws IOException {
+    proxy = new ProxyNode(503, HTML_503);
+    database = connect(proxy);
+
+    assertThatThrownBy(() -> database.queryStream("sql", "select 1", Map.of()))
+        .isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
+  }
+
   /** A commit answered with a proxy's 503 page may have landed: transaction() must not run the block a second time. */
   @Test
   void aCommitAnsweredWithAProxys503PageIsNotRetried() throws IOException {
@@ -235,6 +284,7 @@ class Issue11387NonJsonErrorBodyTest {
     private final int          status;
     private final byte[]       page;
     private volatile boolean   beginOpensASession;
+    private volatile boolean   advertiseReplayProtection;
 
     private ProxyNode(final int status, final String page) throws IOException {
       this.status = status;
@@ -248,6 +298,8 @@ class Issue11387NonJsonErrorBodyTest {
     private void handle(final HttpExchange exchange) throws IOException {
       final String path = exchange.getRequestURI().getPath();
       requests.add(path);
+      if (advertiseReplayProtection)
+        exchange.getResponseHeaders().add(RemoteHttpComponent.HEADER_REPLAY_PROTECTION, "instance-1");
       if ("/api/v1/server".equals(path)) {
         exchange.sendResponseHeaders(404, -1);
         exchange.close();
@@ -263,6 +315,11 @@ class Issue11387NonJsonErrorBodyTest {
       exchange.sendResponseHeaders(status, page.length);
       exchange.getResponseBody().write(page);
       exchange.close();
+    }
+
+    /** Names a server process with a replay cache on every answer, as a server with replay protection does. */
+    private void advertiseReplayProtection() {
+      advertiseReplayProtection = true;
     }
 
     /** Answers begin with 204 and a session, so the scripted status reaches the commit. */
