@@ -62,9 +62,9 @@ public class ArraySelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number number) {
-      return number.intValue();
-    }
+    // Clamped, not narrowed: intValue() wrapped an index beyond the int range round to an element of the list (issue #11626)
+    if (result instanceof Number number)
+      return Math.clamp(number.longValue(), Integer.MIN_VALUE, Integer.MAX_VALUE);
     return result;
   }
 
@@ -81,9 +81,9 @@ public class ArraySelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number number) {
-      return number.intValue();
-    }
+    // Clamped, not narrowed: intValue() wrapped an index beyond the int range round to an element of the list (issue #11626)
+    if (result instanceof Number number)
+      return Math.clamp(number.longValue(), Integer.MIN_VALUE, Integer.MAX_VALUE);
     return result;
   }
 
