@@ -128,11 +128,21 @@ public final class ParallelGzipOutputStream extends OutputStream {
     }
   }
 
-  /** Flushes what is already compressed to the underlying stream; the chunk being filled stays where it is (see above). */
+  /**
+   * Writes the chunks whose compression is complete and flushes the underlying stream. It does not wait for the chunks still
+   * being compressed, which would serialize a writer that flushes often, and the chunk being filled stays where it is (see
+   * above). A failure marks the stream failed, like a failed write.
+   */
   @Override
   public void flush() throws IOException {
     ensureOpen();
-    out.flush();
+    try {
+      deflater.drainCompleted(out);
+      out.flush();
+    } catch (final IOException | RuntimeException | Error e) {
+      failed = true;
+      throw e;
+    }
   }
 
   /**

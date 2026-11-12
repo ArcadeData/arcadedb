@@ -19,6 +19,7 @@
 package com.arcadedb.integration.misc;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -165,6 +166,61 @@ class ParallelGzipOutputStreamTest {
     assertThat(written.size()).as("nothing written by the close of a failed stream").isEqualTo(beforeClose);
     assertThatThrownBy(() -> gunzip(written.toByteArray())).isInstanceOf(EOFException.class);
     assertThat(Thread.getAllStackTraces().keySet()).noneMatch(t -> t.getName().startsWith("arcadedb-gzip-compressor") && t.isAlive());
+  }
+
+  /**
+   * {@code flush()} writes the chunks whose compression is complete (without waiting for the others), and leaves the chunk
+   * being filled where it is. The stream still reads back whole after it.
+   */
+  @Test
+  @Timeout(60)
+  void flushWritesTheCompletedChunksAndKeepsTheOneBeingFilled() throws Exception {
+    final byte[] input = text(SMALL_CHUNK + 100, 8);
+    final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    try (final OutputStream out = new ParallelGzipOutputStream(bytes, 6, 2, SMALL_CHUNK)) {
+      out.write(input);
+      // ONE FULL CHUNK IS SUBMITTED, FAR BELOW THE IN-FLIGHT BOUND, SO NOTHING HAS DRAINED IT: ONLY flush() WRITES IT. THE
+      // LOOP WAITS FOR THE WORKER, THE @Timeout IS ITS HANG DETECTOR
+      while (bytes.size() <= 10) {
+        out.flush();
+        Thread.onSpinWait();
+      }
+      final int flushed = bytes.size();
+      out.flush();
+      assertThat(bytes.size()).as("the partial chunk is not forced out").isEqualTo(flushed);
+    }
+    assertThat(gunzip(bytes.toByteArray())).isEqualTo(input);
+  }
+
+  /** A failed flush leaves the stream missing what it could not write: closing it must not terminate it. */
+  @Test
+  void aFailedFlushLeavesNoTerminatedStream() throws Exception {
+    final ByteArrayOutputStream written = new ByteArrayOutputStream();
+    final OutputStream failingFlush = new OutputStream() {
+      @Override
+      public void write(final int b) {
+        written.write(b);
+      }
+
+      @Override
+      public void write(final byte[] b, final int off, final int len) {
+        written.write(b, off, len);
+      }
+
+      @Override
+      public void flush() throws IOException {
+        throw new IOException("flush failed");
+      }
+    };
+
+    final OutputStream out = new ParallelGzipOutputStream(failingFlush, 6, 2, SMALL_CHUNK);
+    out.write(text(3000, 9));
+    assertThatThrownBy(out::flush).isInstanceOf(IOException.class).hasMessageContaining("flush failed");
+    assertThatThrownBy(() -> out.write(1)).isInstanceOf(IOException.class).hasMessageContaining("previous write");
+
+    final int beforeClose = written.size();
+    out.close();
+    assertThat(written.size()).as("nothing written by the close of a failed stream").isEqualTo(beforeClose);
   }
 
   @Test

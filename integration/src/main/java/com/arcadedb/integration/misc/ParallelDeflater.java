@@ -171,6 +171,19 @@ public final class ParallelDeflater implements AutoCloseable {
     return written;
   }
 
+  /**
+   * Writes to {@code out}, in order, the chunks at the head of the queue whose compression is complete, without waiting for
+   * the others: what a {@code flush()} can promise without stalling the producer on the workers.
+   *
+   * @return the compressed bytes written to {@code out} by this call
+   */
+  public long drainCompleted(final OutputStream out) throws IOException {
+    long written = 0L;
+    while (!inFlight.isEmpty() && inFlight.peek().isDone())
+      written += drainOne(out);
+    return written;
+  }
+
   /** Cancels the chunks still in flight, after a failure: their output is never wanted. */
   public void cancelPending() {
     for (Future<CompressedChunk> pending = inFlight.poll(); pending != null; pending = inFlight.poll())
@@ -196,6 +209,9 @@ public final class ParallelDeflater implements AutoCloseable {
     }
     for (Deflater deflater = deflaterPool.poll(); deflater != null; deflater = deflaterPool.poll())
       deflater.end();
+    // ROUGHLY 4 MB PER THREAD: NOT KEPT REACHABLE THROUGH A CLOSED STREAM OR WRITER THE CALLER STILL HOLDS
+    inputBufferPool.clear();
+    outputBufferPool.clear();
   }
 
   private long drainOne(final OutputStream out) throws IOException {
