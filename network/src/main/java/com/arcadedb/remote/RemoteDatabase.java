@@ -1088,6 +1088,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
+   * {@link #asRuntime} for a request that may write. A proxy's 503 page may come after the proxy forwarded the request
+   * (issue #11387), so it is no proof the write did not run: it is raised as a {@link RemoteException}, which no retry loop
+   * ({@code transaction()} included) runs again, instead of the retryable type a read keeps. The server's own 503 keeps its
+   * type: it is sent only for a request refused before it ran.
+   */
+  private static RuntimeException asRuntimeForAWrite(final Exception mapped, final String operation) {
+    if (mapped instanceof RemoteIntermediaryRefusalException)
+      return new RemoteException("Error on executing " + operation + ": a hop in front of the server answered 503 (" + mapped.getMessage()
+          + "), possibly after forwarding the request, so the server may already have applied it", mapped);
+    return asRuntime(mapped, operation);
+  }
+
+  /**
    * The result set over a streamed body: rows converted as the buffered encoding converts them, and an in-band
    * {@code error} line rebuilt into the typed exception the buffered encoding would have raised (issue #8874).
    */
@@ -1149,12 +1162,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         body.close();
         body = null;
         final Exception mapped = manageException(response.statusCode(), errorBody, command);
-        // A proxy's 503 page may come after it forwarded the request (issue #11387): a streamed write is not handed to a retry
-        // loop as retryable, for the reason httpCommand refuses to resend one on it
-        if (mapped instanceof RemoteIntermediaryRefusalException && !isReplayable("POST", operation))
-          throw new RemoteException("Error on executing streamed " + operation + ": a hop in front of the server answered 503 ("
-              + mapped.getMessage() + "), possibly after forwarding the request, so the server may already have applied it", mapped);
-        throw asRuntime(mapped, "streamed " + operation);
+        throw isReplayable("POST", operation) ? asRuntime(mapped, "streamed " + operation) :
+            asRuntimeForAWrite(mapped, "streamed " + operation);
       }
 
       // A server that predates #7306 ignores the Accept header and answers the buffered envelope with a 200.
@@ -1341,7 +1350,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       }
 
       // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
-      throw asRuntime(manageException(response, "ts write"), "time series write");
+      throw asRuntimeForAWrite(manageException(response, "ts write"), "time series write");
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);

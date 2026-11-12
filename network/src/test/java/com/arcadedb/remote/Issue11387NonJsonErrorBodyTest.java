@@ -188,6 +188,13 @@ class Issue11387NonJsonErrorBodyTest {
     assertThatThrownBy(() -> database.command("sql", "insert into V set a = 1"))
         .isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
     assertThat(proxy.requestsTo("/api/v1/command/db")).as("FIXED: resent with its id, up to the election budget").isEqualTo(1 + 4);
+    // the four attempts of the FIXED call are one logical request, and the resends name the process that holds its entry
+    final List<String[]> fixedCall = proxy.commandHeaders().subList(1, 5);
+    assertThat(fixedCall.getFirst()[0]).isNotEmpty();
+    for (final String[] attempt : fixedCall)
+      assertThat(attempt[0]).isEqualTo(fixedCall.getFirst()[0]);
+    for (final String[] attempt : fixedCall.subList(1, 4))
+      assertThat(attempt[1]).isEqualTo("instance-1");
   }
 
   /** A streamed write answered with a proxy's 503 page is not handed to transaction()'s retry loop as retryable. */
@@ -205,6 +212,24 @@ class Issue11387NonJsonErrorBodyTest {
 
     assertThat(executions.get()).isEqualTo(1);
     assertThat(proxy.requestsTo("/api/v1/command/db")).isEqualTo(1);
+  }
+
+  /** A time-series write answered with a proxy's 503 page may have stored its samples: transaction() must not write them again. */
+  @Test
+  void aTimeSeriesWriteInATransactionAnsweredWithAProxys503PageIsNotReplayed() throws IOException {
+    proxy = new ProxyNode(503, HTML_503);
+    proxy.beginOpensASession();
+    database = connect(proxy);
+
+    final List<TimeSeriesPoint> points = List.of(new TimeSeriesPoint("Sensor", 1L, Map.of(), Map.of("value", 1.0)));
+    final AtomicInteger executions = new AtomicInteger();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      executions.incrementAndGet();
+      database.timeSeriesWrite(points);
+    }, false, 3)).isExactlyInstanceOf(RemoteException.class).hasMessageContaining("may already have applied it");
+
+    assertThat(executions.get()).isEqualTo(1);
+    assertThat(proxy.requestsTo("/api/v1/ts/db/write")).isEqualTo(1);
   }
 
   /** A streamed read is safe to repeat: it keeps the retryable type. */
@@ -280,7 +305,9 @@ class Issue11387NonJsonErrorBodyTest {
   /** A loopback hop: no cluster configuration (404), and every other route answered with its status and a non-JSON page. */
   private static final class ProxyNode {
     private final HttpServer   http;
-    private final List<String> requests = new CopyOnWriteArrayList<>();
+    private final List<String>   requests       = new CopyOnWriteArrayList<>();
+    // X-Request-Id and X-ArcadeDB-Replay-Instance of each command request, "" when absent
+    private final List<String[]> commandHeaders = new CopyOnWriteArrayList<>();
     private final int          status;
     private final byte[]       page;
     private volatile boolean   beginOpensASession;
@@ -298,6 +325,9 @@ class Issue11387NonJsonErrorBodyTest {
     private void handle(final HttpExchange exchange) throws IOException {
       final String path = exchange.getRequestURI().getPath();
       requests.add(path);
+      if (path.startsWith("/api/v1/command/"))
+        commandHeaders.add(new String[] { header(exchange, RemoteHttpComponent.HEADER_REQUEST_ID),
+            header(exchange, RemoteHttpComponent.HEADER_REPLAY_INSTANCE) });
       if (advertiseReplayProtection)
         exchange.getResponseHeaders().add(RemoteHttpComponent.HEADER_REPLAY_PROTECTION, "instance-1");
       if ("/api/v1/server".equals(path)) {
@@ -325,6 +355,15 @@ class Issue11387NonJsonErrorBodyTest {
     /** Answers begin with 204 and a session, so the scripted status reaches the commit. */
     private void beginOpensASession() {
       beginOpensASession = true;
+    }
+
+    private static String header(final HttpExchange exchange, final String name) {
+      final String value = exchange.getRequestHeaders().getFirst(name);
+      return value != null ? value : "";
+    }
+
+    private List<String[]> commandHeaders() {
+      return commandHeaders;
     }
 
     private int requestsTo(final String route) {
