@@ -208,6 +208,51 @@ class Issue11517AppliedIndexDurabilityTest {
   }
 
   @Test
+  void theOperatorsAcceptOfAStaleSnapshotIsRecordedDurably(@TempDir final Path tempDir) throws Exception {
+    final RaftStorage raftStorage = RaftStorage.newBuilder()
+        .setDirectory(tempDir.resolve("raft-storage").toFile())
+        .setOption(RaftStorage.StartupOption.FORMAT)
+        .build();
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    try {
+      sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
+      sm.writePersistedAppliedIndex(10, DB_A);
+      final Field floor = ArcadeStateMachine.class.getDeclaredField("staleSnapshotAppliedFloor");
+      floor.setAccessible(true);
+      ((AtomicLong) floor.get(sm)).set(10L);
+      final int before = syncsOfAppliedIndex(tempDir);
+
+      assertThat(sm.acceptStaleSnapshotFloor("root")).isNotNull();
+
+      assertThat(syncsOfAppliedIndex(tempDir))
+          .as("an accept lost to a power loss raises the floor again at the next reinitialize()")
+          .isEqualTo(before + 1);
+    } finally {
+      sm.close();
+      raftStorage.close();
+    }
+  }
+
+  @Test
+  void strayTempFilesOfAnInterruptedDurableWriteAreRemovedOnLoad(@TempDir final Path tempDir) throws Exception {
+    final Path raftDir = appliedIndexFile(tempDir).getParent();
+    Files.createDirectories(raftDir);
+    final Path stray = raftDir.resolve("applied-index.123456789.tmp");
+    Files.writeString(stray, "{\"global\":");
+    final Path unrelated = raftDir.resolve("bootstrap-baselines.987.tmp");
+    Files.writeString(unrelated, "x");
+
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    try {
+      assertThat(sm.readPersistedAppliedIndex()).isEqualTo(-1L);
+      assertThat(stray).as("left behind by a crash inside FileUtils.atomicWriteFile").doesNotExist();
+      assertThat(unrelated).as("only this file's own temporaries are removed").exists();
+    } finally {
+      sm.close();
+    }
+  }
+
+  @Test
   void takeSnapshotFsyncsTheAppliedIndexBeforeItWritesTheMarker(@TempDir final Path tempDir) throws Exception {
     final RaftStorage raftStorage = RaftStorage.newBuilder()
         .setDirectory(tempDir.resolve("raft-storage").toFile())

@@ -97,6 +97,7 @@ import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.net.http.HttpClient;
 import java.nio.ByteBuffer;
+import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -8585,6 +8586,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final Path file = getAppliedIndexFile();
       if (file == null)
         return; // server not wired yet: do not latch, retry once the path is resolvable
+      removeStrayAppliedIndexTempFiles(file);
       try {
         if (Files.exists(file)) {
           final String content = Files.readString(file).trim();
@@ -8615,6 +8617,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // behavior (a parse failure already returned -1), so it is intentional, not a regression.
         appliedIndexLoaded = true;
       }
+    }
+  }
+
+  /**
+   * Deletes the {@code applied-index.<random>.tmp} files a crash inside {@link FileUtils#atomicWriteFile(File, String)}
+   * leaves behind (issue #11517). Called once, from {@link #ensureAppliedIndexLoaded()} under {@link #appliedIndexFileLock},
+   * which every writer of the file holds, so no write of this instance is in flight. Best effort: a temporary that cannot
+   * be listed or deleted is harmless, nothing reads it.
+   */
+  private void removeStrayAppliedIndexTempFiles(final Path file) {
+    final Path dir = file.getParent();
+    if (dir == null || !Files.isDirectory(dir))
+      return;
+    try (final DirectoryStream<Path> stray = Files.newDirectoryStream(dir, file.getFileName() + ".*.tmp")) {
+      for (final Path tmp : stray)
+        Files.deleteIfExists(tmp);
+    } catch (final IOException | DirectoryIteratorException e) {
+      LogManager.instance().log(this, Level.FINE, "Could not remove stray applied-index temporary files: %s", e.getMessage());
     }
   }
 
