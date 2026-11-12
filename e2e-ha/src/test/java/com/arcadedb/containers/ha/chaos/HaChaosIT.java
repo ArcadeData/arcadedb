@@ -409,7 +409,8 @@ class HaChaosIT extends ContainersTestTemplate {
           final long applied = cluster.getLong("localAppliedIndex", -1);
           final long commit = cluster.getLong("localCommitIndex", -1);
           if (applied >= 0 && commit >= 0)
-            // From the same answer as the commit: a leader named by another read may not have led when this one was taken
+            // From the same answer as the commit: a leader named by another read may not have led when this one was taken.
+            // A server too old to publish leaderReady is never ready, so the gate waits out its timeout: the safe direction
             positions[node] = new RaftPosition(applied, commit, cluster.getBoolean("leaderReady", false));
         } catch (final Exception e) {
           // Left null: an unreadable node is never taken for caught up

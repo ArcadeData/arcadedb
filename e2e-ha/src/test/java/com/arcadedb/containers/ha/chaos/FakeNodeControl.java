@@ -195,8 +195,13 @@ final class FakeNodeControl implements NodeControl {
         Thread.currentThread().interrupt();
       }
     final boolean lagging = readsBeforeCaughtUp-- > 0;
-    final int readyLeader = previousLeader >= 0 && positionReads <= previousLeaderUntilRead ? previousLeader :
-        positionReads >= leaderReadyFromRead ? leader : -1;
+    final int readyLeader;
+    if (previousLeader >= 0 && positionReads <= previousLeaderUntilRead)
+      readyLeader = previousLeader;
+    else if (positionReads >= leaderReadyFromRead)
+      readyLeader = leader;
+    else
+      readyLeader = -1;
     final RaftPosition[] positions = new RaftPosition[5];
     for (int node = 0; node < positions.length; node++)
       positions[node] = node == unreadablePositionOfNode ?
