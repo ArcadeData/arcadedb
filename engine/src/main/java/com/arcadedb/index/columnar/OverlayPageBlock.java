@@ -127,7 +127,7 @@ final class OverlayPageBlock {
             final double d = Double.longBitsToDouble(v);
             if (Double.compare(d, lowDouble) < 0)
               lowDouble = d;
-            if (Double.compare(d, highDouble) > 0)
+            if (!Double.isNaN(d) && Double.compare(d, highDouble) > 0)
               highDouble = d;
           } else {
             low = Math.min(low, v);
