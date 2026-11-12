@@ -113,8 +113,8 @@ EXPOSE 7687
 EXPOSE 50051
 
 # The BusyBox shell above is for healthchecks and `docker exec`, not for the entrypoint: this
-# is an exec-form ENTRYPOINT invoking the static binary directly. The binary is itself the "java" replacement (a GraalVM native-image executable), so JVM-style -D
-# flags are passed straight on its own command line rather than through a JAVA_OPTS-consuming
+# is an exec-form ENTRYPOINT invoking the static binary directly. The binary is itself the
+# "java" replacement (a GraalVM native-image executable), so JVM-style -D flags are passed straight on its own command line rather than through a JAVA_OPTS-consuming
 # wrapper script - there is no such script in this image, unlike the JVM-based
 # package/src/main/docker/Dockerfile, which relies on bin/server.sh reading $JAVA_OPTS.
 # `docker run <image> -Darcadedb.server.rootPassword=... -Dfoo=bar` appends those args after this
