@@ -879,59 +879,96 @@ public class MatchNodeStep extends AbstractExecutionStep {
       properties.put(propertyName, propertyValue);
     }
 
-    // Find the best index (longest leftmost prefix match)
-    TypeIndex bestIndex = null;
-    int bestMatchCount = 0;
-    List<String> bestMatchedProperties = null;
+    // Find the best index (longest leftmost prefix match): index [a,b,c] can be used for [a], [a,b], or [a,b,c] but not [b] or
+    // [a,c]
+    final IndexChoice best = bestKeyIndex(type, properties.keySet());
+    if (best == null)
+      return null;
 
+    final String[] propertyNames = best.matchedProperties().toArray(new String[0]);
+    final Object[] propertyValues = new Object[propertyNames.length];
+    for (int i = 0; i < propertyNames.length; i++)
+      propertyValues[i] = TemporalUtil.toIndexKey(properties.get(propertyNames[i]));
+    return seekChosenIndex(best, label, propertyNames, propertyValues);
+  }
+
+  /**
+   * An index whose leading properties a pattern binds: {@code matchedProperties} is that prefix, the whole key when
+   * {@code wholeKey}.
+   */
+  private record IndexChoice(TypeIndex index, List<String> matchedProperties, boolean wholeKey) {
+  }
+
+  /**
+   * The key index of {@code type} whose longest leftmost prefix {@code bound} covers, an index covering all its properties
+   * preferred at equal length. A prefix shorter than the key is only usable on an index that walks its keys in order, since
+   * it is read as the range of the keys that start with it (issue #11576); a hash index answers a whole key only.
+   */
+  private IndexChoice bestKeyIndex(final DocumentType type, final Set<String> bound) {
+    IndexChoice best = null;
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
       final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
       if (indexProperties == null)
         continue; // not a key index (a FULL_TEXT index answers by token, and misses a value with none, issue #8439) or dropped meanwhile
 
-      // Check how many properties match as a leftmost prefix
-      // For composite indexes, we can only use a partial key if we have values for all
-      // properties from the beginning (leftmost prefix)
-      // Example: Index [a,b,c] can be used for [a], [a,b], or [a,b,c] but not [b] or [a,c]
       int matchCount = 0;
-      final List<String> matchedProperties = new ArrayList<>();
+      while (matchCount < indexProperties.size() && bound.contains(indexProperties.get(matchCount)))
+        matchCount++;
+      if (matchCount == 0)
+        continue;
 
-      for (int i = 0; i < indexProperties.size(); i++) {
-        final String indexProp = indexProperties.get(i);
-        if (properties.containsKey(indexProp)) {
-          // This property is available in the query
-          matchCount++;
-          matchedProperties.add(indexProp);
-        } else {
-          // Missing property - can't use further properties from this index
-          break;
-        }
-      }
-
-      // Update best match if this index covers all its properties (full match required for lookupByKey)
-      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
-        bestMatchCount = matchCount;
-        bestIndex = index;
-        bestMatchedProperties = matchedProperties;
-      }
+      final boolean wholeKey = matchCount == indexProperties.size();
+      if (!wholeKey && !index.supportsOrderedIterations())
+        continue;
+      if (best == null || matchCount > best.matchedProperties().size()
+          || matchCount == best.matchedProperties().size() && wholeKey && !best.wholeKey())
+        best = new IndexChoice(index, indexProperties.subList(0, matchCount), wholeKey);
     }
+    return best;
+  }
 
-    // If we found a suitable index, use it
-    if (bestIndex != null && bestMatchedProperties != null && !bestMatchedProperties.isEmpty()) {
-      final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
-      final Object[] propertyValues = new Object[propertyNames.length];
-
-      for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = TemporalUtil.toIndexKey(properties.get(propertyNames[i]));
-
-      // Track which index was used for profiling output, named after the type that DECLARES it: an inherited
-      // index reported under the queried type would name an index that does not exist (issue #7021).
-      usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", propertyNames) + "]";
-
-      return lookupByKey(bestIndex, label, propertyNames, propertyValues);
+  /**
+   * Seeks the chosen index: the exact lookup for a whole key, the range of the bound prefix otherwise. Records the index for the
+   * profile, named after the type that DECLARES it: an inherited index reported under the queried type would name an index that
+   * does not exist (issue #7021).
+   */
+  private Iterator<Identifiable> seekChosenIndex(final IndexChoice choice, final String label, final String[] propertyNames,
+      final Object[] propertyValues) {
+    final TypeIndex index = choice.index();
+    if (choice.wholeKey()) {
+      usedIndexName = index.getTypeName() + "[" + String.join(", ", propertyNames) + "]";
+      return lookupByKey(index, label, propertyNames, propertyValues);
     }
+    final Iterator<Identifiable> seek = prefixSeek(index, label, propertyValues);
+    if (seek != null)
+      usedIndexName = index.getTypeName() + "[" + String.join(", ", index.getPropertyNames()) + "], prefix: "
+          + String.join(", ", propertyNames);
+    return seek;
+  }
 
-    return null;
+  /**
+   * The records whose leading key columns equal {@code prefix}, read whole before they are returned like
+   * {@link #lookupByKey}'s, so a later write of the statement cannot move an entry under the walk. The step's row filter checks
+   * the properties the prefix leaves out. Null when a concurrent DDL dropped or rebuilt the index meanwhile, for the scan to
+   * answer.
+   */
+  private Iterator<Identifiable> prefixSeek(final TypeIndex index, final String label, final Object[] prefix) {
+    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
+    final List<Identifiable> found = new ArrayList<>();
+    try (final IndexCursor cursor = index.range(true, prefix, true, prefix, true)) {
+      while (cursor.hasNext())
+        found.add(cursor.next());
+    } catch (final IndexException e) {
+      return null;
+    } catch (final IllegalArgumentException e) {
+      if (TypeIndex.isStaleRead(index, e) || !index.isReadyForQueries())
+        return null;
+      throw e;
+    }
+    if (!index.isUnchangedSince(subIndexes))
+      return null;
+    final Iterator<Identifiable> cursor = found.iterator();
+    return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(cursor, context.getDatabase(), label) : cursor;
   }
 
   /**
@@ -1000,43 +1037,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (equalityPredicates.isEmpty())
       return tryInListIndexSeek(type, label, currentInputResult);
 
-    // Find the best matching index
-    TypeIndex bestIndex = null;
-    int bestMatchCount = 0;
-    List<String> bestMatchedProperties = null;
-
-    for (final TypeIndex index : polymorphicIndexesOf(type)) {
-      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
-      if (indexProperties == null)
-        continue; // not a key index (a FULL_TEXT index answers by token, and misses a value with none, issue #8439) or dropped meanwhile
-      int matchCount = 0;
-      final List<String> matchedProperties = new ArrayList<>();
-
-      for (final String indexProp : indexProperties) {
-        if (equalityPredicates.containsKey(indexProp)) {
-          matchCount++;
-          matchedProperties.add(indexProp);
-        } else
-          break; // Leftmost prefix matching
-      }
-
-      // Require full index match (all index properties covered) - lookupByKey needs exact match
-      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
-        bestMatchCount = matchCount;
-        bestIndex = index;
-        bestMatchedProperties = matchedProperties;
-      }
-    }
-
-    if (bestIndex != null && bestMatchedProperties != null && !bestMatchedProperties.isEmpty()) {
-      final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
+    // Find the best matching index (longest leftmost prefix)
+    final IndexChoice best = bestKeyIndex(type, equalityPredicates.keySet());
+    if (best != null) {
+      final String[] propertyNames = best.matchedProperties().toArray(new String[0]);
       final Object[] propertyValues = new Object[propertyNames.length];
       for (int i = 0; i < propertyNames.length; i++)
         propertyValues[i] = TemporalUtil.toIndexKey(equalityPredicates.get(propertyNames[i]));
-
-      usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", propertyNames) + "]";
-
-      return lookupByKey(bestIndex, label, propertyNames, propertyValues);
+      return seekChosenIndex(best, label, propertyNames, propertyValues);
     }
 
     return tryInListIndexSeek(type, label, currentInputResult);
