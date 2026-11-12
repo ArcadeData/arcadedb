@@ -4384,8 +4384,10 @@ public class CypherExecutionPlan {
     if (firstRel.isVariableLength())
       return null;
 
-    // No property constraints
+    // No property constraints, and no inline predicate the edge count cannot apply (issue #11583)
     if (firstRel.getProperties() != null && !firstRel.getProperties().isEmpty())
+      return null;
+    if (firstRel.hasWhereExpression())
       return null;
 
     // No WHERE clause
@@ -4416,8 +4418,10 @@ public class CypherExecutionPlan {
     if (secondRel.isVariableLength())
       return null;
 
-    // No property constraints
+    // No property constraints, and no inline predicate the edge count cannot apply (issue #11583)
     if (secondRel.getProperties() != null && !secondRel.getProperties().isEmpty())
+      return null;
+    if (secondRel.hasWhereExpression())
       return null;
 
     // No WHERE clause
@@ -4503,6 +4507,20 @@ public class CypherExecutionPlan {
     } else {
       return null; // Patterns don't share a variable
     }
+
+    // The step applies one label on the intermediate where the first hop reaches it and one on the counted target. A label
+    // written on the bound node or again on the intermediate, a label set no single name stands for, a dynamic label or an
+    // inline WHERE on a node filters what the step cannot see (issue #11583)
+    final NodePattern boundNode = firstVar1.equals(boundVar) ? firstNode1 : firstNode2;
+    final NodePattern intermediateNode = boundNode == firstNode1 ? firstNode2 : firstNode1;
+    final NodePattern secondIntermediateNode = secondVar1.equals(intermediateVar) ? secondNode1 : secondNode2;
+    final NodePattern targetNode = secondIntermediateNode == secondNode1 ? secondNode2 : secondNode1;
+    if (boundNode.hasLabels() || secondIntermediateNode.hasLabels() || !isCountableEndpoint(boundNode)
+        || !isCountableEndpoint(intermediateNode) || !isCountableEndpoint(secondIntermediateNode)
+        || !isCountableEndpoint(targetNode))
+      return null;
+    final String intermediateLabel = intermediateNode.hasLabels() ? intermediateNode.getLabels().get(0) : null;
+    final String targetLabel = targetNode.hasLabels() ? targetNode.getLabels().get(0) : null;
 
     // 6. Analyze the WITH clause
     final List<ReturnClause.ReturnItem> groupingKeys = new ArrayList<>();
@@ -4630,7 +4648,7 @@ public class CypherExecutionPlan {
     // Build the optimized step
     final CountChainedEdgesStep chainedStep = new CountChainedEdgesStep(
         boundVar, firstHopDirection, firstHopTypes, secondHopDirection, secondHopTypes,
-        countAlias, passThroughAliases, context);
+        intermediateLabel, targetLabel, countAlias, passThroughAliases, context);
     if (currentStep != null)
       chainedStep.setPrevious(currentStep);
 
@@ -4666,8 +4684,10 @@ public class CypherExecutionPlan {
     if (relPattern.isVariableLength())
       return null;
 
-    // 3. No property constraints on the relationship
+    // 3. No property constraints on the relationship, and no inline predicate the edge count cannot apply (issue #11583)
     if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+      return null;
+    if (relPattern.hasWhereExpression())
       return null;
 
     // 4. No WHERE clause on the OPTIONAL MATCH
@@ -4770,6 +4790,14 @@ public class CypherExecutionPlan {
     if (!countArgVariable.equals(unboundVar))
       return null;
 
+    // The step applies one label on the counted node. A label written on the bound node, a label set no single name stands
+    // for, a dynamic label or an inline WHERE on a node filters what the step cannot see (issue #11583)
+    final NodePattern boundNode = firstVar.equals(boundVar) ? firstNode : lastNode;
+    final NodePattern countedNode = boundNode == firstNode ? lastNode : firstNode;
+    if (boundNode.hasLabels() || !isCountableEndpoint(boundNode) || !isCountableEndpoint(countedNode))
+      return null;
+    final String targetLabel = countedNode.hasLabels() ? countedNode.getLabels().get(0) : null;
+
     // 8. Relationship variable (if named) must NOT be referenced in grouping keys
     final String relVar = relPattern.getVariable();
     if (relVar != null) {
@@ -4834,7 +4862,7 @@ public class CypherExecutionPlan {
 
     // Build the optimized step
     final CountEdgesStep countEdgesStep = new CountEdgesStep(
-        boundVar, direction, edgeTypes, countAlias, passThroughAliases, context);
+        boundVar, direction, edgeTypes, targetLabel, countAlias, passThroughAliases, context);
     if (currentStep != null)
       countEdgesStep.setPrevious(currentStep);
 
@@ -8746,6 +8774,14 @@ public class CypherExecutionPlan {
    */
   private static boolean hasPushDownRepresentableLabel(final NodePattern node) {
     return !node.hasLabels() || (node.getLabels().size() == 1 && !node.isLabelDisjunction());
+  }
+
+  /**
+   * Whether an endpoint of an OPTIONAL MATCH hop filters nothing an edge count with at most one label cannot apply: no
+   * dynamic label, no inline WHERE and at most one static label (issue #11583).
+   */
+  private static boolean isCountableEndpoint(final NodePattern node) {
+    return !node.hasDynamicLabels() && !node.hasWhereExpression() && hasPushDownRepresentableLabel(node);
   }
 
   /** Records the label a variable carries; false when it already carries a different one, which no single label can stand for. */

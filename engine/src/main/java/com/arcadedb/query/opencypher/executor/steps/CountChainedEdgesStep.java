@@ -24,6 +24,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -32,6 +33,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -53,6 +55,9 @@ import java.util.Map;
  * but the WITH aggregation boundary collapses them into one output row per group rather than
  * passing every input row through (issue #6629). This step therefore groups by the pass-through
  * key values and sums the per-row counts within each group.
+ * <p>
+ * A label on the intermediate node of the first hop and one on the target node of the second are applied by counting
+ * only the intermediates, and then the edges, whose far end carries them (issue #11583).
  */
 public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String boundVertexVariable;
@@ -60,6 +65,9 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String[] firstHopTypes;
   private final Vertex.DIRECTION secondHopDirection;
   private final String[] secondHopTypes;
+  // The labels the intermediate and the counted target must carry, or null
+  private final String intermediateLabel;
+  private final String targetLabel;
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
@@ -72,6 +80,8 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
       final String[] firstHopTypes,
       final Vertex.DIRECTION secondHopDirection,
       final String[] secondHopTypes,
+      final String intermediateLabel,
+      final String targetLabel,
       final String countOutputAlias,
       final Map<String, String> passThroughAliases,
       final CommandContext context) {
@@ -81,6 +91,8 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     this.firstHopTypes = firstHopTypes;
     this.secondHopDirection = secondHopDirection;
     this.secondHopTypes = secondHopTypes;
+    this.intermediateLabel = intermediateLabel;
+    this.targetLabel = targetLabel;
     this.countOutputAlias = countOutputAlias;
     this.passThroughAliases = passThroughAliases;
   }
@@ -91,6 +103,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
 
     // Try GAV provider for accelerated traversal and counting
     final Database db = context.getDatabase();
+    final Schema schema = db.getSchema();
     // Need a provider that covers both first-hop and second-hop edge types
     final String[] allTypes = mergeEdgeTypes(firstHopTypes, secondHopTypes);
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, allTypes);
@@ -132,7 +145,9 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
               // Second hop: count edges for each intermediate via CSR, an undirected self loop once (issue #8750)
               long count = 0;
               for (final int intermediateId : intermediateIds)
-                count += CSRCountUtils.hopDegree(provider, intermediateId, secondHopDirection, secondHopTypes);
+                if (intermediateLabel == null || Labels.carriesLabel(schema, provider.getRID(intermediateId), intermediateLabel))
+                  count += CSRCountUtils.hopDegree(provider, schema, intermediateId, secondHopDirection, targetLabel,
+                      secondHopTypes);
               totalCount = count;
             } else
               totalCount = countOLTP(boundVertex, context);
@@ -182,7 +197,8 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     long count = 0;
     while (intermediates.hasNext()) {
       final Vertex intermediate = intermediates.next();
-      count += IncomingEdgeLookup.countPatternEdges(context, intermediate, secondHopDirection, secondHopTypes);
+      if (intermediateLabel == null || Labels.hasLabel(intermediate, intermediateLabel))
+        count += CSRCountUtils.patternDegree(context, intermediate, secondHopDirection, targetLabel, secondHopTypes);
     }
     return count;
   }
@@ -223,7 +239,10 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
       }
       builder.append("]");
     }
-    builder.append(" -> intermediate ").append(secondHopDirection);
+    builder.append(" -> intermediate ");
+    if (intermediateLabel != null)
+      builder.append(":").append(intermediateLabel).append(" ");
+    builder.append(secondHopDirection);
     if (secondHopTypes != null && secondHopTypes.length > 0) {
       builder.append(" [");
       for (int i = 0; i < secondHopTypes.length; i++) {
@@ -234,6 +253,8 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
       builder.append("]");
     }
     builder.append(" -> ").append(countOutputAlias).append(")");
+    if (targetLabel != null)
+      builder.append(" [target: ").append(targetLabel).append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
