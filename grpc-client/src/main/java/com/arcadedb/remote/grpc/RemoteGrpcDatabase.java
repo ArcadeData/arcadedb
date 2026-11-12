@@ -431,6 +431,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     checkCrossThreadUse("before CommitTransaction");
 
     boolean committed = false;
+    // Whether the failure proves the commit was not applied (issue #11541): only then do the created records go back to
+    // provisional identities. Set from inside the RPC lambda for the server's "no such transaction" answer
+    final boolean[] provenNotApplied = { false };
     try {
       callUnaryVoid("CommitTransaction", () -> {
 
@@ -457,6 +460,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           // commit (e.g. the transaction was already rolled back by the idle reaper). Surfacing this as a
           // failure prevents silent data loss where the client believes its writes are durable.
           if (!response.getCommitted()) {
+            // THE SERVER HAS NO SUCH TRANSACTION ANY MORE (REAPED OR ROLLED BACK): NOTHING OF IT WAS APPLIED
+            provenNotApplied[0] = true;
             throw new TransactionException("Transaction was not committed on the server: " + response.getMessage());
           }
         } catch (StatusRuntimeException | StatusException e) {
@@ -479,13 +484,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       });
       committed = true;
+    } catch (final RuntimeException e) {
+      // A RETRYABLE REFUSAL, A DUPLICATED KEY OR A FAILURE TO CONNECT PROVES THE COMMIT WAS NOT APPLIED. AN OUTCOME
+      // GrpcClientErrorMapper.toCommitException REPORTS AS UNKNOWN (A LOST CONNECTION, AN EXPIRED DEADLINE) DOES NOT
+      if (provesCommitNotApplied(e))
+        provenNotApplied[0] = true;
+      throw e;
     } finally {
-      if (committed)
-        // SUCCESSFUL COMMIT: THE ASSIGNED RIDs ARE DURABLE, JUST DROP THE TRACKING
-        txCreatedRecords.clear();
-      else
-        // FAILED COMMIT = SERVER-SIDE ROLLBACK: RESET CREATED RECORDS SO THEY CAN BE CLEANLY RE-INSERTED (ISSUE #4562)
-        resetCreatedRecordsIdentity();
+      endCommitTracking(committed, provenNotApplied[0]);
     }
   }
 

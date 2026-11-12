@@ -109,6 +109,25 @@ public class Issue5042CommitRollbackThrowIT extends BaseGrpcClientServerTest {
     assertThatThrownBy(() -> grpc.commit()).isInstanceOf(TransactionException.class);
   }
 
+  /**
+   * Issue #11541: {@code committed=false} is the server saying it has no such transaction any more, which proves nothing of
+   * it was applied, so a record created in it goes back to a provisional identity and a re-save inserts it again (issue
+   * #4562), as it does after a rollback. Only an outcome that may have landed keeps the assigned RID.
+   */
+  @Test
+  void aReapedCommitResetsTheIdentityOfTheCreatedRecords() throws Exception {
+    grpc.begin();
+    final MutableVertex v = grpc.newVertex(VERTEX_TYPE);
+    v.set("svex", "reaped");
+    v.save();
+    assertThat(v.getIdentity()).isNotNull();
+
+    Thread.sleep(Long.parseLong(MAX_IDLE_MS) + 1500L);
+
+    assertThatThrownBy(() -> grpc.commit()).isInstanceOf(TransactionException.class);
+    assertThat(v.getIdentity()).isNull();
+  }
+
   @Test
   void rollbackThrowsWhenTransactionWasReaped() throws Exception {
     grpc.begin();
