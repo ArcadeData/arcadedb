@@ -1826,8 +1826,8 @@ public class LocalSchema implements Schema {
     unavailableIndexes.computeIfAbsent(typeName, k -> new TreeMap<>()).put(indexName, indexJSON.copy());
     refusedIndexFiles.add(indexName);
 
-    // A UNIQUE one says so: nothing refuses a duplicate key until the definition is corrected, and no re-install from a cluster can
-    // correct it (getUnavailableUniqueIndexNames() leaves it out for that reason)
+    // A UNIQUE one says so: nothing refuses a duplicate key until the definition is corrected (an HA node also re-installs the
+    // database from its cluster, see getUnavailableUniqueIndexNames())
     final String unenforced = indexJSON.getBoolean("unique", false) ?
         " Its UNIQUE constraint on " + indexJSON.getJSONArray("properties", new JSONArray()) + " is NOT enforced meanwhile." :
         "";
@@ -1876,22 +1876,22 @@ public class LocalSchema implements Schema {
    * loaded it accepts duplicates a healthy peer would refuse, and no local step can tell a half-arrived compaction file
    * from one a power loss emptied. An HA node reads this to re-install the database from its cluster.
    * <p>
-   * Not a definition the load refused (issue #11568): what is wrong there is the definition, which the cluster holds too, so a
-   * re-install would bring it back refused and quarantine the node again for good. The load reports it as the configuration
-   * error it is instead, naming the constraint it leaves unenforced.
+   * A UNIQUE definition the load refused (issue #11568) is listed too: it enforces nothing either, and a definition edited on
+   * this node alone is what a re-install from the cluster repairs. When the cluster holds the same refused definition the
+   * re-install cannot repair it, but it cannot loop on it either: the HA node reads this list once, when its Raft server starts,
+   * and the quarantine lifts when the re-install completes, so a restart costs one re-install and the cluster stays uniform.
    */
   public List<String> getUnavailableUniqueIndexNames() {
     final Map<String, Map<String, JSONObject>> unavailable = unavailableIndexDefinitions;
     if (unavailable.isEmpty())
       return List.of();
-    final Set<String> refused = refusedIndexDefinitionFiles;
 
     final List<String> names = new ArrayList<>();
     for (final Map.Entry<String, Map<String, JSONObject>> typeEntry : unavailable.entrySet()) {
       final LocalDocumentType type = existsType(typeEntry.getKey()) ? getType(typeEntry.getKey()) : null;
       for (final Map.Entry<String, JSONObject> entry : typeEntry.getValue().entrySet()) {
         final JSONObject definition = entry.getValue();
-        if (!definition.getBoolean("unique", false) || refused.contains(entry.getKey()))
+        if (!definition.getBoolean("unique", false))
           continue;
         final List<String> properties = definition.getJSONArray("properties", new JSONArray()).toListOfStrings();
         // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again

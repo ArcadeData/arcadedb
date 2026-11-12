@@ -295,9 +295,9 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
   }
 
   @Test
-  void aRefusedUniqueDefinitionDoesNotAskTheClusterForAReinstall() throws IOException {
+  void aRefusedUniqueDefinitionIsReportedAsAUniqueIndexThatEnforcesNothing() throws IOException {
     createSchema();
-    // a null strategy the LSM tree refuses: the definition is wrong in the cluster as much as here
+    // a null strategy the LSM tree refuses
     final JSONObject schema = new JSONObject(readSchemaFile());
     final JSONObject indexes = schema.getJSONObject("types").getJSONObject("Zzz").getJSONObject("indexes");
     final JSONObject definition = indexes.getJSONObject(indexes.keySet().iterator().next());
@@ -308,8 +308,9 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
     database = factory.open();
     assertThat(database.getSchema().existsIndex(UNIQUE_INDEX)).isFalse();
     assertThat(database.getSchema().existsIndex(VECTOR_INDEX)).as("the other indexes still load").isTrue();
-    // a re-install would bring the same definition back refused: an HA node must not quarantine itself over it
-    assertThat(database.getSchema().getEmbedded().getUnavailableUniqueIndexNames()).isEmpty();
+    // listed with the unique indexes that enforce nothing, which an HA node answers with one re-install from its cluster: that
+    // repairs a definition edited on this node alone
+    assertThat(database.getSchema().getEmbedded().getUnavailableUniqueIndexNames()).hasSize(1);
   }
 
   private String vectorIndexEntryName() throws IOException {
