@@ -127,9 +127,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private final    RemoteSchema                         schema                    = new RemoteSchema(this);
   private          boolean                              open                      = true;
-  // Records created inside the current transaction. If the transaction is rolled back (explicitly or by a failed
-  // commit), their server-assigned RID no longer exists, so the identity is reset to provisional letting the same
-  // in-memory object be cleanly re-inserted in a later transaction, matching the embedded engine (issue #4562).
+  // Records created inside the current transaction. If the transaction is rolled back (explicitly or by a commit that
+  // provably did not land), their server-assigned RID no longer exists, so the identity is reset to provisional letting the
+  // same in-memory object be cleanly re-inserted in a later transaction, matching the embedded engine (issue #4562). A commit
+  // whose outcome is unknown keeps them (issue #11541).
   protected final  List<MutableDocument>                txCreatedRecords          = new ArrayList<>();
   private          RemoteTransactionExplicitLock        explicitLock;
   private          int                                  cachedHashCode            = 0;
@@ -512,6 +513,20 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return leader != null ? leader : new Pair<>(currentServer, currentPort);
   }
 
+  /**
+   * Commits the server-side transaction.
+   * <p>
+   * On a failure the records created in the transaction go back to provisional identities (so re-saving them inserts them
+   * again, issue #4562) only when the failure proves the commit was not applied: a retryable refusal of the server, a
+   * duplicated key, or a connection that could not even be established. Every other failure leaves the outcome open (a
+   * dispatched replication that timed out, a 503 page of a hop in front of the server, a transport failure after the
+   * request was sent) or reports a commit that did land (409 committed remotely), and keeps the identities the server
+   * assigned: the records may be durable under them, and a re-save then updates them instead of inserting them a second
+   * time. The caller has to reconcile such an outcome before saving the records again (issue #11541). Any other answer of the
+   * server (a validation or schema error raised at commit, a session the server no longer holds) keeps them as well: it is
+   * not on the short list of answers that prove nothing was applied, and a re-save of a record the server does not hold
+   * fails loudly with a {@code RecordNotFoundException}, where a reset that turned out wrong inserts a silent duplicate.
+   */
   public void commit() {
     checkDatabaseIsOpen();
     stats.writeTx.incrementAndGet();
@@ -520,6 +535,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction not begun");
 
     boolean committed = false;
+    boolean provenNotApplied = false;
     try {
       HttpRequest request =
           createRequestBuilder("POST", getUrl("commit", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
@@ -529,6 +545,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
+        provenNotApplied = provesCommitNotApplied(detail);
 
         // A 503 page from a hop in front of the server (issue #11387) does not prove the commit did not land: the hop may have
         // forwarded it. Not retried and not rolled back, like any outcome that may have landed
@@ -565,16 +582,46 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final NeedRetryException | DuplicatedKeyException | TransactionException e) {
       throw e;
     } catch (final Exception e) {
+      // A CONNECTION THAT COULD NOT BE ESTABLISHED PROVES THE COMMIT NEVER REACHED THE SERVER; ANY OTHER TRANSPORT FAILURE MAY
+      // HAVE BEEN RAISED AFTER THE SERVER APPLIED IT
+      provenNotApplied = provesCommitNotApplied(e);
       throw new TransactionException("Error on transaction commit", e);
     } finally {
-      if (committed)
-        // SUCCESSFUL COMMIT: THE ASSIGNED RIDs ARE DURABLE, JUST DROP THE TRACKING
-        txCreatedRecords.clear();
-      else
-        // FAILED COMMIT = SERVER-SIDE ROLLBACK: RESET CREATED RECORDS SO THEY CAN BE CLEANLY RE-INSERTED (ISSUE #4562)
-        resetCreatedRecordsIdentity();
+      endCommitTracking(committed, provenNotApplied);
       setSessionId(null);
     }
+  }
+
+  /**
+   * Whether the failure a commit ended with proves the server did NOT apply it (issue #11541): a retryable refusal of the
+   * server, which it answers only for a commit it refused before the entry reached the replicated log, a duplicated key,
+   * or a transport failure that proves the request never left this client. A 503 page of a hop in front of the server
+   * (issue #11387) is a {@link NeedRetryException} too, but does not carry that guarantee: the hop may have forwarded the
+   * commit. Everything else - a commit that landed remotely, an outcome the server could not learn, an answer this client
+   * cannot type, a transport failure after the request was sent - leaves open that the commit was applied.
+   *
+   * @param failure the exception the server's answer was mapped to, or the transport failure, before any wrapping
+   */
+  protected static boolean provesCommitNotApplied(final Throwable failure) {
+    if (failure instanceof RemoteIntermediaryRefusalException)
+      return false;
+    if (failure instanceof NeedRetryException || failure instanceof DuplicatedKeyException)
+      return true;
+    return failure instanceof IOException io && provablyNeverSent(io);
+  }
+
+  /**
+   * Ends the tracking of the records created in the transaction a commit closed. A committed transaction keeps the RIDs the
+   * server assigned, and so does one whose commit may have landed (issue #11541): resetting them would turn the caller's
+   * re-save of a durable record into a second insert. Only a commit proven not applied resets them, so the same in-memory
+   * objects can be cleanly inserted again (issue #4562). The tracking is dropped either way, so a later reset (the failure
+   * arm of {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}) cannot undo the decision.
+   */
+  protected void endCommitTracking(final boolean committed, final boolean provenNotApplied) {
+    if (!committed && provenNotApplied)
+      resetCreatedRecordsIdentity();
+    else
+      txCreatedRecords.clear();
   }
 
   public void rollback() {
