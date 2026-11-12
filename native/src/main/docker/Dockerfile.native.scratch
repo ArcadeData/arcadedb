@@ -22,7 +22,7 @@
 # statically-linked, musl-libc executable with zero dynamic-library dependencies, verifiable
 # with `ldd` reporting "not a dynamic executable"). That is what makes it possible to run in a
 # `FROM scratch` base: scratch has no libc, no shell, no package manager, nothing except what is
-# COPYed in below.
+# COPYed in below (which includes a static BusyBox for sh/wget, #11546).
 #
 # linux/arm64 builds a DIFFERENT (mostly-static glibc) binary instead, because GraalVM CE ships
 # no static musl JDK libraries for aarch64 (oracle/graal#4645, closed not-planned) - see
@@ -38,7 +38,9 @@
 FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
 RUN mkdir -p /skel/bin /skel/config /skel/databases /skel/backups /skel/replication /skel/log && \
     chown -R 1000:1000 /skel && \
-    mkdir -p /skeltmp
+    mkdir -p /skeltmp && \
+    mkdir -p /bbx/bin && cp /bin/busybox /bbx/bin/busybox && \
+    for applet in sh wget ls cat tail grep ps du df; do ln -s busybox "/bbx/bin/$applet"; done
 
 FROM scratch
 
@@ -60,6 +62,12 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 #                               anchors baked in at native-image build time. Documented as a known
 #                               caveat, not something this Dockerfile resolves.
 COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run,
+# plus a few applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it
+# needs no libc here. It is a separate, unmodified executable in the image, not linked into
+# ArcadeDB. The ENTRYPOINT below stays exec-form: there is still
+# no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
+COPY --from=dirs /bbx/bin/ /bin/
 COPY --from=dirs --chown=1000:1000 /skel/ /home/arcadedb/
 # config is written at runtime (server-users.jsonl, server-groups.json), so it must be owned by the
 # runtime UID like the other volumes, not left root-owned by a plain COPY.
@@ -104,14 +112,15 @@ EXPOSE 7687
 # gRPC service
 EXPOSE 50051
 
-# scratch has no shell: this is an exec-form ENTRYPOINT invoking the static binary directly. The
-# binary is itself the "java" replacement (a GraalVM native-image executable), so JVM-style -D
-# flags are passed straight on its own command line rather than through a JAVA_OPTS-consuming
-# wrapper script - there is no such script in this image, unlike the JVM-based
-# package/src/main/docker/Dockerfile, which relies on bin/server.sh reading $JAVA_OPTS.
-# `docker run <image> -Darcadedb.server.rootPassword=... -Dfoo=bar` appends those args after this
-# ENTRYPOINT array (standard Docker ENTRYPOINT+CMD concatenation) - see docs/native-image.md for
-# a full worked `docker run` example, including how to set the root password without a shell.
+# The BusyBox shell above is for healthchecks and `docker exec`, not for the entrypoint: this is
+# an exec-form ENTRYPOINT invoking the static binary directly. The binary is itself the "java"
+# replacement (a GraalVM native-image executable), so JVM-style -D flags are passed straight on
+# its own command line rather than through a JAVA_OPTS-consuming wrapper script - there is no such
+# script in this image, unlike the JVM-based package/src/main/docker/Dockerfile, which relies on
+# bin/server.sh reading $JAVA_OPTS. `docker run <image> -Darcadedb.server.rootPassword=...
+# -Dfoo=bar` appends those args after this ENTRYPOINT array (standard Docker ENTRYPOINT+CMD
+# concatenation) - see docs/native-image.md for a full worked `docker run` example, including how
+# to set the root password without a wrapper script.
 # -Duser.home: UID 1000 has no /etc/passwd entry in either base, so the JVM cannot look its home
 # directory up and would leave user.home unusable (the `%h` of a log file pattern resolves through it).
 ENTRYPOINT ["/home/arcadedb/bin/arcadedb", \

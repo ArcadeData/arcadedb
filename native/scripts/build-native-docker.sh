@@ -445,7 +445,8 @@ cat <<EOF
 
 The image runs as UID/GID 1000:1000, so a bind-mounted directory must be writable by it
 (chown 1000:1000 databases). The named config volume keeps the users, groups and API
-tokens the server writes there across --rm, which deletes anonymous volumes. Neither base
-image has a shell, so -D flags go as trailing arguments, not via -e ARCADEDB_SETTINGS.
+tokens the server writes there across --rm, which deletes anonymous volumes. The entrypoint
+is the binary itself (no wrapper script), so -D flags go as trailing arguments, not via
+-e ARCADEDB_SETTINGS. /bin/sh and wget (static BusyBox) are there for healthchecks and docker exec.
 See docs/native-image.md "Running the container".
 EOF
