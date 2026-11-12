@@ -435,8 +435,12 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
           }
           database.commit();
+        } catch (final TimeoutException e) {
+          // The statement's deadline ends it whatever ON ERROR says
+          database.rollbackAllNested();
+          throw e;
         } catch (final Exception e) {
-          if (onError == SubqueryClause.OnError.FAIL || e instanceof TimeoutException) {
+          if (onError == SubqueryClause.OnError.FAIL) {
             database.rollbackAllNested();
             throw e;
           }
