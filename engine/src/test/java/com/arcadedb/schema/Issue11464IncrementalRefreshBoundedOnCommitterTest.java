@@ -39,6 +39,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * makes the one pass it owes and hands any further pass to the schema's scheduler thread.
  */
 class Issue11464IncrementalRefreshBoundedOnCommitterTest extends TestHelper {
+  /**
+   * ORDER BY keeps the view off the per-record path (#11475): these tests count the writes of whole-view passes, each of which
+   * rewrites every row.
+   */
+  private static final String LEGACY_QUERY = "SELECT value FROM Src11464 ORDER BY value";
 
   @Test
   void theCommitterMakesOnePassAndALaterPassRunsOffItsThread() throws Exception {
@@ -63,7 +68,7 @@ class Issue11464IncrementalRefreshBoundedOnCommitterTest extends TestHelper {
     database.transaction(() -> database.getSchema().createDocumentType("Src11464"));
     database.transaction(() -> database.getSchema().buildMaterializedView()
         .withName("Src11464View")
-        .withQuery("SELECT value FROM Src11464")
+        .withQuery(LEGACY_QUERY)
         .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
         .create());
     final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("Src11464View");
@@ -97,7 +102,7 @@ class Issue11464IncrementalRefreshBoundedOnCommitterTest extends TestHelper {
     database.transaction(() -> database.getSchema().createDocumentType("Src11464"));
     database.transaction(() -> database.getSchema().buildMaterializedView()
         .withName("Src11464View")
-        .withQuery("SELECT value FROM Src11464")
+        .withQuery(LEGACY_QUERY)
         .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
         .create());
 

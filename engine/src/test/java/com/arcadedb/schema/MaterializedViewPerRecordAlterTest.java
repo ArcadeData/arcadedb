@@ -607,13 +607,16 @@ class MaterializedViewPerRecordAlterTest extends TestHelper {
     assertThat(captured.await(30, TimeUnit.SECONDS)).isTrue();
     try {
       restore.run();
-    } finally {
+    } catch (final RuntimeException e) {
       restored.countDown();
+      throw e;
     }
     final MaterializedViewImpl after = view("Adults");
     assertThat(after).isNotSameAs(before);
 
+    // the writer commits only once the failing listener is on the backing type, or its pass can run before it is armed
     failNextPassOf("Adults", () -> {
+      restored.countDown();
       try {
         writer.join(60_000);
       } catch (final InterruptedException e) {

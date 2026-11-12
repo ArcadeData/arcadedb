@@ -43,9 +43,10 @@ class Issue11470HandedOffRefreshYieldsTest extends TestHelper {
   @Test
   void aHandedOffPassQueuesTheNextOneBehindWorkAlreadyWaiting() throws Exception {
     database.transaction(() -> database.getSchema().createDocumentType("Src11470"));
+    // ORDER BY keeps the view off the per-record path (#11475): the test counts the writes of whole-view passes of two rows each
     database.transaction(() -> database.getSchema().buildMaterializedView()
         .withName("Src11470View")
-        .withQuery("SELECT value FROM Src11470")
+        .withQuery("SELECT value FROM Src11470 ORDER BY value")
         .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
         .create());
     final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("Src11470View");
