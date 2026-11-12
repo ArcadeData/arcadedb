@@ -19,6 +19,8 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import com.arcadedb.exception.CommandParsingException;
+
 import java.math.BigDecimal;
 
 public class FloatValue extends AbstractValue {
@@ -28,8 +30,17 @@ public class FloatValue extends AbstractValue {
     super(id);
   }
 
+  /**
+   * The longest float literal taken, in characters: a {@code double} needs at most 17 significant digits and an exponent of 3,
+   * while {@code BigDecimal} parsing is superlinear in the digits, so a document of digits must not buy that CPU (#11451).
+   */
+  static final int MAX_LENGTH = 128;
+
   @Override
   public Object getValue() {
+    if (stringValue.length() > MAX_LENGTH)
+      throw new CommandParsingException(
+          "GraphQL float literal of " + stringValue.length() + " characters exceeds the " + MAX_LENGTH + " a Float can take");
     return new BigDecimal(stringValue);
   }
 

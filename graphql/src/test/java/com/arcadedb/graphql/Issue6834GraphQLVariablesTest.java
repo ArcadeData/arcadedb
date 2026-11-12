@@ -504,13 +504,33 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
   }
 
   @Test
-  void nullableVariableWithoutValueResolvesToNull() {
+  void nullableVariableWithoutValueLeavesTheArgumentOut() {
     executeTest(database -> {
       defineTypes(database);
 
-      // A nullable variable left unset is null by the specification: `name = null` matches nothing, but it is the
-      // documented outcome rather than the accidental one it used to be.
+      // An argument bound to a variable the caller gave no value is not provided (CoerceArgumentValues), exactly as if the
+      // document omitted it: a nullable argument without a default then adds no filter. It used to bind `name = null`, which
+      // matched nothing, while the directive path already treated it as omitted (issues #11098 and #11447).
+      int unset = 0;
       try (final ResultSet resultSet = database.query("graphql", "query($n: String) { bookByName(name: $n) { id } }")) {
+        while (resultSet.hasNext()) {
+          resultSet.next();
+          ++unset;
+        }
+      }
+      int omitted = 0;
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName { id } }")) {
+        while (resultSet.hasNext()) {
+          resultSet.next();
+          ++omitted;
+        }
+      }
+      assertThat(unset).isEqualTo(omitted).isEqualTo(2);
+
+      // an explicit null is a value: no book has a null name
+      final Map<String, Object> explicitNull = new HashMap<>();
+      explicitNull.put("n", null);
+      try (final ResultSet resultSet = database.query("graphql", "query($n: String) { bookByName(name: $n) { id } }", explicitNull)) {
         assertThat(resultSet.hasNext()).isFalse();
       }
 

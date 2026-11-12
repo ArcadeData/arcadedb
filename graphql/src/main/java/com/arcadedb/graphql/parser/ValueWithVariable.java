@@ -26,6 +26,7 @@ public class ValueWithVariable extends SimpleNode {
   protected FloatValue              floatValue;
   protected StringValue             stringValue;
   protected BooleanValue            booleanValue;
+  protected NullValue               nullValue;
   protected EnumValue               enumValue;
   protected ListValueWithVariable   listValueWithVariable;
   protected ObjectValueWithVariable objectValueWithVariable;
@@ -46,6 +47,8 @@ public class ValueWithVariable extends SimpleNode {
       return stringValue;
     else if (booleanValue != null)
       return booleanValue;
+    else if (nullValue != null)
+      return nullValue;
     else if (enumValue != null)
       return enumValue;
     else if (listValueWithVariable != null)

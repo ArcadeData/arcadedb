@@ -19,7 +19,13 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class StringValue extends AbstractValue {
+  private static final String BLOCK_QUOTES         = "\"\"\"";
+  private static final String ESCAPED_BLOCK_QUOTES = "\\\"\"\"";
+
   protected String val;
 
   /**
@@ -43,13 +49,18 @@ public class StringValue extends AbstractValue {
    * accepts the whole escape set (a backslash followed by one of {@code " \ / b f n r t}, or by {@code u} and four
    * hexadecimal digits) but used to keep the raw token image, so the backslash sequences reached the database
    * verbatim instead of the characters they stand for. See issue #6836.
+   * <p>
+   * A block string ({@code """..."""}) is raw text instead: its only escape is {@code \"""}, and the value is the one the
+   * specification's BlockStringValue() computes from it (issue #11451).
    */
   public String getValue() {
     if (val == null)
       return null;
 
     String result = decoded;
-    if (result == null) {
+    if (result == null && isBlockString(val))
+      decoded = result = blockStringValue(val.substring(BLOCK_QUOTES.length(), val.length() - BLOCK_QUOTES.length()));
+    else if (result == null) {
       final String unquoted =
           val.length() > 1 && val.charAt(0) == '"' && val.charAt(val.length() - 1) == '"' ?
               val.substring(1, val.length() - 1) :
@@ -107,6 +118,62 @@ public class StringValue extends AbstractValue {
     }
 
     return buffer.toString();
+  }
+
+  /** Whether {@code literal}, a lexed string token, is a block string: a quoted string cannot start with three quotes. */
+  private static boolean isBlockString(final String literal) {
+    return literal.length() >= 2 * BLOCK_QUOTES.length() && literal.startsWith(BLOCK_QUOTES);
+  }
+
+  /**
+   * The specification's BlockStringValue() of the raw text between the triple quotes, after the {@code \"""} escape is
+   * decoded: the common indentation of the lines after the first is removed, then the leading and trailing lines made of
+   * whitespace only, and the lines are joined with a line feed whatever terminated them.
+   */
+  static String blockStringValue(final String raw) {
+    final String text = raw.contains(ESCAPED_BLOCK_QUOTES) ? raw.replace(ESCAPED_BLOCK_QUOTES, BLOCK_QUOTES) : raw;
+    final List<String> lines = new ArrayList<>();
+    final int length = text.length();
+    int start = 0;
+    for (int i = 0; i < length; ++i) {
+      final char c = text.charAt(i);
+      if (c == '\n' || c == '\r') {
+        lines.add(text.substring(start, i));
+        if (c == '\r' && i + 1 < length && text.charAt(i + 1) == '\n')
+          ++i;
+        start = i + 1;
+      }
+    }
+    lines.add(text.substring(start));
+
+    int commonIndent = -1;
+    for (int i = 1; i < lines.size(); ++i) {
+      final String line = lines.get(i);
+      final int indent = leadingWhitespace(line);
+      if (indent < line.length() && (commonIndent < 0 || indent < commonIndent))
+        commonIndent = indent;
+    }
+    if (commonIndent > 0)
+      for (int i = 1; i < lines.size(); ++i) {
+        final String line = lines.get(i);
+        lines.set(i, line.length() <= commonIndent ? "" : line.substring(commonIndent));
+      }
+
+    int first = 0;
+    int last = lines.size() - 1;
+    while (first <= last && leadingWhitespace(lines.get(first)) == lines.get(first).length())
+      ++first;
+    while (last >= first && leadingWhitespace(lines.get(last)) == lines.get(last).length())
+      --last;
+    return first > last ? "" : String.join("\n", lines.subList(first, last + 1));
+  }
+
+  /** The number of spaces and tabs {@code line} starts with: the WhiteSpace of the specification. */
+  private static int leadingWhitespace(final String line) {
+    int count = 0;
+    while (count < line.length() && (line.charAt(count) == ' ' || line.charAt(count) == '\t'))
+      ++count;
+    return count;
   }
 
   /**

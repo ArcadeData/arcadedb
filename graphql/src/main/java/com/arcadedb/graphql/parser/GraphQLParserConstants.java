@@ -123,9 +123,11 @@ public interface GraphQLParserConstants {
   /** RegularExpression Id. */
   int FLOAT_LITERAL = 50;
   /** RegularExpression Id. */
-  int STRING_LITERAL = 51;
+  int BLOCK_STRING_LITERAL = 51;
   /** RegularExpression Id. */
-  int NAME_LITERAL = 52;
+  int STRING_LITERAL = 52;
+  /** RegularExpression Id. */
+  int NAME_LITERAL = 53;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -183,6 +185,7 @@ public interface GraphQLParserConstants {
     "<EXPONENT_PART>",
     "<INTEGER_LITERAL>",
     "<FLOAT_LITERAL>",
+    "<BLOCK_STRING_LITERAL>",
     "<STRING_LITERAL>",
     "<NAME_LITERAL>",
   };

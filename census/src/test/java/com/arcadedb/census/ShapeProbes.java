@@ -18,10 +18,14 @@
  */
 package com.arcadedb.census;
 
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.event.ServerEventLog;
@@ -188,6 +192,38 @@ final class ShapeProbes {
 
     static RuntimeException anotherFailure(final String name) {
       return new CommandExecutionException("Cannot read " + name);
+    }
+  }
+
+  /**
+   * {@link RemoteUnguardedNextCensusTest}: the census ranged over the classes of two modules named in a list, so a read of a
+   * remote answer anywhere else - the console holds its database as a {@link BasicDatabase} - was outside it (#11452).
+   */
+  static final class RemoteAnswer {
+    static Result unguarded(final BasicDatabase database) {
+      return database.query("sql", "select from V").next();
+    }
+
+    static Result throughALocal(final BasicDatabase database) {
+      final ResultSet answer = database.command("sql", "insert into V set a = 1");
+      return answer.next();
+    }
+
+    static Result throughAHelper(final BasicDatabase database) {
+      return answerOf(database).next();
+    }
+
+    private static ResultSet answerOf(final BasicDatabase database) {
+      return database.query("sql", "select from V");
+    }
+
+    static Result guarded(final BasicDatabase database) {
+      final ResultSet answer = database.query("sql", "select from V");
+      return answer.hasNext() ? answer.next() : null;
+    }
+
+    static Result embedded(final Database database) {
+      return database.query("sql", "select from V").next();
     }
   }
 }

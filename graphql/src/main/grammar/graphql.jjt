@@ -45,7 +45,11 @@
 *      GlobalConfiguration is unused - and the `catch (java.io.IOException e)` sites become the imported
 *      simple name, which is what makes that import carry its weight;
 *   4. in GraphQLParser.java, every `if (x instanceof T) { throw (T) x; }` becomes the pattern-matching
-*      `if (x instanceof T t) { throw t; }`.
+*      `if (x instanceof T t) { throw t; }`;
+*   5. in GraphQLParser.java, the two `jjtree.reset();` lines the generator puts in the ReInit methods are deleted:
+*      the checked-in JJTGraphQLParserState predates them and has no reset(), and the parser is never re-initialised;
+*   6. a new node class (NullValue in #11451) is generated with neither the Apache header nor the final parameters of
+*      the others: it gets both by hand, and generated node classes are never overwritten afterwards.
 */
 
 options {
@@ -208,6 +212,19 @@ TOKEN: {
                                     | <INTEGER_PART> <EXPONENT_PART>
                                     | <INTEGER_PART> <FRACTIONAL_PART> <EXPONENT_PART>
                                   ) >
+    // A block string (spec section 2.9.4): raw text between triple quotes, whose only escape is \""" for a triple quote in
+    // the text. The content cannot hold """ any other way, so the longest match never runs past the closing quotes into the
+    // next block string of the document: a quote or a pair of quotes is content only when something other than a quote
+    // follows it. A backslash that may start the escape is also offered as the escape itself, and the longest match takes
+    // the escape whenever the literal goes on after it. StringValue decodes the text (#11451).
+    | < BLOCK_STRING_LITERAL    : "\"\"\""
+                                  (
+                                      ~["\"", "\\"]
+                                    | "\\\"\"\""
+                                    | "\\"
+                                    | ( "\"" | "\"\"" ) ( ~["\"", "\\"] | "\\\"\"\"" | "\\" )
+                                  )*
+                                  "\"\"\"" >
     | < STRING_LITERAL          : "\""
                                   (
                                       ~["\"", "\\", "\u2028", "\u2029"]
@@ -544,6 +561,8 @@ Value Value(): {
         |
         jjtThis.booleanValue = BooleanValue()
         |
+        jjtThis.nullValue = NullValue()
+        |
         jjtThis.enumValue = EnumValue()
         |
         jjtThis.listValue = ListValue()
@@ -567,6 +586,8 @@ ValueWithVariable ValueWithVariable(): {}
         jjtThis.stringValue = StringValue()
         |
         jjtThis.booleanValue = BooleanValue()
+        |
+        jjtThis.nullValue = NullValue()
         |
         jjtThis.enumValue = EnumValue()
         |
@@ -1170,6 +1191,17 @@ BooleanValue BooleanValue(): {
     }
 }
 
+// The null literal (spec section 2.9.5). <NULL> is not a token Name accepts, so it can never be read as an enum value (#11451).
+NullValue NullValue(): {
+}
+{
+    <NULL> {
+        return jjtThis;
+    }
+}
+
+// The literal keeps its digits: an integer is not an Int until the type of the argument it is written for says so, and a Long
+// or an ID argument takes values Integer.parseInt refuses. IntValue answers the narrowest Java type that holds it (#11451).
 IntValue IntValue(): {
     int tokenId = tokenId();
     int line = line();
@@ -1178,7 +1210,7 @@ IntValue IntValue(): {
 }
 {
     literal = <INTEGER_LITERAL> {
-        jjtThis.val = Integer.parseInt(literal.image);
+        jjtThis.image = literal.image;
         return jjtThis;
     }
 }
@@ -1204,7 +1236,7 @@ StringValue StringValue(): {
     Token literal;
 }
 {
-    literal = <STRING_LITERAL> {
+    ( literal = <STRING_LITERAL> | literal = <BLOCK_STRING_LITERAL> ) {
         jjtThis.val = literal.image;
         return jjtThis;
     }
