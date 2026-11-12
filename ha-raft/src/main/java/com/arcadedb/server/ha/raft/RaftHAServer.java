@@ -4041,6 +4041,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /**
+   * Called by the database wrapper for every database the server opens (issue #11555): on the leader, the open recovers the
+   * per-record materialized views the leadership hook could not, because the database was not open when it ran. Before the Raft
+   * server is built no node leads, and the leadership hook covers every database open by then.
+   */
+  void recoverMaterializedViewsOfOpenedDatabase(final String databaseName, final DatabaseInternal database) {
+    final ArcadeStateMachine sm = getStateMachine();
+    if (raftServer == null || shutdownRequested || sm == null)
+      return;
+    try {
+      sm.recoverMaterializedViewsOfOpenedDatabase(databaseName, database);
+    } catch (final RuntimeException e) {
+      // The open itself must not fail for the recovery: REFRESH MATERIALIZED VIEW is the workaround the warning names
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot schedule the materialized view recovery of database '%s' after its open: run REFRESH MATERIALIZED VIEW on its "
+              + "per-record views: %s", e, databaseName, e.getMessage());
+    }
+  }
+
   /** The bootstrap election, or {@code null} before the Raft server has started. */
   BootstrapElection getBootstrapElection() {
     return bootstrapElection;
