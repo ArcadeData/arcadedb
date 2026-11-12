@@ -370,10 +370,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return declaredColumns(statement);
   }
 
-  private static List<String> declaredColumns(CypherStatement statement) {
+  private static List<String> declaredColumns(final CypherStatement parsed) {
     // The branches of a UNION answer the same columns, under the names of the first one
-    if (statement instanceof UnionStatement union)
-      statement = union.getQueries().getFirst();
+    final CypherStatement statement = parsed instanceof UnionStatement union ? union.getQueries().getFirst() : parsed;
     if (statement.hasFinishClause())
       return null;
 
