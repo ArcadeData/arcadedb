@@ -530,6 +530,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
 
+        // A 503 page from a hop in front of the server (issue #11387) does not prove the commit did not land: the hop may have
+        // forwarded it. Not retried and not rolled back, like any outcome that may have landed
+        if (detail instanceof RemoteIntermediaryRefusalException)
+          throw new TransactionException(
+              "Error on transaction commit: a hop in front of the server answered 503, so the commit may have been applied", detail);
+
         // Issue #8618: the server ANSWERED, so nothing of this commit is still running on it, and it may still hold the
         // session. A refusal issued before the handler ran (the 503 of a node installing a snapshot) left the
         // transaction open, and a server that predates the fix keeps the session of a commit that failed inside the

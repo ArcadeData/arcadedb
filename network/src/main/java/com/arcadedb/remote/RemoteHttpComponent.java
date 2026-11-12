@@ -697,6 +697,16 @@ public class RemoteHttpComponent extends RWLockContext {
         Thread.currentThread().interrupt();
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
+        // A 503 page from a hop in front of the server may come after the hop forwarded the request (issue #11387): retried
+        // only where a transport failure after sending would be, with the request id the server answers a replay from
+        if (e instanceof RemoteIntermediaryRefusalException) {
+          mayHaveBeenSent = true;
+          if (!replayable && !(requestId != null && instancesAtStart.containsKey(server)))
+            throw new RemoteException("Error on executing remote operation '" + messageLabel + "' on server " + server
+                + ": a hop in front of the server answered 503 (" + e.getMessage()
+                + "), possibly after forwarding the request, so the server may already have applied it. It is not sent again,"
+                + " because a replay could apply it twice", e);
+        }
         // Transient server-side condition (election in progress, snapshot install) - retry the SAME
         // server after a delay. Bounded by the election budget only, never by maxRetry, so the FIXED
         // strategy's maxRetry of 1 does not reduce this to a single attempt.
@@ -1328,7 +1338,7 @@ public class RemoteHttpComponent extends RWLockContext {
       unparsedBody = bodyExcerpt(responsePayload);
       LogManager.instance()
           .log(this, Level.FINE, "Error answer to '%s' is not JSON (httpErrorCode=%d body=%s): %s", null, operation, statusCode,
-              unparsedBody, e.toString());
+              unparsedBody, e.getClass().getSimpleName());
     }
 
     if (exception != null) {
@@ -1462,7 +1472,11 @@ public class RemoteHttpComponent extends RWLockContext {
     if (statusCode == 503) {
       final String message = detail != null && !detail.isEmpty() ? detail :
           reason != null ? reason : "Server temporarily unavailable, please retry";
-      return new NeedRetryException(unparsedBody != null ? message + " (httpErrorCode=503 body=" + unparsedBody + ")" : message);
+      // A PAGE THE SERVER DID NOT WRITE DOES NOT CARRY ITS "REFUSED BEFORE RUNNING" GUARANTEE: ITS OWN TYPE, SO A WRITE IS NOT
+      // REPLAYED ON IT (ISSUE #11387)
+      return unparsedBody != null ?
+          new RemoteIntermediaryRefusalException(message + " (httpErrorCode=503 body=" + unparsedBody + ")") :
+          new NeedRetryException(message);
     }
 
     final String httpErrorDescription = statusCode == 400 ? "Bad Request" :

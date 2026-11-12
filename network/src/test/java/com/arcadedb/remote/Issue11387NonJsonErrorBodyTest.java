@@ -31,12 +31,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -80,7 +80,8 @@ class Issue11387NonJsonErrorBodyTest {
         final Exception fromPage = component.manageException(status, body, "test");
 
         assertThat(fromPage).as("status %d, body '%s'", status, body).isNotInstanceOf(JSONException.class);
-        assertThat(fromPage.getClass()).as("status %d, body '%s'", status, body).isEqualTo(fromJson.getClass());
+        // the same type, or for a 503 its subtype that says the page did not come from the server
+        assertThat(fromPage).as("status %d, body '%s'", status, body).isInstanceOf(fromJson.getClass());
         assertThat(fromPage.getMessage()).as("status %d, body '%s'", status, body)
             .contains("httpErrorCode=" + status)
             .contains(body);
@@ -91,7 +92,10 @@ class Issue11387NonJsonErrorBodyTest {
   @Test
   void aProxys503PageIsRetryable() throws IOException {
     final RemoteHttpComponent component = mapper();
-    assertThat(component.manageException(503, HTML_503, "test")).isExactlyInstanceOf(NeedRetryException.class);
+    assertThat(component.manageException(503, HTML_503, "test")).isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
+    // the server's own 503 keeps the plain type, which carries its "refused before running" guarantee
+    assertThat(component.manageException(503, "{\"error\":\"Server temporarily unavailable\"}", "test"))
+        .isExactlyInstanceOf(NeedRetryException.class);
   }
 
   @Test
@@ -119,7 +123,7 @@ class Issue11387NonJsonErrorBodyTest {
     proxy = new ProxyNode(503, HTML_503);
     database = connect(proxy);
 
-    assertThatThrownBy(() -> database.query("sql", "select 1")).isExactlyInstanceOf(NeedRetryException.class)
+    assertThatThrownBy(() -> database.query("sql", "select 1")).isExactlyInstanceOf(RemoteIntermediaryRefusalException.class)
         .hasMessageContaining("httpErrorCode=503");
 
     assertThat(proxy.requestsTo("/api/v1/query/db")).as("the first attempt and the 3 election retries").isEqualTo(4);
@@ -143,9 +147,42 @@ class Issue11387NonJsonErrorBodyTest {
     database = connect(proxy);
 
     assertThatThrownBy(() -> database.transaction(() -> {
-    }, false, 3)).isExactlyInstanceOf(NeedRetryException.class);
+    }, false, 3)).isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
 
     assertThat(proxy.requestsTo("/api/v1/begin/db")).isEqualTo(3);
+  }
+
+  /**
+   * A hop may answer 503 after it forwarded the request (the upstream reset before its answer arrived), so the page does not
+   * prove the write did not run: a command that cannot be replayed safely is not sent again on it.
+   */
+  @Test
+  void aWriteCommandAnsweredWithAProxys503PageIsNotReplayed() throws IOException {
+    proxy = new ProxyNode(503, HTML_503);
+    database = connect(proxy);
+
+    assertThatThrownBy(() -> database.command("sql", "insert into V set a = 1")).isExactlyInstanceOf(RemoteException.class)
+        .hasMessageContaining("may already have applied it")
+        .cause().isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
+
+    assertThat(proxy.requestsTo("/api/v1/command/db")).isEqualTo(1);
+  }
+
+  /** A commit answered with a proxy's 503 page may have landed: transaction() must not run the block a second time. */
+  @Test
+  void aCommitAnsweredWithAProxys503PageIsNotRetried() throws IOException {
+    proxy = new ProxyNode(503, HTML_503);
+    proxy.beginOpensASession();
+    database = connect(proxy);
+
+    final AtomicInteger executions = new AtomicInteger();
+    assertThatThrownBy(() -> database.transaction(executions::incrementAndGet, false, 3)).isExactlyInstanceOf(TransactionException.class)
+        .hasMessageContaining("may have been applied")
+        .cause().isExactlyInstanceOf(RemoteIntermediaryRefusalException.class);
+
+    assertThat(executions.get()).isEqualTo(1);
+    assertThat(proxy.requestsTo("/api/v1/commit/db")).isEqualTo(1);
+    assertThat(proxy.requestsTo("/api/v1/rollback/db")).as("an outcome that may have landed is not rolled back").isZero();
   }
 
   /** A begin refused with a page that is not retryable: one TransactionException, whose cause names the status. */
@@ -181,7 +218,7 @@ class Issue11387NonJsonErrorBodyTest {
     assertThatThrownBy(() -> database.sendBatch("{\"@type\":\"vertex\"}", Map.of(), progress -> {
     })).isExactlyInstanceOf(DatabaseOperationException.class)
         .hasMessageContaining("HTTP 503")
-        .cause().isExactlyInstanceOf(NeedRetryException.class).hasMessageContaining("503 Service Temporarily Unavailable");
+        .cause().isExactlyInstanceOf(RemoteIntermediaryRefusalException.class).hasMessageContaining("503 Service Temporarily Unavailable");
   }
 
   private static RemoteDatabase connect(final ProxyNode node) {
@@ -197,11 +234,13 @@ class Issue11387NonJsonErrorBodyTest {
     private final List<String> requests = new CopyOnWriteArrayList<>();
     private final int          status;
     private final byte[]       page;
+    private volatile boolean   beginOpensASession;
 
     private ProxyNode(final int status, final String page) throws IOException {
       this.status = status;
       this.page = page.getBytes(StandardCharsets.UTF_8);
-      http = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+      // THE ADDRESS THE CLIENTS DIAL: getLoopbackAddress() MAY BE ::1 ON A JVM THAT PREFERS IPv6
+      http = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
       http.createContext("/api/v1/", this::handle);
       http.start();
     }
@@ -214,10 +253,21 @@ class Issue11387NonJsonErrorBodyTest {
         exchange.close();
         return;
       }
+      if (beginOpensASession && path.startsWith("/api/v1/begin/")) {
+        exchange.getResponseHeaders().add(RemoteDatabase.ARCADEDB_SESSION_ID, "AS-1");
+        exchange.sendResponseHeaders(204, -1);
+        exchange.close();
+        return;
+      }
       exchange.getResponseHeaders().add("Content-Type", "text/html");
       exchange.sendResponseHeaders(status, page.length);
       exchange.getResponseBody().write(page);
       exchange.close();
+    }
+
+    /** Answers begin with 204 and a session, so the scripted status reaches the commit. */
+    private void beginOpensASession() {
+      beginOpensASession = true;
     }
 
     private int requestsTo(final String route) {
