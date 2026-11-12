@@ -62,6 +62,10 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
         chunk.newEdge("OF_RECORD", records.get(i % RECORDS));
         if (i % 3 == 0)
           chunk.newEdge("MENTIONS", entities.get(i % 5));
+        // a second, parallel mention: two MENTIONS hops can then come back to the same chunk over two edges, which only the
+        // inequality of aFlippedChainKeepsItsInequality rules out
+        if (i % 9 == 0)
+          chunk.newEdge("MENTIONS", entities.get(i % 5));
       }
     });
   }
@@ -106,6 +110,34 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
     assertThat(chainLine(plan(query))).startsWith("(Chunk");
     // Neither end has one: the smaller label starts
     assertThat(chainLine(plan("MATCH (c:Chunk)-[:OF_RECORD]->(r:Record) RETURN count(*) AS n"))).startsWith("(Record");
+  }
+
+  /**
+   * A flipped chain renumbers the positions of its node inequality. The two MENTIONS hops can bind one edge only when c1 and c2
+   * are one chunk, which the inequality rules out, so the push-down keeps the chain, now walked from Record; and a chunk with
+   * two parallel mentions reaches itself over two edges, so an inequality left on the wrong positions changes the count.
+   */
+  @Test
+  void aFlippedChainKeepsItsInequality() {
+    final String[] patterns = {
+        "(c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record) WHERE c1 <> c2",
+        "(c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record {external_id: 'r3'}) "
+            + "WHERE c1 <> c2",
+        "(c:Chunk)-[:MENTIONS]->(e:Entity) WHERE c <> e" };
+    for (final String pattern : patterns) {
+      final String counted = "MATCH " + pattern + " RETURN count(*) AS n";
+      final String oracle = "MATCH " + pattern + " RETURN sum(1) AS n";
+      final String plan = plan(counted);
+      assertThat(plan).as(counted).contains("COUNT CHAIN PATHS");
+      assertThat(chainLine(plan)).as(counted).doesNotStartWith("(Chunk");
+      assertThat(count(counted)).as(counted).isEqualTo(count(oracle));
+    }
+    // the inequality removes the paths that come back to the same chunk over its two parallel mentions: a count that ignored it
+    // would be larger
+    final String withInequality = "MATCH " + patterns[0] + " RETURN count(*) AS n";
+    final String without = "MATCH (c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record) "
+        + "RETURN sum(1) AS n";
+    assertThat(count(withInequality)).isLessThan(count(without));
   }
 
   private long count(final String query) {
