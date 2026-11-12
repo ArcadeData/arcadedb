@@ -1459,8 +1459,9 @@ public class SelectExecutionPlanner {
       collectReadFields(base.expression, out);
       if (base.identifier != null) {
         if (base.identifier.suffix != null && base.identifier.suffix.identifier != null) {
-          // a $variable resolves from the context, not from the row
-          if (!base.identifier.suffix.identifier.getStringValue().startsWith("$"))
+          // an unquoted $variable resolves from the context, not from the row; a back-tick quoted `$name` is a property
+          final Identifier field = base.identifier.suffix.identifier;
+          if (field.isQuoted() || !field.getStringValue().startsWith("$"))
             out.add(base.identifier.suffix.identifier);
         }
         else if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)

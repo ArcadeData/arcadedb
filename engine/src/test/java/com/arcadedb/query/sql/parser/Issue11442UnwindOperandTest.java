@@ -44,7 +44,7 @@ class Issue11442UnwindOperandTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().createDocumentType("T");
       database.newDocument("T").set("name", "n1").set("tags", List.of("t1", "t2")).set("a", Map.of("b", List.of(1, 2, 3)))
-          .save();
+          .set("$tags", List.of("d1", "d2")).save();
     });
   }
 
@@ -145,6 +145,10 @@ class Issue11442UnwindOperandTest extends TestHelper {
     final List<Result> literal = rows("SELECT tags FROM T UNWIND [name, 'z'] AS x");
     assertThat(literal.stream().map(r -> r.<String>getProperty("x")).toList()).containsExactly("n1", "z");
     assertThat(literal.getFirst().getPropertyNames()).containsExactlyInAnyOrder("tags", "x");
+
+    // a back-tick quoted $name is a property the operand reads, not a context variable
+    assertThat(rows("SELECT name FROM T UNWIND `$tags` AS x").stream().map(r -> r.<String>getProperty("x")).toList())
+        .containsExactly("d1", "d2");
 
     final List<Result> parameter = rows("SELECT name FROM T UNWIND :p AS x", Map.of("p", List.<Object>of("p1", "p2")));
     assertThat(parameter.stream().map(r -> r.<String>getProperty("x")).toList()).containsExactly("p1", "p2");
