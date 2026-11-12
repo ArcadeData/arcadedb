@@ -51,6 +51,7 @@ import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
@@ -320,6 +321,42 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (!stripped)
       return query.trim();
     return query.substring(i).trim();
+  }
+
+  /**
+   * The columns a statement declares in its RETURN clause, in order, named as a row of it names them, for a caller that has to
+   * announce the columns of a result with no row to read them from: Neo4j reports the RETURN items of a zero-row result, and a
+   * Bolt client reads its keys from them (issue #11386). Looked up as the execution looks the statement up (as written under
+   * EXPLAIN and PROFILE, with the literals extracted otherwise), so an unaliased item is named as the rows of that execution
+   * name it, and the parse is the cached one.
+   *
+   * @return the column names, or {@code null} when the statement does not fix them without running: no RETURN (a write, a
+   * standalone CALL) or {@code RETURN *}, whose columns are the variables in scope
+   */
+  public static List<String> declaredColumns(final DatabaseInternal database, final String query) {
+    if (query == null)
+      return null;
+    String actual = stripLeadingComments(query);
+    final boolean explain = actual.regionMatches(true, 0, "EXPLAIN ", 0, 8);
+    final boolean profile = !explain && actual.regionMatches(true, 0, "PROFILE ", 0, 8);
+    if (explain || profile)
+      actual = actual.substring(8).trim();
+
+    final CypherStatement statement = (explain || profile ?
+        database.getCypherStatementCache().getAsWritten(actual) :
+        database.getCypherStatementCache().getParameterized(actual)).statement().statement();
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || statement.hasFinishClause())
+      return null;
+
+    final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
+    final List<String> columns = new ArrayList<>(items.size());
+    for (final ReturnClause.ReturnItem item : items) {
+      if (item.isStar())
+        return null;
+      columns.add(item.getOutputName());
+    }
+    return columns;
   }
 
   @Override

@@ -309,9 +309,14 @@ class CypherExecutionPlanTest {
           Map.of("src", "Alice", "dest", "Frank", "year", 2024));
 
       assertThat((Object) resultSet).isNotNull();
+      assertThat(resultSet.getExecutionPlan()).isPresent();
+      // a RETURN-less write answers no rows under PROFILE, as it does without it (issue #11386); it used to answer the row its
+      // last write clause passed on, which this assertion pinned as ">= 1"
       final var results = resultSet.stream().toList();
-      assertThat(results.size()).isGreaterThanOrEqualTo(1);
+      assertThat(results).isEmpty();
     });
+    assertThat(database.query("opencypher", "MATCH (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Frank'}) RETURN count(*) AS c")
+        .next().<Number>getProperty("c").longValue()).as("the profiled write ran").isEqualTo(1L);
   }
 
   /**
