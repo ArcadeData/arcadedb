@@ -391,16 +391,18 @@ public class DateUtils {
         // NOT SUPPORTED
         timestamp = 0;
     } else if (value instanceof LocalDate localDate) {
+      // From the epoch second, which every LocalDate has (the epoch day times 86,400 cannot overflow). TimeUnit.convert()
+      // SATURATES to Long.MAX_VALUE/MIN_VALUE on overflow instead of silently wrapping, unlike a raw `* 1_000_000L`
+      // multiplication (issue #5625); toEpochMilli() threw instead, past year 292278993 either way (issue #11625)
+      final long epochSecond = localDate.toEpochDay() * 86_400L;
       if (precisionToUse.equals(ChronoUnit.SECONDS))
-        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() / 1_000L;
+        timestamp = epochSecond;
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
-        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+        timestamp = TimeUnit.MILLISECONDS.convert(epochSecond, TimeUnit.SECONDS);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        // TimeUnit.convert() SATURATES to Long.MAX_VALUE/MIN_VALUE on overflow instead of silently wrapping,
-        // unlike a raw `* 1_000_000L` multiplication (issue #5625).
-        timestamp = TimeUnit.MICROSECONDS.convert(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(), TimeUnit.MILLISECONDS);
+        timestamp = TimeUnit.MICROSECONDS.convert(epochSecond, TimeUnit.SECONDS);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = TimeUnit.NANOSECONDS.convert(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(), TimeUnit.MILLISECONDS);
+        timestamp = TimeUnit.NANOSECONDS.convert(epochSecond, TimeUnit.SECONDS);
       else
         // NOT SUPPORTED
         timestamp = 0;

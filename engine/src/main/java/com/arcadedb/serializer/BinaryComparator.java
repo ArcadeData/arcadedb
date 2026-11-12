@@ -29,6 +29,7 @@ import com.arcadedb.utility.DateUtils;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
@@ -212,6 +213,9 @@ public class BinaryComparator {
       // so both directions agree (issue #7754).
       if (type2 == BinaryTypes.TYPE_BOOLEAN || value2 instanceof Boolean)
         throw unsupportedPair(type1, type2);
+      // Two dates compare by their day: a DATE holds days the epoch-millisecond conversion below overflows on (issue #11625)
+      if (value1 instanceof LocalDate date1 && value2 instanceof LocalDate date2)
+        return date1.compareTo(date2);
       final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
       final Long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
       final Long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
