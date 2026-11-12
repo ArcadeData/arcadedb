@@ -22,6 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -87,6 +90,22 @@ class CypherMergeNumericListKeyIssue11575Test extends TestHelper {
     for (int i = 0; i < 3; i++)
       database.transaction(() -> database.command("opencypher", "MERGE (n:B {key: $key})", params));
     assertThat(count("MATCH (n:B) RETURN count(n) AS c")).isEqualTo(1L);
+  }
+
+  /** A native temporal parameter compares with a stored temporal inside a list as it does alone, and as {@code =} does. */
+  @Test
+  void aListOfNativeTemporalsMatchesAsEqualsDoes() {
+    final LocalDateTime local = LocalDateTime.of(2024, 5, 6, 7, 8, 9);
+    final Instant instant = local.toInstant(ZoneOffset.UTC);
+    database.transaction(() -> database.command("opencypher", "CREATE (:E {d: $d, l: $l})",
+        Map.of("d", local, "l", List.of(local))));
+    final Map<String, Object> params = Map.of("d", instant, "l", List.of(instant));
+    assertThat(count("MATCH (n:E) WHERE n.d = $d RETURN count(n) AS c", params)).isEqualTo(1L);
+    assertThat(count("MATCH (n:E) WHERE n.l = $l RETURN count(n) AS c", params)).isEqualTo(1L);
+    assertThat(count("MATCH (n:E {d: $d}) RETURN count(n) AS c", params)).isEqualTo(1L);
+    assertThat(count("MATCH (n:E {l: $l}) RETURN count(n) AS c", params)).isEqualTo(1L);
+    database.transaction(() -> database.command("opencypher", "MERGE (n:E {l: $l})", params));
+    assertThat(count("MATCH (n:E) RETURN count(n) AS c")).isEqualTo(1L);
   }
 
   private long count(final String query) {

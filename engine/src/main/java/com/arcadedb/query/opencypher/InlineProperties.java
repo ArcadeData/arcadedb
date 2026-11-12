@@ -295,7 +295,11 @@ public final class InlineProperties {
       return numbersEqual(a, b);
     if (actual instanceof byte[] a && expected instanceof byte[] b)
       return Arrays.equals(a, b);
-    return isSequence(actual) && isSequence(expected) && sequencesEqual(actual, expected);
+    if (isSequence(actual) && isSequence(expected))
+      return sequencesEqual(actual, expected);
+    // A native java.time value (a parameter, or an element of a list parameter) compares as its Cypher form does under =
+    return !(expected instanceof String) && TemporalUtil.fromCoreJavaType(expected) instanceof CypherTemporalValue wanted
+        && temporalEqual(actual, wanted);
   }
 
   /** A list, or an array that is not the BINARY {@code byte[]}: what {@code =} compares element by element. */
