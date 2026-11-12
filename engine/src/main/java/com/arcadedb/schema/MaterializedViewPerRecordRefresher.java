@@ -72,6 +72,13 @@ final class MaterializedViewPerRecordRefresher {
    * The defining query with {@code @rid AS _sourceRID} added to its projection, rendered from a copy of the parsed statement. A
    * query with no projection ({@code SELECT FROM X}) returns the whole record, so it gains {@code *} as well.
    * <p>
+   * {@link #SOURCE_RID} is a reserved column of the view (issue #11552). The classifier refuses a query that projects a column of
+   * that name or reads a type declaring it through {@code *}, but a schemaless source record can still carry an undeclared field
+   * of that name, as can a record of a type that declared it after the view was created: {@code *} copies it into the row. The
+   * link always wins over it, because the rendered projection prints {@code *} before every other item and
+   * {@code Projection.calculateSingle} writes the items in order, so the link added last overwrites the field. The field's own
+   * value is not in the view.
+   * <p>
    * The RID-list variant reads the records bound to {@link #RIDS_PARAMETER} instead of the source type, and keeps the WHERE with
    * {@code @this INSTANCEOF '<source>'} added: a RID-list target returns whatever record sits at each RID, whatever its type, and
    * the listener fires for the subtypes of the source too, which {@code INSTANCEOF} accepts.
