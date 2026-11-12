@@ -1805,18 +1805,26 @@ public class LocalSchema implements Schema {
   private void leaveOutRefusedIndexDefinition(final String typeName, final String indexName, final String registeredName,
       final IndexInternal component, final JSONObject indexJSON, final RuntimeException reason,
       final Map<String, Map<String, JSONObject>> unavailableIndexes, final Set<String> refusedIndexFiles) {
+    final boolean incremental = isStagingPublication() && !isRebuildingEverything();
+    IndexInternal published = null;
     for (final String name : new String[] { registeredName, indexName })
       if (lookupIndex(name) == component) {
-        if (isStagingPublication() && !isRebuildingEverything() && !stagedIndexMap.containsKey(name))
-          // a component an incremental reload kept: still published, so the barrier withdraws it, and an aborted load does not
-          stagedIndexWithdrawals.put(name, component);
-        else
+        if (incremental) {
+          // An incremental reload, whether it kept the component or staged a new one for a touched file: the name stays
+          // published until the barrier withdraws the instance published under it, and an aborted load leaves it as it was
+          stagedIndexMap.remove(name);
+          final IndexInternal publishedUnderName = indexMap.get(name);
+          if (publishedUnderName != null) {
+            stagedIndexWithdrawals.put(name, publishedUnderName);
+            published = publishedUnderName;
+          }
+        } else
           removeIndexDuringLoad(name);
       }
-    // The published type index the kept component belonged to goes with it at the barrier, unless this load registers one under
-    // the same name again (another of its bucket indexes loads): left published, it would answer for a bucket index withdrawn
-    final TypeIndex typeIndex = component.getTypeIndex();
-    if (typeIndex != null && isStagingPublication() && !isRebuildingEverything() && lookupIndex(typeIndex.getName()) == typeIndex)
+    // The published type index of the withdrawn instance goes with it at the barrier, unless this load registers one under the
+    // same name again (another of its bucket indexes loads): left published, it would answer for a bucket index withdrawn
+    final TypeIndex typeIndex = published != null ? published.getTypeIndex() : null;
+    if (typeIndex != null && lookupIndex(typeIndex.getName()) == typeIndex)
       stagedIndexWithdrawals.putIfAbsent(typeIndex.getName(), typeIndex);
     // Its file is referenced by a schema entry, though not under its own name when the orphan-relinking pass met it: recorded,
     // or the sweep of unreferenced bucket-index files at the end of this open would drop the file the log says is kept
