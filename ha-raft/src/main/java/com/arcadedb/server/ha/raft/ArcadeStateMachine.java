@@ -3389,7 +3389,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // An unreadable term (-1) is never recorded, so every recovery under it is a full one
     final Long previous = term >= 0 ? materializedViewsRecoveredInTerm.put(dbName, term) : null;
     final boolean everyView = previous == null || previous != term;
-    final int views = schema.recoverPerRecordMaterializedViews(everyView);
+    final int views;
+    try {
+      views = schema.recoverPerRecordMaterializedViews(everyView);
+    } catch (final RuntimeException | Error e) {
+      // A full recovery that failed is not recorded as made: the next open in this term makes it again, not the partial one
+      if (everyView && term >= 0)
+        materializedViewsRecoveredInTerm.remove(dbName, term);
+      throw e;
+    }
     if (views > 0)
       LogManager.instance().log(this, Level.INFO,
           "Leader recovery of database '%s': %d per-record materialized view(s) handed a %s pass", dbName, views,
@@ -8165,6 +8173,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     clearCompactionHoldOff(databaseName);
     // Nor a compaction whose swap could not be persisted (issue #11240): there is nothing left to replay it into
     releaseHeldEntry(unpersistedPublicationKey(databaseName));
+    // Nor the term of its last materialized view recovery (issue #11555): a database recreated under the same name in this
+    // leadership gets the full recovery at its open, not the partial one the dropped database had earned
+    materializedViewsRecoveredInTerm.remove(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
