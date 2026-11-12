@@ -627,8 +627,10 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("type", getType());
-    final int bucketId = underlyingIndex.getAssociatedBucketId();
-    json.put("bucket", underlyingIndex.getComponent().getDatabase().getSchema().getBucketById(bucketId).getName());
+    // The underlying index's id, not getAssociatedBucketId(), which answers the index's own file id for an orphan; never
+    // getBucketById(): an orphan whose bucket association was lost must still serialize (issue #11569)
+    json.put("bucket", IndexInternal.bucketNameForJSON(underlyingIndex.getComponent().getDatabase().getSchema(),
+        underlyingIndex.getAssociatedBucketId(), underlyingIndex.getName()));
     json.put("properties", getPropertyNames());
     json.put("precision", precision);
     json.put("tokenization", tokenization.name());

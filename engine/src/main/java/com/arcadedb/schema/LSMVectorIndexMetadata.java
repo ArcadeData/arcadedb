@@ -452,14 +452,18 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("encoding"))
       setEncoding(metadata.getString("encoding"));
 
+    // Every setting with a creation-time invariant is read through the setter that enforces it at creation, so a persisted
+    // definition can never hold what CREATE INDEX refuses (issue #11568: a pqClusters edited to 512 used to enter the runtime
+    // index as is). A refusal here fails the load of THIS index only: LocalSchema leaves it out, keeps its definition and its
+    // file, and loads the rest of the schema.
     if (metadata.has("maxConnections"))
-      this.maxConnections = metadata.getInt("maxConnections");
+      setMaxConnections(metadata.getInt("maxConnections"));
 
     if (metadata.has("beamWidth"))
-      this.beamWidth = metadata.getInt("beamWidth");
+      setBeamWidth(metadata.getInt("beamWidth"));
 
     if (metadata.has("efSearch")) {
-      this.efSearch = metadata.getInt("efSearch");
+      setEfSearch(metadata.getInt("efSearch"));
       // A schema written before efSearchConfigured existed cannot say whether the value was chosen or defaulted,
       // so fall back to the old inference for it. That keeps existing databases behaving exactly as they do now.
       this.efSearchConfigured = metadata.getBoolean("efSearchConfigured", this.efSearch != 100);
@@ -470,10 +474,10 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     // need no equivalent change - getInt() already parses a quoted number through Gson's lazy Number - so the reader
     // here is deliberately not mirrored onto them.
     if (metadata.has("neighborOverflowFactor"))
-      this.neighborOverflowFactor = metadataFloat(metadata, "neighborOverflowFactor");
+      setNeighborOverflowFactor(metadataFloat(metadata, "neighborOverflowFactor"));
 
     if (metadata.has("alphaDiversityRelaxation"))
-      this.alphaDiversityRelaxation = metadataFloat(metadata, "alphaDiversityRelaxation");
+      setAlphaDiversityRelaxation(metadataFloat(metadata, "alphaDiversityRelaxation"));
 
     if (metadata.has("idPropertyName"))
       this.idPropertyName = metadata.getString("idPropertyName");
@@ -500,17 +504,23 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       this.buildState = metadata.getString("buildState");
 
     // Product Quantization (PQ) configuration
-    if (metadata.has("pqSubspaces"))
-      this.pqSubspaces = metadata.getInt("pqSubspaces");
+    // -1 (and any value up to 0) is the persisted "auto" (dimensions / 4), which the setter does not take from a user
+    if (metadata.has("pqSubspaces")) {
+      final int subspaces = metadata.getInt("pqSubspaces");
+      if (subspaces > 0)
+        setPQSubspaces(subspaces);
+      else
+        this.pqSubspaces = subspaces;
+    }
 
     if (metadata.has("pqClusters"))
-      this.pqClusters = metadata.getInt("pqClusters");
+      setPQClusters(metadata.getInt("pqClusters"));
 
     if (metadata.has("pqCenterGlobally"))
       this.pqCenterGlobally = metadata.getBoolean("pqCenterGlobally");
 
     if (metadata.has("pqTrainingLimit"))
-      this.pqTrainingLimit = metadata.getInt("pqTrainingLimit");
+      setPQTrainingLimit(metadata.getInt("pqTrainingLimit"));
 
     if (metadata.has("fusedPQ"))
       this.fusedPQ = metadata.getBoolean("fusedPQ");

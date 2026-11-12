@@ -12636,7 +12636,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Add required fields for schema loading (matching LSMTreeIndex pattern)
     json.put("type", getType());
-    json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+    // The field, not getAssociatedBucketId(), which warns on an orphan; never getBucketById(): an orphan whose bucket
+    // association was lost must still serialize (issue #11569)
+    json.put("bucket", IndexInternal.bucketNameForJSON(getDatabase().getSchema(), metadata.associatedBucketId, getName()));
 
     // Add vector-specific metadata. The name is the CURRENT component, not the one this instance was built with:
     // a compaction swaps the data file, and a node that reloads the index from the file it received names it after

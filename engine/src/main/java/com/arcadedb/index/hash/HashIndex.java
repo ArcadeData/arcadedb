@@ -820,7 +820,8 @@ public class HashIndex implements IndexInternal {
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
     json.put("type", getType());
-    json.put("bucket", getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+    // never getBucketById(): an orphan whose bucket association was lost must still serialize (issue #11569)
+    json.put("bucket", IndexInternal.bucketNameForJSON(getDatabase().getSchema(), getAssociatedBucketId(), getName()));
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());

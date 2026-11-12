@@ -1605,8 +1605,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final JSONObject json = new JSONObject();
     json.put("type", getType());
 
-    json.put("bucket",
-        underlyingIndex.getMutableIndex().getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+    // never getBucketById(): an orphan whose bucket association was lost must still serialize (issue #11569)
+    json.put("bucket", IndexInternal.bucketNameForJSON(underlyingIndex.getMutableIndex().getDatabase().getSchema(),
+        getAssociatedBucketId(), underlyingIndex.getName()));
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
