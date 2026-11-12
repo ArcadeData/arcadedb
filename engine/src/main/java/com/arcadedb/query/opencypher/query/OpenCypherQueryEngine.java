@@ -350,10 +350,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN, in the order the statement
    * binds them (the order a row of it carries them in), followed by any item written after the star; for a standalone
    * {@code CALL} the fields it yields (its YIELD items, or every output of the procedure under {@code YIELD *} or no YIELD).
+   * <p>
+   * A {@code RETURN *} reached through a {@code CALL { ... }} subquery that itself returns {@code *} declares the names of the
+   * body's own {@code RETURN *} scope too (issue #11571).
    *
    * @return the column names, or {@code null} when the statement does not fix them without running: no RETURN and no
-   * standalone CALL (a write), a CALL of a procedure the engine does not know without an explicit YIELD, or a scope this
-   * analysis does not follow (a {@code RETURN *} reached through a CALL subquery that itself returns {@code *})
+   * standalone CALL (a write), or a CALL without an explicit YIELD of a name the procedure registry does not know - a
+   * {@code DEFINE FUNCTION}, a Cypher or SQL function, which answer a row named by the value they return ({@code value}
+   * for a scalar, the keys of a map), so no signature fixes their columns before they run
    */
   public static List<String> declaredColumns(final DatabaseInternal database, final String query) {
     if (query == null)
@@ -379,7 +383,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final ReturnClause returnClause = statement.getReturnClause();
     if (returnClause == null)
       return standaloneCallColumns(statement);
+    return returnedColumns(statement, returnClause);
+  }
 
+  /**
+   * The columns a RETURN answers, in order: its items, with the variables in scope at it in place of {@code *}. {@code null}
+   * when the scope of a {@code *} is not known without running the statement.
+   */
+  private static List<String> returnedColumns(final CypherStatement statement, final ReturnClause returnClause) {
     final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
     final List<String> columns = new ArrayList<>(items.size());
     for (final ReturnClause.ReturnItem item : items) {
@@ -526,14 +537,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
         yield ScopeWalk.NEXT;
       }
       case SUBQUERY -> {
-        // What a CALL { } subquery returns joins the enclosing scope; a unit subquery (no RETURN) adds nothing
-        final CypherStatement inner = ((SubqueryClause) entry.getTypedClause()).getInnerStatement();
-        if (inner != null && inner.getReturnClause() != null)
-          for (final ReturnClause.ReturnItem item : inner.getReturnClause().getReturnItems()) {
-            if (item.isStar())
-              yield ScopeWalk.UNKNOWN;
-            bind(item.getOutputName(), scope);
-          }
+        // What a CALL { } subquery returns joins the enclosing scope, after the names already in it (the order the executor
+        // merges the body's row into the outer one); a unit subquery (no RETURN) adds nothing. The branches of a UNION body
+        // return the same columns, under the names of the first one. A RETURN * of the body is the scope at that RETURN,
+        // walked the same way (issue #11571): the names the body imports are outer names already, so the walk does not need
+        // to seed them, and the WITH that imports them clears and rebinds the body's scope as any WITH does
+        final CypherStatement body = ((SubqueryClause) entry.getTypedClause()).getInnerStatement();
+        final CypherStatement inner = body instanceof UnionStatement union ? union.getQueries().getFirst() : body;
+        if (inner == null || inner.getReturnClause() == null)
+          yield ScopeWalk.NEXT;
+        final List<String> returned = returnedColumns(inner, inner.getReturnClause());
+        if (returned == null)
+          yield ScopeWalk.UNKNOWN;
+        for (final String name : returned)
+          bind(name, scope);
         yield ScopeWalk.NEXT;
       }
       // the FOREACH variable, and what its inner clauses bind, live and die inside the loop
