@@ -191,7 +191,7 @@ final class SegmentWriter implements AutoCloseable {
     for (int i = 0; i < directoryEntries * 4; i++)
       footer.putInt(directory[i]);
     for (int k = 0; k < columns.length; k++) {
-      if (kinds[k] == ColumnKind.DOUBLE && minDouble[k] <= maxDouble[k])
+      if (kinds[k] == ColumnKind.DOUBLE && Double.compare(minDouble[k], maxDouble[k]) <= 0)
         footer.putLong(Double.doubleToLongBits(minDouble[k])).putLong(Double.doubleToLongBits(maxDouble[k]));
       else
         footer.putLong(min[k]).putLong(max[k]);
@@ -241,9 +241,9 @@ final class SegmentWriter implements AutoCloseable {
       final double v = row.doubles[k];
       values[k][r] = present ? Double.doubleToRawLongBits(v) : 0L;
       if (present) {
-        if (v < minDouble[k])
+        if (Double.compare(v, minDouble[k]) < 0)
           minDouble[k] = v;
-        if (v > maxDouble[k])
+        if (Double.compare(v, maxDouble[k]) > 0)
           maxDouble[k] = v;
       }
     }

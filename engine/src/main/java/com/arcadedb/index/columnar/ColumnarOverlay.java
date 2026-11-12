@@ -252,9 +252,9 @@ final class ColumnarOverlay {
               low = blockLow;
               high = blockHigh;
             } else if (isDouble) {
-              if (Double.longBitsToDouble(blockLow) < Double.longBitsToDouble(low))
+              if (Double.compare(Double.longBitsToDouble(blockLow), Double.longBitsToDouble(low)) < 0)
                 low = blockLow;
-              if (Double.longBitsToDouble(blockHigh) > Double.longBitsToDouble(high))
+              if (Double.compare(Double.longBitsToDouble(blockHigh), Double.longBitsToDouble(high)) > 0)
                 high = blockHigh;
             } else {
               low = Math.min(low, blockLow);
