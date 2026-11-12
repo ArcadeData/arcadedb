@@ -4880,10 +4880,16 @@ public class SelectExecutionPlanner {
         plan.chain(new ParallelExecStep(resultSubPlans, context));
         plan.chain(new FilterByClustersStep(filterClusters, context));
         plan.chain(new DistinctExecutionStep(context));
-        if (rescoresAfterTheBranches(typez, info, context))
+        if (rescoresAfterTheBranches(typez, info, context)) {
           // The DISTINCT keeps a record as the first branch to match served it, with the $score of that branch alone: the whole
-          // WHERE gives it the best score of the arms it matches, the one MergeByScoreStep serves it with (issue #11618)
-          plan.chain(new FilterStep(info.whereClause, context));
+          // WHERE gives it the best score of the arms it matches, the one MergeByScoreStep serves it with (issue #11618). As
+          // "WHERE OR true", which sets the score and drops no row: an arm an index answered, as a full-text index answers
+          // CONTAINSTEXT, can disagree with the same condition evaluated on the record
+          final OrBlock rescore = new OrBlock();
+          rescore.getSubBlocks().add(info.whereClause.getBaseExpression());
+          rescore.getSubBlocks().add(BooleanExpression.TRUE);
+          plan.chain(new FilterStep(createWhereFrom(rescore), context));
+        }
       }
       indexedFunctionsFound = true;
     }

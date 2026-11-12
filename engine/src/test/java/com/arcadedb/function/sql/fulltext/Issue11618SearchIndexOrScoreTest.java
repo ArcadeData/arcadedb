@@ -24,7 +24,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,6 +96,16 @@ class Issue11618SearchIndexOrScoreTest extends TestHelper {
         Map.of("textOnly", text.get("textOnly")));
   }
 
+  /** A scoring call on the right-hand side of its condition scores as one on the left does. */
+  @Test
+  void aScoringCallOnTheRightOfItsConditionKeepsItsScore() {
+    final Map<String, Float> text = scores("SELECT name, $score AS score FROM Chunk WHERE " + A);
+    final String rid = database.query("sql", "SELECT @rid AS rid FROM Chunk WHERE name = 'textOnly'").next().getProperty("rid")
+        .toString();
+    assertThat(scores("SELECT name, $score AS score FROM [" + rid + "] WHERE true = SEARCH_INDEX('Chunk[text]', 'capital') OR " + B))
+        .isEqualTo(Map.of("textOnly", text.get("textOnly")));
+  }
+
   /** A record matched only by an arm that does not score gets 0, not the score left by the record before it. */
   @Test
   void aRecordMatchedOnlyByAPlainArmGetsZero() {
@@ -109,6 +121,21 @@ class Issue11618SearchIndexOrScoreTest extends TestHelper {
     everyMatch.put("bothTextBest", text.get("bothTextBest"));
     assertThat(scores("SELECT name, $score AS score FROM Chunk WHERE name IN ['questionsOnly', 'filler1'] OR " + A
         + " ORDER BY name")).isEqualTo(everyMatch);
+  }
+
+  /**
+   * Setting the scores again does not filter the rows again: an arm an index answered with its own semantics, as a full-text
+   * index answers CONTAINSTEXT ignoring case, keeps every row it returned.
+   */
+  @Test
+  void rescoringKeepsTheRowsAnIndexedArmReturned() {
+    final Set<String> containsText = scores("SELECT name, 0 AS score FROM Chunk WHERE questions CONTAINSTEXT 'CAPITAL'").keySet();
+    assertThat(containsText).contains("questionsOnly");
+    final Set<String> expected = new HashSet<>(scores("SELECT name, $score AS score FROM Chunk WHERE " + A).keySet());
+    expected.addAll(containsText);
+    for (final String orderBy : new String[] { "", " ORDER BY name" })
+      assertThat(scores("SELECT name, $score AS score FROM Chunk WHERE " + A + " OR questions CONTAINSTEXT 'CAPITAL'" + orderBy)
+          .keySet()).as(orderBy).isEqualTo(expected);
   }
 
   private void insert(final String name, final String text, final String questions) {
