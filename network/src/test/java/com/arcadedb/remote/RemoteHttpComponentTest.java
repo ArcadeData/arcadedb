@@ -945,7 +945,7 @@ class RemoteHttpComponentTest {
     }
 
     // Replica server: accepts one connection and returns HTTP/1.1 200 OK with JSON body
-    try (final ServerSocket replicaSocket = new ServerSocket(0)) {
+    try (final ServerSocket replicaSocket = LoopbackStubListener.bind()) {
       final int replicaPort = replicaSocket.getLocalPort();
 
       final Thread serverThread = new Thread(() -> {
@@ -1313,7 +1313,7 @@ class RemoteHttpComponentTest {
    */
   @Test
   void sendWithWatchdogFiresWithinConfiguredWindowNotAThousandTimesLonger() throws Exception {
-    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+    try (final ServerSocket serverSocket = LoopbackStubListener.bind()) {
       final int port = serverSocket.getLocalPort();
 
       final Thread serverThread = new Thread(() -> {
@@ -1369,7 +1369,7 @@ class RemoteHttpComponentTest {
    * {@code action} against its port. Used to exercise the client's retry loop across multiple attempts.
    */
   private void withHttpServer(final List<StubResponse> responses, final ServerAction action) throws Exception {
-    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+    try (final ServerSocket serverSocket = LoopbackStubListener.bind()) {
       final int port = serverSocket.getLocalPort();
 
       final Thread serverThread = new Thread(() -> {
@@ -1410,7 +1410,7 @@ class RemoteHttpComponentTest {
    * before writing the response so the client does not block on the request body.
    */
   private void withOneShotHttp200Server(final String responseBody, final ServerAction action) throws Exception {
-    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+    try (final ServerSocket serverSocket = LoopbackStubListener.bind()) {
       final int port = serverSocket.getLocalPort();
 
       final Thread serverThread = new Thread(() -> {

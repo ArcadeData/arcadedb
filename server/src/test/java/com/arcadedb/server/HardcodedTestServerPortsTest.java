@@ -72,6 +72,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link StaticBaseServerTest#allocateFreePorts(int)} instead. A probe that binds port 0 and closes it only to obtain an
  * address that refuses connections is the third shape: it hands the number to a client, not to a listener, and the
  * worst a stranger taking it can do is answer that client.
+ * <p>
+ * <b>A held listener must be bound to an address</b>, the one its client dials. {@code new ServerSocket(port)} binds
+ * the wildcard address, and on macOS that does not own the port: another process can still bind {@code 127.0.0.1} on
+ * it (Java sets {@code SO_REUSEADDR} on every server socket) and, being the more specific binding, receives every
+ * connection the test's client makes to {@code 127.0.0.1}. A stub HTTP server of the {@code network} tests was answered
+ * that way with a stranger's {@code 404} during a parallel build (issue #11538). The scan flags a one-argument
+ * {@code new ServerSocket(...)} whose variable the same source then {@code accept()}s on.
  */
 class HardcodedTestServerPortsTest {
 
@@ -104,6 +111,12 @@ class HardcodedTestServerPortsTest {
    * {@code ArcadeGraph} learns the port from the server; a test that builds its own driver reads it from the fixture.
    */
   private static final Pattern LITERAL_GREMLIN_PORT = Pattern.compile("\\.port\\(\\s*8182\\s*\\)");
+
+  /**
+   * {@code socket = new ServerSocket(0)}: a listener on the wildcard address, captured by the variable it is assigned
+   * to. Only an offender when that variable is also {@code accept()}ed on, see {@link #acceptsOn(String, String)}.
+   */
+  private static final Pattern WILDCARD_LISTENER = Pattern.compile("\\b(\\w+)\\s*=\\s*new\\s+ServerSocket\\(\\s*[^,()\\s][^,()]*\\)");
 
   /** A class that starts an ArcadeDB server, directly or through one of the fixture bases. */
   private static final Pattern STARTS_SERVER = Pattern.compile(
@@ -173,6 +186,14 @@ class HardcodedTestServerPortsTest {
         class IndirectRaftRestart extends SomeRaftFixture { @Test void t() { servers[i].start(); } }""");
     sources.put("a/SomeRaftFixture.java", """
         abstract class SomeRaftFixture extends BaseRaftHATest { }""");
+    sources.put("a/WildcardStub.java", """
+        class WildcardStub {
+          private final ServerSocket socket;
+          WildcardStub() { socket = new ServerSocket(0); }
+          @Test void t() { try (Socket client = socket.accept()) { answer(client); } } }""");
+    sources.put("a/WildcardStubInTry.java", """
+        class WildcardStubInTry {
+          @Test void t() { try (final ServerSocket serverSocket = new ServerSocket(0)) { serverSocket.accept(); } } }""");
     sources.put("a/RatisPort.java", """
         class RatisPort {
           private static final int BASE_PORT = 19860;
@@ -196,6 +217,14 @@ class HardcodedTestServerPortsTest {
             try (ServerSocket leader = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))) {
               forward("http://127.0.0.1:" + leader.getLocalPort() + "/api/v1/batch/db");
             } } }""");
+    // A stub listening on the address its client dials, and a wildcard probe released only to obtain a refusing port.
+    sources.put("b/LoopbackStub.java", """
+        class LoopbackStub {
+          @Test void t() {
+            try (final ServerSocket serverSocket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) { serverSocket.accept(); }
+            try (final ServerSocket stub = LoopbackStubListener.bind()) { stub.accept(); }
+            try (final ServerSocket probe = new ServerSocket(0)) { closedPort = probe.getLocalPort(); }
+          } }""");
     // The fixture's own helper, and a bare start() outside a Raft fixture, where nothing was patched to lose.
     sources.put("b/RaftRestart.java", """
         class RaftRestart extends BaseRaftHATest { @Test void t() { getServer(1).stop(); startServer(1); } }""");
@@ -208,8 +237,8 @@ class HardcodedTestServerPortsTest {
 
     final List<String> offenders = offenders(sources);
     for (final String name : List.of("IndexUrl", "HttpsIndexUrl", "LiteralUrl", "LiteralSetting", "ConstantSetting", "BasePlusIndex",
-        "GremlinDriverPort", "RatisPort", "BareRaftRestart", "BareRaftRestartOfLeader", "AliasedRaftRestart", "VarAliasedRaftRestart",
-        "IndirectRaftRestart"))
+        "GremlinDriverPort", "RatisPort", "WildcardStub", "WildcardStubInTry", "BareRaftRestart", "BareRaftRestartOfLeader",
+        "AliasedRaftRestart", "VarAliasedRaftRestart", "IndirectRaftRestart"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
   }
@@ -264,6 +293,12 @@ class HardcodedTestServerPortsTest {
 
       if (declaresAnyOf(source, raftFixtureSubclasses))
         reportBareFixtureStarts(offenders, name, source);
+
+      final Matcher wildcard = WILDCARD_LISTENER.matcher(source);
+      while (wildcard.find())
+        if (acceptsOn(wildcard.group(1), source))
+          offenders.add(location(name, source, wildcard.start()) + ": accepts connections on a listener bound to the wildcard "
+              + "address, which a stranger binding 127.0.0.1 on the same port can answer for; bind the address the client dials");
     }
     return offenders;
   }
@@ -315,6 +350,11 @@ class HardcodedTestServerPortsTest {
       }
     }
     return subclasses;
+  }
+
+  /** Whether the source accepts connections on the socket held by {@code variable}. */
+  private static boolean acceptsOn(final String variable, final String source) {
+    return Pattern.compile("\\b" + Pattern.quote(variable) + "\\s*\\.\\s*accept\\(").matcher(source).find();
   }
 
   private static boolean declaresAnyOf(final String source, final Set<String> classNames) {

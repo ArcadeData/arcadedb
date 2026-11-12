@@ -289,7 +289,7 @@ class Issue8136RemoteCommandReplayTest {
     private final AtomicInteger received = new AtomicInteger();
 
     CountingServer() throws IOException {
-      socket = new ServerSocket(0);
+      socket = LoopbackStubListener.bind();
       final Thread t = new Thread(() -> {
         while (!socket.isClosed()) {
           try (final Socket client = socket.accept()) {
