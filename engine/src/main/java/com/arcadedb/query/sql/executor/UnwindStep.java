@@ -18,9 +18,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.GeneratedAlias;
 import com.arcadedb.query.sql.parser.Unwind;
 
 import java.util.*;
@@ -32,6 +34,12 @@ import java.util.stream.Collectors;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class UnwindStep extends AbstractExecutionStep {
+  /**
+   * The column under which the projection before the UNWIND carries the record it projected, for an operand that reads
+   * both the projected row and the record (issue #11563). The projection after the UNWIND drops it.
+   */
+  public static final String RECORD_ALIAS = GeneratedAlias.PREFIX + "UNWIND_RECORD$$$";
+
   /**
    * Checks the statement's deadline and termination while a long list is expanded: the expansion of one input row reads
    * no record, so no scan below this step checks anything meanwhile (issue #9680). Created on the first pull.
@@ -45,12 +53,30 @@ public class UnwindStep extends AbstractExecutionStep {
    * expression whose elements are written into the alias (issue #11442).
    */
   private final Expression[] operands;
+  /**
+   * Parallel to {@link #operands}: whether the operand is evaluated on the projected row laid over the record the row
+   * carries under {@link #RECORD_ALIAS} (issue #11563), or null when none is.
+   */
+  private final boolean[]    overRecord;
+  /** The names the projection excluded, which the record must not answer in the row's place. */
+  private final Set<String>  hiddenNames;
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
   public UnwindStep(final Unwind unwind, final CommandContext context) {
+    this(unwind, context, null, null);
+  }
+
+  /**
+   * @param overRecord  parallel to the items: whether an operand reads the record the row carries under
+   *                    {@link #RECORD_ALIAS} for the names the row lacks, or null when none does
+   * @param hiddenNames the names the projection excluded, answered from the row (as null) and never from the record
+   */
+  public UnwindStep(final Unwind unwind, final CommandContext context, final boolean[] overRecord, final Set<String> hiddenNames) {
     super(context);
+    this.overRecord = overRecord;
+    this.hiddenNames = hiddenNames;
     this.unwind = unwind;
     unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
     operands = new Expression[unwindFields.size()];
@@ -133,7 +159,7 @@ public class UnwindStep extends AbstractExecutionStep {
       final int nextFields = itemIndex + 1;
       final Expression operand = operands[itemIndex];
 
-      final Object fieldValue = operand != null ? operand.execute(doc, context) : doc.getProperty(firstField);
+      final Object fieldValue = operand != null ? operand.execute(operandRow(doc, itemIndex, context), context) : doc.getProperty(firstField);
       if (fieldValue == null || fieldValue instanceof Record
           || (!(fieldValue instanceof Iterable) && !MultiValue.isSequenceArray(fieldValue))) {
         // Null, Record, scalar or BINARY blob value: there is nothing to flatten, so a single row is forwarded.
@@ -177,6 +203,16 @@ public class UnwindStep extends AbstractExecutionStep {
     }
 
     return result;
+  }
+
+  /**
+   * The row an operand is evaluated on: the row itself, or the row laid over the record it carries when the operand
+   * reads both (issue #11563).
+   */
+  private Result operandRow(final Result doc, final int itemIndex, final CommandContext context) {
+    if (overRecord != null && overRecord[itemIndex] && doc.getProperty(RECORD_ALIAS) instanceof Document record)
+      return new RecordOverlayResult(context.getDatabase(), doc, record, hiddenNames);
+    return doc;
   }
 
   private void copy(final Result from, final ResultInternal to) {

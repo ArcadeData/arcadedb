@@ -1157,7 +1157,7 @@ public class SelectExecutionPlanner {
 
   public static void handleUnwind(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
     if (info.unwind != null) {
-      result.chain(new UnwindStep(info.unwind, context));
+      result.chain(new UnwindStep(info.unwind, context, info.unwindOperandsOverRecord, info.unwindHiddenNames));
     }
   }
 
@@ -1380,7 +1380,9 @@ public class SelectExecutionPlanner {
    * the record, under a generated alias the UNWIND then reads (issue #11537). That is what lets it read what a narrowing
    * projection drops: a record attribute ({@code @rid}), a record-level function ({@code out()}), a field read only inside
    * a method or index argument ({@code a[b]}) or a {@code CASE}. Any other operand reads the projected row, and every
-   * field it is seen to read is brought into the projection the way a bare field is.
+   * field it is seen to read is brought into the projection the way a bare field is; when the row is projected from a
+   * record (no aggregation), the projection also carries that record under {@link UnwindStep#RECORD_ALIAS}, and the
+   * UNWIND evaluates the operand on the row laid over it, so a name the row lacks is read off the record (issue #11563).
    */
   private static void addUnwindProjections(final QueryPlanningInfo info, final CommandContext context) {
     if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
@@ -1396,6 +1398,7 @@ public class SelectExecutionPlanner {
 
     // an aggregated row is not a record, so no operand can be evaluated against the record there
     final Set<String> lateNames = info.preAggregateProjection == null ? namesReadOnlyAfterProjection(info) : null;
+    boolean[] overRecord = null;
 
     final List<Identifier> unwindItems = info.unwind.getItems();
     final List<Identifier> readFields = new ArrayList<>();
@@ -1418,11 +1421,39 @@ public class SelectExecutionPlanner {
           early.setAlias(earlyAlias);
           earlyOperandProjections.add(early);
           info.unwind.expressions.set(i, new Expression(earlyAlias));
-        } else
+        } else {
           // Every field the operand reads (`a` in `a.b`, `(a.b)`, `a.size() + b`, `f(a)`) is brought into the projection
           // the same way a bare field is; an operand that reads no field (a parameter) brings nothing
           collectReadFields(operand, readFields);
+          if (lateNames != null && !operand.isAggregate(context)) {
+            // it also reads a name only the row holds, so it is evaluated by the UNWIND on the row laid over the record,
+            // which the projection carries for it: what the row lacks (@rid, out(), a field read inside a modifier or a
+            // CASE) is read off the record (issue #11563)
+            if (overRecord == null)
+              overRecord = new boolean[unwindItems.size()];
+            overRecord[i] = true;
+          }
+        }
       }
+    }
+
+    if (overRecord != null) {
+      final RecordAttribute self = new RecordAttribute();
+      self.setName(Property.THIS_PROPERTY);
+      final ProjectionItem carrier = new ProjectionItem();
+      carrier.setExpression(new Expression(self, null));
+      carrier.setAlias(new Identifier(UnwindStep.RECORD_ALIAS));
+      earlyOperandProjections.add(carrier);
+
+      Set<String> hidden = null;
+      for (final ProjectionItem item : info.projection.getItems())
+        if (item.exclude) {
+          if (hidden == null)
+            hidden = new HashSet<>();
+          hidden.add(item.getProjectionAliasAsString());
+        }
+      info.unwindOperandsOverRecord = overRecord;
+      info.unwindHiddenNames = hidden;
     }
 
     for (final Identifier readField : readFields) {
@@ -1442,9 +1473,22 @@ public class SelectExecutionPlanner {
       // Save the original projection to restore after UNWIND
       info.projectionAfterUnwind = new Projection();
       info.projectionAfterUnwind.setItems(new ArrayList<>());
-      for (final String alias : allAliases) {
-        info.projectionAfterUnwind.getItems().add(projectionFromAlias(new Identifier(alias)));
+      boolean keepsAll = false;
+      for (final ProjectionItem item : info.projection.getItems()) {
+        final ProjectionItem after = projectionFromAlias(new Identifier(item.getProjectionAliasAsString()));
+        // an excluded column stays excluded, rather than coming back as a null column
+        after.exclude = item.exclude;
+        keepsAll |= item.isAll();
+        info.projectionAfterUnwind.getItems().add(after);
       }
+      if (keepsAll)
+        // `*` copies every column of the row, so the columns generated for the UNWIND are excluded by name
+        for (final ProjectionItem item : additionalUnwindProjections)
+          if (GeneratedAlias.is(item.getAlias().getStringValue())) {
+            final ProjectionItem excluded = projectionFromAlias(item.getAlias());
+            excluded.exclude = true;
+            info.projectionAfterUnwind.getItems().add(excluded);
+          }
       for (final String alias : unwindAliases)
         if (!allAliases.contains(alias))
           info.projectionAfterUnwind.getItems().add(projectionFromAlias(new Identifier(alias)));
