@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
@@ -98,25 +99,30 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
 
   @Override
   public Object getResult() {
-    return MultiValue.toSet(context);
+    return toDistinctSet(context);
   }
 
-  static Collection intersectWith(final Iterator current, Object value) {
-    final HashSet tempSet = new HashSet();
-
-    if (!(value instanceof Set))
-      value = MultiValue.toSet(value);
+  static Collection intersectWith(final Iterator current, final Object value) {
+    final DistinctValueSet tempSet = new DistinctValueSet();
+    final Set<Object> other = toDistinctSet(value);
 
     for (final Iterator it = current; it.hasNext(); ) {
       final Object curr = it.next();
-
-      if (value instanceof Collection collection) {
-        if (collection.contains(curr))
-          tempSet.add(curr);
-      }
+      if (other.contains(curr))
+        tempSet.add(curr);
     }
 
     return tempSet;
+  }
+
+  /** The items of {@code value} keyed as SQL compares them, so a {@code Long} 1 and an {@code Integer} 1 are one (issue #11581). */
+  private static Set<Object> toDistinctSet(final Object value) {
+    if (value instanceof DistinctValueSet set)
+      return set;
+    final DistinctValueSet set = new DistinctValueSet();
+    if (MultiValue.toSet(value) instanceof Collection<?> items)
+      set.addAll(items);
+    return set;
   }
 
   public String getSyntax() {
