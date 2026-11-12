@@ -40,6 +40,7 @@ final class SchemaSessionCounter {
   private final DatabaseInternal proxy;
   private       int              depth     = 0;
   private       int              outermost = 0;
+  private       int              failed    = 0;
 
   private SchemaSessionCounter(final DatabaseInternal delegate) {
     this.delegate = delegate;
@@ -54,6 +55,9 @@ final class SchemaSessionCounter {
           try {
             return method.invoke(this.delegate, args);
           } catch (final InvocationTargetException e) {
+            // an outermost session that throws is one Raft publishes nothing for (RaftReplicatedDatabase.recordFileChanges)
+            if (session && depth == 1)
+              ++failed;
             throw e.getCause();
           } finally {
             if (session)
@@ -65,9 +69,15 @@ final class SchemaSessionCounter {
   /** What {@link #count} saw, available even when the work threw: the only way to measure work that fails part way. */
   static final class Count {
     private int sessions = -1;
+    private int failed   = -1;
 
     int sessions() {
       return sessions;
+    }
+
+    /** The outermost sessions that ended by throwing: under HA, schema changes the leader made and never shipped. */
+    int failed() {
+      return failed;
     }
   }
 
@@ -80,11 +90,13 @@ final class SchemaSessionCounter {
     final SchemaSessionCounter counter = new SchemaSessionCounter(database);
     database.setWrappedDatabaseInstance(counter.proxy);
     seen.sessions = -1;
+    seen.failed = -1;
     try {
       work.run();
     } finally {
       database.setWrappedDatabaseInstance(previous);
       seen.sessions = counter.outermost;
+      seen.failed = counter.failed;
     }
     return counter.outermost;
   }

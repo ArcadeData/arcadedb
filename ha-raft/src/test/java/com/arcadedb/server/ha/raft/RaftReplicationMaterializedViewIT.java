@@ -19,10 +19,20 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.event.BeforeRecordCreateListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.index.Index;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.MaterializedViewImpl;
+import com.arcadedb.schema.MaterializedViewRefreshMode;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -129,6 +139,188 @@ class RaftReplicationMaterializedViewIT extends BaseRaftHATest {
 
     for (int i = 0; i < getServerCount(); i++)
       assertThat(withResyncRetry(i, RaftReplicationMaterializedViewIT::readSchemaFile)).doesNotContain("RaftHighMetrics");
+  }
+
+  /**
+   * An ALTER ... REFRESH INCREMENTAL whose upgrade pass fails on the leader (issue #11475) still ships its schema change: the
+   * frame returns normally, so every follower gets the source link, its UNIQUE index and the per-record flag the leader already
+   * has, and the recovery pass a later commit gets made on the leader replicates to all of them.
+   */
+  @Test
+  void failedUpgradePassStillReplicatesTheSchemaChange() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("Expected to find a Raft leader").isGreaterThanOrEqualTo(0);
+    final String query = "SELECT name, age FROM RaftPerson WHERE age >= 18";
+
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().createDocumentType("RaftPerson");
+      db.transaction(() -> {
+        for (int i = 0; i < 20; i++)
+          db.newDocument("RaftPerson").set("name", "p" + i).set("age", 10 + i).save();
+      });
+      db.getSchema().buildMaterializedView().withName("RaftAdults").withQuery(query)
+          .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create();
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    final Exception failure = withResyncRetry(leaderIndex, db -> {
+      final DocumentType backing = db.getSchema().getType("RaftAdults");
+      final BeforeRecordCreateListener boomOnCreate = record -> {
+        throw new IllegalStateException("simulated failure of the upgrade pass");
+      };
+      final BeforeRecordUpdateListener boomOnUpdate = record -> {
+        throw new IllegalStateException("simulated failure of the upgrade pass");
+      };
+      backing.getEvents().registerListener(boomOnCreate);
+      backing.getEvents().registerListener(boomOnUpdate);
+      try {
+        db.getSchema().alterMaterializedView("RaftAdults", MaterializedViewRefreshMode.INCREMENTAL, 0);
+        return null;
+      } catch (final Exception e) {
+        return e;
+      } finally {
+        backing.getEvents().unregisterListener(boomOnCreate);
+        backing.getEvents().unregisterListener(boomOnUpdate);
+      }
+    });
+    assertThat(failure).as("the ALTER reports the failed upgrade pass").isNotNull();
+    assertThat(failure.getMessage()).contains("was switched to REFRESH INCREMENTAL");
+
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      final boolean perRecord = withResyncRetry(server,
+          db -> ((MaterializedViewImpl) db.getSchema().getMaterializedView("RaftAdults")).isPerRecord());
+      assertThat(perRecord).as("server %d has the per-record flag", server).isTrue();
+      final boolean indexed = withResyncRetry(server, RaftReplicationMaterializedViewIT::hasSourceIndex);
+      assertThat(indexed).as("server %d has the UNIQUE index on the source link", server).isTrue();
+    }
+
+    // A commit on the leader gets the recovery full pass made, and that pass replicates like any other
+    withResyncRetry(leaderIndex, db -> {
+      db.transaction(() -> db.newDocument("RaftPerson").set("name", "late").set("age", 40).save());
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      Awaitility.await("server " + server + " holds the recovered view").atMost(60, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .untilAsserted(() -> {
+            final long linked = withResyncRetry(server, RaftReplicationMaterializedViewIT::linkedRowCount);
+            final long expected = withResyncRetry(server, db -> count(db, "SELECT count(*) AS c FROM (" + query + ")"));
+            assertThat(linked).isEqualTo(expected);
+          });
+    }
+  }
+
+  /**
+   * A successful ALTER ... REFRESH INCREMENTAL of a view created without the source link (issue #11475): its upgrade pass writes
+   * the link on every existing row inside the schema frame of the ALTER, and those rows must reach every follower with the flag
+   * and the index. A follower holding the index over rows without the link would, once promoted, match no row by it and duplicate
+   * every row its first delta pass touched.
+   */
+  @Test
+  void successfulUpgradeReplicatesTheLinkOnEveryRow() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("Expected to find a Raft leader").isGreaterThanOrEqualTo(0);
+    final String query = "SELECT name, age FROM RaftPerson WHERE age >= 18";
+
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().createDocumentType("RaftPerson");
+      db.transaction(() -> {
+        for (int i = 0; i < 20; i++)
+          db.newDocument("RaftPerson").set("name", "p" + i).set("age", 10 + i).save();
+      });
+      db.getSchema().buildMaterializedView().withName("RaftAdults").withQuery(query)
+          .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create();
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      assertThat(linkedRows(server))
+          .as("server %d starts with rows that carry no link", server).isEqualTo(-1L);
+    }
+
+    withResyncRetry(leaderIndex, db -> {
+      db.getSchema().alterMaterializedView("RaftAdults", MaterializedViewRefreshMode.INCREMENTAL, 0);
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    final long expected = withResyncRetry(leaderIndex, db -> count(db, "SELECT count(*) AS c FROM (" + query + ")"));
+    assertThat(expected).isEqualTo(12L);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      final boolean perRecord = withResyncRetry(server,
+          db -> ((MaterializedViewImpl) db.getSchema().getMaterializedView("RaftAdults")).isPerRecord());
+      assertThat(perRecord).as("server %d has the per-record flag", server).isTrue();
+      assertThat(indexed(server))
+          .as("server %d has the UNIQUE index on the source link", server).isTrue();
+      assertThat(viewRowCount(server))
+          .as("server %d holds every row once", server).isEqualTo(expected);
+      assertThat(linkedRows(server))
+          .as("server %d holds the link the upgrade pass wrote on every row", server).isEqualTo(expected);
+    }
+
+    // The first delta pass after the upgrade matches the rows by the link on every node: no row is duplicated anywhere
+    withResyncRetry(leaderIndex, db -> {
+      db.transaction(() -> db.command("sql", "UPDATE RaftPerson SET age = 60 WHERE name = 'p1'"));
+      return null;
+    });
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+    for (int i = 0; i < getServerCount(); i++) {
+      final int server = i;
+      assertThat(viewRowCount(server))
+          .as("server %d gained only p1", server).isEqualTo(expected + 1);
+      assertThat(linkedRows(server))
+          .as("server %d holds every row linked", server).isEqualTo(expected + 1);
+    }
+  }
+
+  private long linkedRows(final int server) {
+    return withResyncRetry(server, RaftReplicationMaterializedViewIT::linkedRowCount);
+  }
+
+  private boolean indexed(final int server) {
+    return withResyncRetry(server, RaftReplicationMaterializedViewIT::hasSourceIndex);
+  }
+
+  /** count(@rid), not count(*): the ground truth of a scan, not the cached bucket counter. */
+  private long viewRowCount(final int server) {
+    return withResyncRetry(server, db -> count(db, "SELECT count(@rid) AS c FROM RaftAdults"));
+  }
+
+  private static boolean hasSourceIndex(final Database database) {
+    for (final Index index : database.getSchema().getType("RaftAdults").getAllIndexes(false))
+      if (index.isUnique() && index.getPropertyNames().equals(List.of("_sourceRID")))
+        return true;
+    return false;
+  }
+
+  /** The view rows that carry the source link; -1 when some row lacks it, so a half-recovered view never matches. */
+  private static long linkedRowCount(final Database database) {
+    long linked = 0;
+    try (final ResultSet rs = database.query("sql", "SELECT _sourceRID FROM RaftAdults")) {
+      while (rs.hasNext()) {
+        if (rs.next().getProperty("_sourceRID") == null)
+          return -1;
+        ++linked;
+      }
+    }
+    return linked;
+  }
+
+  private static long count(final Database database, final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
   }
 
   private static String readSchemaFile(final Database database) {

@@ -90,6 +90,10 @@ public class SelectStatement extends Statement {
     return skip;
   }
 
+  public Limit getLimit() {
+    return limit;
+  }
+
   public LetClause getLetClause() {
     return letClause;
   }

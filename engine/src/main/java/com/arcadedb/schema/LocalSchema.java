@@ -31,6 +31,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
@@ -2913,46 +2914,99 @@ public class LocalSchema implements Schema {
 
     // See dropMaterializedView for why the monitor is not held across recordFileChanges, and why the teardown of the
     // old refresh resources and the setup of the new ones both run inside it (#7457)
+    final MaterializedViewImpl registered;
     synchronized (this) {
-      if (!materializedViews.containsKey(viewName))
+      registered = materializedViews.get(viewName);
+      if (registered == null)
         throw new SchemaException("Materialized view '" + viewName + "' not found");
     }
 
-    recordFileChanges(() -> {
-      final MaterializedViewImpl oldView;
-      final MaterializedViewImpl newView;
-      final MaterializedViewScheduler scheduler;
-      synchronized (this) {
-        oldView = materializedViews.get(viewName);
-        if (oldView == null)
-          throw new SchemaException("Materialized view '" + viewName + "' not found");
-        // A view whose query reads what no type's events report cannot become INCREMENTAL (issue #10205). Checked here, on
-        // the query of the view this ALTER replaces, before anything changes
-        if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
-          MaterializedViewSources.of(database, oldView.getQuery()).checkIncremental(viewName);
-        // Create new view instance with updated refresh mode
-        newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
-        adoptEveryReadType(newView);
-        materializedViews.put(viewName, newView);
-        scheduler = materializedViewScheduler;
-      }
+    // ALTER ... REFRESH INCREMENTAL is the upgrade path of a view whose rows map 1:1 to source records (issue #11475): it gains
+    // the source link, and the index on it is built under the async quiescence taken OUTSIDE the write lock of the frame, as at
+    // creation (#10537). Decided on the view read above: the flag only ever goes from false to true and a source rename keeps the
+    // query's shape, so the frame can only find less to do, never more. On a view already flagged it is a no-op for the link
+    final boolean upgradeCandidate = newMode == MaterializedViewRefreshMode.INCREMENTAL && !registered.isPerRecord()
+        && MaterializedViewQueryClassifier.isPerRecord(registered.getQuery(), database);
 
-      // Tear down old refresh infrastructure
-      if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-        MaterializedViewBuilder.unregisterListeners(this, oldView);
-      if (scheduler != null)
-        scheduler.cancel(viewName);
+    // The failure of the upgrade pass, caught inside the frame and reported after it (issue #11475)
+    final AtomicReference<RuntimeException> upgradePassFailure = new AtomicReference<>();
+    try (final AsyncQuiesce asyncPaused = upgradeCandidate ? database.quiesceAsync() : null) {
+      recordFileChanges(() -> {
+        final MaterializedViewImpl oldView;
+        final MaterializedViewImpl newView;
+        final MaterializedViewScheduler scheduler;
+        synchronized (this) {
+          oldView = materializedViews.get(viewName);
+          if (oldView == null)
+            throw new SchemaException("Materialized view '" + viewName + "' not found");
+          // A view whose query reads what no type's events report cannot become INCREMENTAL (issue #10205). Checked here, on
+          // the query of the view this ALTER replaces, before anything changes
+          if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
+            MaterializedViewSources.of(database, oldView.getQuery()).checkIncremental(viewName);
+          // Create new view instance with updated refresh mode
+          newView = oldView.copyWithRefreshMode(newMode, newIntervalMs);
+        }
 
-      saveConfiguration();
+        final boolean upgrade = upgradeCandidate && !newView.isPerRecord();
+        if (upgrade) {
+          // Before the new view is registered: a refusal here leaves the old one in place, maintained as before
+          MaterializedViewPerRecordRefresher.addLink(this, newView);
+          newView.setPerRecord(true);
+          // The schema saved below carries the flag before any row carries the link: BUILDING, as at creation, makes a crash in
+          // between reopen as STALE with a full pass owed, instead of a VALID per-record view over unlinked rows
+          newView.setStatus(MaterializedViewStatus.BUILDING);
+        }
 
-      // Set up new refresh infrastructure
-      if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
-        MaterializedViewBuilder.registerListeners(this, newView, newView.getSourceTypeNames());
-      if (newMode == MaterializedViewRefreshMode.PERIODIC && newIntervalMs > 0)
-        getMaterializedViewScheduler().schedule((DatabaseInternal) database, newView);
+        synchronized (this) {
+          adoptEveryReadType(newView);
+          materializedViews.put(viewName, newView);
+          // A transaction open across this ALTER captured its changes against the old instance: its commit follows this link
+          oldView.replacedBy(newView);
+          scheduler = materializedViewScheduler;
+        }
 
-      return null;
-    });
+        // Tear down old refresh infrastructure
+        if (oldView.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+          MaterializedViewBuilder.unregisterListeners(this, oldView);
+        if (scheduler != null)
+          scheduler.cancel(viewName);
+
+        saveConfiguration();
+
+        try {
+          // One full pass writes the link on every row, matching rows by it from then on. Under the write lock, before the
+          // listeners exist, so no commit of a source lands between the pass and the registration
+          if (upgrade) {
+            try {
+              MaterializedViewRefresher.fullRefresh(database, newView);
+              saveConfiguration();
+            } catch (final RuntimeException e) {
+              // The link, its index and the flag are in the schema already, and the failed pass left the view in ERROR with a
+              // recovery full pass owed, persisted. The frame must still end normally: under HA a frame that throws ships
+              // nothing (RaftReplicatedDatabase.recordFileChanges), and the followers would lack the index file the leader's
+              // next pass writes pages of. The failure is reported once the frame is over
+              upgradePassFailure.set(e);
+            }
+          }
+        } finally {
+          // Set up new refresh infrastructure, also after a failed upgrade pass: the view then owes a recovery full pass, which
+          // the next commit hands to the scheduler, rather than being left with no listener at all
+          if (newMode == MaterializedViewRefreshMode.INCREMENTAL)
+            MaterializedViewBuilder.registerListeners(this, newView, newView.getSourceTypeNames());
+          if (newMode == MaterializedViewRefreshMode.PERIODIC && newIntervalMs > 0)
+            getMaterializedViewScheduler().schedule(database, newView);
+        }
+
+        return null;
+      });
+    }
+
+    final RuntimeException failure = upgradePassFailure.get();
+    if (failure != null)
+      throw new SchemaException("Materialized view '" + viewName + "' was switched to REFRESH INCREMENTAL and carries the "
+          + MaterializedViewPerRecordRefresher.SOURCE_RID + " link, but the full pass that writes the link on every row failed: "
+          + "the view is in ERROR and owes a recovery full pass, which the next commit on a source type hands to the scheduler, "
+          + "or run REFRESH MATERIALIZED VIEW " + viewName + ". Cause: " + failure.getMessage(), failure);
   }
 
   @Override
@@ -5358,6 +5412,8 @@ public class LocalSchema implements Schema {
     // On a schema-file read, always clear and re-populate to keep in sync - taking the refresh resources of every
     // view down first, for the reason the trigger sweep above does: an INCREMENTAL view holds listeners on its
     // source types and a PERIODIC one holds a scheduled task, and neither goes away with the map entry.
+    // The instances the sweep forgets are kept until their replacement is registered: see replacedBy below
+    final Map<String, MaterializedViewImpl> sweptViews = replaceExisting && stage == null ? new HashMap<>(materializedViews) : Map.of();
     if (replaceExisting) {
       if (stage == null)
         for (final String viewName : new ArrayList<>(materializedViews.keySet()))
@@ -5371,6 +5427,8 @@ public class LocalSchema implements Schema {
         // can be undone rather than left as the registered view. Null on the replace path, where the sweep above
         // has already emptied the map.
         final MaterializedViewImpl replaced = viewTarget.get(viewName);
+        // The live instance this one takes the place of, on either path (none when staged: publishStagedMembers links those)
+        final MaterializedViewImpl predecessor = stage != null ? null : replaced != null ? replaced : sweptViews.get(viewName);
 
         try {
           final JSONObject viewDef = mvJSON.getJSONObject(viewName);
@@ -5383,6 +5441,11 @@ public class LocalSchema implements Schema {
           if (stage == null)
             unregisterMaterializedViewRefresh(viewName);
 
+          // A transaction open across the restore captured its changes against the instance replaced here, as across an ALTER
+          // (issue #11475): its commit, and a pass of that instance still running, follow this link to the registered view instead
+          // of refreshing an instance nothing else refreshes, whose failure would leave its recovery where no pass reads it
+          if (predecessor != null)
+            predecessor.replacedBy(view);
           viewTarget.put(viewName, view);
 
           // Staged: installed by publishStagedMembers().
@@ -5392,6 +5455,11 @@ public class LocalSchema implements Schema {
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
             view.setStatus(MaterializedViewStatus.STALE);
+
+          // A per-record view loaded non-VALID may be missing the records of a failed or interrupted pass, and the recovery mark
+          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass
+          if (view.isPerRecord() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
+            view.requestFullPass(true);
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading materialized view '%s': %s", e, viewName,
@@ -5409,6 +5477,11 @@ public class LocalSchema implements Schema {
           }
 
           unregisterMaterializedViewRefresh(viewName);
+
+          // The link to the instance being thrown away goes with it: the reinstated one is its own registered view again, and a
+          // swept one with no replacement refreshes itself, as before the restore
+          if (predecessor != null)
+            predecessor.replacedBy(null);
 
           if (replaced != null) {
             materializedViews.put(viewName, replaced);
@@ -5557,6 +5630,14 @@ public class LocalSchema implements Schema {
         LogManager.instance().log(this, Level.SEVERE, "Error releasing materialized view '%s': %s", e, viewName,
             e.getMessage() != null ? e.getMessage() : e.toString());
       }
+    // Each replaced instance follows its successor, as in the restore that does not stage (issue #11475), linked before the
+    // successor is published
+    final Map<String, MaterializedViewImpl> previousViews = new HashMap<>(materializedViews);
+    for (final Map.Entry<String, MaterializedViewImpl> entry : stage.materializedViews.entrySet()) {
+      final MaterializedViewImpl previous = previousViews.get(entry.getKey());
+      if (previous != null)
+        previous.replacedBy(entry.getValue());
+    }
     materializedViews.clear();
     materializedViews.putAll(stage.materializedViews);
 
@@ -5594,6 +5675,9 @@ public class LocalSchema implements Schema {
             e.getMessage() != null ? e.getMessage() : e.toString());
         unregisterMaterializedViewRefresh(view.getName());
         materializedViews.remove(view.getName());
+        final MaterializedViewImpl previous = previousViews.get(view.getName());
+        if (previous != null)
+          previous.replacedBy(null);
       }
     }
   }

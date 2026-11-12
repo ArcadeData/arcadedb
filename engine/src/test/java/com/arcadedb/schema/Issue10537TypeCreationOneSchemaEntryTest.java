@@ -121,6 +121,11 @@ class Issue10537TypeCreationOneSchemaEntryTest extends TestHelper {
       final var to = database.newVertex("B").save();
       from.newEdge("Populated", to);
     });
+    // The source of the per-record materialized view routes, and a MANUAL view over it the ALTER upgrades
+    database.command("sql", "CREATE DOCUMENT TYPE MvSource");
+    database.transaction(() -> database.newDocument("MvSource").set("name", "n").save());
+    database.getSchema().buildMaterializedView().withName("MvManual").withQuery("SELECT name FROM MvSource")
+        .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create();
   }
 
   @ParameterizedTest(name = "{0}")
@@ -219,7 +224,17 @@ class Issue10537TypeCreationOneSchemaEntryTest extends TestHelper {
     CYPHER_CREATE_WITH_INDEX(db -> db.command("opencypher", "CREATE (n:Indexed:AsyncCypher {key: 'k'})").close()),
     SQL_UNIQUE_EDGE(db -> db.command("sql", "CREATE EDGE TYPE SqlAsyncUnique UNIQUE").close()),
     SQL_SUPER_WITH_INDEX(db -> db.command("sql", "CREATE VERTEX TYPE SqlAsyncSub EXTENDS Indexed").close()),
-    ALTER_TYPE_UNIQUE(db -> db.command("sql", "ALTER TYPE Populated WITH unique = true").close());
+    ALTER_TYPE_UNIQUE(db -> db.command("sql", "ALTER TYPE Populated WITH unique = true").close()),
+    // A per-record materialized view builds the UNIQUE index on its source link, at creation and at the ALTER upgrade (#11475)
+    MV_PER_RECORD_CREATE(db -> {
+      db.getSchema().buildMaterializedView().withName("MvPerRecord").withQuery("SELECT name FROM MvSource")
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create();
+      assertThat(((MaterializedViewImpl) db.getSchema().getMaterializedView("MvPerRecord")).isPerRecord()).isTrue();
+    }),
+    MV_PER_RECORD_ALTER_UPGRADE(db -> {
+      db.command("sql", "ALTER MATERIALIZED VIEW MvManual REFRESH INCREMENTAL").close();
+      assertThat(((MaterializedViewImpl) db.getSchema().getMaterializedView("MvManual")).isPerRecord()).isTrue();
+    });
 
     private final Consumer<LocalDatabase> action;
 

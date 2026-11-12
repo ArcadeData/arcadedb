@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RecordEventsRegistry;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -267,7 +268,21 @@ public class MaterializedViewBuilder {
 
     // Classify query complexity
     final boolean simple = MaterializedViewQueryClassifier.isSimple(query, databaseInternal);
+    // Only an INCREMENTAL view is maintained per changed record, so only one gets the source link (issue #11475)
+    final boolean perRecord = refreshMode == MaterializedViewRefreshMode.INCREMENTAL
+        && MaterializedViewQueryClassifier.isPerRecord(query, databaseInternal);
 
+    // The async quiescence is taken OUTSIDE the write lock of the frame, for the build of the index on the source link: an index
+    // build waits for the async workers to drain, and they need that lock to commit their batch (issue #10537). A view with no
+    // link builds no index and is created exactly as before, without pausing the workers (a null resource is not closed)
+    try (final AsyncQuiesce asyncPaused = perRecord ? databaseInternal.quiesceAsync() : null) {
+      return createInFrame(databaseInternal, schema, sourceTypeNames, simple, perRecord);
+    }
+  }
+
+  /** The creation proper, in one schema frame, under the async quiescence {@link #create()} holds. */
+  private MaterializedView createInFrame(final DatabaseInternal databaseInternal, final LocalSchema schema,
+      final List<String> sourceTypeNames, final boolean simple, final boolean perRecord) {
     // Wrap in recordFileChanges so that all schema mutations (backing type creation,
     // MV metadata registration, and initial data population) are replicated atomically
     // to HA replicas as a single schema change
@@ -293,6 +308,18 @@ public class MaterializedViewBuilder {
           databaseInternal, name, query, name, sourceTypeNames,
           refreshMode, simple, refreshInterval);
       view.setStatus(MaterializedViewStatus.BUILDING);
+
+      // The source link is created with the backing type, before the first save and the initial refresh, so the schema that
+      // registers the view already carries it and the initial refresh writes it on every row (issue #11475)
+      if (perRecord) {
+        try {
+          MaterializedViewPerRecordRefresher.addLink(schema, view);
+        } catch (final Exception e) {
+          dropBackingTypeAfterFailure(schema);
+          throw e;
+        }
+        view.setPerRecord(true);
+      }
       synchronized (schema) {
         schema.materializedViews.put(name, view);
       }
@@ -306,13 +333,7 @@ public class MaterializedViewBuilder {
         synchronized (schema) {
           schema.materializedViews.remove(name);
         }
-        try {
-          schema.dropType(name);
-        } catch (final Exception dropEx) {
-          LogManager.instance().log(MaterializedViewBuilder.class, Level.WARNING,
-              "Failed to clean up backing type '%s' after materialized view creation failure: %s",
-              dropEx, name, dropEx.getMessage());
-        }
+        dropBackingTypeAfterFailure(schema);
         throw e;
       }
       schema.saveConfiguration();
@@ -326,6 +347,16 @@ public class MaterializedViewBuilder {
 
       return view;
     });
+  }
+
+  private void dropBackingTypeAfterFailure(final LocalSchema schema) {
+    try {
+      schema.dropType(name);
+    } catch (final Exception dropEx) {
+      LogManager.instance().log(MaterializedViewBuilder.class, Level.WARNING,
+          "Failed to clean up backing type '%s' after materialized view creation failure: %s",
+          dropEx, name, dropEx.getMessage());
+    }
   }
 
   /**

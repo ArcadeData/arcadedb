@@ -19,10 +19,13 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -191,6 +194,74 @@ class MaterializedViewConcurrentRefreshTest extends TestHelper {
     assertThat(awaitViewCount("ConcurrentSourceView", expected))
         .as("the view must eventually reflect every committed record, not a stale earlier snapshot")
         .isEqualTo(expected);
+  }
+
+  /**
+   * A per-record view (issue #11475) refreshes only the RIDs each commit hands over: a RID appended while another thread owns
+   * the refresh must be drained by that owner's next pass, so the view ends equal to its defining query, updates included.
+   */
+  @Tag("slow")
+  @Test
+  void concurrentWritersOnAPerRecordViewLoseNoDelta() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("PerRecordSource"));
+
+    final String query = "SELECT value FROM PerRecordSource WHERE value >= 10";
+    database.transaction(() -> database.getSchema().buildMaterializedView()
+        .withName("PerRecordSourceView")
+        .withQuery(query)
+        .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
+        .create());
+    assertThat(((MaterializedViewImpl) database.getSchema().getMaterializedView("PerRecordSourceView")).isPerRecord()).isTrue();
+
+    final int threads = 4;
+    final int perThread = 40;
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+    final AtomicReference<Exception> failure = new AtomicReference<>();
+
+    for (int t = 0; t < threads; t++) {
+      final int threadId = t;
+      new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < perThread; i++) {
+            final int value = threadId * perThread + i;
+            final MutableDocument[] created = new MutableDocument[1];
+            database.transaction(() -> created[0] = database.newDocument("PerRecordSource").set("value", value).save());
+            // every third record moves across the WHERE in a later transaction of its own
+            if (i % 3 == 0)
+              database.transaction(() -> {
+                final MutableDocument doc = created[0].getIdentity().asDocument(true).modify();
+                doc.set("value", value >= 10 ? 1 : value + 1000).save();
+              });
+          }
+        } catch (final Exception e) {
+          failure.compareAndSet(null, e);
+        } finally {
+          done.countDown();
+        }
+      }, "mv-per-record-writer-" + t).start();
+    }
+
+    start.countDown();
+    assertThat(done.await(2, TimeUnit.MINUTES)).as("writers should finish").isTrue();
+    if (failure.get() != null)
+      throw failure.get();
+
+    final List<Integer> expected = values(query);
+    Awaitility.await("the view converges on its defining query").atMost(60, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
+        .untilAsserted(() -> assertThat(values("SELECT value FROM PerRecordSourceView"))
+            .as("the view must equal its defining query: no delta lost to a concurrent pass")
+            .containsExactlyInAnyOrderElementsOf(expected));
+  }
+
+  private List<Integer> values(final String sql) {
+    final List<Integer> values = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        values.add(rs.next().<Number>getProperty("value").intValue());
+    }
+    return values;
   }
 
   /**
