@@ -101,6 +101,14 @@ The counter is recomputed only when it reads -1, which happens on a fresh open w
 
 This matters as soon as any index has been compacted: an LSM index with a compacted sub-index, or a vector index with its companion graph file, has two or more files. Locking only the mutable makes the commit-time coverage check throw a plain `TransactionException` - which, not being a `NeedRetryException`, `COMMIT RETRY` cannot absorb. Keep the two collections symmetric.
 
+## A commit must never release its locks after the unique-key check
+
+`TransactionIndexContext.commit()` checks the UNIQUE keys against the whole polymorphic index while the commit holds the lock of every sibling sub-index file. Two transactions inserting one key into DIFFERENT buckets write different index files, so no page-version check can see the collision: that lock is the only thing standing between them, and it has to be held from the check to the end of the commit.
+
+The #4937 late-joiner coverage (a page of a file the up-front lock set did not name) is taken by releasing every lock and re-acquiring the union in order. It therefore runs BEFORE the unique-key check (`relockForLateJoiningFiles`), and a late joiner the index replay itself introduces is acquired on top of the held locks without waiting (`lockLateJoiningFilesInPlace`), never by releasing them (#11526: an EXTERNAL property written by a deferred update reached its `_ext` bucket only after the check, and both transactions committed the key). A check made before the re-lock that no page-version check backs (`checkUnidirectionalEdgesAgainstConcurrentDeletes`) is repeated after it.
+
+The re-lock is meant to be the exception: `lockFilesFromChanges` names the files the later steps write, the paired external bucket of every deferred update included (`addExternalBucketsOfDeferredUpdates`). A new step that writes a file in the 1st phase belongs there too.
+
 ## Compaction threshold is cached at construction
 
 `LSMTreeIndexMutable.minPagesToScheduleACompaction` is read from `INDEX_COMPACTION_MIN_PAGES_SCHEDULE` in the constructor. Changing that config at runtime does **not** affect an existing mutable; only a new one created by `splitIndex()` picks it up.
