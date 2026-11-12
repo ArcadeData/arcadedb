@@ -7599,7 +7599,7 @@ public class CypherExecutionPlan {
       // puts the anchored node last, (c:Chunk)-[:OF_RECORD]->(r:Record {external_id: $id}), which enumerated every chunk
       // to keep the paths of one record (issue #11594). The far end is reached by reading the same arrays the other way,
       // as seededChainOp does, and the count of paths is the same
-      if (startsAtTheFarEnd(db, nodeLabels, nodePredicates))
+      if (startsAtTheFarEnd(db, nodeLabels, edgeTypes, nodePredicates))
         return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions),
             inequalityIdxA < 0 ? -1 : hopCount - inequalityIdxA, inequalityIdxB < 0 ? -1 : hopCount - inequalityIdxB, null,
             null, reversed(nodePredicates));
@@ -7615,9 +7615,16 @@ public class CypherExecutionPlan {
    * Whether an uncorrelated chain is cheaper to enumerate from its last position than from its first (issue #11594). The end
    * that carries the only node predicate starts, since the predicate is applied to the vertices the start enumerates and
    * the rest of the chain is walked only from those that pass. With a predicate on neither end or on both, the end whose
-   * label holds fewer vertices starts. An unlabeled end is never chosen over a labeled one: it enumerates every vertex.
+   * label holds fewer vertices starts. An unlabeled end is never chosen over a labeled one: it enumerates every vertex. A chain
+   * over an edge type declared unidirectional keeps its written orientation.
    */
-  private static boolean startsAtTheFarEnd(final Database db, final String[] nodeLabels, final VertexPredicate[] predicates) {
+  private static boolean startsAtTheFarEnd(final Database db, final String[] nodeLabels, final String[] edgeTypes,
+      final VertexPredicate[] predicates) {
+    // Read from its far end every hop is walked against its written direction, and the incoming side of an edge type declared
+    // unidirectional is stored on no vertex: such a chain is only walked as written, the outgoing hops tryOptimizeCountStar lets
+    // through for it
+    if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
+      return false;
     final int last = nodeLabels.length - 1;
     if (nodeLabels[last] == null)
       return false;

@@ -140,6 +140,20 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
     assertThat(count(withInequality)).isLessThan(count(without));
   }
 
+  /** The incoming side of a unidirectional edge type is stored on no vertex: such a chain keeps its written orientation. */
+  @Test
+  void aChainOverAUnidirectionalTypeIsNotFlipped() {
+    database.command("sql", "CREATE EDGE TYPE BELONGS UNIDIRECTIONAL");
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (c:Chunk), (r:Record) WHERE c.i % 20 = 3 AND r.external_id = 'r3' CREATE (c)-[:BELONGS]->(r)"));
+    final String counted = "MATCH (c:Chunk)-[:BELONGS]->(r:Record {external_id: 'r3'}) RETURN count(*) AS n";
+    assertThat(count(counted)).isEqualTo(CHUNKS / RECORDS);
+    assertThat(count("MATCH (c:Chunk)-[:BELONGS]->(r:Record) RETURN count(*) AS n")).isEqualTo(CHUNKS / RECORDS);
+    final String plan = plan(counted);
+    if (plan.contains("COUNT CHAIN PATHS"))
+      assertThat(chainLine(plan)).startsWith("(Chunk");
+  }
+
   private long count(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       final Number n = rs.next().getProperty("n");
