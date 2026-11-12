@@ -106,6 +106,14 @@ public class AndBlock extends BooleanExpression {
     }
   }
 
+  @Override
+  public boolean setsScore(final CommandContext context) {
+    for (final BooleanExpression block : subBlocks)
+      if (block.setsScore(context))
+        return true;
+    return false;
+  }
+
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (subBlocks == null) {
       return null;

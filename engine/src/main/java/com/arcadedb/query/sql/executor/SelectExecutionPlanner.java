@@ -4880,6 +4880,10 @@ public class SelectExecutionPlanner {
         plan.chain(new ParallelExecStep(resultSubPlans, context));
         plan.chain(new FilterByClustersStep(filterClusters, context));
         plan.chain(new DistinctExecutionStep(context));
+        if (rescoresAfterTheBranches(typez, info, context))
+          // The DISTINCT keeps a record as the first branch to match served it, with the $score of that branch alone: the whole
+          // WHERE gives it the best score of the arms it matches, the one MergeByScoreStep serves it with (issue #11618)
+          plan.chain(new FilterStep(info.whereClause, context));
       }
       indexedFunctionsFound = true;
     }
@@ -4892,6 +4896,29 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * Whether the branches of the WHERE's OR, run one after the other and deduplicated, need the whole WHERE evaluated again on
+   * each row to set {@code $score} (issue #11618): a branch sets it, every indexed function of every branch can be evaluated
+   * on a record, and no branch reads a per-record LET, which is evaluated inside the branches.
+   */
+  private static boolean rescoresAfterTheBranches(final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.whereClause == null)
+      return false;
+    boolean scored = false;
+    for (final AndBlock block : info.flattenedWhereClause) {
+      if (refersToLet(block.getSubBlocks(), info.perRecordLetClause))
+        return false;
+      final List<BinaryCondition> functions = block.getIndexedFunctionConditions(type, context);
+      if (functions != null)
+        for (final BinaryCondition function : functions)
+          if (!function.canExecuteIndexedFunctionWithoutIndex(info.target, context))
+            return false;
+      scored |= block.setsScore(context);
+    }
+    return scored;
   }
 
   /**

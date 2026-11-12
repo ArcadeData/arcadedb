@@ -29,49 +29,82 @@ import com.arcadedb.schema.DocumentType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class OrBlock extends BooleanExpression {
+  private static final boolean[] NO_SCORING_ARM = new boolean[0];
+
   public List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
+  // Which arms set $score, worked out on the first evaluation
+  private boolean[] scoringArms;
 
   public OrBlock() {
   }
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    if (getSubBlocks() == null) {
+    if (getSubBlocks() == null)
       return true;
-    }
-
-    Boolean hasNull = false;
-    for (final BooleanExpression block : subBlocks) {
-      final Boolean result = block.evaluate(currentRecord, context);
-      if (result == null) {
-        hasNull = true;
-      } else if (result) {
-        return true;
-      }
-    }
-    // If any operand was null and none were true, return null (SQL three-valued logic)
-    return hasNull ? null : false;
+    return evaluate(block -> block.evaluate(currentRecord, context), context);
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     if (getSubBlocks() == null)
       return true;
+    return evaluate(block -> block.evaluate(currentRecord, context), context);
+  }
 
-    Boolean hasNull = false;
-    for (final BooleanExpression block : subBlocks) {
-      final Boolean result = block.evaluate(currentRecord, context);
-      if (result == null) {
+  /**
+   * Stops at the first arm that matches, unless an arm sets {@code $score}: then every such arm is evaluated, and a matching
+   * record gets the best score of the arms it matched, or 0 when it matched none of them. That is the score
+   * {@code MergeByScoreStep} serves a record matching several branches with, and the plan must not change it (issue
+   * #11618): stopping at the first match gave the first matching arm's score, or left the previous record's.
+   */
+  private Boolean evaluate(final Function<BooleanExpression, Boolean> arm, final CommandContext context) {
+    final boolean[] scoring = scoringArms(context);
+    boolean hasNull = false;
+    boolean matched = false;
+    float best = 0f;
+    for (int i = 0; i < subBlocks.size(); i++) {
+      if (matched && !scoring[i])
+        continue;
+      final Boolean result = arm.apply(subBlocks.get(i));
+      if (result == null)
         hasNull = true;
-      } else if (result) {
-        return true;
+      else if (result) {
+        if (scoring == NO_SCORING_ARM)
+          return true;
+        matched = true;
+        if (scoring[i] && context.getVariable("$score") instanceof Number score)
+          best = Math.max(best, score.floatValue());
       }
+    }
+    if (matched) {
+      context.setVariable("$score", best);
+      return true;
     }
     // If any operand was null and none were true, return null (SQL three-valued logic)
     return hasNull ? null : false;
+  }
+
+  /** Which arms set {@code $score}, worked out once: {@link #NO_SCORING_ARM} when none does. */
+  private boolean[] scoringArms(final CommandContext context) {
+    boolean[] arms = scoringArms;
+    if (arms == null) {
+      arms = new boolean[subBlocks.size()];
+      boolean any = false;
+      for (int i = 0; i < arms.length; i++)
+        any |= arms[i] = subBlocks.get(i).setsScore(context);
+      scoringArms = arms = any ? arms : NO_SCORING_ARM;
+    }
+    return arms;
+  }
+
+  @Override
+  public boolean setsScore(final CommandContext context) {
+    return scoringArms(context) != NO_SCORING_ARM;
   }
 
   public Boolean evaluate(final Object currentRecord, final CommandContext context) {

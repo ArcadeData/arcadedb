@@ -148,6 +148,11 @@ public class BinaryCondition extends BooleanExpression {
     return function != null && function.answersByScore();
   }
 
+  @Override
+  public boolean setsScore(final CommandContext context) {
+    return indexedFunctionAnswersByScore(context);
+  }
+
   /** The function of a bare call on the left-hand side, the path {@link #executeIndexedFunction} delegates down. */
   private IndexableSQLFunction indexableFunction(final CommandContext context) {
     if (left == null || !(left.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
