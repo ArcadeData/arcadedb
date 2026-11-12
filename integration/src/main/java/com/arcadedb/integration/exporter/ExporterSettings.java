@@ -105,15 +105,18 @@ public class ExporterSettings {
   /**
    * The entries of a comma-separated list, trimmed, empty ones dropped. {@code Set.of(value.split(","))} refused a repeated
    * entry ({@code A,A}) with a bare "duplicate element", and kept the blank after a comma, so {@code 'A, B'} filtered on
-   * {@code " B"} and silently exported nothing of type B.
+   * {@code " B"} and silently exported nothing of type B. A list with no entry at all ({@code ''}, {@code ' , '}) is refused:
+   * as an include filter it would export nothing and answer OK, as an exclude filter it says nothing.
    */
-  private static Set<String> parseList(final String value) {
+  private static Set<String> parseList(final String name, final String value) {
     final Set<String> entries = new HashSet<>();
     for (final String entry : value.split(",")) {
       final String trimmed = entry.trim();
       if (!trimmed.isEmpty())
         entries.add(trimmed);
     }
+    if (entries.isEmpty())
+      throw new IllegalArgumentException("Invalid value '" + value + "' for -" + name + ": the list is empty");
     return entries;
   }
 
@@ -147,9 +150,9 @@ public class ExporterSettings {
         throw new IllegalArgumentException("Invalid value '" + value + "' for -overwrite. Supported values are 'true' and 'false'");
       }
     }
-    case "includeTypes" -> includeTypes = parseList(value);
-    case "excludeTypes" -> excludeTypes = parseList(value);
-    case "includeRecords" -> includeRecords = parseList(value);
+    case "includeTypes" -> includeTypes = parseList(name, value);
+    case "excludeTypes" -> excludeTypes = parseList(name, value);
+    case "includeRecords" -> includeRecords = parseList(name, value);
     // THE FIELD THE CONSOLE LOGGER IS BUILT FROM: IT WAS NEVER SETTABLE, THE NAME WENT INTO THE MAP NOTHING READ. THE PYTHON
     // BINDINGS SEND IT ON EVERY EXPORT, SO REFUSING IT WOULD BREAK THEM; APPLYING IT IS WHAT THEY ALWAYS ASKED FOR
     case "verboseLevel" -> {

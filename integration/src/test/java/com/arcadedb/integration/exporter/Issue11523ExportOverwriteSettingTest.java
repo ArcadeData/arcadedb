@@ -241,6 +241,12 @@ class Issue11523ExportOverwriteSettingTest {
     // A REPEATED ENTRY USED TO THROW "duplicate element", AND THE BLANK AFTER A COMMA WAS KEPT AS PART OF THE NAME
     assertThat(parse("-format", "jsonl", "-includeTypes", "A, B,A,").includeTypes).containsExactlyInAnyOrder("A", "B");
     assertThat(parse("-format", "jsonl", "-includeRecords", "#1:0 , #1:1").includeRecords).containsExactlyInAnyOrder("#1:0", "#1:1");
+    // AN EMPTY LIST WOULD EXPORT NOTHING AND ANSWER OK
+    for (final String setting : new String[] { "-includeTypes", "-excludeTypes", "-includeRecords" })
+      for (final String empty : new String[] { "", " , ", "," })
+        assertThatThrownBy(() -> parse("-format", "jsonl", setting, empty))//
+            .as("%s '%s'", setting, empty)//
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("the list is empty");
 
     assertThatThrownBy(() -> parse("-format", "jsonl", "-overwrite", "yes"))//
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid value 'yes' for -overwrite");
