@@ -1781,16 +1781,18 @@ public class BoltNetworkExecutor extends Thread {
       return propertyNames != null ? new ArrayList<>(propertyNames) : List.of();
     }
 
-    // No row to read the names from: the RETURN items name them, as Neo4j announces them for a zero-row result and every
-    // column-driven client (result.keys(), Browser tables) reads them (issue #11386). Asked only here, so a result with rows
-    // pays nothing for it
+    // No row to read the names from: the statement declares them (its RETURN items, the variables in scope of a RETURN *, the
+    // yielded fields of a standalone CALL), as Neo4j announces them for a zero-row result and every column-driven client
+    // (result.keys(), Browser tables) reads them (issues #11386, #11543). Asked only here, so a result with rows pays nothing
+    // for it
     return declaredFieldNames(query);
   }
 
   /**
-   * The columns the statement's RETURN clause declares, or none when it declares none it can name without running: no RETURN,
-   * {@code RETURN *}, or a statement the cached parse cannot give back (it ran, so that would only be a statement the engine
-   * reads differently from the Cypher parser, which is no reason to fail a query that succeeded).
+   * The columns the statement declares, or none when it declares none it can name without running: a write with no RETURN, a
+   * CALL of a procedure the engine does not know without an explicit YIELD, or a statement the cached parse cannot give back (it
+   * ran, so that would only be a statement the engine reads differently from the Cypher parser, which is no reason to fail a
+   * query that succeeded).
    */
   private List<String> declaredFieldNames(final String query) {
     try {
