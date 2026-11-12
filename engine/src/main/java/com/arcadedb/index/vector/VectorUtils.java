@@ -75,6 +75,27 @@ public final class VectorUtils {
     return true;
   }
 
+  /**
+   * Whether JVector's COSINE can score this vector. It computes {@code sum / Math.sqrt(norm1 * norm2)} with float squared
+   * norms, so a vector whose squared norm underflows or overflows a float, or whose product with another one does, scores
+   * -Infinity, NaN or a flat 0. A squared norm within [2^-63, 2^63], summed in float as JVector sums it, keeps the product
+   * of two of them inside the float range. The all-zero vector is outside it (issue #11635).
+   */
+  public static boolean hasCosineScorableNorm(final float[] vector) {
+    float norm = 0f;
+    for (final float v : vector)
+      norm += v * v;
+    return norm >= 0x1p-63f && norm <= 0x1p63f;
+  }
+
+  /** {@link #hasCosineScorableNorm(float[])} of a JVector vector, without a {@code float[]} copy. */
+  public static boolean hasCosineScorableNorm(final VectorFloat<?> vector) {
+    float norm = 0f;
+    for (int i = 0; i < vector.length(); i++)
+      norm += vector.get(i) * vector.get(i);
+    return norm >= 0x1p-63f && norm <= 0x1p63f;
+  }
+
   /** Whether every component is a finite number: no similarity can rank a NaN or an Infinity (issue #8962). */
   public static boolean isFinite(final float[] vector) {
     for (final float v : vector)
@@ -605,6 +626,9 @@ public final class VectorUtils {
     // on the first non-zero element, so this is O(1) for the common non-degenerate case.
     if (isZeroVector(v1) || isZeroVector(v2))
       return 0.0f;
+    // The float cosine cannot score a vector too small or too large: the double one below can (issue #11635)
+    if (!hasCosineScorableNorm(v1) || !hasCosineScorableNorm(v2))
+      return scalarCosineSimilarity(v1, v2);
     try {
       final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
       final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
@@ -612,21 +636,25 @@ public final class VectorUtils {
       return cosine(jv1, jv2);
     } catch (final Exception e) {
       // Fallback to scalar implementation
-      double dotProduct = 0.0;
-      double normA = 0.0;
-      double normB = 0.0;
-      for (int i = 0; i < v1.length; i++) {
-        // Cast operands to double before multiplying so the dot-product accumulates at the same
-        // precision as normA/normB instead of forming a float product first (issue #4583).
-        dotProduct += (double) v1[i] * v2[i];
-        normA += (double) v1[i] * v1[i];
-        normB += (double) v2[i] * v2[i];
-      }
-      final double mag = Math.sqrt(normA) * Math.sqrt(normB);
-      if (mag == 0.0)
-        return 0.0f;
-      return (float) (dotProduct / mag);
+      return scalarCosineSimilarity(v1, v2);
     }
+  }
+
+  private static float scalarCosineSimilarity(final float[] v1, final float[] v2) {
+    double dotProduct = 0.0;
+    double normA = 0.0;
+    double normB = 0.0;
+    for (int i = 0; i < v1.length; i++) {
+      // Cast operands to double before multiplying so the dot-product accumulates at the same
+      // precision as normA/normB instead of forming a float product first (issue #4583).
+      dotProduct += (double) v1[i] * v2[i];
+      normA += (double) v1[i] * v1[i];
+      normB += (double) v2[i] * v2[i];
+    }
+    final double mag = Math.sqrt(normA) * Math.sqrt(normB);
+    if (mag == 0.0)
+      return 0.0f;
+    return (float) (dotProduct / mag);
   }
 
   /**
