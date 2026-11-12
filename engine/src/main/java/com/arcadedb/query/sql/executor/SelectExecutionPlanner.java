@@ -44,6 +44,7 @@ import com.arcadedb.query.facet.FacetSpecCompiler;
 import com.arcadedb.query.sql.executor.ColumnarGroupByPlanner.ColumnarGroupByPlan;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.ArrayLiteralExpression;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
@@ -1386,21 +1387,22 @@ public class SelectExecutionPlanner {
     final List<String> unwindAliases = new ArrayList<>();
 
     final List<Identifier> unwindItems = info.unwind.getItems();
+    final List<Identifier> readFields = new ArrayList<>();
     for (int i = 0; i < unwindItems.size(); i++) {
       final Identifier unwindItem = unwindItems.get(i);
       final Expression operand = info.unwind.getExpression(i);
-      final Identifier readField;
       if (operand == null)
-        readField = unwindItem;
+        readFields.add(unwindItem);
       else {
         // UNWIND <operand> AS <alias> reads the projected row like a bare field does, and keeps its alias in the rows it
-        // returns (#11442). The field at the root of the operand's path (`a` in `a.b`) is brought into the projection
-        // the same way a bare field is; an operand with no field at its root (a parameter) reads nothing of the row
+        // returns (#11442). Every field the operand reads (`a` in `a.b`, `(a.b)`, `a.size() + b`, `f(a)`) is brought into
+        // the projection the same way a bare field is; an operand that reads no field (a parameter) brings nothing
         unwindAliases.add(unwindItem.getStringValue());
-        readField = rootFieldOf(operand);
-        if (readField == null)
-          continue;
+        collectReadFields(operand, readFields);
       }
+    }
+
+    for (final Identifier readField : readFields) {
       final String unwindFieldName = readField.getStringValue();
       if (!allAliases.contains(unwindFieldName) && additionalUnwindProjections.stream()
           .noneMatch(p -> p.getAlias().getStringValue().equals(unwindFieldName))) {
@@ -1437,14 +1439,41 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Returns the field at the root of an UNWIND operand's path ({@code a} for {@code a.b} or {@code a[0]}), or null when the
-   * operand has none (a parameter, a literal, a function call).
+   * Collects the top-level fields an UNWIND operand reads from the row: the root of every path, through parentheses,
+   * arithmetic, array literals, {@code ||} operands and function arguments. What sits in a path's modifiers (method or
+   * index arguments) is not followed.
    */
-  private static Identifier rootFieldOf(final Expression operand) {
-    if (operand.mathExpression instanceof final BaseExpression baseExpr && baseExpr.identifier != null
-        && baseExpr.identifier.levelZero == null && baseExpr.identifier.suffix != null)
-      return baseExpr.identifier.suffix.identifier;
-    return null;
+  private static void collectReadFields(final Expression operand, final List<Identifier> out) {
+    if (operand == null)
+      return;
+    if (operand.getArrayConcatExpression() != null)
+      for (final Expression element : operand.getArrayConcatExpression().getChildExpressions())
+        collectReadFields(element, out);
+    collectReadFields(operand.mathExpression, out);
+  }
+
+  private static void collectReadFields(final MathExpression math, final List<Identifier> out) {
+    if (math == null)
+      return;
+    if (math instanceof final BaseExpression base) {
+      collectReadFields(base.expression, out);
+      if (base.identifier != null) {
+        if (base.identifier.suffix != null && base.identifier.suffix.identifier != null) {
+          // a $variable resolves from the context, not from the row
+          if (!base.identifier.suffix.identifier.getStringValue().startsWith("$"))
+            out.add(base.identifier.suffix.identifier);
+        }
+        else if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
+          for (final Expression param : base.identifier.levelZero.functionCall.params)
+            collectReadFields(param, out);
+      }
+    } else if (math instanceof final ParenthesisExpression parenthesis)
+      collectReadFields(parenthesis.expression, out);
+    else if (math instanceof final ArrayLiteralExpression array)
+      for (final Expression item : array.items)
+        collectReadFields(item, out);
+    for (final MathExpression child : math.getChildExpressions())
+      collectReadFields(child, out);
   }
 
   /**

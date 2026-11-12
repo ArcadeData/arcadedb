@@ -139,6 +139,13 @@ class Issue11442UnwindOperandTest extends TestHelper {
     assertThat(rows("SELECT a AS c FROM T UNWIND c.b AS x").stream().map(r -> r.<Integer>getProperty("x")).toList())
         .containsExactly(1, 2, 3);
 
+    // every field the operand reads is kept for the UNWIND, not only the root of a bare path
+    assertThat(rows("SELECT name FROM T UNWIND (a.b) AS x").stream().map(r -> r.<Integer>getProperty("x")).toList())
+        .containsExactly(1, 2, 3);
+    final List<Result> literal = rows("SELECT tags FROM T UNWIND [name, 'z'] AS x");
+    assertThat(literal.stream().map(r -> r.<String>getProperty("x")).toList()).containsExactly("n1", "z");
+    assertThat(literal.getFirst().getPropertyNames()).containsExactlyInAnyOrder("tags", "x");
+
     final List<Result> parameter = rows("SELECT name FROM T UNWIND :p AS x", Map.of("p", List.<Object>of("p1", "p2")));
     assertThat(parameter.stream().map(r -> r.<String>getProperty("x")).toList()).containsExactly("p1", "p2");
     assertThat(parameter.getFirst().<String>getProperty("name")).isEqualTo("n1");
