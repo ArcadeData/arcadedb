@@ -78,10 +78,10 @@ public class RoundFunction implements StatelessFunction {
     if (Double.isNaN(value) || Double.isInfinite(value))
       return value;
 
-    if (args.length == 1) {
-      // round(value) - round to nearest integer
-      return (double) Math.round(value);
-    }
+    if (args.length == 1)
+      // round(value) - round to nearest integer. From 2^52 up every double is a whole number already, and Math.round()
+      // saturates at the long range: round(1.0e19) answered 9.223372036854776E18 (issue #11627)
+      return Math.abs(value) >= 0x1p52 ? value : (double) Math.round(value);
 
     // round(value, precision) or round(value, precision, mode)
     if (precisionArg == null)
