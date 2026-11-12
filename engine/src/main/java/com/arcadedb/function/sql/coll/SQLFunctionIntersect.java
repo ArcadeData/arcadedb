@@ -98,20 +98,17 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
 
   @Override
   public Object getResult() {
-    return MultiValue.toSet(context);
+    return CanonicalSet.from(context);
   }
 
-  static Collection intersectWith(final Iterator current, Object value) {
-    final HashSet tempSet = new HashSet();
+  static Collection intersectWith(final Iterator current, final Object value) {
+    final Set<Object> tempSet = new CanonicalSet();
+    final Set<Object> valueSet = CanonicalSet.from(value);
 
-    if (!(value instanceof Set))
-      value = MultiValue.toSet(value);
-
-    for (final Iterator it = current; it.hasNext(); ) {
-      final Object curr = it.next();
-
-      if (value instanceof Collection collection) {
-        if (collection.contains(curr))
+    if (current != null) {
+      while (current.hasNext()) {
+        final Object curr = current.next();
+        if (valueSet.contains(curr))
           tempSet.add(curr);
       }
     }

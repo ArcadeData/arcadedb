@@ -19,16 +19,18 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.Collection;
-import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * This operator can work as aggregate or inline. If only one argument is passed than aggregates, otherwise executes, and returns,
  * the SYMMETRIC DIFFERENCE between the collections received as parameters. Works also with no collection values.
+ * Numerically equal values (e.g. Long 1 and Integer 1) are treated as equal.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -55,9 +57,15 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
     }
   }
 
-  private static void addItemsToResult(final Collection<Object> co, final Set<Object> accepted, final Set<Object> rejected) {
-    for (final Object o : co) {
-      addItemToResult(o, accepted, rejected);
+  private static void addItemsToResult(final Object co, final Set<Object> accepted, final Set<Object> rejected) {
+    if (co instanceof Collection<?> coll) {
+      for (final Object o : coll)
+        addItemToResult(o, accepted, rejected);
+    } else if (co != null && MultiValue.isMultiValue(co) && !(co instanceof Map<?, ?>)) {
+      for (final Object o : MultiValue.getMultiValueIterable(co, false))
+        addItemToResult(o, accepted, rejected);
+    } else {
+      addItemToResult(co, accepted, rejected);
     }
   }
 
@@ -72,27 +80,19 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
     if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
-        context = new HashSet<Object>();
-        rejected = new HashSet<Object>();
+        context = new CanonicalSet();
+        rejected = new CanonicalSet();
       }
-      if (value instanceof Collection<?>) {
-        addItemsToResult((Collection<Object>) value, context, rejected);
-      } else {
-        addItemToResult(value, context, rejected);
-      }
+      addItemsToResult(value, context, rejected);
 
       return null;
     } else {
       // IN-LINE MODE (STATELESS)
-      final Set<Object> result = new HashSet<Object>();
-      final Set<Object> rejected = new HashSet<Object>();
+      final Set<Object> result = new CanonicalSet();
+      final Set<Object> rejected = new CanonicalSet();
 
       for (final Object iParameter : params) {
-        if (iParameter instanceof Collection<?>) {
-          addItemsToResult((Collection<Object>) iParameter, result, rejected);
-        } else {
-          addItemToResult(iParameter, result, rejected);
-        }
+        addItemsToResult(iParameter, result, rejected);
       }
 
       return result;

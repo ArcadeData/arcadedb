@@ -19,11 +19,12 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.Collection;
-import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -51,19 +52,25 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
       return null;
 
     // IN-LINE MODE (STATELESS)
-    final Set<Object> result = new HashSet<Object>();
+    final Set<Object> result = new CanonicalSet();
 
     boolean first = true;
     for (final Object iParameter : params) {
       if (first) {
-        if (iParameter instanceof Collection<?>) {
-          result.addAll((Collection<Object>) iParameter);
+        if (iParameter instanceof Collection<?> coll) {
+          result.addAll(coll);
+        } else if (iParameter != null && MultiValue.isMultiValue(iParameter) && !(iParameter instanceof Map<?, ?>)) {
+          for (final Object o : MultiValue.getMultiValueIterable(iParameter, false))
+            result.add(o);
         } else {
           result.add(iParameter);
         }
       } else {
-        if (iParameter instanceof Collection<?>) {
-          result.removeAll((Collection<Object>) iParameter);
+        if (iParameter instanceof Collection<?> coll) {
+          result.removeAll(coll);
+        } else if (iParameter != null && MultiValue.isMultiValue(iParameter) && !(iParameter instanceof Map<?, ?>)) {
+          for (final Object o : MultiValue.getMultiValueIterable(iParameter, false))
+            result.remove(o);
         } else {
           result.remove(iParameter);
         }
