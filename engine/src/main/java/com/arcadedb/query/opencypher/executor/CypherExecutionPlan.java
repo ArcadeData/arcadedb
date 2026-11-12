@@ -453,18 +453,9 @@ public class CypherExecutionPlan {
       // write statement, even if it performed no actual mutation (containsUpdates() is false then).
       final QueryStatistics stats = context.getStatistics();
 
-      // A bare CALL (no YIELD/RETURN, e.g. a write-classified custom function or write procedure) is its
-      // own projection: CallStep already yields its implicit "all columns" row, so a missing RETURN clause
-      // here does not mean "side effects only" the way it does for CREATE/SET/DELETE/MERGE/REMOVE. Issue #6446.
-      // Deliberately scoped to a CALL that is the statement's ONLY clause: a CALL chained after other
-      // clauses (e.g. WITH ... CALL proc() YIELD x, or multiple chained CALLs), still with no trailing
-      // RETURN, is a separate, narrower gap left for #6450 rather than widened here.
-      final List<ClauseEntry> clauses = statement.getClausesInOrder();
-      final boolean bareCallOwnsProjection = clauses.size() == 1 && clauses.get(0).getType() == ClauseEntry.ClauseType.CALL;
-
       // If no RETURN clause (or GQL FINISH was used), return empty results
       // (write side effects still happened). Issue #3365 section 1.3.
-      if (statement.hasFinishClause() || (statement.getReturnClause() == null && !bareCallOwnsProjection)) {
+      if (writeAnswersNoRows()) {
         final IteratorResultSet empty = new IteratorResultSet(Collections.<Result>emptyList().iterator());
         empty.setStatistics(stats);
         return empty;
@@ -1135,6 +1126,27 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Whether a WRITE statement answers no rows: it has no RETURN clause, so it is run for its side effects only, or it ends
+   * with GQL FINISH. Shared by the streaming {@link #execute} and the eager {@link #profile()}, so PROFILE of a write answers
+   * the rows the write answers - none for a RETURN-less one, where it used to answer whatever the last write clause passed
+   * on (issue #11386).
+   */
+  private boolean writeAnswersNoRows() {
+    if (statement.hasFinishClause())
+      return true;
+    if (statement.getReturnClause() != null)
+      return false;
+    // A bare CALL (no YIELD/RETURN, e.g. a write-classified custom function or write procedure) is its
+    // own projection: CallStep already yields its implicit "all columns" row, so a missing RETURN clause
+    // here does not mean "side effects only" the way it does for CREATE/SET/DELETE/MERGE/REMOVE. Issue #6446.
+    // Deliberately scoped to a CALL that is the statement's ONLY clause: a CALL chained after other
+    // clauses (e.g. WITH ... CALL proc() YIELD x, or multiple chained CALLs), still with no trailing
+    // RETURN, is a separate, narrower gap left for #6450 rather than widened here.
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    return clauses.size() != 1 || clauses.get(0).getType() != ClauseEntry.ClauseType.CALL;
+  }
+
+  /**
    * Executes the query with profiling enabled and <b>eagerly</b>: every row is pulled into heap before this method
    * returns, and the rows are returned alongside the profile via {@code getExecutionPlan()}. The javadoc here used
    * to claim the results were discarded and that the return was an {@code ExplainResultSet}; neither has been true
@@ -1160,6 +1172,10 @@ public class CypherExecutionPlan {
     final InternalResultSet results = new InternalResultSet();
     AbstractExecutionStep rootStep = null;
     boolean countPushedDown = false;
+    // The rows the statement answers, as execute() answers them: the run is still drained for its side effects, but a
+    // RETURN-less write (or a FINISH) keeps none. It kept the rows its last write clause passed on, which a client iterating
+    // the profiled write read as phantom records (issue #11386)
+    final boolean keepRows = statement.isReadOnly() ? !statement.hasFinishClause() : !writeAnswersNoRows();
 
     // A failure ends the statement here, as it ends the statement PROFILE wraps: it reaches the caller, so the transaction
     // around the statement rolls back what was written before it. It used to be caught into the profile text, which
@@ -1168,8 +1184,11 @@ public class CypherExecutionPlan {
       final UnionStep unionStep =
           new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
       try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
-        while (resultSet.hasNext())
-          results.add(resultSet.next());
+        while (resultSet.hasNext()) {
+          final Result row = resultSet.next();
+          if (keepRows)
+            results.add(row);
+        }
       }
     } else {
       // FAST PATH: Count-push-down (same logic as execute())
@@ -1185,8 +1204,11 @@ public class CypherExecutionPlan {
 
       if (rootStep != null) {
         try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
-          while (resultSet.hasNext())
-            results.add(resultSet.next());
+          while (resultSet.hasNext()) {
+            final Result row = resultSet.next();
+            if (keepRows)
+              results.add(row);
+          }
         }
       }
     }

@@ -62,6 +62,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
+import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -980,7 +981,7 @@ public class BoltNetworkExecutor extends Thread {
         }
       }
 
-      stream.fields = extractFieldNames(stream.resultSet, stream);
+      stream.fields = extractFieldNames(stream.resultSet, stream, query);
 
       // The plan above is necessarily built before this query's column list is known (for EXPLAIN the rows have
       // to be drained first), so its identifiers are filled in here. Reading them from a connection-wide field
@@ -1756,7 +1757,7 @@ public class BoltNetworkExecutor extends Thread {
    * For single-element results (e.g., RETURN n), the projection name is stored
    * in metadata by FinalProjectionStep and used here to preserve field names.
    */
-  private List<String> extractFieldNames(final ResultSet resultSet, final BoltQueryStream stream) {
+  private List<String> extractFieldNames(final ResultSet resultSet, final BoltQueryStream stream, final String query) {
     if (resultSet == null) {
       return List.of();
     }
@@ -1780,7 +1781,25 @@ public class BoltNetworkExecutor extends Thread {
       return propertyNames != null ? new ArrayList<>(propertyNames) : List.of();
     }
 
-    return List.of();
+    // No row to read the names from: the RETURN items name them, as Neo4j announces them for a zero-row result and every
+    // column-driven client (result.keys(), Browser tables) reads them (issue #11386). Asked only here, so a result with rows
+    // pays nothing for it
+    return declaredFieldNames(query);
+  }
+
+  /**
+   * The columns the statement's RETURN clause declares, or none when it declares none it can name without running: no RETURN,
+   * {@code RETURN *}, or a statement the cached parse cannot give back (it ran, so that would only be a statement the engine
+   * reads differently from the Cypher parser, which is no reason to fail a query that succeeded).
+   */
+  private List<String> declaredFieldNames(final String query) {
+    try {
+      final List<String> declared = OpenCypherQueryEngine.declaredColumns((DatabaseInternal) database, query);
+      return declared != null ? declared : List.of();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "BOLT could not read the declared columns of: %s", e, query);
+      return List.of();
+    }
   }
 
   /**
