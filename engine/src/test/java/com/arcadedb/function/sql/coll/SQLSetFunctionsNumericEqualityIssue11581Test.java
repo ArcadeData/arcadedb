@@ -78,6 +78,11 @@ class SQLSetFunctionsNumericEqualityIssue11581Test extends TestHelper {
     set.execute(null, null, null, new Object[] { List.of(1, 2) }, new BasicCommandContext());
     set.execute(null, null, null, new Object[] { List.of(2L, 3L) }, new BasicCommandContext());
     assertThat(items(set.getResult())).containsExactlyInAnyOrder(1, 2, 3L);
+
+    // A single row aggregates to its own items, read in their order: the Integer 1 comes first and is the one kept
+    final SQLFunctionIntersect single = new SQLFunctionIntersect();
+    single.execute(null, null, null, new Object[] { List.of(1, 1.0) }, new BasicCommandContext());
+    assertThat(items(single.getResult())).containsExactly(1);
   }
 
   @Test

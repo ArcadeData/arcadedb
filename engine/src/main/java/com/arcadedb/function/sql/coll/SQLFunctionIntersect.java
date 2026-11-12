@@ -115,13 +115,16 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
     return tempSet;
   }
 
-  /** The items of {@code value} keyed as SQL compares them, so a {@code Long} 1 and an {@code Integer} 1 are one (issue #11581). */
+  /**
+   * The items of {@code value} keyed as SQL compares them, so a {@code Long} 1 and an {@code Integer} 1 are one (issue #11581).
+   * Read in their order, so the first of two equal items is the one kept.
+   */
   private static Set<Object> toDistinctSet(final Object value) {
     if (value instanceof DistinctValueSet set)
       return set;
     final DistinctValueSet set = new DistinctValueSet();
-    if (MultiValue.toSet(value) instanceof Collection<?> items)
-      set.addAll(items);
+    for (final Iterator<?> it = MultiValue.getMultiValueIterator(value, false); it != null && it.hasNext(); )
+      set.add(it.next());
     return set;
   }
 
