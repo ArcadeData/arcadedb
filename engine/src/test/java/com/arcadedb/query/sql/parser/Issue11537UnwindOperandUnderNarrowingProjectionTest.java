@@ -22,6 +22,10 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
+import com.arcadedb.query.sql.executor.MatchExecutionPlanner;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -140,5 +144,37 @@ class Issue11537UnwindOperandUnderNarrowingProjectionTest extends TestHelper {
     final List<Result> result = rows("MATCH {type: T, as: t} RETURN t.name AS n UNWIND CASE WHEN true THEN t.tags END AS x");
     assertThat(result.stream().map(r -> r.<String>getProperty("x")).toList()).containsExactly("t1", "t2");
     assertThat(result.getFirst().getPropertyNames()).containsExactlyInAnyOrder("n", "x");
+  }
+
+  @Test
+  void anAggregatedRowKeepsTheOperandOnTheProjectedRow() {
+    // the aggregated row is not a record, so the operand reads the projected row: `c` is the aggregate's alias
+    final List<Result> result = rows("SELECT name, count(*) AS c FROM T GROUP BY name UNWIND [name, c] AS x");
+    assertThat(result.stream().map(r -> String.valueOf(r.<Object>getProperty("x"))).toList()).containsExactly("n1", "1");
+    assertThat(result.getFirst().getPropertyNames()).containsExactlyInAnyOrder("name", "c", "x");
+  }
+
+  @Test
+  void aPlannerAskedForASecondPlanDoesNotSeeItsOwnRewrite() {
+    final MatchStatement statement = (MatchStatement) new SQLAntlrParser(database).parse(
+        "MATCH {type: T, as: t} RETURN t.name AS n UNWIND CASE WHEN true THEN t.tags END AS x");
+    final String unwindBefore = statement.getUnwind().toString();
+    final MatchExecutionPlanner planner = new MatchExecutionPlanner(statement);
+    for (int run = 0; run < 2; run++) {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      final InternalExecutionPlan plan = planner.createExecutionPlan(context);
+      final List<Result> result = new ArrayList<>();
+      try (final ResultSet rs = new LocalResultSet(plan)) {
+        rs.forEachRemaining(result::add);
+      }
+      assertThat(result.stream().map(r -> r.<String>getProperty("x")).toList()).as("plan %d", run).containsExactly("t1", "t2");
+    }
+    assertThat(statement.getUnwind().toString()).isEqualTo(unwindBefore);
+
+    // the SELECT planner, through the statement cache and its plan cache
+    for (int run = 0; run < 2; run++)
+      assertThat(rows("SELECT name FROM P WHERE name = 'alice' UNWIND out('K').name AS x").stream()
+          .map(r -> r.<String>getProperty("x")).toList()).as("run %d", run).containsExactlyInAnyOrder("bob", "carol");
   }
 }
