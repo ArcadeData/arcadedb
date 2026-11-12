@@ -19,6 +19,8 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -26,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -34,6 +37,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,6 +72,16 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql",
         "CREATE INDEX ON BadVec (vector) LSM_VECTOR METADATA {dimensions: 4, similarity: 'COSINE', quantization: 'PRODUCT', pqClusters: 512}"))
         .hasStackTraceContaining("pqClusters cannot exceed 256");
+  }
+
+  @ParameterizedTest(name = "pqClusters {0}")
+  @CsvSource({ "4294967297", "256.5" })
+  void aPersistedIntegerIsNotNarrowedPastItsValidation(final String value) {
+    // getInt() narrowed first: 4294967297 reached the setter as 1 and 256.5 as 256, both of which it accepts
+    final LSMVectorIndexMetadata metadata = new LSMVectorIndexMetadata("Vec", new String[] { "vector" }, 0);
+    final JSONObject persisted = new JSONObject("{\"typeName\":\"Vec\",\"properties\":[\"vector\"],\"pqClusters\":" + value + "}");
+    assertThatThrownBy(() -> metadata.fromJSON(persisted)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("pqClusters");
   }
 
   @Test
@@ -110,7 +124,7 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
 
     // queries on the type scan instead
     database.transaction(() -> database.newDocument("Vec").set("vector", new float[] { 1, 0, 0, 0 }).save());
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM Vec")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS n FROM Vec")) {
       assertThat(rs.next().<Long>getProperty("n")).isEqualTo(4L);
     }
 
@@ -197,6 +211,87 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
     database = factory.open();
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(VECTOR_INDEX);
     assertThat(typeIndex.countEntries()).isEqualTo(3);
+  }
+
+  @Test
+  void aDefinitionRefusedByAnIncrementalReloadLeavesTheLiveIndexUntouchedUntilThePublication() throws IOException {
+    createSchema();
+    database = factory.open();
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(VECTOR_INDEX);
+    final LSMVectorIndex live = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+    final String fileName = live.getName();
+
+    // "similarityFunction" is read before "pqClusters": applied in place, the refusal used to leave the live index searching
+    // with the new metric and the old graph
+    tamperSchemaFile("\"similarityFunction\":\"COSINE\"", "\"similarityFunction\":\"EUCLIDEAN\"");
+    tamperSchemaFile("\"pqClusters\":16", "\"pqClusters\":512");
+    assertThat(database.getSchema().getEmbedded().loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of())).isTrue();
+
+    assertThat(live.getMetadata().similarityFunction).as("the settings of the instance searches were using")
+        .isEqualTo(VectorSimilarityFunction.COSINE);
+    assertThat(live.getMetadata().pqClusters).isEqualTo(16);
+    // withdrawn by the publication, with the rest of the schema served
+    assertThat(database.getSchema().existsIndex(VECTOR_INDEX)).isFalse();
+    assertThat(database.getSchema().getIndexes()).extracting(Index::getName).doesNotContain(fileName);
+    assertThat(database.getSchema().existsIndex(UNIQUE_INDEX)).isTrue();
+  }
+
+  @Test
+  void anOrphanDefinitionRefusedByTheRelinkingPassKeepsItsIndexKind() throws IOException {
+    database.command("sqlscript", """
+        CREATE DOCUMENT TYPE Article BUCKETS 1;
+        CREATE PROPERTY Article.body STRING;
+        CREATE INDEX ON Article (body) FULL_TEXT;""");
+    database.close();
+
+    // keyed by a name that is no file's, so the relinking pass meets it, with a null strategy the load refuses
+    final JSONObject schema = new JSONObject(readSchemaFile());
+    final JSONObject indexes = schema.getJSONObject("types").getJSONObject("Article").getJSONObject("indexes");
+    final String fileName = indexes.keySet().iterator().next();
+    final JSONObject definition = indexes.getJSONObject(fileName);
+    assertThat(definition.getString("type")).isEqualTo("FULL_TEXT");
+    indexes.remove(fileName);
+    final String renamed = fileName.substring(0, fileName.lastIndexOf('_')) + "_1";
+    indexes.put(renamed, definition.put("nullStrategy", "NOT_A_STRATEGY"));
+    Files.writeString(schemaFile().toPath(), schema.toString(), StandardCharsets.UTF_8);
+
+    database = factory.open();
+    assertThat(database.getSchema().existsIndex("Article[body]")).isFalse();
+    database.command("sql", "CREATE DOCUMENT TYPE Unrelated");
+    database.close();
+
+    // kept as a full-text definition, not as the LSM tree its file is
+    final JSONObject kept = new JSONObject(readSchemaFile()).getJSONObject("types").getJSONObject("Article").getJSONObject("indexes")
+        .getJSONObject(renamed);
+    assertThat(kept.getString("type")).isEqualTo("FULL_TEXT");
+    assertThat(kept.getString("nullStrategy")).isEqualTo("NOT_A_STRATEGY");
+    database = factory.open();
+  }
+
+  @Test
+  void droppingAProductQuantizedIndexLeavesNoFileBehind() throws IOException {
+    database.command("sqlscript", """
+        CREATE DOCUMENT TYPE Vec BUCKETS 1;
+        CREATE PROPERTY Vec.vector ARRAY_OF_FLOATS;
+        CREATE INDEX ON Vec (vector) LSM_VECTOR METADATA {dimensions: 4, similarity: 'EUCLIDEAN', quantization: 'PRODUCT', pqClusters: 16};""");
+    database.transaction(() -> {
+      for (int i = 0; i < 64; i++)
+        database.newDocument("Vec").set("vector", new float[] { i, i % 7, i % 3, 1 }).save();
+    });
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(VECTOR_INDEX);
+    final LSMVectorIndex bucketIndex = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+    final String fileName = bucketIndex.getName();
+    bucketIndex.buildVectorGraphNow();
+    assertThat(new File(getDatabasePath()).list((dir, name) -> name.startsWith(fileName) && name.endsWith(".vecpq")))
+        .as("the fixture builds a PQ file").isNotEmpty();
+    final String graphFileName = fileName + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+    assertThat(((DatabaseInternal) database).getFileManager().getFileByComponentName(graphFileName)).as("the fixture builds a graph file").isNotNull();
+
+    database.command("sql", "DROP INDEX `" + VECTOR_INDEX + "`");
+
+    assertThat(((DatabaseInternal) database).getFileManager().getFileByComponentName(graphFileName)).as("the graph file stays registered").isNull();
+    assertThat(new File(getDatabasePath()).list((dir, name) -> name.startsWith(fileName))).as("files of the dropped %s", fileName)
+        .isEmpty();
   }
 
   private String vectorIndexEntryName() throws IOException {

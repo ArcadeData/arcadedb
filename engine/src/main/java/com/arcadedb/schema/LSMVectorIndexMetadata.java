@@ -455,15 +455,16 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     // Every setting with a creation-time invariant is read through the setter that enforces it at creation, so a persisted
     // definition can never hold what CREATE INDEX refuses (issue #11568: a pqClusters edited to 512 used to enter the runtime
     // index as is). A refusal here fails the load of THIS index only: LocalSchema leaves it out, keeps its definition and its
-    // file, and loads the rest of the schema.
+    // file, and loads the rest of the schema. metadataInt, not getInt(): getInt() narrows first, so a persisted 4294967297 or
+    // 256.5 reached the setter as 1 or 256 and passed it.
     if (metadata.has("maxConnections"))
-      setMaxConnections(metadata.getInt("maxConnections"));
+      setMaxConnections(metadataInt(metadata, "maxConnections"));
 
     if (metadata.has("beamWidth"))
-      setBeamWidth(metadata.getInt("beamWidth"));
+      setBeamWidth(metadataInt(metadata, "beamWidth"));
 
     if (metadata.has("efSearch")) {
-      setEfSearch(metadata.getInt("efSearch"));
+      setEfSearch(metadataInt(metadata, "efSearch"));
       // A schema written before efSearchConfigured existed cannot say whether the value was chosen or defaulted,
       // so fall back to the old inference for it. That keeps existing databases behaving exactly as they do now.
       this.efSearchConfigured = metadata.getBoolean("efSearchConfigured", this.efSearch != 100);
@@ -506,7 +507,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     // Product Quantization (PQ) configuration
     // -1 (and any value up to 0) is the persisted "auto" (dimensions / 4), which the setter does not take from a user
     if (metadata.has("pqSubspaces")) {
-      final int subspaces = metadata.getInt("pqSubspaces");
+      final int subspaces = metadataInt(metadata, "pqSubspaces");
       if (subspaces > 0)
         setPQSubspaces(subspaces);
       else
@@ -514,13 +515,13 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     }
 
     if (metadata.has("pqClusters"))
-      setPQClusters(metadata.getInt("pqClusters"));
+      setPQClusters(metadataInt(metadata, "pqClusters"));
 
     if (metadata.has("pqCenterGlobally"))
       this.pqCenterGlobally = metadata.getBoolean("pqCenterGlobally");
 
     if (metadata.has("pqTrainingLimit"))
-      setPQTrainingLimit(metadata.getInt("pqTrainingLimit"));
+      setPQTrainingLimit(metadataInt(metadata, "pqTrainingLimit"));
 
     if (metadata.has("fusedPQ"))
       this.fusedPQ = metadata.getBoolean("fusedPQ");
@@ -528,6 +529,6 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     // Through the setter, like "similarity" above: a negative value from a hand-edited schema.json fails while OPENING the
     // database, not on the first search of every door that reads the index default
     if (metadata.has("rerankOversample"))
-      setRerankOversample(metadata.getInt("rerankOversample"));
+      setRerankOversample(metadataInt(metadata, "rerankOversample"));
   }
 }

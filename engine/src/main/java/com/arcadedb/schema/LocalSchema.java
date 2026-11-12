@@ -396,6 +396,10 @@ public class LocalSchema implements Schema {
   // one load's last write before the next load's first read. Nothing outside that window touches them - every
   // accessor reaches them only after isStagingPublication() has answered true, which only the owning thread gets.
   private final       Map<String, IndexInternal>             stagedIndexMap                = new HashMap<>();
+  // Names a load in flight withdraws from the PUBLISHED index map (issue #11568: an incremental reload refusing the definition of
+  // an index it kept), with the instance each one resolved to. Withdrawn by the publication barrier, so readers keep the
+  // previous generation whole until then, and an aborted load leaves them untouched
+  private final       Map<String, IndexInternal>             stagedIndexWithdrawals        = new HashMap<>();
   private final       Map<String, LocalBucket>               stagedBucketMap               = new HashMap<>();
 
   /**
@@ -931,7 +935,7 @@ public class LocalSchema implements Schema {
     // Read ONCE for the whole publication: the two decisions below (who to warm, and after how long) must agree, and the setting
     // can be changed at any moment
     final long warmUpDelayMs = warmUpDelayMs();
-    if (rebuildingEverything || !stagedIndexMap.isEmpty()) {
+    if (rebuildingEverything || !stagedIndexMap.isEmpty() || !stagedIndexWithdrawals.isEmpty()) {
       previousIndexes = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
       previousIndexes.addAll(indexMap.values());
       namesToWarm = indexesToWarm(previousIndexes, warmUpDelayMs);
@@ -945,6 +949,10 @@ public class LocalSchema implements Schema {
     // points at is resolvable. Nothing points the other way.
     bucketMap.putAll(stagedBucketMap);
     indexMap.putAll(stagedIndexMap);
+    // only a name still resolving to the instance the load withdrew, which nothing staged under it replaced
+    for (final Map.Entry<String, IndexInternal> withdrawal : stagedIndexWithdrawals.entrySet())
+      if (!stagedIndexMap.containsKey(withdrawal.getKey()))
+        indexMap.remove(withdrawal.getKey(), withdrawal.getValue());
 
     // The full rebuild REPLACES the maps too, and drops what it did not stage only AFTER the put: a name both
     // generations carry never goes unresolvable, not even for an instant (issue #7963). Indexes before buckets,
@@ -1171,6 +1179,7 @@ public class LocalSchema implements Schema {
         retireIndexesNoLongerPublished(new ArrayList<>(stagedIndexMap.values()));
     }
     stagedIndexMap.clear();
+    stagedIndexWithdrawals.clear();
     publishedFromStaging = null;
     stagedTypes.clear();
     stagedBucketOwners.clear();
@@ -1797,8 +1806,18 @@ public class LocalSchema implements Schema {
       final IndexInternal component, final JSONObject indexJSON, final RuntimeException reason,
       final Map<String, Map<String, JSONObject>> unavailableIndexes, final Set<String> refusedIndexFiles) {
     for (final String name : new String[] { registeredName, indexName })
-      if (lookupIndex(name) == component)
-        removeIndexDuringLoad(name);
+      if (lookupIndex(name) == component) {
+        if (isStagingPublication() && !isRebuildingEverything() && !stagedIndexMap.containsKey(name))
+          // a component an incremental reload kept: still published, so the barrier withdraws it, and an aborted load does not
+          stagedIndexWithdrawals.put(name, component);
+        else
+          removeIndexDuringLoad(name);
+      }
+    // The published type index the kept component belonged to goes with it at the barrier, unless this load registers one under
+    // the same name again (another of its bucket indexes loads): left published, it would answer for a bucket index withdrawn
+    final TypeIndex typeIndex = component.getTypeIndex();
+    if (typeIndex != null && isStagingPublication() && !isRebuildingEverything() && lookupIndex(typeIndex.getName()) == typeIndex)
+      stagedIndexWithdrawals.putIfAbsent(typeIndex.getName(), typeIndex);
     // Its file is referenced by a schema entry, though not under its own name when the orphan-relinking pass met it: recorded,
     // or the sweep of unreferenced bucket-index files at the end of this open would drop the file the log says is kept
     if (!openLoadDone)
@@ -4714,6 +4733,9 @@ public class LocalSchema implements Schema {
       final Map<String, String[]> parentTypes = new HashMap<>();
 
       final Map<String, JSONObject> orphanIndexes = new HashMap<>();
+      // The index kind each orphan entry declared: the entry's own "type" is overwritten with the name of the owning type, which
+      // the relinking pass reads, so the kind a refused definition is kept with is read here (issue #11568)
+      final Map<String, String> orphanIndexKinds = new HashMap<>();
 
       for (final String typeName : types.keySet()) {
         final JSONObject schemaType = types.getJSONObject(typeName);
@@ -4944,6 +4966,7 @@ public class LocalSchema implements Schema {
                       publishIndexDuringLoad(registeredName, index);
                     } else {
                       orphanIndexes.put(indexName, indexJSON);
+                      orphanIndexKinds.put(indexName, indexJSON.getString("type", null));
                       indexJSON.put("type", typeName);
                       LogManager.instance()
                           .log(this, Level.WARNING, "Index '%s' of type %s is different from definition %s. Ignoring it",//
@@ -4964,6 +4987,7 @@ public class LocalSchema implements Schema {
                 // Orphans stay keyed by the FILE name, like the schema entry: the relinking pass below matches them to a
                 // bucket by that name's "<bucketName>_" prefix, which a restored logical name need not share.
                 orphanIndexes.put(indexName, indexJSON);
+                orphanIndexKinds.put(indexName, indexJSON.getString("type", null));
                 indexJSON.put("type", typeName);
                 LogManager.instance()
                     .log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName,
@@ -4994,6 +5018,7 @@ public class LocalSchema implements Schema {
                       + "created again with 'REBUILD INDEX' or 'CREATE INDEX'", null, indexName, typeName);
             } else {
               orphanIndexes.put(indexName, indexJSON);
+              orphanIndexKinds.put(indexName, indexJSON.getString("type", null));
               indexJSON.put("type", typeName);
               deferredMissingIndexWarnings.computeIfAbsent(typeName, k -> new ArrayList<>()).add(indexName);
             }
@@ -5047,23 +5072,24 @@ public class LocalSchema implements Schema {
                     for (int i = 0; i < properties.length; ++i)
                       properties[i] = schemaIndexProperties.getString(i);
 
-                    final NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
-                        NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
-                        NULL_STRATEGY.ERROR;
-
-                    index.setNullStrategy(nullStrategy);
-                    // Apply the persisted definition, exactly as the by-name path above does. An LSM-tree index
-                    // carries its key types in its own file header and survives without this, but an index whose
-                    // whole definition lives in schema.json - a vector index with its dimensions, similarity and
-                    // quantization - comes up empty when its file is relinked under a new name after a compaction:
-                    // with dimensions still 0 the component skips loading its vectors at the end of this load.
                     try {
+                      final NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
+                          NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
+                          NULL_STRATEGY.ERROR;
+
+                      index.setNullStrategy(nullStrategy);
+                      // Apply the persisted definition, exactly as the by-name path above does. An LSM-tree index
+                      // carries its key types in its own file header and survives without this, but an index whose
+                      // whole definition lives in schema.json - a vector index with its dimensions, similarity and
+                      // quantization - comes up empty when its file is relinked under a new name after a compaction:
+                      // with dimensions still 0 the component skips loading its vectors at the end of this load.
                       index.setMetadata(entry.getValue());
                     } catch (final RuntimeException e) {
-                      // Refused like on the by-name path above (issue #11568), and left out the same way. The entry's "type"
-                      // was overwritten with the type name when it became an orphan: the kept definition gets its index kind back.
+                      // Refused like on the by-name path above (issue #11568), and left out the same way. The definition is kept
+                      // with the index kind it declared, not the component's: a full-text index relinks as its LSM-tree file.
                       // Leaving out drops the component from the load's index map, so this pass starts over.
-                      final JSONObject definition = entry.getValue().copy().put("type", index.getType().name());
+                      final String kind = orphanIndexKinds.get(entry.getKey());
+                      final JSONObject definition = entry.getValue().copy().put("type", kind != null ? kind : index.getType().name());
                       leaveOutRefusedIndexDefinition(type.getName(), entry.getKey(), indexName, index, definition, e,
                           unavailableIndexes, refusedIndexFiles);
                       relinkedOrphanNames.add(entry.getKey());

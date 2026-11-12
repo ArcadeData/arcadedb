@@ -12706,6 +12706,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(
         indexJSON.getString("nullStrategy", LSMTreeIndexAbstract.NULL_STRATEGY.ERROR.name()));
 
+    // Read into a scratch instance first, so a definition it refuses (issue #11568) leaves this index exactly as it was: an
+    // incremental schema reload applies the definition to the instance it keeps, which searches are using meanwhile, and a
+    // refusal half way through fromJSON() would otherwise leave it with a mix of the old settings and the new ones
+    new LSMVectorIndexMetadata(metadata.typeName, new String[0], metadata.associatedBucketId).fromJSON(indexJSON);
+
     setNullStrategy(nullStrategy);
 
     if (indexJSON.has("typeName"))
@@ -13104,16 +13109,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      // Delete graph file if it exists
+      // Delete the graph file, with its pages and its registrations like the files above: deleting the OS file alone left the
+      // component registered in the file manager and in the schema for the rest of the open (issue #11568 review)
       final LSMVectorIndexGraphFile gf = graphFile;
       if (gf != null) {
+        try {
+          if (db != null && db.isOpen() && db.getFileManager().existsFile(gf.getFileId())) {
+            db.getPageManager().deleteFile(db, gf.getFileId());
+            db.getFileManager().dropFile(gf.getFileId());
+            db.getSchema().getEmbedded().removeFile(gf.getFileId());
+          }
+        } catch (final Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error dropping the graph file of '%s': %s", indexName, e.getMessage());
+        }
         final File graphIndexFile = gf.getOSFile();
-        if (graphIndexFile.exists())
+        if (graphIndexFile != null && graphIndexFile.exists())
           graphIndexFile.delete();
         // And the sidecar that describes it: left behind, it would be read as vouching for whatever graph file a
         // later index happened to create under the same name (issue #6106).
         gf.getManifest().invalidate();
       }
+
+      // And the Product Quantization file next to it, which no component owns: left behind by every DROP INDEX of a PRODUCT
+      // index, and by the load sweep of a replaced one (issue #11568 review)
+      discardProductQuantization();
 
       // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
       // deleted when the schema is updated. We no longer need to delete separate .metadata.json files.
