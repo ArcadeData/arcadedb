@@ -1398,6 +1398,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       }
     }
 
+    // A nested IN TRANSACTIONS fails as ON ERROR FAIL does, rolling back every level, the caller's transaction included: an outer
+    // CONTINUE or BREAK could not take that back, and would carry on without the caller's writes
+    if (onError != SubqueryClause.OnError.FAIL && innerStatement.hasSubqueryInTransactions())
+      throw new CommandParsingException(
+          "A CALL { ... } IN TRANSACTIONS with ON ERROR CONTINUE or BREAK cannot contain another CALL { ... } IN TRANSACTIONS");
+
     return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize, onError, reportStatusVariable);
   }
 

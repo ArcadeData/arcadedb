@@ -138,6 +138,35 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
     assertThat(countX()).isEqualTo(1L);
   }
 
+  /**
+   * A nested IN TRANSACTIONS with the default ON ERROR FAIL rolls back every level on failure, the caller's transaction
+   * included, which an outer CONTINUE or BREAK cannot take back: the combination is refused before anything runs.
+   */
+  @Test
+  void aNestedInTransactionsUnderContinueOrBreakIsRefused() {
+    for (final String mode : new String[] { "CONTINUE", "BREAK" })
+      assertThatThrownBy(() -> database.command("opencypher",
+          "UNWIND range(1, 3) AS i CALL { WITH i CALL { WITH i CREATE (:X {i: i + 100}) } IN TRANSACTIONS } "
+              + "IN TRANSACTIONS OF 1 ROWS ON ERROR " + mode)).as(mode).hasMessageContaining("cannot contain");
+    assertThat(countX()).isEqualTo(1L);
+  }
+
+  /**
+   * A label written in a failed batch is undone with it: the outer row is not redirected to the replacement record the
+   * rolled-back batch created.
+   */
+  @Test
+  void aLabelWrittenInAFailedBatchIsNotFollowed() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 24}), (:A {id: 25}), (:A {id: 26})"));
+    final List<Result> result = rows("MATCH (n:A) WITH n ORDER BY n.id CALL { WITH n SET n:B CREATE (:X {i: n.id}) } "
+        + "IN TRANSACTIONS OF 1 ROWS ON ERROR CONTINUE RETURN n.id AS id, labels(n) AS l ORDER BY id");
+    assertThat(result).hasSize(3);
+    assertThat(result.get(1).<Number>getProperty("id").intValue()).isEqualTo(25);
+    assertThat(result.get(1).<List<Object>>getProperty("l")).containsExactly("A");
+    assertThat(result.get(0).<List<Object>>getProperty("l")).containsExactlyInAnyOrder("A", "B");
+    assertThat(single("MATCH (n:A {id: 25}) RETURN labels(n) AS l").<List<Object>>getProperty("l")).containsExactly("A");
+  }
+
   private long countX() {
     return countLabel("X");
   }

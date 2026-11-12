@@ -420,6 +420,10 @@ public class SubqueryStep extends AbstractExecutionStep {
         final String transactionId = String.valueOf(++batchNumber);
         final boolean callerTransaction = database.isTransactionActive();
         final int nesting = database.getNestedTransactions();
+        // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
+        // commit takes its notes back with it. Only a body that can write has any, and the map is not created for one that cannot
+        final LabelReplacements.Snapshot labelReplacements =
+            innerMayWrite && onError != SubqueryClause.OnError.FAIL ? LabelReplacements.of(context).copy() : null;
         database.begin();
         try {
           for (final Result outerRow : batch) {
@@ -448,6 +452,8 @@ public class SubqueryStep extends AbstractExecutionStep {
           // commit has already ended it
           if (database.getNestedTransactions() > nesting || !callerTransaction && database.isTransactionActive())
             database.rollback();
+          if (labelReplacements != null)
+            LabelReplacements.of(context).restore(labelReplacements);
           if (onError == SubqueryClause.OnError.BREAK)
             broken = true;
           final Map<String, Object> status = status(true, false, transactionId, e.getMessage());
