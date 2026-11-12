@@ -319,6 +319,10 @@ healthcheck:
   start_period: 30s
 ```
 
+The shell is a deliberate trade-off: a process that already has code execution inside the container
+also gets `sh` and `wget`. The applet list is kept minimal, the image still runs as `1000:1000`, and
+the shell is never the entrypoint.
+
 The shell is not the entrypoint, though. A few things still differ from the JVM Docker image because the
 entrypoint is the binary itself, with no wrapper script:
 

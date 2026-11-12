@@ -107,6 +107,23 @@ class PackagingManifestsTest {
   }
 
   @Test
+  void nativeImagesShipTheShellAndWgetTheComposeHealthcheckRuns() {
+    // docker-compose.yml's CMD-SHELL healthcheck needs /bin/sh and wget, which FROM scratch / distroless lack (#11546).
+    // Both native Dockerfiles stage the static BusyBox the same way; this keeps them from drifting apart.
+    for (final String name : List.of(NATIVE_SCRATCH, NATIVE_DISTROLESS)) {
+      final String dockerfile = read(name);
+      assertThat(dockerfile).as("%s builder stage", name).contains("FROM busybox:").contains("-musl@sha256:")
+          .contains("cp /bin/busybox /bbx/bin/busybox");
+      final Matcher applets = Pattern.compile("for applet in ([^;]+);").matcher(dockerfile);
+      assertThat(applets.find()).as("%s links the BusyBox applets", name).isTrue();
+      assertThat(applets.group(1).trim().split("\\s+")).as("%s applets", name).contains("sh", "wget");
+      assertThat(dockerfile).as("%s copies BusyBox into /bin", name).contains("COPY --from=dirs /bbx/bin/ /bin/");
+    }
+    assertThat(read("docker-compose.yml")).as("the healthcheck the native images are sized for")
+        .contains("\"CMD-SHELL\", \"wget ");
+  }
+
+  @Test
   void dockerImagesRunOnAJvmThatAcceptsCompactObjectHeaders() {
     // bin/server.sh enables compact object headers (JEP 519) only when the JVM accepts the flag: Java 21 rejects it
     // and Java 24 gates it behind UnlockExperimentalVMOptions, so on an older base the probe fails and every

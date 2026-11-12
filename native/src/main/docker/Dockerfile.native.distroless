@@ -29,9 +29,9 @@
 #
 # distroless/base-debian12 provides glibc, libssl and a CA-certificate bundle already baked in -
 # no separate ca-certificates COPY needed here, unlike Dockerfile.native.scratch - but no shell
-# of its own and no package manager, so a static BusyBox (sh, wget) is copied in below (#11546). The entrypoint is still
-# exec-form: the same "no JAVA_OPTS wrapper script" constraint documented in
-# Dockerfile.native.scratch's ENTRYPOINT comment applies here too.
+# of its own and no package manager, so a static BusyBox (sh, wget) is copied in below
+# (#11546). The entrypoint is still exec-form: the same "no JAVA_OPTS wrapper script"
+# constraint documented in Dockerfile.native.scratch's ENTRYPOINT comment applies here too.
 #
 # Runs as 1000:1000 (see `USER` below), the UID/GID of the JVM image's `arcadedb` user and of the
 # amd64 scratch image, so the three images' volumes are interchangeable (issue #10319). This uses
@@ -46,11 +46,12 @@
 # digest with:
 #   docker buildx imagetools inspect gcr.io/distroless/base-debian12:latest --format '{{.Manifest.Digest}}'
 #
-# Tiny builder stage (also the source of the static BusyBox): distroless/base has no shell/mkdir/chown to create the VOLUME directories
-# below owned by the 1000:1000 runtime user, so pre-create them here and COPY the resulting tree
-# in. Docker initializes an anonymous volume with the ownership of the image directory it is
-# mounted on, so these directories decide who can write a fresh volume. Pinned by digest,
-# matching the base image's own pin above.
+# Tiny builder stage (also the source of the static BusyBox): distroless/base has no
+# shell/mkdir/chown to create the VOLUME directories below owned by the 1000:1000 runtime
+# user, so pre-create them here and COPY the resulting tree in. Docker initializes an
+# anonymous volume with the ownership of the image directory it is mounted on, so these
+# directories decide who can write a fresh volume. Pinned by digest, matching the base
+# image's own pin above.
 FROM busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94 AS dirs
 RUN mkdir -p /skel/bin /skel/config /skel/databases /skel/backups /skel/replication /skel/log && \
     chown -R 1000:1000 /skel && \
@@ -66,10 +67,11 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 #   ./arcadedb -> the linux/arm64 mostly-static binary, from artifact arcadedb-native-linux-arm64
 #   ./config   -> config templates from package/src/main/config, with the JVM
 #                 assemblies' include set
-# Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run, plus a few
-# applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it needs no libc here. It is a
-# separate, unmodified executable in the image, not linked into ArcadeDB (GPL-2.0, see ATTRIBUTIONS.md). The
-# ENTRYPOINT below stays exec-form: there is still no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
+# Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run,
+# plus a few applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it
+# needs no libc here. It is a separate, unmodified executable in the image, not linked into
+# ArcadeDB (GPL-2.0, see ATTRIBUTIONS.md). The ENTRYPOINT below stays exec-form: there is still
+# no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
 COPY --from=dirs /bbx/bin/ /bin/
 COPY --from=dirs --chown=1000:1000 /skel/ /home/arcadedb/
 COPY --chown=1000:1000 config /home/arcadedb/config

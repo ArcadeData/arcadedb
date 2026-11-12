@@ -62,10 +62,11 @@ LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 #                               anchors baked in at native-image build time. Documented as a known
 #                               caveat, not something this Dockerfile resolves.
 COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-# Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run, plus a few
-# applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it needs no libc here. It is a
-# separate, unmodified executable in the image, not linked into ArcadeDB (GPL-2.0, see ATTRIBUTIONS.md). The
-# ENTRYPOINT below stays exec-form: there is still no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
+# Static BusyBox (#11546): /bin/sh and /bin/wget so a compose `CMD-SHELL` healthcheck can run,
+# plus a few applets for `docker exec` debugging. The -musl BusyBox is statically linked, so it
+# needs no libc here. It is a separate, unmodified executable in the image, not linked into
+# ArcadeDB (GPL-2.0, see ATTRIBUTIONS.md). The ENTRYPOINT below stays exec-form: there is still
+# no wrapper script, so $JAVA_OPTS / $ARCADEDB_SETTINGS are not expanded.
 COPY --from=dirs /bbx/bin/ /bin/
 COPY --from=dirs --chown=1000:1000 /skel/ /home/arcadedb/
 # config is written at runtime (server-users.jsonl, server-groups.json), so it must be owned by the
@@ -111,9 +112,8 @@ EXPOSE 7687
 # gRPC service
 EXPOSE 50051
 
-# The BusyBox shell above is for healthchecks and `docker exec`, not for the entrypoint: this is an exec-form
-# ENTRYPOINT invoking the static binary directly. The
-# binary is itself the "java" replacement (a GraalVM native-image executable), so JVM-style -D
+# The BusyBox shell above is for healthchecks and `docker exec`, not for the entrypoint: this
+# is an exec-form ENTRYPOINT invoking the static binary directly. The binary is itself the "java" replacement (a GraalVM native-image executable), so JVM-style -D
 # flags are passed straight on its own command line rather than through a JAVA_OPTS-consuming
 # wrapper script - there is no such script in this image, unlike the JVM-based
 # package/src/main/docker/Dockerfile, which relies on bin/server.sh reading $JAVA_OPTS.
