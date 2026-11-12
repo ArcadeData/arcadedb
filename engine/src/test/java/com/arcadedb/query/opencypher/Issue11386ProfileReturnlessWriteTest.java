@@ -123,9 +123,9 @@ class Issue11386ProfileReturnlessWriteTest extends TestHelper {
   }
 
   @Test
-  void aStatementWithNoReturnOrAStarDeclaresNoColumns() {
+  void aStatementWithNoReturnDeclaresNoColumns() {
     assertThat(declaredColumns("CREATE (:PF {i: 99})")).isNull();
-    assertThat(declaredColumns("MATCH (n:PF) RETURN *")).isNull();
+    assertThat(declaredColumns("MATCH (n:PF) WHERE n.i > 100 SET n.x = 1")).isNull();
   }
 
   private List<String> declaredColumns(final String query) {

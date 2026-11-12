@@ -52,6 +52,22 @@ import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.InternalVariables;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.MergeClause;
+import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
+import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
@@ -99,6 +115,7 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -324,14 +341,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * The columns a statement declares in its RETURN clause, in order, named as a row of it names them, for a caller that has to
-   * announce the columns of a result with no row to read them from: Neo4j reports the RETURN items of a zero-row result, and a
-   * Bolt client reads its keys from them (issue #11386). Looked up as the execution looks the statement up (as written under
-   * EXPLAIN and PROFILE, with the literals extracted otherwise), so an unaliased item is named as the rows of that execution
-   * name it, and the parse is the cached one.
+   * The columns a statement declares, in order, named as a row of it names them, for a caller that has to announce the columns
+   * of a result with no row to read them from: Neo4j reports the declared columns of a zero-row result, and a Bolt client reads
+   * its keys from them (issues #11386, #11543). Looked up as the execution looks the statement up (as written under EXPLAIN
+   * and PROFILE, with the literals extracted otherwise), so an unaliased item is named as the rows of that execution name it,
+   * and the parse is the cached one.
+   * <p>
+   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN, in the order the statement
+   * binds them (the order a row of it carries them in), followed by any item written after the star; for a standalone
+   * {@code CALL} the fields it yields (its YIELD items, or every output of the procedure under {@code YIELD *} or no YIELD).
    *
-   * @return the column names, or {@code null} when the statement does not fix them without running: no RETURN (a write, a
-   * standalone CALL) or {@code RETURN *}, whose columns are the variables in scope
+   * @return the column names, or {@code null} when the statement does not fix them without running: no RETURN and no
+   * standalone CALL (a write), a CALL of a procedure the engine does not know without an explicit YIELD, or a scope this
+   * analysis does not follow (a {@code RETURN *} reached through a CALL subquery that itself returns {@code *})
    */
   public static List<String> declaredColumns(final DatabaseInternal database, final String query) {
     if (query == null)
@@ -345,18 +367,167 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final CypherStatement statement = (explain || profile ?
         database.getCypherStatementCache().getAsWritten(actual) :
         database.getCypherStatementCache().getParameterized(actual)).statement().statement();
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || statement.hasFinishClause())
+    return declaredColumns(statement);
+  }
+
+  private static List<String> declaredColumns(CypherStatement statement) {
+    // The branches of a UNION answer the same columns, under the names of the first one
+    if (statement instanceof UnionStatement union)
+      statement = union.getQueries().getFirst();
+    if (statement.hasFinishClause())
       return null;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null)
+      return standaloneCallColumns(statement);
 
     final List<ReturnClause.ReturnItem> items = returnClause.getReturnItems();
     final List<String> columns = new ArrayList<>(items.size());
     for (final ReturnClause.ReturnItem item : items) {
-      if (item.isStar())
-        return null;
-      columns.add(item.getOutputName());
+      if (item.isStar()) {
+        final Set<String> scope = scopeAtReturn(statement);
+        if (scope == null)
+          return null;
+        for (final String variable : scope)
+          if (!columns.contains(variable))
+            columns.add(variable);
+      } else
+        columns.add(item.getOutputName());
     }
     return columns;
+  }
+
+  /**
+   * The fields a statement made of a single CALL yields: its YIELD items, or every output of the procedure for {@code YIELD *}
+   * and for no YIELD at all. {@code null} for anything else, and for a procedure the engine does not know without an explicit
+   * YIELD (its outputs are not known before it runs).
+   */
+  private static List<String> standaloneCallColumns(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.size() != 1 || clauses.getFirst().getType() != ClauseEntry.ClauseType.CALL)
+      return null;
+    final CallClause call = clauses.getFirst().getTypedClause();
+    final List<String> yielded = yieldedFields(call);
+    if (yielded != null || call.hasYield())
+      return yielded;
+    // no YIELD: a standalone CALL answers every output of the procedure
+    final CypherProcedure procedure = call.resolveProcedure();
+    return procedure != null ? new ArrayList<>(procedure.getYieldFields()) : null;
+  }
+
+  /** The names a CALL ... YIELD binds, or {@code null} when it has no YIELD or yields {@code *} of a procedure not known. */
+  private static List<String> yieldedFields(final CallClause call) {
+    if (!call.hasYield())
+      return null;
+    if (call.isYieldAll()) {
+      final CypherProcedure procedure = call.resolveProcedure();
+      return procedure != null ? new ArrayList<>(procedure.getYieldFields()) : null;
+    }
+    final List<String> names = new ArrayList<>(call.getYieldItems().size());
+    for (final CallClause.YieldItem item : call.getYieldItems())
+      names.add(item.getOutputName());
+    return names;
+  }
+
+  /**
+   * The variables in scope at the RETURN of a statement, in the order its clauses bind them, which is the order a {@code RETURN
+   * *} row carries them in. Anonymous pattern elements, and the names the executor generates for them, are not variables.
+   * {@code null} when the scope passes through something this walk does not follow.
+   */
+  private static Set<String> scopeAtReturn(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty())
+      return null;
+    final Set<String> scope = new LinkedHashSet<>();
+    for (final ClauseEntry entry : clauses) {
+      switch (entry.getType()) {
+      case MATCH -> {
+        final MatchClause match = entry.getTypedClause();
+        if (match.hasPathPatterns())
+          for (final PathPattern path : match.getPathPatterns())
+            bindPattern(path, scope);
+      }
+      case CREATE -> {
+        final CreateClause create = entry.getTypedClause();
+        if (create != null && !create.isEmpty())
+          for (final PathPattern path : create.getPathPatterns())
+            bindPattern(path, scope);
+      }
+      case MERGE -> {
+        final MergeClause merge = entry.getTypedClause();
+        if (merge != null)
+          bindPattern(merge.getPathPattern(), scope);
+      }
+      case WITH -> {
+        final WithClause with = entry.getTypedClause();
+        boolean forwardsAll = false;
+        final List<String> projected = new ArrayList<>(with.getItems().size());
+        for (final ReturnClause.ReturnItem item : with.getItems())
+          if (item.isStar())
+            forwardsAll = true;
+          else
+            projected.add(item.getOutputName());
+        if (!forwardsAll)
+          scope.clear();
+        for (final String name : projected)
+          bind(name, scope);
+      }
+      case UNWIND -> bind(((UnwindClause) entry.getTypedClause()).getVariable(), scope);
+      case LOAD_CSV -> bind(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope);
+      case CALL -> {
+        final CallClause call = entry.getTypedClause();
+        if (call.hasYield()) {
+          final List<String> yielded = yieldedFields(call);
+          if (yielded == null)
+            return null;
+          for (final String name : yielded)
+            bind(name, scope);
+        }
+      }
+      case SUBQUERY -> {
+        // What a CALL { } subquery returns joins the enclosing scope; a unit subquery (no RETURN) adds nothing
+        final CypherStatement inner = ((SubqueryClause) entry.getTypedClause()).getInnerStatement();
+        if (inner != null && inner.getReturnClause() != null)
+          for (final ReturnClause.ReturnItem item : inner.getReturnClause().getReturnItems()) {
+            if (item.isStar())
+              return null;
+            bind(item.getOutputName(), scope);
+          }
+      }
+      case RETURN -> {
+        return scope;
+      }
+      default -> {
+        // SET, REMOVE, DELETE, FOREACH: no binding visible after the clause
+      }
+      }
+    }
+    return scope;
+  }
+
+  /** Binds the variables of a pattern in the order the match binds them: each element along the path, then the path. */
+  private static void bindPattern(final PathPattern path, final Set<String> scope) {
+    if (path == null)
+      return;
+    final List<NodePattern> nodes = path.getNodes();
+    final List<RelationshipPattern> relationships = path.getRelationships();
+    for (int i = 0; i < nodes.size(); i++) {
+      bind(nodes.get(i).getVariable(), scope);
+      if (i < relationships.size()) {
+        final RelationshipPattern relationship = relationships.get(i);
+        bind(relationship.getVariable(), scope);
+        if (relationship instanceof QuantifiedPathPattern quantified)
+          for (final String groupVariable : quantified.getGroupVariables())
+            bind(groupVariable, scope);
+      }
+    }
+    if (path.hasPathVariable())
+      bind(path.getPathVariable(), scope);
+  }
+
+  private static void bind(final String variable, final Set<String> scope) {
+    if (variable != null && !variable.isEmpty() && !InternalVariables.isInternal(variable))
+      scope.add(variable);
   }
 
   @Override
