@@ -5238,6 +5238,10 @@ public class CypherExecutionPlan {
       return null;
     if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
       return null;
+    // An inline predicate on the relationship, -[r:R WHERE r.w = 1]->, filters the edges the step would count, and the step
+    // counts every edge of the anchor (issue #11584)
+    if (relPattern.hasWhereExpression())
+      return null;
 
     // No WHERE clause
     if (matchClause.hasWhereClause())
