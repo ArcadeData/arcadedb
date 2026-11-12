@@ -170,6 +170,12 @@ public class TernaryLogicalExpression implements Expression {
     return false;
   }
 
+  /** An aggregate under AND, OR, XOR or NOT makes the item an aggregation, not a grouping key (issue #11597). */
+  @Override
+  public boolean containsAggregation() {
+    return left.containsAggregation() || right != null && right.containsAggregation();
+  }
+
   @Override
   public String getText() {
     return switch (operator) {
