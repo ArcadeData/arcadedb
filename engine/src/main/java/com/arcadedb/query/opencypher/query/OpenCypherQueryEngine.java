@@ -406,32 +406,43 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (clauses == null || clauses.size() != 1 || clauses.getFirst().getType() != ClauseEntry.ClauseType.CALL)
       return null;
     final CallClause call = clauses.getFirst().getTypedClause();
-    final List<String> yielded = yieldedFields(call);
-    if (yielded != null || call.hasYield())
-      return yielded;
     // no YIELD: a standalone CALL answers every output of the procedure
-    final CypherProcedure procedure = call.resolveProcedure();
-    return procedure != null ? new ArrayList<>(procedure.getYieldFields()) : null;
+    return call.hasYield() ? yieldedFields(call) : procedureOutputs(call);
   }
 
   /** The names a CALL ... YIELD binds, or {@code null} when it has no YIELD or yields {@code *} of a procedure not known. */
   private static List<String> yieldedFields(final CallClause call) {
     if (!call.hasYield())
       return null;
-    if (call.isYieldAll()) {
-      final CypherProcedure procedure = call.resolveProcedure();
-      return procedure != null ? new ArrayList<>(procedure.getYieldFields()) : null;
-    }
+    if (call.isYieldAll())
+      return procedureOutputs(call);
     final List<String> names = new ArrayList<>(call.getYieldItems().size());
     for (final CallClause.YieldItem item : call.getYieldItems())
       names.add(item.getOutputName());
     return names;
   }
 
+  /** Every output of the procedure a CALL runs, or {@code null} when the engine does not know the procedure. */
+  private static List<String> procedureOutputs(final CallClause call) {
+    final CypherProcedure procedure = call.resolveProcedure();
+    return procedure != null ? new ArrayList<>(procedure.getYieldFields()) : null;
+  }
+
+  /** What the scope walk of {@link #scopeAtReturn} does after a clause. */
+  private enum ScopeWalk {
+    /** the clause is accounted for: go on with the next one */
+    NEXT,
+    /** the RETURN is reached: the scope is complete */
+    DONE,
+    /** the clause binds names the walk cannot know without running: the scope is unknown */
+    UNKNOWN
+  }
+
   /**
    * The variables in scope at the RETURN of a statement, in the order its clauses bind them, which is the order a {@code RETURN
-   * *} row carries them in. Anonymous pattern elements, and the names the executor generates for them, are not variables.
-   * {@code null} when the scope passes through something this walk does not follow.
+   * *} row carries them in (Neo4j sorts them alphabetically instead: #11557 tracks switching the rows and this together).
+   * Anonymous pattern elements, and the names the executor generates for them, are not variables. {@code null} when the scope
+   * passes through something this walk does not follow.
    */
   private static Set<String> scopeAtReturn(final CypherStatement statement) {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
@@ -439,23 +450,45 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return null;
     final Set<String> scope = new LinkedHashSet<>();
     for (final ClauseEntry entry : clauses) {
-      switch (entry.getType()) {
+      switch (bindClause(entry, scope)) {
+      case NEXT -> {
+      }
+      case DONE -> {
+        return scope;
+      }
+      case UNKNOWN -> {
+        return null;
+      }
+      }
+    }
+    return scope;
+  }
+
+  /**
+   * Adds the names one clause binds to the scope. A switch expression with no default on purpose: a new
+   * {@link ClauseEntry.ClauseType} does not compile until it says what it binds, so {@code RETURN *} cannot silently miss it.
+   */
+  private static ScopeWalk bindClause(final ClauseEntry entry, final Set<String> scope) {
+    return switch (entry.getType()) {
       case MATCH -> {
         final MatchClause match = entry.getTypedClause();
         if (match.hasPathPatterns())
           for (final PathPattern path : match.getPathPatterns())
             bindPattern(path, scope);
+        yield ScopeWalk.NEXT;
       }
       case CREATE -> {
         final CreateClause create = entry.getTypedClause();
         if (create != null && !create.isEmpty())
           for (final PathPattern path : create.getPathPatterns())
             bindPattern(path, scope);
+        yield ScopeWalk.NEXT;
       }
       case MERGE -> {
         final MergeClause merge = entry.getTypedClause();
         if (merge != null)
           bindPattern(merge.getPathPattern(), scope);
+        yield ScopeWalk.NEXT;
       }
       case WITH -> {
         final WithClause with = entry.getTypedClause();
@@ -470,19 +503,27 @@ public class OpenCypherQueryEngine implements QueryEngine {
           scope.clear();
         for (final String name : projected)
           bind(name, scope);
+        yield ScopeWalk.NEXT;
       }
-      case UNWIND -> bind(((UnwindClause) entry.getTypedClause()).getVariable(), scope);
-      case LOAD_CSV -> bind(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope);
+      case UNWIND -> {
+        bind(((UnwindClause) entry.getTypedClause()).getVariable(), scope);
+        yield ScopeWalk.NEXT;
+      }
+      case LOAD_CSV -> {
+        bind(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope);
+        yield ScopeWalk.NEXT;
+      }
       case CALL -> {
         // An in-query CALL with no YIELD is a side-effect call: it binds nothing
         final CallClause call = entry.getTypedClause();
-        if (call.hasYield()) {
-          final List<String> yielded = yieldedFields(call);
-          if (yielded == null)
-            return null;
-          for (final String name : yielded)
-            bind(name, scope);
-        }
+        if (!call.hasYield())
+          yield ScopeWalk.NEXT;
+        final List<String> yielded = yieldedFields(call);
+        if (yielded == null)
+          yield ScopeWalk.UNKNOWN;
+        for (final String name : yielded)
+          bind(name, scope);
+        yield ScopeWalk.NEXT;
       }
       case SUBQUERY -> {
         // What a CALL { } subquery returns joins the enclosing scope; a unit subquery (no RETURN) adds nothing
@@ -490,19 +531,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
         if (inner != null && inner.getReturnClause() != null)
           for (final ReturnClause.ReturnItem item : inner.getReturnClause().getReturnItems()) {
             if (item.isStar())
-              return null;
+              yield ScopeWalk.UNKNOWN;
             bind(item.getOutputName(), scope);
           }
+        yield ScopeWalk.NEXT;
       }
-      case RETURN -> {
-        return scope;
-      }
-      default -> {
-        // SET, REMOVE, DELETE, FOREACH: no binding visible after the clause
-      }
-      }
-    }
-    return scope;
+      // the FOREACH variable, and what its inner clauses bind, live and die inside the loop
+      case SET, REMOVE, DELETE, FOREACH -> ScopeWalk.NEXT;
+      case RETURN -> ScopeWalk.DONE;
+      // FINISH answers no columns (declaredColumns refuses it first)
+      case FINISH -> ScopeWalk.UNKNOWN;
+    };
   }
 
   /** Binds the variables of a pattern in the order the match binds them: each element along the path, then the path. */

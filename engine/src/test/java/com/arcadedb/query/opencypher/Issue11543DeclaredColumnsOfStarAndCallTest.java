@@ -69,6 +69,10 @@ class Issue11543DeclaredColumnsOfStarAndCallTest extends TestHelper {
       "MATCH (z:A) CALL { WITH z RETURN 5 AS k } RETURN *",
       "MATCH (z:A) OPTIONAL MATCH (z)-[q:X]->(m) RETURN *",
       "MATCH (z:A) RETURN * ORDER BY z.i LIMIT 1",
+      "MATCH (z:A) FOREACH (x IN [1] | CREATE (:B {j: x})) RETURN *",
+      "MATCH (z:A) WITH DISTINCT * RETURN *",
+      "MATCH (z:A) WITH * OPTIONAL MATCH (z)-[r:R]->(b:B) RETURN *",
+      "MATCH (z:A) MATCH (z)-[r:R]->(b:B) RETURN *",
       "CREATE (c:A {i: 3}) RETURN *",
       "MERGE (c:A {i: 1}) RETURN *",
       "MATCH (n:A) RETURN * UNION MATCH (n:B) RETURN *",
@@ -86,6 +90,20 @@ class Issue11543DeclaredColumnsOfStarAndCallTest extends TestHelper {
         assertThat(declaredColumns(query)).as(query).isEqualTo(new ArrayList<>(rs.next().getPropertyNames()));
       }
     });
+  }
+
+  /**
+   * A pattern walked from an end bound by an earlier clause binds its elements in the plan's direction ({@code b} then
+   * {@code r} then {@code z}), not in the written one: the same names, in an order only the plan knows. Neo4j sorts the
+   * columns of {@code RETURN *}, which removes the difference; #11557 tracks doing that for the rows and the declared columns
+   * together.
+   */
+  @Test
+  void aPatternWalkedFromABoundEndDeclaresTheSameNames() {
+    final String query = "MATCH (b:B) MATCH (z:A)-[r:R]->(b) RETURN *";
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      assertThat(declaredColumns(query)).containsExactlyInAnyOrderElementsOf(rs.next().getPropertyNames());
+    }
   }
 
   @Test
