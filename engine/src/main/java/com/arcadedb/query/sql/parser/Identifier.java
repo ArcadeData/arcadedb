@@ -63,6 +63,13 @@ public class Identifier extends SimpleNode {
   }
 
   /**
+   * Returns true when the identifier was written back-tick quoted: a quoted {@code `$name`} is a property, not a context variable.
+   */
+  public boolean isQuoted() {
+    return quoted;
+  }
+
+  /**
    * builds an identifier from the SQL spelling of a back-tick quoted name, outer back-ticks included. Going through the
    * {@link #Identifier(String)} constructor first would run the inner text through {@link #escape(String)} only to discard the
    * result on the following {@link #setQuotedStringValue(String)}.

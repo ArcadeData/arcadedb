@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Unwind;
 
 import java.util.*;
@@ -39,6 +40,11 @@ public class UnwindStep extends AbstractExecutionStep {
   private int       produced = 0;
   private final Unwind       unwind;
   private final List<String> unwindFields;
+  /**
+   * The operand of each item, parallel to {@link #unwindFields}: null for a bare field read in place, otherwise the
+   * expression whose elements are written into the alias (issue #11442).
+   */
+  private final Expression[] operands;
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
@@ -47,6 +53,9 @@ public class UnwindStep extends AbstractExecutionStep {
     super(context);
     this.unwind = unwind;
     unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
+    operands = new Expression[unwindFields.size()];
+    for (int i = 0; i < operands.length; i++)
+      operands[i] = unwind.getExpression(i);
   }
 
   @Override
@@ -108,22 +117,23 @@ public class UnwindStep extends AbstractExecutionStep {
       }
 
       final Result nextAggregateItem = lastResult.next();
-      nextSubsequence = unwind(nextAggregateItem, unwindFields, context).iterator();
+      nextSubsequence = unwind(nextAggregateItem, 0, context).iterator();
 
     } while (true);
 
   }
 
-  private Collection<Result> unwind(final Result doc, final List<String> unwindFields, final CommandContext context) {
+  private Collection<Result> unwind(final Result doc, final int itemIndex, final CommandContext context) {
     final List<Result> result = new ArrayList<>();
 
-    if (unwindFields.isEmpty()) {
+    if (itemIndex >= unwindFields.size()) {
       result.add(doc);
     } else {
-      final String firstField = unwindFields.getFirst();
-      final List<String> nextFields = unwindFields.subList(1, unwindFields.size());
+      final String firstField = unwindFields.get(itemIndex);
+      final int nextFields = itemIndex + 1;
+      final Expression operand = operands[itemIndex];
 
-      final Object fieldValue = doc.getProperty(firstField);
+      final Object fieldValue = operand != null ? operand.execute(doc, context) : doc.getProperty(firstField);
       if (fieldValue == null || fieldValue instanceof Record
           || (!(fieldValue instanceof Iterable) && !MultiValue.isSequenceArray(fieldValue))) {
         // Null, Record, scalar or BINARY blob value: there is nothing to flatten, so a single row is forwarded.
@@ -135,6 +145,9 @@ public class UnwindStep extends AbstractExecutionStep {
         copy(doc, unwindedDoc);
         if (doc.isElement())
           unwindedDoc.setElement(doc.getElement().get());
+        if (operand != null)
+          // an aliased item writes its single value into the alias, as a bare field already holds it in place
+          unwindedDoc.setProperty(firstField, fieldValue);
         result.addAll(unwind(unwindedDoc, nextFields, context));
         return result;
       }
