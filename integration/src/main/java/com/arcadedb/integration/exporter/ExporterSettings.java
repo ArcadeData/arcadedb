@@ -20,28 +20,67 @@ package com.arcadedb.integration.exporter;
 
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StringUtils;
 
 import java.time.LocalDateTime;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 public class ExporterSettings {
-  public       String              format;
-  public       String              databaseURL;
-  public       String              file;
-  public       boolean             overwriteFile = false;
-  public       int                 verboseLevel  = 2;
-  public       Set<String>         includeRecords;
-  public       Set<String>         includeTypes;
-  public       Set<String>         excludeTypes;
-  public final Map<String, String> options       = new HashMap<>();
+  /**
+   * Every setting {@link #parseParameter} accepts, which is what a {@code WITH} clause of {@code EXPORT DATABASE} may carry. It
+   * used to accept anything, into a free-form map nothing read back, so a misspelled setting ({@code exludeTypes}) exported
+   * everything and answered OK (issue #11523). The target file and the database are not among them: the caller fixes both,
+   * and only the command line sets them ({@link #parseParameters}).
+   */
+  public static final Set<String> SETTINGS = Set.of("format", "overwrite", "includeTypes", "excludeTypes", "includeRecords",
+      "verboseLevel");
 
+  /** The most verbose level the console logger distinguishes. */
+  public static final int MAX_VERBOSE_LEVEL = 3;
+
+  public String      format;
+  public String      databaseURL;
+  public String      file;
+  public boolean     overwriteFile = false;
+  public int         verboseLevel  = 2;
+  public Set<String> includeRecords;
+  public Set<String> includeTypes;
+  public Set<String> excludeTypes;
+
+  /**
+   * Parses the command line: {@code -o} is a flag with no value, every other argument is a {@code -<name> <value>} pair. A
+   * trailing {@code -o} used to be dropped, because the loop stopped one argument before the end expecting a value for every
+   * name (issue #11523).
+   */
   protected void parseParameters(final String[] args) {
     if (args != null)
-      for (int i = 0; i < args.length - 1; )
-        i += parseParameter(args[i].substring(1), args[i + 1]);
+      for (int i = 0; i < args.length; ) {
+        if (args[i].isEmpty() || args[i].charAt(0) != '-')
+          throw new IllegalArgumentException("Arguments must begin with '-', found '" + args[i] + "'");
+
+        final String name = args[i].substring(1);
+        if ("o".equals(name)) {
+          overwriteFile = true;
+          ++i;
+          continue;
+        }
+
+        // A VALUE THAT IS ONE OF THE OPTIONS IS THE NEXT OPTION, NOT A VALUE: '-f -o' WOULD OTHERWISE EXPORT TO A FILE NAMED
+        // '-o' WITHOUT OVERWRITE. ONLY A RECOGNIZED OPTION, SO A VALUE THAT MERELY BEGINS WITH '-' IS STILL A VALUE
+        if (i + 1 >= args.length || isOption(args[i + 1]))
+          throw new IllegalArgumentException("Missing value for -" + name);
+
+        final String value = args[i + 1];
+        switch (name) {
+        case "f", "file" -> file = value;
+        case "d" -> databaseURL = value;
+        default -> parseParameter(name, value);
+        }
+        i += 2;
+      }
 
     if (includeTypes != null && excludeTypes != null)
       throw new IllegalArgumentException("Both includeTypes and excludeTypes were defined, but they are mutual exclusive");
@@ -63,29 +102,77 @@ public class ExporterSettings {
     file = file.formatted(LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
   }
 
-  public int parseParameter(String name, final String value) {
+  /**
+   * The entries of a comma-separated list, trimmed, empty ones dropped. {@code Set.of(value.split(","))} refused a repeated
+   * entry ({@code A,A}) with a bare "duplicate element", and kept the blank after a comma, so {@code 'A, B'} filtered on
+   * {@code " B"} and silently exported nothing of type B. A list with no entry at all ({@code ''}, {@code ' , '}) is refused:
+   * as an include filter it would export nothing and answer OK, as an exclude filter it says nothing.
+   */
+  private static Set<String> parseList(final String name, final String value) {
+    final Set<String> entries = new HashSet<>();
+    for (final String entry : value.split(",")) {
+      final String trimmed = entry.trim();
+      if (!trimmed.isEmpty())
+        entries.add(trimmed);
+    }
+    if (entries.isEmpty())
+      throw new IllegalArgumentException("Invalid value '" + value + "' for -" + name + ": the list is empty");
+    return entries;
+  }
+
+  /** Whether {@code arg} is a command-line option {@link #parseParameters} recognizes. */
+  private static boolean isOption(final String arg) {
+    if (arg.length() < 2 || arg.charAt(0) != '-')
+      return false;
+    final String name = arg.substring(1);
+    return switch (name) {
+      case "o", "f", "file", "d" -> true;
+      default -> SETTINGS.contains(name);
+    };
+  }
+
+  /**
+   * Applies one of the {@link #SETTINGS}. {@code overwrite} takes its value, strictly {@code true} or {@code false}: it used to
+   * be set by its name alone, so {@code WITH overwrite = false} replaced an existing export like {@code overwrite = true}
+   * (issue #11523).
+   *
+   * @throws IllegalArgumentException for a name that is not one of the {@link #SETTINGS}, or a value the setting cannot take
+   */
+  public void parseParameter(String name, final String value) {
     name = FileUtils.getStringContent(name);
 
-    if ("format".equals(name))
-      format = value.toLowerCase(Locale.ENGLISH);
-    else if ("f".equals(name) || "file".equals(name))
-      file = value;
-    else if ("d".equals(name))
-      databaseURL = value;
-    else if ("overwrite".equals(name))
-      overwriteFile = true;
-    else if ("o".equals(name)) {
-      overwriteFile = true;
-      return 1;
-    } else if ("includeTypes".equals(name))
-      includeTypes = Set.of(value.split(","));
-    else if ("excludeTypes".equals(name))
-      excludeTypes = Set.of(value.split(","));
-    else if ("includeRecords".equals(name))
-      includeRecords = Set.of(value.split(","));
-    else
-      // ADDITIONAL OPTIONS
-      options.put(name, value);
-    return 2;
+    switch (name) {
+    case "format" -> format = value.toLowerCase(Locale.ENGLISH);
+    case "overwrite" -> {
+      try {
+        overwriteFile = StringUtils.parseStrictBoolean(value);
+      } catch (final IllegalArgumentException e) {
+        throw new IllegalArgumentException("Invalid value '" + value + "' for -overwrite. Supported values are 'true' and 'false'");
+      }
+    }
+    case "includeTypes" -> includeTypes = parseList(name, value);
+    case "excludeTypes" -> excludeTypes = parseList(name, value);
+    case "includeRecords" -> includeRecords = parseList(name, value);
+    // THE FIELD THE CONSOLE LOGGER IS BUILT FROM: IT WAS NEVER SETTABLE, THE NAME WENT INTO THE MAP NOTHING READ. THE PYTHON
+    // BINDINGS SEND IT ON EVERY EXPORT, SO REFUSING IT WOULD BREAK THEM; APPLYING IT IS WHAT THEY ALWAYS ASKED FOR
+    case "verboseLevel" -> {
+      int level;
+      try {
+        level = Integer.parseInt(value.trim());
+      } catch (final NumberFormatException e) {
+        level = -1;
+      }
+      if (level < 0 || level > MAX_VERBOSE_LEVEL)
+        throw new IllegalArgumentException(
+            "Invalid value '" + value + "' for -verboseLevel. Supported values are 0 to " + MAX_VERBOSE_LEVEL);
+      verboseLevel = level;
+    }
+    default -> {
+      final String closest = StringUtils.closestMatch(name, SETTINGS);
+      throw new IllegalArgumentException("Unknown export setting '" + name + "'. " + (closest != null ?
+          "Did you mean '" + closest + "'?" :
+          "Supported settings: " + new TreeSet<>(SETTINGS)));
+    }
+    }
   }
 }

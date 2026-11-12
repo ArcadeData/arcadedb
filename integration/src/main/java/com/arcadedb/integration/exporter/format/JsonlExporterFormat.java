@@ -54,8 +54,10 @@ import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.zip.GZIPOutputStream;
 
@@ -116,9 +118,16 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       final List<String> edgeTypes = new ArrayList<>();
       final List<String> documentTypes = new ArrayList<>();
       final List<String> timeSeriesTypes = new ArrayList<>();
+      // EVERY VERTEX TYPE, FILTERED OR NOT: A LIGHTWEIGHT EDGE LIVES IN ITS SOURCE VERTEX, AND IS SELECTED BY ITS OWN TYPE
+      // LIKE A REGULAR EDGE IS. WALKING ONLY THE SELECTED VERTEX TYPES DROPPED EVERY LIGHTWEIGHT EDGE OF AN INCLUDED EDGE
+      // TYPE WHOSE SOURCE VERTEX TYPE WAS NOT LISTED, WITHOUT A WORD (issue #11523)
+      final List<String> allVertexTypes = new ArrayList<>();
 
       for (final DocumentType type : database.getSchema().getTypes()) {
         final String typeName = type.getName();
+
+        if (type instanceof LocalVertexType)
+          allVertexTypes.add(typeName);
 
         if (settings.includeTypes != null && !settings.includeTypes.contains(typeName))
           continue;
@@ -156,7 +165,9 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       exportVertices(vertexTypes, graphSerializer);
       exportDocuments(documentTypes, graphSerializer);
       exportEdges(edgeTypes, graphSerializer);
-      exportLightweightEdges(vertexTypes, graphSerializer);
+      // NO EDGE TYPE SELECTED, NO EDGE TO FIND: THE WALK READS EVERY VERTEX, SO IT IS SKIPPED RATHER THAN RUN TO FILTER OUT ALL
+      if (!edgeTypes.isEmpty())
+        exportLightweightEdges(allVertexTypes, new HashSet<>(edgeTypes), graphSerializer);
       exportTimeSeries(timeSeriesTypes);
     } finally {
       releaseExportFile(lock);
@@ -166,6 +177,11 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   @Override
   public String getName() {
     return NAME;
+  }
+
+  @Override
+  public boolean supportsRecordFilters() {
+    return true;
   }
 
   private void exportVertices(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer) throws IOException {
@@ -218,9 +234,12 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
    * the vertices instead, so they are collected by walking each vertex's outgoing list once. Only the OUT direction
    * is walked - the IN entry of a bidirectional edge is the same edge seen from the other end, and the importer
    * recreates both sides from a single {@code "e"} line.
+   * <p>
+   * {@code vertexTypes} is every vertex type and {@code edgeTypes} the edge types the export selected, so a lightweight
+   * edge is selected by its own type exactly like a regular edge, whichever vertex types the filters kept.
    */
-  private void exportLightweightEdges(final List<String> vertexTypes, final JsonGraphSerializer graphSerializer)
-      throws IOException {
+  private void exportLightweightEdges(final List<String> vertexTypes, final Set<String> edgeTypes,
+      final JsonGraphSerializer graphSerializer) throws IOException {
     for (final String type : vertexTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
         Vertex vertex = null;
@@ -242,11 +261,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         // Issue #6795 (follow-up on #6471): each edge gets its OWN try/catch, so a failure on one edge is
         // counted on its own and does not silently drop the rest of this vertex's edges.
         for (final Edge edge : outEdges) {
-          if (!(edge instanceof LightEdge))
-            continue;
-          if (settings.excludeTypes != null && settings.excludeTypes.contains(edge.getTypeName()))
-            continue;
-          if (settings.includeTypes != null && !settings.includeTypes.contains(edge.getTypeName()))
+          if (!(edge instanceof LightEdge) || !edgeTypes.contains(edge.getTypeName()))
             continue;
 
           try {
