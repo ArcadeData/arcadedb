@@ -172,51 +172,65 @@ public class Dictionary extends PaginatedComponent {
       throw new IllegalArgumentException("Dictionary item name was null");
 
     Integer pos = entries.ids().get(name);
-    if (pos == null && create) {
-      // SYNCHRONIZE THIS BLOCK TO AVOID RACE CONDITIONS WITH RETRIES
-      synchronized (this) {
-        Entries current = entries;
-        pos = current.ids().get(name);
-        if (pos == null) {
-
-          final AtomicInteger newPos = new AtomicInteger();
-
-          database.transaction(() -> {
-            newPos.set(entries.size());
-            addItemToPage(name);
-          }, false);
-
-          // THE COMMIT ABOVE CAN HAVE SWAPPED THE SNAPSHOT (RELOAD ON ROLLBACK/RETRY): RE-READ IT
-          current = entries;
-
-          // THE NAMES ARE PUBLISHED BEFORE THE MAP, AND THE ORDER MATTERS. THE TWO CANNOT BE UPDATED ATOMICALLY TOGETHER, SO ONE
-          // OF THEM LEADS BY AN INSTANT AND A CONCURRENT READER CAN LAND IN BETWEEN. LEADING WITH THE MAP MEANS THAT READER
-          // RESOLVES THE NAME TO AN ID THAT getNameById() DOES NOT YET ACCEPT, WHICH THROWS. LEADING WITH THE NAMES MEANS IT
-          // FINDS THE NAME NOT PRESENT YET AND -1 COMES BACK, WHICH EVERY create=false CALLER ALREADY HANDLES (BinarySerializer
-          // JUST SKIPS THE COMPRESSION) AND WHICH A create=true CALLER RESOLVES BY BLOCKING ON THIS MONITOR. NOBODY CAN HOLD THE
-          // NEW ID BEFORE THE MAP PUBLISHES IT, BECAUSE IT ONLY REACHES A RECORD AFTER THIS RETURNS. A MISS COSTS NOTHING, A
-          // THROW COSTS A REQUEST, SO THE MISS IS THE ONE TO PREFER
-          if (!current.ids().containsKey(name)) {
-            final int appended = appendName(current, name);
-            if (appended != newPos.get() + 1) {
-              try {
-                reload();
-              } catch (final IOException e) {
-                // IGNORE IT
-              }
-              throw new SchemaException("Error on updating dictionary for key '" + name + "'");
-            }
-            current.ids().putIfAbsent(name, newPos.get());
-          }
-          pos = current.ids().get(name);
-        }
-      }
-    }
+    if (pos == null && create)
+      // THE DATABASE LOCK FIRST, THEN THIS MONITOR (ISSUE #11549). REGISTERING A NAME COMMITS A TRANSACTION, AND THE COMMIT TAKES
+      // THE DATABASE READ LOCK; A DDL REGISTERS ITS NAMES (LocalProperty's CONSTRUCTOR) WHILE IT HOLDS THE WRITE LOCK. TAKING THE
+      // MONITOR FIRST AND THE LOCK INSIDE THE COMMIT WAS THE OPPOSITE ORDER, SO AN ASYNC WORKER SERIALIZING A RECORD WITH A NEW
+      // PROPERTY NAME AND A CREATE PROPERTY DEADLOCKED, AND NO TIMEOUT COULD END IT: A THREAD BLOCKED ON A MONITOR IGNORES THE
+      // INTERRUPT. A WRITER TAKES THE READ LOCK AS A DOWNGRADE AND A READER RE-ENTERS ITS OWN, SO THE COMMIT INSIDE IS UNCHANGED.
+      // ONLY A NAME NOT SEEN BEFORE PAYS IT: THE LOOKUP ABOVE TAKES NO LOCK
+      pos = database.executeInReadLock(() -> registerName(name));
 
     if (pos == null)
       return -1;
 
     return pos;
+  }
+
+  /**
+   * Appends a name the lock-free lookup did not find, under this component's monitor. Callers hold the database read (or write)
+   * lock, always taken before the monitor: see {@link #getIdByName(String, boolean)}.
+   */
+  private Integer registerName(final String name) {
+    // SYNCHRONIZE THIS BLOCK TO AVOID RACE CONDITIONS WITH RETRIES
+    synchronized (this) {
+      Entries current = entries;
+      Integer pos = current.ids().get(name);
+      if (pos == null) {
+
+        final AtomicInteger newPos = new AtomicInteger();
+
+        database.transaction(() -> {
+          newPos.set(entries.size());
+          addItemToPage(name);
+        }, false);
+
+        // THE COMMIT ABOVE CAN HAVE SWAPPED THE SNAPSHOT (RELOAD ON ROLLBACK/RETRY): RE-READ IT
+        current = entries;
+
+        // THE NAMES ARE PUBLISHED BEFORE THE MAP, AND THE ORDER MATTERS. THE TWO CANNOT BE UPDATED ATOMICALLY TOGETHER, SO ONE
+        // OF THEM LEADS BY AN INSTANT AND A CONCURRENT READER CAN LAND IN BETWEEN. LEADING WITH THE MAP MEANS THAT READER
+        // RESOLVES THE NAME TO AN ID THAT getNameById() DOES NOT YET ACCEPT, WHICH THROWS. LEADING WITH THE NAMES MEANS IT
+        // FINDS THE NAME NOT PRESENT YET AND -1 COMES BACK, WHICH EVERY create=false CALLER ALREADY HANDLES (BinarySerializer
+        // JUST SKIPS THE COMPRESSION) AND WHICH A create=true CALLER RESOLVES BY BLOCKING ON THIS MONITOR. NOBODY CAN HOLD THE
+        // NEW ID BEFORE THE MAP PUBLISHES IT, BECAUSE IT ONLY REACHES A RECORD AFTER THIS RETURNS. A MISS COSTS NOTHING, A
+        // THROW COSTS A REQUEST, SO THE MISS IS THE ONE TO PREFER
+        if (!current.ids().containsKey(name)) {
+          final int appended = appendName(current, name);
+          if (appended != newPos.get() + 1) {
+            try {
+              reload();
+            } catch (final IOException e) {
+              // IGNORE IT
+            }
+            throw new SchemaException("Error on updating dictionary for key '" + name + "'");
+          }
+          current.ids().putIfAbsent(name, newPos.get());
+        }
+        pos = current.ids().get(name);
+      }
+      return pos;
+    }
   }
 
   /**
