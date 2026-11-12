@@ -292,6 +292,17 @@ class Issue11568PersistedVectorMetadataValidationTest extends TestHelper {
     assertThat(((DatabaseInternal) database).getFileManager().getFileByComponentName(graphFileName)).as("the graph file stays registered").isNull();
     assertThat(new File(getDatabasePath()).list((dir, name) -> name.startsWith(fileName))).as("files of the dropped %s", fileName)
         .isEmpty();
+
+    // and the database reopens without it, with the records the index held, and takes a new one on the same property
+    database.close();
+    database = factory.open();
+    assertThat(database.getSchema().existsIndex(VECTOR_INDEX)).isFalse();
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS n FROM Vec")) {
+      assertThat(rs.next().<Long>getProperty("n")).isEqualTo(64L);
+    }
+    database.command("sql",
+        "CREATE INDEX ON Vec (vector) LSM_VECTOR METADATA {dimensions: 4, similarity: 'EUCLIDEAN', quantization: 'PRODUCT', pqClusters: 16}");
+    assertThat(((TypeIndex) database.getSchema().getIndexByName(VECTOR_INDEX)).countEntries()).isEqualTo(64);
   }
 
   @Test
