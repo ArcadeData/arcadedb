@@ -152,7 +152,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    */
   public TypeFullTextIndexBuilder withPersistedMetadata(final JSONObject json) {
     if (json != null)
-      ftMetadata().fromJSON(json);
+      readPersistedDefinition(ftMetadata(), json);
     return this;
   }
 
