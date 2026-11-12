@@ -1228,7 +1228,7 @@ public class SelectExecutionPlanner {
 
     splitProjectionsForGroupBy(info, context);
     addOrderByProjections(info, context);
-    addUnwindProjections(info);
+    addUnwindProjections(info, context);
   }
 
   private static void rewriteIndexChainsAsSubqueries(QueryPlanningInfo info, CommandContext context) {
@@ -1374,8 +1374,15 @@ public class SelectExecutionPlanner {
   /**
    * Adds UNWIND fields to projections if they are not already present.
    * This ensures the UNWIND step can access the field values even when projections would otherwise exclude them.
+   * <p>
+   * An operand ({@code UNWIND <operand> AS x}) that reads nothing the projection or an UNWIND item writes evaluates to
+   * the same value against the record as against the projected row, so it is evaluated by the projection itself, against
+   * the record, under a generated alias the UNWIND then reads (issue #11537). That is what lets it read what a narrowing
+   * projection drops: a record attribute ({@code @rid}), a record-level function ({@code out()}), a field read only inside
+   * a method or index argument ({@code a[b]}) or a {@code CASE}. Any other operand reads the projected row, and every
+   * field it is seen to read is brought into the projection the way a bare field is.
    */
-  private static void addUnwindProjections(final QueryPlanningInfo info) {
+  private static void addUnwindProjections(final QueryPlanningInfo info, final CommandContext context) {
     if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
         && info.projection.getItems().getFirst().isAll())) {
@@ -1384,7 +1391,11 @@ public class SelectExecutionPlanner {
 
     final List<String> allAliases = info.projection.getAllAliases();
     final List<ProjectionItem> additionalUnwindProjections = new ArrayList<>();
+    final List<ProjectionItem> earlyOperandProjections = new ArrayList<>();
     final List<String> unwindAliases = new ArrayList<>();
+
+    // an aggregated row is not a record, so no operand can be evaluated against the record there
+    final Set<String> lateNames = info.preAggregateProjection == null ? namesReadOnlyAfterProjection(info) : null;
 
     final List<Identifier> unwindItems = info.unwind.getItems();
     final List<Identifier> readFields = new ArrayList<>();
@@ -1395,10 +1406,22 @@ public class SelectExecutionPlanner {
         readFields.add(unwindItem);
       else {
         // UNWIND <operand> AS <alias> reads the projected row like a bare field does, and keeps its alias in the rows it
-        // returns (#11442). Every field the operand reads (`a` in `a.b`, `(a.b)`, `a.size() + b`, `f(a)`) is brought into
-        // the projection the same way a bare field is; an operand that reads no field (a parameter) brings nothing
+        // returns (#11442)
         unwindAliases.add(unwindItem.getStringValue());
-        collectReadFields(operand, readFields);
+        if (lateNames != null && !mentionsAnyName(operand.toString(), lateNames) && !operand.isAggregate(context)) {
+          if (earlyOperandProjections.isEmpty())
+            // the planner's own copy is rewritten below: a planner asked for a second plan must not see the rewrite
+            info.unwind = info.unwind.copy();
+          final Identifier earlyAlias = new Identifier(GeneratedAlias.PREFIX + "UNWIND_OPERAND$$$_" + i);
+          final ProjectionItem early = new ProjectionItem();
+          early.setExpression(operand);
+          early.setAlias(earlyAlias);
+          earlyOperandProjections.add(early);
+          info.unwind.expressions.set(i, new Expression(earlyAlias));
+        } else
+          // Every field the operand reads (`a` in `a.b`, `(a.b)`, `a.size() + b`, `f(a)`) is brought into the projection
+          // the same way a bare field is; an operand that reads no field (a parameter) brings nothing
+          collectReadFields(operand, readFields);
       }
     }
 
@@ -1413,6 +1436,7 @@ public class SelectExecutionPlanner {
         additionalUnwindProjections.add(newProj);
       }
     }
+    additionalUnwindProjections.addAll(earlyOperandProjections);
 
     if (!additionalUnwindProjections.isEmpty()) {
       // Save the original projection to restore after UNWIND
@@ -1436,6 +1460,53 @@ public class SelectExecutionPlanner {
         }
       }
     }
+  }
+
+  /**
+   * The names an UNWIND operand cannot read off the record in their place: every alias the projection gives a value the
+   * record's field of that name does not hold (a renamed, computed, excluded or nested item), and every UNWIND item,
+   * whose value exists only once the UNWIND has written it. A plain item ({@code name}, {@code @rid}, {@code a.b}),
+   * whose alias is its own expression, holds what the record holds and is not one of them.
+   */
+  private static Set<String> namesReadOnlyAfterProjection(final QueryPlanningInfo info) {
+    final Set<String> names = new HashSet<>();
+    for (final ProjectionItem item : info.projection.getItems()) {
+      if (item.isAll())
+        continue;
+      final String alias = item.getProjectionAliasAsString();
+      if (item.exclude || item.nestedProjection != null || item.getExpression() == null || !alias.equals(
+          item.getExpression().toString()))
+        names.add(alias);
+    }
+    for (final Identifier item : info.unwind.getItems())
+      names.add(item.getStringValue());
+    return names;
+  }
+
+  /**
+   * Whether the rendering of an operand mentions one of the names as a whole word. The rendering spells every
+   * identifier the operand holds, wherever it sits (a path, a method or index argument, a {@code CASE}, a sub-query), so
+   * a name it reads is never missed; a string literal or a property name after a dot that spells the same word answers
+   * true as well, which only keeps the operand on the projected row, as it was before #11537.
+   */
+  static boolean mentionsAnyName(final String text, final Set<String> names) {
+    for (final String name : names) {
+      if (name.isEmpty())
+        continue;
+      int from = 0;
+      int at;
+      while ((at = text.indexOf(name, from)) >= 0) {
+        final int end = at + name.length();
+        if ((at == 0 || !isNamePart(text.charAt(at - 1))) && (end >= text.length() || !isNamePart(text.charAt(end))))
+          return true;
+        from = at + 1;
+      }
+    }
+    return false;
+  }
+
+  private static boolean isNamePart(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_' || c == '$';
   }
 
   /**
