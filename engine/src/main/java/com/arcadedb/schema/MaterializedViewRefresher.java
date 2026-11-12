@@ -42,6 +42,33 @@ public class MaterializedViewRefresher {
   }
 
   /**
+   * Asks a per-record view for the recovery full pass and hands that pass to the schema's scheduler thread, so the caller (a
+   * database open, a leadership acquisition) never waits on it (issue #11550). The pending delta and the recovery mark live in
+   * memory only, so after a crash or a failover nothing says which commits the view is missing: the full pass rewrites only the
+   * rows whose source changed, matched through the {@code _sourceRID} index, so a view that misses nothing costs reads, not
+   * writes. The view says STALE until that pass ends VALID.
+   * <p>
+   * When another thread owns the refresh, the request goes to it: its next pass drains the recovery mark set here. Returns
+   * {@code false} when the scheduler cannot take the pass (closed, or not a local schema): the view then keeps the recovery mark,
+   * and the next pass of any trigger makes it.
+   */
+  static boolean recoverInBackground(final Database database, final MaterializedViewImpl view) {
+    view.requestFullPass(true);
+    view.setStatus(MaterializedViewStatus.STALE);
+    if (!view.tryBeginRefresh()) {
+      if (view.markRefreshPendingIfRunning())
+        return true;
+      // It finished between the two calls: whoever owns it now started after the mark above, so its pass drains it
+      if (!view.tryBeginRefresh())
+        return true;
+    }
+    if (handOffFurtherPasses(database, view))
+      return true;
+    view.endRefresh();
+    return false;
+  }
+
+  /**
    * The refresh an INCREMENTAL view owes the commit that changed one of its sources. It runs on the committing thread, so
    * that thread must not be kept for longer than the one pass it owes (issue #11464): when other writers asked for a further
    * pass meanwhile, the owner hands that pass to the schema's scheduler thread instead of making it itself. Without the
