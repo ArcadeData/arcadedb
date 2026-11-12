@@ -261,7 +261,8 @@ public final class ChaosRunner {
    * Waits until every live follower has applied to within {@code catchUpLag} entries of the leader's commit index (issue #11378).
    * A leader known by every node and equal row counts do not say how far behind a follower still is in Raft terms: the next fault
    * would land on a cluster whose only other voter is still catching up. A follower whose indexes cannot be read is never taken
-   * for caught up.
+   * for caught up, and neither is any follower while no leader is known: there is then no commit index to measure against
+   * (issue #11443), and the wait goes on until a leader answers or {@code catchUpTimeout} runs out.
    */
   private void awaitFollowersCaughtUp(final int step, final Fault fault) throws InterruptedException {
     Duration waited = Duration.ZERO;
@@ -285,12 +286,17 @@ public final class ChaosRunner {
   }
 
   /**
-   * The commit index the followers are measured against: the leader's, or the highest one reported when no leader is known (a
-   * leader change between the election check and this read), or {@code null} when no node reports any.
+   * The commit index the followers are measured against: the leader's, or {@code null} when no leader is known or the leader's
+   * indexes cannot be read. A follower reports its own Ratis last-committed index, clamped to the entries it knows committed
+   * (issue #11443): when a leader dies before telling the survivors it advanced, every one of them reports a commit below the one
+   * the next leader will reach, so the highest follower commit is no authority to declare catch-up against.
    */
   private static NodeControl.RaftPosition head(final NodeControl.RaftPosition[] positions, final int leader) {
-    if (leader >= 0 && leader < positions.length && positions[leader] != null)
-      return positions[leader];
+    return leader >= 0 && leader < positions.length ? positions[leader] : null;
+  }
+
+  /** The highest commit index any node reports, for the diagnostics only: see {@link #head}. */
+  private static NodeControl.RaftPosition highestCommit(final NodeControl.RaftPosition[] positions) {
     NodeControl.RaftPosition highest = null;
     for (final NodeControl.RaftPosition position : positions)
       if (position != null && (highest == null || position.commit() > highest.commit()))
@@ -298,10 +304,18 @@ public final class ChaosRunner {
     return highest;
   }
 
-  /** The live followers further behind the head than allowed, as {@code node N lag=L}; empty when none is. */
+  /**
+   * The live followers further behind the leader's commit than allowed, as {@code node N lag=L}; empty when none is. Never empty
+   * while no leader is known or the leader's indexes cannot be read: the step waits for a leader to measure against, and the lag
+   * behind the highest reported commit is listed alongside for the failure message.
+   */
   private String followersBehind(final NodeControl.RaftPosition[] positions, final int leader) {
-    final NodeControl.RaftPosition head = head(positions, leader);
+    NodeControl.RaftPosition head = head(positions, leader);
     final StringBuilder behind = new StringBuilder();
+    if (head == null) {
+      behind.append(leader < 0 ? "no leader known" : "leader node " + leader + " indexes unreadable");
+      head = highestCommit(positions);
+    }
     for (int node = 0; node < config.nodes(); node++) {
       if (node == leader || state.state(node) != ClusterState.NodeState.UP)
         continue;
@@ -322,8 +336,10 @@ public final class ChaosRunner {
 
   /** Every node's applied and commit index and its lag behind the head, for the failure messages. */
   private String lagView(final NodeControl.RaftPosition[] positions, final int leader) {
-    final NodeControl.RaftPosition head = head(positions, leader);
-    final StringBuilder view = new StringBuilder("Raft lag:");
+    final NodeControl.RaftPosition leaderPosition = head(positions, leader);
+    final NodeControl.RaftPosition head = leaderPosition != null ? leaderPosition : highestCommit(positions);
+    final StringBuilder view = new StringBuilder(
+        leaderPosition != null ? "Raft lag:" : "Raft lag (behind the highest reported commit, no leader commit to measure against):");
     for (int node = 0; node < config.nodes(); node++) {
       final NodeControl.RaftPosition position = positions[node];
       view.append(" node ").append(node);

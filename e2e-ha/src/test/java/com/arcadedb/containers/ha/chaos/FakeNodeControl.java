@@ -69,6 +69,15 @@ final class FakeNodeControl implements NodeControl {
   long                   positionReadMillis;
   /** Leader reported by {@link #findLeader()} is -1 from this read on, as during a leader change. */
   int                    noLeaderFromRead = Integer.MAX_VALUE;
+  /** Leader reported by {@link #findLeader()} is back from this read on, once the re-election that followed is over. */
+  int                    leaderBackFromRead = Integer.MAX_VALUE;
+  /**
+   * Commit-index lag per node behind the leader's commit. A node's {@code localCommitIndex} is its own Ratis last-committed index,
+   * clamped to the entries it knows committed (issue #11443): when a leader dies before telling its followers it advanced, every
+   * survivor reports a commit below the one the next leader will reach. Zero keeps the leader's figure, as for a follower that holds
+   * and knows committed every entry and only applies them late.
+   */
+  final long[]           commitLag        = new long[5];
 
   private void log(final String call) {
     if (failure != null)
@@ -159,7 +168,7 @@ final class FakeNodeControl implements NodeControl {
           Thread.currentThread().interrupt();
         }
     }
-    return leaderAvailable && positionReads < noLeaderFromRead ? leader : -1;
+    return leaderAvailable && (positionReads < noLeaderFromRead || positionReads >= leaderBackFromRead) ? leader : -1;
   }
 
   @Override
@@ -180,7 +189,9 @@ final class FakeNodeControl implements NodeControl {
     final boolean lagging = readsBeforeCaughtUp-- > 0;
     final RaftPosition[] positions = new RaftPosition[5];
     for (int node = 0; node < positions.length; node++)
-      positions[node] = node == unreadablePositionOfNode ? null : new RaftPosition(1_000_000 - (lagging ? lag[node] : 0), 1_000_000);
+      positions[node] = node == unreadablePositionOfNode ?
+          null :
+          new RaftPosition(1_000_000 - (lagging ? lag[node] : 0), 1_000_000 - (lagging ? commitLag[node] : 0));
     return positions;
   }
 

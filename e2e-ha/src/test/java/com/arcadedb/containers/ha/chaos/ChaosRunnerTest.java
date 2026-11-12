@@ -545,14 +545,16 @@ class ChaosRunnerTest {
     assertThat(harness.control().positionReads).as("each poll costs its 1 s sleep plus the 1.5 s read").isLessThan(4);
   }
 
+  /** With no leader known the lag behind the highest reported commit is still named, for the failure message only (issue #11443). */
   @Test
-  void lagIsMeasuredAgainstTheHighestCommitWhenNoLeaderIsKnown() throws IOException {
+  void lagBehindTheHighestCommitIsReportedWhenNoLeaderIsKnown() throws IOException {
     final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT2S", "chaos.maxSteps", "1"));
     harness.control().lag[2] = 36_000;
     harness.control().noLeaderFromRead = 1;
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
-    assertThat(result.message()).contains("node 2 lag=36000").doesNotContain("unreadable");
+    assertThat(result.message()).contains("no leader known").contains("node 2 lag=36000").doesNotContain("unreadable")
+        .contains("no leader commit to measure against");
   }
 
   @Test
@@ -564,5 +566,48 @@ class ChaosRunnerTest {
     assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
     assertThat(harness.control().positionReads).isLessThan(4);
     assertThat(harness.control().leaderLookupsDuringWait).isEqualTo(harness.control().positionReads);
+  }
+
+  /**
+   * Issue #11443: with no leader known and every node reporting a commit index clamped to what it knows committed, the highest
+   * reported commit is no authority. Here the dead leader committed entries the survivors hold but were not told about, so node 2,
+   * which does not hold them, is behind by 36000 entries the next leader will commit, yet every position reads applied=commit=964000.
+   */
+  @Test
+  void clampedCommitsWithNoLeaderKnownAreNeverTakenForCaughtUp() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT2S", "chaos.maxSteps", "1"));
+    for (int node = 0; node < 5; node++) {
+      harness.control().lag[node] = 36_000;
+      harness.control().commitLag[node] = 36_000;
+    }
+    harness.control().noLeaderFromRead = 1;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("no leader known").contains("catch up");
+  }
+
+  @Test
+  void catchUpIsDeclaredOnlyOnceALeaderIsKnownAgain() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT30S", "chaos.maxSteps", "1"));
+    for (int node = 0; node < 5; node++) {
+      harness.control().lag[node] = 36_000;
+      harness.control().commitLag[node] = 36_000;
+    }
+    harness.control().readsBeforeCaughtUp = 2;
+    harness.control().noLeaderFromRead = 1;
+    harness.control().leaderBackFromRead = 4;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    assertThat(harness.control().positionReads).as("every node level from read 3, but no leader to measure them against before read 4")
+        .isEqualTo(4);
+  }
+
+  @Test
+  void leaderWhoseIndexesCannotBeReadLeavesTheFollowersUnmeasured() throws IOException {
+    final Harness harness = harness(config("chaos.catchUpLag", "100", "chaos.catchUpTimeout", "PT2S", "chaos.maxSteps", "1"));
+    harness.control().unreadablePositionOfNode = 0;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("leader node 0 indexes unreadable");
   }
 }
