@@ -493,6 +493,19 @@ public enum Type {
    * {@code convertOrNull()} here instead would swallow those too, silently indexing a genuinely mismatched value
    * under a null key - a widening that has nothing to do with the date parsing this rule exists for.
    */
+  /** The text of an array's elements, as {@code List.toString()} writes the list of the same elements. */
+  private static String arrayText(final Object array) {
+    final int length = Array.getLength(array);
+    final StringBuilder text = new StringBuilder(2 + 4 * length).append('[');
+    for (int i = 0; i < length; i++) {
+      if (i > 0)
+        text.append(", ");
+      final Object element = Array.get(array, i);
+      text.append(element != null && element.getClass().isArray() ? arrayText(element) : String.valueOf(element));
+    }
+    return text.append(']').toString();
+  }
+
   public static Object convertIndexKeyOrNull(final Database database, final Object value, final Class<?> targetClass) {
     try {
       return convert(database, value, targetClass);
@@ -772,6 +785,11 @@ public enum Type {
         // not reversible. Refuse it rather than store that (issue #9041).
         if (property != null && valueClass.isArray())
           throw inconvertible(value, "STRING", property);
+        // Without a property - an index key of an undeclared property, whose key type is STRING - the content is the text, the
+        // one a list of the same elements has: the identity text was a key no seek found and no update or delete removed
+        // (issue #11578)
+        if (valueClass.isArray())
+          return arrayText(value);
         // A zoned datetime keeps the text form Cypher gave it before it had a native type (issue #8572)
         if (value instanceof ZonedDateTime zoned)
           return new CypherDateTime(zoned).toString();
