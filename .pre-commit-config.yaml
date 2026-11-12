@@ -8,6 +8,9 @@ repos:
     hooks:
       - id: fix-byte-order-marker
       - id: trailing-whitespace
+        # JavaCC writes its token tables with a space after each comma, and the build regenerates the GraphQL parser
+        # whenever graphql.jjt is newer than it, so every grammar change brought the whitespace back (#9224, #11451)
+        exclude: ^graphql/src/main/java/com/arcadedb/graphql/parser/GraphQLParser\w*\.java$
       - id: end-of-file-fixer
       - id: mixed-line-ending
       - id: detect-aws-credentials
