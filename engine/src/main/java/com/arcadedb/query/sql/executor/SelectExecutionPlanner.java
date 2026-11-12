@@ -1383,14 +1383,31 @@ public class SelectExecutionPlanner {
 
     final List<String> allAliases = info.projection.getAllAliases();
     final List<ProjectionItem> additionalUnwindProjections = new ArrayList<>();
+    final List<String> unwindAliases = new ArrayList<>();
 
-    for (final Identifier unwindItem : info.unwind.getItems()) {
-      final String unwindFieldName = unwindItem.getStringValue();
-      if (!allAliases.contains(unwindFieldName)) {
+    final List<Identifier> unwindItems = info.unwind.getItems();
+    for (int i = 0; i < unwindItems.size(); i++) {
+      final Identifier unwindItem = unwindItems.get(i);
+      final Expression operand = info.unwind.getExpression(i);
+      final Identifier readField;
+      if (operand == null)
+        readField = unwindItem;
+      else {
+        // UNWIND <operand> AS <alias> reads the projected row like a bare field does, and keeps its alias in the rows it
+        // returns (#11442). The field at the root of the operand's path (`a` in `a.b`) is brought into the projection
+        // the same way a bare field is; an operand with no field at its root (a parameter) reads nothing of the row
+        unwindAliases.add(unwindItem.getStringValue());
+        readField = rootFieldOf(operand);
+        if (readField == null)
+          continue;
+      }
+      final String unwindFieldName = readField.getStringValue();
+      if (!allAliases.contains(unwindFieldName) && additionalUnwindProjections.stream()
+          .noneMatch(p -> p.getAlias().getStringValue().equals(unwindFieldName))) {
         final ProjectionItem newProj = new ProjectionItem();
-        newProj.setExpression(new Expression(unwindItem));
+        newProj.setExpression(new Expression(readField));
         // Keep the original field name so UNWIND can find it
-        newProj.setAlias(unwindItem);
+        newProj.setAlias(readField);
         additionalUnwindProjections.add(newProj);
       }
     }
@@ -1402,6 +1419,9 @@ public class SelectExecutionPlanner {
       for (final String alias : allAliases) {
         info.projectionAfterUnwind.getItems().add(projectionFromAlias(new Identifier(alias)));
       }
+      for (final String alias : unwindAliases)
+        if (!allAliases.contains(alias))
+          info.projectionAfterUnwind.getItems().add(projectionFromAlias(new Identifier(alias)));
 
       // Add the UNWIND fields to the current projection
       for (final ProjectionItem item : additionalUnwindProjections) {
@@ -1414,6 +1434,17 @@ public class SelectExecutionPlanner {
         }
       }
     }
+  }
+
+  /**
+   * Returns the field at the root of an UNWIND operand's path ({@code a} for {@code a.b} or {@code a[0]}), or null when the
+   * operand has none (a parameter, a literal, a function call).
+   */
+  private static Identifier rootFieldOf(final Expression operand) {
+    if (operand.mathExpression instanceof final BaseExpression baseExpr && baseExpr.identifier != null
+        && baseExpr.identifier.levelZero == null && baseExpr.identifier.suffix != null)
+      return baseExpr.identifier.suffix.identifier;
+    return null;
   }
 
   /**

@@ -5014,31 +5014,51 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public Unwind visitUnwind(final SQLParser.UnwindContext ctx) {
     final Unwind unwind = new Unwind();
 
-    try {
-      // Iterate over all comma-separated expressions: UNWIND expr1, expr2, ...
-      for (final SQLParser.ExpressionContext exprCtx : ctx.expression()) {
-        final Expression expr = (Expression) visit(exprCtx);
-
-        // Extract the identifier from the expression (typically a simple identifier like "foo")
-        Identifier unwindField = null;
-        if (expr != null && expr.mathExpression instanceof final BaseExpression baseExpr) {
-          if (baseExpr.identifier != null) {
-            final Object suffix = baseExpr.identifier.suffix;
-            if (suffix instanceof final SuffixIdentifier si) {
-              unwindField = si.identifier;
-            }
-          }
-        }
-
-        if (unwindField != null) {
-          unwind.items.add(unwindField);
-        }
+    // UNWIND expr1 [AS] alias1, expr2 [AS] alias2, ...: walk the children in order, since an alias belongs to the expression
+    // right before it and any of them may be missing
+    Expression pendingOperand = null;
+    for (final ParseTree child : ctx.children) {
+      if (child instanceof final SQLParser.ExpressionContext exprCtx) {
+        if (pendingOperand != null)
+          addUnwindItem(unwind, pendingOperand, null);
+        pendingOperand = (Expression) visit(exprCtx);
+      } else if (child instanceof final SQLParser.IdentifierContext aliasCtx) {
+        addUnwindItem(unwind, pendingOperand, (Identifier) visit(aliasCtx));
+        pendingOperand = null;
       }
-    } catch (final Exception e) {
-      throw new CommandSQLParsingException("Failed to build UNWIND clause: " + e.getMessage(), e);
     }
+    if (pendingOperand != null)
+      addUnwindItem(unwind, pendingOperand, null);
 
     return unwind;
+  }
+
+  /**
+   * Adds one UNWIND item. A bare field without an alias is unwound in place; any other operand needs an alias to write its
+   * elements into, and is rejected without one rather than dropped (issue #11442).
+   */
+  private static void addUnwindItem(final Unwind unwind, final Expression operand, final Identifier alias) {
+    if (alias != null) {
+      unwind.addAliased(operand, alias);
+      return;
+    }
+    final Identifier field = bareUnwindField(operand);
+    if (field == null)
+      throw new CommandSQLParsingException(
+          "UNWIND of '" + operand + "' needs an alias to write its elements into: UNWIND " + operand + " AS <name>");
+    unwind.addField(field);
+  }
+
+  /**
+   * Returns the field an UNWIND operand names when it is a bare top-level field (no path, index, method or parameter),
+   * otherwise null.
+   */
+  private static Identifier bareUnwindField(final Expression operand) {
+    if (operand != null && operand.mathExpression instanceof final BaseExpression baseExpr && baseExpr.modifier == null
+        && baseExpr.identifier != null && baseExpr.identifier.levelZero == null
+        && baseExpr.identifier.suffix instanceof final SuffixIdentifier si && si.identifier != null)
+      return si.identifier;
+    return null;
   }
 
   /**

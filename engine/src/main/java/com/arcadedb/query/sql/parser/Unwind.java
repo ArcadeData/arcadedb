@@ -26,17 +26,59 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+/**
+ * The UNWIND clause. Each item flattens one collection into one row per element, written into the property named by
+ * {@link #items}. An item is either a bare field ({@code UNWIND tags}, its entry in {@link #expressions} is {@code null}
+ * and the field is read and overwritten in place) or an operand with an alias ({@code UNWIND a.b AS x},
+ * {@code UNWIND :p AS x}, {@code UNWIND tags AS x}): the expression is evaluated against the row and its elements are
+ * written into the alias. An operand that is not a bare field and has no alias is rejected at parse time, since there is
+ * no property to write its elements into (issue #11442).
+ */
 public class Unwind extends SimpleNode {
-  public List<Identifier> items = new ArrayList<Identifier>();
+  /**
+   * The property each item writes into: the bare field, or the alias.
+   */
+  public List<Identifier> items       = new ArrayList<>();
+  /**
+   * The operand of each item, parallel to {@link #items}: {@code null} for a bare field, the expression for an aliased item.
+   */
+  public List<Expression> expressions = new ArrayList<>();
 
   public Unwind() {
+  }
+
+  /**
+   * Adds a bare-field item: the field is read and overwritten in place.
+   */
+  public void addField(final Identifier field) {
+    items.add(field);
+    expressions.add(null);
+  }
+
+  /**
+   * Adds an aliased item: the operand is evaluated against the row and its elements are written into the alias.
+   */
+  public void addAliased(final Expression operand, final Identifier alias) {
+    items.add(alias);
+    expressions.add(operand);
+  }
+
+  /**
+   * Returns the operand of the item at the given position, or {@code null} when the item is a bare field.
+   */
+  public Expression getExpression(final int i) {
+    return i < expressions.size() ? expressions.get(i) : null;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("UNWIND ");
     for (int i = 0; i < items.size(); i++) {
-      if (i > 0) {
+      if (i > 0)
         builder.append(", ");
+      final Expression operand = getExpression(i);
+      if (operand != null) {
+        operand.toString(params, builder);
+        builder.append(" AS ");
       }
       items.get(i).toString(params, builder);
     }
@@ -45,6 +87,9 @@ public class Unwind extends SimpleNode {
   public Unwind copy() {
     final Unwind result = new Unwind();
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.expressions = new ArrayList<>(expressions.size());
+    for (final Expression operand : expressions)
+      result.expressions.add(operand == null ? null : operand.copy());
     return result;
   }
 
@@ -57,17 +102,29 @@ public class Unwind extends SimpleNode {
 
     final Unwind oUnwind = (Unwind) o;
 
-    return Objects.equals(items, oUnwind.items);
+    if (!Objects.equals(items, oUnwind.items))
+      return false;
+    // compared by position, so an item list built without its parallel operand list equals one carrying null operands
+    for (int i = 0; i < items.size(); i++)
+      if (!Objects.equals(getExpression(i), oUnwind.getExpression(i)))
+        return false;
+    return true;
   }
 
   @Override
   public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+    int result = items != null ? items.hashCode() : 0;
+    for (int i = 0; i < items.size(); i++) {
+      final Expression operand = getExpression(i);
+      result = 31 * result + (operand != null ? operand.hashCode() : 0);
+    }
+    return result;
   }
 
   public List<Identifier> getItems() {
     return items;
   }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();
@@ -82,6 +139,13 @@ public class Unwind extends SimpleNode {
         }
       }
       json.put("items", itemsJson);
+    }
+
+    if (expressions != null && expressions.stream().anyMatch(Objects::nonNull)) {
+      final List<Object> expressionsJson = new ArrayList<>();
+      for (final Expression operand : expressions)
+        expressionsJson.add(operand == null ? null : operand.toJSON());
+      json.put("expressions", expressionsJson);
     }
 
     return json;
