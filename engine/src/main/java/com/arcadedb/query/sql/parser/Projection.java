@@ -99,7 +99,8 @@ public class Projection extends SimpleNode {
     if (distinct)
       builder.append("DISTINCT ");
 
-    // print * before
+    // print * before. A per-record materialized view relies on it: its derived query appends `@rid AS _sourceRID` and is
+    // rendered and parsed again, so the link comes after * and overwrites a same-named field (Issue11552PerRecordSourceRidReservedTest)
     for (final ProjectionItem item : items) {
       if (item.isAll()) {
         if (!first)
@@ -159,6 +160,7 @@ public class Projection extends SimpleNode {
       return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
+    // In order, so a later item overwrites a same-named column an earlier * copied (Issue11552PerRecordSourceRidReservedTest)
     for (int i = 0; i < items.size(); i++) {
       final ProjectionItem item = items.get(i);
       if (item.exclude)

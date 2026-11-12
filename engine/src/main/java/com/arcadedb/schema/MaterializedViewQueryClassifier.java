@@ -133,8 +133,9 @@ public class MaterializedViewQueryClassifier {
 
   /**
    * Whether the type, a supertype or a subtype (whose records {@code SELECT FROM} the type returns too) declares a property named
-   * like the reserved column, in any case. Read at DDL time only. A schemaless record can still carry one undeclared: no static
-   * reading of the schema can see that.
+   * like the reserved column, in any case. Read at DDL time only. A schemaless record can still carry one undeclared, which no
+   * static reading of the schema can see: there the link the refresh adds wins, and the field's value is not in the view (issue
+   * #11552, see {@code MaterializedViewPerRecordRefresher.buildDerivedQuery}).
    */
   private static boolean declaresSourceRid(final Schema schema, final String typeName) {
     if (!schema.existsType(typeName))
