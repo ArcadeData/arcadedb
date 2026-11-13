@@ -227,6 +227,15 @@ public class TransactionContext implements Transaction {
   // while EVERY modification this transaction made to it is a tracked append; the first non-append write to it
   // (edge removal, new-chunk allocation, bulk addAll) poisons its page so it can never be rebased.
   private       Map<RID, EdgeAppendBuffer>           edgeAppendsBySegment;
+  // #11590: the reads an edge append makes for itself (the vertex's head pointer, the chunk it appends to) while it runs, see
+  // beginEdgeAppend. They are recorded on their page when the outermost append ends, except a read of a chunk the append then
+  // wrote in place: that one is the append's own, and the edge-append merge replays it onto whatever the chunk holds at commit.
+  private       int                                  edgeAppendDepth;
+  private       MutablePage[]                        deferredReadPages;
+  private       int[]                                deferredReadSlots;
+  private       int                                  deferredReads;
+  // #11590: whether the reads recorded on the pages of the appended chunks were folded into their EdgeAppendBuffer (once per commit)
+  private       boolean                              appendedChunkReadsFolded;
   // Poisoned edge-list pages, keyed by a packed (fileId, pageNumber) long so poisoning and the hot-path skip
   // check allocate nothing (no PageId objects).
   private       LongHashSet                          edgeAppendPoisonedPages;
@@ -725,15 +734,18 @@ public class TransactionContext implements Transaction {
     if (rec != null) {
       if (statement != null)
         statement.recordObtained(rid, rec, updatedRecords != null && updatedRecords.get(rid) == rec);
-      return rec;
+    } else {
+      rec = immutableRecordsCache.get(rid);
+      if (rec == null && updatedRecords != null) {
+        // IN CASE `READ-YOUR-WRITE` IS FALSE, THE MODIFIED RECORD IS NOT IN CACHE AND MUST BE READ FROM THE UPDATE RECORDS
+        rec = updatedRecords.get(rid);
+        if (rec != null && statement != null)
+          statement.recordObtained(rid, rec, true);
+      }
     }
-    rec = immutableRecordsCache.get(rid);
-    if (rec == null && updatedRecords != null) {
-      // IN CASE `READ-YOUR-WRITE` IS FALSE, THE MODIFIED RECORD IS NOT IN CACHE AND MUST BE READ FROM THE UPDATE RECORDS
-      rec = updatedRecords.get(rid);
-      if (rec != null && statement != null)
-        statement.recordObtained(rid, rec, true);
-    }
+    // #11590: a chunk this transaction appended to is read from the object it queued, not from a page, after the append
+    if (rec != null && edgeAppendsBySegment != null)
+      trackReadOfAppendedChunk(rid);
     return rec;
   }
 
@@ -2199,6 +2211,10 @@ public class TransactionContext implements Transaction {
     private RID     owner;
     private boolean ownerOut;
     private boolean ownerUnknown;
+    // #11590: the application read the chunk (a traversal, a count, a uniqueness check), not only the append. The chunk the
+    // transaction holds is its own append on top of the chunk as it was then: the commit takes the appends onto the committed
+    // chunk only if nobody else changed it meanwhile, and does not take a head of its list moved by somebody else.
+    private boolean readByApplication;
 
     void setOwner(final RID vertex, final boolean out) {
       if (ownerUnknown)
@@ -3103,7 +3119,7 @@ public class TransactionContext implements Transaction {
    */
   private boolean areReadsFromOwnImageCurrent(final MutablePage page, final boolean bySlotMerge) {
     final boolean wholePage = page.isWholePageRead();
-    if (!wholePage && page.nextSlotRead(0) < 0)
+    if (!wholePage && page.nextSlotRead(0) < 0 && (bySlotMerge || !hasAppendedChunkReadOn(page.getPageId())))
       return true;
 
     final PageId pageId = page.getPageId();
@@ -3123,7 +3139,7 @@ public class TransactionContext implements Transaction {
       for (int slot = page.nextSlotRead(scanned); slot >= 0; slot = page.nextSlotRead(slot + 1))
         if (!isReplayedSlot(bucket, pageId, buffer, slot) && !isReadSlotCurrent(bucket, page, committed, slot))
           return false;
-      return true;
+      return bySlotMerge || areAppendedChunksReadCurrent(bucket, page, committed);
     } catch (final IOException e) {
       // a page that cannot be read cannot vouch for the reads: the conflict stands and the transaction retries
       return false;
@@ -3141,12 +3157,80 @@ public class TransactionContext implements Transaction {
     return new RID(pageId.getFileId(), (long) pageId.getPageNumber() * bucket.getMaxRecordsInPage() + slot);
   }
 
+  /** Whether the application read a chunk on {@code pageId} that this transaction appended to (#11590). */
+  private boolean hasAppendedChunkReadOn(final PageId pageId) {
+    if (edgeAppendsBySegment == null)
+      return false;
+    foldReadsOfAppendedChunks();
+    final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet())
+      if (entry.getValue().readByApplication && edgeSegmentPageKey(entry.getKey()) == pageKey)
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether every chunk on {@code image} that this transaction appended to, and the application read, holds on {@code committed}
+   * what it held when this transaction read it (#11590): the chunk this transaction holds is its appends on top of the chunk as it
+   * read it, so replaying the same appends onto the committed chunk gives it back byte for byte only when nobody else changed the
+   * chunk meanwhile. The edge-append merge would take any other change, and the read missed it.
+   */
+  private boolean areAppendedChunksReadCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed) {
+    final PageId pageId = image.getPageId();
+    final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet()) {
+      final EdgeAppendBuffer appends = entry.getValue();
+      final RID chunk = entry.getKey();
+      if (!appends.readByApplication || edgeSegmentPageKey(chunk) != pageKey)
+        continue;
+      final int slot = (int) (chunk.getPosition() % bucket.getMaxRecordsInPage());
+      final byte[] read = bucket.readPlainRecordBody(image, slot);
+      final byte[] current = bucket.readPlainRecordBody(committed, slot);
+      if (read == null || current == null || read.length != current.length)
+        return false;
+      final MutableEdgeSegment replayed = new MutableEdgeSegment(database, chunk, new Binary(current));
+      for (int i = 0; i < appends.size; ++i)
+        if (!replayed.add(new RID(appends.edgeBucket[i], appends.edgePosition[i]),
+            new RID(appends.vertexBucket[i], appends.vertexPosition[i])))
+          return false;
+      if (!Arrays.equals(replayed.getContent().toByteArray(), read))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Folds the reads recorded on the pages of the chunks this transaction appended to into their {@link EdgeAppendBuffer} (#11590),
+   * once per commit and before any merge drops a page: such a read was the application's, an append records none of its own
+   * there (see {@link #beginEdgeAppend()}), and the merges of the chunk's page and of its vertex's page both need to know it.
+   */
+  private void foldReadsOfAppendedChunks() {
+    if (appendedChunkReadsFolded || edgeAppendsBySegment == null || modifiedPages == null)
+      return;
+    appendedChunkReadsFolded = true;
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet()) {
+      final EdgeAppendBuffer appends = entry.getValue();
+      if (appends.readByApplication)
+        continue;
+      final RID chunk = entry.getKey();
+      final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(chunk.getBucketId(), false);
+      if (bucket == null)
+        continue;
+      final int maxRecordsInPage = bucket.getMaxRecordsInPage();
+      final MutablePage image = modifiedPages.get(new PageId(database, chunk.getBucketId(), (int) (chunk.getPosition() / maxRecordsInPage)));
+      if (image != null && (image.isWholePageRead() || image.isSlotRead((int) (chunk.getPosition() % maxRecordsInPage))))
+        appends.readByApplication = true;
+    }
+  }
+
   /**
    * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
    * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
    * only in the heads of its edge lists is still the one read when this transaction appended to each list whose head moved: the
    * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list it
-   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current).
+   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current), and
+   * so is a moved head of a list whose chunk the application read: a walk of that list started from the head it read, and missed
+   * the chunk the other transaction put in front of it.
    */
   private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
       final int slot) {
@@ -3167,16 +3251,22 @@ public class TransactionContext implements Transaction {
     final boolean inMoved = !Arrays.equals(read, VERTEX_IN_HEAD_OFFSET, VERTEX_HEADS_END, current, VERTEX_IN_HEAD_OFFSET,
         VERTEX_HEADS_END);
     final RID vertex = recordAt(bucket, image.getPageId(), slot);
+    foldReadsOfAppendedChunks();
     boolean outAppended = false;
     boolean inAppended = false;
+    boolean outRead = false;
+    boolean inRead = false;
     for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
       if (vertex.equals(appends.owner)) {
-        if (appends.ownerOut)
+        if (appends.ownerOut) {
           outAppended = true;
-        else
+          outRead |= appends.readByApplication;
+        } else {
           inAppended = true;
+          inRead |= appends.readByApplication;
+        }
       }
-    return (!outMoved || outAppended) && (!inMoved || inAppended);
+    return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
   }
 
   /**
@@ -3188,7 +3278,9 @@ public class TransactionContext implements Transaction {
    */
   public void trackReadFromPage(final BasePage page, final int slot) {
     if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage())
-      if (slot < 0)
+      if (edgeAppendDepth > 0)
+        deferRead(mutable, slot);
+      else if (slot < 0)
         mutable.markWholePageRead();
       else
         mutable.markSlotRead(slot);
@@ -3196,8 +3288,80 @@ public class TransactionContext implements Transaction {
 
   /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
   public void trackScanOfPage(final BasePage page) {
-    if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage())
-      mutable.markWholePageRead();
+    trackReadFromPage(page, -1);
+  }
+
+  /**
+   * The transaction's own image of {@code pageId} when it holds one and records the reads of it (#11590), null otherwise. For a
+   * reader that keeps a page across calls, a bucket scan between two batches: the transaction may have written the page meanwhile,
+   * and what the reader reads on is then as stale as that image.
+   */
+  public MutablePage getOwnImageForTracking(final PageId pageId) {
+    return modifiedPages != null && isTrackingReadsFromOwnImage() ? modifiedPages.get(pageId) : null;
+  }
+
+  /**
+   * Opens the window of an edge append (#11590), closed by {@link #endEdgeAppend()} in a {@code finally}; nested windows count. The
+   * append reads the vertex's head pointer and the chunk it appends to, and those reads are not decisions of the application: the
+   * edge-append merge replays the append onto whatever the chunk holds at commit. They are kept apart while the append runs, and
+   * when the outermost window closes every one is recorded on its page except a read of a chunk the append then wrote in place,
+   * so a read recorded on an appended chunk is always the application's.
+   */
+  public void beginEdgeAppend() {
+    ++edgeAppendDepth;
+  }
+
+  /** Closes the window {@link #beginEdgeAppend()} opened (#11590). */
+  public void endEdgeAppend() {
+    if (--edgeAppendDepth > 0)
+      return;
+    edgeAppendDepth = 0;
+    for (int i = 0; i < deferredReads; ++i) {
+      final MutablePage page = deferredReadPages[i];
+      final int slot = deferredReadSlots[i];
+      deferredReadPages[i] = null;
+      if (slot < 0)
+        page.markWholePageRead();
+      else if (!isAppendedChunk(page.getPageId(), slot))
+        page.markSlotRead(slot);
+    }
+    deferredReads = 0;
+  }
+
+  private void resetEdgeAppendReads() {
+    edgeAppendDepth = 0;
+    deferredReadPages = null;
+    deferredReadSlots = null;
+    deferredReads = 0;
+    appendedChunkReadsFolded = false;
+  }
+
+  private void deferRead(final MutablePage page, final int slot) {
+    if (deferredReadPages == null) {
+      deferredReadPages = new MutablePage[8];
+      deferredReadSlots = new int[8];
+    } else if (deferredReads == deferredReadPages.length) {
+      deferredReadPages = Arrays.copyOf(deferredReadPages, deferredReads << 1);
+      deferredReadSlots = Arrays.copyOf(deferredReadSlots, deferredReads << 1);
+    }
+    deferredReadPages[deferredReads] = page;
+    deferredReadSlots[deferredReads++] = slot;
+  }
+
+  private boolean isAppendedChunk(final PageId pageId, final int slot) {
+    if (edgeAppendsBySegment == null)
+      return false;
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
+    return bucket != null && edgeAppendsBySegment.containsKey(recordAt(bucket, pageId, slot));
+  }
+
+  /** Records that the application read {@code rid} when it is a chunk this transaction appended to (#11590). */
+  private void trackReadOfAppendedChunk(final RID rid) {
+    if (edgeAppendDepth == 0 && isTrackingReadsFromOwnImage()) {
+      final EdgeAppendBuffer appends = edgeAppendsBySegment.get(rid);
+      if (appends != null)
+        appends.readByApplication = true;
+    }
   }
 
   private boolean isTrackingReadsFromOwnImage() {
@@ -3563,6 +3727,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
+    resetEdgeAppendReads();
     edgeAppendPoisonedPages = null;
     deletedEdgeSegments = null;
     slotRebaseByPage = null;
@@ -4794,6 +4959,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
+    resetEdgeAppendReads();
     edgeAppendPoisonedPages = null;
     deletedEdgeSegments = null;
     slotRebaseByPage = null;
@@ -5276,6 +5442,10 @@ public class TransactionContext implements Transaction {
       final EdgeAppendBuffer appends = entry.getValue();
       final RID segmentRID = entry.getKey();
       if (appends.owner == null || appends.size == 0 || !(updatedRecords.get(segmentRID) instanceof MutableEdgeSegment queued))
+        continue;
+      // #11590: the application read this chunk, which missed the appends that filled it: the conflict stands
+      foldReadsOfAppendedChunks();
+      if (appends.readByApplication)
         continue;
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());

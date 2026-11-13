@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -27,6 +28,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -242,6 +244,113 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
   }
 
   /**
+   * T appends to the outgoing list of vertex 1, another transaction appends to the same chunk and commits, then T counts that
+   * list. T reads the chunk it appended to, which holds its own append on top of the chunk as it was before the other one: the
+   * count misses the committed relationship. The edge-append merge replays T's append onto the committed chunk, which does not
+   * make the count T already returned current, so the commit must be refused.
+   */
+  @Test
+  void relationshipsOfAListTheTransactionAppendedToAreNotReadStale() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    final long counted;
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {id: 1})-[e:E]->() RETURN count(e) AS c")) {
+      counted = ((Number) rs.next().getProperty("c")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(counted).as("a transaction that commits must have counted the relationship committed before its statement")
+          .isEqualTo(3L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(outgoingOfVertex1()).isEqualTo(failure == null ? 3L : 2L);
+  }
+
+  /**
+   * The success side of the case above: T reads the list it appended to, and the concurrent transaction appended to the list of
+   * another vertex. That read was current, and both appends still merge.
+   */
+  @Test
+  void readOfAListTheTransactionAppendedToNobodyElseChangedStillMerges() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (b:V {id: 2}), (x:V {id: 3}) CREATE (b)-[:E]->(x)");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {id: 1})-[e:E]->() RETURN count(e) AS c")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(2L);
+    }
+    database.commit();
+
+    assertThat(outgoingOfVertex1()).isEqualTo(2L);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (b:V {id: 2})-[e:E]->() RETURN count(e) AS c")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(2L);
+    }
+  }
+
+  /**
+   * Appends nothing decided on: T and the other transaction both append to the outgoing list of vertex 1 without reading it.
+   * The append's own reads of the chunk are not reads of the application, so the edge-append merge still takes both.
+   */
+  @Test
+  void blindAppendsToTheSameListStillMerge() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    database.commit();
+
+    assertThat(outgoingOfVertex1()).isEqualTo(3L);
+  }
+
+  /**
+   * A bucket scan reads a page in batches of 1,024 records and keeps the page it started a batch on. T inserts a record on that page
+   * between two batches, so it now holds its own copy of the page, then another transaction changes a record of the second batch
+   * and commits. The second batch reads the page the scan kept, which misses that change as T's copy does, and the disjoint-slot
+   * merge would replay T's insert onto the committed page: those reads must count as reads of the page T holds.
+   */
+  @Test
+  void scanBatchAfterTheTransactionWroteThePageIsNotReadStale() throws Exception {
+    final int records = 1_500;
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().getType("D").createProperty("f", Type.INTEGER);
+      for (int i = 0; i < records; i++)
+        database.newDocument("D").set("id", i).set("f", 0).save();
+    });
+    final int maxRecordsInPage = ((LocalBucket) database.getSchema().getType("D").getBuckets(false).getFirst()).getMaxRecordsInPage();
+
+    database.begin();
+    final Iterator<Record> scan = database.iterateType("D", false);
+    for (int i = 0; i < 10; i++)
+      scan.next();
+    final RID inserted = database.newDocument("D").set("id", records).set("f", 0).save().getIdentity();
+    assertThat(inserted.getPosition() / maxRecordsInPage).as("the insert lands on the page the scan is reading").isZero();
+    commitFromAnotherThread("sql", "UPDATE D SET f = 9 WHERE id = 1300");
+
+    Integer read = null;
+    while (scan.hasNext()) {
+      final Document document = scan.next().asDocument();
+      if (document.getInteger("id") == 1300) {
+        assertThat(document.getIdentity().getPosition() / maxRecordsInPage).as("the record is on the page of the scan").isZero();
+        read = document.getInteger("f");
+      }
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(read).as("a transaction that commits must have read the value committed before its scan read it").isEqualTo(9);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valuesOf("SELECT f FROM D WHERE id = 1300")).containsExactly(9);
+  }
+
+  /**
    * The success side: writes that do not depend on a stale read of the page still commit through the slot merge. T inserts
    * blindly, reads back its own record, and updates a committed record of the page by key: that record's slot is read from
    * T's copy, but T writes the very slot it read and the merge checks its pre-image, so a concurrent change to it would
@@ -287,6 +396,30 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "D", "id");
       database.command("sql", "INSERT INTO D SET id = 0, f = 0");
     });
+  }
+
+  /**
+   * Vertices 0..5 in one bucket. Vertex 1 has an outgoing list holding one relationship (to 5), vertex 2 one (to 5), and vertices 3
+   * and 4 an incoming list each (from 0), so a new relationship 1->3, 1->4 or 2->3 is an append in place to chunks that exist.
+   */
+  private void createGraphWithListsOfVertex1() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+      database.getSchema().createEdgeType("E", 1);
+      for (int i = 0; i < 6; i++)
+        database.newVertex("V").set("id", i).save();
+      database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 5}) CREATE (a)-[:E]->(x)").close();
+      database.command("opencypher", "MATCH (b:V {id: 2}), (x:V {id: 5}) CREATE (b)-[:E]->(x)").close();
+      database.command("opencypher", "MATCH (o:V {id: 0}), (x:V {id: 3}) CREATE (o)-[:E]->(x)").close();
+      database.command("opencypher", "MATCH (o:V {id: 0}), (x:V {id: 4}) CREATE (o)-[:E]->(x)").close();
+    });
+  }
+
+  private long outgoingOfVertex1() {
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {id: 1})-[e:E]->() RETURN count(e) AS c")) {
+      return ((Number) rs.next().getProperty("c")).longValue();
+    }
   }
 
   /** Runs and commits {@code command} in a transaction of another thread, so it is committed before the caller goes on. */

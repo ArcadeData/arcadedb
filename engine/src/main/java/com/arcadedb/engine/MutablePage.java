@@ -636,6 +636,11 @@ public class MutablePage extends BasePage implements TrackableContent {
     return wholePageRead;
   }
 
+  /** Whether the owning transaction read record slot {@code slot} from this image (#11590). */
+  public boolean isSlotRead(final int slot) {
+    return slotsRead != null && slotsRead.get(slot);
+  }
+
   /** The first slot at or after {@code fromSlot} the owning transaction read from this image, -1 when none (#11590). */
   public int nextSlotRead(final int fromSlot) {
     return slotsRead == null ? -1 : slotsRead.nextSetBit(fromSlot);
