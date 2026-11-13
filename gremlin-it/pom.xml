@@ -46,6 +46,10 @@
         <!-- This module ships nothing; do not deploy or install its near-empty jar. -->
         <maven.deploy.skip>true</maven.deploy.skip>
         <maven.install.skip>true</maven.install.skip>
+        <!-- Default for the surefire guard below. A project property, not a literal in the plugin
+             configuration, so -DfailIfNoTests=false still overrides it for a run that deliberately
+             selects no test (a dependency warm-up such as -Dtest=*#noSuchMethod). -->
+        <failIfNoTests>true</failIfNoTests>
     </properties>
 
     <!-- NOTE: because the shaded/tests arcadedb-gremlin artifacts below use a wildcard (*:*)
@@ -200,14 +204,17 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <!-- groupId:artifactId:type:classifier:version, so only the test-jar is scanned. The bare
+                         coordinate also matches the shaded uber-jar, and a -Dtest class pattern such as
+                         "*#method" then hands every bundled library class to JUnit discovery. -->
                     <dependenciesToScan>
-                        <dependency>com.arcadedb:arcadedb-gremlin</dependency>
+                        <dependency>com.arcadedb:arcadedb-gremlin:jar:tests:*</dependency>
                     </dependenciesToScan>
                     <!-- The migrated unit tests exist ONLY in the scanned test-jar; since the gremlin
                          module skips its own tests, fail loudly if the scan resolves nothing (test-jar
                          not attached, classifier/coordinate mismatch) instead of silently passing with
                          zero tests. -->
-                    <failIfNoTests>true</failIfNoTests>
+                    <failIfNoTests>${failIfNoTests}</failIfNoTests>
                     <!-- ShadedJarLayoutTest checks the Jackson bundled in the uber-jar against the BOM
                          version the parent pom manages (issue #7097). Appended, so the parent's own
                          variables survive the merge. -->
@@ -220,8 +227,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <configuration>
+                    <!-- groupId:artifactId:type:classifier:version, so only the test-jar is scanned. The bare
+                         coordinate also matches the shaded uber-jar, and a -Dtest class pattern such as
+                         "*#method" then hands every bundled library class to JUnit discovery. -->
                     <dependenciesToScan>
-                        <dependency>com.arcadedb:arcadedb-gremlin</dependency>
+                        <dependency>com.arcadedb:arcadedb-gremlin:jar:tests:*</dependency>
                     </dependenciesToScan>
                 </configuration>
             </plugin>

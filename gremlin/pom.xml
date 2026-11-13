@@ -372,9 +372,14 @@
                                 <exclude>org.apache.commons.configuration2.**</exclude>
                             </excludes>
                         </relocation>
+                        <!-- Caffeine is the only com.github library bundled here. A wider "com.github" pattern
+                             also rewrote the optional zstd-jni references of the relocated Netty codec onto
+                             com.arcadedb.gremlin.shaded.com.github.luben, a class that ships nowhere, so a consumer
+                             could never satisfy it. ShadedJarLayoutTest.everyRelocatedComGithubReferenceIsBundled
+                             is the guard. -->
                         <relocation>
-                            <pattern>com.github</pattern>
-                            <shadedPattern>com.arcadedb.gremlin.shaded.com.github</shadedPattern>
+                            <pattern>com.github.benmanes</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.com.github.benmanes</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>com.carrotsearch</pattern>

@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.InputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -34,6 +35,8 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -156,6 +159,49 @@ class ShadedJarLayoutTest {
         swing.add(name);
     }
     assertThat(swing).isEmpty();
+  }
+
+  /**
+   * The {@code com.github} relocation once covered the whole namespace while only Caffeine
+   * ({@code com.github.benmanes}) is bundled. Netty's optional zstd codec then referenced
+   * {@code com.arcadedb.gremlin.shaded.com.github.luben.zstd.*}, a class that exists nowhere: a
+   * consumer who adds zstd-jni still gets a NoClassDefFoundError, and any reflection over the
+   * relocated Netty classes (e.g. JUnit discovery) dies on it. A relocated {@code com.github}
+   * reference must name a class that ships in this jar.
+   */
+  @Test
+  void everyRelocatedComGithubReferenceIsBundled() throws Exception {
+    final String prefix = "com/arcadedb/gremlin/shaded/com/github/";
+    final Pattern reference = Pattern.compile(Pattern.quote(prefix) + "[A-Za-z0-9_/$]+");
+    final Map<String, String> dangling = new TreeMap<>();
+    int scanned = 0;
+
+    for (final JarEntry entry : (Iterable<JarEntry>) shadedJar.stream()::iterator) {
+      final String name = entry.getName();
+      if (entry.isDirectory() || !name.endsWith(".class"))
+        continue;
+
+      final String bytes;
+      try (final InputStream in = shadedJar.getInputStream(entry)) {
+        // Class names in the constant pool are modified UTF-8, identical to ISO-8859-1 for ASCII.
+        bytes = new String(in.readAllBytes(), StandardCharsets.ISO_8859_1);
+      }
+      final Matcher matcher = reference.matcher(bytes);
+      while (matcher.find()) {
+        final String referenced = matcher.group();
+        if (!referenced.endsWith("/") && shadedJar.getEntry(referenced + ".class") == null)
+          dangling.putIfAbsent(referenced, name);
+      }
+      ++scanned;
+    }
+
+    assertThat(scanned).as("the scan must reach the classes of the shaded uber-jar").isGreaterThan(1000);
+    assertThat(shadedJar.getEntry(prefix + "benmanes/caffeine/cache/Caffeine.class"))
+        .as("the scan must reach the bundled, relocated Caffeine").isNotNull();
+    assertThat(dangling)
+        .as("relocated com.github references to classes that are not bundled (referenced class -> referencing entry): "
+            + "narrow the com.github relocation in gremlin/pom.xml to the packages that actually ship")
+        .isEmpty();
   }
 
   /**
