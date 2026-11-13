@@ -397,6 +397,9 @@ public class TransactionContext implements Transaction {
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
+  // #11592: TransactionManager.getVertexDeleteSequence() when this transaction began. A vertex deleted by a commit after it may be
+  // one this transaction read alive, and its RID may hold a vertex created since
+  private       long                                 vertexDeleteEpoch;
   // #10588: TransactionManager.getIndexRegistrationSequence() when this transaction began. An index bound to a type after it owes
   // this transaction's writes to the buckets it covers an entry each, made up at the commit
   private       long                                 indexRegistrationSequenceAtBegin;
@@ -539,6 +542,7 @@ public class TransactionContext implements Transaction {
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
     mergedEdgeEpoch = database.getTransactionManager().getMergedEdges().getSequence();
+    vertexDeleteEpoch = database.getTransactionManager().getVertexDeleteSequence();
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
@@ -4100,6 +4104,11 @@ public class TransactionContext implements Transaction {
         database.getTransactionManager().getMergedEdges().committed(mergedEdgeMarked, mergedEdgeMarkedCount);
       }
 
+      // #11592: AFTER the deletes are published and while the vertices' files are still locked, so a transaction that began before
+      // this bump and writes one of them is refused by mergeEdgeListHeads, and one that began after it cannot have read them alive
+      if (!deletedRecordsInTx.isEmpty())
+        database.getTransactionManager().recordsDeleted(deletedRecordsInTx);
+
       // UPDATE RECORD COUNT
       // #10618: this runs after publishPages and outside the lock a page snapshot takes, so for a moment a reader
       // can scan a committed record that countType() does not count yet. The cached count catches up here; it is
@@ -5092,6 +5101,13 @@ public class TransactionContext implements Transaction {
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
         // the common case: nobody committed the page since this transaction pinned it. Answered from the version alone
         continue;
+
+      // #11592: the vertex was deleted by a commit after this transaction began, and a vertex created since can hold its RID. No
+      // image tells the two apart (a vertex created with the same properties has the same bytes), so neither the heads of the
+      // one this transaction read nor its write go onto the vertex there now: refused, as with the slot merge off
+      if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch))
+        throw new ConcurrentModificationException(
+            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
 
       final ImmutablePage committedPage = committedPage(pageId, bucket.getPageSize());
       if (!staleRead && isSlotTracked(pageId.getFileId(), pageNumber, slot))
