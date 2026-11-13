@@ -30,13 +30,13 @@ import java.util.TreeSet;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Backstop for issue #6318 part 2: {@code Issue6302AlgoGraphDrivenWorkGuardTest}'s parameterised table is the only thing that
+ * Backstop for issue #6318 part 2: {@code AlgoWorkGuardTest.GraphDrivenWorkGuard}'s parameterised table is the only thing that
  * notices an {@code algo.*} procedure shipping without a {@code WorkGuard} / {@code WorkCheckpoint}, and only if somebody
  * remembers to add a row for it. This census finds every procedure, so a new one is caught automatically rather than by memory.
  * <p>
  * The judgement call it cannot make mechanically is whether a procedure's dominant loop is actually superlinear in the graph
  * (needs a guard) or a single O(V + E) pass (does not - "one pass costs what loading the graph and emitting the rows already
- * cost", per {@code Issue6302AlgoGraphDrivenWorkGuardTest}). That judgement is recorded once, here, as {@link #SINGLE_PASS_EXEMPT}:
+ * cost", per {@code AlgoWorkGuardTest.GraphDrivenWorkGuard}). That judgement is recorded once, here, as {@link #SINGLE_PASS_EXEMPT}:
  * every procedure must either use a {@code WorkGuard} in its own code or be listed with a one-line reason.
  * <p>
  * The census ranges over the authorities (#11288), in the compiled classes of every module ({@link CompiledClasses}): a

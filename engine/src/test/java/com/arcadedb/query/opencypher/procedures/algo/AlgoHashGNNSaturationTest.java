@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.offset;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue11144HashGNNSaturationTest {
+class AlgoHashGNNSaturationTest {
   private Database database;
 
   @AfterEach

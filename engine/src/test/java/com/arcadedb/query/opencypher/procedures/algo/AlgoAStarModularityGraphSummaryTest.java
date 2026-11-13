@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.within;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue9149To9151AlgoRegressionTest extends TestHelper {
+class AlgoAStarModularityGraphSummaryTest extends TestHelper {
   // two K4 cliques {0..3} and {4..7}, a triangle {8,9,10}, and the bridges 3-4 and 7-8
   private static final int[]   COMM    = { 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2 };
   private static final int[][] CLIQUES = { { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 8, 9, 10 } };

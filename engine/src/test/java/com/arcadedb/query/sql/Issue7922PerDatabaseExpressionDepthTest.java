@@ -128,7 +128,7 @@ class Issue7922PerDatabaseExpressionDepthTest extends TestHelper {
   /**
    * The other arm of the same guard: a long chain of {@code OR} terms, which nests deeply without nesting a single
    * parenthesis. The {@code ExpressionRewriter} behind it reads the same bound value - see
-   * {@code Issue7922ExpressionRewriterDepthTest} for that reader on its own, since in practice the parse listener
+   * {@code ExpressionRewriterDepthTest} for that reader on its own, since in practice the parse listener
    * here refuses first and the rewriter's own guard is the backstop underneath it.
    */
   @Test
