@@ -3070,15 +3070,37 @@ public class CypherExecutionPlan {
    * finds one vertex at most (issue #11699).
    */
   private boolean isUniquelyKeyed(final NodePattern node) {
-    if (!node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels()
-        || node.getLabels().size() != 1)
+    return isUniquelyKeyed(node, Map.of());
+  }
+
+  /**
+   * {@link #isUniquelyKeyed(NodePattern)}, with one column of the index allowed to be keyed by an IN-list of the
+   * {@code WHERE} instead ({@link #whereInListKeys}): a seek of the node then finds one vertex per key (issue #11715).
+   */
+  private boolean isUniquelyKeyed(final NodePattern node, final Map<String, Set<String>> inListKeys) {
+    final Set<String> listed = node.getVariable() != null ? inListKeys.getOrDefault(node.getVariable(), Set.of()) : Set.of();
+    if ((!node.hasProperties() && listed.isEmpty()) || node.getPropertiesParameterName() != null || node.hasDynamicLabels()
+        || !node.hasLabels() || node.getLabels().size() != 1)
       return false;
     final Schema schema = database.getSchema();
     if (!schema.existsType(node.getLabels().getFirst()))
       return false;
+    final Set<String> inline = node.hasProperties() ? node.getProperties().keySet() : Set.of();
     for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
       final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
-      if (keys != null && node.getProperties().keySet().containsAll(keys))
+      if (keys == null)
+        continue;
+      int listedOnly = 0;
+      boolean covered = true;
+      for (final String key : keys) {
+        if (inline.contains(key))
+          continue;
+        if (listed.contains(key))
+          ++listedOnly;
+        else
+          covered = false;
+      }
+      if (covered && listedOnly <= 1)
         return true;
     }
     return false;
@@ -6274,6 +6296,31 @@ public class CypherExecutionPlan {
     return result;
   }
 
+  /**
+   * The properties of each variable a top-level {@code v.key IN <list>} conjunct of a {@code WHERE} keys, when the list is one
+   * an index seek takes: a parameter, or a non-empty list literal of literals and parameters (issue #11715).
+   */
+  private static Map<String, Set<String>> whereInListKeys(final WhereClause where) {
+    if (where == null || where.getConditionExpression() == null)
+      return Map.of();
+    final Map<String, Set<String>> keys = new HashMap<>();
+    for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where.getConditionExpression())) {
+      if (!(conjunct instanceof InExpression in) || !(in.getExpression() instanceof PropertyAccessExpression property))
+        continue;
+      List<Expression> list = in.getList();
+      if (list != null && list.size() == 1 && list.getFirst() instanceof ListExpression literal)
+        list = literal.getElements();
+      if (list == null || list.isEmpty())
+        continue;
+      boolean seekable = true;
+      for (final Expression element : list)
+        seekable &= RowIndependentValues.isSeekable(element);
+      if (seekable)
+        keys.computeIfAbsent(property.getVariableName(), k -> new HashSet<>()).add(property.getPropertyName());
+    }
+    return keys;
+  }
+
   /** Whether the hop is pinned to zero edges, and so binds none at all. */
   private static boolean bindsNoEdge(final RelationshipPattern rel) {
     final Integer maxHops = rel.getMaxHops();
@@ -7625,10 +7672,12 @@ public class CypherExecutionPlan {
 
     // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
     // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699). A key
-    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in
+    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in.
+    // An IN-list on the key is one vertex per element, which the ordinary plan seeks too when the walk is the longer (#11715)
     if (hopCount == 1) {
       final PathPattern keyed = withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
-      if (isUniquelyKeyed(keyed.getNode(0)) && isUniquelyKeyed(keyed.getNode(1)))
+      final Map<String, Set<String>> inListKeys = whereInListKeys(whereClause);
+      if (isUniquelyKeyed(keyed.getNode(0), inListKeys) && isUniquelyKeyed(keyed.getNode(1), inListKeys))
         return null;
     }
 

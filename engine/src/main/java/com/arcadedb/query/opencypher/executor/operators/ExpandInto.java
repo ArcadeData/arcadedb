@@ -103,10 +103,18 @@ public class ExpandInto extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    return expand(context, nRecords, child.execute(context, nRecords));
+  }
+
+  /**
+   * Expands the pairs of {@code inputResults} instead of the rows of the child, which is not executed: an operator that
+   * decides per row how the hop is answered hands this hop the pairs it sought (issue #11715). Closing the result closes
+   * {@code inputResults}.
+   */
+  public ResultSet expand(final CommandContext context, final int nRecords, final ResultSet inputResults) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    final ResultSet inputResults = child.execute(context, nRecords);
     // Both ends are bound, so an edge no vertex stores on its incoming side is still found from the end that stores it
     // (issue #8625)
     final boolean fromEachSource = IncomingEdgeLookup.isIncomingSideMissing(context.getDatabase().getSchema(),

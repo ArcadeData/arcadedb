@@ -63,6 +63,7 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.SeekOrWalkExpand;
 import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
@@ -546,7 +547,7 @@ public class CypherOptimizer {
     PhysicalOperator operator = rootOperator;
     while (operator != anchorOperator) {
       if (!(operator instanceof FilterOperator || operator instanceof ExpandAll || operator instanceof ExpandInto
-          || operator instanceof VarLengthExpand))
+          || operator instanceof SeekOrWalkExpand || operator instanceof VarLengthExpand))
         return false;
       operator = operator.getChild();
     }
@@ -1204,12 +1205,20 @@ public class CypherOptimizer {
           && (needsEdgeTracking.contains(rel)
               || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
 
+      final boolean anonymousTracked = (rel.getVariable() == null || rel.getVariable().isEmpty()) && needsEdgeTracking.contains(rel);
+      SeekOrWalkExpand seekOrWalk = null;
       // Issue #11699: an endpoint pinned by an equality on every column of a UNIQUE index is one row at most. Seeking
       // it binds both ends, so the hop reads the edges joining the pair off the shorter edge list (ExpandInto) instead
       // of every edge of the bound end followed by a filter on the far one
       if (!rel.isVariableLength()) {
         final AnchorSelection farSeek = uniqueSeekOfFarEnd(logicalPlan, rel, boundVariables);
-        if (farSeek != null) {
+        if (farSeek != null && farSeek.getPropertyValue() instanceof InListValues farKeys)
+          // Issue #11715: keyed by an IN-list, the far end is one row per key, which is worth seeking only from a bound end
+          // with more relationships than keys: the choice is made per row, at run time, where no plan-time count exists
+          seekOrWalk = createSeekOrWalkOperator(logicalPlan, rel, currentOp, farSeek, farKeys, boundVariables, sameClausePreceding,
+              needsEdgeTracking.contains(rel), edgeIsMaterialized, gavTracked.get(rel),
+              anonymousTracked ? "  anon_e_" + (syntheticEdgeCounter[0]++) : null);
+        else if (farSeek != null) {
           final PhysicalOperator seek = createAnchorOperator(farSeek);
           currentOp = new CartesianProduct(currentOp, seek, currentOp.getEstimatedCost() + seek.getEstimatedCost(),
               currentOp.getEstimatedCardinality());
@@ -1217,7 +1226,11 @@ public class CypherOptimizer {
         }
       }
 
-      if (rel.isVariableLength()) {
+      if (seekOrWalk != null) {
+        currentOp = seekOrWalk;
+        if (seekOrWalk.getEdgeTrackingVar() != null)
+          relVarsPerClause.computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>()).add(seekOrWalk.getEdgeTrackingVar());
+      } else if (rel.isVariableLength()) {
         currentOp = createVarLengthExpandOperator(rel, currentOp, boundVariables, sameClausePreceding);
 
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
@@ -1290,8 +1303,9 @@ public class CypherOptimizer {
 
   /**
    * The seek of the endpoint {@code relationship} is about to reach from its bound end, when that endpoint is pinned by an
-   * equality on every column of a UNIQUE index, so the seek finds one row at most; null for any other endpoint, and when
-   * neither or both ends are bound already (issue #11699).
+   * equality on every column of a UNIQUE index, so the seek finds one row at most, or by an IN-list on one of them and
+   * equalities on the others, one row per key (issue #11715); null for any other endpoint, and when neither or both ends
+   * are bound already (issue #11699).
    */
   private AnchorSelection uniqueSeekOfFarEnd(final LogicalPlan logicalPlan, final LogicalRelationship relationship,
       final Set<String> boundVariables) {
@@ -1304,10 +1318,44 @@ public class CypherOptimizer {
       return null;
     final AnchorSelection seek = anchorSelector.evaluateNodeDirect(farNode, logicalPlan);
     if (!seek.useIndex() || seek.isRangeScan() || seek.isDisjunctionIndexSeek() || seek.isUnionIndexSeek()
-        || seek.getPropertyValue() instanceof InListValues || seek.getIndex() == null || !seek.getIndex().isUnique()
+        || seek.getIndex() == null || !seek.getIndex().isUnique()
         || seek.getKeyValues().size() != seek.getIndex().getPropertyNames().size())
       return null;
     return seek;
+  }
+
+  /**
+   * The hop to a far end keyed by an IN-list on a UNIQUE index (issue #11715): per input row, the relationships of the
+   * bound end are walked when they are few for the number of keys, and the far end is sought per key otherwise, each pair
+   * then read off its shorter edge list. Null when a Graph Analytical View answers the hop, or the seek is not a node
+   * index seek: the hop then keeps the plain expansion.
+   *
+   * @param edgeTrackingVar the binding an anonymous relationship is tracked under for the uniqueness checks, or null
+   */
+  private SeekOrWalkExpand createSeekOrWalkOperator(final LogicalPlan logicalPlan, final LogicalRelationship rel,
+      final PhysicalOperator input, final AnchorSelection farSeek, final InListValues farKeys, final Set<String> boundVariables,
+      final Set<String> sameClausePreceding, final boolean needsEdgeTracking, final boolean edgeIsMaterialized,
+      final GraphTraversalProvider trackedGavView, final String edgeTrackingVar) {
+    if (trackedGavView != null || !(createAnchorOperator(farSeek) instanceof NodeIndexSeek seek))
+      return null;
+    final PhysicalOperator walk = addTargetLabelFilter(logicalPlan, rel,
+        createExpandAllOperator(rel, input, boundVariables, sameClausePreceding, edgeIsMaterialized, !needsEdgeTracking, null));
+    final PhysicalOperator into = createExpandIntoOperator(rel, input, sameClausePreceding, needsEdgeTracking, edgeIsMaterialized,
+        null);
+    if (!(walk instanceof ExpandAll walkAll) || !(into instanceof ExpandInto expandInto))
+      return null;
+    // Neither reads a child: the operator hands them each input row it walks, and the pairs of each row it seeks
+    walkAll.setChild(null);
+    expandInto.setChild(null);
+    if (edgeTrackingVar != null) {
+      walkAll.setEdgeTrackingVar(edgeTrackingVar);
+      expandInto.setEdgeTrackingVar(edgeTrackingVar);
+    }
+
+    final long pairs = input.getEstimatedCardinality() * Math.max(1, seek.getEstimatedCardinality());
+    return new SeekOrWalkExpand(input, walkAll.getSourceVariable(), walkAll.getTargetVariable(),
+        walkAll.getDirection().toArcadeDirection(), walkAll.getEdgeTypes(), farKeys, seek, walkAll, expandInto, edgeTrackingVar,
+        input.getEstimatedCost() + seek.getEstimatedCost() + pairs, pairs);
   }
 
   /** Builds a depth-first physical expansion for one ordinary variable-length relationship. */

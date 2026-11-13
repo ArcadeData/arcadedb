@@ -2969,6 +2969,26 @@ public class GraphEngine {
   }
 
   /**
+   * Whether the edge list(s) of {@code vertex} in {@code direction} hold more than {@code limit} entries, of any type. The
+   * entries are stepped without reading an edge or a vertex record, and never past the one after {@code limit}, so the
+   * answer costs what walking a short list would and stays bounded on a super-node: no list keeps a count to read instead.
+   * True when a list whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
+   * A planner deciding at run time between walking a vertex's relationships and seeking the far ends it looks for asks
+   * this (issue #11715).
+   */
+  public boolean hasMoreEdgeEntriesThan(final VertexInternal vertex, final Vertex.DIRECTION direction, final long limit) {
+    final Iterator<RID> entries = entriesOf(getMostUpdatedVertex(vertex), direction);
+    if (entries == null)
+      return true;
+    for (long i = 0; i < limit; i++) {
+      if (!entries.hasNext())
+        return false;
+      entries.next();
+    }
+    return entries.hasNext();
+  }
+
+  /**
    * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list
    * whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
    */
