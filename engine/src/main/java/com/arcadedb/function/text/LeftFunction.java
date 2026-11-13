@@ -45,9 +45,12 @@ public class LeftFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null || args[1] == null)
+    // Issue #11692: the sliced argument is STRING-typed, so any other value is a client type error rather than its
+    // toString() sliced as text (left([1, 2], 1) answered "["). Checked before a null length decides the answer, as
+    // replace() does (#5798).
+    final String str = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    if (str == null || args[1] == null)
       return null;
-    final String str = args[0].toString();
     // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
     // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
     // Issue #10850: a whole number or a type error - intValue() read 2.9 as 2 and 3000000000 as a negative length

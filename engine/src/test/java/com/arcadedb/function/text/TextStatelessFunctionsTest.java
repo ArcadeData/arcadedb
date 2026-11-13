@@ -249,6 +249,17 @@ class TextStatelessFunctionsTest {
         .isInstanceOf(CommandSemanticException.class);
   }
 
+  @Test
+  void leftRightSubstringRejectANonStringSource() {
+    // Issue #11692: the sliced argument is a STRING, not anything toString() can render
+    assertThatThrownBy(() -> new LeftFunction().execute(new Object[]{List.of(1, 2), 1}, null))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("LIST");
+    assertThatThrownBy(() -> new RightFunction().execute(new Object[]{true, 1}, null))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("BOOLEAN");
+    assertThatThrownBy(() -> new SubstringFunction().execute(new Object[]{1L, 0}, null))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("INTEGER");
+  }
+
   // ============ SubstringFunction tests ============
 
   @Test
