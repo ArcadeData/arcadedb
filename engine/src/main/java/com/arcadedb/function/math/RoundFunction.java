@@ -90,9 +90,20 @@ public class RoundFunction implements StatelessFunction {
     // Issue #10850: a whole number in the int range BigDecimal's scale takes - intValue() read 2.9 as 2 and wrapped
     // 4294967298 to 2
     final int precision = CypherFunctionHelper.requireWholeIntArgument(precisionArg, "round", "precision");
-    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, mode);
-    return bd.doubleValue();
+    final BigDecimal bd = BigDecimal.valueOf(value);
+    // setScale() materializes 10^|precision - scale| as a BigInteger: a precision of 10^8 ran for minutes and one near the
+    // int range overflowed BigInteger (an internal error). Clamping does not change the answer: a scale past the value's
+    // own only appends zeros, and below MIN_EFFECTIVE_SCALE every finite double rounds to 0 or to a power of ten no double
+    // can hold (an infinity)
+    final int scale = Math.max(Math.min(precision, bd.scale()), MIN_EFFECTIVE_SCALE);
+    return bd.setScale(scale, mode).doubleValue();
   }
+
+  /**
+   * Below this scale the rounding unit 10^-scale is more than twice Double.MAX_VALUE (below 10^309), so any finite double
+   * rounds to 0 or to plus or minus 10^-scale, which converts to an infinity: every scale below it answers alike.
+   */
+  private static final int MIN_EFFECTIVE_SCALE = -400;
 
   /**
    * Resolves the optional third argument of {@code round()} to a rounding mode, defaulting to HALF_UP when it is absent.
