@@ -5484,6 +5484,35 @@ public class SelectExecutionPlanner {
     return expression != null && expression.isBaseIdentifier() && propertyName.equals(expression.getDefaultAlias().getStringValue());
   }
 
+  /**
+   * True when every condition the index search leaves to the filter is on {@code sortKey} itself (a comparison, a BETWEEN, an IS
+   * NOT NULL): the conditions an ordered walk of the sort key's index answers with its range, so it filters only on the equality.
+   */
+  private static boolean residualOnlyConstrainsSortKey(final BooleanExpression remaining, final String sortKey) {
+    if (remaining == null)
+      return true;
+    if (remaining instanceof AndBlock and) {
+      for (final BooleanExpression conjunct : and.getSubBlocks())
+        if (!constrainsOnly(conjunct, sortKey))
+          return false;
+      return true;
+    }
+    return constrainsOnly(remaining, sortKey);
+  }
+
+  private static boolean constrainsOnly(final BooleanExpression condition, final String property) {
+    final Expression subject;
+    if (condition instanceof BinaryCondition binary)
+      subject = binary.getLeft();
+    else if (condition instanceof BetweenCondition between)
+      subject = between.getFirst();
+    else if (condition instanceof IsNotNullCondition notNull)
+      subject = notNull.expression;
+    else
+      return false;
+    return isPropertyReference(subject, property);
+  }
+
   private boolean handleTypeAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetType,
       final Set<String> filterBuckets, final QueryPlanningInfo info, final CommandContext context) {
 
@@ -5661,7 +5690,16 @@ public class SelectExecutionPlanner {
     final String sortKey = singleSortKey(info);
     if (sortKey == null)
       return null;
-    if (chosen.keyCondition instanceof AndBlock key && fullySorted(info, key, chosen.getIndex()))
+    try {
+      if (chosen.keyCondition instanceof AndBlock key && fullySorted(info, key, chosen.getIndex()))
+        return null;
+    } catch (final IndexException e) {
+      logSkippedIndex(chosen.getIndex(), e);
+      return null;
+    }
+    // The estimate below counts only the entries of the equality: a residual condition on anything but the sort key filters the
+    // walk further, by a fraction the planner does not know, and can make it read up to the whole index for one page
+    if (!residualOnlyConstrainsSortKey(chosen.getRemainingCondition(), sortKey))
       return null;
 
     final long rows = rowsToReturn(info, context);
@@ -5669,30 +5707,31 @@ public class SelectExecutionPlanner {
       return null;
 
     IndexSearchDescriptor walk = null;
+    int walkProperties = 0;
     boolean leadingIndexFound = false;
     boolean nullsIndexed = true;
     for (final TypeIndex index : indexes) {
-      final List<String> properties;
       try {
         if (!index.supportsOrderedIterations() || holdsFoldedKeys(index))
           continue;
-        properties = index.getPropertyNames();
+        final List<String> properties = index.getPropertyNames();
         if (!sortKey.equals(properties.getFirst()))
           continue;
         leadingIndexFound = true;
         if (index.getNullStrategy() != LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
           nullsIndexed = false;
+        final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, block, type);
+        if (candidate == null || !(candidate.keyCondition instanceof AndBlock key) || key.getSubBlocks().size() != 1
+            || candidate.requiresMultipleIndexLookups() || !fullySorted(info, key, index))
+          continue;
+        // the fewer properties the index holds, the more entries a page fits in
+        if (walk == null || properties.size() < walkProperties) {
+          walk = candidate;
+          walkProperties = properties.size();
+        }
       } catch (final IndexException e) {
         logSkippedIndex(index, e);
-        continue;
       }
-      final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, block, type);
-      if (candidate == null || !(candidate.keyCondition instanceof AndBlock key) || key.getSubBlocks().size() != 1
-          || candidate.requiresMultipleIndexLookups() || !fullySorted(info, key, index))
-        continue;
-      // the fewer properties the index holds, the more entries a page fits in
-      if (walk == null || properties.size() < walk.getIndex().getPropertyNames().size())
-        walk = candidate;
     }
     // A walk of the whole index also scans the type for the records the index does not hold, unless none can be returned
     if (walk == null && (!leadingIndexFound || !(nullsIndexed || cannotHoldNull(type, sortKey, info))))

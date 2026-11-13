@@ -718,4 +718,21 @@ class OrderByPlanningTest extends TestHelper {
           .doesNotContain("Chunk[graph_name]");
     }
   }
+
+  /**
+   * Regression test for issue #11700: a second condition, not on the sort key, filters the rows of the walk that pass the equality,
+   * which the estimate does not count. The walk could read the whole index for one page, so the equality's index is kept.
+   */
+  @Test
+  void keysetWalkWithAnotherConditionKeepsTheEqualityIndex() {
+    loadKeysetFixture();
+    database.command("sql", "CREATE PROPERTY Chunk.status STRING");
+    // 1% of the 'g3' chunks
+    database.transaction(() -> database.command("sql", "UPDATE Chunk SET status = 'x' WHERE graph_name = 'g3' AND external_id < 'c000200'"));
+    final String where = "graph_name = 'g3' AND status = 'x'";
+    final List<String> expected = sortedThroughTheEquality(where, true);
+    assertThat(expected).hasSize(20);
+    assertThat(keysetWalk(where, true,
+        plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY"))).isEqualTo(expected);
+  }
 }
