@@ -144,7 +144,9 @@ public class PatternComprehensionExpression implements Expression {
     // is not bound to a vertex): iterate over candidate vertices in the graph
     // (issue #4106).
     if (startVertex == null) {
-      if (hopIndex == 0)
+      // A leading variable in scope but bound to null (an OPTIONAL MATCH miss, WITH null AS a) matches nothing; only a
+      // variable not in scope at all is an uncorrelated start (issue #11685).
+      if (hopIndex == 0 && !isBoundToNull(startNodePattern, currentResult))
         traverseUncorrelatedStart(baseResult, context, currentResult, resultList, pathElements, usedEdges, startNodePattern);
       return;
     }
@@ -414,6 +416,9 @@ public class PatternComprehensionExpression implements Expression {
       final Object bound = baseResult.getProperty(endNodePattern.getVariable());
       if (bound instanceof Vertex boundVertex && !boundVertex.getIdentity().equals(vertex.getIdentity()))
         return false;
+      // An end variable in scope but bound to null matches no vertex (issue #11685)
+      if (bound == null && baseResult.hasProperty(endNodePattern.getVariable()))
+        return false;
     }
     // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x] (issue #5480).
     // The predicate may also reference the relationship variable bound by this same hop, as in
@@ -622,6 +627,11 @@ public class PatternComprehensionExpression implements Expression {
     if (obj instanceof Vertex)
       return (Vertex) obj;
     return null;
+  }
+
+  private static boolean isBoundToNull(final NodePattern nodePattern, final Result result) {
+    final String variable = nodePattern.getVariable();
+    return variable != null && !variable.isEmpty() && result.hasProperty(variable) && result.getProperty(variable) == null;
   }
 
   @Override
