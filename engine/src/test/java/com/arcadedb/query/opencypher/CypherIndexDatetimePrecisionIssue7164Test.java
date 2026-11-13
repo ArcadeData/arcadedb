@@ -41,10 +41,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the index kept their microseconds - an undeclared temporal is serialized at the precision of its own value -
  * while every write after it was silently truncated to milliseconds.
  * <p>
- * Creating an index must never narrow the precision already present in the data, so once the inference sees a
- * temporal value it sweeps the type for the widest precision the rows actually hold, with milliseconds as the
- * floor (a value that happens to land on a whole second must not declare the property {@code DATETIME_SECOND}).
- * {@code CREATE CONSTRAINT} shares the same inference and is covered here too.
+ * Creating an index must never narrow the precision already present in the data. Since issue #11579 {@code CREATE INDEX}
+ * leaves the property undeclared, so every value keeps its own precision. {@code CREATE CONSTRAINT} still declares the
+ * property: once its inference sees a temporal value it sweeps the type for the widest precision the rows actually hold,
+ * with milliseconds as the floor (a value that happens to land on a whole second must not declare the property
+ * {@code DATETIME_SECOND}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -87,7 +88,7 @@ class CypherIndexDatetimePrecisionIssue7164Test {
     database.command("cypher", "CREATE INDEX ev_created IF NOT EXISTS FOR (n:Ev) ON (n.created_at)");
     insert("Ev", "after", MICROS);
 
-    assertThat(database.getSchema().getType("Ev").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
+    assertThat(database.getSchema().getType("Ev").getPropertyIfExists("created_at")).isNull();
     assertThat(readBack("Ev", "before")).isEqualTo(MICROS);
     assertThat(readBack("Ev", "after")).isEqualTo(MICROS);
   }
@@ -98,7 +99,7 @@ class CypherIndexDatetimePrecisionIssue7164Test {
     database.command("cypher", "CREATE INDEX nano_created IF NOT EXISTS FOR (n:Nano) ON (n.created_at)");
     insert("Nano", "after", NANOS);
 
-    assertThat(database.getSchema().getType("Nano").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_NANOS);
+    assertThat(database.getSchema().getType("Nano").getPropertyIfExists("created_at")).isNull();
     assertThat(readBack("Nano", "before")).isEqualTo(NANOS);
     assertThat(readBack("Nano", "after")).isEqualTo(NANOS);
   }
@@ -109,7 +110,7 @@ class CypherIndexDatetimePrecisionIssue7164Test {
     // microseconds already stored on the second record would be truncated on every subsequent write.
     insert("Mixed", "milli", MILLIS);
     insert("Mixed", "micro", MICROS);
-    database.command("cypher", "CREATE INDEX mixed_created IF NOT EXISTS FOR (n:Mixed) ON (n.created_at)");
+    database.command("cypher", "CREATE CONSTRAINT mixed_created IF NOT EXISTS FOR (n:Mixed) REQUIRE n.created_at IS NOT NULL");
     insert("Mixed", "after", MICROS);
 
     assertThat(database.getSchema().getType("Mixed").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
@@ -124,7 +125,7 @@ class CypherIndexDatetimePrecisionIssue7164Test {
     for (int i = 0; i < 300; i++)
       insert("Deep", "milli" + i, MILLIS);
     insert("Deep", "micro", MICROS);
-    database.command("cypher", "CREATE INDEX deep_created IF NOT EXISTS FOR (n:Deep) ON (n.created_at)");
+    database.command("cypher", "CREATE CONSTRAINT deep_created IF NOT EXISTS FOR (n:Deep) REQUIRE n.created_at IS NOT NULL");
     insert("Deep", "after", MICROS);
 
     assertThat(database.getSchema().getType("Deep").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
@@ -139,7 +140,7 @@ class CypherIndexDatetimePrecisionIssue7164Test {
     insert("Het", "micro", MICROS);
     database.command("cypher", "CREATE (n:Het {uuid:'text', created_at:'not a date'})");
     insert("Het", "micro2", MICROS);
-    database.command("cypher", "CREATE INDEX het_created IF NOT EXISTS FOR (n:Het) ON (n.created_at)");
+    database.command("cypher", "CREATE CONSTRAINT het_created IF NOT EXISTS FOR (n:Het) REQUIRE n.created_at IS NOT NULL");
 
     assertThat(database.getSchema().getType("Het").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
     assertThat(readBack("Het", "micro")).isEqualTo(MICROS);
@@ -147,9 +148,9 @@ class CypherIndexDatetimePrecisionIssue7164Test {
 
   @Test
   void nonTemporalPropertyStillInfersFromTheFirstValue() {
-    // Non-temporal inference (issue #4222) is unchanged: the first non-null value decides the type.
+    // Non-temporal inference (issue #4222) is unchanged for a constraint: the first non-null value decides the type.
     database.command("cypher", "CREATE (n:Num {uuid:'a', val:1})");
-    database.command("cypher", "CREATE INDEX num_val IF NOT EXISTS FOR (n:Num) ON (n.val)");
+    database.command("cypher", "CREATE CONSTRAINT num_val IF NOT EXISTS FOR (n:Num) REQUIRE n.val IS NOT NULL");
 
     assertThat(database.getSchema().getType("Num").getProperty("val").getType()).isEqualTo(Type.INTEGER);
   }
@@ -159,7 +160,7 @@ class CypherIndexDatetimePrecisionIssue7164Test {
     // A value that lands on a whole second must keep DATETIME as the floor: declaring DATETIME_SECOND would
     // narrow the type below what the engine has always used by default.
     insert("Sec", "before", SECONDS);
-    database.command("cypher", "CREATE INDEX sec_created IF NOT EXISTS FOR (n:Sec) ON (n.created_at)");
+    database.command("cypher", "CREATE CONSTRAINT sec_created IF NOT EXISTS FOR (n:Sec) REQUIRE n.created_at IS NOT NULL");
     insert("Sec", "after", MILLIS);
 
     assertThat(database.getSchema().getType("Sec").getProperty("created_at").getType()).isEqualTo(Type.DATETIME);
@@ -168,12 +169,26 @@ class CypherIndexDatetimePrecisionIssue7164Test {
 
   @Test
   void constraintOnPopulatedTypePreservesMicrosecondPrecision() {
-    // CREATE CONSTRAINT goes through the same inference as CREATE INDEX.
+    // A uniqueness constraint leaves the property undeclared, like CREATE INDEX (issue #11579): every value keeps its precision
     insert("Uniq", "before", MICROS);
     database.command("cypher", "CREATE CONSTRAINT uniq_created IF NOT EXISTS FOR (n:Uniq) REQUIRE n.created_at IS UNIQUE");
+    insert("Uniq", "after", NANOS);
 
-    assertThat(database.getSchema().getType("Uniq").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
+    assertThat(database.getSchema().getType("Uniq").getPropertyIfExists("created_at")).isNull();
     assertThat(readBack("Uniq", "before")).isEqualTo(MICROS);
+    assertThat(readBack("Uniq", "after")).isEqualTo(NANOS);
+  }
+
+  @Test
+  void nodeKeyOnPopulatedTypePreservesMicrosecondPrecision() {
+    // An existence constraint needs a declared property, so it declares the widest precision the data holds
+    insert("Key", "before", MICROS);
+    database.command("cypher", "CREATE CONSTRAINT key_created IF NOT EXISTS FOR (n:Key) REQUIRE n.created_at IS NODE KEY");
+    insert("Key", "after", MICROS.plusSeconds(1));
+
+    assertThat(database.getSchema().getType("Key").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
+    assertThat(readBack("Key", "before")).isEqualTo(MICROS);
+    assertThat(readBack("Key", "after")).isEqualTo(MICROS.plusSeconds(1));
   }
 
   @Test

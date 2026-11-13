@@ -140,8 +140,9 @@ class CypherIndexMixedNumericIssue8999Test {
       database.newVertex("W2").set("x", 1.5f).save();
       database.newVertex("W2").set("x", 2.5d).save();
     });
-    database.command("opencypher", "CREATE INDEX FOR (n:W1) ON (n.x)");
-    database.command("opencypher", "CREATE INDEX FOR (n:W2) ON (n.x)");
+    // CREATE INDEX leaves the property undeclared (issue #11579); a constraint still declares it from the data
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:W1) REQUIRE n.x IS NOT NULL");
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:W2) REQUIRE n.x IS NOT NULL");
     assertThat(database.getSchema().getType("W1").getProperty("x").getType()).isEqualTo(Type.LONG);
     assertThat(database.getSchema().getType("W2").getProperty("x").getType()).isEqualTo(Type.DOUBLE);
   }

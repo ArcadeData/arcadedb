@@ -37,7 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with an internal {@code ClassCastException} ("String cannot be cast to Integer") or a
  * {@code NumberFormatException}. Cross-type comparisons are undefined (null) in Cypher, so the query must
  * complete (HTTP 200) and return the same result as the un-indexed full-scan path. Equality against the text a value was
- * written with finds it, since the index declared the property INTEGER and a declaration defines its text form (#9794, #9935).
+ * written with finds it, since the property is declared INTEGER and a declaration defines its text form (#9794, #9935).
+ * The declaration is made explicitly: the Cypher index used to infer it from the data, which it no longer does (#11579).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -77,11 +78,12 @@ class Issue5225MixedTypeIndexIT extends BaseGraphServerTest {
     cypher("CREATE (:BugIdx {id: 1, val: 1})", 200);
     cypher("CREATE (:BugIdx {id: 2, val: 2})", 200);
     cypher("CREATE (:BugIdx {id: 3})", 200);
+    getServerDatabase(0, getDatabaseName()).command("sql", "CREATE PROPERTY BugIdx.val INTEGER");
     cypher("CREATE INDEX FOR (n:BugIdx) ON (n.val)", 200);
     cypher("MATCH (n:BugIdx) WHERE n.id = 1 SET n.val = \"1\" RETURN n.val", 200);
 
-    // CREATE INDEX declared val INTEGER from the data, so the SET stored the integer 1, and since #9794 the text it was
-    // written with reads back as that integer (#9935)
+    // val is declared INTEGER, so the SET stored the integer 1, and since #9794 the text it was written with reads back as
+    // that integer (#9935)
     final JSONArray equal = cypher("MATCH (n:BugIdx) WHERE n.val = \"1\" RETURN n.id AS id, n.val AS val", 200).getJSONArray("result");
     assertThat(equal.length()).isEqualTo(1);
     assertThat(equal.getJSONObject(0).getInt("id")).isEqualTo(1);

@@ -1261,7 +1261,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
           typedChanged = true;
         }
       } else if (!isTyped && existing == null) {
-        final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
+        // A uniqueness constraint says nothing about the kind of the values, like a range index (issue #11579): declaring the
+        // kind the records hold converted every later write of another kind, so 2.5 on integers was stored as 2 and then
+        // refused as a duplicate of the 2 already there. Its index keys an undeclared property as text, as CREATE INDEX does.
+        // An existence constraint (NOT NULL, NODE KEY) needs a declared property to be mandatory, so it keeps the inference.
+        final Type inferred = kind == CypherDDLStatement.ConstraintKind.UNIQUE ? null : inferPropertyTypeFromExistingData(typeName, propName);
         if (inferred != null) {
           schema.getType(typeName).createProperty(propName, inferred);
           declared.add(propName);
@@ -1959,12 +1963,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // Cypher properties are dynamically typed and travel over Bolt with their actual Java type
     // (e.g. {@code Long} for numeric literals). Hard-coding {@link Type#STRING} when the property
     // is missing from the schema used to coerce every future write to a {@link String}, which
-    // breaks Cypher's strict-typed equality on follow-up MATCH (issue #4222). We instead:
-    //   1. Try to infer the property type from any existing record on the type, so that the
-    //      common pattern "CREATE node; CREATE INDEX" preserves the existing data's type.
-    //   2. If no record carries the property, keep the property undeclared and tell the index
-    //      builder to fall back to STRING serialisation for its keys. Writes then preserve the
-    //      original Java type and downstream Cypher comparisons work correctly.
+    // breaks Cypher's strict-typed equality on follow-up MATCH (issue #4222). Declaring the type the existing records hold
+    // instead converted every later write of another kind to it (2.5 stored as 2, the string '7' as the number 7, a date as
+    // epoch milliseconds - issue #11579): a range index does not constrain the values of a property, as in Neo4j. So the
+    // property stays undeclared, whether records hold it already or not, and the index builder falls back to STRING keys
+    // for it (one key per number however it was written, #8993). Writes then preserve the original Java type and
+    // downstream Cypher comparisons work correctly.
     // A vector index is the exception: it reads its property as an ARRAY_OF_FLOATS, so an undeclared one is declared so, as
     // SQL CREATE INDEX ... LSM_VECTOR asks the user to do first (#10678). A full-text index tokenizes the text of the value,
     // so its keys are always strings and its properties stay undeclared.
@@ -1976,13 +1980,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final String propName = propertyNames[i];
       if (type.getPolymorphicPropertyIfExists(propName) != null)
         continue;
-      final Type inferred = switch (ddl.getIndexKind()) {
-        case VECTOR -> Type.ARRAY_OF_FLOATS;
-        case FULLTEXT -> null;
-        case RANGE -> inferPropertyTypeFromExistingData(typeName, propName);
-      };
-      if (inferred != null) {
-        type.createProperty(propName, inferred);
+      if (ddl.getIndexKind() == CypherDDLStatement.IndexKind.VECTOR) {
+        type.createProperty(propName, Type.ARRAY_OF_FLOATS);
         declaredHere.add(propName);
       } else {
         defaultKeyTypes[i] = Type.STRING;
@@ -2117,8 +2116,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Walks the type's records (polymorphic) and returns the {@link Type} that matches the Java class of every non-null value
    * of {@code propertyName}. Returns {@code null} if no record sets the property, or when the values do not share one type
-   * (in which case the property stays undeclared and the index falls back to the canonical STRING keys). Used by Cypher DDL to
-   * preserve numeric properties across {@code CREATE INDEX} on an already-populated type (issue #4222).
+   * (in which case the property stays undeclared and the index falls back to the canonical STRING keys). Used by the Cypher
+   * existence constraints ({@code IS NOT NULL}, {@code IS NODE KEY}), which need a declared property to make it mandatory, to
+   * preserve numeric properties on an already-populated type (issue #4222); {@code CREATE INDEX} and a uniqueness constraint
+   * no longer declare the property at all (issue #11579).
    * <p>
    * The whole type is read, not a prefix of it: the first value alone used to decide, so {@code 3} followed by {@code 2.5}
    * declared the property {@code INTEGER}, narrowed the float to {@code 2} in every index key, and made range predicates lose
@@ -2130,17 +2131,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * {@link Type#getTypeByClass} maps every temporal class onto the millisecond {@link Type#DATETIME},
    * while an <em>undeclared</em> temporal property is serialized at the precision of each value
    * (see {@code BinaryTypes.getTypeFromValue}). Declaring {@code DATETIME} would therefore silently
-   * truncate to milliseconds every write made after the index was created, on a property whose
+   * truncate to milliseconds every write made after the constraint was created, on a property whose
    * existing rows carry microseconds or nanoseconds (issue #7164). So when the kind is temporal the scan declares the widest
    * precision the data actually holds. Milliseconds stay the floor - a value that
    * happens to land on a whole second must not declare the property {@code DATETIME_SECOND} and
    * truncate the millisecond writes ArcadeDB has always accepted by default. The sweep stops as soon as it sees
    * nanoseconds (nothing can widen it further).
    * <p>
-   * The scan is unconditional, so indexing a column on a very large type costs one extra sequential scan on top of the index
-   * build - deliberately, because the alternative is silently narrowing or truncating values that are already persisted. If a
-   * slow {@code CREATE INDEX} on a huge type ever needs to be cut down, this is the place, and anything that reintroduces a
-   * bound reintroduces the narrowing of issues #7164 and #8999 with it.
+   * The scan is unconditional, so constraining a column on a very large type costs one extra sequential scan on top of the
+   * index build - deliberately, because the alternative is silently narrowing or truncating values that are already persisted.
+   * If a slow {@code CREATE CONSTRAINT} on a huge type ever needs to be cut down, this is the place, and anything that
+   * reintroduces a bound reintroduces the narrowing of issues #7164 and #8999 with it.
    */
   private Type inferPropertyTypeFromExistingData(final String typeName, final String propertyName) {
     try {
