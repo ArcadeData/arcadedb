@@ -169,12 +169,26 @@ class CypherIndexDatetimePrecisionIssue7164Test {
 
   @Test
   void constraintOnPopulatedTypePreservesMicrosecondPrecision() {
-    // CREATE CONSTRAINT declares the property from the data, which CREATE INDEX no longer does (issue #11579).
+    // A uniqueness constraint leaves the property undeclared, like CREATE INDEX (issue #11579): every value keeps its precision
     insert("Uniq", "before", MICROS);
     database.command("cypher", "CREATE CONSTRAINT uniq_created IF NOT EXISTS FOR (n:Uniq) REQUIRE n.created_at IS UNIQUE");
+    insert("Uniq", "after", NANOS);
 
-    assertThat(database.getSchema().getType("Uniq").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
+    assertThat(database.getSchema().getType("Uniq").getPropertyIfExists("created_at")).isNull();
     assertThat(readBack("Uniq", "before")).isEqualTo(MICROS);
+    assertThat(readBack("Uniq", "after")).isEqualTo(NANOS);
+  }
+
+  @Test
+  void nodeKeyOnPopulatedTypePreservesMicrosecondPrecision() {
+    // An existence constraint needs a declared property, so it declares the widest precision the data holds
+    insert("Key", "before", MICROS);
+    database.command("cypher", "CREATE CONSTRAINT key_created IF NOT EXISTS FOR (n:Key) REQUIRE n.created_at IS NODE KEY");
+    insert("Key", "after", MICROS.plusSeconds(1));
+
+    assertThat(database.getSchema().getType("Key").getProperty("created_at").getType()).isEqualTo(Type.DATETIME_MICROS);
+    assertThat(readBack("Key", "before")).isEqualTo(MICROS);
+    assertThat(readBack("Key", "after")).isEqualTo(MICROS.plusSeconds(1));
   }
 
   @Test

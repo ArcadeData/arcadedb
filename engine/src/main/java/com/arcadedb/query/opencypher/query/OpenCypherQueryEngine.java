@@ -1261,7 +1261,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
           typedChanged = true;
         }
       } else if (!isTyped && existing == null) {
-        final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
+        // A uniqueness constraint says nothing about the kind of the values, like a range index (issue #11579): declaring the
+        // kind the records hold converted every later write of another kind, so 2.5 on integers was stored as 2 and then
+        // refused as a duplicate of the 2 already there. Its index keys an undeclared property as text, as CREATE INDEX does.
+        // An existence constraint (NOT NULL, NODE KEY) needs a declared property to be mandatory, so it keeps the inference.
+        final Type inferred = kind == CypherDDLStatement.ConstraintKind.UNIQUE ? null : inferPropertyTypeFromExistingData(typeName, propName);
         if (inferred != null) {
           schema.getType(typeName).createProperty(propName, inferred);
           declared.add(propName);
@@ -2112,9 +2116,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Walks the type's records (polymorphic) and returns the {@link Type} that matches the Java class of every non-null value
    * of {@code propertyName}. Returns {@code null} if no record sets the property, or when the values do not share one type
-   * (in which case the property stays undeclared and the index falls back to the canonical STRING keys). Used by Cypher
-   * {@code CREATE CONSTRAINT} to preserve numeric properties on an already-populated type (issue #4222); {@code CREATE INDEX}
-   * no longer declares the property at all (issue #11579).
+   * (in which case the property stays undeclared and the index falls back to the canonical STRING keys). Used by the Cypher
+   * existence constraints ({@code IS NOT NULL}, {@code IS NODE KEY}), which need a declared property to make it mandatory, to
+   * preserve numeric properties on an already-populated type (issue #4222); {@code CREATE INDEX} and a uniqueness constraint
+   * no longer declare the property at all (issue #11579).
    * <p>
    * The whole type is read, not a prefix of it: the first value alone used to decide, so {@code 3} followed by {@code 2.5}
    * declared the property {@code INTEGER}, narrowed the float to {@code 2} in every index key, and made range predicates lose
