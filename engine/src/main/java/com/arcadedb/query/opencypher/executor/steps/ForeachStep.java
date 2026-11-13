@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -33,6 +35,7 @@ import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -45,7 +48,9 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 
 /**
@@ -272,6 +277,11 @@ public class ForeachStep extends AbstractExecutionStep {
       if (element instanceof Edge edge && edge.getIdentity() instanceof LightEdgeRID light)
         light.getOccurrence();
 
+    // Only a row holding a list or a map has somewhere a written record can hide from the per-name sync below, so only
+    // such a row pays for recording the writes (issue #11684)
+    final boolean recordWrites = holdsCollection(inputRow);
+    Map<RID, Document> written = null;
+
     // Per-iteration deferred-delete batching: see DeleteStep.DEFERRED_DELETE_BATCH_VAR.
     final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
     // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190)
@@ -289,74 +299,100 @@ public class ForeachStep extends AbstractExecutionStep {
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
         context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
         try {
-          executeInnerClauses(iterationRow, context);
+          written = executeInnerClauses(inputRow, iterationRow, recordWrites, written, context);
 
           DeleteStep.flushDeferredDeletes(context, deleteBatch, deletedSoFar);
         } finally {
           context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
         }
-
-        // Inner write clauses (e.g. SET) mutate a fresh MutableDocument stored back on the iteration
-        // row, but the outer input row still references the original immutable snapshot. Sync those
-        // mutations back so the next iteration accumulates on the latest state and a RETURN in the
-        // same query observes the update, matching direct SET / Neo4j behaviour (issue #5114).
-        propagateMutationsToInputRow(inputRow, iterationRow);
       }
     } catch (final Exception e) {
       if (e instanceof RuntimeException re)
         throw re;
       throw new CommandExecutionException("FOREACH execution failed", e);
     }
+
+    // Once per input row rather than once per iteration: the list FOREACH iterates is usually the very list being
+    // refreshed, and walking it after every element would make the loop quadratic
+    if (written != null)
+      RowAliases.propagateUpdates(inputRow, written);
   }
 
-  /**
-   * Copies document-valued properties that the FOREACH body mutated on the per-iteration row back
-   * onto the passed-through input row. A write clause such as SET replaces the iteration row's
-   * binding with a fresh {@link com.arcadedb.database.MutableDocument} (or, for a label change, a
-   * new {@link com.arcadedb.graph.Vertex}); the outer input row still points at the pre-mutation
-   * snapshot. Restricting the sync to names already present in the input row (as documents) avoids
-   * leaking the loop variable or clause-bound temporaries into the query output.
-   * <p>
-   * A path the input row carries is synced the same way: the write already pointed the iteration row's copy of the path at
-   * the record it produced ({@link com.arcadedb.query.opencypher.executor.RowAliases}), so
-   * {@code FOREACH (item IN nodes(p) | SET item.value = 20) RETURN [x IN nodes(p) | x.value]} answers with the new value
-   * (issue #10890).
-   */
-  private void propagateMutationsToInputRow(final Result inputRow, final ResultInternal iterationRow) {
-    if (!(inputRow instanceof ResultInternal outer))
-      return;
-    for (final String propName : inputRow.getPropertyNames()) {
-      final Object outerValue = inputRow.getProperty(propName);
-      final Object innerValue;
-      if (outerValue instanceof Document) {
-        innerValue = iterationRow.getProperty(propName);
-        if (!(innerValue instanceof Document))
-          continue;
-      } else if (outerValue instanceof TraversalPath) {
-        innerValue = iterationRow.getProperty(propName);
-        if (!(innerValue instanceof TraversalPath))
-          continue;
-      } else
-        continue;
-      // Identity, not equals(): the written record has the same RID as the snapshot, so equals() would call them the same
-      if (innerValue != outerValue)
-        outer.setProperty(propName, innerValue);
+  private static boolean holdsCollection(final Result row) {
+    if (!(row instanceof ResultInternal))
+      return false;
+    for (final String name : row.getPropertyNames()) {
+      final Object value = row.getProperty(name);
+      if (value instanceof List || value instanceof Map)
+        return true;
     }
+    return false;
   }
 
   /**
-   * Executes the inner clauses of the FOREACH body for a single iteration row.
+   * Copies what the FOREACH body changed on one of its output rows back onto the passed-through input row. A write clause
+   * such as SET replaces the row's binding with a fresh {@link MutableDocument} (or, for a label change, a new vertex)
+   * and points every other alias of the record at it ({@link RowAliases}); the outer input row still points at the
+   * pre-mutation snapshot. Restricting the sync to names already present in the input row (as records or holders of
+   * records) avoids leaking the loop variable or clause-bound temporaries into the query output (issue #5114).
+   * <p>
+   * A path the input row carries is synced the same way, so
+   * {@code FOREACH (item IN nodes(p) | SET item.value = 20) RETURN [x IN nodes(p) | x.value]} answers with the new value
+   * (issue #10890), and so is a list or a map a nested FOREACH refreshed.
+   * <p>
+   * The source is the row the body's last clause produced, not the iteration row the body started from: a MERGE (or a
+   * CREATE) copies the row it is given, so {@code FOREACH (x IN [1] | MERGE (m:Node {id: 3}) SET m.v = 99)} pointed the
+   * outer {@code n} of the same node at the written record only on MERGE's copy (issue #11684).
+   *
+   * @param target  the input row to update
+   * @param start   the bindings the iteration started from: what the body did not change still holds them
+   * @param out     an output row of the body
+   * @param record  whether to record the records the body wrote, for {@link RowAliases#propagateUpdates}
+   * @param written the records recorded so far, or {@code null} if none
+   *
+   * @return the records recorded so far, or {@code null} if none
+   */
+  private static Map<RID, Document> propagateMutationsToInputRow(final ResultInternal target, final Result start,
+      final Result out, final boolean record, Map<RID, Document> written) {
+    for (final String name : out.getPropertyNames()) {
+      final Object innerValue = out.getProperty(name);
+      final Object outerValue = start.getProperty(name);
+      // Identity, not equals(): the written record has the same RID as the snapshot, so equals() would call them the same
+      if (innerValue == outerValue)
+        continue;
+      // The loop variable and what the body bound count too: they are how a list element or a MERGE-bound node was written
+      if (record && innerValue instanceof MutableDocument doc && doc.getIdentity() != null) {
+        if (written == null)
+          written = new HashMap<>();
+        written.put(doc.getIdentity(), doc);
+      }
+      if (holdsRecords(outerValue) && holdsRecords(innerValue))
+        target.setProperty(name, innerValue);
+    }
+    return written;
+  }
+
+  private static boolean holdsRecords(final Object value) {
+    return value instanceof Document || value instanceof TraversalPath || value instanceof List || value instanceof Map;
+  }
+
+  /**
+   * Executes the inner clauses of the FOREACH body for a single iteration row, then syncs what they changed back onto
+   * the input row ({@link #propagateMutationsToInputRow}).
    * <p>
    * The clauses are wired into a chained pipeline (each step's input is the previous step's output)
    * instead of being run independently against the raw iteration row. This mirrors the main query
    * pipeline and is required so that variables bound by one write clause are visible to the following
    * clauses in the same body - e.g. {@code MERGE (a)-[r:MON]->(b) SET r.readback = true}, where SET
    * must see the relationship {@code r} bound by MERGE (issue #4994).
+   *
+   * @return the records the body wrote so far for this input row, or {@code null} if none was recorded
    */
-  private void executeInnerClauses(final ResultInternal iterationRow, final CommandContext context) {
+  private Map<RID, Document> executeInnerClauses(final Result inputRow, final ResultInternal iterationRow,
+      final boolean recordWrites, Map<RID, Document> written, final CommandContext context) {
     final List<ClauseEntry> clauses = foreachClause.getInnerClauses();
     if (clauses.isEmpty())
-      return;
+      return written;
 
     // Source step that provides the iteration row as the single input to the chain.
     AbstractExecutionStep tail = new AbstractExecutionStep(context) {
@@ -396,8 +432,34 @@ public class ForeachStep extends AbstractExecutionStep {
 
     // Drain the chain to trigger the write side effects; bindings propagate through the pipeline.
     final ResultSet resultSet = tail.syncPull(context, 100);
-    while (resultSet.hasNext())
-      resultSet.next();
+    if (!(inputRow instanceof ResultInternal target)) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      return written;
+    }
+
+    // A body yields one row unless a MERGE matched several records. A row holds the iteration's starting binding for
+    // every name its own writes did not touch, so each row is compared with that start, which the input row is until
+    // something is synced onto it: only a second row makes it necessary to copy the start aside
+    Result first = null;
+    ResultInternal start = null;
+    while (resultSet.hasNext()) {
+      final Result out = resultSet.next();
+      if (start == null) {
+        if (first == null) {
+          first = out;
+          continue;
+        }
+        start = new ResultInternal();
+        for (final String prop : inputRow.getPropertyNames())
+          start.setProperty(prop, inputRow.getProperty(prop));
+        written = propagateMutationsToInputRow(target, start, first, recordWrites, written);
+      }
+      written = propagateMutationsToInputRow(target, start, out, recordWrites, written);
+    }
+    if (start == null && first != null)
+      written = propagateMutationsToInputRow(target, target, first, recordWrites, written);
+    return written;
   }
 
   /**
