@@ -642,6 +642,13 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   /**
+   * The optional path variable of {@code [p = (a)-->(b) | ...]}, or {@code null}. It is bound inside the comprehension only.
+   */
+  public String getPathVariable() {
+    return pathVariable;
+  }
+
+  /**
    * The pattern matched by the comprehension. Exposed, with the two expressions below, so
    * {@code CypherExpressionWalker} can reach what this expression nests: without them a function call inside a
    * pattern comprehension is invisible to every check that runs through the walker (issue #5602).
