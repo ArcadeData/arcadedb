@@ -93,6 +93,18 @@ class CypherBoundEndpointsShorterSideTest extends TestHelper {
     // UNIDIRECTIONAL: STORED ON THE SOURCE ONLY, FOUND FROM EITHER END
     assertThat(count(BOTH_BOUND + "MATCH (a)-[r:U]->(b) RETURN count(r) AS v")).isEqualTo(1L);
     assertThat(count(BOTH_BOUND + "MATCH (b)<-[r:U]-(a) RETURN count(r) AS v")).isEqualTo(1L);
+
+    // THE TARGET KEYED BY A VARIABLE AN EARLIER CLAUSE BOUND (AN UNWIND OR WITH ROW): SOUGHT PER ROW, A MISSING KEY IS NO ROW
+    assertThat(ints("UNWIND ['b', 'missing', 'f1'] AS t MATCH (a:N {k: 'a'})-[r:T]->(b:N {k: t}) RETURN r.p AS v ORDER BY v"))
+        .containsExactly(1, 2, 3, 100);
+    assertThat(ints("UNWIND ['b', 'f1'] AS t MATCH (a:N {k: 'a'})-[r:T {p: 2}]->(b:N {k: t}) RETURN r.p AS v"))
+        .containsExactly(2);
+    assertThat(ints("WITH 'b' AS t MATCH (b:N {k: t})<-[r:T]-(a:N {k: 'a'}) RETURN r.p AS v ORDER BY v"))
+        .containsExactly(1, 2, 3);
+    assertThat(ints("UNWIND [{k: 'b'}] AS row MATCH (a:N {k: 'a'})-[r:T]->(b:N {k: row.k}) RETURN r.p AS v ORDER BY v"))
+        .containsExactly(1, 2, 3);
+    // A KEY READING A VARIABLE OF THE SAME PATTERN HAS NOTHING TO READ BEFORE THE HOP: STILL A FILTER, SAME ANSWER
+    assertThat(ints("MATCH (a:N {k: 'a'})-[r:T]->(b:N {k: a.k}) RETURN r.p AS v")).containsExactly(7);
   }
 
   @Test
@@ -167,7 +179,10 @@ class CypherBoundEndpointsShorterSideTest extends TestHelper {
         "MATCH (a:N {k: $hub})-[r:T]->(b:N {k: $leaf}) RETURN count(r) AS v",
         "MATCH (a:N {k: $hub})-[:T]->(b:N {k: $leaf}) RETURN count(*) AS v",
         "MATCH (a:N {k: $hub})-[r:T {p: 1}]->(b:N {k: $leaf}) RETURN count(r) AS v",
-        "MATCH (b:N {k: $leaf})<-[r:T {p: 1}]-(a:N {k: $hub}) RETURN count(r) AS v" }) {
+        "MATCH (b:N {k: $leaf})<-[r:T {p: 1}]-(a:N {k: $hub}) RETURN count(r) AS v",
+        "UNWIND [$leaf] AS t MATCH (a:N {k: $hub})-[r:T]->(b:N {k: t}) RETURN count(r) AS v",
+        "UNWIND [$leaf] AS t MATCH (a:N {k: $hub})-[r:T {p: 1}]->(b:N {k: t}) RETURN count(r) AS v",
+        "WITH $leaf AS t MATCH (a:N {k: $hub})-[r:T]->(b:N {k: t}) RETURN count(r) AS v" }) {
       final long small = pages(statement, "small");
       final long large = pages(statement, "large");
       assertThat(large).as("pages read by %s on a 32,000-edge hub, against %d on a 2,000-edge one", statement, small)

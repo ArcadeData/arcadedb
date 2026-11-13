@@ -2794,11 +2794,12 @@ public class CypherExecutionPlan {
           // it before the hop binds both ends, so the hop reads the edges joining the pair off the shorter edge list
           // instead of every edge of the source and a filter on the target. Only from a source that is itself one vertex
           // per row (bound already, or uniquely keyed too), where the seek costs one index lookup per row at most, and with
-          // key values a literal or parameter: one naming a variable of this pattern has nothing to read before the hop
+          // key values readable before the hop: a literal, a parameter, or a variable an earlier clause bound (an UNWIND or WITH
+          // row, which the seek reads off the row it runs on). One naming a variable of this pattern has nothing to read yet
           final boolean seekTarget = !isOptional && !reversed && i == 0 && !relPattern.isVariableLength()
               && !(relPattern instanceof QuantifiedPathPattern) && !boundVariables.contains(effectiveTargetVar)
               && !matchVariables.contains(effectiveTargetVar) && (sourceAlreadyBound || isUniquelyKeyed(sourceNode))
-              && isUniquelyKeyed(effectiveTargetNode) && EdgeIndexSeedPlanner.isRowIndependent(effectiveTargetNode.getProperties());
+              && isUniquelyKeyed(effectiveTargetNode) && readsOnlyEarlierClauses(effectiveTargetNode.getProperties(), boundVariables);
 
           // Track relationship and target variables for cross-MATCH uniqueness scoping.
           // Only add variables that are NEW to this MATCH clause — already-bound variables
@@ -3081,6 +3082,26 @@ public class CypherExecutionPlan {
         return true;
     }
     return false;
+  }
+
+  /**
+   * Whether every value of a property map can be read before the pattern it belongs to is matched: a value an index seek takes
+   * without a row, or one reading only variables {@code boundBefore} holds, which an earlier clause bound for the row the seek
+   * runs on (issue #11699).
+   */
+  private static boolean readsOnlyEarlierClauses(final Map<String, Object> properties, final Set<String> boundBefore) {
+    if (properties == null)
+      return true;
+    for (final Object value : properties.values()) {
+      if (RowIndependentValues.isSeekable(value))
+        continue;
+      if (!(value instanceof Expression expression))
+        return false;
+      final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
+      if (!referenced.isComplete() || !boundBefore.containsAll(referenced.getNames()))
+        return false;
+    }
+    return true;
   }
 
   /**
