@@ -151,6 +151,97 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
   }
 
   /**
+   * Case 6 of the issue: another transaction deletes a record and inserts one that takes over its RID. The index answers the new
+   * key with that RID, and T read the slot from its own copy, where the deleted record still sits: a row that does not satisfy its
+   * own WHERE. A commit after such a read must be refused.
+   */
+  @Test
+  void recordDeletedAndReplacedOnItsRidIsNotReadAsTheNewOne() throws Exception {
+    createDocumentTypeWithRecord();
+    database.transaction(() -> {
+      for (int i = 1; i <= 3; i++)
+        database.command("sql", "INSERT INTO D SET id = ?, f = 0", i).close();
+    });
+
+    database.begin();
+    database.command("sql", "INSERT INTO D SET id = 10, f = 0").close();
+    commitFromAnotherThread("sql", "DELETE FROM D WHERE id = 2");
+    commitFromAnotherThread("sql", "INSERT INTO D SET id = 200, f = 0");
+    final List<Object> ids = valuesOf("SELECT id FROM D WHERE id = 200");
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(ids).as("a transaction that commits must not have read the deleted record in place of the new one")
+          .containsExactly(200);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valuesOf("SELECT id FROM D ORDER BY id")).containsExactly(failure == null ? new Object[] { 0, 1, 3, 10, 200 } :
+        new Object[] { 0, 1, 3, 200 });
+  }
+
+  /**
+   * Without an index the UPDATE finds its rows by scanning the bucket, so the stale read is the scan of T's own copy of the page,
+   * which misses the row committed there: a scan must be tracked as well as a lookup.
+   */
+  @Test
+  void updateThatScansTheBucketDoesNotMissARowCommittedBeforeTheStatement() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().getType("D").createProperty("f", Type.INTEGER);
+      database.command("sql", "INSERT INTO D SET id = 0, f = 0").close();
+    });
+
+    database.begin();
+    database.command("sql", "INSERT INTO D SET id = 1, f = 0").close();
+    commitFromAnotherThread("sql", "INSERT INTO D SET id = 100, f = 0");
+    final long updated = countOf(database.command("sql", "UPDATE D SET f = 1 WHERE id = 100"));
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(updated).as("an UPDATE whose scan missed a committed row must not commit").isEqualTo(1L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valuesOf("SELECT f FROM D WHERE id = 100")).containsExactly(failure == null ? 1 : 0);
+  }
+
+  /**
+   * T appends to the OUTGOING list of vertex 1 and, in the same commit, reads its INCOMING relationships from its own copy of the
+   * vertex page, where vertex 1 has none: another transaction gave it its first incoming relationship meanwhile. The vertex image
+   * differs only in its edge-list heads, but in the head of a list T did not append to: the edge-append merge reconciles the
+   * outgoing list T wrote, it does not make T's read of the incoming one current.
+   */
+  @Test
+  void incomingRelationshipsAreNotReadStaleBecauseTheOutgoingListWasAppendedTo() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+      database.getSchema().createEdgeType("E", 1);
+      for (int i = 0; i < 6; i++)
+        database.newVertex("V").set("id", i).save();
+      database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 5}) CREATE (a)-[:E]->(x)").close();
+    });
+
+    database.begin();
+    database.command("opencypher", "CREATE (:V {id: 10})").close();
+    database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (b:V {id: 2}), (a:V {id: 1}) CREATE (b)-[:E]->(a)");
+    final long deleted;
+    try (final ResultSet rs = database.command("opencypher", "MATCH (a:V {id: 1})<-[e:E]-() DELETE e RETURN count(*) AS c")) {
+      deleted = ((Number) rs.next().getProperty("c")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(deleted).as("a DELETE that found no incoming relationship must not commit when one was committed before it ran")
+          .isEqualTo(1L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {id: 1})<-[e:E]-() RETURN count(e) AS c")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(failure == null ? 0L : 1L);
+    }
+  }
+
+  /**
    * The success side: writes that do not depend on a stale read of the page still commit through the slot merge. T inserts
    * blindly, reads back its own record, and updates a committed record of the page by key: that record's slot is read from
    * T's copy, but T writes the very slot it read and the merge checks its pre-image, so a concurrent change to it would

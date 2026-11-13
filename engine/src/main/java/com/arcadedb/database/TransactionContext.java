@@ -3134,7 +3134,7 @@ public class TransactionContext implements Transaction {
   private boolean isReplayedSlot(final LocalBucket bucket, final PageId pageId, final SlotRebaseBuffer buffer, final int slot) {
     if (buffer != null)
       return buffer.isTracked(slot);
-    return edgeAppendsBySegment.containsKey(recordAt(bucket, pageId, slot));
+    return edgeAppendsBySegment != null && edgeAppendsBySegment.containsKey(recordAt(bucket, pageId, slot));
   }
 
   private static RID recordAt(final LocalBucket bucket, final PageId pageId, final int slot) {
@@ -3144,8 +3144,9 @@ public class TransactionContext implements Transaction {
   /**
    * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
    * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
-   * only in the heads of its edge lists is still the one read when this transaction appended to one of those lists: the
-   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends.
+   * only in the heads of its edge lists is still the one read when this transaction appended to each list whose head moved: the
+   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list it
+   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current).
    */
   private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
       final int slot) {
@@ -3160,11 +3161,22 @@ public class TransactionContext implements Transaction {
         || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
         || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
       return false;
+
+    final boolean outMoved = !Arrays.equals(read, VERTEX_OUT_HEAD_OFFSET, VERTEX_IN_HEAD_OFFSET, current, VERTEX_OUT_HEAD_OFFSET,
+        VERTEX_IN_HEAD_OFFSET);
+    final boolean inMoved = !Arrays.equals(read, VERTEX_IN_HEAD_OFFSET, VERTEX_HEADS_END, current, VERTEX_IN_HEAD_OFFSET,
+        VERTEX_HEADS_END);
     final RID vertex = recordAt(bucket, image.getPageId(), slot);
+    boolean outAppended = false;
+    boolean inAppended = false;
     for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
-      if (vertex.equals(appends.owner))
-        return true;
-    return false;
+      if (vertex.equals(appends.owner)) {
+        if (appends.ownerOut)
+          outAppended = true;
+        else
+          inAppended = true;
+      }
+    return (!outMoved || outAppended) && (!inMoved || inAppended);
   }
 
   /**
