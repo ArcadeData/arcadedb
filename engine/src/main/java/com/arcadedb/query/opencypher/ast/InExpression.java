@@ -452,7 +452,7 @@ public class InExpression implements BooleanExpression {
     /** Whether the two answer every value alike: they hold the same keys, or neither holds any. */
     boolean sameAs(final ListLookup other) {
       if (members == null || other.members == null)
-        return members == other.members;
+        return members == null && other.members == null;
       return hasText == other.hasText && hasNonText == other.hasNonText && members.equals(other.members);
     }
 
