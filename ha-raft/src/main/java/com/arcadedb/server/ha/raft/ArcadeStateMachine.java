@@ -606,6 +606,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
+  // Issue #11555: the Raft term in which this node, as the leader, last recovered the per-record materialized views of each
+  // database. The leadership hook recovers the databases open when it runs, the open of a database recovers it when it happens
+  // later in the leadership: whichever comes first in a term makes the full recovery, the other only what the views still owe
+  private final ConcurrentHashMap<String, Long> materializedViewsRecoveredInTerm = new ConcurrentHashMap<>();
+
   // The local-copy damages already reported on a sole voter (issue #11518), keyed "<database>\0<cause>": the recheck runs on
   // every reopen and every schema reload, and a sole voter cannot repair the copy, so the SEVERE report is made once
   private final Set<String> soleVoterDamageReported = ConcurrentHashMap.newKeySet();
@@ -3310,44 +3315,109 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * thread (issue #11550), once this leader is READY: Ratis reports that only after it has applied every entry committed before
    * its term, so the passes read every source change the previous leader committed. The passes themselves do not run here, so
    * this executor waits for the readiness only. A database being replaced with a peer's copy is skipped: the leadership is handed
-   * on in that case, and the next leader recovers it.
+   * on in that case, and the next leader recovers it. A database this leader opens later is recovered by its open
+   * ({@link #recoverMaterializedViewsOfOpenedDatabase}, issue #11555).
    */
   private void recoverMaterializedViewsAsNewLeader(final RaftHAServer raftHA) {
-    try {
-      if (!raftHA.awaitApplied(raftHA::isLeaderReady, raftHA.getQuorumTimeout())) {
-        if (raftHA.isLeader())
-          LogManager.instance().log(this, Level.WARNING,
-              "This leader did not become ready within %d ms: the per-record materialized views are not recovered and may miss "
-                  + "commits of the previous leader; run REFRESH MATERIALIZED VIEW on them (issue #11550)",
-              raftHA.getQuorumTimeout());
-        return;
-      }
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
+    if (!awaitLeaderReadyForMaterializedViewRecovery(raftHA))
       return;
-    }
 
     final ArcadeDBServer srv = this.server;
     if (srv == null)
       return;
-    for (final String dbName : srv.getDatabaseNames()) {
+    final long term = raftHA.getCurrentTerm();
+
+    // Read under the registry lock (issue #11555): an open still between the HA wrapper, which found this node not leading yet,
+    // and its registration is then either finished, and listed here, or not started, and its wrapper finds this leader ready
+    final List<String> openNames;
+    synchronized (srv.getDatabasesLock()) {
+      openNames = new ArrayList<>(srv.getDatabaseNames());
+    }
+    for (final String dbName : openNames) {
       if (ArcadeDBServer.isReservedDatabaseName(dbName) || databasesBeingReplaced.containsKey(dbName))
         continue;
       try {
-        // Never loads one: only the open databases are recovered. One this leader opens later (lazy load, idle close) is not,
-        // tracked as issue #11555
+        // Never loads one: a database not open now is recovered by its open
         final ServerDatabase db = srv.getDatabase(dbName, false, false);
         if (db == null || !db.isOpen())
           continue;
-        final int views = db.getSchema().getEmbedded().recoverPerRecordMaterializedViews();
-        if (views > 0)
-          LogManager.instance().log(this, Level.INFO,
-              "Leader recovery of database '%s': %d per-record materialized view(s) handed a full pass", dbName, views);
+        recoverMaterializedViewsAsLeader(dbName, db.getSchema().getEmbedded(), term);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Leader recovery of the materialized views of database '%s' failed: run REFRESH MATERIALIZED VIEW on its per-record "
                 + "views (issue #11550): %s", e, dbName, e.getMessage());
       }
+    }
+  }
+
+  /**
+   * The recovery a database opened on this node owes its per-record materialized views when this node leads (issue #11555). The
+   * open-time recovery of the engine is skipped on every HA node, which cannot tell at the open whether it leads, and the
+   * leadership hook ({@link #recoverMaterializedViewsAsNewLeader}) recovers only the databases open when it runs: a database the
+   * leader opens later (loaded lazily, closed and opened again) would otherwise keep views that miss the commits whose pending
+   * delta died with the previous leader. Called by the HA wrapper on every open; on a node not leading it does nothing, and the
+   * leadership hook covers the database if this node is elected while it is open. The recovery waits for the leader to be ready
+   * on {@link #lifecycleExecutor}, never on the opening thread.
+   */
+  void recoverMaterializedViewsOfOpenedDatabase(final String dbName, final DatabaseInternal db) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || dbName == null || ArcadeDBServer.isReservedDatabaseName(dbName) || !raftHA.isLeader())
+      return;
+    try {
+      lifecycleExecutor.submit(() -> {
+        if (!awaitLeaderReadyForMaterializedViewRecovery(raftHA) || databasesBeingReplaced.containsKey(dbName) || !db.isOpen())
+          return;
+        try {
+          recoverMaterializedViewsAsLeader(dbName, db.getSchema().getEmbedded(), raftHA.getCurrentTerm());
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Recovery of the materialized views of database '%s' at its open failed: run REFRESH MATERIALIZED VIEW on its "
+                  + "per-record views (issue #11555): %s", e, dbName, e.getMessage());
+        }
+      });
+    } catch (final RejectedExecutionException ree) {
+      HALog.log(this, HALog.BASIC, "Cannot schedule the materialized view recovery of database '%s': executor is shut down",
+          dbName);
+    }
+  }
+
+  /**
+   * The full recovery the first time in the leadership term, then only the views that still owe it: the leadership hook and the
+   * open of the same database can both reach a database in one term, and the commits of the previous leader are recovered once.
+   */
+  private void recoverMaterializedViewsAsLeader(final String dbName, final LocalSchema schema, final long term) {
+    // An unreadable term (-1) is never recorded, so every recovery under it is a full one
+    final Long previous = term >= 0 ? materializedViewsRecoveredInTerm.put(dbName, term) : null;
+    final boolean everyView = previous == null || previous != term;
+    final int views;
+    try {
+      views = schema.recoverPerRecordMaterializedViews(everyView);
+    } catch (final RuntimeException | Error e) {
+      // A full recovery that failed is not recorded as made: the next open in this term makes it again, not the partial one
+      if (everyView && term >= 0)
+        materializedViewsRecoveredInTerm.remove(dbName, term);
+      throw e;
+    }
+    if (views > 0)
+      LogManager.instance().log(this, Level.INFO,
+          "Leader recovery of database '%s': %d per-record materialized view(s) handed a %s pass", dbName, views,
+          everyView ? "full" : "recovery");
+  }
+
+  /** Whether this node became the READY leader within the quorum timeout: what every materialized view recovery waits for. */
+  private boolean awaitLeaderReadyForMaterializedViewRecovery(final RaftHAServer raftHA) {
+    try {
+      if (raftHA.awaitApplied(raftHA::isLeaderReady, raftHA.getQuorumTimeout()))
+        return true;
+      if (raftHA.isLeader())
+        LogManager.instance().log(this, Level.WARNING,
+            "This leader did not become ready within %d ms: the per-record materialized views are not recovered and may miss "
+                + "commits of the previous leader; run REFRESH MATERIALIZED VIEW on them (issue #11550)",
+            raftHA.getQuorumTimeout());
+      return false;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
     }
   }
 
@@ -8103,6 +8173,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     clearCompactionHoldOff(databaseName);
     // Nor a compaction whose swap could not be persisted (issue #11240): there is nothing left to replay it into
     releaseHeldEntry(unpersistedPublicationKey(databaseName));
+    // Nor the term of its last materialized view recovery (issue #11555): a database recreated under the same name in this
+    // leadership gets the full recovery at its open, not the partial one the dropped database had earned
+    materializedViewsRecoveredInTerm.remove(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);

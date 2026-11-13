@@ -2950,7 +2950,8 @@ public class LocalSchema implements Schema {
    * commits whose pass had not run yet: after an unclean shutdown every per-record view gets the recovery full pass, otherwise
    * only the ones the load found owing it (persisted non-VALID). The passes run on the scheduler thread, so the open does not wait
    * on them. Not on an HA node, where the refresh is the leader's (issue #11031) and the open happens before the node knows
-   * whether it leads: there the leader runs {@link #recoverPerRecordMaterializedViews()} when it takes the leadership.
+   * whether it leads: there the leader runs {@link #recoverPerRecordMaterializedViews()} when it takes the leadership, and for a
+   * database it opens only later, once the HA wrapper is installed on it (issue #11555).
    *
    * @param uncleanShutdown whether the open found the database not closed properly
    */
@@ -2969,7 +2970,12 @@ public class LocalSchema implements Schema {
     return recoverPerRecordMaterializedViews(true);
   }
 
-  private int recoverPerRecordMaterializedViews(final boolean everyView) {
+  /**
+   * As {@link #recoverPerRecordMaterializedViews()}, or, with {@code everyView} false, for the views that owe the recovery full
+   * pass only (persisted non-VALID): what an HA leader owes a database it opens again within the leadership that already
+   * recovered it (issue #11555). Returns the number of views asked.
+   */
+  public int recoverPerRecordMaterializedViews(final boolean everyView) {
     int asked = 0;
     for (final MaterializedView v : getMaterializedViews()) {
       final MaterializedViewImpl view = (MaterializedViewImpl) v;

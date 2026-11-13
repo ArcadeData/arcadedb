@@ -203,6 +203,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
         final RaftReplicatedDatabase wrapped = new RaftReplicatedDatabase(server, db, raft, raft.getForwardHttpClient());
         // A copy found damaged by an open after the startup scan is quarantined like one the scan found (issue #11518)
         raft.recheckOpenedDatabase(db.getName(), db);
+        // A database the leader opens after its leadership hook ran owes its per-record materialized views the recovery the hook
+        // made for the open ones (issue #11555)
+        raft.recoverMaterializedViewsOfOpenedDatabase(db.getName(), db);
         return wrapped;
       });
 
