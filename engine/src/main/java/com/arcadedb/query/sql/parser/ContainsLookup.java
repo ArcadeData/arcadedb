@@ -32,8 +32,9 @@ import java.util.Set;
 
 /**
  * A hash over the items of a {@code CONTAINSANY} / {@code CONTAINSALL} operand that is the same on every row (a parameter, a
- * literal, or one object met again), so that a row costs the size of its own list instead of that size times the operand's
- * (issue #11703). It answers only where its answer is exactly what {@link QueryOperatorEquals} would say for every item:
+ * literal, or one object met again in the same execution), so that a row costs the size of its own list instead of that size
+ * times the operand's (issue #11703). It answers only where its answer is exactly what {@link QueryOperatorEquals} would say
+ * for every item:
  * <ul>
  *   <li>items that are all strings, compared with strings only (a number equals the text it converts to, which no hash of the
  *   text can answer);</li>
@@ -178,32 +179,39 @@ final class ContainsLookup {
   /**
    * One operand as the last row met it, and its lookup. Immutable, and held in a volatile field of the condition, because the
    * node of a cached plan is shared by concurrent executions and the rows of one execution can be evaluated by several threads.
+   * A memo serves only the execution that wrote it: an operand met again in a later one can be the same object changed in place
+   * since (a global variable a caller edits between two queries), so its lookup is built again from its current items.
    *
-   * @param context the execution whose literal or parameter this is, or null when the memo is keyed by the identity of value
-   * @param params  the input parameters of that execution when the memo was written
-   * @param built   whether {@code lookup} was decided; an identity memo builds it only when the same object is met again
+   * @param constant whether the operand is a literal or a parameter, whose value is the same for the whole execution
+   * @param context  the execution that wrote the memo
+   * @param params   the input parameters of that execution when a constant memo was written
+   * @param built    whether {@code lookup} was decided; an identity memo builds it only when the same object is met again
    */
-  record Memo(CommandContext context, Map<String, Object> params, Object value, ContainsLookup lookup, boolean built) {
+  record Memo(boolean constant, CommandContext context, Map<String, Object> params, Object value, ContainsLookup lookup,
+              boolean built) {
     /** @return the memo when it holds the value of a row-independent operand of this execution, otherwise null */
     static Memo constant(final Memo memo, final CommandContext context) {
-      return memo != null && memo.context != null && memo.context == context && memo.params == context.getInputParameters() ?
-          memo : null;
+      return memo != null && memo.constant && memo.context == context && memo.params == context.getInputParameters() ? memo : null;
     }
 
     /**
      * The memo for an operand just evaluated to {@code value}. A literal or an input parameter has one value for the whole
      * execution, so its lookup is built at once and later rows skip evaluating it. Any other operand is recognized by identity
-     * only, and hashed the second time the same object is met, so an operand built per row pays nothing but this check.
+     * only, within the same execution, and hashed the second time the same object is met, so an operand built per row pays
+     * nothing but this check. Without an execution context nothing is remembered.
      */
     static Memo of(final Memo memo, final Expression expression, final Object value, final CommandContext context) {
+      if (context == null)
+        return null;
       // an iterator is read once, so a later row cannot be given the one this row consumed
-      if (context != null && !(value instanceof Iterator<?>) && expression.isLiteral(true))
-        return new Memo(context, context.getInputParameters(), value, ContainsLookup.of(value), true);
-      if (memo != null && memo.context == null && memo.value == value) // NOPMD: the memo is keyed by the identity of the operand
-        return memo.built ? memo : new Memo(null, null, value, ContainsLookup.of(value), true);
+      if (!(value instanceof Iterator<?>) && expression.isLiteral(true))
+        return new Memo(true, context, context.getInputParameters(), value, ContainsLookup.of(value), true);
+      final boolean sameExecution = memo != null && !memo.constant && memo.context == context;
+      if (sameExecution && memo.value == value) // NOPMD: the memo is keyed by the identity of the operand
+        return memo.built ? memo : new Memo(false, context, null, value, ContainsLookup.of(value), true);
       if (!largeEnough(value))
-        return memo;
-      return new Memo(null, null, value, null, false);
+        return sameExecution ? memo : null;
+      return new Memo(false, context, null, value, null, false);
     }
 
     private static boolean largeEnough(final Object value) {

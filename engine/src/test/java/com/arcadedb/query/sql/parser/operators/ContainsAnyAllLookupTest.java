@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -239,6 +240,57 @@ class ContainsAnyAllLookupTest extends TestHelper {
     assertThat(names("SELECT name FROM Doc11703_" + size + " WHERE v CONTAINSALL :p", params)).containsExactly("all");
     assertThat(names("SELECT name FROM Doc11703_" + size + " WHERE :p CONTAINSALL v", params)).containsExactly("all");
     assertThat(names("SELECT name FROM Doc11703_" + size + " WHERE NOT (v CONTAINSANY :p)", params)).containsExactly("miss");
+  }
+
+  /**
+   * A global variable is the same list object on every execution of a statement: changed in place between two executions, the
+   * second one answers from its new contents, not from a lookup hashed by the first.
+   */
+  @Test
+  void globalVariableChangedInPlaceBetweenExecutions() {
+    database.getSchema().createDocumentType("Doc11703_global");
+    database.transaction(() -> {
+      database.newDocument("Doc11703_global").set("name", "b").set("v", List.of("b")).save();
+      database.newDocument("Doc11703_global").set("name", "c").set("v", List.of("c")).save();
+      database.newDocument("Doc11703_global").set("name", "ab").set("v", List.of("a", "b")).save();
+    });
+    final List<Object> g = padded(20, false, "b");
+    ((DatabaseInternal) database).setGlobalVariable("g", g);
+    final Map<String, Object> none = Map.of();
+
+    final String any = "SELECT name FROM Doc11703_global WHERE v CONTAINSANY $g ORDER BY name";
+    final String all = "SELECT name FROM Doc11703_global WHERE $g CONTAINSALL v ORDER BY name";
+    assertThat(names(any, none)).containsExactly("ab", "b");
+    assertThat(names(all, none)).containsExactly("b");
+
+    g.set(g.size() - 1, "c");
+    assertThat(names(any, none)).containsExactly("c");
+    assertThat(names(all, none)).containsExactly("c");
+  }
+
+  /**
+   * One parsed condition evaluated by two executions (each its own context) against a variable that is the same list object in
+   * both, changed in place in between: the second execution answers from the new contents, as the walk does, instead of from
+   * the lookup the first one hashed.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "v CONTAINSANY $g", "$g CONTAINSANY v", "$g CONTAINSALL v" })
+  void sameObjectChangedInPlaceBetweenExecutions(final String condition) {
+    final WhereClause where = new SQLAntlrParser(database).parseCondition(condition);
+    final List<Object> g = padded(20, false, "b");
+    for (final String last : List.of("b", "c")) {
+      g.set(g.size() - 1, last);
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      context.setVariable("g", g);
+      for (final String row : List.of("b", "c")) {
+        final ResultInternal result = new ResultInternal();
+        result.setProperty("v", List.of(row));
+        for (int i = 0; i < 3; i++)
+          assertThat(where.matchesFilters(result, context)).as("%s, operand ending with %s, row %s", condition, last, row)
+              .isEqualTo(row.equals(last));
+      }
+    }
   }
 
   private List<String> names(final String query, final Map<String, Object> params) {
