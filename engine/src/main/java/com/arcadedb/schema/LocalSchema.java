@@ -84,6 +84,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.trigger.*;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -362,6 +363,9 @@ public class LocalSchema implements Schema {
   // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
   // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
   private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
+  // The file names, among unavailableIndexDefinitions, of the indexes the last load left out because it refused their persisted
+  // definition (issue #11568), as opposed to a file with no header page (issue #10046)
+  private volatile    Set<String>                            refusedIndexDefinitionFiles   = Set.of();
 
   /**
    * The index and bucket components an in-flight schema load has instantiated but whose {@code onAfterSchemaLoad()}
@@ -393,6 +397,10 @@ public class LocalSchema implements Schema {
   // one load's last write before the next load's first read. Nothing outside that window touches them - every
   // accessor reaches them only after isStagingPublication() has answered true, which only the owning thread gets.
   private final       Map<String, IndexInternal>             stagedIndexMap                = new HashMap<>();
+  // Names a load in flight withdraws from the PUBLISHED index map (issue #11568: an incremental reload refusing the definition of
+  // an index it kept), with the instance each one resolved to. Withdrawn by the publication barrier, so readers keep the
+  // previous generation whole until then, and an aborted load leaves them untouched
+  private final       Map<String, IndexInternal>             stagedIndexWithdrawals        = new HashMap<>();
   private final       Map<String, LocalBucket>               stagedBucketMap               = new HashMap<>();
 
   /**
@@ -930,7 +938,7 @@ public class LocalSchema implements Schema {
     // Read ONCE for the whole publication: the two decisions below (who to warm, and after how long) must agree, and the setting
     // can be changed at any moment
     final long warmUpDelayMs = warmUpDelayMs();
-    if (rebuildingEverything || !stagedIndexMap.isEmpty()) {
+    if (rebuildingEverything || !stagedIndexMap.isEmpty() || !stagedIndexWithdrawals.isEmpty()) {
       previousIndexes = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
       previousIndexes.addAll(indexMap.values());
       namesToWarm = indexesToWarm(previousIndexes, warmUpDelayMs);
@@ -944,6 +952,10 @@ public class LocalSchema implements Schema {
     // points at is resolvable. Nothing points the other way.
     bucketMap.putAll(stagedBucketMap);
     indexMap.putAll(stagedIndexMap);
+    // only a name still resolving to the instance the load withdrew, which nothing staged under it replaced
+    for (final Map.Entry<String, IndexInternal> withdrawal : stagedIndexWithdrawals.entrySet())
+      if (!stagedIndexMap.containsKey(withdrawal.getKey()))
+        indexMap.remove(withdrawal.getKey(), withdrawal.getValue());
 
     // The full rebuild REPLACES the maps too, and drops what it did not stage only AFTER the put: a name both
     // generations carry never goes unresolvable, not even for an instant (issue #7963). Indexes before buckets,
@@ -1170,6 +1182,7 @@ public class LocalSchema implements Schema {
         retireIndexesNoLongerPublished(new ArrayList<>(stagedIndexMap.values()));
     }
     stagedIndexMap.clear();
+    stagedIndexWithdrawals.clear();
     publishedFromStaging = null;
     stagedTypes.clear();
     stagedBucketOwners.clear();
@@ -1596,7 +1609,9 @@ public class LocalSchema implements Schema {
    * Only what is proven unreferenced is dropped, and only by the first load of an open, when no build of this process can be in
    * flight: a plain LSM_TREE index (never a bucket, never a wrapper index, never a compacted file, which
    * {@link #sweepOrphanCompactedIndexFiles} reclaims once its mutable file is gone), or a HASH index (the new file of a rebuild in place
-   * stopped before its swap, or the previous one of a rebuild stopped after it), left without a type by the whole load including
+   * stopped before its swap, or the previous one of a rebuild stopped after it), or an LSM_VECTOR index (the file of an index a load
+   * left out for a refused definition, which an index created on the same properties since replaced, issue #11568), left without a
+   * type by the whole load including
    * its orphan-relinking pass, whose name is no schema entry's, and whose name is the {@code <bucket>_<number>} name of a bucket
    * index of a bucket that exists (a manual index is named by its creator). Not on an HA node, where the files of an index being
    * created by the leader can arrive before its schema entry.
@@ -1633,6 +1648,9 @@ public class LocalSchema implements Schema {
         orphan = lsm;
       } else if (component instanceof HashIndexBucket hashBucket && hashBucket.getMainComponent() instanceof HashIndex hashIndex)
         orphan = hashIndex;
+      else if (component instanceof LSMVectorIndexMutable vectorMutable && vectorMutable.getMainIndex() != null)
+        // the file of a vector index whose definition a load refused and an index created since replaced (issue #11568)
+        orphan = vectorMutable.getMainIndex();
       else
         continue;
       if (orphan.getTypeName() != null)
@@ -1649,9 +1667,14 @@ public class LocalSchema implements Schema {
           "Dropping index file '%s' (fileId=%d) of bucket '%s': no index of the schema references it, it was left behind by an "
               + "index build or rebuild that did not complete", null, fileName, fileId, bucket.getName());
       try {
-        database.getPageManager().deleteFile(database, fileId);
-        database.getFileManager().dropFile(fileId);
-        removeFile(fileId);
+        if (orphan instanceof LSMVectorIndex vectorIndex)
+          // its graph and PQ companions and its compacted file go with it, as DROP INDEX drops them
+          vectorIndex.drop();
+        else {
+          database.getPageManager().deleteFile(database, fileId);
+          database.getFileManager().dropFile(fileId);
+          removeFile(fileId);
+        }
         // only the names that still resolve to this very index: the live one may answer to the same logical name
         for (final String name : new String[] { orphan.getName(), fileName })
           if (lookupIndex(name) == orphan)
@@ -1783,6 +1806,59 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Leaves out of the load in flight a bucket index whose persisted definition its index refused (issue #11568), the way a file
+   * with no header page is left out (issue #10046): the index is not served and queries on its type scan instead, while its
+   * definition is kept in the schema file verbatim and its file stays where it is, so correcting {@code schema.json} and
+   * reopening brings the index back as it was. Creating an index on the same properties replaces the definition.
+   * <p>
+   * The loaded component is dropped from the load's index map, or it would stay there as a type-less index that the
+   * orphan-relinking pass could bind to the definition of another index of the same bucket.
+   */
+  private void leaveOutRefusedIndexDefinition(final String typeName, final String indexName, final String registeredName,
+      final IndexInternal component, final JSONObject indexJSON, final RuntimeException reason,
+      final Map<String, Map<String, JSONObject>> unavailableIndexes, final Set<String> refusedIndexFiles) {
+    final boolean incremental = isStagingPublication() && !isRebuildingEverything();
+    IndexInternal published = null;
+    for (final String name : new String[] { registeredName, indexName })
+      if (lookupIndex(name) == component) {
+        if (incremental) {
+          // An incremental reload, whether it kept the component or staged a new one for a touched file: the name stays
+          // published until the barrier withdraws the instance published under it, and an aborted load leaves it as it was
+          stagedIndexMap.remove(name);
+          final IndexInternal publishedUnderName = indexMap.get(name);
+          if (publishedUnderName != null) {
+            stagedIndexWithdrawals.put(name, publishedUnderName);
+            published = publishedUnderName;
+          }
+        } else
+          removeIndexDuringLoad(name);
+      }
+    // The published type index of the withdrawn instance goes with it at the barrier, unless this load registers one under the
+    // same name again (another of its bucket indexes loads): left published, it would answer for a bucket index withdrawn
+    final TypeIndex typeIndex = published != null ? published.getTypeIndex() : null;
+    if (typeIndex != null && lookupIndex(typeIndex.getName()) == typeIndex)
+      stagedIndexWithdrawals.putIfAbsent(typeIndex.getName(), typeIndex);
+    // Its file is referenced by a schema entry, though not under its own name when the orphan-relinking pass met it: recorded,
+    // or the sweep of unreferenced bucket-index files at the end of this open would drop the file the log says is kept
+    if (!openLoadDone)
+      indexEntriesReadAtLoad.add(component.getMostRecentFileName());
+
+    unavailableIndexes.computeIfAbsent(typeName, k -> new TreeMap<>()).put(indexName, indexJSON.copy());
+    refusedIndexFiles.add(indexName);
+
+    // A UNIQUE one says so: nothing refuses a duplicate key until the definition is corrected (an HA node also re-installs the
+    // database from its cluster, see getUnavailableUniqueIndexNames())
+    final String unenforced = indexJSON.getBoolean("unique", false) ?
+        " Its UNIQUE constraint on " + indexJSON.getJSONArray("properties", new JSONArray()) + " is NOT enforced meanwhile." :
+        "";
+    LogManager.instance().log(this, Level.SEVERE,
+        "Index '%s' of type '%s' is unavailable: its definition in schema.json is refused (%s). Queries on the type scan instead of "
+            + "using it.%s Its definition and its file are kept: correct the definition in schema.json and reopen the database, or "
+            + "create an index on the same properties again with 'CREATE INDEX'", null, indexName, typeName,
+        Objects.requireNonNullElse(reasonOf(reason), reason.getClass().getSimpleName()), unenforced);
+  }
+
+  /**
    * The definitions, keyed by file name, of the bucket indexes of {@code typeName} that the last load found bound to a file
    * with no header page (issue #10046): not served, but kept in the schema file until they can be again.
    */
@@ -1797,8 +1873,12 @@ public class LocalSchema implements Schema {
    * the WAL holds but the asynchronous flush never wrote, is found headerless by that load and completed by the replay.
    */
   public boolean hasUnavailableIndexCompletedSinceLoad() {
+    final Set<String> refused = refusedIndexDefinitionFiles;
     for (final Map<String, JSONObject> definitions : unavailableIndexDefinitions.values())
       for (final String fileName : definitions.keySet()) {
+        // its file is complete: what is wrong is the definition, which no replay changes
+        if (refused.contains(fileName))
+          continue;
         final ComponentFile file = database.getFileManager().getFileByComponentName(fileName);
         try {
           if (file != null && file.getSize() > 0)
@@ -1815,6 +1895,11 @@ public class LocalSchema implements Schema {
    * that no index on the same properties has replaced since. A unique index in that state enforces nothing: the node that
    * loaded it accepts duplicates a healthy peer would refuse, and no local step can tell a half-arrived compaction file
    * from one a power loss emptied. An HA node reads this to re-install the database from its cluster.
+   * <p>
+   * A UNIQUE definition the load refused (issue #11568) is listed too: it enforces nothing either, and a definition edited on
+   * this node alone is what a re-install from the cluster repairs. When the cluster holds the same refused definition the
+   * re-install cannot repair it, but it cannot loop on it either: the HA node reads this list once, when its Raft server starts,
+   * and the quarantine lifts when the re-install completes, so a restart costs one re-install and the cluster stays uniform.
    */
   public List<String> getUnavailableUniqueIndexNames() {
     final Map<String, Map<String, JSONObject>> unavailable = unavailableIndexDefinitions;
@@ -1829,13 +1914,21 @@ public class LocalSchema implements Schema {
         if (!definition.getBoolean("unique", false))
           continue;
         final List<String> properties = definition.getJSONArray("properties", new JSONArray()).toListOfStrings();
-        // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again
-        if (type != null && !properties.isEmpty() && !type.getIndexesByProperties(properties).isEmpty())
+        // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again. A VALID one only: the type
+        // index the other buckets of a multi-bucket type still load is there too, incomplete, and enforces nothing on this bucket
+        if (type != null && !properties.isEmpty() && hasValidIndex(type.getIndexesByProperties(properties)))
           continue;
         names.add(entry.getKey());
       }
     }
     return names;
+  }
+
+  private static boolean hasValidIndex(final List<TypeIndex> indexes) {
+    for (final TypeIndex index : indexes)
+      if (index.isValid())
+        return true;
+    return false;
   }
 
   /**
@@ -4773,6 +4866,9 @@ public class LocalSchema implements Schema {
       final Map<String, String[]> parentTypes = new HashMap<>();
 
       final Map<String, JSONObject> orphanIndexes = new HashMap<>();
+      // The index kind each orphan entry declared: the entry's own "type" is overwritten with the name of the owning type, which
+      // the relinking pass reads, so the kind a refused definition is kept with is read here (issue #11568)
+      final Map<String, String> orphanIndexKinds = new HashMap<>();
 
       for (final String typeName : types.keySet()) {
         final JSONObject schemaType = types.getJSONObject(typeName);
@@ -4885,6 +4981,9 @@ public class LocalSchema implements Schema {
       // the genuine cases where the file is truly missing (issue #4063).
       final Map<String, List<String>> deferredMissingIndexWarnings = new LinkedHashMap<>();
       final Map<String, Map<String, JSONObject>> unavailableIndexes = new HashMap<>();
+      // The file names of the indexes left out because their persisted definition was refused (issue #11568): kept with the
+      // unavailable ones, but no WAL replay can complete them, which is what hasUnavailableIndexCompletedSinceLoad() asks
+      final Set<String> refusedIndexFiles = new HashSet<>();
       // The type that OWNS each bucket (issue #10093): an index is listed under the type that declares it, and its
       // sub-indexes on the buckets of the types below it are bound to the type that owns the bucket, as they are when created
       final Map<Integer, LocalDocumentType> ownerOfBucket = new HashMap<>();
@@ -4939,68 +5038,80 @@ public class LocalSchema implements Schema {
             final String registeredName = index != null ? index.getName() : indexName;
 
             if (index != null) {
-              index.setMetadata(indexJSON);
-              // Apply the user-supplied TypeIndex name (issue #4139) here so it works for every
-              // index implementation (LSM, Hash, FullText, Geo, Sparse/Dense Vector). Each
-              // {@code setMetadata(JSONObject)} differs across classes and we do not want to
-              // duplicate this read in all of them; addIndexInternal below consults the metadata.
-              if (indexJSON.has("typeIndexName"))
-                index.getMetadata().typeIndexName = indexJSON.getString("typeIndexName");
+              // Applying the persisted definition can refuse it: a value a hand-edited, corrupted or imported schema.json carries that
+              // the creation path refuses (issue #11568), a reserved property name, an unknown enum constant. That refusal must cost
+              // this index alone: escaping into the catch of this method it reported the whole schema as "reset" and left out every
+              // index of every type the loop had not reached yet - an unrelated UNIQUE index included, which then enforced nothing.
+              final IndexInternal loadedComponent = index;
+              try {
+                index.setMetadata(indexJSON);
+                // Apply the user-supplied TypeIndex name (issue #4139) here so it works for every
+                // index implementation (LSM, Hash, FullText, Geo, Sparse/Dense Vector). Each
+                // {@code setMetadata(JSONObject)} differs across classes and we do not want to
+                // duplicate this read in all of them; addIndexInternal below consults the metadata.
+                if (indexJSON.has("typeIndexName"))
+                  index.getMetadata().typeIndexName = indexJSON.getString("typeIndexName");
 
-              if (indexJSON.has("type")) {
-                final String configuredIndexType = indexJSON.getString("type");
+                if (indexJSON.has("type")) {
+                  final String configuredIndexType = indexJSON.getString("type");
 
-                if (!index.getType().toString().equals(configuredIndexType)) {
-                  if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
-                    // bucketId = -1 ("not set"): the bucket association is already established on the underlying index and read via
-                    // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
-                    final FullTextIndexMetadata loadedMeta = new FullTextIndexMetadata(typeName, properties, -1);
-                    loadedMeta.fromJSON(indexJSON);
-                    // The bucket-level index JSON carries no "typeName" key, so fromJSON() above skipped the base-field
-                    // read: take the collations and the manual TypeIndex name from the underlying definition, which
-                    // setMetadata(indexJSON) has just populated. Without this the full-text metadata comes back from a
-                    // restart missing both, and every site that carries the definition into a new index file through
-                    // getMetadataForNewFile() loses them (issue #5742).
-                    loadedMeta.inheritCommonSettingsFrom(index.getMetadata());
-                    // Same reserved-name guard as the creation path, in case a hand-edited/restored schema reintroduced a property
-                    // colliding with the query parser's default-field sentinel.
-                    LSMTreeFullTextIndex.checkReservedPropertyNames(loadedMeta.propertyNames);
-                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index,
-                        shareFullTextMetadata(fullTextMetadataKey(typeName, schemaIndexProperties), loadedMeta,
-                            liveFullTextMetadata, loadedFullTextMetadata));
-                    publishIndexDuringLoad(registeredName, index);
-                  } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
-                    final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
-                    // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
-                    // the full ancestor chain: reading it as anything else would make put/remove miss them.
-                    index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON),
-                        GeoIndexMetadata.readPlanar(indexJSON));
-                    publishIndexDuringLoad(registeredName, index);
-                  } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
-                    final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
-                    sparseMeta.fromJSON(indexJSON);
-                    // Same reason as the full-text branch above (issue #5742).
-                    sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
-                    index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
-                    publishIndexDuringLoad(registeredName, index);
-                  } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.COLUMNAR.toString())) {
-                    final ColumnarIndexMetadata columnarMeta = new ColumnarIndexMetadata(typeName, properties, -1);
-                    columnarMeta.fromJSON(indexJSON);
-                    // Same reason as the full-text branch above (issue #5742).
-                    columnarMeta.inheritCommonSettingsFrom(index.getMetadata());
-                    final ColumnarIndex columnarIndex = new ColumnarIndex((LSMTreeIndex) index, columnarMeta);
-                    ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().register(columnarIndex);
-                    index = columnarIndex;
-                    publishIndexDuringLoad(registeredName, index);
-                  } else {
-                    orphanIndexes.put(indexName, indexJSON);
-                    indexJSON.put("type", typeName);
-                    LogManager.instance()
-                        .log(this, Level.WARNING, "Index '%s' of type %s is different from definition %s. Ignoring it",//
-                            index.getName(), index.getType(), configuredIndexType);
-                    continue;
+                  if (!index.getType().toString().equals(configuredIndexType)) {
+                    if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
+                      // bucketId = -1 ("not set"): the bucket association is already established on the underlying index and read via
+                      // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
+                      final FullTextIndexMetadata loadedMeta = new FullTextIndexMetadata(typeName, properties, -1);
+                      loadedMeta.fromJSON(indexJSON);
+                      // The bucket-level index JSON carries no "typeName" key, so fromJSON() above skipped the base-field
+                      // read: take the collations and the manual TypeIndex name from the underlying definition, which
+                      // setMetadata(indexJSON) has just populated. Without this the full-text metadata comes back from a
+                      // restart missing both, and every site that carries the definition into a new index file through
+                      // getMetadataForNewFile() loses them (issue #5742).
+                      loadedMeta.inheritCommonSettingsFrom(index.getMetadata());
+                      // Same reserved-name guard as the creation path, in case a hand-edited/restored schema reintroduced a property
+                      // colliding with the query parser's default-field sentinel.
+                      LSMTreeFullTextIndex.checkReservedPropertyNames(loadedMeta.propertyNames);
+                      index = new LSMTreeFullTextIndex((LSMTreeIndex) index,
+                          shareFullTextMetadata(fullTextMetadataKey(typeName, schemaIndexProperties), loadedMeta,
+                              liveFullTextMetadata, loadedFullTextMetadata));
+                      publishIndexDuringLoad(registeredName, index);
+                    } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
+                      final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
+                      // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
+                      // the full ancestor chain: reading it as anything else would make put/remove miss them.
+                      index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON),
+                          GeoIndexMetadata.readPlanar(indexJSON));
+                      publishIndexDuringLoad(registeredName, index);
+                    } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
+                      final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
+                      sparseMeta.fromJSON(indexJSON);
+                      // Same reason as the full-text branch above (issue #5742).
+                      sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
+                      index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
+                      publishIndexDuringLoad(registeredName, index);
+                    } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.COLUMNAR.toString())) {
+                      final ColumnarIndexMetadata columnarMeta = new ColumnarIndexMetadata(typeName, properties, -1);
+                      columnarMeta.fromJSON(indexJSON);
+                      // Same reason as the full-text branch above (issue #5742).
+                      columnarMeta.inheritCommonSettingsFrom(index.getMetadata());
+                      final ColumnarIndex columnarIndex = new ColumnarIndex((LSMTreeIndex) index, columnarMeta);
+                      ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().register(columnarIndex);
+                      index = columnarIndex;
+                      publishIndexDuringLoad(registeredName, index);
+                    } else {
+                      orphanIndexes.put(indexName, indexJSON);
+                      orphanIndexKinds.put(indexName, indexJSON.getString("type", null));
+                      indexJSON.put("type", typeName);
+                      LogManager.instance()
+                          .log(this, Level.WARNING, "Index '%s' of type %s is different from definition %s. Ignoring it",//
+                              index.getName(), index.getType(), configuredIndexType);
+                      continue;
+                    }
                   }
                 }
+              } catch (final RuntimeException e) {
+                leaveOutRefusedIndexDefinition(typeName, indexName, registeredName, loadedComponent, indexJSON, e, unavailableIndexes,
+                    refusedIndexFiles);
+                continue;
               }
 
               final String bucketName = indexJSON.getString("bucket");
@@ -5009,6 +5120,7 @@ public class LocalSchema implements Schema {
                 // Orphans stay keyed by the FILE name, like the schema entry: the relinking pass below matches them to a
                 // bucket by that name's "<bucketName>_" prefix, which a restored logical name need not share.
                 orphanIndexes.put(indexName, indexJSON);
+                orphanIndexKinds.put(indexName, indexJSON.getString("type", null));
                 indexJSON.put("type", typeName);
                 LogManager.instance()
                     .log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName,
@@ -5039,6 +5151,7 @@ public class LocalSchema implements Schema {
                       + "created again with 'REBUILD INDEX' or 'CREATE INDEX'", null, indexName, typeName);
             } else {
               orphanIndexes.put(indexName, indexJSON);
+              orphanIndexKinds.put(indexName, indexJSON.getString("type", null));
               indexJSON.put("type", typeName);
               deferredMissingIndexWarnings.computeIfAbsent(typeName, k -> new ArrayList<>()).add(indexName);
             }
@@ -5092,17 +5205,31 @@ public class LocalSchema implements Schema {
                     for (int i = 0; i < properties.length; ++i)
                       properties[i] = schemaIndexProperties.getString(i);
 
-                    final NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
-                        NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
-                        NULL_STRATEGY.ERROR;
+                    try {
+                      final NULL_STRATEGY nullStrategy = entry.getValue().has("nullStrategy") ?
+                          NULL_STRATEGY.valueOf(entry.getValue().getString("nullStrategy")) :
+                          NULL_STRATEGY.ERROR;
 
-                    index.setNullStrategy(nullStrategy);
-                    // Apply the persisted definition, exactly as the by-name path above does. An LSM-tree index
-                    // carries its key types in its own file header and survives without this, but an index whose
-                    // whole definition lives in schema.json - a vector index with its dimensions, similarity and
-                    // quantization - comes up empty when its file is relinked under a new name after a compaction:
-                    // with dimensions still 0 the component skips loading its vectors at the end of this load.
-                    index.setMetadata(entry.getValue());
+                      index.setNullStrategy(nullStrategy);
+                      // Apply the persisted definition, exactly as the by-name path above does. An LSM-tree index
+                      // carries its key types in its own file header and survives without this, but an index whose
+                      // whole definition lives in schema.json - a vector index with its dimensions, similarity and
+                      // quantization - comes up empty when its file is relinked under a new name after a compaction:
+                      // with dimensions still 0 the component skips loading its vectors at the end of this load.
+                      index.setMetadata(entry.getValue());
+                    } catch (final RuntimeException e) {
+                      // Refused like on the by-name path above (issue #11568), and left out the same way. The definition is kept
+                      // with the index kind it declared, not the component's: a full-text index relinks as its LSM-tree file.
+                      // Leaving out drops the component from the load's index map, so this pass starts over.
+                      final String kind = orphanIndexKinds.get(entry.getKey());
+                      final JSONObject definition = entry.getValue().copy().put("type", kind != null ? kind : index.getType().name());
+                      leaveOutRefusedIndexDefinition(type.getName(), entry.getKey(), indexName, index, definition, e,
+                          unavailableIndexes, refusedIndexFiles);
+                      relinkedOrphanNames.add(entry.getKey());
+                      orphanIndexes.remove(entry.getKey());
+                      completed = false;
+                      break;
+                    }
                     // Carry the manual TypeIndex name (issue #4139) onto the metadata for the
                     // orphan-relinking path too. addIndexInternal reads this when minting the
                     // TypeIndex; without this hop, an index file renamed by compaction loses its
@@ -5136,6 +5263,7 @@ public class LocalSchema implements Schema {
       // SCHEMA_ENTRY apply because applySchemaEntry calls load() each time and the persisted
       // schema.json kept the dangling reference).
       unavailableIndexDefinitions = unavailableIndexes.isEmpty() ? Map.of() : unavailableIndexes;
+      refusedIndexDefinitionFiles = refusedIndexFiles.isEmpty() ? Set.of() : refusedIndexFiles;
 
       for (final Map.Entry<String, List<String>> entry : deferredMissingIndexWarnings.entrySet()) {
         final List<String> stillMissing = new ArrayList<>(entry.getValue().size());

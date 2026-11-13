@@ -24,8 +24,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
@@ -342,7 +344,41 @@ public interface IndexInternal extends Index {
 
   String getMostRecentFileName();
 
+  /**
+   * The definition persisted into {@code schema.json} for this bucket index. It must serialize whatever state the index is
+   * in: a schema save serializes every index of every type, so one that throws takes down the save of an unrelated change.
+   * The bucket of an orphaned bucket index is resolved through {@link #bucketNameForJSON(Schema, int, String)}.
+   */
   JSONObject toJSON();
+
+  /**
+   * Best-effort bucket name for the {@code "bucket"} key of a persisted bucket-index definition. A healthy bucket index
+   * resolves by its associated bucket id. An orphan whose association was lost ({@code associatedBucketId == -1}: a bucket
+   * file deleted before its index, a failed reload, corrupt or imported metadata) is recovered from the
+   * {@code <bucketName>_<uniqueId>} naming convention of bucket-index files, so the schema still serializes and the loader
+   * can relink it. The empty string when nothing resolves: the loader then treats the entry as an orphan (bucket not found),
+   * which is exactly what it is (issues #11569 and earlier for the LSM tree).
+   *
+   * @param schema    schema of the database the index belongs to
+   * @param bucketId  the bucket id the index is associated with, -1 when none
+   * @param indexName the index file name, {@code <bucketName>_<uniqueId>} for a bucket index
+   */
+  static String bucketNameForJSON(final Schema schema, final int bucketId, final String indexName) {
+    if (bucketId >= 0) {
+      final Bucket bucket = schema.getBucketByIdIfExists(bucketId);
+      if (bucket != null)
+        return bucket.getName();
+    }
+    if (indexName != null) {
+      final int pos = indexName.lastIndexOf('_');
+      if (pos > 0) {
+        final String candidate = indexName.substring(0, pos);
+        if (schema.existsBucket(candidate))
+          return candidate;
+      }
+    }
+    return "";
+  }
 
   IndexInternal getAssociatedIndex();
 
