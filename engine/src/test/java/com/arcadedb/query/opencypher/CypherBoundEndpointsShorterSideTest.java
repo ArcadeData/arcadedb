@@ -190,6 +190,29 @@ class CypherBoundEndpointsShorterSideTest extends TestHelper {
     }
   }
 
+  /** Keys written in WHERE rather than inline: the chain count declines for them as for inline keys. */
+  @Test
+  void costOfWhereKeyedCountDoesNotGrowWithTheHubDegree() {
+    assertCostIndependentOfHubDegree("MATCH (a:N)-[:T]->(b:N) WHERE a.k = $hub AND b.k = $leaf RETURN count(*) AS v");
+  }
+
+  /** An anonymous far end keyed on a UNIQUE index is sought as a named one is. */
+  @Test
+  void costOfAnonymousKeyedFarEndDoesNotGrowWithTheHubDegree() {
+    assertCostIndependentOfHubDegree("MATCH (a:N {k: $hub})-[r:T]->(:N {k: $leaf}) RETURN count(r) AS v");
+  }
+
+  private void assertCostIndependentOfHubDegree(final String statement) {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 0);
+    createSchema();
+    hub("small", 2_000);
+    hub("large", 32_000);
+    final long small = pages(statement, "small");
+    final long large = pages(statement, "large");
+    assertThat(large).as("pages read by %s on a 32,000-edge hub, against %d on a 2,000-edge one", statement, small)
+        .isLessThanOrEqualTo(small + 4);
+  }
+
   private void buildPair() {
     createSchema();
     database.transaction(() -> {

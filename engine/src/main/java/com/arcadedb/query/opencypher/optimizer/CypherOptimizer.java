@@ -1298,8 +1298,8 @@ public class CypherOptimizer {
     final boolean sourceBound = boundVariables.contains(relationship.getSourceVariable());
     if (sourceBound == boundVariables.contains(relationship.getTargetVariable()))
       return null;
-    final LogicalNode farNode = logicalPlan.getNodes()
-        .get(sourceBound ? relationship.getTargetVariable() : relationship.getSourceVariable());
+    // getPatternNode, not getNodes: an anonymous endpoint (:N {k: $leaf}) is keyed as well as a named one
+    final LogicalNode farNode = logicalPlan.getPatternNode(sourceBound ? relationship.getTargetVariable() : relationship.getSourceVariable());
     if (farNode == null || farNode.getLabels().size() != 1)
       return null;
     final AnchorSelection seek = anchorSelector.evaluateNodeDirect(farNode, logicalPlan);

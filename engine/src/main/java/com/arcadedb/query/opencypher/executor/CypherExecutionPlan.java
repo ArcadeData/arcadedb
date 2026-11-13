@@ -7624,9 +7624,13 @@ public class CypherExecutionPlan {
       return null;
 
     // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
-    // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699)
-    if (hopCount == 1 && isUniquelyKeyed(pathPattern.getNode(0)) && isUniquelyKeyed(pathPattern.getNode(1)))
-      return null;
+    // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699). A key
+    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in
+    if (hopCount == 1) {
+      final PathPattern keyed = withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
+      if (isUniquelyKeyed(keyed.getNode(0)) && isUniquelyKeyed(keyed.getNode(1)))
+        return null;
+    }
 
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
