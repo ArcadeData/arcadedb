@@ -3326,6 +3326,24 @@ public class TransactionContext implements Transaction {
     ++edgeAppendDepth;
   }
 
+  /**
+   * Suspends the edge-append window while a record listener runs (#11590), returning the depth to hand back to
+   * {@link #resumeEdgeAppend(int)} in a {@code finally}. A listener the append's own loads and saves fire is the application: what it
+   * reads, the chunk being appended to included, is recorded as a read of the application, as it is outside any append. An append
+   * the listener makes opens a window of its own and, closing it, records the reads the suspended window deferred so far: that only
+   * gives up the edge-append merge, never a read.
+   */
+  public int suspendEdgeAppend() {
+    final int depth = edgeAppendDepth;
+    edgeAppendDepth = 0;
+    return depth;
+  }
+
+  /** Gives back the window {@link #suspendEdgeAppend()} suspended (#11590). */
+  public void resumeEdgeAppend(final int depth) {
+    edgeAppendDepth = depth;
+  }
+
   /** Closes the window {@link #beginEdgeAppend()} opened (#11590). */
   public void endEdgeAppend() {
     if (--edgeAppendDepth > 0)

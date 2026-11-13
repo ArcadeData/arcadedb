@@ -20,7 +20,9 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -30,6 +32,8 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -347,6 +351,94 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
     database.commit();
 
     assertThat(outgoingOfVertex1()).isEqualTo(3L);
+  }
+
+  /**
+   * The append window (GraphEngine.appendToEdgeList) takes the reads of the chunk it appends to for its own. A record listener the
+   * append's own loads fire is the application, though: T appends 2->3 through a handle of vertex 3 not loaded yet, so the append
+   * loads it, and a listener on that load counts the incoming list of vertex 3, the very chunk being appended to. Another
+   * transaction appended 1->3 to that chunk after T wrote its page, so the count is stale: the commit must be refused, or must
+   * have counted that relationship.
+   */
+  @Test
+  void listReadByAListenerInsideTheAppendToThatListIsNotReadStale() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (o:V {id: 0}), (x:V {id: 4}) CREATE (o)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+
+    final Vertex vertex2 = vertexWithId(2);
+    final Vertex unloaded3 = ridOfVertexWithId(3).asVertex(false);
+    final AtomicLong counted = new AtomicLong(-1L);
+    final AtomicBoolean armed = new AtomicBoolean();
+    final AfterRecordReadListener afterRead = record -> {
+      if (armed.get() && record instanceof Vertex vertex && Integer.valueOf(3).equals(vertex.get("id"))) {
+        armed.set(false);
+        counted.set(vertex.countEdges(Vertex.DIRECTION.IN, "E"));
+      }
+      return record;
+    };
+    database.getEvents().registerListener(afterRead);
+    final Throwable failure;
+    try {
+      armed.set(true);
+      vertex2.newEdge("E", unloaded3);
+      armed.set(false);
+      assertThat(counted.get()).as("the listener must have run inside the append").isNotNegative();
+      failure = commitOrFailure();
+    } finally {
+      database.getEvents().unregisterListener(afterRead);
+    }
+
+    if (failure == null)
+      assertThat(counted.get()).as("a transaction that commits must have counted the relationship committed before its append")
+          .isGreaterThanOrEqualTo(2L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(incomingOfVertex3()).isEqualTo(failure == null ? 3L : 2L);
+  }
+
+  /** The success side of the case above: a listener that reads no list leaves the append blind, and both appends merge. */
+  @Test
+  void appendFiringAListenerThatReadsNoListStillMerges() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (o:V {id: 0}), (x:V {id: 4}) CREATE (o)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+
+    final Vertex vertex2 = vertexWithId(2);
+    final Vertex unloaded3 = ridOfVertexWithId(3).asVertex(false);
+    final AtomicBoolean fired = new AtomicBoolean();
+    final AfterRecordReadListener afterRead = record -> {
+      fired.set(true);
+      return record;
+    };
+    database.getEvents().registerListener(afterRead);
+    try {
+      vertex2.newEdge("E", unloaded3);
+      database.commit();
+    } finally {
+      database.getEvents().unregisterListener(afterRead);
+    }
+
+    assertThat(fired.get()).isTrue();
+    assertThat(incomingOfVertex3()).isEqualTo(3L);
+  }
+
+  private Vertex vertexWithId(final int id) {
+    return database.lookupByKey("V", "id", id).next().getRecord().asVertex();
+  }
+
+  private RID ridOfVertexWithId(final int id) {
+    return database.lookupByKey("V", "id", id).next().getIdentity();
+  }
+
+  private long incomingOfVertex3() {
+    try (final ResultSet rs = database.query("opencypher", "MATCH (x:V {id: 3})<-[e:E]-() RETURN count(e) AS c")) {
+      return ((Number) rs.next().getProperty("c")).longValue();
+    }
   }
 
   /**
