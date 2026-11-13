@@ -248,15 +248,20 @@ class OpenCypherConvertFunctionsTest {
   }
 
   @Test
-  void convertToListFromArrayWrapsAsElement() {
+  void convertToListFromArrayReturnsItsElements() {
     final ConvertToList fn = new ConvertToList();
 
-    // Object[] is treated as a single value (not a collection), so it gets wrapped
+    // An array is a sequence, read as the list of its elements as size() and head() read it (issue #11582): it used to be
+    // wrapped as a single element
     @SuppressWarnings("unchecked")
     final List<Object> result = (List<Object>) fn.execute(new Object[]{new Object[]{1, 2, 3}}, null);
-    // The array is wrapped as a single element
-    assertThat(result).hasSize(1);
-    assertThat(result.get(0)).isInstanceOf(Object[].class);
+    assertThat(result).containsExactly(1, 2, 3);
+
+    // a byte[] is a BINARY value, not a sequence, so it is still wrapped
+    final byte[] binary = { 1, 2, 3 };
+    @SuppressWarnings("unchecked")
+    final List<Object> wrapped = (List<Object>) fn.execute(new Object[]{binary}, null);
+    assertThat(wrapped).containsExactly(binary);
   }
 
   @Test

@@ -19,6 +19,7 @@
 package com.arcadedb.function.convert;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -63,6 +64,11 @@ public class ConvertToList extends AbstractConvertFunction {
     if (args[0] instanceof Collection) {
       return new ArrayList<>((Collection<?>) args[0]);
     }
+
+    // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array: it is the list, not a single value to wrap
+    // (issue #11582). A byte[] is a BINARY value, not a sequence, and is still wrapped
+    if (MultiValue.isSequenceArray(args[0]))
+      return new ArrayList<>(MultiValue.getMultiValueAsList(args[0]));
 
     if (args[0] instanceof Iterator) {
       final List<Object> result = new ArrayList<>();
