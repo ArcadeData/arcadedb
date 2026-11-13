@@ -435,4 +435,60 @@ class CypherPointTest {
       }
     }
   }
+
+  /**
+   * Regression test for issue #11690: a WGS-84 point with a latitude outside [-90, 90] is a client error, while the
+   * longitude is wrapped into [-180, 180] as Neo4j does. Cartesian points accept any coordinate.
+   */
+  @Nested
+  class Issue11690Wgs84Range extends TestHelper {
+
+    private Map<?, ?> point(final String expression) {
+      try (final ResultSet rs = database.command("opencypher", "RETURN " + expression + " AS p")) {
+        return (Map<?, ?>) rs.next().getProperty("p");
+      }
+    }
+
+    @Test
+    void latitudeBoundariesAreAccepted() {
+      assertThat(point("point({latitude: 90.0, longitude: 0.0})").get("latitude")).isEqualTo(90.0);
+      assertThat(point("point({latitude: -90.0, longitude: 0.0})").get("latitude")).isEqualTo(-90.0);
+      assertThat(point("point({latitude: 90.0, longitude: 0.0, height: 5.0})").get("srid")).isEqualTo(4979);
+    }
+
+    @Test
+    void latitudeOutOfRangeIsRejected() {
+      for (final String expression : new String[] { "point({latitude: 91.0, longitude: 0.0})",
+          "point({latitude: -91.0, longitude: 0.0})", "point({latitude: 91.0, longitude: 0.0, height: 1.0})",
+          "point({x: 0.0, y: 91.0, crs: 'wgs-84'})", "point({x: 0.0, y: -91.0, srid: 4326})",
+          "point({x: 0.0, y: 91.0, z: 1.0, srid: 4979})", "point(0.0, 91.0)" })
+        assertThatThrownBy(() -> point(expression)).as(expression).isInstanceOf(CommandSemanticException.class)
+            .hasMessageContaining("latitude");
+    }
+
+    @Test
+    void latitudeOutOfRangeFromParameterIsRejected() {
+      assertThatThrownBy(() -> database.command("opencypher", "RETURN point({latitude: $lat, longitude: 0.0}) AS p",
+          Map.of("lat", 91.0)).next()).isInstanceOf(CommandSemanticException.class);
+    }
+
+    @Test
+    void longitudeIsWrappedLikeNeo4j() {
+      assertThat(point("point({latitude: 0.0, longitude: 180.0})").get("longitude")).isEqualTo(180.0);
+      assertThat(point("point({latitude: 0.0, longitude: -180.0})").get("longitude")).isEqualTo(-180.0);
+      final Map<?, ?> p = point("point({latitude: 0.0, longitude: 181.0})");
+      assertThat(p.get("longitude")).isEqualTo(-179.0);
+      assertThat(p.get("x")).isEqualTo(-179.0);
+      assertThat(point("point({latitude: 0.0, longitude: -541.0})").get("longitude")).isEqualTo(179.0);
+      assertThat(point("point({x: 181.0, y: 0.0, crs: 'wgs-84'})").get("x")).isEqualTo(-179.0);
+    }
+
+    @Test
+    void cartesianAcceptsAnyCoordinate() {
+      final Map<?, ?> p = point("point({x: 500.0, y: -91.0})");
+      assertThat(p.get("x")).isEqualTo(500.0);
+      assertThat(p.get("y")).isEqualTo(-91.0);
+      assertThat(point("point({x: 0.0, y: 1000.0, z: 1.0})").get("y")).isEqualTo(1000.0);
+    }
+  }
 }
