@@ -23,12 +23,14 @@ import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.AbstractSet;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Spliterator;
+import java.util.Spliterators;
 
 /**
  * A {@link Set} implementation that canonicalizes keys using {@link DistinctNumericKey#canonicalize(Object)},
@@ -46,22 +48,26 @@ public class CanonicalSet extends AbstractSet<Object> {
   }
 
   public CanonicalSet(final int initialCapacity) {
-    this.map = new LinkedHashMap<>(initialCapacity);
+    this.map = LinkedHashMap.newLinkedHashMap(initialCapacity);
+  }
+
+  public CanonicalSet(final CanonicalSet other) {
+    this.map = other != null ? new LinkedHashMap<>(other.map) : new LinkedHashMap<>();
   }
 
   public CanonicalSet(final Collection<?> c) {
-    this.map = new LinkedHashMap<>(c != null ? c.size() : 16);
+    this.map = c != null ? LinkedHashMap.newLinkedHashMap(c.size()) : new LinkedHashMap<>();
     if (c != null)
       addAll(c);
   }
 
   /**
-   * Converts {@code value} into a {@link CanonicalSet}. If {@code value} is already a {@link CanonicalSet},
-   * returns it directly; otherwise unpacks multi-values and adds each element.
+   * Converts {@code value} into a new {@link CanonicalSet}. If {@code value} is already a {@link CanonicalSet},
+   * returns a defensive copy; otherwise unpacks multi-values and adds each element.
    */
   public static CanonicalSet from(final Object value) {
     if (value instanceof CanonicalSet canonicalSet)
-      return canonicalSet;
+      return new CanonicalSet(canonicalSet);
     final CanonicalSet set = new CanonicalSet();
     if (value != null) {
       if (value instanceof Iterator<?> iterator) {
@@ -104,9 +110,10 @@ public class CanonicalSet extends AbstractSet<Object> {
   @Override
   public boolean remove(final Object o) {
     final Object key = DistinctNumericKey.canonicalize(o);
-    final boolean present = map.containsKey(key);
+    if (!map.containsKey(key))
+      return false;
     map.remove(key);
-    return present;
+    return true;
   }
 
   @Override
@@ -121,17 +128,10 @@ public class CanonicalSet extends AbstractSet<Object> {
   @Override
   public boolean retainAll(final Collection<?> c) {
     Objects.requireNonNull(c);
-    final CanonicalSet retainKeys = from(c);
-    final Iterator<Map.Entry<Object, Object>> it = map.entrySet().iterator();
-    boolean modified = false;
-    while (it.hasNext()) {
-      final Map.Entry<Object, Object> entry = it.next();
-      if (!retainKeys.map.containsKey(entry.getKey())) {
-        it.remove();
-        modified = true;
-      }
-    }
-    return modified;
+    final Set<Object> retainKeys = HashSet.newHashSet(c.size());
+    for (final Object o : c)
+      retainKeys.add(DistinctNumericKey.canonicalize(o));
+    return map.keySet().retainAll(retainKeys);
   }
 
   @Override
@@ -146,7 +146,7 @@ public class CanonicalSet extends AbstractSet<Object> {
 
   @Override
   public Spliterator<Object> spliterator() {
-    return map.values().spliterator();
+    return Spliterators.spliterator(map.values(), Spliterator.DISTINCT | Spliterator.ORDERED);
   }
 
   @Override

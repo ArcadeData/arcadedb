@@ -41,6 +41,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue11581SqlSetFunctionsNumericEqualityTest extends TestHelper {
 
   @Test
+  void testCanonicalSetDefensiveCopyAndRetainAll() {
+    final CanonicalSet original = new CanonicalSet();
+    original.add(1L);
+    original.add(2L);
+
+    final CanonicalSet copy = CanonicalSet.from(original);
+    copy.add(3);
+    assertThat(original).hasSize(2);
+    assertThat(copy).hasSize(3);
+
+    // retainAll with mixed types (Integer 1 should retain Long 1L)
+    final CanonicalSet testSet = new CanonicalSet();
+    testSet.add(1L);
+    testSet.add(2L);
+    testSet.add(3L);
+    final boolean modified = testSet.retainAll(List.of(1, 3));
+    assertThat(modified).isTrue();
+    assertThat(testSet).hasSize(2);
+    assertThat(testSet).contains(1L, 3L);
+  }
+
+  @Test
   void testSetDirectNumericEquality() {
     final SQLFunctionSet function = new SQLFunctionSet();
 
@@ -128,6 +150,15 @@ class Issue11581SqlSetFunctionsNumericEqualityTest extends TestHelper {
     assertThat(inline).hasSize(2);
     assertThat(inline).contains(2L, 9);
 
+    // 3-way symmetric difference: symmetricDifference([1L, 2L], [1, 3], [1, 4L])
+    // 1 appears in all 3: rejected in 2nd, remains rejected in 3rd.
+    // 2L, 3, 4L appear once each -> [2L, 3, 4L]
+    @SuppressWarnings("unchecked")
+    final Set<Object> threeWay = (Set<Object>) function.execute(null, null, null,
+        new Object[] { Arrays.asList(1L, 2L), Arrays.asList(1, 3), Arrays.asList(1, 4L) }, new BasicCommandContext());
+    assertThat(threeWay).hasSize(3);
+    assertThat(threeWay).contains(2L, 3, 4L);
+
     // Aggregation mode
     final SQLFunctionSymmetricDifference agg = new SQLFunctionSymmetricDifference();
     agg.execute(null, null, null, new Object[] { Arrays.asList(1L, 2L) }, new BasicCommandContext());
@@ -136,6 +167,27 @@ class Issue11581SqlSetFunctionsNumericEqualityTest extends TestHelper {
     final Set<Object> aggResult = (Set<Object>) agg.getResult();
     assertThat(aggResult).hasSize(2);
     assertThat(aggResult).contains(2L, 9);
+  }
+
+  @Test
+  void testSetFunctionDocumentPersistence() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Item");
+      database.command("sql", "INSERT INTO Item SET s = set([1L, 1, 2L, 2])");
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT s FROM Item")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result row = rs.next();
+        final Object val = row.getProperty("s");
+        assertThat(val).isInstanceOf(Collection.class);
+        @SuppressWarnings("unchecked")
+        final Collection<Object> coll = (Collection<Object>) val;
+        assertThat(coll).hasSize(2);
+        assertThat(coll).contains(1L, 2L);
+      }
+    });
   }
 
   @Test
