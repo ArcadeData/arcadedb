@@ -80,8 +80,9 @@ public class TimeConstructorFunction implements StatelessFunction {
     if (args[0] instanceof Map)
       try {
         return CypherTime.fromMap((Map<String, Object>) args[0]);
-      } catch (final DateTimeException e) {
-        // A field outside its range (month 13, week 54 of any year, February 30) is the caller's error, not an internal one
+      } catch (final DateTimeException | IllegalArgumentException e) {
+        // A field outside its range (month 13, week 54 of any year, February 30, nanosecond 10^9) is the caller's error, not an
+        // internal one. TemporalUtil range-checks the sub-second fields with an IllegalArgumentException (#11655)
         throw new CommandSemanticException("time() " + e.getMessage());
       }
     if (args[0] instanceof CypherTime)

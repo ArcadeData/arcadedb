@@ -54,6 +54,14 @@ class CypherTemporalFieldRangeIssue11655Test extends TestHelper {
   }
 
   @Test
+  void anOutOfRangeSubSecondFieldIsTheCallersError() {
+    // The sub-second fields are range-checked by TemporalUtil with an IllegalArgumentException, not a DateTimeException (#11655)
+    for (final String constructor : new String[] { "localtime", "time", "localdatetime", "datetime" })
+      for (final String field : new String[] { "nanosecond: 1000000000", "microsecond: 1000000", "millisecond: 1000" })
+        assertRefused(constructor + "({year: 2017, month: 1, day: 1, hour: 10, " + field + "})");
+  }
+
+  @Test
   void theLastValidValueOfEachFieldIsAccepted() {
     assertThat(date("date('2015W53')")).isEqualTo("2015-12-28");
     assertThat(date("date('2015-W53-7')")).isEqualTo("2016-01-03");
