@@ -19,13 +19,16 @@
 package com.arcadedb.function.sql.text;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextRecordScorer;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -43,6 +46,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -57,16 +61,23 @@ import java.util.function.Supplier;
  * The matches are cached in the command context for the statement, under a key the query string is part of: the opaque
  * cache rather than the variable namespace, which reads a '.' in a key as a nested {@code $var.field} path (issue #4734).
  * A second key holds a SUBSET of the matches with the scores the complete search gives them: the best ones a pushed-down
- * limit kept, or those a RID filter let through. A record among them matches without running the complete search.
+ * limit kept, or those a RID filter let through. A record among them matches without running the complete search. A
+ * third key holds the search prepared to score a record from its own values (issue #11683), which answers the rows of a
+ * target far smaller than the matches without the complete search either.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class FullTextFunctionSearch {
+  // Test-only: how many times a statement computed every match of a search (issue #11683). Nothing in production reads it; a
+  // JVM-wide counter is safe to assert on because this module's tests run sequentially in one fork.
+  private static final AtomicLong completeSearches = new AtomicLong();
+
   private final List<TypeIndex> indexes;
   private final String       query;
   private final List<String> restrictedFields;
   private final String       cacheKey;
   private final String       subsetCacheKey;
+  private final String       recordsCacheKey;
 
   /**
    * @param restrictedFields the properties the query's unqualified clauses are searched in, or null for every property of
@@ -91,10 +102,16 @@ final class FullTextFunctionSearch {
     if (restrictedFields == null) {
       this.cacheKey = "search_index:" + name + ":" + query;
       this.subsetCacheKey = "search_index_best:" + name + ":" + query;
+      this.recordsCacheKey = "search_index_records:" + name + ":" + query;
     } else {
       this.cacheKey = "search_fields:" + name + ":" + restrictedFields + ":" + query;
       this.subsetCacheKey = "search_fields_best:" + name + ":" + restrictedFields + ":" + query;
+      this.recordsCacheKey = "search_fields_records:" + name + ":" + restrictedFields + ":" + query;
     }
+  }
+
+  static long getCompleteSearchesForTesting() {
+    return completeSearches.get();
   }
 
   /**
@@ -116,6 +133,15 @@ final class FullTextFunctionSearch {
       if (score != null) {
         context.setVariable("$score", score);
         return true;
+      }
+
+      // A record whose postings the search can derive from its own values is answered from them, with the score the complete
+      // search gives it: the rows the condition is evaluated on can be far fewer than the matches (issue #11683)
+      final float ownScore = scoreOnItsOwn(currentRecord, context);
+      if (!Float.isNaN(ownScore)) {
+        final boolean matches = ownScore != FullTextRecordScorer.NO_MATCH;
+        context.setVariable("$score", matches ? ownScore : 0f);
+        return matches;
       }
     }
 
@@ -222,9 +248,106 @@ final class FullTextFunctionSearch {
 
   /** Every match with its score, cached for the statement. Stops when the statement is terminated or past its deadline. */
   private Map<RID, Float> completeSearch(final CommandContext context) {
+    completeSearches.incrementAndGet();
     final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null);
     context.setCachedValue(cacheKey, allResults);
     return allResults;
+  }
+
+  /**
+   * The score of {@code currentRecord} computed from the record itself, {@link FullTextRecordScorer#NO_MATCH} when it does not
+   * match, or NaN when the complete search has to answer for it (issue #11683). The statement prepares the per-record search once,
+   * on its first row, which counts the document frequencies of the query's tokens: the complete search reads every one of those
+   * postings at least twice and collects, scores and orders the matches. The rows are then answered from their records for as long
+   * as what they analyze (their tokens and their postings) stays below half of those document frequencies; past that the complete
+   * search, computed once, is the cheaper answer for the rows still to come, and it gives the rows already answered the same scores.
+   */
+  private float scoreOnItsOwn(final Identifiable currentRecord, final CommandContext context) {
+    RecordScoring scoring = (RecordScoring) context.getCachedValue(recordsCacheKey);
+    if (scoring == null) {
+      scoring = RecordScoring.prepare(indexes, query, restrictedFields, WorkGuard.forCommandDeadline(context));
+      context.setCachedValue(recordsCacheKey, scoring);
+    }
+    return scoring.score(currentRecord);
+  }
+
+  /** The per-record answer of one search in one statement (see {@link #scoreOnItsOwn}). */
+  private static final class RecordScoring {
+    /** One per index searched, or null once the complete search answers. */
+    private List<FullTextRecordScorer> scorers;
+    /** How many more postings rows may analyze before the complete search is the cheaper answer. */
+    private long                       budget;
+    private final long[]               analyzed = new long[1];
+
+    private RecordScoring(final List<FullTextRecordScorer> scorers, final long budget) {
+      this.scorers = scorers;
+      this.budget = budget;
+    }
+
+    private static RecordScoring prepare(final List<TypeIndex> indexes, final String query, final List<String> restrictedFields,
+        final WorkGuard guard) {
+      final List<FullTextRecordScorer> scorers = new ArrayList<>(indexes.size());
+      long documentFrequencies = 0L;
+      for (final TypeIndex index : indexes) {
+        final FullTextRecordScorer scorer = FullTextRecordScorer.prepare(index, query, restrictedFields, guard);
+        if (scorer == null)
+          return new RecordScoring(null, 0L);
+        scorers.add(scorer);
+        documentFrequencies += scorer.getDocumentFrequencies();
+      }
+      return new RecordScoring(scorers, documentFrequencies / 2);
+    }
+
+    private float score(final Identifiable currentRecord) {
+      if (scorers == null)
+        return Float.NaN;
+      if (analyzed[0] >= budget) {
+        scorers = null;
+        return Float.NaN;
+      }
+      final RID rid = currentRecord.getIdentity();
+      if (rid == null)
+        return Float.NaN;
+
+      // The complete search merges the matches of the indexes in order, a later one replacing an earlier one's score for a RID
+      float score = FullTextRecordScorer.NO_MATCH;
+      Document document = null;
+      for (final FullTextRecordScorer scorer : scorers) {
+        if (!scorer.covers(rid))
+          continue;
+        if (document == null) {
+          document = indexedValues(currentRecord);
+          if (document == null)
+            return Float.NaN;
+        }
+        // every row counts, so that rows without postings still use the budget up
+        ++analyzed[0];
+        final float own = scorer.score(document, analyzed);
+        if (Float.isNaN(own))
+          return Float.NaN;
+        if (own != FullTextRecordScorer.NO_MATCH)
+          score = own;
+      }
+      return score;
+    }
+
+    /**
+     * The record whose values the index holds postings for, or null when they may not be: a document changed in memory and not
+     * saved yet, or no document.
+     */
+    private static Document indexedValues(final Identifiable currentRecord) {
+      final Record record;
+      try {
+        record = currentRecord instanceof final Record loaded ? loaded : currentRecord.getRecord(true);
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+      if (!(record instanceof final Document document))
+        return null;
+      if (document instanceof final MutableDocument mutable && mutable.isDirty())
+        return null;
+      return document;
+    }
   }
 
   /**
