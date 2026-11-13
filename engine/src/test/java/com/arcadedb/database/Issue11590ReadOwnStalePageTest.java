@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.AfterRecordReadListener;
+import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -421,6 +422,78 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
       database.commit();
     } finally {
       database.getEvents().unregisterListener(afterRead);
+    }
+
+    assertThat(fired.get()).isTrue();
+    assertThat(incomingOfVertex3()).isEqualTo(3L);
+  }
+
+  /**
+   * The case above with a BEFORE READ listener: it fires from the bucket while the append loads vertex 3, inside the append
+   * window, and its count of the list must be checked at commit as the application's read it is.
+   */
+  @Test
+  void listReadByABeforeReadListenerInsideTheAppendToThatListIsNotReadStale() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (o:V {id: 0}), (x:V {id: 4}) CREATE (o)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+
+    final Vertex vertex2 = vertexWithId(2);
+    final RID rid3 = ridOfVertexWithId(3);
+    final Vertex unloaded3 = rid3.asVertex(false);
+    final AtomicLong counted = new AtomicLong(-1L);
+    final AtomicBoolean armed = new AtomicBoolean();
+    final BeforeRecordReadListener beforeRead = rid -> {
+      if (armed.get() && rid3.equals(rid)) {
+        armed.set(false);
+        counted.set(rid.asVertex().countEdges(Vertex.DIRECTION.IN, "E"));
+      }
+      return true;
+    };
+    database.getEvents().registerListener(beforeRead);
+    final Throwable failure;
+    try {
+      armed.set(true);
+      vertex2.newEdge("E", unloaded3);
+      armed.set(false);
+      assertThat(counted.get()).as("the listener must have run inside the append").isNotNegative();
+      failure = commitOrFailure();
+    } finally {
+      database.getEvents().unregisterListener(beforeRead);
+    }
+
+    if (failure == null)
+      assertThat(counted.get()).as("a transaction that commits must have counted the relationship committed before its append")
+          .isGreaterThanOrEqualTo(2L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(incomingOfVertex3()).isEqualTo(failure == null ? 3L : 2L);
+  }
+
+  /** The success side of the case above: a before-read listener that reads no list leaves the append blind, and both merge. */
+  @Test
+  void appendFiringABeforeReadListenerThatReadsNoListStillMerges() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (o:V {id: 0}), (x:V {id: 4}) CREATE (o)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+
+    final Vertex vertex2 = vertexWithId(2);
+    final Vertex unloaded3 = ridOfVertexWithId(3).asVertex(false);
+    final AtomicBoolean fired = new AtomicBoolean();
+    final BeforeRecordReadListener beforeRead = rid -> {
+      fired.set(true);
+      return true;
+    };
+    database.getEvents().registerListener(beforeRead);
+    try {
+      vertex2.newEdge("E", unloaded3);
+      database.commit();
+    } finally {
+      database.getEvents().unregisterListener(beforeRead);
     }
 
     assertThat(fired.get()).isTrue();
