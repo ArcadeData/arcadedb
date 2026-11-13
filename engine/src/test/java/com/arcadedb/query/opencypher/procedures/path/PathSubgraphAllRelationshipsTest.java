@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue10048SubgraphAllRelationshipsTest {
+class PathSubgraphAllRelationshipsTest {
   private static final String START = "MATCH (s:U {name: 's'}), (a:U {name: 'a'}), (b:U {name: 'b'}), (c:U {name: 'c'}), (d:U {name: 'd'}) ";
 
   private static final List<String> EVERY_RELATIONSHIP = List.of("a-[R2]->c", "a-[R]->c", "b-[R]->c", "c-[R]->d", "d-[L]->d",
