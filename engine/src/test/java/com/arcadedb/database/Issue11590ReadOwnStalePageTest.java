@@ -392,6 +392,77 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
   }
 
   /**
+   * The order of the case above with the concurrent commit first: the scan keeps page 0 as it was, U commits a change to a record
+   * of it, and only then does T write the page, so T's image of it already holds U's change while the page the scan goes on
+   * reading does not. The later batches read the record as it was before U committed, and T's image, current at commit, has
+   * nothing to check those reads against.
+   */
+  @Test
+  void scanBatchOfAPageChangedBeforeTheTransactionWroteItIsNotReadStale() throws Exception {
+    final int maxRecordsInPage = createDocumentTypeWithRecords(1_500);
+
+    database.begin();
+    final Iterator<Record> scan = database.iterateType("D", false);
+    for (int i = 0; i < 10; i++)
+      scan.next();
+    commitFromAnotherThread("sql", "UPDATE D SET f = 9 WHERE id = 1300");
+    final RID inserted = database.newDocument("D").set("id", 1_500).set("f", 0).save().getIdentity();
+    assertThat(inserted.getPosition() / maxRecordsInPage).as("the insert lands on the page the scan is reading").isZero();
+
+    final Integer read = readFOf1300(scan, maxRecordsInPage);
+    final Throwable failure = commitOrFailure();
+
+    assertThat(read).isNotNull();
+    if (failure == null)
+      assertThat(read).as("a transaction that commits must have read the value committed before its scan read it").isEqualTo(9);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valuesOf("SELECT f FROM D WHERE id = 1300")).containsExactly(9);
+  }
+
+  /** The success side of the case above: with nobody committing to the page, the scan and the write to it still commit. */
+  @Test
+  void scanOfAPageTheTransactionThenWroteStillCommits() throws Exception {
+    final int maxRecordsInPage = createDocumentTypeWithRecords(1_500);
+
+    database.begin();
+    final Iterator<Record> scan = database.iterateType("D", false);
+    for (int i = 0; i < 10; i++)
+      scan.next();
+    final RID inserted = database.newDocument("D").set("id", 1_500).set("f", 0).save().getIdentity();
+    assertThat(inserted.getPosition() / maxRecordsInPage).as("the insert lands on the page the scan is reading").isZero();
+
+    assertThat(readFOf1300(scan, maxRecordsInPage)).isZero();
+    database.commit();
+
+    assertThat(valuesOf("SELECT count(*) AS c FROM D")).containsExactly(1_501L);
+  }
+
+  /** Type D in one bucket with {@code records} records, ids 0 and up and f 0; returns the records a page of the bucket holds. */
+  private int createDocumentTypeWithRecords(final int records) {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().getType("D").createProperty("f", Type.INTEGER);
+      for (int i = 0; i < records; i++)
+        database.newDocument("D").set("id", i).set("f", 0).save();
+    });
+    return ((LocalBucket) database.getSchema().getType("D").getBuckets(false).getFirst()).getMaxRecordsInPage();
+  }
+
+  /** Drains {@code scan} and returns the f it read for id 1300, a record of page 0. */
+  private static Integer readFOf1300(final Iterator<Record> scan, final int maxRecordsInPage) {
+    Integer read = null;
+    while (scan.hasNext()) {
+      final Document document = scan.next().asDocument();
+      if (document.getInteger("id") == 1300) {
+        assertThat(document.getIdentity().getPosition() / maxRecordsInPage).as("the record is on the page of the scan").isZero();
+        read = document.getInteger("f");
+      }
+    }
+    return read;
+  }
+
+  /**
    * The scan of the case above kept across a commit: the first transaction held the page written when the scan took it, so that was
    * the image the scan recorded its reads on. The next transaction writes the page too, and the second batch must record its reads
    * on that transaction's image, not on the image of the transaction that committed.

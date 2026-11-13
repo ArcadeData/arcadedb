@@ -474,7 +474,13 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
       return;
     currentPageImage = database.getTransaction().getOwnImageForTracking(currentPage.getPageId());
     currentPageImageTransaction = readInTransaction;
-    if (currentPageImage != null && positions == null)
+    if (currentPageImage == null)
+      return;
+    if (currentPage.getVersion() < currentPageImage.getVersion())
+      // another transaction committed to the page after the scan took it and before this one wrote it: the scan goes on reading
+      // what that commit replaced, while the image holds it and so passes every check at commit
+      currentPageImage.markReadAtAnOlderVersion();
+    if (positions == null)
       // a scan of the page: positions mode records each slot it reads instead
       database.getTransaction().trackScanOfPage(currentPageImage);
   }

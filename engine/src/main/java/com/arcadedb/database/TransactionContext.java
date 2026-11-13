@@ -234,11 +234,14 @@ public class TransactionContext implements Transaction {
   private       MutablePage[]                        deferredReadPages;
   private       int[]                                deferredReadSlots;
   private       int                                  deferredReads;
-  // reads of chunks served from the objects this transaction queued for them, and the chunks the window's appends wrote in place
+  // reads of chunks served from the objects this transaction queued for them
   private       RID[]                                deferredChunkReadRIDs;
   private       int                                  deferredChunkReads;
-  private       RID[]                                chunksAppendedInWindowRIDs;
-  private       int                                  chunksAppendedInWindow;
+  // #11590: the chunks the window's appends wrote in place, a set by identity (a chunk is a record): a batch (addAll) that writes
+  // thousands of chunks of one list looks each one up in constant time. Kept empty across windows so one append allocates nothing,
+  // dropped instead when a batch grew it past CHUNKS_APPENDED_IN_WINDOW_KEPT, as wiping its table would cost every later window
+  private       RidHashSet                           chunksAppendedInWindow;
+  private static final int                           CHUNKS_APPENDED_IN_WINDOW_KEPT = 8;
   // #11590: whether the reads recorded on the pages of the appended chunks were folded into their EdgeAppendBuffer (once per commit)
   private       boolean                              appendedChunkReadsFolded;
   // Poisoned edge-list pages, keyed by a packed (fileId, pageNumber) long so poisoning and the hot-path skip
@@ -3345,9 +3348,10 @@ public class TransactionContext implements Transaction {
         markChunkRead(chunk);
     }
     deferredChunkReads = 0;
-    for (int i = 0; i < chunksAppendedInWindow; ++i)
-      chunksAppendedInWindowRIDs[i] = null;
-    chunksAppendedInWindow = 0;
+    if (chunksAppendedInWindow != null && chunksAppendedInWindow.size() > CHUNKS_APPENDED_IN_WINDOW_KEPT)
+      chunksAppendedInWindow = null;
+    else if (chunksAppendedInWindow != null)
+      chunksAppendedInWindow.clear();
   }
 
   private void resetEdgeAppendReads() {
@@ -3357,8 +3361,7 @@ public class TransactionContext implements Transaction {
     deferredReads = 0;
     deferredChunkReadRIDs = null;
     deferredChunkReads = 0;
-    chunksAppendedInWindowRIDs = null;
-    chunksAppendedInWindow = 0;
+    chunksAppendedInWindow = null;
     appendedChunkReadsFolded = false;
   }
 
@@ -3368,24 +3371,19 @@ public class TransactionContext implements Transaction {
    * its chunks as rewrites, which the slot merge replays the same way.
    */
   public void noteChunkAppendedInWindow(final RID chunk) {
-    if (edgeAppendDepth == 0 || isAppendedInWindow(chunk))
+    if (edgeAppendDepth == 0)
       return;
-    if (chunksAppendedInWindowRIDs == null)
-      chunksAppendedInWindowRIDs = new RID[4];
-    else if (chunksAppendedInWindow == chunksAppendedInWindowRIDs.length)
-      chunksAppendedInWindowRIDs = Arrays.copyOf(chunksAppendedInWindowRIDs, chunksAppendedInWindow << 1);
-    chunksAppendedInWindowRIDs[chunksAppendedInWindow++] = chunk;
+    if (chunksAppendedInWindow == null)
+      chunksAppendedInWindow = new RidHashSet(16);
+    chunksAppendedInWindow.add(chunk);
   }
 
   private boolean isAppendedInWindow(final RID chunk) {
-    for (int i = 0; i < chunksAppendedInWindow; ++i)
-      if (chunksAppendedInWindowRIDs[i].equals(chunk))
-        return true;
-    return false;
+    return chunksAppendedInWindow != null && chunksAppendedInWindow.contains(chunk);
   }
 
   private boolean isChunkAppendedInWindow(final PageId pageId, final int slot) {
-    if (chunksAppendedInWindow == 0)
+    if (chunksAppendedInWindow == null || chunksAppendedInWindow.isEmpty())
       return false;
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
     return bucket != null && isAppendedInWindow(recordAt(bucket, pageId, slot));
@@ -4175,6 +4173,11 @@ public class TransactionContext implements Transaction {
           it.remove();
           continue;
         }
+
+        if (p.isReadAtAnOlderVersion())
+          // #11590: a scan kept this page from before a commit that this transaction's image of it holds, see BucketIterator
+          throw new ConcurrentModificationException("A scan of page " + p.getPageId()
+              + " read it as it was before a concurrent commit to it that this transaction then wrote on top of. Please retry the operation");
 
         try {
           pageManager.checkPageVersion(p, false);

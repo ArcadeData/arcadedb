@@ -135,6 +135,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   // a read taken back with its statement costs at most a retry. The bit set is allocated at the first read of a single slot.
   private              BitSet  slotsRead;
   private              boolean wholePageRead;
+  // #11590: the owning transaction read, through a page a scan kept from an earlier batch, an older version of the page than the one
+  // this image was taken from: those reads missed a commit this image already holds, so no comparison with the committed page at
+  // commit can vouch for them, and the commit is refused
+  private              boolean readAtAnOlderVersion;
 
   /**
    * The bookkeeping of a page that is not part of its bytes, saved by a {@link PageUndoLog} and given back with them.
@@ -634,6 +638,16 @@ public class MutablePage extends BasePage implements TrackableContent {
   /** Whether the owning transaction read this image as a whole (#11590). */
   public boolean isWholePageRead() {
     return wholePageRead;
+  }
+
+  /** Records that the owning transaction read this page, kept by a scan, at an older version than this image's (#11590). */
+  public void markReadAtAnOlderVersion() {
+    readAtAnOlderVersion = true;
+  }
+
+  /** Whether the owning transaction read this page at an older version than this image's (#11590). */
+  public boolean isReadAtAnOlderVersion() {
+    return readAtAnOlderVersion;
   }
 
   /** Whether the owning transaction read record slot {@code slot} from this image (#11590). */
