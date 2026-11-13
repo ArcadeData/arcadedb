@@ -527,7 +527,7 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
     assertThat(readFOf1300(scan, maxRecordsInPage)).isZero();
     database.commit();
 
-    assertThat(valuesOf("SELECT count(*) AS c FROM D")).containsExactly(1_501L);
+    assertThat(valuesOf("SELECT count(@rid) AS c FROM D")).containsExactly(1_501L);
   }
 
   /** Type D in one bucket with {@code records} records, ids 0 and up and f 0; returns the records a page of the bucket holds. */
