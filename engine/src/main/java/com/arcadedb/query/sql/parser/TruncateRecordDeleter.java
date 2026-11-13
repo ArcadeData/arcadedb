@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.OwnTransaction;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 
 import java.util.function.Predicate;
@@ -101,7 +102,13 @@ final class TruncateRecordDeleter {
     final long[] count = { 0 };
     scan.run(record -> {
       try {
-        record.delete();
+        try {
+          record.delete();
+        } catch (final RecordNotFoundException e) {
+          // A concurrent transaction deleted it after the scan found it and committed: it is gone, which is what the truncate is
+          // for. Failing the statement here reported a record it never named as not found (issue #11731)
+          return true;
+        }
         if (own != null && batchSize > 0 && ++count[0] % batchSize == 0) {
           // ownership is dropped BEFORE the commit and taken back after it, as RepairTransaction does: a commit that throws has
           // already disposed of its context, and what is left on the thread then belongs to the caller (issue #9977)
