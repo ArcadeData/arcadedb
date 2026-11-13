@@ -122,6 +122,9 @@ public class GrpcPackedArraysIssue11714IT extends BaseGrpcClientServerTest {
     final MutableDocument document = database.newDocument("Special11714");
     document.set("embedding", SPECIAL);
     document.set("empty", new float[0]);
+    // newDocument() loaded the remote schema over gRPC, and that response announced the packed kinds: the save sends both
+    // arrays packed, so the undeclared properties are stored as the float[] they are
+    assertThat(database.sendsPackedArrays()).isTrue();
     document.save();
 
     final Document reloaded = (Document) database.lookupByRID(document.getIdentity(), true);

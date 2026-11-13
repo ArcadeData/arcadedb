@@ -184,10 +184,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   /**
    * The packed array negotiation (issue #11714): asks for {@code float[]} / {@code double[]} results packed, and learns from
    * the responses whether the server decodes packed requests, which an older one reads as nulls. Applied in
-   * {@link #rebuildStubs()} for the reason {@link #partialCommitInterceptor} is.
+   * {@link #rebuildStubs()} for the reason {@link #partialCommitInterceptor} is, but one per channel generation: what the
+   * server behind one channel announced says nothing about the server a reconnect reaches, so a new channel starts with
+   * lists, and a call of the replaced channel that answers late only informs the instance nothing reads any more.
    */
-  private final    PackedArraysNegotiationInterceptor                packedArrays             =
-      new PackedArraysNegotiationInterceptor();
+  private          PackedArraysNegotiationInterceptor                packedArrays;
 
   public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort,
                             final int httpPort,
@@ -220,8 +221,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * single place a subclass customises stub construction.
    */
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub() {
-    if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
-      rebuildStubs();
+    followChannelGeneration();
     return blockingStub;
   }
 
@@ -237,9 +237,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   /** @see #blockingStub() */
   private ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub() {
+    followChannelGeneration();
+    return asyncStub;
+  }
+
+  private void followChannelGeneration() {
     if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
       rebuildStubs();
-    return asyncStub;
   }
 
   /**
@@ -249,6 +253,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private void rebuildStubs() {
     final long generation = remoteGrpcServer.channelGeneration();
+    // #11714: a new channel may reach another server, so the negotiation starts over with it
+    packedArrays = new PackedArraysNegotiationInterceptor();
     // #8134: the partial-commit interceptor is attached HERE rather than inside createBlockingStub() /
     // createAsyncStub(), which exist to be overridden - a subclass customising stub construction would
     // otherwise drop the guard and silently go back to replaying a block whose earlier half is durable.
@@ -258,10 +264,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   /**
-   * Whether this database sends a {@code float[]} / {@code double[]} packed: only once a response of the server announced
-   * that it decodes the packed kinds (issue #11714), lists until then.
+   * Whether this database sends a {@code float[]} / {@code double[]} packed: only once a response on the CURRENT channel
+   * announced that its server decodes the packed kinds (issue #11714), lists until then. Called while a request is being
+   * encoded, so it follows a channel change first, as {@link #blockingStub()} does when the request is sent: an answer the
+   * replaced channel gave must not decide the encoding of the first request on the new one.
    */
   boolean sendsPackedArrays() {
+    followChannelGeneration();
     return packedArrays.serverDecodesPackedArrays();
   }
 
