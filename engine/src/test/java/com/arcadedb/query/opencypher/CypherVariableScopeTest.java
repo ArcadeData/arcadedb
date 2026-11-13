@@ -147,21 +147,25 @@ class CypherVariableScopeTest {
       // unchanged and type(r) is checked right there - still genuinely a relationship at that point. Only later,
       // and only after an intervening WITH that does NOT carry r forward (dropping it from scope), does a fresh
       // MATCH reuse the name "r" for a node - a completely disconnected rebinding that must not reach backwards
-      // and change what "r" meant at the WITH written above it.
+      // and change what "r" meant at the WITH written above it. The body exports it as "p": a CALL subquery cannot return a
+      // name the outer scope already binds (issue #11689).
       try (ResultSet ignored = database.query("opencypher",
           "MATCH ()-[r:KNOWS]->() "
-              + "CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS x MATCH (r:P) RETURN r, x } "
-              + "RETURN r")) {
+              + "CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS x MATCH (r:P) RETURN r AS p, x } "
+              + "RETURN r, p")) {
         assertThatCode(ignored::hasNext).doesNotThrowAnyException();
       }
     }
 
-    /** The exact query from the code-review comment that first raised this concern, kept as a named anchor. */
+    /**
+     * The query from the code-review comment that first raised this concern, kept as a named anchor. The column the body
+     * returns is renamed, as a CALL subquery cannot return a name the outer scope already binds (issue #11689).
+     */
     @Test
     void reviewCommentReproDoesNotFalselyReject() {
       database.getSchema().createEdgeType("KNOWS");
       try (ResultSet ignored = database.query("opencypher",
-          "MATCH ()-[r:KNOWS]->() CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS r RETURN r } RETURN r")) {
+          "MATCH ()-[r:KNOWS]->() CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS r RETURN r AS s } RETURN r, s")) {
         assertThatCode(ignored::hasNext).doesNotThrowAnyException();
       }
     }
