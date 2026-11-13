@@ -731,10 +731,10 @@ public final class CypherFunctionHelper {
   public static int compareMaps(final Map<?, ?> a, final Map<?, ?> b, final Comparator<Object> values) {
     if (a.size() != b.size())
       return Integer.compare(a.size(), b.size());
-    final List<String> keysA = sortedKeys(a);
-    final List<String> keysB = sortedKeys(b);
+    final List<Object> keysA = sortedKeys(a);
+    final List<Object> keysB = sortedKeys(b);
     for (int i = 0; i < keysA.size(); i++) {
-      final int cmp = BinaryComparator.compareStrings(keysA.get(i), keysB.get(i));
+      final int cmp = BinaryComparator.compareStrings(String.valueOf(keysA.get(i)), String.valueOf(keysB.get(i)));
       if (cmp != 0)
         return cmp;
     }
@@ -746,11 +746,11 @@ public final class CypherFunctionHelper {
     return 0;
   }
 
-  private static List<String> sortedKeys(final Map<?, ?> map) {
-    final List<String> keys = new ArrayList<>(map.size());
-    for (final Object key : map.keySet())
-      keys.add(String.valueOf(key));
-    keys.sort(BinaryComparator::compareStrings);
+  // The original keys sorted by their string form: a Java parameter map may hold non-String keys, and looking its values up by
+  // the string form would find none (#11657)
+  private static List<Object> sortedKeys(final Map<?, ?> map) {
+    final List<Object> keys = new ArrayList<>(map.keySet());
+    keys.sort((x, y) -> BinaryComparator.compareStrings(String.valueOf(x), String.valueOf(y)));
     return keys;
   }
 

@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +59,17 @@ class CypherMapOrderabilityIssue11657Test extends TestHelper {
     assertThat(ints("UNWIND [{a: 10}, {a: 2}, {a: 9}] AS m WITH min(m) AS x RETURN x.a AS v")).containsExactly(2);
     assertThat(ints("UNWIND [{a: 9}, {a: 10}, {a: 2}] AS m WITH max(m) AS x RETURN x.a AS v")).containsExactly(10);
     assertThat(ints("UNWIND [{a: 1, b: 1}, {a: 5}] AS m WITH max(m) AS x RETURN size(keys(x)) AS v")).containsExactly(2);
+  }
+
+  @Test
+  void mapsWithNonStringKeysFromParametersCompareByTheirValues() {
+    // A Java parameter map may carry Integer keys: the values must be looked up with the original key, not its string form
+    final List<Integer> order = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "UNWIND range(0, size($m) - 1) AS i RETURN i AS v ORDER BY $m[i]",
+        Map.of("m", List.of(Map.of(1, 10), Map.of(1, 9))))) {
+      rs.forEachRemaining(r -> order.add(r.<Number>getProperty("v").intValue()));
+    }
+    assertThat(order).containsExactly(1, 0);
   }
 
   private List<Integer> ints(final String query) {
