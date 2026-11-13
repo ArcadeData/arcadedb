@@ -2790,6 +2790,16 @@ public class CypherExecutionPlan {
             directionOverride = null;
           }
 
+          // Issue #11699: a target pinned by an equality on every column of a UNIQUE index is one vertex at most. Seeking
+          // it before the hop binds both ends, so the hop reads the edges joining the pair off the shorter edge list
+          // instead of every edge of the source and a filter on the target. Only from a source that is itself one vertex
+          // per row (bound already, or uniquely keyed too), where the seek costs one index lookup per row at most, and with
+          // key values a literal or parameter: one naming a variable of this pattern has nothing to read before the hop
+          final boolean seekTarget = !isOptional && !reversed && i == 0 && !relPattern.isVariableLength()
+              && !(relPattern instanceof QuantifiedPathPattern) && !boundVariables.contains(effectiveTargetVar)
+              && !matchVariables.contains(effectiveTargetVar) && (sourceAlreadyBound || isUniquelyKeyed(sourceNode))
+              && isUniquelyKeyed(effectiveTargetNode) && EdgeIndexSeedPlanner.isRowIndependent(effectiveTargetNode.getProperties());
+
           // Track relationship and target variables for cross-MATCH uniqueness scoping.
           // Only add variables that are NEW to this MATCH clause — already-bound variables
           // (from previous MATCHes or WITH) should not be treated as new match variables,
@@ -2798,6 +2808,11 @@ public class CypherExecutionPlan {
             matchVariables.add(relVar);
           if (!boundVariables.contains(effectiveTargetVar))
             matchVariables.add(effectiveTargetVar);
+          if (seekTarget) {
+            final MatchNodeStep targetSeek = new MatchNodeStep(effectiveTargetVar, effectiveTargetNode, context);
+            targetSeek.setPrevious(currentStep);
+            currentStep = targetSeek;
+          }
 
           AbstractExecutionStep nextStep;
           if (relPattern instanceof QuantifiedPathPattern quantified) {
@@ -3047,6 +3062,25 @@ public class CypherExecutionPlan {
       return pinned.isEmpty();
     }
     return true;
+  }
+
+  /**
+   * Whether a node pattern pins its node by an equality on every column of a UNIQUE index of its one label, so a seek of it
+   * finds one vertex at most (issue #11699).
+   */
+  private boolean isUniquelyKeyed(final NodePattern node) {
+    if (!node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels()
+        || node.getLabels().size() != 1)
+      return false;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(node.getLabels().getFirst()))
+      return false;
+    for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys != null && node.getProperties().keySet().containsAll(keys))
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -7566,6 +7600,11 @@ public class CypherExecutionPlan {
     // A node variable named twice is one vertex, a constraint the operator cannot express: it counts the chain as if
     // every position were free, so (x)-[:K]->(x) would count every K edge instead of the self-loops (issue #8941)
     if (repeatsNodeVariable(pathPattern))
+      return null;
+
+    // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
+    // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699)
+    if (hopCount == 1 && isUniquelyKeyed(pathPattern.getNode(0)) && isUniquelyKeyed(pathPattern.getNode(1)))
       return null;
 
     // Resolve inequality variable positions in the chain

@@ -44,11 +44,11 @@ import java.util.Set;
 /**
  * Physical operator that walks the relationships between two vertices the plan has already bound.
  * <p>
- * KEY OPTIMIZATION: the edge list of the source is filtered on the neighbour pointer stored beside
- * each edge pointer in the segment ({@code GraphEngine.getEdgesConnectedTo}), so an edge that does
- * not reach the target is rejected by two primitive comparisons instead of a record load. On a hub
- * vertex that is the difference between answering a question about one edge and reading its whole
- * edge list.
+ * KEY OPTIMIZATION: the edge list is filtered on the neighbour pointer stored beside each edge
+ * pointer in the segment ({@code GraphEngine.getEdgesConnectedTo}), so an edge that does not reach
+ * the other end is rejected by two primitive comparisons instead of a record load, and the list read
+ * is the shorter of the two ends' (issue #11699). On a hub vertex that is the difference between
+ * answering a question about one edge and reading its whole edge list.
  * <p>
  * Example query:
  * MATCH (a:Person {id: 1}), (b:Person {id: 2})
@@ -60,7 +60,8 @@ import java.util.Set;
  * relationship. Answering it once per input row under-counts every cycle and every multigraph pattern
  * (issue #5663).
  * <p>
- * Cost: O(degree(source)) pointer comparisons plus one record load per emitted row
+ * Cost: O(min(degree(source), degree(target))) pointer comparisons plus one record load per emitted
+ * row; O(degree(source)) over an edge type that stores no incoming side, read from the source only
  * Cardinality: input rows * the number of relationships joining the pair
  */
 public class ExpandInto extends AbstractPhysicalOperator {
@@ -200,8 +201,8 @@ public class ExpandInto extends AbstractPhysicalOperator {
    * Returns the relationships joining the two bound vertices, in the pattern's direction and of the
    * pattern's types, each one exactly once.
    * <p>
-   * The engine walks the source's edge segments rejecting on the neighbour pointer, so only the edges
-   * that actually reach the target are materialised.
+   * The engine walks the edge segments of whichever end has the shorter list (issue #11699), rejecting
+   * on the neighbour pointer, so only the edges that actually join the pair are materialised.
    * <p>
    * The {@link Vertex#getEdges} branch is for a source handle that is not a {@link VertexInternal},
    * which the plan does not produce today - every vertex an operator binds comes from a scan, a seek
