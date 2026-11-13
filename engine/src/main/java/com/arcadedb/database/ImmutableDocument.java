@@ -270,7 +270,7 @@ public class ImmutableDocument extends BaseDocument {
    * <p>
    * The reload must REPLACE the buffer, never refresh it in place: the openCypher SET clause detects a reload by the
    * buffer changing identity and re-evaluates its right-hand sides only then (issue #8538, pinned by a contract test in
-   * Issue8538MergeOnMatchLostUpdateTest). Refreshing in place would silently bring the lost update back.
+   * CypherConcurrentWriteTest.Issue8538MergeOnMatchLostUpdate). Refreshing in place would silently bring the lost update back.
    */
   protected void pinPageAndReloadIfStale() throws IOException {
     final BasePage page = database.getTransaction()

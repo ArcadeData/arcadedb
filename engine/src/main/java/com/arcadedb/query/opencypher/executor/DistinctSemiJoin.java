@@ -90,7 +90,7 @@ public final class DistinctSemiJoin {
    * temporal constructors ({@code date()}, {@code datetime()}, ...) are: they answer from one clock per statement.
    * A {@code sql.} bridge is never trusted here ({@code sql.date()} reads the clock on every call).
    * <p>
-   * {@code Issue11009DistinctSemiJoinTest} checks that every name listed is a registered function and that none of
+   * {@code CypherQueryPlanningTest.Issue11009DistinctSemiJoin} checks that every name listed is a registered function and that none of
    * the varying ones above is.
    */
   public static final Set<String> DETERMINISTIC_FUNCTIONS = Set.of(

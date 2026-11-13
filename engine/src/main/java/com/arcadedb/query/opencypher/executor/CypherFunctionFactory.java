@@ -274,7 +274,7 @@ public class CypherFunctionFactory {
     } catch (final RuntimeException e) {
       // a function that validates its arguments in config() refuses the placeholders. It is not an aggregation as far as the
       // planner can tell, and the call reports the real error when it is configured with its real arguments.
-      // Issue9768CypherDottedAggregateTest sweeps the registry so that a registered function that does this fails a test
+      // CypherFunctionResolutionTest.Issue9768CypherDottedAggregate sweeps the registry so that a registered function that does this fails a test
       LogManager.instance().log(CypherFunctionFactory.class, Level.FINE,
           "Function '%s' refused the probe configuration, so it is not planned as an aggregation: %s", sqlFunctionName, e.getMessage());
       return false;

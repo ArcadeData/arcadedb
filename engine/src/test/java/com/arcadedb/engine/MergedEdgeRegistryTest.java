@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The protocol of {@link MergedEdgeRegistry} (issue #11482), deterministically: what a key is, and how a commit is refused by
  * another one that committed after its begin or is committing now. The concurrent end-to-end behaviour is covered by
- * {@code Issue11482ConcurrentMergeRelationshipTest}.
+ * {@code CypherConcurrentWriteTest.Issue11482ConcurrentMergeRelationship}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

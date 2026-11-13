@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * missing vertex in {@code nodes}, nor the edge reaching it in {@code relationships}. Reporting the edge while
  * leaving its endpoint out just moves the failure to whoever reads the edge back.
  * <p>
- * The ghost is fabricated the way {@code AlgoGhostEdgeTest} and {@code Issue394Test} do it - the record is deleted
+ * The ghost is fabricated the way {@code AlgoGhostEdgeTest} and {@code CypherMergeSemanticsTest.Issue394} do it - the record is deleted
  * from its bucket directly, so the pointers that name it survive - except that here it is the VERTEX that goes,
  * not the edge.
  *

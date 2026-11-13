@@ -47,7 +47,7 @@ import org.neo4j.driver.SessionConfig;
  * that also self-loops and carries {@code ON CREATE}/{@code ON MATCH SET} touching a variable
  * bound by the earlier {@code CREATE}).
  * <p>
- * See also {@link com.arcadedb.query.opencypher.Issue6367MergeStepAutoRetryTest} in the engine
+ * See also {@link com.arcadedb.query.opencypher.CypherConcurrentWriteTest.Issue6367MergeStepAutoRetry} in the engine
  * module, which pins down and regression-tests the specific defect this investigation found still
  * live on this branch: {@code MergeStep}, unlike {@code CreateStep}, did not retry an MVCC conflict
  * when it owned its own auto-commit mini-transaction (the normal shape for an unwrapped autocommit

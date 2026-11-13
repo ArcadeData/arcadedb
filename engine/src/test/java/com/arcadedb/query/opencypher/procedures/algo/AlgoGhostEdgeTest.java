@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * database copy or a rolled-back transaction) by skipping them, rather than throwing
  * {@code RecordNotFoundException} and crashing the whole query.
  * <p>
- * Mirrors the ghost-edge fabrication used by {@code Issue394Test}: delete only the edge record from
+ * Mirrors the ghost-edge fabrication used by {@code CypherMergeSemanticsTest.Issue394}: delete only the edge record from
  * its bucket, leaving the segment pointer in place.
  */
 class AlgoGhostEdgeTest {
