@@ -116,6 +116,9 @@ public class TransactionManager {
   private static final int                   VERTEX_DELETE_STRIPES = 1 << 14;
   private final AtomicLong                   vertexDeleteSequence = new AtomicLong();
   private volatile AtomicLongArray           vertexDeletedAt;
+  // The sequence the last replicated apply reaching a vertex bucket took (#11592). An entry carries page images, not the records it
+  // deleted, so a transaction that began before it may have read alive a vertex it deleted, under any RID
+  private final AtomicLong                   vertexReplicatedApplyAt = new AtomicLong();
   // Sequence of the bucket indexes bound to their type, and the number each of them took (#10588): what a transaction that began
   // before an index existed asks at its commit to know which indexes it owes entries to
   private final AtomicLong                   indexRegistrationSequence = new AtomicLong();
@@ -268,10 +271,13 @@ public class TransactionManager {
   }
 
   /**
-   * Whether a vertex with this RID (or one sharing its stripe) was deleted by a commit after {@code sequence} was taken. The RID can
-   * be holding a vertex created after the delete, which no image of the record tells apart from the one deleted (#11592).
+   * Whether a vertex with this RID (or one sharing its stripe) was deleted by a commit after {@code sequence} was taken, or a
+   * replicated apply that reached a vertex bucket ran after it. The RID can be holding a vertex created after the delete, which no
+   * image of the record tells apart from the one deleted (#11592).
    */
   public boolean wasVertexDeletedSince(final RID rid, final long sequence) {
+    if (vertexReplicatedApplyAt.get() > sequence)
+      return true;
     final AtomicLongArray deletedAt = vertexDeletedAt;
     return deletedAt != null && deletedAt.get(vertexDeleteStripe(rid.getBucketId(), rid.getPosition())) > sequence;
   }
@@ -296,6 +302,22 @@ public class TransactionManager {
       // max: with an explicit lock list two commits can reach here out of order
       deletedAt.accumulateAndGet(vertexDeleteStripe(bucketId, position), sequence, Math::max);
     });
+  }
+
+  /**
+   * Called after a replicated (or recovered) entry was written to the pages: when it reached a vertex bucket, a transaction that
+   * began before it can no longer merge an edge-list head (#11592). A follower commits no transaction of its own, so this only
+   * refuses, with a retryable conflict, one begun before the node was promoted.
+   */
+  private void replicatedPagesApplied(final WALFile.WALTransaction tx) {
+    if (tx.pages == null)
+      return;
+    final Schema schema = database.getSchema();
+    for (final WALFile.WALPage page : tx.pages)
+      if (schema.getTypeByBucketId(page.fileId) instanceof VertexType) {
+        vertexReplicatedApplyAt.accumulateAndGet(vertexDeleteSequence.incrementAndGet(), Math::max);
+        return;
+      }
   }
 
   private static int vertexDeleteStripe(final int bucketId, final long position) {
@@ -1633,6 +1655,9 @@ public class TransactionManager {
           unlockFile(bucketLocks.locked[i], requester);
       }
       applyLock.readLock().unlock();
+      // #11592: after the pages are published, so a transaction that began after this sequence read what the entry wrote. Also
+      // when it threw: part of the entry can be published
+      replicatedPagesApplied(tx);
     }
   }
 

@@ -5097,17 +5097,20 @@ public class TransactionContext implements Transaction {
       final int slot = (int) (rid.getPosition() % maxRecordsInPage);
       final PageId pageId = new PageId(database, bucket.getFileId(), pageNumber);
 
+      // #11592: the vertex was deleted by a commit after this transaction began, and a vertex created since can hold its RID. No
+      // image tells the two apart (a vertex created with the same properties has the same bytes), so neither the heads of the
+      // one this transaction read nor its write go onto the vertex there now: refused, as with the slot merge off. Before the
+      // version check: a transaction that pins the page only after the new vertex was committed finds the version it pinned
+      // current, and a read of identical bytes is not marked stale. Two volatile reads when no vertex was ever deleted. A vertex
+      // this transaction created on a RID freed since it began is its own and keeps its relationships
+      if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch) && !isCreatedInTransaction(rid))
+        throw new ConcurrentModificationException(
+            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
+
       final MutablePage pinned = modifiedPages.get(pageId);
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
         // the common case: nobody committed the page since this transaction pinned it. Answered from the version alone
         continue;
-
-      // #11592: the vertex was deleted by a commit after this transaction began, and a vertex created since can hold its RID. No
-      // image tells the two apart (a vertex created with the same properties has the same bytes), so neither the heads of the
-      // one this transaction read nor its write go onto the vertex there now: refused, as with the slot merge off
-      if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch))
-        throw new ConcurrentModificationException(
-            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
 
       final ImmutablePage committedPage = committedPage(pageId, bucket.getPageSize());
       if (!staleRead && isSlotTracked(pageId.getFileId(), pageNumber, slot))
