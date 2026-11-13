@@ -169,6 +169,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
     currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, position.getBucketId(), nextPageNumber),
         bucket.pageSize);
+    // #11590: the scan goes on through this page: what it finds there, and what it does not, may come from the transaction's own
+    // stale image of it, which its commit has to know
+    if (currentPage instanceof MutablePage)
+      database.getTransaction().trackScanOfPage(currentPage);
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
 
@@ -408,6 +412,9 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     }
 
     currentRecordInPage = (int) (position % bucket.getMaxRecordsInPage());
+    // #11590: a record looked for in the transaction's own image of the page, found or not, see LocalBucket.getRecordInternal
+    if (currentPage instanceof MutablePage)
+      database.getTransaction().trackReadFromPage(currentPage, currentRecordInPage);
     if (currentRecordInPage < recordCountInCurrentPage)
       readSlot();
     return true;
@@ -490,6 +497,9 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
             currentPage = database.getTransaction()
                 .getPageForAbsoluteReads(new PageId(database, bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
+            // #11590: see setPosition
+            if (currentPage instanceof MutablePage)
+              database.getTransaction().trackScanOfPage(currentPage);
             recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
             if (!forwardDirection && currentRecordInPage == Integer.MAX_VALUE)

@@ -2493,7 +2493,8 @@ public class TransactionContext implements Transaction {
     // transaction wrote there was declared replayable by THIS merge. A writer that forgot to poison the page (or
     // never knew the merge exists) leaves at least one undeclared byte behind and is refused here - a retry instead
     // of a silently lost write. See reportCoverageDecline for the counter and the log.
-    return hasReplayableEdgeAppends(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
+    return hasReplayableEdgeAppends(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE)
+        && areReadsFromOwnImageCurrent(page, false);
   }
 
   /**
@@ -3084,7 +3085,114 @@ public class TransactionContext implements Transaction {
   private boolean isRebasableSlotPage(final MutablePage page) {
     // #5596: same coverage proof as the edge-append merge - the page is re-derived from the tracked slot writes
     // alone, so any byte written outside a slot-merge declaration disqualifies it.
-    return hasReplayableSlotWrites(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+    return hasReplayableSlotWrites(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)
+        && areReadsFromOwnImageCurrent(page, true);
+  }
+
+  /**
+   * Whether every read this transaction served from its own image of {@code page} still holds on the committed page (#11590).
+   * Under {@code READ_COMMITTED} that image was taken at the transaction's first write to the page and misses what others
+   * committed there since, while the merges replay the transaction's writes onto the newer page and check only the slots it
+   * wrote: a decision taken on a slot of the image that changed meanwhile, or on the image as a whole, would be committed too.
+   * A slot the merge replays is not compared (the slot merge checks the pre-image of a slot it replays, the edge-append merge
+   * re-applies appends that commute); every other slot read must hold the same record on both pages, or none on either. Runs on
+   * the conflict path only, under the commit lock.
+   *
+   * @param bySlotMerge true for the slot merge, whose replayed slots are the ones it tracked, false for the edge-append merge,
+   *                    whose replayed slots are the edge-list segments this transaction appended to
+   */
+  private boolean areReadsFromOwnImageCurrent(final MutablePage page, final boolean bySlotMerge) {
+    final boolean wholePage = page.isWholePageRead();
+    if (!wholePage && page.nextSlotRead(0) < 0)
+      return true;
+
+    final PageId pageId = page.getPageId();
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
+    if (bucket == null)
+      return false;
+    final SlotRebaseBuffer buffer = bySlotMerge ? slotRebaseByPage.get(packPageKey(pageId.getFileId(), pageId.getPageNumber())) : null;
+    try {
+      final ImmutablePage committed = committedPage(pageId, bucket.getPageSize());
+      if (committed == null)
+        return false;
+      // a scan of the page read every slot of it, the ones it did not find included
+      final int scanned = wholePage ? Math.max(bucket.getSlotCountInPage(page), bucket.getSlotCountInPage(committed)) : 0;
+      for (int slot = 0; slot < scanned; slot++)
+        if (!isReplayedSlot(bucket, pageId, buffer, slot) && !isReadSlotCurrent(bucket, page, committed, slot))
+          return false;
+      for (int slot = page.nextSlotRead(scanned); slot >= 0; slot = page.nextSlotRead(slot + 1))
+        if (!isReplayedSlot(bucket, pageId, buffer, slot) && !isReadSlotCurrent(bucket, page, committed, slot))
+          return false;
+      return true;
+    } catch (final IOException e) {
+      // a page that cannot be read cannot vouch for the reads: the conflict stands and the transaction retries
+      return false;
+    }
+  }
+
+  /** Whether the merge replays {@code slot}: tracked by {@code buffer} for the slot merge, an appended segment otherwise. */
+  private boolean isReplayedSlot(final LocalBucket bucket, final PageId pageId, final SlotRebaseBuffer buffer, final int slot) {
+    if (buffer != null)
+      return buffer.isTracked(slot);
+    return edgeAppendsBySegment.containsKey(recordAt(bucket, pageId, slot));
+  }
+
+  private static RID recordAt(final LocalBucket bucket, final PageId pageId, final int slot) {
+    return new RID(pageId.getFileId(), (long) pageId.getPageNumber() * bucket.getMaxRecordsInPage() + slot);
+  }
+
+  /**
+   * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
+   * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
+   * only in the heads of its edge lists is still the one read when this transaction appended to one of those lists: the
+   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends.
+   */
+  private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
+      final int slot) {
+    final byte[] read = bucket.readPlainRecordBody(image, slot);
+    final byte[] current = bucket.readPlainRecordBody(committed, slot);
+    if (read == null || current == null)
+      return read == null && current == null && bucket.isSlotFree(image, slot) && bucket.isSlotFree(committed, slot);
+    if (Arrays.equals(read, current))
+      return true;
+
+    if (edgeAppendsBySegment == null || read.length != current.length || read.length < VERTEX_HEADS_END
+        || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
+        || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
+      return false;
+    final RID vertex = recordAt(bucket, image.getPageId(), slot);
+    for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
+      if (vertex.equals(appends.owner))
+        return true;
+    return false;
+  }
+
+  /**
+   * Records that a record read was served from {@code page} at slot {@code slot}, so a commit-time merge of the page can tell a
+   * decision taken on the transaction's own image of it (#11590). Under {@code READ_COMMITTED} a page this transaction holds
+   * modified is that image, taken at its first write: it misses what others committed to the page since, and the merges must
+   * not replay this transaction's writes onto the newer page when they may rest on such a read. Only a page the transaction
+   * holds modified is recorded, while it runs: nothing is allocated for any other read.
+   */
+  public void trackReadFromPage(final BasePage page, final int slot) {
+    if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage())
+      if (slot < 0)
+        mutable.markWholePageRead();
+      else
+        mutable.markSlotRead(slot);
+  }
+
+  /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
+  public void trackScanOfPage(final BasePage page) {
+    if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage())
+      mutable.markWholePageRead();
+  }
+
+  private boolean isTrackingReadsFromOwnImage() {
+    // REPEATABLE_READ reads every page as it stood at the transaction's first access, which its own image is. The commit's own
+    // reads (COMMIT_1ST_PHASE) run under the commit lock and decide nothing a merge could replay.
+    return status == STATUS.BEGUN && isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED && (slotMerge
+        || edgeAppendMerge);
   }
 
   /**
