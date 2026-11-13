@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * edge record and crashed the whole Cypher command (and, on the leader's Raft apply path, destabilized
  * the cluster).
  * <p>
- * Mirrors the precedent set by {@code Issue394Test} (ghost edges in MERGE): the per-edge body of the
+ * Mirrors the precedent set by {@code CypherMergeSemanticsTest.Issue394} (ghost edges in MERGE): the per-edge body of the
  * pattern-predicate loops now skips ghost edges instead of propagating the exception.
  */
 class PatternPredicateGhostEdgeTest {

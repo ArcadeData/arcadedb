@@ -240,7 +240,7 @@ class Issue8610StaleReadModifyTest {
   }
 
   /**
-   * And for an openCypher SET (the MERGE actions are covered by Issue8538MergeOnMatchLostUpdateTest).
+   * And for an openCypher SET (the MERGE actions are covered by CypherConcurrentWriteTest.Issue8538MergeOnMatchLostUpdate).
    */
   @Test
   void cypherSetBuildsOnACommitLandingInsideTheStatement() {
