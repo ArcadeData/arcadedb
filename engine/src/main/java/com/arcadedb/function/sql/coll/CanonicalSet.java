@@ -84,7 +84,7 @@ public class CanonicalSet extends AbstractSet<Object> {
   }
 
   private static Object canonicalKey(final Object o) {
-    if (o instanceof Set<?> set && !(o instanceof CanonicalSet)) {
+    if (o instanceof Set<?> set) {
       final Set<Object> canonicalSet = new HashSet<>(set.size());
       for (final Object element : set)
         canonicalSet.add(canonicalKey(element));

@@ -78,7 +78,7 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
     }
 
     // IN-LINE MODE (STATELESS)
-    Iterator iterator = MultiValue.getMultiValueIterator(value, false);
+    Iterator iterator = value instanceof byte[] ? List.of(value).iterator() : MultiValue.getMultiValueIterator(value, false);
 
     for (int i = 1; i < params.length; ++i) {
       value = params[i];

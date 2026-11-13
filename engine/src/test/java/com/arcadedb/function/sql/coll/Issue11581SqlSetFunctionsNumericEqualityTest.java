@@ -93,12 +93,30 @@ class Issue11581SqlSetFunctionsNumericEqualityTest extends TestHelper {
         new Object[] { List.of(1), map }, new BasicCommandContext());
     assertThat(res2).containsExactly(1);
 
-    // 3. Nested Set elements equal regardless of iteration order
+    // Binary byte[] operand in inline intersect()
+    @SuppressWarnings("unchecked")
+    final List<Object> intBinMatch = (List<Object>) intersect.execute(null, null, null,
+        new Object[] { binary, binary }, new BasicCommandContext());
+    assertThat(intBinMatch).hasSize(1);
+    assertThat(intBinMatch).containsExactly(binary);
+
+    @SuppressWarnings("unchecked")
+    final List<Object> intBinMismatch = (List<Object>) intersect.execute(null, null, null,
+        new Object[] { binary, new byte[] { 3, 4 } }, new BasicCommandContext());
+    assertThat(intBinMismatch).isEmpty();
+
+    // 3. Nested Set elements equal regardless of iteration order and Set implementations
     final java.util.Set<Integer> set1 = new java.util.LinkedHashSet<>(List.of(1, 2));
     final java.util.Set<Integer> set2 = new java.util.LinkedHashSet<>(List.of(2, 1));
+    final CanonicalSet innerCs = new CanonicalSet();
+    innerCs.add(1L);
+    innerCs.add(2L);
+
     final CanonicalSet outer = new CanonicalSet();
-    outer.add(set1);
+    outer.add(innerCs);
+    assertThat(outer.contains(set1)).isTrue();
     assertThat(outer.contains(set2)).isTrue();
+    assertThat(outer.add(set1)).isFalse();
     assertThat(outer.add(set2)).isFalse();
     assertThat(outer).hasSize(1);
   }
