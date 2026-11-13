@@ -1162,6 +1162,29 @@ public class CypherSemanticValidator {
       final ListIndexExpression lie = (ListIndexExpression) expr;
       checkExpressionScope(lie.getListExpression(), scope);
       checkExpressionScope(lie.getIndexExpression(), scope);
+    } else if (expr instanceof ListSliceExpression slice) {
+      // l[0..3] with l never bound evaluated to null instead of being refused (issue #11686)
+      checkExpressionScope(slice.getListExpression(), scope);
+      checkExpressionScope(slice.getFromExpression(), scope);
+      checkExpressionScope(slice.getToExpression(), scope);
+    } else if (expr instanceof PatternComprehensionExpression pce) {
+      // The pattern binds its own variables (and the optional path variable) for the WHERE and the projection only.
+      // Without this branch an unbound name after | evaluated to null per match instead of being refused (issue #11686)
+      final PathPattern path = pce.getPathPattern();
+      final Set<String> innerScope = new HashSet<>(scope);
+      if (pce.getPathVariable() != null)
+        innerScope.add(pce.getPathVariable());
+      if (path != null) {
+        addBoundVarsFromPattern(path, innerScope);
+        for (final NodePattern node : path.getNodes())
+          if (node.getProperties() != null)
+            checkPropertyValuesScope(node.getProperties(), innerScope);
+        for (final RelationshipPattern rel : path.getRelationships())
+          if (rel.getProperties() != null)
+            checkPropertyValuesScope(rel.getProperties(), innerScope);
+      }
+      checkExpressionScope(pce.getWhereExpression(), innerScope);
+      checkExpressionScope(pce.getMapExpression(), innerScope);
     } else if (expr instanceof ListPredicateExpression) {
       final ListPredicateExpression lpe = (ListPredicateExpression) expr;
       checkExpressionScope(lpe.getListExpression(), scope);
