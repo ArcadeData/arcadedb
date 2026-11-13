@@ -27,9 +27,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #11588: CALL { ... } IN TRANSACTIONS inside a transaction the client opened (HTTP /begin, Bolt BEGIN) committed
- * its batches on their own, so the client's ROLLBACK did not undo them. The statement is now refused there, as Neo4j
- * does, and keeps running in batches in an implicit transaction.
+ * Issue #11588: CALL { ... } IN TRANSACTIONS inside a transaction its caller owns (HTTP /begin, Bolt BEGIN, an embedded
+ * begin() or transaction()) committed its batches on their own, so the caller's ROLLBACK did not undo them. The statement
+ * is now refused there, as Neo4j does, and keeps running in batches in an implicit transaction: none at all, or the one a
+ * server opens around one request.
  */
 class CallInTransactionsExplicitTxIssue11588Test extends TestHelper {
 
@@ -64,10 +65,54 @@ class CallInTransactionsExplicitTxIssue11588Test extends TestHelper {
   }
 
   @Test
+  void refusedInEmbeddedTransactionAndNothingCommitted() {
+    assertThatThrownBy(() -> database.transaction(() -> {
+      database.command("opencypher", "CREATE (:X {i: 0})");
+      database.command("opencypher", STATEMENT);
+    })).hasStackTraceContaining("can only be executed in an implicit transaction");
+
+    assertThat(countX()).isZero();
+  }
+
+  @Test
+  void refusedInEmbeddedBeginAndRollbackLeavesNothing() {
+    database.begin();
+    try {
+      assertThatThrownBy(() -> database.command("opencypher", STATEMENT))
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("implicit transaction");
+    } finally {
+      database.rollback();
+    }
+
+    assertThat(countX()).isZero();
+  }
+
+  @Test
   void runsInServerOpenedTransaction() {
-    // The HTTP auto-commit wrapper runs every command inside database.transaction(): not client managed
-    database.transaction(() -> database.command("opencypher", STATEMENT));
+    // What the HTTP auto-commit wrapper does around every command it runs
+    database.transaction(() -> {
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+      database.command("opencypher", STATEMENT);
+    });
     assertThat(countX()).isEqualTo(25);
+  }
+
+  @Test
+  void refusedOnceTheClientDeclaresTheImplicitTransactionItsOwn() {
+    // A Postgres BEGIN sent inside the implicit block of a pipeline joins that block and declares it the client's
+    database.begin();
+    ((DatabaseInternal) database).getTransaction().setImplicit(true);
+    ((DatabaseInternal) database).getTransaction().setClientManaged(true);
+    try {
+      assertThatThrownBy(() -> database.command("opencypher", STATEMENT))
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("implicit transaction");
+    } finally {
+      database.rollback();
+    }
+
+    assertThat(countX()).isZero();
   }
 
   private long countX() {
