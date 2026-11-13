@@ -18,9 +18,11 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ImmutablePage;
@@ -91,6 +93,47 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
       assertThat(database.countType("E", false)).isZero();
       assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
     });
+  }
+
+  @Test
+  void appendsOverflowingAChunkFilledUnderTheRidOfAVertexReplacedConcurrentlyConflict() throws Exception {
+    // first chunks of the maximum size: a full one cannot grow, so appends that do not fit go in a new head chunk
+    final int savedChunkSize = GlobalConfiguration.GRAPH_EDGE_LIST_INITIAL_CHUNK_SIZE.getValueAsInteger();
+    GlobalConfiguration.GRAPH_EDGE_LIST_INITIAL_CHUNK_SIZE.setValue(LocalDatabase.MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE);
+    try {
+      final RID a = newVertex("a");
+      final RID sink = newVertex("sink");
+      final List<RID> mine = new ArrayList<>();
+      for (int i = 0; i < 11; i++)
+        mine.add(newVertex("t" + i));
+      final RID chunk = edgeAndOutHead(a, sink);
+      final AtomicReference<RID> replacement = new AtomicReference<>();
+      final AtomicReference<RID> replacementChunk = new AtomicReference<>();
+      final long overflowsBefore = stats().edgeAppendMerges;
+
+      // the transaction appends to a's chunk without filling it, so a is not written. Meanwhile a is deleted, an identical vertex
+      // takes its RID, and its first chunk takes the RID of the one the transaction appended to and is filled up
+      final Throwable failure = interleave(() -> {
+        for (final RID t : mine)
+          vertex(a).newEdge("E", vertex(t));
+      }, () -> {
+        database.transaction(() -> vertex(a).delete());
+        replacement.set(newVertex("a"));
+        replacementChunk.set(edgeAndOutHead(a, sink));
+        database.transaction(() -> {
+          while (replacementChunk.get().equals(((VertexInternal) vertex(a)).getOutEdgesHeadChunk()))
+            vertex(a).newEdge("E", vertex(sink));
+        });
+      });
+
+      assertThat(replacement.get()).as("the new vertex reuses the RID of the deleted one").isEqualTo(a);
+      assertThat(replacementChunk.get()).as("the new vertex's chunk reuses the RID of the one appended to").isEqualTo(chunk);
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+      assertThat(stats().edgeAppendMerges).as("no append was moved to a new head chunk").isEqualTo(overflowsBefore);
+      database.transaction(() -> assertThat(neighbours(a, Vertex.DIRECTION.OUT)).doesNotContainAnyElementsOf(mine));
+    } finally {
+      GlobalConfiguration.GRAPH_EDGE_LIST_INITIAL_CHUNK_SIZE.setValue(savedChunkSize);
+    }
   }
 
   @Test
@@ -260,6 +303,14 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
 
   private Vertex vertex(final RID rid) {
     return database.lookupByRID(rid, true).asVertex();
+  }
+
+  /** Creates the relationship {@code from} to {@code to} in a transaction of its own, then answers {@code from}'s out head. */
+  private RID edgeAndOutHead(final RID from, final RID to) {
+    return compute(() -> {
+      vertex(from).newEdge("E", vertex(to));
+      return ((VertexInternal) vertex(from)).getOutEdgesHeadChunk();
+    });
   }
 
   private List<RID> neighbours(final RID rid, final Vertex.DIRECTION direction) {

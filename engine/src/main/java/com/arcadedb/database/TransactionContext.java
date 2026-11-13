@@ -5234,6 +5234,12 @@ public class TransactionContext implements Transaction {
         previousHead = appends.ownerOut ? queuedVertex.getOutEdgesHeadChunk() : queuedVertex.getInEdgesHeadChunk();
       } else if (ownerQueued == null) {
         // not written by this transaction: written from its committed image, which the lock keeps as it is
+        // #11592: the vertex the transaction appended for can have been deleted since it began, and the vertex at its RID now be
+        // a new one, with a chunk of its own at the RID of the one appended to. Written from that image, the new head would give
+        // the new vertex these relationships; mergeEdgeListHeads skips an owner queued here, so it is refused here
+        if (database.getTransactionManager().wasVertexDeletedSince(owner, vertexDeleteEpoch) && !isCreatedInTransaction(owner))
+          throw new ConcurrentModificationException(
+              "Record " + owner + " was deleted by a concurrent transaction. Please retry the operation");
         final int ownerMaxRecords = ownerBucket.getMaxRecordsInPage();
         final PageId ownerPageId = new PageId(database, ownerBucket.getFileId(), (int) (owner.getPosition() / ownerMaxRecords));
         final ImmutablePage ownerPage = committedPage(ownerPageId, ownerBucket.getPageSize());
