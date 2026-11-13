@@ -51,6 +51,7 @@ import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -723,6 +724,36 @@ public final class CypherFunctionHelper {
     return TemporalUtil.fromCoreJavaType(value) instanceof CypherTemporalValue wrapped ? temporalTypeRank(wrapped) : -1;
   }
 
+  /**
+   * The Cypher order of two maps, as Neo4j orders them: by size, then by their keys in ascending order, then by the values of
+   * those keys in that order, each compared by {@code values}.
+   */
+  public static int compareMaps(final Map<?, ?> a, final Map<?, ?> b, final Comparator<Object> values) {
+    if (a.size() != b.size())
+      return Integer.compare(a.size(), b.size());
+    final List<String> keysA = sortedKeys(a);
+    final List<String> keysB = sortedKeys(b);
+    for (int i = 0; i < keysA.size(); i++) {
+      final int cmp = BinaryComparator.compareStrings(keysA.get(i), keysB.get(i));
+      if (cmp != 0)
+        return cmp;
+    }
+    for (int i = 0; i < keysA.size(); i++) {
+      final int cmp = values.compare(a.get(keysA.get(i)), b.get(keysB.get(i)));
+      if (cmp != 0)
+        return cmp;
+    }
+    return 0;
+  }
+
+  private static List<String> sortedKeys(final Map<?, ?> map) {
+    final List<String> keys = new ArrayList<>(map.size());
+    for (final Object key : map.keySet())
+      keys.add(String.valueOf(key));
+    keys.sort(BinaryComparator::compareStrings);
+    return keys;
+  }
+
   @SuppressWarnings({ "unchecked", "rawtypes" })
   public static int cypherCompare(final Object a, final Object b) {
     if (a == null && b == null)
@@ -750,6 +781,9 @@ public final class CypherFunctionHelper {
     // every pair of them tied and min() / max() kept the first row (issue #10380)
     if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
       return BinaryComparator.compareBytes(bytesA, bytesB);
+    // A Map is not Comparable: without this arm every pair of maps tied and min() / max() kept the first row
+    if (a instanceof Map<?, ?> mapA && b instanceof Map<?, ?> mapB)
+      return compareMaps(mapA, mapB, CypherFunctionHelper::cypherCompare);
     if ((a instanceof List || MultiValue.isSequenceArray(a)) && (b instanceof List || MultiValue.isSequenceArray(b))) {
       final List<?> la = MultiValue.getMultiValueAsList(a);
       final List<?> lb = MultiValue.getMultiValueAsList(b);
