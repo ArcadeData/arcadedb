@@ -22,12 +22,18 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.java.JavaMethodFunctionLibraryDefinition;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
-class TraverseStatementExecutionTest extends TestHelper {
+public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   void plainTraverse() {
     database.transaction(() -> {
@@ -572,5 +578,161 @@ class TraverseStatementExecutionTest extends TestHelper {
       }
       assertThat(names).as(strategy).containsExactly("leaf", "mid", "root");
     }
+  }
+
+  // ---- #8795: TRAVERSE runs its projection only on vertices that can still expand ----
+  // TRAVERSE ran its projection on every vertex it visited, including those at MAXDEPTH, and dropped the result
+  // afterwards. On a graph that fans out the last level is the largest, so most of the out() work loaded neighbor
+  // lists nobody used. The projection must run only on vertices that can still expand.
+  // The class is public because the projection below is registered as a Java function library and invoked reflectively.
+
+  private static final AtomicInteger DEPTH_PROJECTION_TOUCHED = new AtomicInteger();
+
+  /** The projection under test: counts its calls and leads nowhere. */
+  public static Object touch(final Object ignored) {
+    DEPTH_PROJECTION_TOUCHED.incrementAndGet();
+    return List.of();
+  }
+
+  private void createDepthProjectionFixture() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("E");
+    // A CHAIN OF 6 VERTICES, SO MAXDEPTH 3 REACHES VERTEX 3 AND NOTHING BEYOND
+    database.transaction(() -> {
+      MutableVertex prev = null;
+      for (int i = 0; i < 6; i++) {
+        final MutableVertex v = database.newVertex("V").set("id", i).save();
+        if (prev != null)
+          prev.newEdge("E", v);
+        prev = v;
+      }
+    });
+    try {
+      database.getSchema().registerFunctionLibrary(
+          new JavaMethodFunctionLibraryDefinition("t8795", TraverseStatementExecutionTest.class.getMethod("touch", Object.class)));
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /** Regression test for issue #8795. */
+  @Test
+  void projectionDoesNotRunOnVerticesAtMaxDepth() {
+    createDepthProjectionFixture();
+    try {
+      for (final String strategy : new String[] { "DEPTH_FIRST", "BREADTH_FIRST" }) {
+        DEPTH_PROJECTION_TOUCHED.set(0);
+        final List<Integer> ids = new ArrayList<>();
+        try (final ResultSet rs = database.query("sql",
+            "TRAVERSE out('E'), `t8795.touch`(@rid) FROM (SELECT FROM V WHERE id = 0) MAXDEPTH 3 STRATEGY " + strategy)) {
+          while (rs.hasNext())
+            ids.add(rs.next().<Integer>getProperty("id"));
+        }
+        assertThat(ids).as(strategy).containsExactlyInAnyOrder(0, 1, 2, 3);
+        // DEPTH 0, 1 AND 2 EXPAND; THE VERTEX AT DEPTH 3 DOES NOT
+        assertThat(DEPTH_PROJECTION_TOUCHED.get()).as(strategy).isEqualTo(3);
+      }
+    } finally {
+      database.getSchema().unregisterFunctionLibrary("t8795");
+    }
+  }
+
+  // ---- #9778: both TRAVERSE strategies accept the same entry points ----
+  // The two TRAVERSE strategies differ in the order they visit nodes and in nothing else, so a row that is a valid entry
+  // point for one is a valid entry point for the other. The breadth-first step turned a one-column row holding a bare RID
+  // (SELECT @rid ..., or a LINK property) into no entry point at all and answered an empty result, while the depth-first
+  // step loaded the record and walked the whole graph.
+
+  private static final String[] ENTRY_POINT_SOURCES = {//
+      "[%s]",//
+      "(SELECT @this AS v FROM V WHERE name = 'a')",//
+      "(SELECT FROM V WHERE name = 'a')",//
+      "(SELECT @rid FROM V WHERE name = 'a')",//
+      "(SELECT @rid AS r FROM V WHERE name = 'a')",//
+      "(SELECT link FROM L)",//
+      "(SELECT expand(link) FROM L)" };
+
+  /** Creates the a -> b -> c chain plus a document type L linking to a, and returns the RID of a. */
+  private String createEntryPointFixture() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("E");
+    database.getSchema().createDocumentType("L").createProperty("link", Type.LINK);
+
+    final String[] aRid = new String[1];
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("V").set("name", "a").save();
+      final MutableVertex b = database.newVertex("V").set("name", "b").save();
+      final MutableVertex c = database.newVertex("V").set("name", "c").save();
+      a.newEdge("E", b);
+      b.newEdge("E", c);
+      database.newDocument("L").set("link", a.getIdentity()).save();
+      aRid[0] = a.getIdentity().toString();
+    });
+    return aRid[0];
+  }
+
+  /** Regression test for issue #9778. */
+  @Test
+  void everyEntryPointShapeTraversesTheWholeGraphUnderBothStrategies() {
+    final String aRid = createEntryPointFixture();
+    for (final String source : ENTRY_POINT_SOURCES) {
+      final String from = source.formatted(aRid);
+      assertThat(traverseNames(from, "DEPTH_FIRST")).as("DEPTH_FIRST from %s", from).containsExactlyInAnyOrder("a", "b", "c");
+      assertThat(traverseNames(from, "BREADTH_FIRST")).as("BREADTH_FIRST from %s", from).containsExactlyInAnyOrder("a", "b", "c");
+    }
+  }
+
+  /**
+   * Regression test for issue #9778.
+   * <p>
+   * A row of two or more columns is not an entry point under either strategy. Pinned here for what the issue asks of every
+   * shape: the two strategies give the same answer.
+   */
+  @Test
+  void aMultiColumnRowGivesTheSameAnswerUnderBothStrategies() {
+    createEntryPointFixture();
+    final String from = "(SELECT @rid AS r, name FROM V WHERE name = 'a')";
+    assertThat(traverseNames(from, "BREADTH_FIRST")).isEqualTo(traverseNames(from, "DEPTH_FIRST"));
+  }
+
+  /**
+   * Regression test for issue #9778.
+   * <p>
+   * A LINK left null projects a one-column row with nothing to start from: skipped by both strategies, never an error.
+   */
+  @Test
+  void aNullLinkIsSkippedByBothStrategies() {
+    createEntryPointFixture();
+    database.transaction(() -> database.newDocument("L").save());
+
+    for (final String strategy : new String[] { "DEPTH_FIRST", "BREADTH_FIRST" })
+      assertThat(traverseNames("(SELECT link FROM L)", strategy)).as(strategy).containsExactlyInAnyOrder("a", "b", "c");
+  }
+
+  /**
+   * Regression test for issue #9778.
+   * <p>
+   * A LINK whose record was deleted has nothing to start from either: skipped like a null one, not a failed query.
+   */
+  @Test
+  void aLinkToADeletedRecordIsSkippedByBothStrategies() {
+    createEntryPointFixture();
+    database.transaction(() -> {
+      final MutableVertex gone = database.newVertex("V").set("name", "gone").save();
+      database.newDocument("L").set("link", gone.getIdentity()).save();
+      gone.delete();
+    });
+
+    for (final String strategy : new String[] { "DEPTH_FIRST", "BREADTH_FIRST" })
+      assertThat(traverseNames("(SELECT link FROM L)", strategy)).as(strategy).containsExactlyInAnyOrder("a", "b", "c");
+  }
+
+  private Set<String> traverseNames(final String from, final String strategy) {
+    final Set<String> names = new HashSet<>();
+    try (final ResultSet rs = database.query("sql", "TRAVERSE out() FROM " + from + " STRATEGY " + strategy)) {
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+    }
+    return names;
   }
 }

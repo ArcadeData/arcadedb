@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * or dropping, the database did not release them: they kept the threads of a database that was gone for the whole timeout,
  * and every parallel scan of every other database of the JVM ran with fewer producers, or none, meanwhile. In the test suite
  * that was a scan whose test failed before closing it, and the next test classes that need the pool failed with it
- * ({@code Issue8594ParallelScanLimitReleaseTest} saw all of its threads busy).
+ * (the #8594 tests of {@code ParallelScanExecutionTest} saw all of their threads busy).
  * <p>
  * The abandonment timeout is left at its default: a regression keeps the threads until the hang detector fires.
  *

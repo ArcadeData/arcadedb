@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * hold one on the heap without the limits seeing it", and was applied to every STEP that materialises one and to none of the
  * EXPRESSIONS that do. A subquery written inline - in a projection, a function argument, a SET value, a {@code CREATE EDGE ... FROM}
  * clause - ran the hand-rolled drain loop {@code materialize()} was created to retire, so the identical subquery was refused as a
- * LET and accepted inline. The behaviour is pinned by {@code Issue10080ExpressionSubqueryHeapLimitTest}.
+ * LET and accepted inline. The behaviour is pinned by {@code QueryHeapBudgetTest.ExpressionSubqueryHeapLimit}.
  * <p>
  * The census ranges over the authority (#11288): the positions where a sub-plan is evaluated for its value are the expressions,
  * conditions, statements and functions of both languages - every class extending the SQL {@code SimpleNode}, implementing an
