@@ -630,10 +630,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return profile ? plan.profile() : plan.execute(null, timeExecution);
 
     if (execDb.isTransactionActive()) {
-      // CALL { ... } IN TRANSACTIONS commits its batches on their own, so inside a transaction the CLIENT opened (HTTP
-      // /begin, Bolt BEGIN) the client's ROLLBACK could not undo them and the batches would not see its writes (issue
-      // #11588). Refused there as Neo4j does; the transaction a server opens around one request keeps running it.
-      if (statement.hasSubqueryInTransactions() && execDb.getTransaction().isClientManaged())
+      // CALL { ... } IN TRANSACTIONS commits its batches on their own, so inside a transaction its CALLER owns (HTTP /begin,
+      // Bolt BEGIN, an embedded begin() or transaction()) the caller's ROLLBACK could not undo them and the batches would not
+      // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
+      // request keeps running it.
+      if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
         throw new CommandExecutionException(
             "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
       return executeWrite(plan, execDb, profile, timeExecution);
