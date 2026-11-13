@@ -159,7 +159,8 @@ final class ContainsLookup {
       if (d >= -MAX_EXACT && d <= MAX_EXACT && d == Math.rint(d))
         return d.longValue();
     } else if (value instanceof Float f) {
-      if (f > -MAX_EXACT_FLOAT && f < MAX_EXACT_FLOAT && f == Math.rint(f))
+      // -0.0f has no key: "=" converts a byte or a short zero to 0.0f, which Float.equals separates from it, so it is walked
+      if (f > -MAX_EXACT_FLOAT && f < MAX_EXACT_FLOAT && f == Math.rint(f) && Float.compare(f, -0.0f) != 0)
         return f.longValue();
     }
     return UNKNOWN;

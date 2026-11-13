@@ -209,6 +209,16 @@ class ContainsAnyAllLookupTest extends TestHelper {
     check("v CONTAINSANY $p", List.of(16777215f), padded(size, true, 16777215d), true);
     check("v CONTAINSANY $p", List.of(16777215f), padded(size, true, 16777214L), false);
     check("$p CONTAINSANY v", List.of(-3), padded(size, true, -3f), true);
+
+    // A FLOAT NEGATIVE ZERO: a byte or a short zero converts to the float 0.0f, which Float.equals separates from it, while an
+    // int or a long zero, another float zero and both double zeros equal it
+    for (final Object zero : List.of((byte) 0, (short) 0, 0, 0L, 0f, 0.0d, -0.0d, -0.0f)) {
+      final boolean equal = !(zero instanceof Byte || zero instanceof Short);
+      check("v CONTAINSANY $p", List.of(-0.0f), padded(size, true, zero), equal);
+      check("v CONTAINSANY $p", List.of(zero), padded(size, true, -0.0f), equal);
+      check("$p CONTAINSANY v", List.of(-0.0f), padded(size, true, zero), equal);
+      check("$p CONTAINSANY v", List.of(zero), padded(size, true, -0.0f), equal);
+    }
   }
 
   /** A list parameter is hashed once per execution: the answers stay those of the walk. */
