@@ -31,9 +31,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #5225. Creating a Cypher index on an initially-untyped property infers and
- * declares the property's type from the existing data ({@code INTEGER} here, see issue #4222). A later
- * {@code SET n.val = "1"} is therefore coerced to the integer {@code 1}. The bug was that a <em>range</em> predicate
+ * Regression test for issue #5225. The property is declared {@code INTEGER} before the Cypher index is created (which
+ * used to infer and declare it from the existing data, see issue #4222, and no longer declares anything since #11579). A
+ * later {@code SET n.val = "1"} is therefore coerced to the integer {@code 1}. The bug was that a <em>range</em> predicate
  * against a String bound (e.g. {@code WHERE n.val < "zzz"}) crashed the index path with an internal
  * {@code ClassCastException} / {@code NumberFormatException}, while the same predicate without an index completed.
  * Cross-type comparisons are undefined (null) in Cypher, so the range must complete and return the same result as the
@@ -54,6 +54,7 @@ class CypherMixedTypeIndexIssue5225Test {
     database.command("cypher", "CREATE (:BugIdx {id: 1, val: 1})");
     database.command("cypher", "CREATE (:BugIdx {id: 2, val: 2})");
     database.command("cypher", "CREATE (:BugIdx {id: 3})");
+    database.command("sql", "CREATE PROPERTY BugIdx.val INTEGER");
     database.command("cypher", "CREATE INDEX FOR (n:BugIdx) ON (n.val)");
     database.command("cypher", "MATCH (n:BugIdx) WHERE n.id = 1 SET n.val = \"1\" RETURN n.val");
   }

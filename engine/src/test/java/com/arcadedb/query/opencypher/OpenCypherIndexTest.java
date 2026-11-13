@@ -166,7 +166,7 @@ class OpenCypherIndexTest {
     assertThat(indexes).anyMatch(idx -> idx.getPropertyNames().contains("id") && !idx.isUnique());
   }
 
-  // Issue #4222: integer property values must be preserved (not coerced to STRING) after CREATE INDEX inserts an implicit property declaration.
+  // Issue #4222: integer property values must be preserved (not coerced to STRING) after CREATE INDEX on a populated type.
   @Test
   void integerPropertyValueIsPreservedAfterCreateIndex() {
     // PART 1 (control): no index. Integer round-trips correctly.
