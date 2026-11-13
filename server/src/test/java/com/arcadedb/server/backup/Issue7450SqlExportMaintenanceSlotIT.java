@@ -61,7 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * This is the server half of the fix: the server binds its real {@link BackupCoordinator} to every database it
  * opens, so the refusal reaches an HTTP client as a 409 rather than as a 500, a slot held by a running export is
  * seen by the server's own entry points, and - the part that is new to {@code EXPORT} - a second export is NOT
- * refused. The statement's own side of the contract is {@code Issue7450SqlExportMaintenanceSlotTest} in the engine
+ * refused. The statement's own side of the contract is {@code SqlMaintenanceStatementTest.SqlExportMaintenanceSlotTest} in the engine
  * module, and the admission policy itself is {@link Issue7450ExportAdmissionTest}.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)

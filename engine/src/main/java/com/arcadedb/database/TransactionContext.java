@@ -2886,7 +2886,7 @@ public class TransactionContext implements Transaction {
     if (buffer.isDeleted(slot) && !buffer.isInserted(slot)) {
       // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
       // hands back a slot this transaction has just freed (guarded by
-      // Issue5279ConcurrentInsertTest.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
+      // ConcurrentRecordWriteTest.ConcurrentInsert.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
       // replaying it as a plain insert would skip the pre-image check the delete relies on, so if that allocation
       // policy ever changes the page must fall back to a normal retry instead of silently mis-merging.
       poisonSlotRebasePage(fileId, pageNumber);

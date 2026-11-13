@@ -48,7 +48,7 @@ class DedicatedThreadPoolTest {
    * Plain wall clock, because {@code @Timeout} cannot be stall-discounted - so it is sized as a hang detector and
    * never as a bound on anything. The tests that wait for something get their actual verdict from
    * {@link #awaited(CountDownLatch)}, whose budget IS stall-discounted (#6260); this only stops a genuine wedge
-   * from hanging the build. Same sizing as {@code Issue6568NestedFanOutDeadlockTest}, for the same reason.
+   * from hanging the build. Same sizing as {@code GavBuildTest}, for the same reason.
    */
   private static final int HANG_DETECTOR_SECONDS = 300;
 

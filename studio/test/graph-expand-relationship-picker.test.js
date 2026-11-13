@@ -26,7 +26,7 @@
 // pulled down merely to be counted - and then expands only the chosen (direction, type) pairs, with a ceiling.
 //
 // What these builders can assert is the TEXT of the command. What that text means is an engine question, and it
-// is pinned next door by engine/src/test/java/com/arcadedb/query/sql/Issue7847EdgeExpansionQueriesTest.java:
+// is pinned next door by engine/src/test/java/com/arcadedb/query/sql/SqlEdgeEndpointWalkTest.java (nested EdgeExpansionQueries):
 // the per-type aggregate, `outE(:t0, :t1)` taking the type names as named parameters (including one containing
 // a quote), and LIMIT bounding the expansion.
 //

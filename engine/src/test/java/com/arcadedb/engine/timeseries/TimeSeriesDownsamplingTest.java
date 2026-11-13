@@ -618,7 +618,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
    * It cannot, because the WRITE side refuses first and always has: {@code compressColumn} throws for the same
    * two codecs, so a type declaring one never gets as far as producing a block for the reader to choke on. The
    * type itself is created without complaint - {@code TimeSeriesTypeBuilder} does not restrict codec by role,
-   * which {@code Issue7399TimeSeriesTypeBuilderSQLTest} pins - and the refusal lands at seal time.
+   * which {@code TimeSeriesTypeBuilderTest.TimeSeriesTypeBuilderSQLTest} pins - and the refusal lands at seal time.
    */
   @Test
   void aColumnWithAnUndecodableCodecIsRefusedAtSealTimeSoNoBlockCanCarryOne() throws Exception {

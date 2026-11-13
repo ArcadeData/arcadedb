@@ -608,7 +608,7 @@ class SelectTargetPlanningTest extends TestHelper {
    * by name. When a concurrent {@code DROP INDEX} took the index away in between, both reads of the name raised the
    * {@code SchemaException} "Index with name ... was not found", which the re-planning of the statement
    * ({@code Statement.openResultSetPlanningAgainOnStaleIndex}) does not catch, so a read-only SELECT failed instead of being
-   * planned again (seen once in ~600k statements of {@code Issue9331Issue9332IndexDdlDuringReadsTest}).
+   * planned again (seen once in ~600k statements of {@code SelectStaleIndexTest.IndexDdlDuringReads}).
    */
   /** Regression test for issue #9331. */
   @Test

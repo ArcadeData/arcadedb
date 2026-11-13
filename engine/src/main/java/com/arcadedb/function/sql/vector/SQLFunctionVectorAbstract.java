@@ -64,7 +64,7 @@ import java.util.function.Function;
  * NULL one is refused as the caller's mistake. An empty vector answers what the function answers on a zero vector:
  * 0 for a norm or a distance, false for a predicate, an empty vector for an element-wise operation. Only a function that
  * has no value on it (cosine similarity, variance, standard deviation, sparsity, the quantizations: 0/0) refuses it.
- * {@code Issue11052VectorDegenerateArgumentsTest} checks the NULL rule over every registered {@code vector.*} function.
+ * {@code VectorNeighborsArgumentsTest.VectorDegenerateArgumentsTest} checks the NULL rule over every registered {@code vector.*} function.
  * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)

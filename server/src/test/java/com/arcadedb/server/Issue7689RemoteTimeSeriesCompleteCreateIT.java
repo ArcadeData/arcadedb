@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The grammar now carries both, so the remote create is ONE statement. The engine-side half of the acceptance
  * criteria - the grammar, the AST and the rendering - is
- * {@code Issue7689CreateTimeSeriesTypeCompleteDeclarationTest}.
+ * {@code TimeSeriesTypeBuilderTest.CreateTimeSeriesTypeCompleteDeclarationTest}.
  */
 class Issue7689RemoteTimeSeriesCompleteCreateIT extends BaseGraphServerTest {
 

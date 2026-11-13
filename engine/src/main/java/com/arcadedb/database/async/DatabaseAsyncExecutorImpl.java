@@ -632,7 +632,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           // isTransactionActive() here doubles as the "did this really go in" signal without needing
           // execute() to report it separately.
           if (!database.isTransactionActive())
-            // That local rollback (unchanged, pre-existing behaviour: see Issue6470AsyncSuccessCallbackDurabilityTest)
+            // That local rollback (unchanged, pre-existing behaviour: see AsyncBatchCommitRetryTest.SuccessCallbackDurabilityTest)
             // discarded every write buffered before it too - drop the stale references so a LATER boundary
             // commit that fails cannot replay writes this rollback already undid. #7667: and the same call covers
             // the case where nothing is open because the task COMMITTED the batch part-way through and then failed

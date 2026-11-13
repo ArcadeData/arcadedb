@@ -121,7 +121,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
 
   /**
    * A bucket attached with {@link DocumentType#addBucket} carries a name of its own (see
-   * {@code Issue774AddBucketWithIndexTest}, which attaches "O202203" to type "Order"). That name is not derived
+   * {@code IndexSchemaDdlTest.AddBucketWithIndexTest}, which attaches "O202203" to type "Order"). That name is not derived
    * from the type name, so it must stay put when the type is renamed rather than be rebased onto the new name or
    * abort the rename half-way through.
    */

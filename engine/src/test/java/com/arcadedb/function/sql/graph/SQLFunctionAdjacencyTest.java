@@ -31,6 +31,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
+import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Nested;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLFunctionAdjacencyTest {
@@ -246,5 +249,123 @@ class SQLFunctionAdjacencyTest {
         }
       }
     });
+  }
+
+  /**
+   * Regression for #4199: a range on a missing edge type returns empty.
+   *
+   * Issue #4199 regression: in 26.4.2 a SELECT that applies a range to {@code bothE()} (or
+   * {@code outE()} / {@code inE()}) with a non-existent edge type raised
+   * {@code SchemaException("Type with name 'X' was not found")}, while the same query without
+   * the range correctly returned an empty list (the behaviour of 26.3.2).
+   *
+   * Root cause: {@code EdgeLinkedList.count(String... edgeTypes)} resolved each edge-type name
+   * via {@code schema.getType(name)} and threw when the type did not exist. {@code count()}
+   * is invoked by {@code MultiValue.getSize(...)} during range evaluation, so the range form
+   * crashed while the plain iteration form (which uses {@code existsType} + skip) did not.
+   *
+   * After the fix the range form returns an empty list, matching the non-ranged form and the
+   * 26.3.2 behaviour.
+   *
+   * https://github.com/ArcadeData/arcadedb/issues/4199
+   */
+  @Nested
+  class NonExistentEdgeTypeWithRange {
+
+    @Test
+    void bothEWithRangeOnMissingEdgeTypeReturnsEmpty() throws Exception {
+      TestHelper.executeInNewDatabase("testIssue4199BothERange", db -> {
+        db.getSchema().createVertexType("Node");
+        db.getSchema().createEdgeType("KnownEdge");
+
+        final RID[] vertexRid = new RID[1];
+        db.transaction(() -> {
+          final MutableVertex v1 = db.newVertex("Node").save();
+          final MutableVertex v2 = db.newVertex("Node").save();
+          v1.newEdge("KnownEdge", v2);
+          vertexRid[0] = v1.getIdentity();
+        });
+
+        // Without range: returns []
+        try (final ResultSet rs = db.query("sql",
+            "SELECT bothE('NonExistentEdge') AS edges FROM " + vertexRid[0])) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(MultiValue.getSize(rs.next().getProperty("edges"))).isZero();
+        }
+
+        // With range: must also return [] (regression from 26.4.2)
+        try (final ResultSet rs = db.query("sql",
+            "SELECT bothE('NonExistentEdge')[0...25] AS edges FROM " + vertexRid[0])) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(MultiValue.getSize(rs.next().getProperty("edges"))).isZero();
+        }
+      });
+    }
+
+    @Test
+    void outEWithRangeOnMissingEdgeTypeReturnsEmpty() throws Exception {
+      TestHelper.executeInNewDatabase("testIssue4199OutERange", db -> {
+        db.getSchema().createVertexType("Node");
+        db.getSchema().createEdgeType("KnownEdge");
+
+        final RID[] vertexRid = new RID[1];
+        db.transaction(() -> {
+          final MutableVertex v1 = db.newVertex("Node").save();
+          final MutableVertex v2 = db.newVertex("Node").save();
+          v1.newEdge("KnownEdge", v2);
+          vertexRid[0] = v1.getIdentity();
+        });
+
+        try (final ResultSet rs = db.query("sql",
+            "SELECT outE('NonExistentEdge')[0...25] AS edges FROM " + vertexRid[0])) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(MultiValue.getSize(rs.next().getProperty("edges"))).isZero();
+        }
+      });
+    }
+
+    @Test
+    void inEWithRangeOnMissingEdgeTypeReturnsEmpty() throws Exception {
+      TestHelper.executeInNewDatabase("testIssue4199InERange", db -> {
+        db.getSchema().createVertexType("Node");
+        db.getSchema().createEdgeType("KnownEdge");
+
+        final RID[] vertexRid = new RID[1];
+        db.transaction(() -> {
+          final MutableVertex v1 = db.newVertex("Node").save();
+          final MutableVertex v2 = db.newVertex("Node").save();
+          v1.newEdge("KnownEdge", v2);
+          vertexRid[0] = v2.getIdentity();
+        });
+
+        try (final ResultSet rs = db.query("sql",
+            "SELECT inE('NonExistentEdge')[0...25] AS edges FROM " + vertexRid[0])) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(MultiValue.getSize(rs.next().getProperty("edges"))).isZero();
+        }
+      });
+    }
+
+    @Test
+    void bothEWithRangeMixingKnownAndMissingTypesReturnsKnownOnly() throws Exception {
+      TestHelper.executeInNewDatabase("testIssue4199BothEMixed", db -> {
+        db.getSchema().createVertexType("Node");
+        db.getSchema().createEdgeType("KnownEdge");
+
+        final RID[] vertexRid = new RID[1];
+        db.transaction(() -> {
+          final MutableVertex v1 = db.newVertex("Node").save();
+          final MutableVertex v2 = db.newVertex("Node").save();
+          v1.newEdge("KnownEdge", v2);
+          vertexRid[0] = v1.getIdentity();
+        });
+
+        try (final ResultSet rs = db.query("sql",
+            "SELECT bothE('KnownEdge','NonExistentEdge')[0...25] AS edges FROM " + vertexRid[0])) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(MultiValue.getSize(rs.next().getProperty("edges"))).isEqualTo(1);
+        }
+      });
+    }
   }
 }

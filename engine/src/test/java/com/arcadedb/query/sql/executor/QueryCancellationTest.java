@@ -114,7 +114,7 @@ class QueryCancellationTest extends TestHelper {
    * Rather than reproducing that with a dataset large enough to outrun a real deadline under wall-clock
    * timing (flaky across machines), each test here pins an already-expired deadline directly on the
    * {@link CommandContext} - the same technique
-   * {@code Issue6266CommandTimeoutCoverageTest#aPinnedDeadlineIsHonouredWhateverItsValue} uses - and drains
+   * {@code CommandTimeoutTest#aPinnedDeadlineIsHonouredWhateverItsValue} uses - and drains
    * the guarded step directly, so the assertion is deterministic: the very first record the step tries to
    * hand back must instead raise a {@link TimeoutException}.
    */

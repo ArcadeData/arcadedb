@@ -274,7 +274,7 @@ class IndexMetadataTest {
       assertThat(metadata.mutationsBeforeRebuild).isEqualTo(4242);
       // locationCacheSize is deliberately absent: it is the one setting the builder no longer reaches, because it
       // cannot be honoured and a capped location index drops vectors (issues #5559 and #5568). See
-      // Issue5559LocationCacheSizeTest for the refusal.
+      // VectorLocationIndexTest.LocationCacheSize for the refusal.
       assertThat(metadata.graphBuildCacheSize).isEqualTo(2048);
       assertThat(metadata.storeVectorsInGraph).isTrue();
     }

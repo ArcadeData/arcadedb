@@ -31,7 +31,7 @@ import java.util.function.IntSupplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Benchmark for issue #7840, kept next to {@code Issue7840WideKeyComparisonTest} so the equivalence guarantees and the
+ * Benchmark for issue #7840, kept next to {@code BinaryComparatorBehaviorTest.WideKeyComparison} so the equivalence guarantees and the
  * reason they were worth having live together.
  * <p>
  * The assertion is not a latency bound: it is a RATIO against the byte-at-a-time loop this change replaced, measured

@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The cluster runs at the default replicated entry cap on purpose: below it the build's bulk load commits in chunks
  * clamped under the cap (finding 2, {@code Issue8905VectorBuildHATest}), a chunk commit loads the graph, and PHASE 3 is
- * not reached at all. The engine-side routing is pinned by {@code Issue8905VectorBuildCommitsReachTheWrapperTest}.
+ * not reached at all. The engine-side routing is pinned by {@code VectorGraphPersistTest.VectorBuildCommitsReachTheWrapper}.
  */
 class Issue8905BuildWithUnloadedGraphHATest extends BaseRaftHATest {
 
@@ -113,7 +113,7 @@ class Issue8905BuildWithUnloadedGraphHATest extends BaseRaftHATest {
     // NO SEARCH AND NO FURTHER WRITE HERE, UNLIKE Issue8291WalDisabledTransactionHATest: what a node makes of the index
     // afterwards is not this issue's. An insert on the leader no longer reuses a vector id the replica allocated (issue
     // #9428, Issue9428FollowerVectorInsertHATest). That this build commits nothing outside the wrapper - the defect - is
-    // pinned by Issue8905VectorBuildCommitsReachTheWrapperTest, which also searches the index after a build that skipped
+    // pinned by VectorGraphPersistTest.VectorBuildCommitsReachTheWrapper, which also searches the index after a build that skipped
     // PHASE 3.
     // Before the fix THIS build already failed, above.
   }

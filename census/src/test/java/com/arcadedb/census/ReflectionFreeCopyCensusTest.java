@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code FieldMatchPathItem} and {@code MathExpression} created the copy with {@code getClass().getConstructor().newInstance()}. A
  * GraalVM native image registers no constructor for reflection unless told to, so every UPDATE/DELETE (whose plan-cache key copies
  * a synthetic SELECT) failed there with {@code NoSuchMethodException: SelectStatement.<init>()}. The copies now come from an
- * overridable {@code newInstance()} factory, pinned by {@code Issue9495ReflectionFreeCopyTest}. A reflective self-instantiation
+ * overridable {@code newInstance()} factory, pinned by {@code StatementRenderingTest.ReflectionFreeCopyTest}. A reflective self-instantiation
  * works on the JVM and fails only in the native image, so no JVM test can catch it by running it.
  * <p>
  * The census ranges over the authority (#11288): every {@code getConstructor}/{@code getDeclaredConstructor} of

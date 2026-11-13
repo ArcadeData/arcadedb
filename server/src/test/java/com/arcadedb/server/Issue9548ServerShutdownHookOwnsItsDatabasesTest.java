@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #9548: the server's JVM shutdown hook stops the Raft HA service before it closes the databases, and the engine's
  * own hook, which the JVM runs at the same time, closed them in between - a leader committing across a rolling restart
  * then quarantined its own database. The server registers its hook as the owner of its databases, so the engine's hook
- * waits for it ({@code Issue9548OwningShutdownHookTest} pins the wait itself).
+ * waits for it ({@code DatabaseOpenCloseLockTest.OwningShutdownHook} pins the wait itself).
  */
 class Issue9548ServerShutdownHookOwnsItsDatabasesTest {
 

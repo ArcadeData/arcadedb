@@ -141,7 +141,7 @@ public class JsonSerializer {
       // for the same value since #7610, and what the write side does - Type#convertToDate anchors its
       // LocalDateTime-to-Date conversion to UTC - so the old answer was the outlier: the same document read back
       // through GET /document/{db}/{rid} and through a query disagreed, and the document one moved with the
-      // machine's time zone. Pinned by Issue7638DateColumnPrecisionTest#anUndeclaredDatePropertyIsAlsoUtcAnchored.
+      // machine's time zone. Pinned by JsonTemporalSerializationTest.DateColumnPrecision#anUndeclaredDatePropertyIsAlsoUtcAnchored.
       value = formatTemporalForPrecision(value, declaredType(type, p), schemaDateTimeFormat, schemaDateFormat);
 
       object.put(p, value);

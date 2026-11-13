@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * message - not 500 with a stack trace in the server log, which is what #7393 established for the hybrid and
  * full-text search APIs and what these four call sites were still doing.
  * <p>
- * The engine half is {@code Issue7862MalformedFullTextQueryAtEveryCallSiteTest}; this pins the HTTP half, which
+ * The engine half is {@code FullTextMalformedQueryTest.EveryCallSiteClientError}; this pins the HTTP half, which
  * is a ladder of its own in {@code AbstractServerHttpHandler} rather than {@code ErrorCategory}, and therefore
  * had to be given its own arm.
  *
