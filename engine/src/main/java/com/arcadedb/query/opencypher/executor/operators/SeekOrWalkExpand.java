@@ -86,6 +86,8 @@ public class SeekOrWalkExpand extends AbstractPhysicalOperator {
    *                        time
    * @param edgeTrackingVar the binding both hops keep an anonymous relationship under for the uniqueness checks, or null
    */
+  // an immutable plan operator built in one place (CypherOptimizer): a parameter object would only move these fields elsewhere
+  @SuppressWarnings("PMD.ExcessiveParameterList")
   public SeekOrWalkExpand(final PhysicalOperator child, final String nearVariable, final String farVariable,
       final Vertex.DIRECTION nearDirection, final String[] edgeTypes, final InListValues farKeys, final NodeIndexSeek farSeek,
       final ExpandAll walk, final ExpandInto seek, final String edgeTrackingVar, final double estimatedCost,
