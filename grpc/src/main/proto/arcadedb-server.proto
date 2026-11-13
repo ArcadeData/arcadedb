@@ -75,6 +75,15 @@ message GrpcValue {
     GrpcEmbedded              embedded_value   = 11; // embedded doc
     GrpcLink                  link_value       = 12; // RID link
     GrpcDecimal               decimal_value    = 13; // exact decimal
+    // Packed vectors (issue #11714): one length-delimited run of little-endian IEEE 754 values instead of a GrpcList of one
+    // GrpcValue per element. Decoded to float[] / double[], so a float_array_value bound to an ARRAY_OF_FLOATS property or
+    // to a vector function arrives as the array it is. Negotiated with the metadata header "x-arcade-packed-arrays: true",
+    // because a peer built from an older copy of this file reads an unknown oneof member as an unset value, a null:
+    // - every response of a server that decodes them carries the header (in its headers, and in its trailers): send them
+    //   only to a server that announced it, and list_value otherwise;
+    // - a RESPONSE carries them only to a call that sent the header; without it float[] / double[] results stay list_value.
+    GrpcFloatArray            float_array_value  = 15; // float[], ARRAY_OF_FLOATS
+    GrpcDoubleArray           double_array_value = 16; // double[], ARRAY_OF_DOUBLES
   }
 
   // Optional semantic hint (non-breaking): "date", "datetime", "rid", "decimal(38,9)", etc.
@@ -91,6 +100,10 @@ message GrpcEmbedded{
   string type = 1;  // ArcadeDB class name if present; may be empty
   map<string, GrpcValue> fields = 2;
 }
+
+// Packed primitive arrays (proto3 packs repeated scalars by default): 4 or 8 bytes per element, NaN payloads and -0.0 kept
+message GrpcFloatArray  { repeated float  values = 1; }
+message GrpcDoubleArray { repeated double values = 1; }
 
 // RID link
 message GrpcLink {

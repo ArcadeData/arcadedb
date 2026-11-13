@@ -124,6 +124,11 @@ class GrpcTypeConverter {
         out.add(fromGrpcValue(e));
       return out;
     }
+    case FLOAT_ARRAY_VALUE:
+      // Issue #11714: straight into the float[] an ARRAY_OF_FLOATS property and the vector functions take, no element boxed
+      return GrpcPackedArrays.toFloats(v.getFloatArrayValue());
+    case DOUBLE_ARRAY_VALUE:
+      return GrpcPackedArrays.toDoubles(v.getDoubleArrayValue());
     case MAP_VALUE: {
       final var out = new LinkedHashMap<String, Object>();
       v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
@@ -220,10 +225,11 @@ class GrpcTypeConverter {
    * The container arms both encoders share, each element encoded by {@code element}, through which the service recurses with
    * its projection settings: a {@link Map} as a map, and as a list any {@link Iterable} (a {@link List}, a {@code Set}, the
    * {@code JSONArray} a search hit's array property is, the lazy result of {@code out()}/{@code in()}), any {@link Iterator}
-   * (a nested result set) and any Java array ({@code float[]} vectors included; {@code byte[]} is a scalar). Answers
-   * {@code null} when {@code o} is none of them. The {@code Iterable} arm is what this converter lacked (issue #11207): a
-   * {@code JSONArray} is not a {@code List}, so an array property of a search hit reached the client as its JSON text while
-   * the query path sent the same property as a list.
+   * (a nested result set) and any Java array ({@code byte[]} is a scalar). Answers {@code null} when {@code o} is none of them.
+   * The {@code Iterable} arm is what this converter lacked (issue #11207): a {@code JSONArray} is not a {@code List}, so an
+   * array property of a search hit reached the client as its JSON text while the query path sent the same property as a list.
+   * A {@code float[]} or {@code double[]} (a vector, an ARRAY_OF_FLOATS / ARRAY_OF_DOUBLES property) is sent packed to a call
+   * that asked for it with {@link GrpcPackedArrays#HEADER}, and as a list otherwise (issue #11714).
    */
   static GrpcValue toGrpcContainer(final Object o, final Function<Object, GrpcValue> element) {
     if (o instanceof Map<?, ?> map) {
@@ -239,6 +245,10 @@ class GrpcTypeConverter {
       return toGrpcList(iterator, element);
 
     if (o.getClass().isArray()) {
+      if (o instanceof float[] floats && GrpcPackedArraysInterceptor.requested())
+        return GrpcPackedArrays.encode(floats);
+      if (o instanceof double[] doubles && GrpcPackedArraysInterceptor.requested())
+        return GrpcPackedArrays.encode(doubles);
       final GrpcList.Builder lb = GrpcList.newBuilder();
       final int len = Array.getLength(o);
       for (int i = 0; i < len; i++)

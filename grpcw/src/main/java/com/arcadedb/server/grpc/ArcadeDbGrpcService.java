@@ -588,6 +588,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // transaction's thread, so the slot goes with it there, where a forward to the leader or a wait on an explicit lock
     // gives it back (issue #10140). Left behind, those releases read an empty thread and hold the slot for the whole wait
     final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+    // The call's consent to packed array results, read from the gRPC Context the transaction's thread lacks: a statement that
+    // runs there encodes its rows there (issue #11714)
+    final boolean packedArrays = GrpcPackedArraysInterceptor.requested();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -600,7 +603,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
         final QueryAdmissionGate.Adoption adoption = admission.adopt();
         try {
-          return task.call();
+          return GrpcPackedArraysInterceptor.callWith(packedArrays, task);
         } finally {
           adoption.close();
           if (binding != null)
@@ -5467,6 +5470,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return dbgDec("fromGrpcValue", v, out, null);
       }
 
+      case FLOAT_ARRAY_VALUE:
+        // Issue #11714: straight into the float[] an ARRAY_OF_FLOATS property and the vector functions take, no element boxed
+        return dbgDec("fromGrpcValue", v, GrpcPackedArrays.toFloats(v.getFloatArrayValue()), null);
+
+      case DOUBLE_ARRAY_VALUE:
+        return dbgDec("fromGrpcValue", v, GrpcPackedArrays.toDoubles(v.getDoubleArrayValue()), null);
+
       case MAP_VALUE: {
         var out = new LinkedHashMap<String, Object>();
         v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
@@ -6654,6 +6664,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case STRING:
         return switch (v.getKindCase()) {
           case STRING_VALUE -> v.getStringValue();
+          // The text a list_value of the same elements gives, not the array's identity hash
+          case FLOAT_ARRAY_VALUE -> Arrays.toString(GrpcPackedArrays.toFloats(v.getFloatArrayValue()));
+          case DOUBLE_ARRAY_VALUE -> Arrays.toString(GrpcPackedArrays.toDoubles(v.getDoubleArrayValue()));
           default -> String.valueOf(fromGrpcValue(v));
         };
 
@@ -6820,6 +6833,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
           return list;
         }
+        // A packed array goes to the engine as the array, which its LIST conversion turns into the list of its elements
+        if (v.getKindCase() == GrpcValue.KindCase.FLOAT_ARRAY_VALUE || v.getKindCase() == GrpcValue.KindCase.DOUBLE_ARRAY_VALUE)
+          return fromGrpcValue(v);
         throw cannotConvert(propName, t, v);
 
       case ARRAY_OF_SHORTS:
@@ -6827,10 +6843,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case ARRAY_OF_LONGS:
       case ARRAY_OF_FLOATS:
       case ARRAY_OF_DOUBLES:
-        // The items go to the engine as they came: its conversion of the array range-checks each one (issue #11382)
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE)
-          return fromGrpcValue(v);
-        throw cannotConvert(propName, t, v);
+        // The items go to the engine as they came: its conversion of the array range-checks each one (issue #11382). A packed
+        // array is already the float[] / double[] it converts from (issue #11714)
+        return switch (v.getKindCase()) {
+          case LIST_VALUE, FLOAT_ARRAY_VALUE, DOUBLE_ARRAY_VALUE -> fromGrpcValue(v);
+          default -> throw cannotConvert(propName, t, v);
+        };
 
       case DATETIME_SECOND:
       case DATETIME_MICROS:
@@ -6934,6 +6952,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
         case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
         case LIST_VALUE -> "LIST[size=" + v.getListValue().getValuesCount() + "]";
+        case FLOAT_ARRAY_VALUE -> "FLOAT_ARRAY[size=" + v.getFloatArrayValue().getValuesCount() + "]";
+        case DOUBLE_ARRAY_VALUE -> "DOUBLE_ARRAY[size=" + v.getDoubleArrayValue().getValuesCount() + "]";
         case MAP_VALUE -> "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
         case EMBEDDED_VALUE -> "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
         case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
@@ -6960,6 +6980,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
       case LIST_VALUE:
         return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+      case FLOAT_ARRAY_VALUE:
+        return "FLOAT_ARRAY[size=" + v.getFloatArrayValue().getValuesCount() + "]";
+      case DOUBLE_ARRAY_VALUE:
+        return "DOUBLE_ARRAY[size=" + v.getDoubleArrayValue().getValuesCount() + "]";
       case MAP_VALUE:
         return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
       case EMBEDDED_VALUE:
