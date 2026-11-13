@@ -47,8 +47,8 @@ public class TypeBuilder<T> {
 
   // EVERY field below that describes the type must be rendered by toSQL(), which a replica sends to the leader in place of creating
   // the type itself (issue #10067): a field left out would make the leader create a different type than the caller asked for, with no
-  // compile-time signal. Issue10067TypeBuilderToSQLTest fails when a field is added here without being listed there, and
-  // Issue10146TypeBuilderSetterRoundTripTest when a setter is added without a case proving its statement makes the same type.
+  // compile-time signal. TypeCreationTest.TypeBuilderToSQL fails when a field is added here without being listed there, and
+  // TypeCreationTest.TypeBuilderSetterRoundTrip when a setter is added without a case proving its statement makes the same type.
   final DatabaseInternal database;
   final Class<T>         type;
   boolean                 ignoreIfExists    = false;

@@ -50,7 +50,7 @@ import java.util.regex.Pattern;
  * the characters, of the shape, matches it, so a text left out would refuse a pattern that value satisfies.
  * <p>
  * Each form also carries actual values of its class: the edge values of its range and ordinary ones. They are what pins the
- * form against the class ({@code Issue9853TextFormCoversEveryValueTest}), and a pattern one of them matches is satisfied by a
+ * form against the class ({@code RegexTextFormTest}), and a pattern one of them matches is satisfied by a
  * real value, whatever the shape says (issue #9990).
  *
  * @param characters every character a text of the class can contain, in the order a search tries them

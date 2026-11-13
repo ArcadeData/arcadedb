@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * both directly and unwrapped from a cause.
  * <p>
  * So the status code is correct today but it rests on a wrap two layers away from the throw. Nothing else pins it:
- * the engine-side {@code Issue5559LocationCacheSizeTest} asserts on the message and cannot see a status code, so a
+ * the engine-side {@code VectorLocationIndexTest.LocationCacheSize} asserts on the message and cannot see a status code, so a
  * future change to how DDL wraps a metadata failure would silently turn this into a 500 carrying a helpful message
  * nobody displays. Both rejection arms of the one key are asserted below, since they take different paths into the
  * handler and must not disagree.

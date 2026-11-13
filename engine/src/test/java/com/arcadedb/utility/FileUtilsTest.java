@@ -18,9 +18,14 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.GlobalConfiguration;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
+import org.mockito.invocation.InvocationOnMock;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -35,7 +40,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -773,6 +781,225 @@ class FileUtilsTest {
 
       assertThat(FileUtils.readFully(channel, ByteBuffer.allocate(4), content.length)).as("nothing at end of file")
           .isZero();
+    }
+  }
+
+  /**
+   * Regression for #7465.
+   * <p>
+   * Regression test for issue #7465: {@code FileUtils.atomicWriteFile} and {@code atomicCopyFile} fsync'd the
+   * temporary file and then published it with an atomic rename, but never forced the PARENT DIRECTORY. On a POSIX
+   * filesystem the rename is a directory-metadata update, and fsyncing the file does not make that entry durable: the
+   * guarantee both javadocs state - "a crash leaves the previous valid file untouched" - was exact for a crash of the
+   * process and weaker than stated for a crash of the machine.
+   * <p>
+   * A genuine crash-consistency test would have to kill a process between the rename and the force, which is a
+   * harness question rather than a unit test. What IS testable, and what regressed here, is whether the publish path
+   * performs the directory fsync at all - so that is what these assert, by observing the one thing that fsync needs:
+   * the parent directory opened as a channel. Nothing else on either path opens a DIRECTORY.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class AtomicWriteDirectoryFsync {
+
+    @TempDir
+    Path tempDir;
+
+    @BeforeEach
+    void fileSyncOn() {
+      // these tests are about fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+      GlobalConfiguration.FILE_SYNC.setValue(true);
+    }
+
+    @AfterEach
+    void restoreFileSync() {
+      GlobalConfiguration.FILE_SYNC.reset();
+    }
+
+    @Test
+    void atomicWriteForcesTheParentDirectoryAfterPublishingTheRename() throws Exception {
+      final Path target = tempDir.resolve("schema.json");
+      Files.writeString(target, "old");
+
+      final int directoryOpens = countDirectoryOpens(() -> FileUtils.atomicWriteFile(target.toFile(), "new"));
+
+      assertThat(directoryOpens)
+          .as("the rename that publishes the file is directory metadata and has to be fsync'd on its own")
+          .isEqualTo(isWindows() ? 0 : 1);
+      assertThat(Files.readString(target)).isEqualTo("new");
+    }
+
+    @Test
+    void atomicCopyForcesTheParentDirectoryToo() throws Exception {
+      final Path source = tempDir.resolve("schema.json");
+      final Path target = tempDir.resolve("schema.prev.json");
+      Files.writeString(source, "generation-1");
+
+      final int directoryOpens = countDirectoryOpens(() -> FileUtils.atomicCopyFile(source.toFile(), target.toFile()));
+
+      assertThat(directoryOpens).isEqualTo(isWindows() ? 0 : 1);
+      assertThat(Files.readString(target)).isEqualTo("generation-1");
+      assertThat(Files.readString(source)).as("the source must never be moved aside").isEqualTo("generation-1");
+    }
+
+    /**
+     * Issue #8635: the schema save publishes schema.prev.json and then schema.json into the same directory, and the
+     * second publication's directory fsync makes both renames durable. The copy can therefore leave the fsync to it,
+     * which halves the device flushes of every schema change, and the pair still forces the directory exactly once.
+     */
+    @Test
+    void atomicCopyLeavesTheDirectoryFsyncToACallerThatForcesItNext() throws Exception {
+      final Path source = tempDir.resolve("schema.json");
+      final Path target = tempDir.resolve("schema.prev.json");
+      Files.writeString(source, "generation-1");
+
+      assertThat(countDirectoryOpens(() -> FileUtils.atomicCopyFile(source.toFile(), target.toFile(), false))).isZero();
+      assertThat(Files.readString(target)).isEqualTo("generation-1");
+      assertThat(Files.readString(source)).as("the source must never be moved aside").isEqualTo("generation-1");
+
+      assertThat(countDirectoryOpens(() -> {
+        FileUtils.atomicCopyFile(source.toFile(), target.toFile(), false);
+        FileUtils.atomicWriteFile(source.toFile(), "generation-2");
+      })).isEqualTo(isWindows() ? 0 : 1);
+      assertThat(Files.readString(target)).isEqualTo("generation-1");
+      assertThat(Files.readString(source)).isEqualTo("generation-2");
+    }
+
+    @Test
+    void forcingADirectorySucceedsOnEveryPlatformThatCan() {
+      // Linux and macOS - where CI and every supported server deployment run - open a directory as a channel and
+      // force it. Windows throws on the open instead, and the contract is that this is TOLERATED rather than fatal:
+      // a durability improvement a platform cannot provide must never turn into a failed schema save on it.
+      if (!isWindows())
+        assertThat(FileUtils.forceDirectory(tempDir)).isTrue();
+    }
+
+    /**
+     * A path that cannot be forced is refused per call and says NOTHING about the rest of the JVM. Whether this
+     * platform can fsync a directory at all is decided once from the platform itself, so one uncooperative
+     * directory - a network mount, an unusual permission - cannot silently turn the guarantee off for every other
+     * database in the process (code review on PR #7855).
+     */
+    @Test
+    void aPathThatCannotBeForcedIsRefusedWithoutDisablingTheFsyncForTheWholeJvm() throws Exception {
+      final Path notADirectory = tempDir.resolve("plain.txt");
+      Files.writeString(notADirectory, "x");
+
+      assertThatCode(() -> FileUtils.forceDirectory(tempDir.resolve("absent"))).doesNotThrowAnyException();
+      assertThatCode(() -> FileUtils.forceDirectory(notADirectory)).doesNotThrowAnyException();
+      assertThatCode(() -> FileUtils.forceDirectory(null)).doesNotThrowAnyException();
+
+      if (!isWindows())
+        assertThat(FileUtils.forceDirectory(tempDir)).as("a real directory must still be forced afterwards").isTrue();
+    }
+
+    /**
+     * And the same holds through the publish path: a directory the channel layer refuses leaves the write correct
+     * and the NEXT publish, into a directory that works, still fsync'd.
+     */
+    @Test
+    void oneRefusedDirectoryDoesNotStopTheNextPublishFromForcingItsOwn() throws Exception {
+      final Path target = tempDir.resolve("schema.json");
+      Files.writeString(target, "old");
+
+      try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+        if (isDirectoryOpen(invocation))
+          throw new IOException("this directory will not open");
+        return invocation.callRealMethod();
+      })) {
+        FileUtils.atomicWriteFile(target.toFile(), "new");
+      }
+
+      assertThat(countDirectoryOpens(() -> FileUtils.atomicWriteFile(target.toFile(), "newer")))
+          .as("one directory's refusal must not be generalised into a verdict about every other")
+          .isEqualTo(isWindows() ? 0 : 1);
+      assertThat(Files.readString(target)).isEqualTo("newer");
+    }
+
+    @Test
+    void aPlatformThatRefusesToForceADirectoryStillPublishesTheFile() throws Exception {
+      final Path target = tempDir.resolve("configuration.json");
+      Files.writeString(target, "old");
+
+      try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+        if (isDirectoryOpen(invocation))
+          throw new IOException("this platform does not open directories");
+        return invocation.callRealMethod();
+      })) {
+        FileUtils.atomicWriteFile(target.toFile(), "new");
+      }
+
+      assertThat(Files.readString(target)).as("a directory fsync that cannot be had is not a failed write")
+          .isEqualTo("new");
+    }
+
+    /**
+     * A directory created on the way to the target is durable only once its own entry - which lives in ITS parent -
+     * has been fsync'd. Without that, a power failure right after a publish into a freshly created nested path can
+     * lose the whole directory, taking the carefully fsync'd and atomically renamed file inside it along (CodeRabbit
+     * on PR #7855). Every level has to be forced, not only the one the file lands in.
+     */
+    @Test
+    void everyDirectoryCreatedOnTheWayToTheTargetIsForcedAsItIsCreated() throws Exception {
+      final Path a = tempDir.resolve("a");
+      final Path b = a.resolve("b");
+      final Path c = b.resolve("c");
+
+      final List<Path> forced = recordDirectoryOpens(() -> FileUtils.atomicWriteFile(c.resolve("config.json").toFile(), "new"));
+
+      if (!isWindows())
+        assertThat(forced)
+            .as("each new level's entry lives in its parent, so each parent has to be forced as the level appears")
+            .containsExactlyInAnyOrder(tempDir, a, b, c);
+      assertThat(Files.readString(c.resolve("config.json"))).isEqualTo("new");
+    }
+
+    /** Runs {@code publish} with {@code FileChannel.open} observed, counting the opens of {@link #tempDir} itself. */
+    private int countDirectoryOpens(final ThrowingRunnable publish) throws Exception {
+      final AtomicInteger opens = new AtomicInteger();
+      try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+        if (isDirectoryOpen(invocation))
+          opens.incrementAndGet();
+        return invocation.callRealMethod();
+      })) {
+        publish.run();
+      }
+      return opens.get();
+    }
+
+    /** As {@link #countDirectoryOpens}, but records WHICH directories were opened rather than how many times. */
+    private List<Path> recordDirectoryOpens(final ThrowingRunnable publish) throws Exception {
+      final List<Path> opened = new ArrayList<>();
+      try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+        if ("open".equals(invocation.getMethod().getName()) && invocation.getMethod().getParameterCount() == 2) {
+          final Path path = invocation.getArgument(0);
+          if (Files.isDirectory(path))
+            opened.add(path);
+        }
+        return invocation.callRealMethod();
+      })) {
+        publish.run();
+      }
+      return opened;
+    }
+
+    /**
+     * {@code FileChannel.open(Path, OpenOption...)} delegates to {@code open(Path, Set, FileAttribute...)}, and the
+     * static mock intercepts BOTH - so the varargs form is matched on its parameter count, or one call to it counts
+     * as two.
+     */
+    private boolean isDirectoryOpen(final InvocationOnMock invocation) {
+      return "open".equals(invocation.getMethod().getName()) && invocation.getMethod().getParameterCount() == 2
+          && tempDir.equals(invocation.getArgument(0));
+    }
+
+    private static boolean isWindows() {
+      return System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private interface ThrowingRunnable {
+      void run() throws Exception;
     }
   }
 }

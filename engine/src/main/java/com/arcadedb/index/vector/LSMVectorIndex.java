@@ -8975,7 +8975,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The scan with no transaction overlay to account for - every candidate the committed index holds is eligible.
    * This is the signature the method had before issue #7378 added the overlay, kept because it is the meaningful
-   * "nothing uncommitted" call and because {@code Issue5748AllowListBruteForceScanTest} and
+   * "nothing uncommitted" call and because {@code VectorPrefilterTest.AllowListBruteForceScan} and
    * {@code LSMVectorIndexBruteForceScanTest} reach the scan reflectively by it.
    */
   private void bruteForceScan(final VectorFloat<?> queryVectorFloat, final int k,
@@ -11054,7 +11054,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Re-ranked: the exact path's pre-filter plan, since the PQ-scaled one returns PQ distances (issue #6502). Not
           // re-ranked: the issue #6514 pre-filter plan, the PQ-scored counterpart of the issue #6502 plan in
           // findNeighborsFromVector - see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by
-          // its own selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
+          // its own selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: VectorPrefilterBenchmark.ApproximatePrefilter
           // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default - see
           // VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
           final GlobalConfiguration selectivitySetting = rerank ?

@@ -6121,7 +6121,7 @@ public class LocalSchema implements Schema {
    * types: each type is now serialized as it is visited, into the same Gson writer the document's {@code toString()}
    * uses, so the formatting cannot differ.
    */
-  // Byte identity with toJSON().toString() is pinned by Issue10247SchemaChangeScalingTest, which writes the same schema both ways
+  // Byte identity with toJSON().toString() is pinned by SchemaMaintenanceTest.SchemaChangeScaling, which writes the same schema both ways
   private String serializeSchema(final long schemaVersion) throws IOException {
     final JSONObject root = toJSON(schemaVersion, false);
     final Gson gson = JSONFactory.INSTANCE.getGson();

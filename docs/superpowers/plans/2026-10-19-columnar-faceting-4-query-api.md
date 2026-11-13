@@ -308,7 +308,7 @@ plus one engine execution test in the same class (extends `TestHelper`): for eve
 @Test void differentRangesDoNotShareAStatement() // two texts differing only in a range bound parameterize to different texts
 ```
 
-(class extends `TestHelper`; entry point as in `Issue9714RepeatedLiteralTextLookupTest`.)
+(class extends `TestHelper`; entry point as in `SqlRepeatedLiteralTextTest`.)
 
 - [ ] **Step 2: Run, expect FAIL**
 

@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code SelectOperator.not} has no fluent entry point on the {@code Select} builder today (no {@code .not()} method
  * exists on {@code SelectWhereLeftBlock}/{@code SelectWhereOperatorBlock}/etc.), so the where-tree in these tests is
  * built by hand, the same technique already used by
- * {@code Issue6565SelectIndexCandidateLimitTest#notLeafIsNeverTreatedAsExactlyIndexed} and
+ * {@code SelectIndexCandidatesTest.CandidateLimit#notLeafIsNeverTreatedAsExactlyIndexed} and
  * {@code SelectCompositeIndexTest#compositeIndexNotUsedWithNotInTheConjunction} - neither of which happens to cover
  * this defect: the first only asserts the candidate cap stays {@code -1}, and the second returns a {@code null}
  * cursor only because neither of its two properties has a standalone index, not because the code excludes a leaf

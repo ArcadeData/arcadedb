@@ -451,7 +451,7 @@ ColumnarIndexManager.replaceWatchedFiles(Runnable onChange, int[] fileIds);     
 
 - [ ] **Step 4: Wire `ColumnarIndexManager`**: add `replaceWatchedFiles`; make `mark()` notify the watchers of a projected file too; create a manager on the first `hierarchy(typeName, property)` call (one per (declaring type, property), from the TypeIndex METADATA, since a bucket index added by ALTER TYPE carries default metadata), `close()` it on the DROP_COLUMN/DROP_PROJECTION event of its index and when the database closes; the registry registers ONE schema listener for all managers (`addSchemaEventListener` has no remove). Compile: `mvn -o -pl engine -am compile -q`.
 
-- [ ] **Step 5: Run to verify they pass** (Step 2 command). Expected: PASS. Then plan 3's manager and recovery tests and plan 4's `Issue10450IndexBuildWithUnrelatedPendingWritesTest`: `mvn -o -pl engine -am test -Dtest='Columnar*Test,Issue10450IndexBuildWithUnrelatedPendingWritesTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: PASS.
+- [ ] **Step 5: Run to verify they pass** (Step 2 command). Expected: PASS. Then plan 3's manager and recovery tests and plan 4's `IndexBuildTest`: `mvn -o -pl engine -am test -Dtest='Columnar*Test,IndexBuildTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: PASS.
 
 - [ ] **Step 6: Stop: changes ready for review** - `HierarchyManager.java`, `ColumnarIndexManager.java`, `HierarchyManagerTest.java`.
 
@@ -650,7 +650,7 @@ void distinctEqualsCountDistinct(final long seed) {
 - Modify: plan 4's `FacetExecutor.collectorFor` (case before the `default` branch; the stats result carries `withValueType(propertyType)`); `FacetOracle.java` (`stats`). Consumed from plan 4 Task 1: `FacetStats`, `FacetResult.ofStats/stats()`
 - Modify: `engine/src/main/java/com/arcadedb/query/facet/FacetFallbackScanner.java` (STATS read by declared type on scanned buckets, as today; routing reviewed with Tasks 6 and 8)
 - Modify: `engine/src/main/java/com/arcadedb/query/facet/FacetResult.java` (stats min/max and the AFTER cursor through the encoder and decoder), `grpc/src/main/proto/arcadedb-server.proto`, `grpc/src/main/java/com/arcadedb/server/grpc/FacetProtocol.java` (typed `GrpcValue` `after`, `min`, `max` as additive fields 9-11 on `GrpcFacetResult`, `has_after` 12)
-- Test: `engine/src/test/java/com/arcadedb/query/facet/StatsFacetCollectorTest.java`, `StatsFacetIntegrationTest.java`; existing `engine/src/test/java/com/arcadedb/function/sql/math/Issue9496NumericSumTest.java`, `Issue5906SumAverageIntegerOverflowTest.java`
+- Test: `engine/src/test/java/com/arcadedb/query/facet/StatsFacetCollectorTest.java`, `StatsFacetIntegrationTest.java`; existing `engine/src/test/java/com/arcadedb/function/sql/math/SQLFunctionMathRegressionTest.java`, `SQLFunctionMathRegressionTest.java`
 
 **Interfaces:**
 - Produces:
@@ -684,17 +684,17 @@ JSON: `{"source": "index", "count": 10, "missing": 2, "min": 1, "max": 99, "sum"
 @Test void validationOnlyCollectorFinishesEmpty() // collectorFor(spec, null, null, 0): release() and finish() give an empty result, no exception
 @Test void deletedAndUpdatedRowsAreNotCounted()   // segment with dead rows (overlay view with a delete and an update): counts equal the oracle
 @Test void negativeDoublesDoNotSkipByBounds()     // DOUBLE view with negative values: min/max equal SQL min()/max()
-// NumericSum: extend Issue9496NumericSumTest
+// NumericSum: extend SQLFunctionMathRegressionTest
 @Test void primitiveAddersMatchBoxedAdd()         // random mix of int/long/double sequences: get() equals the boxed add() path, including class
 ```
 
 - [ ] **Step 2: Write the failing integration test** `StatsFacetIntegrationTest extends TestHelper` (seeds {1, 7, 42}): `facet("... FACETS s: fileSize STATS", "s").stats()` equals `FacetOracle.stats(...)` for `fileSize` (LONG) exactly, for a DOUBLE property `score` with `min`/`max`/`count`/`missing` exact and `sum`/`avg` `isCloseTo(expected, withinPercentage(1e-9))` (addition order differs), and for `publishDate` (min/max as dates); a FLOAT property `ratio` (sum, avg, min, max equal `SELECT sum(ratio), avg(ratio), min(ratio), max(ratio)` including class); plus a lagging case under `suspendApply()`. `ColumnarTestData` with `doubleColumn = true` and `dateColumn = true`; the test adds `ratio FLOAT` with a COLUMNAR index. Also `@Test void scannedBucketEqualsOracle()` (the type's projection made unusable, plan 3 rebuild held by `ColumnarTestHooks.killPoint "rebuild.scanned"`: facet source "scan", values equal the oracle) and `@Test void microAndNanoDatetimeMinMaxMatchSql()` (DATETIME_MICROS/NANOS min/max equal SQL `min()`/`max()` on the index and the scan path, or STATS on those types is refused on the scan path with a message naming the type).
 
-- [ ] **Step 3: Run to verify they fail**: `mvn -o -pl engine -am test -Dtest='StatsFacet*Test,Issue9496NumericSumTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: FAIL.
+- [ ] **Step 3: Run to verify they fail**: `mvn -o -pl engine -am test -Dtest='StatsFacet*Test,SQLFunctionMathRegressionTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: FAIL.
 
 - [ ] **Step 4: Implement** the `NumericSum` changes (the existing `add` delegates to the primitive adders for `Integer`/`Long`/`Double`) and `SQLFunctionAverage.average`, then the collector: `long count, missing`, `long minL/maxL` or `double minD/maxD`, one `NumericSum`; per segment `matches.andCardinality(segment.live()) == 0` skips; rows are visited with `matches.forEachAnd(segment.live(), ...)`; on a LONG column whose view holds a value (`minLong != Long.MAX_VALUE`) and whose `[minLong, maxLong]` lies inside `[minL, maxL]` the loop only feeds the sum and the count; DOUBLE views never skip by bounds; INTEGER/SHORT/BYTE-declared properties feed `addInt`, LONG `addLong`, DOUBLE `addDouble`, FLOAT `add(Float.valueOf((float) v))` (the boxed path `sum()` takes). A scanned bucket (`beginBucket(b, null, null)`) delivers values through `collectPatched` only. `stats()` returns the collector's `FacetExecutionStats` (merged collectors added), as `TermsCollector`. `FacetResult.toJSON` encodes min/max through the encoder and `fromJSON` decodes them; `FacetProtocol` writes them as typed `GrpcValue`.
 
-- [ ] **Step 5: Run to verify they pass** (Step 3 command). Expected: PASS. Then the aggregate regression set: `mvn -o -pl engine -am test -Dtest='Issue5906SumAverageIntegerOverflowTest,SQLFunctionSumAverageMultiArgTest,Issue9496*Test,GroupByExecutionTest,FacetResultsJsonTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: PASS. The proto change is pinned in Task 14 (`FacetProtocolTest`, `FacetsGrpcIT`).
+- [ ] **Step 5: Run to verify they pass** (Step 3 command). Expected: PASS. Then the aggregate regression set: `mvn -o -pl engine -am test -Dtest='SQLFunctionMathRegressionTest,SQLFunctionSumAverageMultiArgTest,Issue9496*Test,GroupByExecutionTest,FacetResultsJsonTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: PASS. The proto change is pinned in Task 14 (`FacetProtocolTest`, `FacetsGrpcIT`).
 
 - [ ] **Step 6: Stop: changes ready for review** - `NumericSum.java`, `SQLFunctionAverage.java`, `StatsFacetCollector.java`, `FacetExecutor.java`, `FacetFallbackScanner.java`, `FacetResult.java`, `arcadedb-server.proto`, `FacetProtocol.java`, `FacetOracle.java`, `FacetsExplainTest.java`, the tests.
 
@@ -997,7 +997,7 @@ Then gRPC: `mvn -o -pl grpc-client -am verify -DskipITs=false -Dit.test=FacetsGr
 
 - [ ] **Step 1: Engine, everything this plan touched or could affect**
 
-Run: `mvn -o -pl engine -am test -Dtest='*Facet*Test,Columnar*Test,Hierarchy*Test,AncestorExpanderTest,HyperLogLogTest,DictionaryPrefixSearchTest,TermsAfterCursorTest,Issue10450IndexBuildWithUnrelatedPendingWritesTest,CrossBucketOrdinalMapTest,SQLFacetsParserTest,FacetsKeywordsAsIdentifiersTest,FacetSpecCompilerTest,FacetResultsJsonTest,GroupBy*Test,Issue*GroupBy*Test,Issue9496*Test,Issue5906*Test,Issue8523ParallelScanAggregationTest,Issue8973OrderByAggregateTest,Issue8976HardwiredAggregateProjectionTest,AggregateProjection*Test,SelectStatementExecutionTest,SQLFunction*Test,*TimeSeries*Aggregat*Test,*Parser*Test' -Dsurefire.failIfNoSpecifiedTests=false -DexcludedGroups=benchmark`
+Run: `mvn -o -pl engine -am test -Dtest='*Facet*Test,Columnar*Test,Hierarchy*Test,AncestorExpanderTest,HyperLogLogTest,DictionaryPrefixSearchTest,TermsAfterCursorTest,IndexBuildTest,CrossBucketOrdinalMapTest,SQLFacetsParserTest,FacetsKeywordsAsIdentifiersTest,FacetSpecCompilerTest,FacetResultsJsonTest,GroupBy*Test,Issue*GroupBy*Test,Issue9496*Test,Issue5906*Test,Issue8523ParallelScanAggregationTest,Issue8973OrderByAggregateTest,Issue8976HardwiredAggregateProjectionTest,AggregateProjection*Test,SelectStatementExecutionTest,SQLFunction*Test,*TimeSeries*Aggregat*Test,*Parser*Test' -Dsurefire.failIfNoSpecifiedTests=false -DexcludedGroups=benchmark`
 Expected: `BUILD SUCCESS`, failures 0, from Maven's `Results:` summary (not the report files).
 
 - [ ] **Step 2: Graph tests touched by the edge-bucket watch**: `mvn -o -pl engine -am test -Dtest='com.arcadedb.graph.*Test' -Dsurefire.failIfNoSpecifiedTests=false -DexcludedGroups=benchmark,slow`. Expected: `BUILD SUCCESS`.

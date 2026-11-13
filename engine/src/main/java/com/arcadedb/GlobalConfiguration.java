@@ -1607,7 +1607,7 @@ public enum GlobalConfiguration {
       more than the walk it replaces. Set to 0 to disable the pre-filter plan and always use the graph walk. \
       Shared between the plain and groupBy paths rather than tuned separately: both score candidates the same way \
       (the groupBy path only adds cap bookkeeping on top), and benchmarking found no crossover far enough apart to \
-      justify a second setting (see Issue6502PrefilterLatencyBenchmark / Issue6514GroupedPrefilterBenchmark) - \
+      justify a second setting (see VectorPrefilterBenchmark.PrefilterLatency / VectorPrefilterBenchmark.GroupedPrefilter) - \
       unlike the PQ-approximate path below, whose per-candidate cost is a different shape entirely.""",
       Float.class, 0.2f),
 
@@ -1616,7 +1616,7 @@ public enum GlobalConfiguration {
       The vectorIndex.prefilterMaxSelectivity threshold, but for findNeighborsFromVectorApproximate (issue #6514's \
       extension of issue #6502 to the zero-disk-I/O PQ search path) - kept as a separate setting, not \
       folded into that one, because the two paths' pre-filter plans have measurably different crossovers. PQ scores a \
-      candidate from in-memory codes, which Issue6514ApproximatePrefilterBenchmark measured at roughly an order of \
+      candidate from in-memory codes, which VectorPrefilterBenchmark.ApproximatePrefilter measured at roughly an order of \
       magnitude cheaper per candidate than the exact plan's page/document read; a Bits-filtered PQ graph walk is \
       correspondingly cheaper too, so it stays the better plan for longer as the allow-list narrows. That benchmark \
       put the actual crossover between the two plans at roughly 6-7% selectivity on a 20,000-vector, 128-dimension \

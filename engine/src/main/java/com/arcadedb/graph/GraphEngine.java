@@ -1861,7 +1861,7 @@ public class GraphEngine {
    * failures and counts them for CHECK DATABASE.
    * <p>
    * That leaves one BOUNDARY, measured and pinned by
-   * {@code Issue5779MoveEdgeIndexCleanupTest.movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath}:
+   * {@code VertexDeleteRepairTest.MoveEdgeIndexCleanup.movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath}:
    * corruption the reader TOLERATES - a bad length prefix on an inline value (#4420) surfaces as the property
    * being absent, not as an exception. Nothing here can then learn the key the index holds, so that entry outlives
    * the record. It is not a leak this method can close, and not one it introduces: {@code deleteRecordNoLock}
@@ -3333,8 +3333,8 @@ public class GraphEngine {
    * routes the collection of the vertex's OWN edges through here as well, so a delete can no longer remove the
    * record while its edges stay behind. Both are deliberate - succeeding in either case leaves a reference to a
    * record that is gone - and {@code force} is the single documented escape hatch from both. Pinned by
-   * {@code Issue5670EdgeDeleteDanglingBackRefTest.deletingAVertexWhoseNeighbourListIsUnreadableReportsAConflictRatherThanDanglingTheReference}
-   * and by {@code Issue5680VertexDeleteEdgeCollectionTest}.
+   * {@code EdgeDeleteRepairRegressionTest.EdgeDeleteDanglingBackRef.deletingAVertexWhoseNeighbourListIsUnreadableReportsAConflictRatherThanDanglingTheReference}
+   * and by {@code EdgeDeleteRepairRegressionTest.VertexDeleteEdgeCollection}.
    */
   public EdgeLinkedList getEdgeHeadChunkForWrite(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
@@ -3365,7 +3365,7 @@ public class GraphEngine {
       // message is the only place the missing CHUNK's RID appears - the text above names the vertex, not the chunk,
       // which is inside the record-not-found message - and the top-level message is what a log line and an HTTP
       // error body carry, while the cause chain surfaces only in a full trace or a development-mode detail field.
-      // Pinned by Issue5670EdgeDeleteDanglingBackRefTest, which asserts the head chunk's RID is in this message.
+      // Pinned by EdgeDeleteRepairRegressionTest.EdgeDeleteDanglingBackRef, which asserts the head chunk's RID is in this message.
       throw new ConcurrentModificationException(
           "Edge list " + direction + " of vertex " + vertexRID
               + " is not fully visible yet (concurrent commit in flight): " + e.getMessage(), e);

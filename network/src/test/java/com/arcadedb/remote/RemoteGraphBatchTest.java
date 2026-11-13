@@ -229,7 +229,7 @@ class RemoteGraphBatchTest {
 
   // Code review follow-up: byte[] (BINARY property type) needs the same typed fast path as the
   // other numeric arrays; the matching server-side Collection -> byte[] narrowing branch was added
-  // to Type.convert() (see Issue6061BinaryPropertyListConversionTest in the engine module).
+  // to Type.convert() (see PropertyTypeConversionTest in the engine module).
   @Test
   void appendJsonValueSerializesByteArrayAsJsonArray() {
     final StringBuilder sb = new StringBuilder();
