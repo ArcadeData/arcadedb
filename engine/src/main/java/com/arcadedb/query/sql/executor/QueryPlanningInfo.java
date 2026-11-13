@@ -53,6 +53,9 @@ public class QueryPlanningInfo {
   Projection projection             = null;
   Projection projectionAfterOrderBy = null;
   Projection projectionAfterUnwind  = null;
+  // PARALLEL TO THE UNWIND ITEMS: WHETHER AN OPERAND IS EVALUATED ON THE ROW LAID OVER ITS RECORD (ISSUE #11563)
+  boolean[]   unwindOperandsOverRecord = null;
+  Set<String> unwindHiddenNames        = null;
 
   LetClause globalLetClause  = null;
   boolean   globalLetPresent = false;
@@ -116,6 +119,8 @@ public class QueryPlanningInfo {
     result.nextAggregateAliasId = this.nextAggregateAliasId;
     result.orderByAggregateAdded = this.orderByAggregateAdded;
     result.projectionAfterUnwind = this.projectionAfterUnwind;
+    result.unwindOperandsOverRecord = this.unwindOperandsOverRecord;
+    result.unwindHiddenNames = this.unwindHiddenNames;
     result.globalLetClause = this.globalLetClause;
     result.globalLetPresent = this.globalLetPresent;
     result.perRecordLetClause = this.perRecordLetClause;
