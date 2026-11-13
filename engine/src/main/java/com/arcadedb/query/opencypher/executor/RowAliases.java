@@ -149,7 +149,7 @@ public final class RowAliases {
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object element = entry.getValue();
         final Object live = liveValue(element, updated);
-        if (live != element && rebuilt == null)
+        if (live != element && rebuilt == null) // NOPMD: by identity, as liveValue answers an unchanged element
           rebuilt = new LinkedHashMap<>(map);
         if (rebuilt != null)
           rebuilt.put(entry.getKey(), live);
@@ -163,6 +163,6 @@ public final class RowAliases {
   private static TraversalPath withUpdated(final TraversalPath path, final Document member,
       final Map<RID, ? extends Document> updated) {
     final Document live = updated.get(member.getIdentity());
-    return live != null && live != member ? path.withRecord(member.getIdentity(), live) : path;
+    return live != null && live != member ? path.withRecord(member.getIdentity(), live) : path; // NOPMD: same RID, so by identity
   }
 }
