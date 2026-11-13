@@ -1894,9 +1894,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Projection items
     final List<ProjectionItem> items = new ArrayList<>();
 
-    // Handle * wildcard
-    if (ctx.STAR() != null) {
-      // Add wildcard projection item
+    // * wildcards, at any position of the list (issue #11570), go first: Projection.toString renders them first and
+    // calculateSingle applies the items in order, so an explicit item overwrites a same-named column of the record whether the
+    // * was written before or after it, and the statement means the same as its rendering
+    for (int i = 0; i < ctx.STAR().size(); i++) {
       final ProjectionItem item = new ProjectionItem();
       item.setAll(true);
       items.add(item);

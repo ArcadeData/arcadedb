@@ -1481,10 +1481,11 @@ timeout
     ;
 
 /**
- * Projection - list of expressions to return
+ * Projection - list of expressions to return. STAR may appear at any position (issue #11570): the builder places every STAR
+ * first, which is how Projection.toString renders it, so an explicit item wins over a same-named column of the record.
  */
 projection
-    : DISTINCT? (STAR | projectionItem) (COMMA projectionItem)*
+    : DISTINCT? (STAR | projectionItem) (COMMA (STAR | projectionItem))*
     ;
 
 projectionItem
