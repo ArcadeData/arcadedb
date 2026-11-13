@@ -39,6 +39,12 @@ import java.util.Locale;
  * </ul>
  */
 public class RoundFunction implements StatelessFunction {
+  /**
+   * Below this scale the rounding unit 10^-scale is more than twice Double.MAX_VALUE (below 10^309), so any finite double
+   * rounds to 0 or to plus or minus 10^-scale, which converts to an infinity: every scale below it answers alike.
+   */
+  private static final int MIN_EFFECTIVE_SCALE = -400;
+
   @Override
   public String getName() {
     return "round";
@@ -98,12 +104,6 @@ public class RoundFunction implements StatelessFunction {
     final int scale = Math.max(Math.min(precision, bd.scale()), MIN_EFFECTIVE_SCALE);
     return bd.setScale(scale, mode).doubleValue();
   }
-
-  /**
-   * Below this scale the rounding unit 10^-scale is more than twice Double.MAX_VALUE (below 10^309), so any finite double
-   * rounds to 0 or to plus or minus 10^-scale, which converts to an infinity: every scale below it answers alike.
-   */
-  private static final int MIN_EFFECTIVE_SCALE = -400;
 
   /**
    * Resolves the optional third argument of {@code round()} to a rounding mode, defaulting to HALF_UP when it is absent.
