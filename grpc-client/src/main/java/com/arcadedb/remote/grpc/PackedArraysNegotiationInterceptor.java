@@ -30,7 +30,8 @@ import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 
 /**
- * The client end of the packed array negotiation of issue #11714, one per {@link RemoteGrpcDatabase}:
+ * The client end of the packed array negotiation of issue #11714, one per {@link RemoteGrpcDatabase} and channel generation (a
+ * reconnect may reach another server, so it starts over with a new instance):
  * <ul>
  * <li>every call asks for {@code float[]} / {@code double[]} results packed ({@link GrpcPackedArrays#HEADER}), which
  * {@code ProtoUtils} decodes to the same arrays;</li>
@@ -39,7 +40,7 @@ import io.grpc.Status;
  * null, and would store that, so until the announcement arrives (the first call included) vectors travel as lists, which
  * every server decodes.</li>
  * </ul>
- * The response headers decide, each time they arrive: a server swapped for an older one behind the same address stops the
+ * The response headers decide, each time they arrive: a server swapped for an older one behind the same connection stops the
  * packed requests at its first answer. A response that carries no headers (a call that failed before any message: trailers
  * only, or a status the transport made up) can only confirm support through its trailers, never withdraw it, so a client-side
  * deadline or a refused authentication does not send the next call back to lists.
