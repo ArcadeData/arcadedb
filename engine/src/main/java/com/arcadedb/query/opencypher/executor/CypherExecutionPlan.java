@@ -3087,7 +3087,8 @@ public class CypherExecutionPlan {
   /**
    * Whether every value of a property map can be read before the pattern it belongs to is matched: a value an index seek takes
    * without a row, or one reading only variables {@code boundBefore} holds, which an earlier clause bound for the row the seek
-   * runs on (issue #11699).
+   * runs on (issue #11699). Not a value two evaluations can disagree on, such as one calling {@code rand()}: the seek reads it
+   * once and the hop's filter on the vertex found once more.
    */
   private static boolean readsOnlyEarlierClauses(final Map<String, Object> properties, final Set<String> boundBefore) {
     if (properties == null)
@@ -3095,7 +3096,7 @@ public class CypherExecutionPlan {
     for (final Object value : properties.values()) {
       if (RowIndependentValues.isSeekable(value))
         continue;
-      if (!(value instanceof Expression expression))
+      if (!(value instanceof Expression expression) || !RowIndependentValues.isDeterministic(expression))
         return false;
       final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
       if (!referenced.isComplete() || !boundBefore.containsAll(referenced.getNames()))

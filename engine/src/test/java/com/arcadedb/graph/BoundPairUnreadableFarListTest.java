@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -38,7 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BoundPairUnreadableFarListTest extends TestHelper {
   // MORE ENTRIES THAN THE NEAR LIST WALKS ALONE BEFORE THE FAR LIST IS LOOKED AT
-  private static final int FILLERS = 200;
+  private static final int FILLERS    = 200;
+  // THE INCOMING RELATIONSHIPS OF A FAR END PROMOTED TO A SUPER-NODE. THE HUB HAS FILLERS MORE, SO THE FAR LIST WINS THE RACE
+  private static final int FAR_DEGREE = 150;
 
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
@@ -64,6 +67,56 @@ class BoundPairUnreadableFarListTest extends TestHelper {
     database.transaction(() -> leafHead[0] = ((VertexInternal) ends[1].asVertex()).getInEdgesHeadChunk());
     assertThat(leafHead[0]).isNotNull();
     database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, leafHead[0]));
+
+    database.transaction(() -> {
+      final GraphEngine engine = ((DatabaseInternal) database).getGraphEngine();
+      final VertexInternal hub = (VertexInternal) ends[0].asVertex();
+      for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.BOTH }) {
+        final List<Edge> edges = drain(engine.getEdgesConnectedTo(hub, direction, ends[1], "T"));
+        assertThat(edges).as("%s", direction).hasSize(1);
+        assertThat(edges.getFirst().getIn()).isEqualTo(ends[1]);
+      }
+    });
+  }
+
+  /**
+   * The same on a far end promoted to a super-node (#5156), whose list is one chain per stripe. A read walk skips a stripe
+   * chain whose head cannot be loaded, so the race took what was left for the whole far list, the shorter one, and the pair
+   * read off it missed every edge that stripe holds: all of them, since the edges to one neighbour sit in one stripe of a
+   * generation. Whether the skipped stripe made a longer list look shorter or not, the edges it holds were lost.
+   */
+  @Test
+  void anUnreadableStripeOfAFarListLeavesTheWalkOnTheSource() {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 64);
+    database.command("sql", "CREATE VERTEX TYPE N");
+    database.command("sql", "CREATE EDGE TYPE T");
+    final RID[] ends = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex leaf = database.newVertex("N").save();
+      for (int i = 0; i < FAR_DEGREE; i++)
+        database.newVertex("N").save().newEdge("T", leaf);
+      ends[1] = leaf.getIdentity();
+    });
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("N").save();
+      for (int i = 0; i < FAR_DEGREE + FILLERS; i++)
+        hub.newEdge("T", database.newVertex("N").save());
+      hub.newEdge("T", ends[1].asVertex());
+      ends[0] = hub.getIdentity();
+    });
+
+    // THE STRIPE OF THE NEWEST GENERATION THAT HOLDS THE HUB'S ENTRY IN THE LEAF'S INCOMING LIST
+    final RID[] stripeHead = new RID[1];
+    database.transaction(() -> {
+      final RID head = ((VertexInternal) ends[1].asVertex()).getInEdgesHeadChunk();
+      assertThat(database.lookupByRID(head, true)).as("the far end must be a promoted super-node")
+          .isInstanceOf(StripeDirectory.class);
+      final StripeDirectory directory = (StripeDirectory) database.lookupByRID(head, true);
+      final int generation = directory.getGenerationCount() - 1;
+      stripeHead[0] = directory.getHead(generation, StripeDirectory.stripeOf(ends[0], directory.getStripes(generation)));
+      assertThat(stripeHead[0]).isNotNull();
+    });
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, stripeHead[0]));
 
     database.transaction(() -> {
       final GraphEngine engine = ((DatabaseInternal) database).getGraphEngine();

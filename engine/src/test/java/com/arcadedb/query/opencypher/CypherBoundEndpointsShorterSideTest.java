@@ -202,6 +202,33 @@ class CypherBoundEndpointsShorterSideTest extends TestHelper {
     assertCostIndependentOfHubDegree("MATCH (a:N {k: $hub})-[r:T]->(:N {k: $leaf}) RETURN count(r) AS v");
   }
 
+  /**
+   * A key calling a non-deterministic function is not one value per row: the walk evaluates it once per relationship, on
+   * the vertex at its far end. Sought before the hop it was evaluated twice, for the seek and again by the hop's filter
+   * on the vertex found, and the two values seldom agreed. Of a hundred neighbours keyed '0' to '99', each matches a draw of
+   * {@code rand()} once in a hundred, so fifty runs of the walk find fifty relationships on average; the seek found one
+   * every other run. The relationship property map sends the first statement to the traditional plan, the second is planned
+   * by the cost-based one.
+   */
+  @Test
+  void aNonDeterministicKeyIsNotSoughtBeforeTheHop() {
+    createSchema();
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("N").set("k", "hub").save();
+      for (int i = 0; i < 100; i++)
+        hub.newEdge("T", database.newVertex("N").set("k", String.valueOf(i)).save(), "p", 1);
+    });
+
+    for (final String statement : new String[] {
+        "MATCH (a:N {k: 'hub'})-[r:T {p: 1}]->(b:N {k: toString(toInteger(rand() * 100))}) RETURN count(r) AS v",
+        "MATCH (a:N {k: 'hub'})-[r:T]->(b:N {k: toString(toInteger(rand() * 100))}) RETURN count(r) AS v" }) {
+      long found = 0;
+      for (int run = 0; run < 50; run++)
+        found += count(statement);
+      assertThat(found).as("relationships found by 50 runs of %s, 50 expected on average", statement).isGreaterThan(10L);
+    }
+  }
+
   private void assertCostIndependentOfHubDegree(final String statement) {
     database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 0);
     createSchema();

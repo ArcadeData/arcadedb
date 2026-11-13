@@ -105,7 +105,15 @@ public final class RowIndependentValues {
     final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
     if (!referenced.isComplete() || !referenced.getNames().isEmpty())
       return false;
+    return isDeterministic(expression);
+  }
 
+  /**
+   * Whether two evaluations of {@code expression} against the same row give the same value: it calls no aggregation and no
+   * non-deterministic function such as {@code rand()}, and reads no pattern or nested statement, whose answer depends on the
+   * graph at the moment it is evaluated. A value evaluated once for a seek and once more by a filter must be one.
+   */
+  public static boolean isDeterministic(final Expression expression) {
     final boolean[] dependent = new boolean[1];
     CypherExpressionWalker.walk(expression, new CypherExpressionWalker.Visitor() {
       @Override
@@ -117,7 +125,7 @@ public final class RowIndependentValues {
 
       @Override
       public void visitPattern(final PathPattern pattern) {
-        // A pattern reads the graph, which the statement itself may be changing between two rows
+        // A pattern reads the graph, which the statement itself may be changing between two evaluations
         dependent[0] = true;
       }
 

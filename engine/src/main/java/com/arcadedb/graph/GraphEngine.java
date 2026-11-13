@@ -2927,8 +2927,9 @@ public class GraphEngine {
    * The far vertex is read again through the database rather than taken from the caller's handle: a handle loaded before
    * another transaction appended to its list would hide the newest edges, and a MERGE deciding on that would create a
    * second one (issues #6461, #7174). A far vertex that cannot be read leaves the walk on {@code source}, and so does a
-   * list of either end whose head is present but cannot be loaded (a concurrent commit not yet fully published, see
-   * {@link #getEdgeHeadChunkForWrite}): read as empty, it would win the race and hide the edges the readable list holds.
+   * list of either end whose head, or the head of one of whose stripes, is present but cannot be loaded (a concurrent
+   * commit not yet fully published, see {@link #getEdgeHeadChunkForWrite}): read as empty or as short, it would win the
+   * race and hide the edges the unreadable part holds.
    */
   private VertexInternal shorterFarEnd(final VertexInternal source, final Vertex.DIRECTION direction, final RID targetRID,
       final String[] edgeTypes) {
@@ -2969,28 +2970,30 @@ public class GraphEngine {
   }
 
   /**
-   * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list
-   * whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
+   * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list, or a
+   * stripe of one, whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
    */
   private Iterator<RID> entriesOf(final VertexInternal vertex, final Vertex.DIRECTION direction) {
-    if (direction != Vertex.DIRECTION.BOTH) {
-      final EdgeLinkedList edges = getEdgeHeadChunk(vertex, direction);
-      if (edges != null)
-        return edges.entryRidIterator();
-      return hasNoEdgeList(vertex, direction) ? Collections.emptyIterator() : null;
-    }
+    if (direction != Vertex.DIRECTION.BOTH)
+      return entriesOfList(vertex, direction);
+    final Iterator<RID> outEntries = entriesOfList(vertex, Vertex.DIRECTION.OUT);
+    if (outEntries == null)
+      return null;
+    final Iterator<RID> inEntries = entriesOfList(vertex, Vertex.DIRECTION.IN);
+    if (inEntries == null)
+      return null;
     final MultiIterator<RID> both = new MultiIterator<>();
-    final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-    if (outEdges != null)
-      both.addIterator(outEdges.entryRidIterator());
-    else if (!hasNoEdgeList(vertex, Vertex.DIRECTION.OUT))
-      return null;
-    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-    if (inEdges != null)
-      both.addIterator(inEdges.entryRidIterator());
-    else if (!hasNoEdgeList(vertex, Vertex.DIRECTION.IN))
-      return null;
+    both.addIterator(outEntries);
+    both.addIterator(inEntries);
     return both;
+  }
+
+  /** {@link #entriesOf} in {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}. */
+  private Iterator<RID> entriesOfList(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    final EdgeLinkedList edges = getEdgeHeadChunk(vertex, direction);
+    if (edges != null)
+      return edges.wholeEntryRidIterator();
+    return hasNoEdgeList(vertex, direction) ? Collections.emptyIterator() : null;
   }
 
   /** Whether {@code vertex} names no head chunk in {@code direction}: false too when the vertex itself cannot be read. */
