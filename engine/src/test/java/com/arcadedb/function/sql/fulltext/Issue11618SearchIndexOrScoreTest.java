@@ -138,6 +138,30 @@ class Issue11618SearchIndexOrScoreTest extends TestHelper {
           .keySet()).as(orderBy).isEqualTo(expected);
   }
 
+  /**
+   * An arm an index answered keeps the score it served a record with, though the arm is false on the record: the full-text
+   * index answers CONTAINSTEXT ignoring case, the record does not. A record only a plain arm matched gets 0. The arm serves
+   * the record first: a branch that comes after the one that served a record does not change its score.
+   */
+  @Test
+  void anArmFalseOnTheRecordKeepsTheScoreItServedWith() {
+    final String indexed = "questions CONTAINSTEXT 'CAPITAL' AND true = SEARCH_INDEX('Chunk[text]', 'capital')";
+    final Map<String, Float> served = scores("SELECT name, $score AS score FROM Chunk WHERE " + indexed);
+    final Map<String, Float> questions = scores("SELECT name, $score AS score FROM Chunk WHERE " + B);
+    final Map<String, Float> best = new HashMap<>(served);
+    questions.forEach((name, score) -> best.merge(name, score, Math::max));
+    assertThat(served.get("bothTextBest")).isGreaterThan(questions.get("bothTextBest"));
+    for (final String query : new String[] {
+        "SELECT name, $score AS score FROM Chunk WHERE " + indexed + " OR " + B,
+        "SELECT name, $score AS score FROM Chunk WHERE " + indexed + " OR " + B + " ORDER BY name" })
+      assertThat(scores(query)).as(query).isEqualTo(best);
+
+    final Map<String, Float> expected = new HashMap<>(scores("SELECT name, $score AS score FROM Chunk WHERE " + A));
+    expected.put("questionsOnly", 0f);
+    assertThat(scores("SELECT name, $score AS score FROM Chunk WHERE " + A + " OR text CONTAINSTEXT 'unrelated' ORDER BY name"))
+        .isEqualTo(expected);
+  }
+
   private void insert(final String name, final String text, final String questions) {
     database.command("sql", "INSERT INTO Chunk SET name = ?, text = ?, questions = ?", name, text, questions);
   }
