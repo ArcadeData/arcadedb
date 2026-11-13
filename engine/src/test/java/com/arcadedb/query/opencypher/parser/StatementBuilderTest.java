@@ -87,7 +87,7 @@ class StatementBuilderTest {
     final StatementBuilder builder = new StatementBuilder();
     final NodePattern node = new NodePattern("n", null, null);
     final PathPattern path = new PathPattern(node);
-    final MergeClause merge = new MergeClause(path, null, null);
+    final MergeClause merge = new MergeClause(path);
 
     builder.setMerge(merge);
     final SimpleCypherStatement stmt = builder.build();

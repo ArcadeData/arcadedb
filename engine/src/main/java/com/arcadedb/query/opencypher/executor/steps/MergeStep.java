@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -286,10 +287,11 @@ public class MergeStep extends AbstractExecutionStep {
           ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
         }
         // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+        // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
         if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
-          applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
+          applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
-          applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
+          applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
         // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
         if (absorbedSet != null && !createSetFolded)
           // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
@@ -1714,6 +1716,22 @@ public class MergeStep extends AbstractExecutionStep {
     // a path pattern matching several existing rows fans out inside ONE executeMerge(), and those rows do not see
     // each other's writes. They target different records, which is why it has never mattered.
     setApplier.apply(setClause, result, new HashMap<>(), labelReplacements);
+  }
+
+  /**
+   * Applies repeated ON CREATE / ON MATCH SET clauses in source order (issue #11691). Each is a SET of its own, so its
+   * values are evaluated after the previous one was applied; the shared map carries the read-your-writes reach across
+   * them, as it would across consecutive SET clauses.
+   */
+  private void applySetClauses(final List<SetClause> setClauses, final Result result, final LabelReplacements labelReplacements) {
+    if (setClauses.size() == 1) {
+      applySetClause(setClauses.getFirst(), result, labelReplacements);
+      return;
+    }
+    final Map<RID, MutableDocument> written = new HashMap<>();
+    for (final SetClause setClause : setClauses)
+      if (!setClause.isEmpty())
+        setApplier.apply(setClause, result, written, labelReplacements);
   }
 
   /**
