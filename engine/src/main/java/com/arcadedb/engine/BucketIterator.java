@@ -68,8 +68,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   BasePage currentPage = null;
   // #11590: the transaction's own image of the page in hand, on which the reads of that page are recorded: the page itself when the
   // transaction held it written when it was taken, the image it wrote later when the page was kept from a batch before
-  // (see trackReadsOfKeptPage), null when the transaction holds no image of it
+  // (see trackReadsOfKeptPage), null when the transaction holds no image of it. Bound to the transaction it was resolved in, by its
+  // begin sequence (the context is reused): an iterator kept across a commit resolves the image of the next transaction
   private MutablePage currentPageImage;
+  private long        currentPageImageTransaction = -1;
   short    recordCountInCurrentPage;
   int      totalPages;
   int      currentRecordInPage;
@@ -175,7 +177,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         bucket.pageSize);
     // #11590: the scan goes on through this page: what it finds there, and what it does not, may come from the transaction's own
     // stale image of it, which its commit has to know
-    currentPageImage = currentPage instanceof MutablePage image ? image : null;
+    bindCurrentPageImage(database.getTransaction().getBeginSequence());
     database.getTransaction().trackScanOfPage(currentPageImage);
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
@@ -412,7 +414,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         return true;
       nextPageNumber = pageNumber;
       currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, bucket.file.getFileId(), pageNumber), bucket.pageSize);
-      currentPageImage = currentPage instanceof MutablePage image ? image : null;
+      bindCurrentPageImage(readInTransaction);
       recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     }
 
@@ -468,12 +470,19 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
    * the transaction did not hold written when the scan took it.
    */
   private void trackReadsOfKeptPage() {
-    if (currentPage == null || currentPageImage != null)
+    if (currentPage == null || currentPageImage != null && currentPageImageTransaction == readInTransaction)
       return;
     currentPageImage = database.getTransaction().getOwnImageForTracking(currentPage.getPageId());
+    currentPageImageTransaction = readInTransaction;
     if (currentPageImage != null && positions == null)
       // a scan of the page: positions mode records each slot it reads instead
       database.getTransaction().trackScanOfPage(currentPageImage);
+  }
+
+  /** The page just taken is the transaction's own image when it is a written one (#11590). */
+  private void bindCurrentPageImage(final long transaction) {
+    currentPageImage = currentPage instanceof MutablePage image ? image : null;
+    currentPageImageTransaction = transaction;
   }
 
   private void fetchNext() {
@@ -520,7 +529,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
             currentPage = database.getTransaction()
                 .getPageForAbsoluteReads(new PageId(database, bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
             // #11590: see setPosition
-            currentPageImage = currentPage instanceof MutablePage image ? image : null;
+            bindCurrentPageImage(readInTransaction);
             database.getTransaction().trackScanOfPage(currentPageImage);
             recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 

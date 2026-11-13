@@ -636,7 +636,15 @@ public class GraphEngine {
       return edges;
 
     // No eager modify() - see connectOutgoingEdge.
-    getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    // #11590: inside the edge-append window, see appendToEdgeList
+    if (tx != null)
+      tx.beginEdgeAppend();
+    try {
+      getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    } finally {
+      if (tx != null)
+        tx.endEdgeAppend();
+    }
 
     if (inEdgePairs != null)
       for (int i = 0; i < inEdgePairs.size(); ++i) {

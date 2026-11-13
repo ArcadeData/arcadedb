@@ -293,6 +293,47 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
   }
 
   /**
+   * As {@link #relationshipsOfAListTheTransactionAppendedToAreNotReadStale()}, but T also creates a vertex with an outgoing
+   * relationship, whose new chunk lands on the page of vertex 1's chunk: the edge-append merge gives that page up, and the slot merge
+   * replays the append onto the chunk the other transaction appended to (#11498). It must not when T read that chunk.
+   */
+  @Test
+  void listReadAfterAnAppendMergedBySlotIsNotReadStale() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (x:V {id: 5}) CREATE (:V {id: 10})-[:E]->(x)").close();
+    database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    final long counted;
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {id: 1})-[e:E]->() RETURN count(e) AS c")) {
+      counted = ((Number) rs.next().getProperty("c")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(counted).as("a transaction that commits must have counted the relationship committed before its statement")
+          .isEqualTo(3L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(outgoingOfVertex1()).isEqualTo(failure == null ? 3L : 2L);
+  }
+
+  /** The success side of the case above: without the read, the slot merge still replays the append. */
+  @Test
+  void blindAppendMergedBySlotStillMerges() throws Exception {
+    createGraphWithListsOfVertex1();
+
+    database.begin();
+    database.command("opencypher", "MATCH (x:V {id: 5}) CREATE (:V {id: 10})-[:E]->(x)").close();
+    database.command("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    database.commit();
+
+    assertThat(outgoingOfVertex1()).isEqualTo(3L);
+  }
+
+  /**
    * Appends nothing decided on: T and the other transaction both append to the outgoing list of vertex 1 without reading it.
    * The append's own reads of the chunk are not reads of the application, so the edge-append merge still takes both.
    */
@@ -343,6 +384,51 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
     }
     final Throwable failure = commitOrFailure();
 
+    if (failure == null)
+      assertThat(read).as("a transaction that commits must have read the value committed before its scan read it").isEqualTo(9);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valuesOf("SELECT f FROM D WHERE id = 1300")).containsExactly(9);
+  }
+
+  /**
+   * The scan of the case above kept across a commit: the first transaction held the page written when the scan took it, so that was
+   * the image the scan recorded its reads on. The next transaction writes the page too, and the second batch must record its reads
+   * on that transaction's image, not on the image of the transaction that committed.
+   */
+  @Test
+  void scanKeptAcrossACommitRecordsItsReadsForTheNextTransaction() throws Exception {
+    final int records = 1_500;
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().getType("D").createProperty("f", Type.INTEGER);
+      for (int i = 0; i < records; i++)
+        database.newDocument("D").set("id", i).set("f", 0).save();
+    });
+    final int maxRecordsInPage = ((LocalBucket) database.getSchema().getType("D").getBuckets(false).getFirst()).getMaxRecordsInPage();
+
+    database.begin();
+    assertThat(database.newDocument("D").set("id", records).set("f", 0).save().getIdentity().getPosition() / maxRecordsInPage)
+        .isZero();
+    final Iterator<Record> scan = database.iterateType("D", false);
+    for (int i = 0; i < 10; i++)
+      scan.next();
+    database.commit();
+
+    database.begin();
+    assertThat(database.newDocument("D").set("id", records + 1).set("f", 0).save().getIdentity().getPosition() / maxRecordsInPage)
+        .as("the insert lands on the page the scan is reading").isZero();
+    commitFromAnotherThread("sql", "UPDATE D SET f = 9 WHERE id = 1300");
+
+    Integer read = null;
+    while (scan.hasNext()) {
+      final Document document = scan.next().asDocument();
+      if (document.getInteger("id") == 1300)
+        read = document.getInteger("f");
+    }
+    final Throwable failure = commitOrFailure();
+
+    assertThat(read).isNotNull();
     if (failure == null)
       assertThat(read).as("a transaction that commits must have read the value committed before its scan read it").isEqualTo(9);
     else
