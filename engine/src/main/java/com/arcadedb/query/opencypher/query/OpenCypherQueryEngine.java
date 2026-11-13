@@ -629,8 +629,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (statement.isReadOnly())
       return profile ? plan.profile() : plan.execute(null, timeExecution);
 
-    if (execDb.isTransactionActive())
+    if (execDb.isTransactionActive()) {
+      // CALL { ... } IN TRANSACTIONS commits its batches on their own, so inside a transaction the CLIENT opened (HTTP
+      // /begin, Bolt BEGIN) the client's ROLLBACK could not undo them and the batches would not see its writes (issue
+      // #11588). Refused there as Neo4j does; the transaction a server opens around one request keeps running it.
+      if (statement.hasSubqueryInTransactions() && execDb.getTransaction().isClientManaged())
+        throw new CommandExecutionException(
+            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
       return executeWrite(plan, execDb, profile, timeExecution);
+    }
 
     // An AUTO-COMMIT write (issue #10190): the statement is one transaction, begun here and committed once it has run to
     // the end, as the HTTP handler does around every command and Neo4j does for an implicit transaction. The write steps
