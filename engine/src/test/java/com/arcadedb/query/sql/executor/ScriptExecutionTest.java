@@ -566,4 +566,38 @@ class ScriptExecutionTest extends TestHelper {
   private SQLFunction defineThrowCME() {
     return new SQLFunctionThrowCME();
   }
+
+  // ---- #9454: FOREACH over a null source ----
+  // FOREACH over a source that evaluates to null (e.g. a variable that is not set) threw a bare NullPointerException.
+  // It must iterate zero times instead.
+
+  /** Regression test for issue #9454. */
+  @Test
+  void foreachOverUnsetVariableIteratesNothing() {
+    database.getSchema().createDocumentType("Dst");
+
+    database.command("sqlscript", """
+        foreach ($p IN $notSet) {
+          insert into Dst set id = 1;
+        }
+        """);
+
+    assertThat(database.countType("Dst", true)).isZero();
+  }
+
+  /** Regression test for issue #9454. */
+  @Test
+  void foreachOverNonNullSourceStillIterates() {
+    database.getSchema().createDocumentType("Dst");
+
+    database.command("sqlscript", """
+        begin;
+        foreach ($p IN [1, 2, 3]) {
+          insert into Dst set id = $p;
+        }
+        commit;
+        """);
+
+    assertThat(database.countType("Dst", true)).isEqualTo(3);
+  }
 }

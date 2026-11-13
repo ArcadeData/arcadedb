@@ -25,6 +25,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -267,5 +269,199 @@ class SchemaDetailQueryTest extends TestHelper {
         rs.hasNext();
       }
     }).isInstanceOf(SchemaException.class);
+  }
+
+  // ---- #7654: SELECT FROM schema:triggers ----
+  // The catalog listing that closes the hole found while sweeping #7654's exception messages.
+  // RemoteSchema.existsTrigger() already issued this exact query, so on a remote database it answered
+  // "UnsupportedOperationException: Invalid metadata: triggers" instead of true or false: the target was never
+  // registered in SelectExecutionPlanner.handleSchemaAsTarget. CREATE TRIGGER and DROP TRIGGER were both reachable
+  // over the wire while nothing could list what they had produced.
+
+  private static final String TRIGGER_CATALOG_TYPE = "Issue7654Audited";
+
+  private void createTriggerCatalogFixture() {
+    database.getSchema().createDocumentType(TRIGGER_CATALOG_TYPE).createProperty("v", Type.INTEGER);
+  }
+
+  /** Regression test for issue #7654. */
+  @Test
+  void theCatalogListsEveryTriggerAndItsDefinition() {
+    createTriggerCatalogFixture();
+    database.command("sql", "CREATE TRIGGER bumpOnCreate BEFORE CREATE ON TYPE " + TRIGGER_CATALOG_TYPE + " EXECUTE SQL 'SELECT 1'");
+    database.command("sql", "CREATE TRIGGER auditOnUpdate AFTER UPDATE ON TYPE " + TRIGGER_CATALOG_TYPE + " EXECUTE SQL 'SELECT 2'");
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:triggers")) {
+      final List<Result> rows = rs.stream().toList();
+      assertThat(rows).hasSize(2);
+
+      // Ordered by name, case-insensitively, like every sibling catalog listing.
+      assertThat(rows.stream().map(r -> r.<String>getProperty("name")).toList())
+          .containsExactly("auditOnUpdate", "bumpOnCreate");
+
+      final Result audit = rows.getFirst();
+      assertThat(audit.<String>getProperty("typeName")).isEqualTo(TRIGGER_CATALOG_TYPE);
+      assertThat(audit.<String>getProperty("timing")).isEqualTo("AFTER");
+      assertThat(audit.<String>getProperty("event")).isEqualTo("UPDATE");
+      assertThat(audit.<String>getProperty("actionType")).isEqualTo("SQL");
+      assertThat(audit.<String>getProperty("actionCode")).contains("SELECT 2");
+    }
+  }
+
+  /**
+   * Regression test for issue #7654.
+   * <p>
+   * The shape {@code RemoteSchema.existsTrigger()} depends on: before this target existed, the query it issues threw
+   * rather than answering, so the remote method could never return false either.
+   */
+  @Test
+  void theCatalogAnswersTheExistenceCheckTheRemoteClientIssues() {
+    createTriggerCatalogFixture();
+    try (final ResultSet none = database.query("sql", "SELECT FROM schema:triggers WHERE name = 'absent'")) {
+      assertThat(none.hasNext()).isFalse();
+    }
+
+    database.command("sql", "CREATE TRIGGER presentTrigger BEFORE CREATE ON TYPE " + TRIGGER_CATALOG_TYPE + " EXECUTE SQL 'SELECT 1'");
+
+    try (final ResultSet found = database.query("sql", "SELECT FROM schema:triggers WHERE name = 'presentTrigger'")) {
+      assertThat(found.hasNext()).isTrue();
+    }
+
+    database.command("sql", "DROP TRIGGER presentTrigger");
+
+    try (final ResultSet gone = database.query("sql", "SELECT FROM schema:triggers WHERE name = 'presentTrigger'")) {
+      assertThat(gone.hasNext()).isFalse();
+    }
+  }
+
+  /** Regression test for issue #7654. */
+  @Test
+  void theCatalogIsEmptyRatherThanBrokenOnADatabaseWithNoTriggers() {
+    createTriggerCatalogFixture();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:triggers")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  // ---- #7898: schema: catalog listings honour LIMIT and SKIP ----
+  // Every schema: catalog LISTING step materialised its whole listing on the first pull and then handed back a
+  // ResultSet over the entire thing, ignoring the nRecords it was asked for. Both paging steps above it assume a batch
+  // is bounded by what they requested, and broke in opposite directions: LimitExecutionStep counted the rows it
+  // delivered but never applied its own cut-off, so LIMIT 2 over six types answered six rows; SkipExecutionStep
+  // discarded the whole batch it received rather than the rows it still owed, so SKIP 1 answered none at all.
+  // The listings are asserted together rather than one per test because the shape is shared - a new one of exactly
+  // this kind was added for schema:triggers the same week the counting half was fixed, which is why the paging now
+  // lives in a single base class.
+
+  private static final int CATALOG_PAGING_TYPES = 6;
+
+  private void createCatalogPagingFixture() {
+    database.transaction(() -> {
+      for (int i = 0; i < CATALOG_PAGING_TYPES; i++) {
+        database.command("sql", "CREATE DOCUMENT TYPE T" + i);
+        database.command("sql", "CREATE PROPERTY T" + i + ".name STRING");
+        database.command("sql", "CREATE INDEX ON T" + i + " (name) NOTUNIQUE");
+        database.command("sql", "CREATE TRIGGER trg" + i + " AFTER CREATE ON TYPE T" + i
+            + " EXECUTE SQL \"SELECT 1\"");
+      }
+    });
+  }
+
+  /** Regression test for issue #7898. */
+  @Test
+  void limitBoundsEveryCatalogListing() {
+    createCatalogPagingFixture();
+    for (final String catalog : List.of("schema:types", "schema:buckets", "schema:indexes", "schema:triggers")) {
+      assertThat(count("SELECT FROM " + catalog)).as(catalog + " without a limit").isGreaterThanOrEqualTo(CATALOG_PAGING_TYPES);
+      assertThat(count("SELECT FROM " + catalog + " LIMIT 2")).as(catalog + " LIMIT 2").isEqualTo(2);
+      assertThat(count("SELECT FROM " + catalog + " LIMIT 1")).as(catalog + " LIMIT 1").isEqualTo(1);
+      assertThat(count("SELECT name FROM " + catalog + " LIMIT 2")).as(catalog + " projected LIMIT 2").isEqualTo(2);
+    }
+  }
+
+  /** Regression test for issue #7898. */
+  @Test
+  void skipDropsOnlyTheRowsItOwes() {
+    createCatalogPagingFixture();
+    final List<String> all = names("SELECT name FROM schema:types");
+    assertThat(all).hasSize(CATALOG_PAGING_TYPES);
+
+    assertThat(names("SELECT name FROM schema:types SKIP 1")).isEqualTo(all.subList(1, CATALOG_PAGING_TYPES));
+    assertThat(names("SELECT name FROM schema:types SKIP 4")).isEqualTo(all.subList(4, CATALOG_PAGING_TYPES));
+    assertThat(names("SELECT name FROM schema:types SKIP " + CATALOG_PAGING_TYPES)).isEmpty();
+  }
+
+  /** Regression test for issue #7898. */
+  @Test
+  void skipAndLimitComposeOverACatalogListing() {
+    createCatalogPagingFixture();
+    final List<String> all = names("SELECT name FROM schema:types");
+
+    assertThat(names("SELECT name FROM schema:types SKIP 1 LIMIT 2")).isEqualTo(all.subList(1, 3));
+    assertThat(names("SELECT name FROM schema:types SKIP 4 LIMIT 5")).isEqualTo(all.subList(4, CATALOG_PAGING_TYPES));
+    assertThat(names("SELECT name FROM schema:types LIMIT 3")).isEqualTo(all.subList(0, 3));
+  }
+
+  /**
+   * Regression test for issue #7898.
+   * <p>
+   * A listing is no use paged if paging reshuffles it, and the whole-listing answer must not change either: the
+   * cut-off is applied on the way out, so the rows and their order stay what an unpaged read reports.
+   */
+  @Test
+  void pagingPreservesTheListingAndItsOrder() {
+    createCatalogPagingFixture();
+    final List<String> all = names("SELECT name FROM schema:types");
+    final List<String> paged = new ArrayList<>();
+    for (int skip = 0; skip < CATALOG_PAGING_TYPES; skip++)
+      paged.addAll(names("SELECT name FROM schema:types SKIP " + skip + " LIMIT 1"));
+
+    assertThat(paged).isEqualTo(all);
+  }
+
+  /**
+   * Regression test for issue #7898.
+   * <p>
+   * ORDER BY forces the whole listing through a sort before the limit, which must not double-count either.
+   */
+  @Test
+  void limitStillAppliesUnderAnOrderBy() {
+    createCatalogPagingFixture();
+    assertThat(count("SELECT name FROM schema:types ORDER BY name DESC LIMIT 2")).isEqualTo(2);
+    assertThat(names("SELECT name FROM schema:types ORDER BY name DESC LIMIT 2"))
+        .isEqualTo(List.of("T" + (CATALOG_PAGING_TYPES - 1), "T" + (CATALOG_PAGING_TYPES - 2)));
+  }
+
+  /**
+   * Regression test for issue #7898.
+   * <p>
+   * A single-row catalog has no paging to do, but must not start answering nothing.
+   */
+  @Test
+  void singleRowCatalogsAreUnaffected() {
+    createCatalogPagingFixture();
+    assertThat(count("SELECT FROM schema:database")).isEqualTo(1);
+    assertThat(count("SELECT FROM schema:database LIMIT 5")).isEqualTo(1);
+    assertThat(count("SELECT FROM schema:database SKIP 1")).isZero();
+  }
+
+  private int count(final String sql) {
+    int rows = 0;
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext()) {
+        rs.next();
+        rows++;
+      }
+    }
+    return rows;
+  }
+
+  private List<String> names(final String sql) {
+    final List<String> names = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+    }
+    return names;
   }
 }
