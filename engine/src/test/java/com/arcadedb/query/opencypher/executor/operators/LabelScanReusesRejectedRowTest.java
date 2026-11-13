@@ -52,7 +52,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue10818LabelScanReusesRejectedRowTest extends TestHelper {
+class LabelScanReusesRejectedRowTest extends TestHelper {
   private static final int ROWS   = 20_000;
   private static final int GROUPS = 100;
   private static final int PEOPLE = 3;

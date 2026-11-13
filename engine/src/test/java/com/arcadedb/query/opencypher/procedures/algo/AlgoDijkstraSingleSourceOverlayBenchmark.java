@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
-class Issue6791DijkstraSingleSourceOverlayBenchmark {
+class AlgoDijkstraSingleSourceOverlayBenchmark {
   private static final int NODES   = 4000;
   private static final int SOURCES = 40;
 

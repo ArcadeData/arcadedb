@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue8124ProcedureOptionalArgumentsTest extends TestHelper {
+class ProcedureOptionalArgumentsTest extends TestHelper {
 
   @Override
   protected void beginTest() {

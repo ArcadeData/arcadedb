@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7922ExpressionRewriterDepthTest {
+class ExpressionRewriterDepthTest {
 
   /** A rewriter with no rules of its own: what is under test is the depth guard in {@code rewrite()}. */
   private final ExpressionRewriter rewriter = new ExpressionRewriter() {
