@@ -63,6 +63,47 @@ class Issue11581SqlSetFunctionsNumericEqualityTest extends TestHelper {
   }
 
   @Test
+  void testBinaryMapAndNestedSetEdgeCases() {
+    // 1. Binary byte[] operand should stay as a scalar value, not unpacked
+    final SQLFunctionDifference diff = new SQLFunctionDifference();
+    final byte[] binary = new byte[] { 1, 2 };
+    @SuppressWarnings("unchecked")
+    final Set<Object> diffBin = (Set<Object>) diff.execute(null, null, null,
+        new Object[] { binary, List.of() }, new BasicCommandContext());
+    assertThat(diffBin).hasSize(1);
+    assertThat(diffBin).containsExactly(binary);
+
+    final SQLFunctionSymmetricDifference symmDiff = new SQLFunctionSymmetricDifference();
+    @SuppressWarnings("unchecked")
+    final Set<Object> symmBin = (Set<Object>) symmDiff.execute(null, null, null,
+        new Object[] { binary, List.of() }, new BasicCommandContext());
+    assertThat(symmBin).hasSize(1);
+    assertThat(symmBin).containsExactly(binary);
+
+    // 2. Map-value expansion symmetry in intersect()
+    final SQLFunctionIntersect intersect = new SQLFunctionIntersect();
+    final java.util.Map<String, Object> map = java.util.Map.of("a", 1L);
+    @SuppressWarnings("unchecked")
+    final List<Object> res1 = (List<Object>) intersect.execute(null, null, null,
+        new Object[] { map, List.of(1) }, new BasicCommandContext());
+    assertThat(res1).containsExactly(1L);
+
+    @SuppressWarnings("unchecked")
+    final List<Object> res2 = (List<Object>) intersect.execute(null, null, null,
+        new Object[] { List.of(1), map }, new BasicCommandContext());
+    assertThat(res2).containsExactly(1);
+
+    // 3. Nested Set elements equal regardless of iteration order
+    final java.util.Set<Integer> set1 = new java.util.LinkedHashSet<>(List.of(1, 2));
+    final java.util.Set<Integer> set2 = new java.util.LinkedHashSet<>(List.of(2, 1));
+    final CanonicalSet outer = new CanonicalSet();
+    outer.add(set1);
+    assertThat(outer.contains(set2)).isTrue();
+    assertThat(outer.add(set2)).isFalse();
+    assertThat(outer).hasSize(1);
+  }
+
+  @Test
   void testSetDirectNumericEquality() {
     final SQLFunctionSet function = new SQLFunctionSet();
 

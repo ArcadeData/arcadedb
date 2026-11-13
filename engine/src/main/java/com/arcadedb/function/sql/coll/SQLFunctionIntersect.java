@@ -54,7 +54,9 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
         // ADD ALL THE ITEMS OF THE FIRST COLLECTION
-        if (value instanceof Collection collection) {
+        if (value instanceof Map<?, ?> map) {
+          context = map.values().iterator();
+        } else if (value instanceof Collection collection) {
           context = collection.iterator();
         } else if (value instanceof Iterator) {
           context = value;
@@ -103,7 +105,8 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
 
   static Collection intersectWith(final Iterator current, final Object value) {
     final Set<Object> tempSet = new CanonicalSet();
-    final Set<Object> valueSet = CanonicalSet.from(value);
+    final Object toConvert = value instanceof Map<?, ?> map ? map.values() : value;
+    final Set<Object> valueSet = CanonicalSet.from(toConvert);
 
     if (current != null) {
       while (current.hasNext()) {

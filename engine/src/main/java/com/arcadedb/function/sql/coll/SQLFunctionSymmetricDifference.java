@@ -61,7 +61,7 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
     if (co instanceof Collection<?> coll) {
       for (final Object o : coll)
         addItemToResult(o, accepted, rejected);
-    } else if (co != null && MultiValue.isMultiValue(co) && !(co instanceof Map<?, ?>)) {
+    } else if (co != null && MultiValue.isMultiValue(co) && !(co instanceof Map<?, ?>) && !(co instanceof byte[])) {
       for (final Object o : MultiValue.getMultiValueIterable(co, false))
         addItemToResult(o, accepted, rejected);
     } else {

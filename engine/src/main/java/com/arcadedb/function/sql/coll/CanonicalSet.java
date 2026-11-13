@@ -73,7 +73,7 @@ public class CanonicalSet extends AbstractSet<Object> {
       if (value instanceof Iterator<?> iterator) {
         while (iterator.hasNext())
           set.add(iterator.next());
-      } else if (MultiValue.isMultiValue(value) && !(value instanceof Map<?, ?>)) {
+      } else if (MultiValue.isMultiValue(value) && !(value instanceof Map<?, ?>) && !(value instanceof byte[])) {
         for (final Object o : MultiValue.getMultiValueIterable(value, false))
           set.add(o);
       } else {
@@ -81,6 +81,16 @@ public class CanonicalSet extends AbstractSet<Object> {
       }
     }
     return set;
+  }
+
+  private static Object canonicalKey(final Object o) {
+    if (o instanceof Set<?> set && !(o instanceof CanonicalSet)) {
+      final Set<Object> canonicalSet = new HashSet<>(set.size());
+      for (final Object element : set)
+        canonicalSet.add(canonicalKey(element));
+      return canonicalSet;
+    }
+    return DistinctNumericKey.canonicalize(o);
   }
 
   @Override
@@ -95,12 +105,12 @@ public class CanonicalSet extends AbstractSet<Object> {
 
   @Override
   public boolean contains(final Object o) {
-    return map.containsKey(DistinctNumericKey.canonicalize(o));
+    return map.containsKey(canonicalKey(o));
   }
 
   @Override
   public boolean add(final Object o) {
-    final Object key = DistinctNumericKey.canonicalize(o);
+    final Object key = canonicalKey(o);
     if (map.containsKey(key))
       return false;
     map.put(key, o);
@@ -109,7 +119,7 @@ public class CanonicalSet extends AbstractSet<Object> {
 
   @Override
   public boolean remove(final Object o) {
-    final Object key = DistinctNumericKey.canonicalize(o);
+    final Object key = canonicalKey(o);
     if (!map.containsKey(key))
       return false;
     map.remove(key);
@@ -130,7 +140,7 @@ public class CanonicalSet extends AbstractSet<Object> {
     Objects.requireNonNull(c);
     final Set<Object> retainKeys = HashSet.newHashSet(c.size());
     for (final Object o : c)
-      retainKeys.add(DistinctNumericKey.canonicalize(o));
+      retainKeys.add(canonicalKey(o));
     return map.keySet().retainAll(retainKeys);
   }
 

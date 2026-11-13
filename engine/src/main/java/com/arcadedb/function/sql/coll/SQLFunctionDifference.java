@@ -59,7 +59,8 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
       if (first) {
         if (iParameter instanceof Collection<?> coll) {
           result.addAll(coll);
-        } else if (iParameter != null && MultiValue.isMultiValue(iParameter) && !(iParameter instanceof Map<?, ?>)) {
+        } else if (iParameter != null && MultiValue.isMultiValue(iParameter) && !(iParameter instanceof Map<?, ?>)
+            && !(iParameter instanceof byte[])) {
           for (final Object o : MultiValue.getMultiValueIterable(iParameter, false))
             result.add(o);
         } else {
@@ -68,7 +69,8 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
       } else {
         if (iParameter instanceof Collection<?> coll) {
           result.removeAll(coll);
-        } else if (iParameter != null && MultiValue.isMultiValue(iParameter) && !(iParameter instanceof Map<?, ?>)) {
+        } else if (iParameter != null && MultiValue.isMultiValue(iParameter) && !(iParameter instanceof Map<?, ?>)
+            && !(iParameter instanceof byte[])) {
           for (final Object o : MultiValue.getMultiValueIterable(iParameter, false))
             result.remove(o);
         } else {
