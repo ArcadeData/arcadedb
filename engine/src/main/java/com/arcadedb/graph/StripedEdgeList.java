@@ -366,10 +366,11 @@ public class StripedEdgeList extends EdgeLinkedList {
     if (!chunk.add(edgeRID, vertexRID))
       return false;
     database.updateRecord(chunk);
-    // Commutative in-chunk append: track it so a commit-time page conflict rebases instead of retrying.
+    // Commutative in-chunk append: track it so a commit-time page conflict rebases instead of retrying. With the vertex and the
+    // direction of the list, so the rebase can check the chunk is still in it (#11591).
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null)
-      tx.trackEdgeAppend(chunk.getIdentity(), edgeRID, vertexRID);
+      tx.trackEdgeAppend(chunk.getIdentity(), edgeRID, vertexRID, vertex.getIdentity(), direction == Vertex.DIRECTION.OUT);
     return true;
   }
 
