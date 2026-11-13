@@ -755,8 +755,11 @@ public class CypherSemanticValidator {
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
                 if (item.isStar()) {
                   // The star exports the variables in scope at the inner RETURN, when they are known without running
-                  // (issue #11556: CALL { UNWIND [5] AS k RETURN *, k * 2 AS d } exports k as well as d)
-                  final Set<String> exported = ReturnScope.scopeAtReturn(subqueryClause.getInnerStatement());
+                  // (issue #11556: CALL { UNWIND [5] AS k RETURN *, k * 2 AS d } exports k as well as d). The branches of a
+                  // UNION body return the same columns, under the names of the first one
+                  final CypherStatement body = subqueryClause.getInnerStatement();
+                  final Set<String> exported = ReturnScope.scopeAtReturn(
+                      body instanceof UnionStatement union ? union.getQueries().getFirst() : body);
                   if (exported != null)
                     scope.addAll(exported);
                 } else if (item.getAlias() != null)

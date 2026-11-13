@@ -121,30 +121,54 @@ class Issue11556ReturnStarWithExplicitItemsTest extends TestHelper {
   }
 
   /**
-   * A scope the parser cannot read without running (a subquery that itself returns {@code *}) keeps the star, which the
-   * projection resolves against the row instead: the items after it are still columns.
+   * A scope the parser cannot read without running (a {@code YIELD *} of a {@code DEFINE FUNCTION}, whose output no signature
+   * declares) keeps the star, which the projection resolves against the row instead: the items after it are still columns.
    */
   @Test
   void aStarOverAScopeKnownOnlyAtRunTimeKeepsTheItems() {
-    final Result row = single("MATCH (z:A {i: 1}) CALL { UNWIND [5] AS k RETURN * } RETURN *, z.i AS i, k + 1 AS n");
-    assertThat(row.getPropertyNames()).containsExactlyInAnyOrder("z", "k", "i", "n");
+    defineTwice();
+    final List<Result> rows = commandRows("MATCH (z:A {i: 1}) CALL math.twice(z.i) YIELD * RETURN *, z.i AS i, z.i + 1 AS n");
+    assertThat(rows).hasSize(1);
+    final Result row = rows.getFirst();
+    assertThat(row.getPropertyNames()).containsExactlyInAnyOrder("z", "value", "i", "n");
+    assertThat(row.<Number>getProperty("value").longValue()).isEqualTo(2L);
     assertThat(row.<Integer>getProperty("i")).isEqualTo(1);
-    assertThat(row.<Number>getProperty("n").longValue()).isEqualTo(6L);
+    assertThat(row.<Number>getProperty("n").longValue()).isEqualTo(2L);
   }
 
   /** The same unknown scope under DISTINCT: the rows are told apart by the variables and the items. */
   @Test
   void aDistinctStarOverAScopeKnownOnlyAtRunTimeKeepsTheItems() {
-    final List<Result> rows = rows("MATCH (z:A) CALL { UNWIND [5, 5] AS k RETURN * } RETURN DISTINCT *, z.i AS i ORDER BY i");
+    defineTwice();
+    final List<Result> rows = commandRows("MATCH (z:A) CALL math.twice(z.i) YIELD * RETURN DISTINCT *, z.i AS i ORDER BY i");
     assertThat(rows).hasSize(3);
-    assertThat(rows.getFirst().getPropertyNames()).containsExactlyInAnyOrder("z", "k", "i");
+    assertThat(rows.getFirst().getPropertyNames()).containsExactlyInAnyOrder("z", "value", "i");
   }
 
   /** Grouping by keys only known at run time is refused, rather than answered without its grouping keys. */
   @Test
   void anAggregateOverAScopeKnownOnlyAtRunTimeIsRefused() {
-    assertThatThrownBy(() -> rows("MATCH (z:A) CALL { UNWIND [5] AS k RETURN * } RETURN *, count(*) AS c"))
+    defineTwice();
+    assertThatThrownBy(() -> rows("MATCH (z:A) CALL math.twice(z.i) YIELD * RETURN *, count(*) AS c"))
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("RETURN *");
+  }
+
+  /**
+   * A CALL subquery that itself returns {@code *} has a scope known without running since #11571, so the star expands at
+   * parse time and an aggregation groups by its variables.
+   */
+  @Test
+  void anAggregateOverASubqueryReturningStarGroupsByItsScope() {
+    final List<Result> rows = rows("MATCH (z:A) CALL { UNWIND [5, 5] AS k RETURN * } RETURN *, count(*) AS c");
+    assertThat(rows).hasSize(3);
+    for (final Result row : rows) {
+      assertThat(row.getPropertyNames()).containsExactly("z", "k", "c");
+      assertThat(row.<Number>getProperty("c").longValue()).isEqualTo(2L);
+    }
+  }
+
+  private void defineTwice() {
+    database.command("sql", "DEFINE FUNCTION math.twice \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
   }
 
   /** A RETURN *, expr inside a CALL subquery answers its items to the enclosing query too. */
@@ -195,6 +219,16 @@ class Issue11556ReturnStarWithExplicitItemsTest extends TestHelper {
     final List<Result> rows = rows(query);
     assertThat(rows).as(query).hasSize(1);
     return rows.getFirst();
+  }
+
+  /** A call that may reach a DEFINE FUNCTION body is not idempotent, so it runs as a command. */
+  private List<Result> commandRows(final String query) {
+    try (final ResultSet rs = database.command("opencypher", query)) {
+      final List<Result> rows = new ArrayList<>();
+      while (rs.hasNext())
+        rows.add(rs.next());
+      return rows;
+    }
   }
 
   private List<Result> rows(final String query) {
