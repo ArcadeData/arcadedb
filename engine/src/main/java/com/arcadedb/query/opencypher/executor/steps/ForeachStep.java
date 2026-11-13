@@ -358,7 +358,7 @@ public class ForeachStep extends AbstractExecutionStep {
       final Object innerValue = out.getProperty(name);
       final Object outerValue = start.getProperty(name);
       // Identity, not equals(): the written record has the same RID as the snapshot, so equals() would call them the same
-      if (innerValue == outerValue)
+      if (innerValue == outerValue) // NOPMD: identity on purpose, see the line above
         continue;
       // The loop variable and what the body bound count too: they are how a list element or a MERGE-bound node was written
       if (record && innerValue instanceof MutableDocument doc && doc.getIdentity() != null) {

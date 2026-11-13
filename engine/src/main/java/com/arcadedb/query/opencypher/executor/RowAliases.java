@@ -110,7 +110,7 @@ public final class RowAliases {
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
       final Object live = liveValue(value, updated);
-      if (live != value)
+      if (live != value) // NOPMD: liveValue answers the value itself, by identity, when nothing in it was stale
         ((ResultInternal) row).setProperty(name, live);
     }
   }
@@ -136,7 +136,7 @@ public final class RowAliases {
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
         final Object live = liveValue(element, updated);
-        if (live != element && rebuilt == null)
+        if (live != element && rebuilt == null) // NOPMD: by identity, as liveValue answers an unchanged element
           rebuilt = new ArrayList<>(list);
         if (rebuilt != null)
           rebuilt.set(i, live);
