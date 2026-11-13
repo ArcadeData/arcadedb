@@ -90,6 +90,11 @@ import java.util.concurrent.atomic.AtomicReference;
 public class MergeStep extends AbstractExecutionStep {
   /** The far end of a relationship a MERGE created together with it, in the key of {@link #registerMergedEdgeToCreatedNode}. */
   private static final RID CREATED_END = new RID(-2, -2);
+  /**
+   * The far end of a relationship a MERGE created between two nodes that existed, in the key it marks for each of its ends and that
+   * {@link #registerMergedEdgeToCreatedNode} checks (issue #11660).
+   */
+  private static final RID EXISTING_END = new RID(-2, -3);
 
   // Internal row flags, removed before a row leaves the step
   private static final String WAS_CREATED        = "  wasCreated";
@@ -1094,7 +1099,9 @@ public class MergeStep extends AbstractExecutionStep {
    * appends its own path, and two appends commute at commit. The key stands for every such path: the existing node, a placeholder
    * for the created one, the type with its direction from the existing node, and what the relationship and the created node were
    * matched by. So the commit refuses a transaction whose equivalent path another one committed meanwhile, and only that one: a MERGE
-   * looking for another far end is another key.
+   * looking for another far end is another key. It is refused as well when a concurrent MERGE committed a relationship of the type
+   * and direction from the same node to a node that existed, which may be one this pattern matches: that key is coarser, so such a
+   * commit can cost a retry the pattern did not need, never a duplicate path.
    *
    * @param anchor          the end that existed
    * @param createdPattern  the pattern of the end this MERGE created
@@ -1122,6 +1129,7 @@ public class MergeStep extends AbstractExecutionStep {
       default -> "-";
     };
     tx.addMergedEdge(anchor.getIdentity(), CREATED_END, edge.getTypeName() + direction, matchedBy);
+    tx.checkMergedEdge(anchor.getIdentity(), EXISTING_END, edge.getTypeName() + direction);
   }
 
   /**
@@ -1579,8 +1587,14 @@ public class MergeStep extends AbstractExecutionStep {
     if (betweenExistingNodes) {
       // The match that did not find it read an edge list a concurrent MERGE may be appending the same relationship to (#11482)
       final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
-      if (tx != null)
+      if (tx != null) {
         tx.addMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+        // A MERGE from either end that creates its far node would have found this relationship if its far node matches (#11660)
+        tx.markMergedEdge(fromVertex.getIdentity(), EXISTING_END, edge.getTypeName() + ">");
+        tx.markMergedEdge(fromVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "-");
+        tx.markMergedEdge(toVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "<");
+        tx.markMergedEdge(toVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "-");
+      }
     }
 
     final QueryStatistics stats = context.getStatistics();

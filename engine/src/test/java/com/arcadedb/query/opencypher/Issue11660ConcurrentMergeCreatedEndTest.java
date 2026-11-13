@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #11660: a MERGE that creates the far end of a relationship from a bound node stored it once per concurrent
@@ -114,6 +115,41 @@ class Issue11660ConcurrentMergeCreatedEndTest {
       assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(ROUNDS * THREADS);
     }
     assertThat(retries).isLessThan(ROUNDS);
+  }
+
+  /**
+   * A MERGE that creates its far end is refused at commit when a concurrent MERGE between two existing nodes committed meanwhile a
+   * relationship from the same node that its pattern matches, so its retry finds that path instead of storing a second one. Each
+   * spelling of the creating MERGE runs on its own anchor; the other MERGE commits between its statement and its commit.
+   */
+  @Test
+  void aMergeCreatingTheFarEndIsRefusedByAConcurrentMergeToAnExistingMatch() throws Exception {
+    final List<String> creators = List.of("MERGE (n)-[r:T]->(m:M {k: 1})", "MERGE (m:M {k: 1})<-[r:T]-(n)",
+        "MERGE (n)-[r:T]-(m:M {k: 1})");
+    final ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      for (int i = 0; i < creators.size(); i++) {
+        final Map<String, Object> params = Map.of("uuid", "n" + i);
+        final String create = "MATCH (n:N {uuid: $uuid}) " + creators.get(i);
+        database.transaction(() -> database.command("opencypher", "CREATE (:M {k: 1, existing: $uuid})", params));
+
+        database.begin();
+        database.command("opencypher", create, params);
+        executor.submit(() -> database.transaction(() -> database.command("opencypher",
+            "MATCH (n:N {uuid: $uuid}), (b:M {existing: $uuid}) MERGE (n)-[:T]->(b)", params))).get(30, TimeUnit.SECONDS);
+        assertThatThrownBy(() -> database.commit()).isInstanceOf(NeedRetryException.class);
+
+        database.transaction(() -> database.command("opencypher", create, params));
+        try (final ResultSet rs = database.query("opencypher",
+            "MATCH (:N {uuid: $uuid})-[r:T]-(m) RETURN count(r) AS c, collect(m.existing) AS ends", params)) {
+          final Result row = rs.next();
+          assertThat(((Number) row.getProperty("c")).intValue()).as(creators.get(i)).isEqualTo(1);
+          assertThat(row.<List<Object>>getProperty("ends")).as(creators.get(i)).containsExactly("n" + i);
+        }
+      }
+    } finally {
+      executor.shutdownNow();
+    }
   }
 
   private void assertOneTPerAnchor() {
