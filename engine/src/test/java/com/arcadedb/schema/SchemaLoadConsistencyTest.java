@@ -91,7 +91,7 @@ class SchemaLoadConsistencyTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaLoadTypeGraphBarrierTest extends TestHelper {
+  class SchemaLoadTypeGraphBarrier extends TestHelper {
 
     private static final String TYPE_NAME  = "Issue7961Doc";
     private static final String INDEX_NAME = TYPE_NAME + "[embedding]";
@@ -391,14 +391,14 @@ class SchemaLoadConsistencyTest {
    * replacement while its schema hook was still pending, which for an {@code LSMVectorIndexMutable} is an index with
    * no vectors loaded.
    * <p>
-   * These tests hold a load inside that exact window, in the same way {@code SchemaLoadTest.SchemaLoadPublicationBarrierTest}
+   * These tests hold a load inside that exact window, in the same way {@code SchemaLoadTest.SchemaLoadPublicationBarrier}
    * does - a bucket whose {@code onAfterSchemaLoad()} parks - and then look at the file-id lookup from another
    * thread while recording what the LOADING thread sees at the same instant.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaLoadFileIdBarrierTest extends TestHelper {
+  class SchemaLoadFileIdBarrier extends TestHelper {
 
     private static final String TYPE_NAME  = "Issue7962Doc";
     private static final String INDEX_NAME = TYPE_NAME + "[embedding]";
@@ -723,7 +723,7 @@ class SchemaLoadConsistencyTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class FullSchemaLoadKeepsPreviousGenerationTest extends TestHelper {
+  class FullSchemaLoadKeepsPreviousGeneration extends TestHelper {
 
     private static final String TYPE_NAME  = "Issue7963Doc";
     private static final String INDEX_NAME = TYPE_NAME + "[embedding]";
@@ -1010,7 +1010,7 @@ class SchemaLoadConsistencyTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AbortedSchemaLoadKeepsSchemaMembersTest extends TestHelper {
+  class AbortedSchemaLoadKeepsSchemaMembers extends TestHelper {
     private static final String TARGET = "Target8230";
     private static final String AUDIT  = "Audit8230";
 
@@ -1131,14 +1131,14 @@ class SchemaLoadConsistencyTest {
    * thread per instance - armed by any write, so the retired instance woke up once the window expired and ran a full
    * graph build of its own: against the live database, contending for the JVM-wide {@code REBUILD_SEMAPHORE} and
    * persisting a graph file the NEW instance also owns, or, when the database had been dropped in between, against a
-   * closed one. The CI log of issue #8178 shows the second shape: {@code SchemaLoadTest.SchemaLoadPublicationBarrierTest}
+   * closed one. The CI log of issue #8178 shows the second shape: {@code SchemaLoadTest.SchemaLoadPublicationBarrier}
    * passed, and fifteen seconds later - the default inactivity window - a timer from one of its reloads failed with
    * {@code DatabaseIsClosedException} on a database the test had already dropped.
    * <p>
    * The same leak runs on an HA follower on every schema entry it applies, since each one reloads the schema.
    */
   @Nested
-  class SchemaReloadRetiresSupersededVectorIndexTest extends TestHelper {
+  class SchemaReloadRetiresSupersededVectorIndex extends TestHelper {
 
     private static final String TYPE_NAME           = "Issue8310Doc";
     private static final String INDEX_NAME          = TYPE_NAME + "[embedding]";
@@ -1331,7 +1331,7 @@ class SchemaLoadConsistencyTest {
    * live database. A full reload, which rebuilds the bucket instances, carries each live counter over to the new instance.
    */
   @Nested
-  class SchemaReloadKeepsLiveCountsTest extends TestHelper {
+  class SchemaReloadKeepsLiveCounts extends TestHelper {
 
     private static final String TYPE     = "Counted";
     private static final int    INITIAL  = 25;
@@ -1427,7 +1427,7 @@ class SchemaLoadConsistencyTest {
    * "file ... is closed".
    */
   @Nested
-  class AbortedSchemaLoadKeepsTimeSeriesFilesOpenTest extends TestHelper {
+  class AbortedSchemaLoadKeepsTimeSeriesFilesOpen extends TestHelper {
     private static final String TYPE = "SensorReading9886";
 
     @Override
@@ -1497,7 +1497,7 @@ class SchemaLoadConsistencyTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaReloadBeforeReadCountTest extends TestHelper {
+  class SchemaReloadBeforeReadCount extends TestHelper {
     private static final String        TYPE  = "Reloaded9997";
     static final         AtomicInteger FIRED = new AtomicInteger();
 

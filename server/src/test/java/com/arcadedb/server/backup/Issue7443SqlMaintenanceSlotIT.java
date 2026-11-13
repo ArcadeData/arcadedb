@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * database it opens, that a refusal reaches an HTTP client as a 409 rather than as a 500, and that a slot held by
  * a SQL statement is seen by the server's own entry points. The statements' own side of the contract - reserve
  * before starting, release on every way out, leave an unco-ordinated embedded database alone - is
- * {@code SqlMaintenanceStatementTest.SqlMaintenanceSlotTest} in the engine module.
+ * {@code SqlMaintenanceStatementTest.SqlMaintenanceSlot} in the engine module.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

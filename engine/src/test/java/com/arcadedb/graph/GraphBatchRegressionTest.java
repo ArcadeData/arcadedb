@@ -94,7 +94,7 @@ class GraphBatchRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchDateTimeOffsetStringTest extends TestHelper {
+  class GraphBatchDateTimeOffsetString extends TestHelper {
 
     private static final String        INSTANT = "2020-01-02T03:04:05+02:00";
     private static final LocalDateTime UTC     = LocalDateTime.of(2020, 1, 2, 1, 4, 5);
@@ -185,7 +185,7 @@ class GraphBatchRegressionTest {
    * two tasks).
    */
   @Nested
-  class GraphBatchOneBucketParallelismTest extends TestHelper {
+  class GraphBatchOneBucketParallelism extends TestHelper {
     private static final int PARALLEL_LEVEL = 4;
     private static final int VERTICES       = 2_000;
     private static final int EDGES          = 40_000;
@@ -348,7 +348,7 @@ class GraphBatchRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchEdgeFlushReusesSpaceTest extends TestHelper {
+  class GraphBatchEdgeFlushReusesSpace extends TestHelper {
     private static final int WINDOW         = 20;
     private static final int NODES          = 30;
     private static final int EDGES_PER_NODE = 3;
@@ -501,7 +501,7 @@ class GraphBatchRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ReplicatedCommitEveryTest extends TestHelper {
+  class ReplicatedCommitEvery extends TestHelper {
 
     private static final int DEFAULT_COMMIT_EVERY = 50_000;
 
@@ -571,7 +571,7 @@ class GraphBatchRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class WalWriteAmplificationTest extends TestHelper {
+  class WalWriteAmplification extends TestHelper {
 
     private static final int BUCKETS    = 8;
     private static final int WARMUP     = 5_000;
@@ -684,7 +684,7 @@ class GraphBatchRegressionTest {
    * (constructor / close-or-abandon) instead of once per flush.
    */
   @Nested
-  class GraphBatchAsyncPoolChurnTest extends TestHelper {
+  class GraphBatchAsyncPoolChurn extends TestHelper {
 
     private static final String VERTEX_TYPE = "ChurnPerson";
     private static final String EDGE_TYPE   = "CHURN_KNOWS";
@@ -817,7 +817,7 @@ class GraphBatchRegressionTest {
    * batching until the process restarts.
    */
   @Nested
-  class ConcurrentGraphBatchTest extends TestHelper {
+  class ConcurrentGraphBatch extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -1043,7 +1043,7 @@ class GraphBatchRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchSuperNodeResumeTest extends TestHelper {
+  class GraphBatchSuperNodeResume extends TestHelper {
     private int savedThreshold;
     private int savedStripes;
 

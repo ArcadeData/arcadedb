@@ -87,7 +87,7 @@ class TypeRenameTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TypeRenameCarriesDependantsTest extends TestHelper {
+  class TypeRenameCarriesDependants extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -470,7 +470,7 @@ class TypeRenameTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RenamedTypeInheritedIndexTest extends TestHelper {
+  class RenamedTypeInheritedIndex extends TestHelper {
 
     @Test
     void renamingASubTypeCarriesTheSubIndexOfAnInheritedIndex() {
@@ -691,7 +691,7 @@ class TypeRenameTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RenamedIndexedSuperTypeTest extends TestHelper {
+  class RenamedIndexedSuperType extends TestHelper {
 
     @Test
     void dropTypeOfASubTypeAfterItsIndexedSuperTypeWasRenamed() {
@@ -874,7 +874,7 @@ class TypeRenameTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TypeRenameMovesEveryOwnedFileTest extends TestHelper {
+  class TypeRenameMovesEveryOwnedFile extends TestHelper {
     private static final String OLD = "Old10749";
     private static final String NEW = "New10749";
 
@@ -1278,7 +1278,7 @@ class TypeRenameTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TypeRenameRekeysIndexMapTest extends TestHelper {
+  class TypeRenameRekeysIndexMap extends TestHelper {
 
     @Test
     void aDefaultNamedIndexAnswersToItsNewNameOnly() {
@@ -1559,7 +1559,7 @@ class TypeRenameTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ReproTest extends TestHelper {
+  class Repro extends TestHelper {
 
     @Test
     void renamedVertexTypeCanStillInsertEdges() {

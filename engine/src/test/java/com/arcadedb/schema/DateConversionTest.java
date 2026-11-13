@@ -69,7 +69,7 @@ class DateConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DateImplementationRoutesTest extends TestHelper {
+  class DateImplementationRoutes extends TestHelper {
     private static final String ISO_DATE = "[0-9]{4}-[0-9]{2}-[0-9]{2}";
 
     @Test
@@ -236,7 +236,7 @@ class DateConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DateTimeOffsetStringTest extends TestHelper {
+  class DateTimeOffsetString extends TestHelper {
 
     private static final String           INSTANT = "2020-01-02T03:04:05+02:00";
     private static final LocalDateTime    UTC     = LocalDateTime.of(2020, 1, 2, 1, 4, 5);
@@ -365,7 +365,7 @@ class DateConversionTest {
    * client encodes a DATE as epoch days (#4601), so a date written through it was stored as 1970-01-01.
    */
   @Nested
-  class DateNumberAsDaysTest extends TestHelper {
+  class DateNumberAsDays extends TestHelper {
     private static final LocalDate DAY        = LocalDate.of(2024, 1, 15);
     private static final long      DAY_MILLIS = DAY.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
 
@@ -527,7 +527,7 @@ class DateConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DateNumberImplementationsAgreeTest extends TestHelper {
+  class DateNumberImplementationsAgree extends TestHelper {
     private static final List<Class<?>> IMPLEMENTATIONS = List.of(LocalDate.class, Date.class, Calendar.class, LocalDateTime.class);
 
     private static final long MAX_DAY_COUNT = Long.MAX_VALUE / DateUtils.MS_IN_A_DAY;
@@ -660,7 +660,7 @@ class DateConversionTest {
    * back into the number instead of handing it to {@code Float.parseFloat}, which refuses {@code PosInfinity}.
    */
   @Nested
-  class NonFiniteMarkerConversionTest {
+  class NonFiniteMarkerConversion {
 
     @Test
     void floatMarkersDecodeToFloat() {
@@ -701,7 +701,7 @@ class DateConversionTest {
    * reads it as a date and ignores the zone; the engine refused it for a DATE property and matched nothing in a predicate.
    */
   @Nested
-  class DateWithZoneSuffixTest extends TestHelper {
+  class DateWithZoneSuffix extends TestHelper {
 
     @Test
     void insertOfDateWithZoneSuffixKeepsTheDay() {

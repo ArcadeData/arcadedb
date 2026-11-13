@@ -801,7 +801,7 @@ class FileUtilsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AtomicWriteDirectoryFsyncTest {
+  class AtomicWriteDirectoryFsync {
 
     @TempDir
     Path tempDir;

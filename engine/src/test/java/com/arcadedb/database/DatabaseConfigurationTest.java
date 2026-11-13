@@ -386,7 +386,7 @@ public class DatabaseConfigurationTest {
    * settings file.
    * <p>
    * The schema half of the same issue ({@code schema.json} / {@code schema.prev.json}) is covered by
-   * {@code com.arcadedb.schema.SchemaFileDurabilityTest.AtomicSchemaWriteTest}; this class deliberately does not repeat it.
+   * {@code com.arcadedb.schema.SchemaFileDurabilityTest.AtomicSchemaWrite}; this class deliberately does not repeat it.
    * <p>
    * Killing the JVM mid-write is not something a unit test can do, so the equivalent observation is made from another
    * thread: a reader polling the file as fast as it can, while it is rewritten over and over, must never see it

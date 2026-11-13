@@ -70,7 +70,7 @@ class AsyncExecutorConfigurationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncExecutorPerTaskDurabilityFlagsTest extends TestHelper {
+  class AsyncExecutorPerTaskDurabilityFlags extends TestHelper {
 
     @Test
     void directDurabilityFlagFlipsDoNotRecreateAsyncThreads() throws Exception {
@@ -350,7 +350,7 @@ class AsyncExecutorConfigurationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncExecutorFollowUpsTest extends TestHelper {
+  class AsyncExecutorFollowUps extends TestHelper {
 
     /**
      * How long the gate task below occupies its worker. Longer than the one second
@@ -1102,7 +1102,7 @@ class AsyncExecutorConfigurationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncParallelLevelTest extends TestHelper {
+  class AsyncParallelLevel extends TestHelper {
 
     private static final String TYPE      = "Issue7004Doc";
     private static final int    RECORDS   = 500;

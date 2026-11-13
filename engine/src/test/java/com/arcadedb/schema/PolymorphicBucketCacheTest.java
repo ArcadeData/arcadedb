@@ -66,7 +66,7 @@ class PolymorphicBucketCacheTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class PolymorphicCountTest extends TestHelper {
+  class PolymorphicCount extends TestHelper {
 
     private long countViaSQL(final String typeName) {
       try (final ResultSet rs = database.query("sql", "SELECT count(*) as c FROM " + typeName)) {
@@ -204,7 +204,7 @@ class PolymorphicBucketCacheTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class PolymorphicBucketCacheVisibilityTest extends TestHelper {
+  class PolymorphicBucketCacheVisibility extends TestHelper {
 
     @Test
     void bucketListFieldsMustBeVolatileForCrossThreadPlanningReads() throws Exception {
@@ -252,7 +252,7 @@ class PolymorphicBucketCacheTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RemoveSuperTypeGrandchildTest extends TestHelper {
+  class RemoveSuperTypeGrandchild extends TestHelper {
 
     @Test
     void removingTheMiddleLinkWithdrawsTheGrandchildFromTheAncestor() {
@@ -351,7 +351,7 @@ class PolymorphicBucketCacheTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RemoveBucketStrategyRefreshTest extends TestHelper {
+  class RemoveBucketStrategyRefresh extends TestHelper {
 
     @Test
     void insertAfterRemovingBucketDoesNotThrowIndexOutOfBounds() {
@@ -385,7 +385,7 @@ class PolymorphicBucketCacheTest {
    * also published before it was bound: the field was assigned first and {@code setType(this)} called afterwards, so a
    * concurrent insert could reach a strategy whose bucket count was still 0 or whose type was still null.
    * <p>
-   * The first test pins the modifier, like the sibling {@link PolymorphicBucketCacheVisibilityTest} does for
+   * The first test pins the modifier, like the sibling {@link PolymorphicBucketCacheVisibility} does for
    * the four lists. The second uses a strategy that records what the type was publishing at the moment it was bound:
    * with the fix it is still the previous strategy, never the half-bound one. The last two check the rollback contract
    * the old try/catch provided survives the reordering, once per exit of the block it wrapped: a strategy that throws
@@ -393,7 +393,7 @@ class PolymorphicBucketCacheTest {
    * succeeded, are both never published.
    */
   @Nested
-  class BucketSelectionStrategyPublicationTest extends TestHelper {
+  class BucketSelectionStrategyPublication extends TestHelper {
 
     @Test
     void bucketSelectionStrategyMustBeVolatileForLockFreeReaders() throws Exception {
@@ -543,7 +543,7 @@ class PolymorphicBucketCacheTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaCopyOnWritePublicationTest {
+  class SchemaCopyOnWritePublication {
     private Database database;
 
     @BeforeEach

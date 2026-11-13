@@ -94,7 +94,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IncomingEdgeDrainReentrancyTest extends TestHelper {
+  class IncomingEdgeDrainReentrancy extends TestHelper {
 
     private static final String SRC_TYPE   = "Issue5950Src";
     private static final String DST_A_TYPE = "Issue5950DstA";
@@ -380,7 +380,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class OutgoingEdgeRetryCacheTest extends TestHelper {
+  class OutgoingEdgeRetryCache extends TestHelper {
 
     private static final String VERTEX_TYPE = "Issue5950RetrySrc";
     private static final String EDGE_TYPE   = "ISSUE5950_RETRY_KNOWS";
@@ -478,7 +478,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class StripeIterationOrderTest extends TestHelper {
+  class StripeIterationOrder extends TestHelper {
     private static final int STRIPES   = 16;
     private static final int THRESHOLD = 64;
     private static final int TOTAL     = 2_000;
@@ -688,7 +688,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SupernodeFullWalkDegradeTest extends TestHelper {
+  class SupernodeFullWalkDegrade extends TestHelper {
     private static final int STRIPES   = 16;
     private static final int THRESHOLD = 64;
     private static final int TOTAL     = 2_000;
@@ -752,7 +752,7 @@ class EdgeStripeDirectoryTest {
       // THE NEWEST EDGE IS THE HEAD OF ITS OWN CHAIN: round-robin must emit it within the first turn.
       assertThat(positionOf.get(sources.getLast())).isLessThan(STRIPES);
 
-      // RANK-BOUNDED ERROR for the newest 50, same bound as EdgeStripeDirectoryTest.StripeIterationOrderTest: the degrade
+      // RANK-BOUNDED ERROR for the newest 50, same bound as EdgeStripeDirectoryTest.StripeIterationOrder: the degrade
       // threshold (128) has not been reached yet at these positions.
       int worstOfTheNewest = 0;
       for (int rank = 0; rank < 50; rank++)
@@ -763,7 +763,7 @@ class EdgeStripeDirectoryTest {
     /**
      * A threshold of 0 must actually take effect, not be a no-op left over from a wiring mistake: it should
      * reproduce the exact failure signature #6044 fixed - the newest edges scattered by {@code hash(neighbour
-     * RID)} instead of clustered near the front. Same fixture and same bound EdgeStripeDirectoryTest.StripeIterationOrderTest
+     * RID)} instead of clustered near the front. Same fixture and same bound EdgeStripeDirectoryTest.StripeIterationOrder
      * uses for the INTERLEAVED case (worst-of-newest-50 &lt; 400 positions); here the assertion is inverted.
      */
     @Test
@@ -892,7 +892,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AdjacencyProbeCacheTest extends TestHelper {
+  class AdjacencyProbeCache extends TestHelper {
     private static final String VERTEX_TYPE = "Issue6062Node";
     private static final String EDGE_TYPE   = "Issue6062Link";
     private static final int    DEGREE      = 400;
@@ -1191,7 +1191,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BoundedLimitOrderingTest extends TestHelper {
+  class BoundedLimitOrdering extends TestHelper {
     private static final int STRIPES   = 16;
     private static final int ROUNDS    = 4;
     /** Promotion threshold: everything past this lives in the striped generation the rotation walks. */
@@ -1361,7 +1361,7 @@ class EdgeStripeDirectoryTest {
    * plus one match cost {@code 2 * (HUB + 1)}; after it only the match is decoded.
    */
   @Nested
-  class TypeFilteredScanTest {
+  class TypeFilteredScan {
     private static final String DB_PATH = "./target/databases/issue8417TypeFilteredScan";
     private static final int    HUB     = 500;
 
@@ -1681,7 +1681,7 @@ class EdgeStripeDirectoryTest {
    * on every path that builds one from stored bytes.
    */
   @Nested
-  class StripeDirectoryHashVersionTest extends TestHelper {
+  class StripeDirectoryHashVersion extends TestHelper {
     private static final String VERTEX_TYPE = "Issue8868Node";
     private static final String EDGE_TYPE   = "Issue8868Link";
     private static final int    DEGREE      = 300;
@@ -1996,7 +1996,7 @@ class EdgeStripeDirectoryTest {
    * directory only through a back-reference probe: each pass and each arm is driven separately.
    */
   @Nested
-  class StripeDirectoryCheckDatabaseTest extends TestHelper {
+  class StripeDirectoryCheckDatabase extends TestHelper {
     private static final String HUB_TYPE    = "Issue9266Hub";
     private static final String VERTEX_TYPE = "Issue9266Node";
     private static final String EDGE_TYPE   = "Issue9266Link";
@@ -2340,7 +2340,7 @@ class EdgeStripeDirectoryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SuperNodeStripeInvolvedTest extends TestHelper {
+  class SuperNodeStripeInvolved extends TestHelper {
     private static final int STRIPES = 4;
 
     @Override

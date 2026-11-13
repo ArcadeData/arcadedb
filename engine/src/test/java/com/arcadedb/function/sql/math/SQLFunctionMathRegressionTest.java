@@ -56,7 +56,7 @@ class SQLFunctionMathRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class PowSqrtValueTest extends TestHelper {
+  class PowSqrtValue extends TestHelper {
 
     @Test
     void negativeBaseIsDefined() {
@@ -195,7 +195,7 @@ class SQLFunctionMathRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SumAverageIntegerOverflowTest {
+  class SumAverageIntegerOverflow {
 
     @Test
     void sumOverIntegerColumnDoesNotOverflow() throws Exception {
@@ -240,7 +240,7 @@ class SQLFunctionMathRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AggregateNumericInputTest extends TestHelper {
+  class AggregateNumericInput extends TestHelper {
 
     @Test
     void everySumSiblingRejectsANonNumericElement() {
@@ -384,7 +384,7 @@ class SQLFunctionMathRegressionTest {
    * falling back to the boxed path.
    */
   @Nested
-  class NumericSumTest {
+  class NumericSumRegression {
 
     /** The total as the boxed accumulator built it before #9496. */
     private static Number reference(final List<Number> values) {

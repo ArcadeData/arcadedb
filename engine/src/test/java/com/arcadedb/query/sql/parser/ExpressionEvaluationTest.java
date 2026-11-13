@@ -60,7 +60,7 @@ class ExpressionEvaluationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EarlyCalculatedModifierTest extends TestHelper {
+  class EarlyCalculatedModifier extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -195,7 +195,7 @@ class ExpressionEvaluationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LiteralExpressionTest extends AbstractParserTest {
+  class LiteralExpression extends AbstractParserTest {
 
     private final CommandContext context = new BasicCommandContext();
 
@@ -235,7 +235,7 @@ class ExpressionEvaluationTest {
 
     /**
      * A function call is never a literal, whatever its arguments are. That it stays "early calculated" - the point
-     * of the issue - is pinned where a database is at hand, in {@code ExpressionEvaluationTest.EarlyCalculatedModifierTest}.
+     * of the issue - is pinned where a database is at hand, in {@code ExpressionEvaluationTest.EarlyCalculatedModifier}.
      */
     @Test
     void aFunctionOverLiteralsIsNotALiteral() {
@@ -317,7 +317,7 @@ class ExpressionEvaluationTest {
    * Issue #6190: before this, nothing on {@link com.arcadedb.query.sql.executor.SQLFunction} told a pure function
    * ({@code abs}) from one with a side effect or hidden input ({@code uuid}, {@code sysdate}), so the planner could
    * not cache a plan containing a call, and constant folding refused to reach into one at all - both restrictions are
-   * pinned as the pre-existing behaviour in {@code ExpressionEvaluationTest.LiteralExpressionTest} and
+   * pinned as the pre-existing behaviour in {@code ExpressionEvaluationTest.LiteralExpression} and
    * {@code ConstantFalseFilterFoldingTest#aFilterCallingAFunctionIsNeverFolded}.
    * <p>
    * These pin the two consumers that need no live database: {@link FunctionCall#isCacheable()} (plan caching) and
@@ -327,7 +327,7 @@ class ExpressionEvaluationTest {
    * concern), which needs its own predicate; see the PR description.
    */
   @Nested
-  class FunctionDeterminismTest extends AbstractParserTest {
+  class FunctionDeterminism extends AbstractParserTest {
 
     private final CommandContext context = new BasicCommandContext();
 
@@ -418,7 +418,7 @@ class ExpressionEvaluationTest {
      * isFoldable() is a strictly narrower, additive question - it must never replace
      * {@link Expression#isEarlyCalculated(CommandContext)} (issue #6179), which still answers "computable without a
      * record" for every function, pure or not. Pinning that for a function call needs a live database (see
-     * {@code ExpressionEvaluationTest.EarlyCalculatedModifierTest}); the literal case needs none.
+     * {@code ExpressionEvaluationTest.EarlyCalculatedModifier}); the literal case needs none.
      */
     @Test
     void theEarlyCalculatedPredicateAdmitsMoreThanFoldableDoes() {
@@ -449,7 +449,7 @@ class ExpressionEvaluationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NodeIdentityTest extends AbstractParserTest {
+  class NodeIdentity extends AbstractParserTest {
 
     private Expression projectionOf(final String query) {
       return ((SelectStatement) checkRightSyntax(query)).getProjection().getItems().getFirst().expression;
@@ -670,7 +670,7 @@ class ExpressionEvaluationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class FollowupsTest extends AbstractParserTest {
+  class Followups extends AbstractParserTest {
 
     /**
      * Item 1: {@code IMPORT}, {@code EXPORT} and {@code BACKUP DATABASE} used to park a setting NAME in the node's
@@ -839,7 +839,7 @@ class ExpressionEvaluationTest {
    * change, for numbers inside the table, at its edges and above it.
    */
   @Nested
-  class PositionalParameterKeyTest extends TestHelper {
+  class PositionalParameterKey extends TestHelper {
 
     private static final int[] NUMBERS = { 0, 1, 9, 10, 31, 62, 63, 64, 65, 99, 100, 1_000, 123_456, Integer.MAX_VALUE, -1, -64 };
 
@@ -926,7 +926,7 @@ class ExpressionEvaluationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class PerRowIdentifierWorkTest extends TestHelper {
+  class PerRowIdentifierWork extends TestHelper {
 
     @Override
     protected void beginTest() {

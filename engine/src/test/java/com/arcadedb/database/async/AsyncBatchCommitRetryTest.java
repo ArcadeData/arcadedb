@@ -84,7 +84,7 @@ class AsyncBatchCommitRetryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RetryFamilyEveryLoopTest extends TestHelper {
+  class RetryFamilyEveryLoop extends TestHelper {
     private static final String TYPE     = "Issue10759Doc";
     private static final String FUNCTION = "issue10759Throw";
     private static final int    ATTEMPTS = 4;
@@ -312,7 +312,7 @@ class AsyncBatchCommitRetryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncCommandBatchCommitConflictTest extends TestHelper {
+  class AsyncCommandBatchCommitConflict extends TestHelper {
 
     private static final String TYPE = "Issue7615Item";
 
@@ -843,7 +843,7 @@ class AsyncBatchCommitRetryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncMidStatementCommitReplayTest extends TestHelper {
+  class AsyncMidStatementCommitReplay extends TestHelper {
 
     private static final String TYPE     = "Issue7667Item";
     private static final String OLD_TYPE = "Issue7667Old";
@@ -1058,7 +1058,7 @@ class AsyncBatchCommitRetryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncOutOfBandCommitDurabilitySignalTest extends TestHelper {
+  class AsyncOutOfBandCommitDurabilitySignal extends TestHelper {
 
     private static final String TYPE = "Issue7673Item";
 
@@ -1166,7 +1166,7 @@ class AsyncBatchCommitRetryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncBatchReplayBackoffTest extends TestHelper {
+  class AsyncBatchReplayBackoff extends TestHelper {
 
     private static final String TYPE = "Issue9529Item";
 
@@ -1306,7 +1306,7 @@ class AsyncBatchCommitRetryTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncTransactionErrorReachesCallbackTest extends TestHelper {
+  class AsyncTransactionErrorReachesCallback extends TestHelper {
 
     @Test
     void anErrorInAnAsyncTransactionReachesItsErrorCallbackAndRollsBack() {
@@ -1345,7 +1345,7 @@ class AsyncBatchCommitRetryTest {
    * every point this shared batch can actually commit.
    */
   @Nested
-  class AsyncSuccessCallbackDurabilityTest extends TestHelper {
+  class AsyncSuccessCallbackDurability extends TestHelper {
 
     private static final String TYPE = "Issue6470Item";
 

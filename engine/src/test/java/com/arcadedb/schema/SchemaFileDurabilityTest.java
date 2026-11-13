@@ -69,7 +69,7 @@ class SchemaFileDurabilityTest {
    */
   @Nested
   @Timeout(300) // Separate wall-clock watchdog for a hung test; completion budgets below discount JVM stalls.
-  class AtomicSchemaWriteTest extends TestHelper {
+  class AtomicSchemaWrite extends TestHelper {
     @Test
     void preservesUtf8PreviousSchemaDespiteANonUtf8EncodingSetting() throws Exception {
       assertPreviousSchemaBytesAndRecovery(StandardCharsets.UTF_8);
@@ -424,7 +424,7 @@ class SchemaFileDurabilityTest {
    * unreadable. It is now always a byte copy.
    */
   @Nested
-  class SchemaPrevWithoutHardLinkTest extends TestHelper {
+  class SchemaPrevWithoutHardLink extends TestHelper {
 
     @Test
     void schemaSaveNeverLinksThePreviousGeneration() throws Exception {
@@ -465,7 +465,7 @@ class SchemaFileDurabilityTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class FailedSchemaSaveStaysDirtyTest extends TestHelper {
+  class FailedSchemaSaveStaysDirty extends TestHelper {
     @Test
     void aFailedSaveIsRetriedOnceTheFileCanBeWritten() throws Exception {
       final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
@@ -505,7 +505,7 @@ class SchemaFileDurabilityTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DeferredRecoveryCopySyncTest extends TestHelper {
+  class DeferredRecoveryCopySync extends TestHelper {
     private final List<Path> synced = new CopyOnWriteArrayList<>();
 
     @Override
@@ -761,7 +761,7 @@ class SchemaFileDurabilityTest {
    * BEFORE calling it. A failed write therefore left the in-memory version a generation ahead of every file.
    */
   @Nested
-  class SchemaVersionPublishedAfterSaveTest extends TestHelper {
+  class SchemaVersionPublishedAfterSave extends TestHelper {
 
     @Test
     void failedSaveConfigurationDoesNotAdvanceTheVersion() throws Exception {

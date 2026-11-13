@@ -3403,7 +3403,7 @@ class GraphAnalyticalViewTest extends TestHelper {
   /**
    * A view of the database that only differs in being replicated, and in whether this node leads. Avoids pulling a
    * mocking framework into the engine module just to flip two flags (same approach used by
-   * LSMVectorIndexAutoCompactionTest/GraphBatchRegressionTest.ReplicatedCommitEveryTest).
+   * LSMVectorIndexAutoCompactionTest/GraphBatchRegressionTest.ReplicatedCommitEvery).
    */
   private static DatabaseInternal nodeView(final DatabaseInternal delegate, final boolean leader) {
     return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),

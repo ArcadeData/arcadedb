@@ -55,7 +55,7 @@ class VectorNeighborsArgumentsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NeighborsArgumentsTest extends TestHelper {
+  class NeighborsArguments extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -154,7 +154,7 @@ class VectorNeighborsArgumentsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorDegenerateArgumentsTest extends TestHelper {
+  class VectorDegenerateArguments extends TestHelper {
     private static final String[] VALUES = { "[1,2]", "2" };
 
     /**
@@ -308,7 +308,7 @@ class VectorNeighborsArgumentsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorSparseAnnGuardsTest extends TestHelper {
+  class VectorSparseAnnGuards extends TestHelper {
 
     @Override
     public void beginTest() {
@@ -394,7 +394,7 @@ class VectorNeighborsArgumentsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EmptySparseFilterTest extends TestHelper {
+  class EmptySparseFilter extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -477,7 +477,7 @@ class VectorNeighborsArgumentsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EmptyVectorFilterTest extends TestHelper {
+  class EmptyVectorFilter extends TestHelper {
 
     @Override
     protected void beginTest() {

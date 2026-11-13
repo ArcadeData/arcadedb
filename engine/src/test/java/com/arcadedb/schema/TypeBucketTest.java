@@ -73,7 +73,7 @@ class TypeBucketTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BucketLookupTest extends TestHelper {
+  class BucketLookup extends TestHelper {
 
     /** An id far past the end of the files array: the "component not loaded" shape, without corrupting anything. */
     private static final int UNLOADED_BUCKET_ID = 9999;
@@ -334,7 +334,7 @@ class TypeBucketTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BucketOfNoTypeTest extends TestHelper {
+  class BucketOfNoType extends TestHelper {
     private RID document;
     private RID vertex;
 
@@ -533,7 +533,7 @@ class TypeBucketTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SuperTypeAttachOverDuplicateTest extends TestHelper {
+  class SuperTypeAttachOverDuplicate extends TestHelper {
 
     @Test
     void attachOverAKeyTheSuperTypeAlreadyHoldsIsRefusedAndUndone() {

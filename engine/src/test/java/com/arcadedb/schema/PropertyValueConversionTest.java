@@ -76,7 +76,7 @@ class PropertyValueConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SpaceSeparatedFractionalDateTimeTest extends TestHelper {
+  class SpaceSeparatedFractionalDateTime extends TestHelper {
 
     @Test
     void spaceSeparatedLiteralWithFractionIsStored() {
@@ -756,7 +756,7 @@ class PropertyValueConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CanonicalNumberKeyTest extends TestHelper {
+  class CanonicalNumberKey extends TestHelper {
 
     @Test
     void numbersOfEveryTypeShareOneSpelling() {
@@ -802,7 +802,7 @@ class PropertyValueConversionTest {
    */
   @SuppressWarnings("unchecked")
   @Nested
-  class ScalarIntoTypedListTest extends TestHelper {
+  class ScalarIntoTypedList extends TestHelper {
 
     @Test
     void sqlScalarIsConvertedToTheDeclaredElementType() {
@@ -949,7 +949,7 @@ class PropertyValueConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DeclaredTypeConversionTest extends TestHelper {
+  class DeclaredTypeConversion extends TestHelper {
 
     private void assertRefused(final String typeName, final String property, final Object value) {
       assertThatThrownBy(() -> database.transaction(() -> database.newDocument(typeName).set(property, value).save()))
@@ -1330,7 +1330,7 @@ class PropertyValueConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UndeclaredBigIntegerTest extends TestHelper {
+  class UndeclaredBigInteger extends TestHelper {
 
     private Document write(final String typeName, final BigInteger value) {
       database.getSchema().createDocumentType(typeName);
@@ -1379,7 +1379,7 @@ class PropertyValueConversionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DateImplementationChangeKeepsConstraintsTest extends TestHelper {
+  class DateImplementationChangeKeepsConstraints extends TestHelper {
 
     @Test
     void theReproductionOfTheIssueIsRefusedAndLeavesTheSettingAsItWas() {

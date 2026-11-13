@@ -111,13 +111,13 @@ class SchemaDdlAtomicityTest {
    * A refusal leaves the schema as it was now: every statement asks what can refuse - the file of an index that cannot be deleted, a
    * file lock another thread holds - before its first change, and takes the locks of every file it is going to drop up front.
    * <p>
-   * The failure is injected as {@code TypeRenameTest.RenamedTypeInheritedIndexTest} does, with a file system fault: the file of a sub-index
+   * The failure is injected as {@code TypeRenameTest.RenamedTypeInheritedIndex} does, with a file system fault: the file of a sub-index
    * is moved aside and a non-empty directory takes its path, which {@code Files.delete} refuses.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaStatementsAreAtomicTest extends TestHelper {
+  class SchemaStatementsAreAtomic extends TestHelper {
 
     /** A directory with something in it where a file of the schema is: it cannot be deleted. */
     private record Fault(Path file, Path aside) {
@@ -410,7 +410,7 @@ class SchemaDdlAtomicityTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RefusedDdlChangesNothingCensusTest extends TestHelper {
+  class RefusedDdlChangesNothingCensus extends TestHelper {
 
     private static final int BUCKETS = 4;
     private static final int RECORDS = 12;
@@ -698,13 +698,13 @@ class SchemaDdlAtomicityTest {
    * A refused schema statement changes nothing (#10421): every refusal the drop of the backing type can give - a file that cannot be
    * deleted, another view or aggregate built from the backing type - is now asked before the first change.
    * <p>
-   * The file fault is injected as {@code SchemaDdlAtomicityTest.SchemaStatementsAreAtomicTest} does: the file of a bucket of the backing type is
+   * The file fault is injected as {@code SchemaDdlAtomicityTest.SchemaStatementsAreAtomic} does: the file of a bucket of the backing type is
    * moved aside and a non-empty directory takes its path, which {@code Files.delete} refuses.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DropViewRefusalChangesNothingTest extends TestHelper {
+  class DropViewRefusalChangesNothing extends TestHelper {
 
     /** A directory with something in it where a file of the schema is: it cannot be deleted. */
     private record Fault(Path file, Path aside) {
@@ -922,7 +922,7 @@ class SchemaDdlAtomicityTest {
    * follower-side count lives in {@code HaSchemaDeltaReplicationIT}.
    */
   @Nested
-  class BulkSchemaScopeTest extends TestHelper {
+  class BulkSchemaScope extends TestHelper {
 
     /**
      * Sessions opened by the last {@link #countSchemaSessions(Runnable)} call, readable even when the work threw. That is

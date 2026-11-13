@@ -87,7 +87,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class InheritedSubIndexOwnerTest extends TestHelper {
+  class InheritedSubIndexOwner extends TestHelper {
 
     /** The registration of every type: its name, then the bucket id and the sub-indexes registered under that bucket. */
     private Map<String, Map<Integer, List<String>>> registrations() {
@@ -260,7 +260,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NonUniqueSortedBuildChoiceTest extends TestHelper {
+  class NonUniqueSortedBuildChoice extends TestHelper {
     private static final int ROWS = 6_000;
 
     private final List<SortedIndexBuildMetrics> sortedBuilds = new ArrayList<>();
@@ -472,7 +472,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SortedBuildRunSizingTest extends TestHelper {
+  class SortedBuildRunSizing extends TestHelper {
     private static final int  ROWS            = 50_000;
     private static final long ONE_PASS_BUDGET = 16L << 20;
 
@@ -622,7 +622,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UniqueIndexSortedBuildTest extends TestHelper {
+  class UniqueIndexSortedBuild extends TestHelper {
     private final List<SortedIndexBuildMetrics> sortedBuilds = new ArrayList<>();
 
     @BeforeEach
@@ -947,7 +947,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DeferredUniqueVerificationTest extends TestHelper {
+  class DeferredUniqueVerification extends TestHelper {
     private final List<SortedIndexBuildMetrics> sortedBuilds   = new ArrayList<>();
     private       int                           pendingRecords = 0;
 
@@ -1315,12 +1315,12 @@ class IndexBuildTest {
    * it raises in a reason-less {@link IndexException}, so {@code getMessage()} of what the caller catches named neither the
    * duplicated key nor the record already holding it, whereas the record-at-a-time build of the same statement did (issue
    * #5607). The message is what the embedded API, the console and every log line report, so it is what these tests read:
-   * the root cause carrying the key was already covered by {@code IndexBuildTest.UniqueIndexSortedBuildTest}.
+   * the root cause carrying the key was already covered by {@code IndexBuildTest.UniqueIndexSortedBuild}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UniqueIndexRefusalMessageTest extends TestHelper {
+  class UniqueIndexRefusalMessage extends TestHelper {
     private final List<SortedIndexBuildMetrics> sortedBuilds = new ArrayList<>();
 
     @BeforeEach
@@ -1401,7 +1401,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UniqueIndexRefusalAtDefaultThresholdTest extends TestHelper {
+  class UniqueIndexRefusalAtDefaultThreshold extends TestHelper {
     /** One record either side of {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS}, which is 10,000 by default. */
     private static final long ONE_BELOW_THE_THRESHOLD = 9_999L;
     private static final long AT_THE_THRESHOLD        = 10_000L;
@@ -1489,7 +1489,7 @@ class IndexBuildTest {
    * share.
    */
   @Nested
-  class IndexBuildWithUnrelatedPendingWritesTest extends TestHelper {
+  class IndexBuildWithUnrelatedPendingWrites extends TestHelper {
 
     /** SQL {@code CREATE INDEX ... LSM_VECTOR}: the case the issue names. */
     @Test
@@ -1734,7 +1734,7 @@ class IndexBuildTest {
    * transaction of the stack, since it sets the whole stack aside.
    */
   @Nested
-  class SortedBuildBesideUnrelatedWritesTest extends TestHelper {
+  class SortedBuildBesideUnrelatedWrites extends TestHelper {
     private static final int RECORDS = 2_000;
 
     private final List<SortedIndexBuildMetrics> sortedBuilds = new ArrayList<>();
@@ -1935,7 +1935,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
+  class IndexBuildRollbackKeepsCommittedRecords extends TestHelper {
 
     /** One row per index family the issue lists: how to create it, how to ask it for key 1, and what a scan must find. */
     private record Family(String name, String create, String lookupOne, String lookupNine) {
@@ -2465,7 +2465,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateIndexBesideUncommittedWriterTest extends TestHelper {
+  class CreateIndexBesideUncommittedWriter extends TestHelper {
 
     private static final int COMMITTED = 20;
 
@@ -2999,7 +2999,7 @@ class IndexBuildTest {
    * and every record of a bucket whose sub-index was gone answered 0 rows through the index, across a restart. When the refusing file
    * was the last one the wrapper was left empty, which wedged every later DDL.
    * <p>
-   * The failure is injected as {@code SchemaDdlAtomicityTest.SchemaStatementsAreAtomicTest} does: the file of a sub-index is moved aside and a
+   * The failure is injected as {@code SchemaDdlAtomicityTest.SchemaStatementsAreAtomic} does: the file of a sub-index is moved aside and a
    * non-empty directory takes its path, which {@code Files.delete} refuses. Every statement that reaches {@code dropIndexInternal} is
    * covered, and the ones that drop several indexes are checked with the refusing file on each of them in turn, so the index dropped
    * BEFORE the refusal is the one that proves nothing was changed.
@@ -3007,7 +3007,7 @@ class IndexBuildTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DropIndexIsAtomicTest extends TestHelper {
+  class DropIndexIsAtomic extends TestHelper {
 
     private static final int BUCKETS = 4;
     private static final int RECORDS = 12;

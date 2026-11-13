@@ -55,7 +55,7 @@ class TimeSeriesTypeBuilderTest {
    * The end-to-end embedded-vs-remote comparison lives in {@code Issue7399RemoteTimeSeriesTypeBuilderIT}.
    */
   @Nested
-  class TimeSeriesTypeBuilderSQLTest extends TestHelper {
+  class TimeSeriesTypeBuilderSQL extends TestHelper {
 
     /**
      * Every type {@link ColumnDefinition#isStorableType} admits. A type the builder accepts and the grammar cannot
@@ -378,7 +378,7 @@ class TimeSeriesTypeBuilderTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TransitiveTimeSeriesHierarchyTest extends TestHelper {
+  class TransitiveTimeSeriesHierarchy extends TestHelper {
 
     @Test
     void aSuperTypeLinkIsRefusedWhenATimeSeriesTypeIsBelowInTheExistingSubtree() {
@@ -418,7 +418,7 @@ class TimeSeriesTypeBuilderTest {
    * {@code Issue7689RemoteTimeSeriesTypeCompleteCreateIT}.
    */
   @Nested
-  class CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
+  class CreateTimeSeriesTypeCompleteDeclaration extends TestHelper {
 
     private TimeSeriesTypeBuilder builder(final String name) {
       return database.getSchema().buildTimeSeriesType().withName(name).withTimestamp("ts");
@@ -708,7 +708,7 @@ class TimeSeriesTypeBuilderTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class InterleavedTagAndFieldOrderTest extends TestHelper {
+  class InterleavedTagAndFieldOrder extends TestHelper {
 
     /** {@code t1} and {@code f1} deliberately share a data type: a shift between them is silent, not an error. */
     private TimeSeriesTypeBuilder interleaved(final String name) {
@@ -835,7 +835,7 @@ class TimeSeriesTypeBuilderTest {
     /**
      * The TIMESTAMP clause is a member of the same ordered list, so a type whose timestamp is not its first column -
      * which {@code create()} has always accepted and stored - is now spellable too. This was the second axis of the
-     * same divergence: {@code TimeSeriesTypeSchemaTest.TimeSeriesBuilderParityTest} pinned it as a regrouping the rendering could
+     * same divergence: {@code TimeSeriesTypeSchemaTest.TimeSeriesBuilderParity} pinned it as a regrouping the rendering could
      * not avoid.
      */
     @Test
@@ -951,7 +951,7 @@ class TimeSeriesTypeBuilderTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ExplicitCodecSurvivesDefaultTableChangeTest extends TestHelper {
+  class ExplicitCodecSurvivesDefaultTableChange extends TestHelper {
 
     private TimeSeriesTypeBuilder builder(final String name) {
       return database.getSchema().buildTimeSeriesType().withName(name).withTimestamp("ts");

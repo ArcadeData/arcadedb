@@ -75,7 +75,7 @@ class RegexpConstraintTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RegexpOnNonTextPropertyTest extends TestHelper {
+  class RegexpOnNonTextProperty extends TestHelper {
 
     @Test
     void aPatternIsRefusedOnATypeWithoutATextFormThroughEveryDoor() {
@@ -163,7 +163,7 @@ class RegexpConstraintTest {
    * every door a REGEXP is declared by; one some value matches stays legal and lets that value through.
    */
   @Nested
-  class RegexpNoValueCanMatchTest extends TestHelper {
+  class RegexpNoValueCanMatch extends TestHelper {
 
     /** one row per declared type: a pattern no value can match, one a value can, and that value */
     private record Row(String type, String unmatchable, String matchable, Object value) {
@@ -368,7 +368,7 @@ class RegexpConstraintTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RegexpDecidedOnEveryTypeTest extends TestHelper {
+  class RegexpDecidedOnEveryType extends TestHelper {
 
     /** per type: patterns no value can match, then patterns some value matches */
     private static final Map<Type, List<List<String>>> TABLE = new EnumMap<>(Type.class);
@@ -491,7 +491,7 @@ class RegexpConstraintTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LinkRegexpTextFormTest extends TestHelper {
+  class LinkRegexpTextForm extends TestHelper {
 
     @Test
     void aLinkIsMatchedAsItsRidWhateverObjectItArrivedAs() {

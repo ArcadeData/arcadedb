@@ -44,7 +44,7 @@ class DictionaryDamageTest {
    * the database out of service</b>. A brand new database, or one killed before its first type, is not flagged.
    */
   @Nested
-  class EmptiedDictionaryTest extends TestHelper {
+  class EmptiedDictionary extends TestHelper {
 
     @Test
     void aDictionaryEmptiedOnDiskWhileTheSchemaHasTypesIsReported() throws IOException {
@@ -91,7 +91,7 @@ class DictionaryDamageTest {
    * file as committed, so the "names were lost" fact the open recorded must survive the reload or the recheck reads it as gone.
    */
   @Nested
-  class DamageSurvivesSchemaReloadTest extends TestHelper {
+  class DamageSurvivesSchemaReload extends TestHelper {
 
     @Test
     void anEmptiedDictionaryIsStillReportedAfterAFullSchemaReload() throws IOException {

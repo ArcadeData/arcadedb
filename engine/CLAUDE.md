@@ -136,7 +136,7 @@ An index build (`TypeIndexBuilder`, `BucketIndexBuilder`, `ManualIndexBuilder`) 
 The rules that follow, and what each one did to `CREATE EDGE TYPE X UNIQUE`, the builder and `ALTER TYPE ... WITH unique = true` under a live executor that held a batch (#10537, none of them had a test with one):
 - take the quiescence (`database.quiesceAsync()`) BEFORE the frame, in try-with-resources, whenever the frame links a super type that has indexes or builds an index. It is reentrant: a builder reached from under it rides on it;
 - `LocalDatabase.waitForAsyncCompletion()` returns at once for a thread that holds a quiescence (`DatabaseAsyncExecutorImpl.isQuiescedByCurrentThread()`), because the quiescence committed every batch before it parked the workers, which is what the wait asks for;
-- a database that never touched the async API has no executor, and both calls are free: nothing in a test without one can see this. `TypeCreationTest.TypeCreationOneSchemaEntryTest.noRouteStallsWhileTheAsyncExecutorHoldsABatch` starts one and holds a batch on purpose, and its `@Timeout` is a hang detector, not a latency bound.
+- a database that never touched the async API has no executor, and both calls are free: nothing in a test without one can see this. `TypeCreationTest.TypeCreationOneSchemaEntry.noRouteStallsWhileTheAsyncExecutorHoldsABatch` starts one and holds a batch on purpose, and its `@Timeout` is a hang detector, not a latency bound.
 
 ## An index lookup of a value the key type cannot hold matches nothing
 

@@ -73,7 +73,7 @@ class SqlArithmeticTest {
    * </ol>
    */
   @Nested
-  class SqlIntegerArithmeticTest {
+  class SqlIntegerArithmetic {
 
     /**
      * The wrap-around is only reachable on the {@code Long} overload: {@code Integer} operands widen to {@code long}
@@ -286,7 +286,7 @@ class SqlArithmeticTest {
    * parameter - only the direct literal spelling failed.
    */
   @Nested
-  class SqlLongMinValueLiteralTest {
+  class SqlLongMinValueLiteral {
 
     @Test
     void longMinValueLiteralParsesToTheCorrectValue() throws Exception {
@@ -382,7 +382,7 @@ class SqlArithmeticTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MathExpressionBigIntegerTest {
+  class MathExpressionBigInteger {
 
     private static final BigInteger FIVE = BigInteger.valueOf(5);
 
@@ -503,7 +503,7 @@ class SqlArithmeticTest {
    * operators with a NULL operand (#10186; before it {@code date - null} kept the date).
    */
   @Nested
-  class DateTimeMinusNullTest {
+  class DateTimeMinusNull {
 
     @Test
     void dateMinusNullOperatorIsNull() {
@@ -566,7 +566,7 @@ class SqlArithmeticTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MapMinusNullTest {
+  class MapMinusNull {
 
     @Test
     void mapMinusNullReturnsTheMapUnchanged() {
@@ -719,7 +719,7 @@ class SqlArithmeticTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ArrayConcatElementTest extends TestHelper {
+  class ArrayConcatElement extends TestHelper {
 
     @Override
     protected void beginTest() {

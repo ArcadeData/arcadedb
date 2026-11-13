@@ -59,7 +59,7 @@ class FunctionLibrarySchemaTest {
    * and only there. The cluster-level proof is {@code HaSchemaDdlReplicationThreeNodeIT} in the ha-raft module.
    */
   @Nested
-  class FunctionDdlRecordsSchemaChangeTest extends TestHelper {
+  class FunctionDdlRecordsSchemaChange extends TestHelper {
 
     private final AtomicInteger  sessions = new AtomicInteger();
     private final Callable<Void> counter  = () -> {
@@ -216,7 +216,7 @@ class FunctionLibrarySchemaTest {
    * {@code HaSchemaDdlReplicationThreeNodeIT}.
    */
   @Nested
-  class UnregisterFunctionLibraryPersistedTest extends TestHelper {
+  class UnregisterFunctionLibraryPersisted extends TestHelper {
 
     private final AtomicInteger  sessions = new AtomicInteger();
     private final Callable<Void> counter  = () -> {
@@ -304,7 +304,7 @@ class FunctionLibrarySchemaTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RegisterFunctionLibraryPersistedTest extends TestHelper {
+  class RegisterFunctionLibraryPersisted extends TestHelper {
 
     private final AtomicInteger  sessions = new AtomicInteger();
     private final Callable<Void> counter  = () -> {

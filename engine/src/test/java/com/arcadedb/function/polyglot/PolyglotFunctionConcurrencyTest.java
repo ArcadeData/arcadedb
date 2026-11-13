@@ -54,7 +54,7 @@ class PolyglotFunctionConcurrencyTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ConcurrentCallSerializationTest extends TestHelper {
+  class ConcurrentCallSerialization extends TestHelper {
 
     @Test
     void concurrentCallersOfTheSameFunctionAreSerialized() throws Exception {
@@ -111,13 +111,13 @@ class PolyglotFunctionConcurrencyTest {
    * <p>
    * The fix introduces a dedicated, never-reassigned {@code engineLock} monitor: {@code execute()} and
    * {@code reloadEngine()} both synchronize on it (a plain mutex, not a read-write lock, since the shared GraalVM
-   * {@code Context} does not support concurrent callers either - see {@link ConcurrentCallSerializationTest}),
+   * {@code Context} does not support concurrent callers either - see {@link ConcurrentCallSerialization}),
    * so a redefinition always waits for in-flight calls to finish before closing their engine.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ConcurrentRedefinitionTest extends TestHelper {
+  class ConcurrentRedefinition extends TestHelper {
 
     @Test
     void redefinitionWaitsForInFlightCallInsteadOfClosingItsEngine() throws Exception {

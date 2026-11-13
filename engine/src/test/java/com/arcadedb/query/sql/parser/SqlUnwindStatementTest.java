@@ -52,7 +52,7 @@ class SqlUnwindStatementTest {
    * unparseable {@code UNWIND }, and {@code UNWIND tags AS x} lost {@code x}.
    */
   @Nested
-  class UnwindOperandTest extends TestHelper {
+  class UnwindOperand extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -221,7 +221,7 @@ class SqlUnwindStatementTest {
    * {@code CASE} evaluated against a projected row that lacked it, and unwound {@code null}.
    */
   @Nested
-  class UnwindOperandUnderNarrowingProjectionTest extends TestHelper {
+  class UnwindOperandUnderNarrowingProjection extends TestHelper {
     private RID aliceRid;
 
     @Override
@@ -368,7 +368,7 @@ class SqlUnwindStatementTest {
    * alone. The #11537 fix covered only an operand that reads no such name.
    */
   @Nested
-  class UnwindOperandReadingAnAliasAndTheRecordTest extends TestHelper {
+  class UnwindOperandReadingAnAliasAndTheRecord extends TestHelper {
     private RID aliceRid;
     private RID docRid;
 

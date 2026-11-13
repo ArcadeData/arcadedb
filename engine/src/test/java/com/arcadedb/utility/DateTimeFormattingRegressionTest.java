@@ -77,7 +77,7 @@ class DateTimeFormattingRegressionTest {
    * is a day, not an instant, and keeps its fields.
    */
   @Nested
-  class FormatZoneConversionTest extends TestHelper {
+  class FormatZoneConversion extends TestHelper {
     private static final String  PATTERN = "yyyy-MM-dd HH:mm";
     private static final String  ROME    = "Europe/Rome";
     // 2020-01-31T23:30Z is already February in Rome (UTC+1 in winter)
@@ -226,7 +226,7 @@ class DateTimeFormattingRegressionTest {
    */
   @Nested
   @Isolated
-  class SchemaDatePatternLocaleTest extends TestHelper {
+  class SchemaDatePatternLocale extends TestHelper {
     private static final String  DATE_PATTERN     = "dd MMMM yyyy";
     private static final String  DATETIME_PATTERN = "dd MMMM yyyy HH:mm:ss";
     private static final String  ENGLISH_DATE     = "04 March 2026";
@@ -332,7 +332,7 @@ class DateTimeFormattingRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LocaleIndependentFormatTest {
+  class LocaleIndependentFormat {
 
     private Locale originalDefault;
 
@@ -390,7 +390,7 @@ class DateTimeFormattingRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class FractionalTimestampTest extends TestHelper {
+  class FractionalTimestamp extends TestHelper {
 
     @Test
     void fractionalNumberIsFlooredNotTruncated() {

@@ -73,7 +73,7 @@ class ConcurrentSchemaStatementTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateTypeIfNotExistsConcurrentTest extends TestHelper {
+  class CreateTypeIfNotExistsConcurrent extends TestHelper {
 
     private static final int THREADS = 8;
     private static final int ROUNDS  = 25;
@@ -174,7 +174,7 @@ class ConcurrentSchemaStatementTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ConcurrentCreateIndexTest extends TestHelper {
+  class ConcurrentCreateIndex extends TestHelper {
 
     private static final String DDL = "CREATE INDEX IF NOT EXISTS ON V (a, b, c) UNIQUE";
 
@@ -400,7 +400,7 @@ class ConcurrentSchemaStatementTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreatesAnIndexHookTest extends TestHelper {
+  class CreatesAnIndexHook extends TestHelper {
 
     @Test
     void onlyAUniqueEdgeTypeBuildsAnIndexWhenItIsCreated() {
@@ -436,7 +436,7 @@ class ConcurrentSchemaStatementTest {
    * planningEpoch)} introduced by the fix must refuse to cache it.
    */
   @Nested
-  class ExecutionPlanCacheRaceTest {
+  class ExecutionPlanCacheRace {
     private DatabaseInternal database;
 
     @BeforeEach

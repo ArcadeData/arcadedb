@@ -242,7 +242,7 @@ Tests in `engine/src/test/java/com/arcadedb/schema/`, in the style of `Materiali
 - a record at a drained RID that is not of the source type produces no row.
 - a view over a per-record view's backing type stays correct after per-record and full passes upstream.
 - regression for #11475: a large per-record view, one commit, the pass reads O(1) backing rows.
-- HA: the existing MV HA tests (`MaterializedViewRegressionTest.MaterializedViewRefreshLeaderOnlyTest` and the ha-raft MV tests) still pass; the
+- HA: the existing MV HA tests (`MaterializedViewRegressionTest.MaterializedViewRefreshLeaderOnly` and the ha-raft MV tests) still pass; the
   nightly Load Tests MV arm is the end-to-end check.
 
 ## Left to the builder

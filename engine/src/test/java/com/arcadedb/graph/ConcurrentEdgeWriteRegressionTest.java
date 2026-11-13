@@ -77,7 +77,7 @@ class ConcurrentEdgeWriteRegressionTest {
    * transaction; the stress tests are the reporter's program.
    */
   @Nested
-  class ConcurrentEdgeDeleteTest extends TestHelper {
+  class ConcurrentEdgeDelete extends TestHelper {
     private static final int THREADS = 2;
     private static final int COMMITS = 200;
     private static final int SEEDS   = 40;
@@ -465,7 +465,7 @@ class ConcurrentEdgeWriteRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ConcurrentEdgeListMergeTest extends TestHelper {
+  class ConcurrentEdgeListMerge extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -865,9 +865,9 @@ class ConcurrentEdgeWriteRegressionTest {
                   });
                   mine.addAll(created);
                   for (final RID edge : created)
-                    net.merge(edge, 1, ConcurrentEdgeListMergeTest::sumOrRemove);
+                    net.merge(edge, 1, ConcurrentEdgeListMerge::sumOrRemove);
                   for (final RID edge : toDelete)
-                    net.merge(edge, -1, ConcurrentEdgeListMergeTest::sumOrRemove);
+                    net.merge(edge, -1, ConcurrentEdgeListMerge::sumOrRemove);
                   break;
                 } catch (final NeedRetryException e) {
                   if (attempt == MAX_CALLER_RETRIES)
@@ -1021,7 +1021,7 @@ class ConcurrentEdgeWriteRegressionTest {
    */
   @Nested
   @Tag("slow")
-  class SuperNodeChunkRaceTest extends TestHelper {
+  class SuperNodeChunkRace extends TestHelper {
 
     private static final int THREADS          = 8;
     private static final int EDGES_PER_THREAD = 4000;
@@ -1105,7 +1105,7 @@ class ConcurrentEdgeWriteRegressionTest {
    */
   @Nested
   @Tag("slow")
-  class EdgeRemovalAnchorTest extends TestHelper {
+  class EdgeRemovalAnchor extends TestHelper {
 
     private static final int EDGES      = 30_000; // enough IN edges on the hub to span several pages of 8KB chunks
     private static final int BATCH_SIZE = 1_000;
@@ -1301,7 +1301,7 @@ class ConcurrentEdgeWriteRegressionTest {
    */
   @Nested
   @Tag("slow")
-  class FalseConflictTest extends TestHelper {
+  class FalseConflict extends TestHelper {
     private boolean savedSlotMerge;
     private int     savedThreshold;
     private int     savedStripes;
@@ -2261,7 +2261,7 @@ class ConcurrentEdgeWriteRegressionTest {
    * so they hold no matter which poison calls exist, and pin that the merges still fire on a fully covered page.
    * <p>
    * DELIBERATELY NOT {@code @Tag("slow")}, unlike the contention suites it sits next to
-   * ({@code ConcurrentEdgeWriteRegressionTest.FalseConflictTest}, {@code EdgeAppendMergeRaceTest}, ...). Those run thousands of transactions;
+   * ({@code ConcurrentEdgeWriteRegressionTest.FalseConflict}, {@code EdgeAppendMergeRaceTest}, ...). Those run thousands of transactions;
    * these are sized to the smallest contention that reproduces, and the whole class measures ~0.37s (heaviest method
    * 0.19s; the 16-thread growth/delete one 0.04s) - well inside a regular CI run. It belongs there: a merge that stops
    * firing because a writer forgot its declaration is a silent throughput regression no correctness assertion catches,
@@ -2271,7 +2271,7 @@ class ConcurrentEdgeWriteRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MergeCoverageTest extends TestHelper {
+  class MergeCoverage extends TestHelper {
     private static final String MARKER = "ZZZZZZZZ";
     private static final String POKED  = "QQQQQQQQ";
 

@@ -79,7 +79,7 @@ class SchemaLoadTest {
    * wall-clock budget it cannot pass or fail on how loaded the machine is.
    */
   @Nested
-  class IncrementalSchemaLoadTest extends TestHelper {
+  class IncrementalSchemaLoad extends TestHelper {
 
     private static final int TYPE_COUNT = 12;
 
@@ -411,7 +411,7 @@ class SchemaLoadTest {
    * index' own hook is still pending. That is precisely the state the issue describes.
    */
   @Nested
-  class SchemaLoadPublicationBarrierTest extends TestHelper {
+  class SchemaLoadPublicationBarrier extends TestHelper {
 
     private static final String TYPE_NAME  = "Issue7213Doc";
     private static final String INDEX_NAME = TYPE_NAME + "[embedding]";
@@ -839,7 +839,7 @@ class SchemaLoadTest {
    * second pass's own comment already argues the dictionary needs nothing here.
    */
   @Nested
-  class IncrementalSchemaSecondPassTest extends TestHelper {
+  class IncrementalSchemaSecondPass extends TestHelper {
 
     private static final String TYPE_NAME = "Issue7266Indexed";
     /**
@@ -988,7 +988,7 @@ class SchemaLoadTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaLoadPropertyRecoveryTest extends TestHelper {
+  class SchemaLoadPropertyRecovery extends TestHelper {
 
     /**
      * The trigger the issue reported: a schema whose {@code LIST OF} property names a type that is gone. {@code DROP TYPE} reached it
@@ -1195,7 +1195,7 @@ class SchemaLoadTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IncrementalReloadRefusalTest extends TestHelper {
+  class IncrementalReloadRefusal extends TestHelper {
     private static final String VECTOR_INDEX = "Vec[vector]";
 
     @Override
@@ -1249,7 +1249,7 @@ class SchemaLoadTest {
    * needs the intended files (snapshot install) can refuse instead of going on with a database that looks fine.
    */
   @Nested
-  class LoadedFromPreviousSchemaTest extends TestHelper {
+  class LoadedFromPreviousSchema extends TestHelper {
     private static final String TRUNCATED_SCHEMA = "{\"schemaVersion\":42,\"settings\":{\"dateForm";
 
     @Test

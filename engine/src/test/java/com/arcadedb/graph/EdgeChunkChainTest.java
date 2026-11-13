@@ -64,7 +64,7 @@ class EdgeChunkChainTest {
    * added through a freshly looked-up vertex never sees a stale parse.
    */
   @Nested
-  class VertexReloadEdgePointerTest extends BaseGraphTest {
+  class VertexReloadEdgePointer extends BaseGraphTest {
 
     @Test
     void reloadRefreshesOutEdgesHeadChunk() {
@@ -250,13 +250,13 @@ class EdgeChunkChainTest {
    * <p>
    * The fix lifts the guard into {@code ResettableIteratorBase.moveToPreviousChunk()}, the one chunk-hop every one of
    * these iterators now goes through. Each test here plants a self-referencing head chunk - the same
-   * {@code setPrevious(itself)} trick as {@code EdgeStripeDirectoryTest.AdjacencyProbeCacheTest
+   * {@code setPrevious(itself)} trick as {@code EdgeStripeDirectoryTest.AdjacencyProbeCache
    * .aSelfReferencingChunkEndsTheWalkInsteadOfFeedingItForever} - and walks one iterator family under a HARD CAP
    * rather than a timeout: an unterminating walk does not fail a test, it hangs the build, and a regression has to
    * come back as a red test, not a red build.
    */
   @Nested
-  class SelfReferencingChunkTraversalIteratorsTest extends TestHelper {
+  class SelfReferencingChunkTraversalIterators extends TestHelper {
     private static final String VERTEX_TYPE = "Issue6278Node";
     private static final String EDGE_TYPE   = "Issue6278Link";
     private static final int    DEGREE      = 50;
@@ -386,7 +386,7 @@ class EdgeChunkChainTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeSegmentToJsonTest extends TestHelper {
+  class EdgeSegmentToJson extends TestHelper {
 
     @Test
     void edgeListSerializesItsEntries() {
@@ -450,7 +450,7 @@ class EdgeChunkChainTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeListCountSelfLoopTest extends TestHelper {
+  class EdgeListCountSelfLoop extends TestHelper {
     private static final String VERTEX_TYPE = "Issue8568Node";
     private static final String EDGE_TYPE   = "Issue8568Link";
     private static final int    DEGREE      = 50;
@@ -632,7 +632,7 @@ class EdgeChunkChainTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ChunkChainCycleTest extends TestHelper {
+  class ChunkChainCycle extends TestHelper {
     private static final String VERTEX_TYPE = "Issue8713Node";
     private static final String EDGE_TYPE   = "Issue8713Link";
     private static final int    DEGREE      = 400;
@@ -782,7 +782,7 @@ class EdgeChunkChainTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TruncatedRecordPrefixTest extends TestHelper {
+  class TruncatedRecordPrefix extends TestHelper {
     private static final String VERTEX_TYPE = "Issue9985Vertex";
     private static final String EDGE_TYPE   = "Issue9985Edge";
 

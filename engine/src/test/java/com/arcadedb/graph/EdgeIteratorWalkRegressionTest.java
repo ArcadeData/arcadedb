@@ -88,7 +88,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeEntryRIDIteratorTest extends TestHelper {
+  class EdgeEntryRIDIteratorRegression extends TestHelper {
     private int savedThreshold;
     private int savedStripes;
 
@@ -241,7 +241,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AdjacencyIteratorResetContractTest {
+  class AdjacencyIteratorResetContract {
     private static final String DB_PATH   = "./target/databases/issue10151-reset-contract";
     private static final int    RECORD_E  = 40;
     private static final int    RECORD_F  = 10;
@@ -380,7 +380,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeListWalkWhileWritingTest {
+  class EdgeListWalkWhileWriting {
     private static final String DB_PATH = "./target/databases/issue10308-walk-while-writing";
     private static final int    EDGES   = 3_000;
 
@@ -536,7 +536,7 @@ class EdgeIteratorWalkRegressionTest {
    * module).
    */
   @Nested
-  class IteratorRemoveEdgeAppendMergeTest extends TestHelper {
+  class IteratorRemoveEdgeAppendMerge extends TestHelper {
     private static final int COMMITTED_EDGES = 5;
 
     private RID   source;
@@ -786,7 +786,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class StaleMutableVertexHeadsTest extends TestHelper {
+  class StaleMutableVertexHeads extends TestHelper {
     private RID a;
     private RID b;
 
@@ -969,7 +969,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeWalkHotPathTest extends TestHelper {
+  class EdgeWalkHotPath extends TestHelper {
 
     @Test
     void theBucketMaskOfATypeIsKeptAndRebuiltWhenItsBucketsChange() {
@@ -1066,7 +1066,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeListScannerTest extends TestHelper {
+  class EdgeListScannerRegression extends TestHelper {
     private static final int VERTICES = 200;
 
     @Test
@@ -1377,7 +1377,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AdjacencyFromEntriesTest {
+  class AdjacencyFromEntries {
     private static final String DB_PATH = "./target/databases/issue-11104";
 
     private static final Vertex.DIRECTION[] DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, Vertex.DIRECTION.BOTH };
@@ -1601,7 +1601,7 @@ class EdgeIteratorWalkRegressionTest {
    * them and CHECK DATABASE FIX must prune them, so the vertices can be deleted again.
    */
   @Nested
-  class DroppedEdgeTypeAdjacencyEntriesTest extends TestHelper {
+  class DroppedEdgeTypeAdjacencyEntries extends TestHelper {
 
     @Override
     protected boolean isCheckingDatabaseIntegrity() {
@@ -1688,7 +1688,7 @@ class EdgeIteratorWalkRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class WalkPastDeletedSegmentsTest extends TestHelper {
+  class WalkPastDeletedSegments extends TestHelper {
     private static final int EDGES = 3000;
 
     private Logger          previousLogger;

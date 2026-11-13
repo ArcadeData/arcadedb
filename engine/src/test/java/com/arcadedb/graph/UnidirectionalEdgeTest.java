@@ -66,7 +66,7 @@ class UnidirectionalEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UnidirectionalEdgeDirectionTest extends TestHelper {
+  class UnidirectionalEdgeDirection extends TestHelper {
     private static final int QUESTIONS = 400;
     private static final int TAGS      = 20;
     private static final int EXPECTED  = QUESTIONS * 2;
@@ -795,7 +795,7 @@ class UnidirectionalEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UnidirectionalGraphAlgorithmsTest extends TestHelper {
+  class UnidirectionalGraphAlgorithms extends TestHelper {
     private Database uni;
 
     @Override
@@ -1168,7 +1168,7 @@ class UnidirectionalEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
+  class DeleteTargetOfUnidirectionalEdge extends TestHelper {
     private RID a;
     private RID b;
 
@@ -1500,7 +1500,7 @@ class UnidirectionalEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UnidirectionalEdgeToDeletedVertexTest extends TestHelper {
+  class UnidirectionalEdgeToDeletedVertex extends TestHelper {
     private RID source;
     private RID target;
 

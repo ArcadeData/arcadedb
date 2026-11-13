@@ -67,7 +67,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LossyStatementRenderingTest extends TestHelper {
+  class LossyStatementRendering extends TestHelper {
 
     /**
      * Every condition is evaluated against all 16 combinations of a, b, c, d in {1, 2}, written as-is and as rendered: the two must
@@ -321,7 +321,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LossyRenderingTest extends TestHelper {
+  class LossyRendering extends TestHelper {
 
     @Test
     void aLongLiteralKeepsItsTypeThroughTheRendering() {
@@ -422,7 +422,7 @@ class StatementRenderingTest {
    * the grammar does not accept, so the rendering of an edge with both did not parse back.
    */
   @Nested
-  class CreateEdgeRenderingTest extends TestHelper {
+  class CreateEdgeRendering extends TestHelper {
 
     @Test
     void theClausesAreRenderedInTheOrderTheGrammarAccepts() {
@@ -476,7 +476,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NegativeLiteralRenderingTest extends TestHelper {
+  class NegativeLiteralRendering extends TestHelper {
 
     private static String render(final String query) {
       final Statement statement = new SQLAntlrParser(null).parse(query);

@@ -401,7 +401,7 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
 
   /**
    * A view of the database that only differs in being replicated, and in whether this node leads. Avoids pulling a
-   * mocking framework into the engine module just to flip two flags (same approach as GraphBatchRegressionTest.ReplicatedCommitEveryTest).
+   * mocking framework into the engine module just to flip two flags (same approach as GraphBatchRegressionTest.ReplicatedCommitEvery).
    */
   private static DatabaseInternal nodeView(final DatabaseInternal delegate, final boolean leader) {
     return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),

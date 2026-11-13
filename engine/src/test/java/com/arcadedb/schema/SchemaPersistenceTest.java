@@ -82,7 +82,7 @@ class SchemaPersistenceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class StatisticsFormatVersionTest extends TestHelper {
+  class StatisticsFormatVersion extends TestHelper {
 
     private static final String TYPE    = "Counted";
     private static final int    RECORDS = 25;
@@ -190,7 +190,7 @@ class SchemaPersistenceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LegacyWatermarkMigrationTest extends TestHelper {
+  class LegacyWatermarkMigration extends TestHelper {
 
     private static final long HOUR = 3_600_000L;
 
@@ -315,7 +315,7 @@ class SchemaPersistenceTest {
    * (fresh maps filled from the file), so a schema written before and after a reopen must be the same string.
    */
   @Nested
-  class SchemaSerializationOrderTest extends TestHelper {
+  class SchemaSerializationOrder extends TestHelper {
     private static final int CREATED = 40;
     private static final int KEPT    = 5;
 
@@ -444,7 +444,7 @@ class SchemaPersistenceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaSaveOncePerDdlTest extends TestHelper {
+  class SchemaSaveOncePerDdl extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -963,7 +963,7 @@ class SchemaPersistenceTest {
    * value it already holds must not open a session at all - no save, no schema version bump.
    */
   @Nested
-  class SchemaSettersPersistTest extends TestHelper {
+  class SchemaSettersPersist extends TestHelper {
 
     @Test
     void everyMovedSetterStillPersistsAcrossAReopen() {
@@ -1082,7 +1082,7 @@ class SchemaPersistenceTest {
    * instead would fail it unpublished: the members would stay on this node with nothing on disk and nothing shipped.
    */
   @Nested
-  class FailedImportRestoreKeepsPrefixTest {
+  class FailedImportRestoreKeepsPrefix {
     private static final String DATABASE_PATH = "target/databases/test-issue9764-failed-import-restore";
 
     @BeforeEach

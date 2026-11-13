@@ -168,7 +168,7 @@ And in `MaterializedViewConcurrentRefreshTest`: `concurrentWritersOnAPerRecordVi
   - `fullPass` drains the pending delta first (spec section 6) - covered by the drain at pass start; manual `REFRESH` and scheduler passes go through the same `runOwnedPasses`, so they drain too.
   - `deltaPass`: `rids.sortAndDeduplicate()`; in own tx under `BackingTypeWriteScope`: run `derivedQuery(true)` = derived projection + `FROM :rids` (pass a `List<RID>`) + WHERE `(<original where>) AND @this INSTANCEOF '<source>'`; for each result row upsert by `_sourceRID` index; collect hit RIDs; for each drained RID not hit, delete the backing row found by the index, if any.
 
-- [ ] **Step 4: Run Task 3 tests + `MaterializedViewIncrementalTest`, `MaterializedViewConcurrentRefreshTest`, `MaterializedViewEdgeCaseTest`, `MaterializedViewRegressionTest.MaterializedViewRefreshLeaderOnlyTest` → PASS.**
+- [ ] **Step 4: Run Task 3 tests + `MaterializedViewIncrementalTest`, `MaterializedViewConcurrentRefreshTest`, `MaterializedViewEdgeCaseTest`, `MaterializedViewRegressionTest.MaterializedViewRefreshLeaderOnly` → PASS.**
 
 - [ ] **Step 5: No commit.**
 
@@ -263,7 +263,7 @@ And in `MaterializedViewConcurrentRefreshTest`: `concurrentWritersOnAPerRecordVi
 
 - [ ] **Step 3: Implement.** `alterMaterializedView`: wrap `recordFileChanges` in `try (final AsyncQuiesce q = database.quiesceAsync())`; inside, after `copyWithRefreshMode`, if `newMode == INCREMENTAL && !newView.isPerRecord() && MaterializedViewQueryClassifier.isPerRecord(query, database)`: `addLink`, `setPerRecord(true)`, then after `saveConfiguration()` run `MaterializedViewRefresher.fullRefresh` (dispatches to `fullPass`) before registering listeners; `saveConfiguration()` again. Views-over-views need no code if Tasks 3-4 hold; the test proves it.
 
-- [ ] **Step 4: Run Task 6 tests + `AlterMaterializedViewRefreshTest`, `MaterializedViewRegressionTest.MaterializedViewLifecycleUnderWriteLockTest`, `FailedMaterializedViewRestoreIsUndoneTest` → PASS.**
+- [ ] **Step 4: Run Task 6 tests + `AlterMaterializedViewRefreshTest`, `MaterializedViewRegressionTest.MaterializedViewLifecycleUnderWriteLock`, `FailedMaterializedViewRestoreIsUndoneTest` → PASS.**
 
 - [ ] **Step 5: No commit.**
 

@@ -66,7 +66,7 @@ class VectorNeighborsGroupedTest {
    */
   @Nested
   @Tag("slow")
-  class GroupedNeighborsChurnTest extends TestHelper {
+  class GroupedNeighborsChurn extends TestHelper {
     private static final int DIMENSIONS = 16;
     private static final int GROUPS     = 40;
     private static final int RECORDS    = 4_000;
@@ -229,7 +229,7 @@ class VectorNeighborsGroupedTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GroupKeyMemoTest extends TestHelper {
+  class GroupKeyMemoRegression extends TestHelper {
 
     @Test
     void theFirstKeyReadWinsAndAChangedRecordIsNotRankedUnderIt() {
@@ -303,7 +303,7 @@ class VectorNeighborsGroupedTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SparseGroupedShortfallTest extends TestHelper {
+  class SparseGroupedShortfall extends TestHelper {
     private static final String TYPE_NAME = "SD";
     private static final String INDEX     = "SD[tokens,weights]";
 

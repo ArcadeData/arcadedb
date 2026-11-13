@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SQLStringMethodsRegressionTest {
   /** Regression for #10193: s.replace() and s.length() on a NULL value answer NULL, not the first argument or 0. */
   @Nested
-  class NullInputTest extends TestHelper {
+  class NullInput extends TestHelper {
 
     @Test
     void updateWithReplaceAndLengthOnNullKeepsNull() {
@@ -111,7 +111,7 @@ class SQLStringMethodsRegressionTest {
 
   /** Regression for #10248: the SQL string methods count and cut Unicode characters, not UTF-16 code units. */
   @Nested
-  class CodePointsTest extends TestHelper {
+  class CodePoints extends TestHelper {
     private static final String EMOJI = "😀";
     private static final String VALUE = EMOJI + "a";
 
@@ -297,7 +297,7 @@ class SQLStringMethodsRegressionTest {
 
   /** Regression for #10485: split() and replace() never cut surrogate pairs and split() keeps trailing empty pieces, as openCypher does. */
   @Nested
-  class SplitReplaceCodePointsTest extends TestHelper {
+  class SplitReplaceCodePoints extends TestHelper {
     private static final String P = new String(Character.toChars(0x1F600));
     private static final String Q = new String(Character.toChars(0x1F601));
 

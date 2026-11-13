@@ -52,7 +52,7 @@ class NumberComparisonTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DecimalEqualityScaleTest extends TestHelper {
+  class DecimalEqualityScale extends TestHelper {
 
     @Test
     void castComparableNumberAgreesWithCompareToForEveryScaleMismatchedPair() {
@@ -98,7 +98,7 @@ class NumberComparisonTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CastComparableNumberFloatNarrowingTest extends TestHelper {
+  class CastComparableNumberFloatNarrowing extends TestHelper {
 
     @Test
     void aLongAboveTheFloatMantissaIsNotCollapsedOntoTheNearestFloat() {
@@ -144,7 +144,7 @@ class NumberComparisonTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NormalizeNumberForKeyScaleTest extends TestHelper {
+  class NormalizeNumberForKeyScale extends TestHelper {
 
     @Test
     void integralAndDecimalRepresentationsOfAMultipleOfTenShareOneKey() {
@@ -203,7 +203,7 @@ class NumberComparisonTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ExactIntegralComparisonTest {
+  class ExactIntegralComparison {
     /** One above 2^53's last exactly representable neighbourhood, and the float/double it used to collapse onto. */
     private static final long   BEYOND_MANTISSA = 10_000_000_000_000_001L;
     private static final float  AS_FLOAT        = 1.0E16f;

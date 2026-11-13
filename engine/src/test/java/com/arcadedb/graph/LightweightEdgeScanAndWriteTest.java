@@ -79,7 +79,7 @@ class LightweightEdgeScanAndWriteTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LightweightEdgeScanTest extends TestHelper {
+  class LightweightEdgeScanRegression extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -714,8 +714,8 @@ class LightweightEdgeScanAndWriteTest {
    * type's INVOLVED buckets only, so the vertex type stays fully writable and only the edge type is refused.
    */
   @Nested
-  class LightweightEdgeWriteGrantsTest {
-    private static final String PATH = "target/databases/LightweightEdgeScanAndWriteTest.LightweightEdgeWriteGrantsTest";
+  class LightweightEdgeWriteGrants {
+    private static final String PATH = "target/databases/LightweightEdgeScanAndWriteTest.LightweightEdgeWriteGrants";
 
     private DatabaseFactory factory;
     private Database        database;
@@ -1053,13 +1053,13 @@ class LightweightEdgeScanAndWriteTest {
    * walked list by RID and the iterator then removed, by position, the entry that had moved into its place.</li>
    * </ul>
    * The user below resolves permissions as {@code ServerSecurityDatabaseUser} does (see
-   * {@code LightweightEdgeScanAndWriteTest.LightweightEdgeWriteGrantsTest}): only the edge type's buckets are refused, the vertex type stays writable.
+   * {@code LightweightEdgeScanAndWriteTest.LightweightEdgeWriteGrants}): only the edge type's buckets are refused, the vertex type stays writable.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeIteratorRemoveTest {
-    private static final String PATH = "target/databases/LightweightEdgeScanAndWriteTest.EdgeIteratorRemoveTest";
+  class EdgeIteratorRemove {
+    private static final String PATH = "target/databases/LightweightEdgeScanAndWriteTest.EdgeIteratorRemove";
 
     /** Every iterator over one vertex's OUT list that supports {@code remove()}. */
     enum Walk {
@@ -1526,7 +1526,7 @@ class LightweightEdgeScanAndWriteTest {
    * exactly when metadata is asked for, whichever class answers.
    */
   @Nested
-  class LightEdgeMetadataTest extends TestHelper {
+  class LightEdgeMetadata extends TestHelper {
     private static final Set<String> METADATA = Set.of(Property.CAT_PROPERTY, Property.TYPE_PROPERTY, Property.RID_PROPERTY,
         Property.IN_PROPERTY, Property.OUT_PROPERTY);
 

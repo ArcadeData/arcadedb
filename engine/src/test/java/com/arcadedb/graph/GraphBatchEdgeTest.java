@@ -66,7 +66,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchEmptyEdgeHeaderTest extends TestHelper {
+  class GraphBatchEmptyEdgeHeader extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -125,7 +125,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchNullEdgePropertyTest extends TestHelper {
+  class GraphBatchNullEdgeProperty extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -180,7 +180,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchEdgeSchemaTest extends TestHelper {
+  class GraphBatchEdgeSchema extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -350,7 +350,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchFailedTransactionTest extends TestHelper {
+  class GraphBatchFailedTransaction extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -458,7 +458,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchCallerTransactionTest extends TestHelper {
+  class GraphBatchCallerTransaction extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -618,7 +618,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchEndpointHintsTest extends TestHelper {
+  class GraphBatchEndpointHints extends TestHelper {
     private static final int VERTICES   = 3_000;
     private static final int EDGES      = 20_000;
     private static final int BATCH_SIZE = 2_000;
@@ -754,7 +754,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchSegmentHeadReadsTest extends TestHelper {
+  class GraphBatchSegmentHeadReads extends TestHelper {
     private static final int VERTICES   = 2_000;
     private static final int EDGES      = 30_000;
     private static final int BATCH_SIZE = 1_000;
@@ -872,7 +872,7 @@ class GraphBatchEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GraphBatchExternalEdgePropertyTest extends TestHelper {
+  class GraphBatchExternalEdgeProperty extends TestHelper {
 
     private static final String BLOB = "q".repeat(500);
 

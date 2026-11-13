@@ -84,7 +84,7 @@ class OrphanAndGhostEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class GhostEdgeOnAppendRaceTest extends TestHelper {
+  class GhostEdgeOnAppendRace extends TestHelper {
 
     /**
      * The {@code force} test deliberately ends on a graph {@code force} was asked to leave behind - that is its
@@ -642,7 +642,7 @@ class OrphanAndGhostEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class OrphanEdgeRecordTest extends TestHelper {
+  class OrphanEdgeRecord extends TestHelper {
 
     private static final String VERTEX_TYPE = "Issue6083Node";
     private static final String EDGE_TYPE   = "Issue6083Link";
@@ -920,7 +920,7 @@ class OrphanAndGhostEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class OrphanEdgeRecordCheckTest extends TestHelper {
+  class OrphanEdgeRecordCheck extends TestHelper {
 
     private static final String VERTEX_TYPE       = "Issue6090Node";
     private static final String BIDIRECTIONAL_EDGE = "Issue6090BiLink";
@@ -1101,7 +1101,7 @@ class OrphanAndGhostEdgeTest {
      * The clause must survive alongside the rest of the statement, COMPRESS included - the grammar puts it between
      * {@code FIX} and {@code COMPRESS}, which is the one place an added optional clause can break a parse.
      * The grammar and {@code toString} round trip are pinned separately by
-     * {@code CheckDatabaseStatementRenderTest.CheckDatabaseDeleteOrphansParserTest}.
+     * {@code CheckDatabaseStatementRenderTest.CheckDatabaseDeleteOrphansParser}.
      */
     @Test
     void theClauseCombinesWithTheRestOfTheStatement() {
@@ -1180,7 +1180,7 @@ class OrphanAndGhostEdgeTest {
    * {@link ClassCastException} handler, so both directions are exercised here.
    */
   @Nested
-  class ClassCastEdgeCheckTest extends TestHelper {
+  class ClassCastEdgeCheck extends TestHelper {
     private static final String VERTEX_TYPE = "Node";
     private static final String EDGE_TYPE   = "Link";
 
@@ -1527,7 +1527,7 @@ class OrphanAndGhostEdgeTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MissingVertexDiagnosisTest extends TestHelper {
+  class MissingVertexDiagnosis extends TestHelper {
     private RID srcRID;
     private RID targetRID;
 

@@ -306,7 +306,7 @@ class IteratorTest {
    * walk through, and both refused {@code remove()}. They now hand it to the source that produced the last element.
    */
   @Nested
-  class CompositeIteratorRemoveTest {
+  class CompositeIteratorRemove {
 
     @Test
     void multiIteratorRemovesFromTheSourceOfTheLastElement() {
@@ -468,7 +468,7 @@ class IteratorTest {
    * racing a 1 ms budget, which is what made the original symptom a 1-in-12 flake.
    */
   @Nested
-  class MultiIteratorTimeoutTest {
+  class MultiIteratorTimeout {
 
     /**
      * The statement of the bug: a non-throwing deadline that expires after {@code hasNext()} answered {@code true} must

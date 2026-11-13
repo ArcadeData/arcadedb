@@ -54,7 +54,7 @@ class VectorNeighborsStaleTopUpTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NeighborsStaleTopUpTest extends TestHelper {
+  class NeighborsStaleTopUp extends TestHelper {
     private static final int COUNT = 60;
 
     @Override
@@ -100,7 +100,7 @@ class VectorNeighborsStaleTopUpTest {
 
       // Since issue #10973 a row is made without reading its record, and asks the index whether the record is still there: a
       // delete that commits takes the vector out of the index in the same commit, which a removal from the bucket alone does not
-      // simulate (VectorNeighborsPrefilterTest.VectorNeighborsDeferredRecordReadTest pins what such a row answers). A read listener keeps the
+      // simulate (VectorNeighborsPrefilterTest.VectorNeighborsDeferredRecordRead pins what such a row answers). A read listener keeps the
       // records read as the rows are made, which is the path whose stale entries are found by the read and topped up
       final AfterRecordReadListener listener = record -> record;
       database.getSchema().getType("Doc").getEvents().registerListener(listener);
@@ -125,7 +125,7 @@ class VectorNeighborsStaleTopUpTest {
    * their index entries behind, which is the state a search sees between a commit's record delete and its index update.
    */
   @Nested
-  class SparseNeighborsStaleTopUpTest extends TestHelper {
+  class SparseNeighborsStaleTopUp extends TestHelper {
     private static final int COUNT = 60;
 
     @Override
@@ -286,7 +286,7 @@ class VectorNeighborsStaleTopUpTest {
    * stale RIDs over as they are, which isolates the SQL layer from the index-level top-up of #9692.
    */
   @Nested
-  class GroupedNeighborsStaleTopUpTest extends TestHelper {
+  class GroupedNeighborsStaleTopUp extends TestHelper {
     private static final int COUNT = 60;
 
     @Override
@@ -506,7 +506,7 @@ class VectorNeighborsStaleTopUpTest {
    * wider pass which did not grow keeps widening while it meets stale candidates no earlier pass met.
    */
   @Nested
-  class GroupedStaleTopUpLoopTest {
+  class GroupedStaleTopUpLoop {
 
     /** One scripted pass: the rows it answers and the stale candidates it reports, by position in bucket 1. */
     private record Step(int rows, int... stale) {

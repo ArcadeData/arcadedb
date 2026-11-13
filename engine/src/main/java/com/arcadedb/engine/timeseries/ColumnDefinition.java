@@ -658,7 +658,7 @@ public final class ColumnDefinition {
    * {@link #defaultCodecFor} picks, because those are the ones whose values round-trip through the encoder.</li>
    * <li>{@code NONE} and {@code DELTA_OF_DELTA} on a non-timestamp column have no encoder.</li>
    * </ul>
-   * Keep this in step with {@code TimeSeriesSealedStore.compressColumn}; {@code TimeSeriesTypeSchemaTest.TimeSeriesCodecValidationTest}
+   * Keep this in step with {@code TimeSeriesSealedStore.compressColumn}; {@code TimeSeriesTypeSchemaTest.TimeSeriesCodecValidation}
    * drives every accepted combination through a compaction and checks the values read back, so a drift fails there. A new
    * data type must be classified in {@link #defaultCodecFor}, which this method defers to for the numeric codecs.
    */

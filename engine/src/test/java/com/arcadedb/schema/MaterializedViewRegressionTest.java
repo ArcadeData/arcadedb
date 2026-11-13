@@ -101,7 +101,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IncrementalLoadRefusalReasonTest extends TestHelper {
+  class IncrementalLoadRefusalReason extends TestHelper {
 
     private static final String TYPE_NAME = "Issue10020Indexed";
     private static final int    RECORDS   = 2_000;
@@ -210,7 +210,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IncrementalViewSourcesTest extends TestHelper {
+  class IncrementalViewSources extends TestHelper {
 
     private static final String COUNT    = "SELECT count(*) AS c FROM Item";
     private static final String GROUPED  = "SELECT grp, count(*) AS c FROM (SELECT grp FROM Item) GROUP BY grp";
@@ -480,7 +480,7 @@ class MaterializedViewRegressionTest {
    * Regression for #10502: the start of the bucket a timestamp is in, on the grid of fixed-width buckets a watermark is a start of.
    */
   @Nested
-  class BucketStartTest {
+  class BucketStart {
     private static final long HOUR = 3_600_000L;
 
     @Test
@@ -534,7 +534,7 @@ class MaterializedViewRegressionTest {
    * watermark first: that is the watermark the refresh that wrote those rows installed.
    */
   @Nested
-  class UnsetWatermarkWithRowsTest extends TestHelper {
+  class UnsetWatermarkWithRows extends TestHelper {
     private static final long HOUR = 3_600_000L;
     private static final long H0   = 1_700_000_000_000L - (1_700_000_000_000L % HOUR);
 
@@ -645,7 +645,7 @@ class MaterializedViewRegressionTest {
    * sessions the append opens and the samples the type holds at each: a session that sees 3 samples ran before the commit of the 4th.
    */
   @Nested
-  class LateSampleRecordBeforeCommitTest extends TestHelper {
+  class LateSampleRecordBeforeCommit extends TestHelper {
     private static final long HOUR = 3_600_000L;
     private static final long H0   = 1_700_000_000_000L - (1_700_000_000_000L % HOUR);
 
@@ -791,7 +791,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ContinuousAggregateBucketIndexTest extends TestHelper {
+  class ContinuousAggregateBucketIndex extends TestHelper {
     private static final long HOUR = 3_600_000L;
     private static final long H0   = 1_700_000_000_000L - (1_700_000_000_000L % HOUR);
 
@@ -1048,7 +1048,7 @@ class MaterializedViewRegressionTest {
    * its check for late samples and before its samples are visible.
    */
   @Nested
-  class RefreshDuringAppendCommitTest extends TestHelper {
+  class RefreshDuringAppendCommit extends TestHelper {
     private static final long HOUR = 3_600_000L;
     private static final long H0   = 1_700_000_000_000L - (1_700_000_000_000L % HOUR);
 
@@ -1353,7 +1353,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AggregateCreatedDuringAppendCommitTest extends TestHelper {
+  class AggregateCreatedDuringAppendCommit extends TestHelper {
     private static final long HOUR = 3_600_000L;
     private static final long H0   = 1_700_000_000_000L - (1_700_000_000_000L % HOUR);
 
@@ -1498,7 +1498,7 @@ class MaterializedViewRegressionTest {
    * the last refresh that ran, whether or not the process that ran it is still alive.
    */
   @Nested
-  class RefreshStatusPersistedTest extends TestHelper {
+  class RefreshStatusPersisted extends TestHelper {
 
     private void createViewWithUniqueRegion(final String refreshMode) {
       database.command("sql", "CREATE DOCUMENT TYPE Sale");
@@ -1617,7 +1617,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BackingTypeWritesTest extends TestHelper {
+  class BackingTypeWrites extends TestHelper {
     private static final long HOUR = 3_600_000L;
     /** 2023-11-14T22:13:20Z, the first sample of the issue. */
     private static final long T0   = 1_700_000_000_000L;
@@ -2049,7 +2049,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MaterializedViewRefreshLeaderOnlyTest extends TestHelper {
+  class MaterializedViewRefreshLeaderOnly extends TestHelper {
 
     /** Runs before {@code TestHelper.afterTest()}, whose integrity check would otherwise meet a database that says it is replicated. */
     @AfterEach
@@ -2169,7 +2169,7 @@ class MaterializedViewRegressionTest {
    * The end-to-end embedded-vs-remote comparison lives in {@code Issue7688RemoteViewBuildersIT}.
    */
   @Nested
-  class ViewBuilderSQLTest extends TestHelper {
+  class ViewBuilderSQL extends TestHelper {
 
     private static final String AGGREGATE_QUERY =
         "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp FROM SensorReading GROUP BY sensor_id, hour";
@@ -2417,7 +2417,7 @@ class MaterializedViewRegressionTest {
   /**
    * Regression for #7457: the drop and the alter of a materialized view no longer hold the schema monitor across the database write lock.
    * <p>
-   * Companion of {@link SchemaWriteLockTest.SchemaSaveUnderWriteLockTest} for the materialized view lifecycle: since #7457 the
+   * Companion of {@link SchemaWriteLockTest.SchemaSaveUnderWriteLock} for the materialized view lifecycle: since #7457 the
    * drop and the alter of a view no longer hold the schema monitor across the database write lock, so the teardown of
    * a view's refresh resources (incremental listeners, periodic task) moved INSIDE the write-locked transition, next
    * to the removal or replacement of the view itself. What a drop tears down is therefore always what the view it
@@ -2426,7 +2426,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MaterializedViewLifecycleUnderWriteLockTest extends TestHelper {
+  class MaterializedViewLifecycleUnderWriteLock extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -2606,7 +2606,7 @@ class MaterializedViewRegressionTest {
   /**
    * Regression for #7457: the drop of a continuous aggregate checks and removes under the lock, concurrent drops must not fail.
    * <p>
-   * Companion of {@link MaterializedViewLifecycleUnderWriteLockTest} for continuous aggregates, whose drop has
+   * Companion of {@link MaterializedViewLifecycleUnderWriteLock} for continuous aggregates, whose drop has
    * the same check-then-remove-under-the-lock shape since #7457: two concurrent drops of the same aggregate produce
    * exactly one success and one "not found", and nothing deadlocks against the schema saves that take the schema
    * monitor under the write lock.
@@ -2614,7 +2614,7 @@ class MaterializedViewRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ContinuousAggregateConcurrentDropTest extends TestHelper {
+  class ContinuousAggregateConcurrentDrop extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -2688,7 +2688,7 @@ class MaterializedViewRegressionTest {
    * makes the one pass it owes and hands any further pass to the schema's scheduler thread.
    */
   @Nested
-  class IncrementalRefreshBoundedOnCommitterTest extends TestHelper {
+  class IncrementalRefreshBoundedOnCommitter extends TestHelper {
     /**
      * ORDER BY keeps the view off the per-record path (#11475): these tests count the writes of whole-view passes, each of which
      * rewrites every row.
@@ -2829,7 +2829,7 @@ class MaterializedViewRegressionTest {
    * queues the next one behind whatever is already due.
    */
   @Nested
-  class HandedOffRefreshYieldsTest extends TestHelper {
+  class HandedOffRefreshYields extends TestHelper {
 
     @Test
     void aHandedOffPassQueuesTheNextOneBehindWorkAlreadyWaiting() throws Exception {
@@ -2942,7 +2942,7 @@ class MaterializedViewRegressionTest {
    * the WAL hands every per-record view the recovery full pass, on the scheduler thread, without a manual REFRESH.
    */
   @Nested
-  class PerRecordViewSelfHealTest extends TestHelper {
+  class PerRecordViewSelfHeal extends TestHelper {
     private static final String QUERY = "SELECT name, age FROM Person WHERE age >= 18";
 
     @Test
@@ -3075,7 +3075,7 @@ class MaterializedViewRegressionTest {
    * same source, and the next pass would write one over the other.
    */
   @Nested
-  class PerRecordSourceRidReservedTest extends TestHelper {
+  class PerRecordSourceRidReserved extends TestHelper {
     private static final String SOURCE_RID = MaterializedViewPerRecordRefresher.SOURCE_RID;
 
     @ParameterizedTest

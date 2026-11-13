@@ -77,7 +77,7 @@ class LightweightEdgeConstraintTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LightweightSubtypeInheritsConstraintTest extends TestHelper {
+  class LightweightSubtypeInheritsConstraint extends TestHelper {
 
     private static final String VERTEX = "Issue9846Person";
     private static final String PARENT = "Issue9846Follows";
@@ -375,7 +375,7 @@ class LightweightEdgeConstraintTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeUniqueDeclarationAtomicityTest extends TestHelper {
+  class EdgeUniqueDeclarationAtomicity extends TestHelper {
 
     private static final String VERTEX     = "Issue9848Person";
     private static final String EDGE       = "Issue9848Follows";
@@ -569,7 +569,7 @@ class LightweightEdgeConstraintTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LightweightUnenforcedConstraintWarningTest extends TestHelper {
+  class LightweightUnenforcedConstraintWarning extends TestHelper {
 
     private static final String PARENT = "Issue9975Follows";
     private static final String CHILD  = "Issue9975CloseFollows";

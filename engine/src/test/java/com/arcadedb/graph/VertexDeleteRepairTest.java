@@ -101,7 +101,7 @@ class VertexDeleteRepairTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VertexDeleteSelfSideSkipTest extends TestHelper {
+  class VertexDeleteSelfSideSkip extends TestHelper {
 
     private static final int EDGES = 200;
 
@@ -811,7 +811,7 @@ class VertexDeleteRepairTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DeleteVertexRepairAdviceTest extends TestHelper {
+  class DeleteVertexRepairAdvice extends TestHelper {
 
     /** These tests deliberately break an edge-list chain, so the blanket end-of-test check would always fire. */
     @Override
@@ -1116,7 +1116,7 @@ class VertexDeleteRepairTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DanglingEndpointScopeTest extends TestHelper {
+  class DanglingEndpointScope extends TestHelper {
     /** These tests deliberately delete records underneath live edges, so the blanket end-of-test check would fire. */
     @Override
     protected boolean isCheckingDatabaseIntegrity() {
@@ -1399,7 +1399,7 @@ class VertexDeleteRepairTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MoveEdgeIndexCleanupTest extends TestHelper {
+  class MoveEdgeIndexCleanup extends TestHelper {
 
     private static final int    BUCKETS         = 4;
     /** Long enough to be found verbatim in the page, and distinctive enough not to collide with anything else. */
@@ -1622,7 +1622,7 @@ class VertexDeleteRepairTest {
      * {@code cleanUpBeforePhysicalDelete} cannot deliver: an indexed property whose value cannot be deserialized.
      * <p>
      * This fixture uses the #4420 shape - a corrupt length prefix on an inline STRING. The reader TOLERATES it by
-     * reporting the value as ABSENT rather than throwing (see {@code EdgeDeleteRepairRegressionTest.TolerantDeleteTest}), so nothing here
+     * reporting the value as ABSENT rather than throwing (see {@code EdgeDeleteRepairRegressionTest.TolerantDelete}), so nothing here
      * can learn the key the index actually holds, and the entry for the deleted record survives. That is not a
      * regression this fix introduces and not one it can close: {@code LocalDatabase.deleteRecordNoLock} degrades
      * identically on the same record, by design and with a logged warning. CHECK DATABASE does not detect a dangling
@@ -1793,7 +1793,7 @@ class VertexDeleteRepairTest {
      * The #4420 corruption shape, applied to the edge's indexed STRING property: the length-prefix varint of the
      * inline value is overwritten with one that decodes above {@link Integer#MAX_VALUE}. The record's declared size
      * in the page record table is left alone, so the record still loads - only deserializing that property fails.
-     * Lifted from {@code EdgeDeleteRepairRegressionTest.TolerantDeleteTest}, which pins the same shape on the delete path.
+     * Lifted from {@code EdgeDeleteRepairRegressionTest.TolerantDelete}, which pins the same shape on the delete path.
      */
     private void corruptPropertyLength(final RID rid) {
       final DatabaseInternal db = (DatabaseInternal) database;
@@ -1921,7 +1921,7 @@ class VertexDeleteRepairTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DanglingVertexReferenceTest extends TestHelper {
+  class DanglingVertexReference extends TestHelper {
     private RID srcRID;
     private RID targetRID;
     private RID edgeRID;
@@ -2131,7 +2131,7 @@ class VertexDeleteRepairTest {
    */
   @Nested
   @Tag("slow")
-  class ConcurrentEdgeDeleteTest extends TestHelper {
+  class ConcurrentEdgeDeleteRepair extends TestHelper {
     private static final int THREADS = 4;
     private static final int PER_THREAD = 1500;
     private static final int HUBS = 100;

@@ -76,7 +76,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreatePropertyNullAttributeTest extends TestHelper {
+  class CreatePropertyNullAttribute extends TestHelper {
 
     @Test
     void createPropertyRegexpNullDoesNotStoreTheTextNull() {
@@ -247,7 +247,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ExplicitNullKeepsNullTest extends TestHelper {
+  class ExplicitNullKeepsNull extends TestHelper {
 
     @BeforeEach
     void createType() {
@@ -436,7 +436,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class StringPropertyOverStoredNumbersTest extends TestHelper {
+  class StringPropertyOverStoredNumbers extends TestHelper {
 
     @Test
     void stringOverStoredIntegersIsRefused() {
@@ -526,7 +526,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ResultIntoDeclaredPropertyTest extends TestHelper {
+  class ResultIntoDeclaredProperty extends TestHelper {
     private static final String SINK      = "Census";
     private static final String UNDECLARED = "undeclared";
 
@@ -696,7 +696,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NestedNumericArrayParamTest extends TestHelper {
+  class NestedNumericArrayParam extends TestHelper {
 
     private static final String REQUEST = "{\"params\":{\"m\":{\"a\":[1,2]},\"ll\":[[1,2],[3]],\"md\":{\"a\":[1.5,2.5]}}}";
 
@@ -962,7 +962,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NestedLongCoercionTest extends TestHelper {
+  class NestedLongCoercion extends TestHelper {
 
     @Test
     void mapOfLongCoercesNestedIntegerValues() {
@@ -1033,7 +1033,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EmbeddedOfTypeFromMapTest extends TestHelper {
+  class EmbeddedOfTypeFromMap extends TestHelper {
 
     @Test
     void plainMapUsesTheDeclaredOfType() {
@@ -1170,7 +1170,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IntegerTruncationTest {
+  class IntegerTruncation {
 
     @Test
     void insertOutOfRangeIntegerIsRejectedNotTruncated() throws Exception {
@@ -1252,7 +1252,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class PropertyOfTypeDependantTest extends TestHelper {
+  class PropertyOfTypeDependant extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -1408,7 +1408,7 @@ class PropertyDefinitionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class PropertyRenameTest extends TestHelper {
+  class PropertyRename extends TestHelper {
 
     private void createType() {
       database.command("sql", "CREATE DOCUMENT TYPE Person");

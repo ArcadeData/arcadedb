@@ -80,7 +80,7 @@ class TypeLifecycleDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ConcurrentRenameOfSameTypeTest extends TestHelper {
+  class ConcurrentRenameOfSameType extends TestHelper {
     private static final int ROUNDS = 25;
 
     @Test
@@ -176,7 +176,7 @@ class TypeLifecycleDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SetAliasesAtomicReservationTest extends TestHelper {
+  class SetAliasesAtomicReservation extends TestHelper {
 
     private static final int CONCURRENT_ATTEMPTS = 32;
 
@@ -338,7 +338,7 @@ class TypeLifecycleDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DropTypeLeavesAliasesTest extends TestHelper {
+  class DropTypeLeavesAliases extends TestHelper {
 
     @Test
     void dropTypeDeregistersTheTypeAliases() {
@@ -519,7 +519,7 @@ class TypeLifecycleDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BucketlessZombieTypeTest extends TestHelper {
+  class BucketlessZombieType extends TestHelper {
 
     @Test
     void aZombieTypeIsReportedAtOpenAndDropTypeRemovesItForGood() throws IOException {
@@ -619,7 +619,7 @@ class TypeLifecycleDdlTest {
    * recorded is compared with the files that actually moved on disk.
    */
   @Nested
-  class TypeRenameRecordsFileRenamesTest extends TestHelper {
+  class TypeRenameRecordsFileRenames extends TestHelper {
 
     @Test
     void aDocumentTypeRenameRecordsEveryBucketAndIndexFileItMoved() {
@@ -790,7 +790,7 @@ class TypeLifecycleDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CopyTypeKeepsTheCallerTransactionTest extends TestHelper {
+  class CopyTypeKeepsTheCallerTransaction extends TestHelper {
 
     private static final int RECORDS = 25;
 
@@ -922,7 +922,7 @@ class TypeLifecycleDdlTest {
    * its rename was never published, silently; it is now refused before anything moves.
    */
   @Nested
-  class TypeRenamePublishSignalTest extends TestHelper {
+  class TypeRenamePublishSignal extends TestHelper {
 
     @Test
     void aRenameCalledWhileTheThreadAlreadyHoldsTheRenameLockIsRefusedBeforeAnythingMoves() {
@@ -1045,7 +1045,7 @@ class TypeLifecycleDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DropTypeDependantsUnderWriteLockTest extends TestHelper {
+  class DropTypeDependantsUnderWriteLock extends TestHelper {
     private static final String DOC_SOURCE = "Issue9978Source";
     private static final String TS_SOURCE  = "Issue9978Readings";
 

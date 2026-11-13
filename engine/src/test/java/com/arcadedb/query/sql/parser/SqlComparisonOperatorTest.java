@@ -59,7 +59,7 @@ class SqlComparisonOperatorTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ComparisonTypeMismatchTest {
+  class ComparisonTypeMismatch {
 
     @Test
     void lessThanNonNumericStringOnIntegerColumnDoesNotThrow() throws Exception {
@@ -309,7 +309,7 @@ class SqlComparisonOperatorTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IndexedRangeTypedBoundsTest {
+  class IndexedRangeTypedBounds {
 
     @Test
     void lessThanNumericStringOnIndexedIntegerColumnAfterCommitReturnsCorrectRow() throws Exception {
@@ -513,7 +513,7 @@ class SqlComparisonOperatorTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ContainsBinaryOperandTest extends TestHelper {
+  class ContainsBinaryOperand extends TestHelper {
 
     private static final byte[] BINARY = { 1, 2 };
 
@@ -601,7 +601,7 @@ class SqlComparisonOperatorTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class NullCoalescingTest extends TestHelper {
+  class NullCoalescing extends TestHelper {
 
     @Test
     void leftOperandWinsWhenNotNull() {

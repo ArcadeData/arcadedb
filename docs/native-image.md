@@ -636,5 +636,5 @@ constructor were verified against the binary.
 
 ArcadeDB's own code must not instantiate classes reflectively where a plain `new` will do: the SQL
 AST `copy()` methods used `getClass().getConstructor()`, which made every `UPDATE`/`DELETE` fail in
-the native binary while passing on the JVM (#9495). `StatementRenderingTest.ReflectionFreeCopyTest` refuses that
+the native binary while passing on the JVM (#9495). `StatementRenderingTest.ReflectionFreeCopy` refuses that
 pattern in the SQL parser sources.

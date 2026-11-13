@@ -60,7 +60,7 @@ class IndexSchemaDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AddBucketWithIndexTest extends TestHelper {
+  class AddBucketWithIndex extends TestHelper {
 
     @Test
     void addBucketAfterIndexCreation() {
@@ -148,7 +148,7 @@ class IndexSchemaDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RemoveSuperTypeDetachesIndexesTest extends TestHelper {
+  class RemoveSuperTypeDetachesIndexes extends TestHelper {
 
     @Test
     void theAncestorsIndexStopsCoveringTheDetachedSubtype() {
@@ -344,7 +344,7 @@ class IndexSchemaDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SortedBuildRunsTest extends TestHelper {
+  class SortedBuildRuns extends TestHelper {
     private static final int LOW_CARDINALITY_ROWS = 100_000;
     private static final int DISTINCT_ROWS        = 100_000;
 
@@ -444,7 +444,7 @@ class IndexSchemaDdlTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IndexUnderConstructionTest extends TestHelper {
+  class IndexUnderConstruction extends TestHelper {
     @Test
     void theMarkerOutlivesTheFirstOfTwoBuildsOnTheSameProperties() {
       final LocalDocumentType type = (LocalDocumentType) database.getSchema().createDocumentType("Marked");

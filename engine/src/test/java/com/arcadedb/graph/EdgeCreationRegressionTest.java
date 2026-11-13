@@ -62,7 +62,7 @@ class EdgeCreationRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeCreateVetoTest extends TestHelper {
+  class EdgeCreateVeto extends TestHelper {
     private static final String V = "V10085";
     private static final String E = "E10085";
     private static final String LIGHT = "ELight10085";
@@ -375,7 +375,7 @@ class EdgeCreationRegressionTest {
    * creates a light edge and refuses them. The storage shape of an edge is a property of its type, not of the call.
    */
   @Nested
-  class LightweightBatchEdgesTest extends TestHelper {
+  class LightweightBatchEdges extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -503,7 +503,7 @@ class EdgeCreationRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeOnDeletedVertexTest extends TestHelper {
+  class EdgeOnDeletedVertex extends TestHelper {
     private RID v1;
     private RID v2;
 
@@ -618,7 +618,7 @@ class EdgeCreationRegressionTest {
    * a unidirectional type ignores {@code bidirectional=true}, and a bidirectional type refuses {@code bidirectional=false}.
    */
   @Nested
-  class NewEdgesDirectionFromTypeTest extends TestHelper {
+  class NewEdgesDirectionFromType extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -755,7 +755,7 @@ class EdgeCreationRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class UnidirectionalEdgeToMissingVertexTest extends TestHelper {
+  class UnidirectionalEdgeToMissingVertex extends TestHelper {
     private RID source;
     private RID gone;
 

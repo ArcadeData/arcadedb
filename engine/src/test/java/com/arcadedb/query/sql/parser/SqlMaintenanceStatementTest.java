@@ -69,7 +69,7 @@ class SqlMaintenanceStatementTest {
    * @author Roberto Franchini (r.franchini@arcadedata.com)
    */
   @Nested
-  class SqlMaintenanceSlotTest extends TestHelper {
+  class SqlMaintenanceSlot extends TestHelper {
 
     /**
      * A real coordinator, not a mock: it records the calls in order so the test can assert the reserve/release pair,
@@ -227,7 +227,7 @@ class SqlMaintenanceStatementTest {
    * @author Roberto Franchini (r.franchini@arcadedata.com)
    */
   @Nested
-  class SqlExportMaintenanceSlotTest extends TestHelper {
+  class SqlExportMaintenanceSlot extends TestHelper {
 
     /**
      * A real coordinator, not a mock: it records the calls in order so the test can assert the reserve/release pair,
@@ -433,16 +433,16 @@ class SqlMaintenanceStatementTest {
    * refused by a concurrent {@code restore database} (issue #7450 gave the export {@link MaintenanceCoordinator.Operation#EXPORT})
    * had no way to see the export that was refusing them, how far along it was, or when it would let go.
    * <p>
-   * Mirrors {@link SqlMaintenanceStatementTest.SqlMaintenanceSlotTest}'s assertion for {@code BACKUP DATABASE} and {@code IMPORT DATABASE}:
+   * Mirrors {@link SqlMaintenanceStatementTest.SqlMaintenanceSlot}'s assertion for {@code BACKUP DATABASE} and {@code IMPORT DATABASE}:
    * the registry is empty once the statement returns, on the failure path as on the success one, because the statement
    * always fails at the reflective boundary in this module (the integration module is not on the engine's test
-   * classpath) - which makes this a sharp test of the RELEASE, exactly as {@code SqlMaintenanceStatementTest.SqlExportMaintenanceSlotTest}
+   * classpath) - which makes this a sharp test of the RELEASE, exactly as {@code SqlMaintenanceStatementTest.SqlExportMaintenanceSlot}
    * is for the maintenance slot itself.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SqlExportProgressTest extends TestHelper {
+  class SqlExportProgress extends TestHelper {
 
     @Test
     void aFailedSqlExportPublishesNoLingeringProgress() {
@@ -513,7 +513,7 @@ class SqlMaintenanceStatementTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ExportDefaultTargetNameTest {
+  class ExportDefaultTargetName {
 
     @Test
     void defaultTargetNameIsLocaleIndependent() {
@@ -547,7 +547,7 @@ class SqlMaintenanceStatementTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SqlBackupRetentionHookTest extends TestHelper {
+  class SqlBackupRetentionHook extends TestHelper {
 
     private static class RecordingResolver implements BackupDirectoryResolver {
       private final List<String> retentionCalls = new ArrayList<>();

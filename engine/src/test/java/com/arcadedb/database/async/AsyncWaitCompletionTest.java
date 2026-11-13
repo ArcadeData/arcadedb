@@ -52,7 +52,7 @@ class AsyncWaitCompletionTest {
    * as long as {@link DatabaseAsyncExecutor#isProcessing()} answered true, which also counts the tasks OTHER threads keep
    * submitting after the call began. A steady producer that keeps the queues non-empty - one thread is enough against 3
    * workers, a 4-CPU CI runner - made every pass end with "still processing", for ever:
-   * {@code GraphBatchRegressionTest.GraphBatchAsyncPoolChurnTest.unrelatedAsyncCallerSurvivesConcurrentParallelFlushes} hung 20+ minutes
+   * {@code GraphBatchRegressionTest.GraphBatchAsyncPoolChurn.unrelatedAsyncCallerSurvivesConcurrentParallelFlushes} hung 20+ minutes
    * in a GraphBatch parallel flush, which waits there for its own connect tasks. {@code LocalDatabase.waitForAsyncCompletion()}
    * (the barrier of every index build) wrapped the same loop around it.
    * <p>
@@ -63,7 +63,7 @@ class AsyncWaitCompletionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class WaitCompletionUnderSteadyProducerTest extends TestHelper {
+  class WaitCompletionUnderSteadyProducer extends TestHelper {
 
     private static final String VERTEX_TYPE = "SteadyVertex";
     private static final String EDGE_TYPE   = "STEADY_EDGE";
@@ -266,7 +266,7 @@ class AsyncWaitCompletionTest {
    * it moving for ever, and the barrier (the one every index build waits on, {@code LocalDatabase.waitForAsyncCompletion()})
    * never returned although the caller's own work was done after the first pass.
    * <p>
-   * The interleaving is forced, as in {@link WaitCompletionUnderSteadyProducerTest}: one worker, and a producer on
+   * The interleaving is forced, as in {@link WaitCompletionUnderSteadyProducer}: one worker, and a producer on
    * its own (non-worker) thread that queues the next task while the running one is held. The only difference with that test is
    * that every producer task schedules one more task from inside the worker before it ends, which is the shape the engine
    * itself uses for the incoming half of a cross-slot bidirectional edge. Each {@code @Timeout} is a hang detector; the budgets
@@ -276,7 +276,7 @@ class AsyncWaitCompletionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class WaitCompletionUnderCascadingProducerTest extends TestHelper {
+  class WaitCompletionUnderCascadingProducer extends TestHelper {
 
     private static final long BUDGET_MS = 30_000;
 
@@ -654,7 +654,7 @@ class AsyncWaitCompletionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IdleAfterWaitCompletionTest extends TestHelper {
+  class IdleAfterWaitCompletion extends TestHelper {
 
     private static final String TYPE   = "Msg";
     private static final int    ROUNDS = 300;
@@ -809,7 +809,7 @@ class AsyncWaitCompletionTest {
    * than by timing.
    */
   @Nested
-  class CrossSlotWaitCompletionMissesCascadeTest extends TestHelper {
+  class CrossSlotWaitCompletionMissesCascade extends TestHelper {
 
     @Test
     @Timeout(30)
@@ -938,7 +938,7 @@ class AsyncWaitCompletionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncBarrierUnderQuiescenceTest extends TestHelper {
+  class AsyncBarrierUnderQuiescence extends TestHelper {
 
     /** A database that never touched the async API has no executor: the quiescence and the barrier are free, and create none. */
     @Test
@@ -1004,10 +1004,10 @@ class AsyncWaitCompletionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class QuiesceResizeRaceTest extends TestHelper {
+  class QuiesceResizeRace extends TestHelper {
 
     // The 3s polling window below (code review, PR #6661) puts this on the slower end - comparable to the
-    // WORKER_HOLD_MS-scale tests in AsyncExecutorFollowUpsTest, which carry the same tag.
+    // WORKER_HOLD_MS-scale tests in AsyncExecutorConfigurationTest.AsyncExecutorFollowUps, which carry the same tag.
     @Test
     @Tag("slow")
     @Timeout(60)

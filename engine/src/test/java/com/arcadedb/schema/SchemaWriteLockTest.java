@@ -74,7 +74,7 @@ class SchemaWriteLockTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaSaveUnderWriteLockTest extends TestHelper {
+  class SchemaSaveUnderWriteLock extends TestHelper {
 
     @Override
     protected boolean isCheckingDatabaseIntegrity() {
@@ -227,7 +227,7 @@ class SchemaWriteLockTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DropPropertyValidationUnderWriteLockTest extends TestHelper {
+  class DropPropertyValidationUnderWriteLock extends TestHelper {
 
     private static final String PARENT = "Issue7672Parent";
     private static final String CHILD  = "Issue7672Child";
@@ -317,7 +317,7 @@ class SchemaWriteLockTest {
    * losers answer {@code created=false}, and (2) never lose the property from schema.json.
    */
   @Nested
-  class ConcurrentCreatePropertyIfNotExistsTest extends TestHelper {
+  class ConcurrentCreatePropertyIfNotExists extends TestHelper {
 
     private static final int THREADS = 8;
     private static final int ROUNDS  = 60;

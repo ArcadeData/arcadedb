@@ -49,7 +49,7 @@ class VectorApproxDistanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ApproxDistanceModesTest {
+  class ApproxDistanceModes {
 
     private final SQLFunctionVectorQuantizeBinary quantizeBinary = new SQLFunctionVectorQuantizeBinary();
     private final SQLFunctionVectorApproxDistance approxDistance = new SQLFunctionVectorApproxDistance();
@@ -104,7 +104,7 @@ class VectorApproxDistanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ApproxDistanceInt8BandTest extends TestHelper {
+  class ApproxDistanceInt8Band extends TestHelper {
     private final SQLFunctionVectorQuantizeInt8   quantize       = new SQLFunctionVectorQuantizeInt8();
     private final SQLFunctionVectorApproxDistance approxDistance = new SQLFunctionVectorApproxDistance();
     private       BasicCommandContext             context;
@@ -309,7 +309,7 @@ class VectorApproxDistanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DequantizeInt8CodeRangeTest extends TestHelper {
+  class DequantizeInt8CodeRange extends TestHelper {
     private final SQLFunctionVectorDequantizeInt8 dequantize = new SQLFunctionVectorDequantizeInt8();
     private       BasicCommandContext             context;
 

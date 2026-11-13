@@ -52,7 +52,7 @@ class ExternalPropertySchemaTest {
    * default-allow; and it is what an explicit type lock collects its files from, so the {@code _ext} bucket was never locked.
    */
   @Nested
-  class ExternalBucketInvolvedTest extends TestHelper {
+  class ExternalBucketInvolved extends TestHelper {
 
     @Test
     void externalBucketOfADocumentTypeResolvesToItsType() {
@@ -213,7 +213,7 @@ class ExternalPropertySchemaTest {
    * update (and its old external record leaked) and on a delete.
    */
   @Nested
-  class InheritedExternalPropertyTest extends TestHelper {
+  class InheritedExternalProperty extends TestHelper {
 
     private static final String BIG  = "z".repeat(500);
     private static final String BIG2 = "w".repeat(600);

@@ -39,7 +39,7 @@ class CheckDatabaseStatementRenderTest {
    * these also pin the round trip the statement cache depends on.
    */
   @Nested
-  class CheckDatabaseDeleteOrphansParserTest extends AbstractParserTest {
+  class CheckDatabaseDeleteOrphansParser extends AbstractParserTest {
 
     @Test
     void deleteOrphansClause() {
@@ -49,7 +49,7 @@ class CheckDatabaseStatementRenderTest {
       checkRightSyntax("check database type Customer fix delete orphans");
       checkRightSyntax("check database record #12:3 fix delete orphans");
       // Accepted by the GRAMMAR; refused at execution because it removes records - see
-      // OrphanAndGhostEdgeTest.OrphanEdgeRecordCheckTest.deleteOrphansWithoutFixIsRefused.
+      // OrphanAndGhostEdgeTest.OrphanEdgeRecordCheck.deleteOrphansWithoutFixIsRefused.
       checkRightSyntax("check database delete orphans");
 
       checkWrongSyntax("check database fix delete");
@@ -86,7 +86,7 @@ class CheckDatabaseStatementRenderTest {
    * these also pin the round trip the statement cache depends on.
    */
   @Nested
-  class CheckDatabaseReclaimUnreferencedFilesParserTest extends AbstractParserTest {
+  class CheckDatabaseReclaimUnreferencedFilesParser extends AbstractParserTest {
 
     @Test
     void reclaimUnreferencedFilesClause() {
@@ -147,7 +147,7 @@ class CheckDatabaseStatementRenderTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CheckDatabaseTypeBucketSeparatorTest extends AbstractParserTest {
+  class CheckDatabaseTypeBucketSeparator extends AbstractParserTest {
 
     @Test
     void twoTypesReRenderWithASeparatorAndNoTrailingComma() {
@@ -199,7 +199,7 @@ class CheckDatabaseStatementRenderTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CheckDatabaseQuotedNameRenderTest extends AbstractParserTest {
+  class CheckDatabaseQuotedNameRender extends AbstractParserTest {
 
     @Test
     void aQuotedTypeNameWithASpaceKeepsItsBackTicks() {
@@ -284,7 +284,7 @@ class CheckDatabaseStatementRenderTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CheckDatabaseDeleteInvalidRecordsParserTest extends AbstractParserTest {
+  class CheckDatabaseDeleteInvalidRecordsParser extends AbstractParserTest {
 
     @Test
     void deleteInvalidRecordsClause() {

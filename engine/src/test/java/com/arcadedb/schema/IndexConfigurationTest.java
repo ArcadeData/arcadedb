@@ -69,7 +69,7 @@ class IndexConfigurationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BuilderStateCarryOverTest extends TestHelper {
+  class BuilderStateCarryOver extends TestHelper {
     private static final String   TYPE_NAME     = "Issue5606";
     private static final String   BUCKET_NAME   = "Issue5606_bucket";
     private static final String[] PROPERTY_NAME = { "name" };
@@ -349,7 +349,7 @@ class IndexConfigurationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CopyTypeIndexConfigurationTest extends TestHelper {
+  class CopyTypeIndexConfiguration extends TestHelper {
 
     private static final String ENGLISH_ANALYZER = "org.apache.lucene.analysis.en.EnglishAnalyzer";
 
@@ -615,7 +615,7 @@ class IndexConfigurationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IndexConfigurationCarryOverTest extends TestHelper {
+  class IndexConfigurationCarryOver extends TestHelper {
 
     private static final String ENGLISH_ANALYZER = "org.apache.lucene.analysis.en.EnglishAnalyzer";
 

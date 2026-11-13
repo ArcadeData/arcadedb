@@ -63,7 +63,7 @@ class VectorNeighborsPrefilterTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorNeighborsWherePredicateTest extends TestHelper {
+  class VectorNeighborsWherePredicate extends TestHelper {
     private static final int     RECORDS = 600;
     private static final float[] QUERY   = { 1.0f, 0.2f, 0.1f, 0.0f };
 
@@ -250,7 +250,7 @@ class VectorNeighborsPrefilterTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class WhereIndexedPrefilterPlanTest extends TestHelper {
+  class WhereIndexedPrefilterPlan extends TestHelper {
     private static final int     RECORDS = 2_000;
     // one record in 100 has tenant 1: 20 of 2,000, far under the 20% threshold
     private static final int     EVERY   = 100;
@@ -569,7 +569,7 @@ class VectorNeighborsPrefilterTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorNeighborsDeferredRecordReadTest extends TestHelper {
+  class VectorNeighborsDeferredRecordRead extends TestHelper {
     private static final int    DIMENSIONS = 16;
     private static final String RID_ONLY   =
         "SELECT @rid AS r, distance FROM (SELECT expand(vectorNeighbors('Doc[vector]', ?, 10)))";

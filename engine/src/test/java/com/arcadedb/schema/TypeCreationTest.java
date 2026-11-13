@@ -80,7 +80,7 @@ class TypeCreationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TypeBuilderToSQLTest extends TestHelper {
+  class TypeBuilderToSQL extends TestHelper {
 
     @Test
     void aPlainVertexTypeRendersOnlyWhatWasChosen() {
@@ -260,7 +260,7 @@ class TypeCreationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TypeBuilderSetterRoundTripTest extends TestHelper {
+  class TypeBuilderSetterRoundTrip extends TestHelper {
 
     @Test
     void anEmptyBucketInstanceListRendersZeroBuckets() {
@@ -415,7 +415,7 @@ class TypeCreationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateTypeOneSchemaEntryTest extends TestHelper {
+  class CreateTypeOneSchemaEntry extends TestHelper {
 
     @Override
     protected void beginTest() {
@@ -671,7 +671,7 @@ class TypeCreationTest {
    * before the type is created, and a refused statement leaves the schema as it was.
    */
   @Nested
-  class CreateTypeTakenBucketTest extends TestHelper {
+  class CreateTypeTakenBucket extends TestHelper {
 
     @Test
     void createTypeWithAnotherTypesBucketLeavesNoTypeBehind() {
@@ -798,7 +798,7 @@ class TypeCreationTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateTypeRegistersLastTest extends TestHelper {
+  class CreateTypeRegistersLast extends TestHelper {
 
     @Test
     void typeBuilderUnderATimeSeriesTypeLeavesNothingBehind() {
@@ -1115,14 +1115,14 @@ class TypeCreationTest {
    * three labels four. A follower that counts the entries a transaction has to tolerate reads every one of those as somebody else's schema
    * change, and the {@code engine} and {@code ha-raft} guidance states the one-entry rule as if it held for all of them.
    * <p>
-   * The guarantee is the one {@code TypeCreationTest.CreateTypeOneSchemaEntryTest} makes for the statement, over every route that creates, grows
+   * The guarantee is the one {@code TypeCreationTest.CreateTypeOneSchemaEntry} makes for the statement, over every route that creates, grows
    * or links a type: one outermost session (what Raft publishes, see {@link SchemaSessionCounter}) and one schema version, and none
    * at all when the type is there already.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TypeCreationOneSchemaEntryTest extends TestHelper {
+  class TypeCreationOneSchemaEntry extends TestHelper {
 
     /** The routes that create or change a type. Each one names what it does, which is what the failure message shows. */
     enum Route {
@@ -1346,7 +1346,7 @@ class TypeCreationTest {
    * while every edge was live in the vertices' adjacency lists, leaving entries no surface could read or delete.
    */
   @Nested
-  class DropTypeLightweightEdgesTest extends TestHelper {
+  class DropTypeLightweightEdges extends TestHelper {
 
     @Override
     protected boolean isCheckingDatabaseIntegrity() {
@@ -1464,7 +1464,7 @@ class TypeCreationTest {
    * labels that are missing and the composite, in one outermost schema frame, answering whether this call made the composite.
    */
   @Nested
-  class EnsureLabelTypesFunctionTest extends TestHelper {
+  class EnsureLabelTypesFunction extends TestHelper {
 
     @Test
     void missingLabelsAndTheCompositeAreOneSchemaEntry() {

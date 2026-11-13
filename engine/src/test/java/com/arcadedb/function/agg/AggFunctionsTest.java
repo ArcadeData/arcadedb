@@ -40,7 +40,7 @@ class AggFunctionsTest {
    * {@code agg.statistics} result had no {@code median} key.
    */
   @Nested
-  class AggItemsNullsAndSeedTest {
+  class AggItemsNullsAndSeed {
     private final AggMinItems min = new AggMinItems();
     private final AggMaxItems max = new AggMaxItems();
     private final AggStatistics statistics = new AggStatistics();
@@ -120,7 +120,7 @@ class AggFunctionsTest {
    * every row holds.
    */
   @Nested
-  class AggMergePartialTest {
+  class AggMergePartial {
     private static void feed(final StatelessFunction function, final Object... values) {
       for (final Object value : values)
         function.execute(new Object[] { value }, null);
@@ -173,7 +173,7 @@ class AggFunctionsTest {
    * column right.
    */
   @Nested
-  class AggPrimitiveArraysTest extends TestHelper {
+  class AggPrimitiveArrays extends TestHelper {
     private static final Object[] SHAPES = { List.of(1.0, 2.0, 3.0, 4.0), new double[] { 1, 2, 3, 4 }, new int[] { 1, 2, 3, 4 },
         new long[] { 1, 2, 3, 4 }, new float[] { 1, 2, 3, 4 }, new short[] { 1, 2, 3, 4 }, new byte[] { 1, 2, 3, 4 },
         new Integer[] { 1, 2, 3, 4 } };

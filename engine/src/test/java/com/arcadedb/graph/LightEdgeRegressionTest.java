@@ -76,7 +76,7 @@ class LightEdgeRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LightEdgeCensusFailureCountedTest extends TestHelper {
+  class LightEdgeCensusFailureCounted extends TestHelper {
     private static final String STAT = "lightEdgeCensusFallbacks";
     private static final int    MAX_REPORTED_LISTS = 64;
 
@@ -270,7 +270,7 @@ class LightEdgeRegressionTest {
    * occurrences in the committed list against those this transaction removed itself.
    */
   @Nested
-  class ConcurrentLightEdgeDeleteTest extends TestHelper {
+  class ConcurrentLightEdgeDelete extends TestHelper {
 
     /**
      * The transaction appended to the OUT list of v0 and the IN list of v1 (its own copies of their head chunks) before a
@@ -500,7 +500,7 @@ class LightEdgeRegressionTest {
    * as the classic layout does.
    */
   @Nested
-  class StripedLightEdgeDeleteTest extends TestHelper {
+  class StripedLightEdgeDelete extends TestHelper {
     private static final int TWINS = 40;
 
     private RID v0;
@@ -602,7 +602,7 @@ class LightEdgeRegressionTest {
    * {@code stale <=> committed > removed - created}.
    */
   @Nested
-  class CreatedTwinLightEdgeDeleteTest extends TestHelper {
+  class CreatedTwinLightEdgeDelete extends TestHelper {
 
     /**
      * The transaction creates one twin v0->v1, a concurrent commit appends another one, and the transaction deletes two:
@@ -938,7 +938,7 @@ class LightEdgeRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class LightweightTwinTombstoneTest extends TestHelper {
+  class LightweightTwinTombstone extends TestHelper {
     private RID v;
     private RID w;
 
@@ -1351,7 +1351,7 @@ class LightEdgeRegressionTest {
    * holds lightweight edges (classic and striped), and {@code Iterator.remove()} through the public API.
    */
   @Nested
-  class SuperNodePruneAndLightEdgeRebuildTest extends TestHelper {
+  class SuperNodePruneAndLightEdgeRebuild extends TestHelper {
     private static final String V = "V10377";
     private static final String E = "E10377";
     private static final String L = "L10377";
@@ -1611,7 +1611,7 @@ class LightEdgeRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CheckFixLightEdgeFarEndpointTest extends TestHelper {
+  class CheckFixLightEdgeFarEndpoint extends TestHelper {
     private static final String V = "V10406";
     private static final String E = "E10406";
     private static final String L = "L10406";
@@ -1975,7 +1975,7 @@ class LightEdgeRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RestoreVertexLightEdgesTest extends TestHelper {
+  class RestoreVertexLightEdges extends TestHelper {
     private static final String V = "V10407";
     private static final String E = "E10407";
     private static final String L = "L10407";

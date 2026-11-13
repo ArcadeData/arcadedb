@@ -71,7 +71,7 @@ class AsyncRecordOperationsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncUpdateValidationTest extends TestHelper {
+  class AsyncUpdateValidation extends TestHelper {
 
     private static final String TYPE = "Issue7002P";
 
@@ -145,7 +145,7 @@ class AsyncRecordOperationsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncDeleteListenerDoubleFireTest extends TestHelper {
+  class AsyncDeleteListenerDoubleFire extends TestHelper {
 
     private static final String TYPE = "Issue7003Doc";
 
@@ -224,7 +224,7 @@ class AsyncRecordOperationsTest {
    * so the caller saw a silently partial scan.
    */
   @Nested
-  class ScanTypeBucketFailureTest extends TestHelper {
+  class ScanTypeBucketFailure extends TestHelper {
 
     private static final String TYPE = "Issue6467Item";
 
@@ -400,7 +400,7 @@ class AsyncRecordOperationsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncDispatchedDDLPerLanguageTest extends TestHelper {
+  class AsyncDispatchedDDLPerLanguage extends TestHelper {
 
     /** The reported shape in Cypher: {@code CREATE INDEX} sent without waiting for the response. */
     @Test
@@ -515,7 +515,7 @@ class AsyncRecordOperationsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AsyncQueryParametersTest extends TestHelper {
+  class AsyncQueryParameters extends TestHelper {
 
     private static final String TYPE = "Issue9941V";
 
@@ -627,7 +627,7 @@ class AsyncRecordOperationsTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class RecordStatisticsTest extends TestHelper {
+  class RecordStatistics extends TestHelper {
 
     @Override
     public void beginTest() {

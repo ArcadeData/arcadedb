@@ -71,7 +71,7 @@ class EdgeDeleteRepairRegressionTest {
    * record outlived the vertex at both of its ends. The skip is now derived from what the outgoing walk deleted.
    */
   @Nested
-  class SelfLoopOfDamagedVertexTest extends TestHelper {
+  class SelfLoopOfDamagedVertex extends TestHelper {
 
     /** The reporter's repro: the OUT head points at a record that is not an edge segment, the IN list is intact. */
     @Test
@@ -319,7 +319,7 @@ class EdgeDeleteRepairRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class OrphanEdgeRelinkTest extends TestHelper {
+  class OrphanEdgeRelink extends TestHelper {
     private static final int VERTICES = 1_000;
     private static final int EDGES    = 2_000;
 
@@ -522,7 +522,7 @@ class EdgeDeleteRepairRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TolerantDeleteTest extends TestHelper {
+  class TolerantDelete extends TestHelper {
 
     private static final String MARKER = "CORRUPT4420MARKERVALUE";
 
@@ -620,7 +620,7 @@ class EdgeDeleteRepairRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CorruptVertexDeleteTest extends TestHelper {
+  class CorruptVertexDelete extends TestHelper {
 
     private static final String TYPE = "AssetClassification";
 
@@ -711,7 +711,7 @@ class EdgeDeleteRepairRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class EdgeDeleteDanglingBackRefTest extends TestHelper {
+  class EdgeDeleteDanglingBackRef extends TestHelper {
 
     /** These tests deliberately corrupt an edge-list chain, so the blanket end-of-test check would always fire. */
     @Override
@@ -789,7 +789,7 @@ class EdgeDeleteRepairRegressionTest {
      * vertex record that is GONE cannot become visible on a retry, so the retryable type spent a caller's whole
      * budget on a foregone failure and advertised a repair aimed at the missing record. The evidence is the RID the
      * cause names: the vertex's own here, a chunk's in every other test in this class. See
-     * {@code VertexDeleteRepairTest.DanglingVertexReferenceTest} for the delete-level contract this underpins.
+     * {@code VertexDeleteRepairTest.DanglingVertexReference} for the delete-level contract this underpins.
      */
     @Test
     void headChunkForWriteRaisesANonRetryableNotFoundWhenTheVertexItselfVanishes() {
@@ -1035,7 +1035,7 @@ class EdgeDeleteRepairRegressionTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VertexDeleteEdgeCollectionTest extends TestHelper {
+  class VertexDeleteEdgeCollection extends TestHelper {
 
     /** These tests deliberately corrupt an edge-list chain, so the blanket end-of-test check would always fire. */
     @Override
@@ -1296,7 +1296,7 @@ class EdgeDeleteRepairRegressionTest {
      * separate window on the append path, reported as #5725. That window is closed (the delete now pins every page
      * its list can grow through and re-reads the vertex's head pointers, so an append behind the collection is a
      * retryable conflict), so the assertion below is the whole invariant again. The full append-side fixture, and the
-     * deterministic tests that pin the mechanism, live in {@code OrphanAndGhostEdgeTest.GhostEdgeOnAppendRaceTest}.
+     * deterministic tests that pin the mechanism, live in {@code OrphanAndGhostEdgeTest.GhostEdgeOnAppendRace}.
      */
     @Test
     @Tag("slow")
@@ -1550,7 +1550,7 @@ class EdgeDeleteRepairRegressionTest {
    * the prune raise {@link com.arcadedb.exception.ConcurrentModificationException} on every attempt.
    */
   @Nested
-  class GhostEdgePruneCallerTransactionTest extends TestHelper {
+  class GhostEdgePruneCallerTransaction extends TestHelper {
     /** Both tests deliberately end on a graph that still holds the planted ghost: the blanket check would fire. */
     @Override
     protected boolean isCheckingDatabaseIntegrity() {

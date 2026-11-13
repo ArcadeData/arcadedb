@@ -54,7 +54,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MatchStatementNotPatternToStringTest extends TestHelper {
+  class MatchStatementNotPatternToString extends TestHelper {
 
     /** The documented shape: a friend-of-a-friend who is not already a direct friend. */
     private static final String QUERY = "MATCH {as: a, type: Person}-Friend->{as: b}-Friend->{as: c}, NOT {as: a}-Friend->{as: c} "
@@ -147,7 +147,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ProfileStatementTest extends AbstractParserTest {
+  class ProfileStatementRendering extends AbstractParserTest {
 
     @Test
     void toStringRendersProfileNotExplain() {
@@ -181,7 +181,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AlterTypeStatementTest extends AbstractParserTest {
+  class AlterTypeStatementRendering extends AbstractParserTest {
 
     @Test
     void toStringRoundTripsSuperTypeWithSigns() {
@@ -295,7 +295,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateIndexIfNotExistsTest extends AbstractParserTest {
+  class CreateIndexIfNotExists extends AbstractParserTest {
 
     @Test
     void reRendersIfNotExistsWithoutAName() {
@@ -344,7 +344,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateTriggerToStringTest extends AbstractParserTest {
+  class CreateTriggerToString extends AbstractParserTest {
 
     @Test
     void reRendersAsSqlNotAsJavaDebugDump() {
@@ -433,7 +433,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class ReRenderAndCopyTest extends AbstractParserTest {
+  class ReRenderAndCopy extends AbstractParserTest {
 
     /** Item 1: CREATE MATERIALIZED VIEW ... REFRESH EVERY n UNIT used to re-render as the unparseable "REFRESH PERIODIC EVERY n UNIT". */
     @Test
@@ -654,7 +654,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreateContinuousAggregateStatementTest extends AbstractParserTest {
+  class CreateContinuousAggregateStatementRendering extends AbstractParserTest {
 
     @Test
     void reRendersAsSqlNotAsJavaDebugDump() {
@@ -760,7 +760,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class MultiItemAlterTypeTest extends AbstractParserTest {
+  class MultiItemAlterType extends AbstractParserTest {
 
     @Test
     void everyItemIsKept() {
@@ -855,7 +855,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DeleteFunctionStatementCopyAndEqualsTest {
+  class DeleteFunctionStatementCopyAndEquals {
 
     private static DeleteFunctionStatement parse(final String sql) {
       return (DeleteFunctionStatement) new SQLAntlrParser(null).parse(sql);
@@ -905,7 +905,7 @@ class StatementRenderingTest {
    * constructor of its own runtime type is held by {@code ReflectionFreeCopyCensusTest} (census module).
    */
   @Nested
-  class ReflectionFreeCopyTest extends TestHelper {
+  class ReflectionFreeCopy extends TestHelper {
 
     private static final String     SQL_PACKAGE   = "com/arcadedb/query/sql";
     private static final Class<?>[] FACTORY_BASES = { SelectStatement.class, CreateVertexStatement.class, MatchPathItem.class,
@@ -1038,7 +1038,7 @@ class StatementRenderingTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class StatementRenderAndCopyTest extends AbstractParserTest {
+  class StatementRenderAndCopy extends AbstractParserTest {
 
     /** Row 1: the index type is optional in the grammar (validate() refuses its absence later), so the render must not assume it. */
     @Test

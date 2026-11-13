@@ -57,7 +57,7 @@ class VectorRecordLoadTest {
    * every call.
    */
   @Nested
-  class FuseRerankRecordLoadTest extends TestHelper {
+  class FuseRerankRecordLoad extends TestHelper {
     private static final String TYPE = "Passage10129";
 
     private List<RID> seed(final int count) {
@@ -388,7 +388,7 @@ class VectorRecordLoadTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorRerankersCarriedRecordTest extends TestHelper {
+  class VectorRerankersCarriedRecord extends TestHelper {
     private static final String TYPE = "Passage10170";
 
     private List<RID> seed(final int count) {
@@ -624,7 +624,7 @@ class VectorRecordLoadTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class HeldRowsAfterWriteTest extends TestHelper {
+  class HeldRowsAfterWrite extends TestHelper {
     private static final String DELETE = "DELETE FROM Doc WHERE name = 'a'";
     private static final String UPDATE = "UPDATE Doc SET name = 'a2' WHERE name = 'a'";
 
@@ -734,7 +734,7 @@ class VectorRecordLoadTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorRowRecordKeyTest extends TestHelper {
+  class VectorRowRecordKey extends TestHelper {
     private static final float[] QUERY = { 1.0f, 0.0f, 0.0f };
 
     @Override
@@ -888,7 +888,7 @@ class VectorRecordLoadTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class VectorRowExtractorTest extends TestHelper {
+  class VectorRowExtractor extends TestHelper {
 
     @Test
     void everyRowShapeIsFusedAsTheSharedExtractorReadsIt() {

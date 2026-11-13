@@ -72,7 +72,7 @@ class TimeSeriesTypeSchemaTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TimeSeriesBuilderParityTest extends TestHelper {
+  class TimeSeriesBuilderParity extends TestHelper {
 
     private TimeSeriesTypeBuilder builder(final String name) {
       return database.getSchema().buildTimeSeriesType().withName(name).withTimestamp("ts");
@@ -169,7 +169,7 @@ class TimeSeriesTypeSchemaTest {
      * document the difference; issue #7702 removed it instead, by making the grammar's column members repeatable
      * and orderable. This is that same recipe - a FIELD declared before the TIMESTAMP - rendered in full.
      *
-     * @see TimeSeriesTypeBuilderTest.InterleavedTagAndFieldOrderTest
+     * @see TimeSeriesTypeBuilderTest.InterleavedTagAndFieldOrder
      */
     @Test
     void theRenderedPathSpellsTheDeclarationItWasGiven() {
@@ -263,7 +263,7 @@ class TimeSeriesTypeSchemaTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class AlterTimeSeriesTypeDurationRenderTest extends TestHelper {
+  class AlterTimeSeriesTypeDurationRender extends TestHelper {
 
     @Test
     void theAlterStatementPrintsBackToSQLThatParsesToAnEqualStatement() {
@@ -324,7 +324,7 @@ class TimeSeriesTypeSchemaTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class TimeSeriesCodecValidationTest extends TestHelper {
+  class TimeSeriesCodecValidation extends TestHelper {
 
     @Test
     void aCodecWithNoEncoderIsRefusedAtCreate() {

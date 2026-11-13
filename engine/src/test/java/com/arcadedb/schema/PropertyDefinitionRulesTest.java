@@ -74,7 +74,7 @@ class PropertyDefinitionRulesTest {
    * its javadoc documents - threw {@link UnsupportedOperationException}.
    */
   @Nested
-  class MutableSingletonCollectionTest extends TestHelper {
+  class MutableSingletonCollection extends TestHelper {
 
     @Test
     void convertScalarToListReturnsAMutableList() {
@@ -211,7 +211,7 @@ class PropertyDefinitionRulesTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class CreatePropertyValidationUnderWriteLockTest extends TestHelper {
+  class CreatePropertyValidationUnderWriteLock extends TestHelper {
 
     private static final String PARENT = "Issue7918Parent";
     private static final String CHILD  = "Issue7918Child";
@@ -366,7 +366,7 @@ class PropertyDefinitionRulesTest {
    * other properties, because the stored value was compared with the current one by reference.
    */
   @Nested
-  class ReadonlyArrayPropertyTest extends TestHelper {
+  class ReadonlyArrayProperty extends TestHelper {
 
     static Stream<Arguments> arrayTypes() {
       return Stream.of(//
@@ -571,7 +571,7 @@ class PropertyDefinitionRulesTest {
    * write of the property (a MIN/MAX bound the type cannot use or read).
    */
   @Nested
-  class InvalidPropertyDefinitionTest extends TestHelper {
+  class InvalidPropertyDefinition extends TestHelper {
 
     // ---------------------------------------------------------------- #9042: unknown property type
 

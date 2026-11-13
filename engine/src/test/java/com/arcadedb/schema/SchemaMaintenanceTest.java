@@ -63,7 +63,7 @@ class SchemaMaintenanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class DirtySchemaSavedAtCloseTest extends TestHelper {
+  class DirtySchemaSavedAtClose extends TestHelper {
 
     @Test
     void typeAndIndexCreatedInAnOpenTransactionSurviveTheClose() {
@@ -111,7 +111,7 @@ class SchemaMaintenanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class InvalidationRecordTest extends TestHelper {
+  class InvalidationRecord extends TestHelper {
 
     private ContinuousAggregateImpl newAggregate() {
       return new ContinuousAggregateImpl(database, "A", "SELECT 1", "A", "S", 3_600_000L, "hr", "ts");
@@ -255,7 +255,7 @@ class SchemaMaintenanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class SchemaChangeScalingTest extends TestHelper {
+  class SchemaChangeScaling extends TestHelper {
 
     @Test
     void creatingTypesAndPropertiesDoesNotRebuildTheBucketMaps() {
@@ -504,7 +504,7 @@ class SchemaMaintenanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class IndexWarmUpSchedulerTest {
+  class IndexWarmUpSchedulerRegression {
     /** Long enough that a request with it can never come due while a test runs. */
     private static final long NEVER = 600_000L;
     /** A bound for waiting on something that must happen, sized as a hang detector and not as a latency claim. */
@@ -710,7 +710,7 @@ class SchemaMaintenanceTest {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   @Nested
-  class BucketPageSizeFloorTest extends TestHelper {
+  class BucketPageSizeFloor extends TestHelper {
 
     private static final String BUCKET_SETTING   = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey();
     private static final String EXTERNAL_SETTING = GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE.getKey();
