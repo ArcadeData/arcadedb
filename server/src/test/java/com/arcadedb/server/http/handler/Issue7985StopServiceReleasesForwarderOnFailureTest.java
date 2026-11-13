@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.utility.FileUtils;
@@ -28,10 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
-import java.io.IOException;
 import java.lang.reflect.Field;
-import java.net.InetAddress;
-import java.net.ServerSocket;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,7 +83,7 @@ class Issue7985StopServiceReleasesForwarderOnFailureTest {
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "DefaultPasswordForTests123!");
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
     // A free port, not the default 2480: this test must not fight whatever else is listening there.
-    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(freePort()));
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(StaticBaseServerTest.allocateFreePorts(1)[0]));
 
     final ArcadeDBServer server = new ArcadeDBServer(config);
     final LeaderCommandForwarder forwarder;
@@ -117,11 +115,5 @@ class Issue7985StopServiceReleasesForwarderOnFailureTest {
     final Field field = HttpServer.class.getDeclaredField("webSocketEventBus");
     field.setAccessible(true);
     field.set(httpServer, new FailingWebSocketEventBus(server));
-  }
-
-  private static int freePort() throws IOException {
-    try (final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
-      return socket.getLocalPort();
-    }
   }
 }

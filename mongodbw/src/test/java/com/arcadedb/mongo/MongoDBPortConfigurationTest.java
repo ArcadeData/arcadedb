@@ -28,9 +28,6 @@ import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.net.ServerSocket;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -52,11 +49,7 @@ public class MongoDBPortConfigurationTest extends BaseMongoServerTest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    try (final ServerSocket probe = new ServerSocket(0)) {
-      customPort = probe.getLocalPort();
-    } catch (final IOException e) {
-      throw new RuntimeException(e);
-    }
+    customPort = allocateFreePorts(1)[0];
     config.setValue(GlobalConfiguration.MONGO_PORT, customPort);
   }
 

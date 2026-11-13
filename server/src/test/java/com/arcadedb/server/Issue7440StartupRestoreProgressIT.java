@@ -33,11 +33,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
-import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -126,7 +124,7 @@ class Issue7440StartupRestoreProgressIT extends BaseGraphServerTest {
     // another test class mid-shutdown, an IDE, a locally installed ArcadeDB - answering even once would be read
     // as the server under test saying something it never said.
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, LOOPBACK);
-    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(freePort()));
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(allocateFreePorts(1)[0]));
 
     config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES,
         RESTORED_DB + "[albert:einstein:admin]{restore:http://" + LOOPBACK + ":"
@@ -356,15 +354,6 @@ class Issue7440StartupRestoreProgressIT extends BaseGraphServerTest {
     } catch (final Exception e) {
       // The listener is not up yet, or is refusing while the server boots: keep sampling.
       pollOutcomes.add(e.getClass().getSimpleName() + "@" + port(server));
-    }
-  }
-
-  /** An ephemeral port the OS has just handed out, released again immediately so the server can take it. */
-  private static int freePort() {
-    try (final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName(LOOPBACK))) {
-      return socket.getLocalPort();
-    } catch (final IOException e) {
-      throw new RuntimeException("Cannot reserve a free port for the test server", e);
     }
   }
 

@@ -32,9 +32,7 @@ import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Record;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.net.ConnectException;
-import java.net.ServerSocket;
 import java.net.Socket;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,7 +58,7 @@ public class BoltPortConfigIT extends BaseBoltServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Neo4j-Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
     // After super.setTestConfiguration(), which sets the ephemeral port 0 this test deliberately overrides
-    customBoltPort = findFreePort();
+    customBoltPort = allocateFreePorts(1)[0];
     GlobalConfiguration.BOLT_PORT.setValue(customBoltPort);
   }
 
@@ -128,14 +126,6 @@ public class BoltPortConfigIT extends BaseBoltServerTest {
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().get("status").asString()).isEqualTo("port-config-works");
       }
-    }
-  }
-
-  private static int findFreePort() {
-    try (final ServerSocket socket = new ServerSocket(0)) {
-      return socket.getLocalPort();
-    } catch (final IOException e) {
-      throw new UncheckedIOException("Cannot find a free port for the BOLT listener", e);
     }
   }
 

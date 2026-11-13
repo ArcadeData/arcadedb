@@ -24,9 +24,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
-import java.io.IOException;
-import java.net.ServerSocket;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -49,11 +46,7 @@ public class RedisPortConfigurationTest extends BaseRedisServerTest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    try (final ServerSocket probe = new ServerSocket(0)) {
-      customPort = probe.getLocalPort();
-    } catch (final IOException e) {
-      throw new RuntimeException(e);
-    }
+    customPort = allocateFreePorts(1)[0];
     config.setValue(GlobalConfiguration.REDIS_PORT, customPort);
   }
 

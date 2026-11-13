@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.protocol.TermIndex;
@@ -38,7 +39,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -504,7 +504,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, PASSWORD);
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
     // A free port rather than the fixed 2480: anything else listening there would take this server's requests.
-    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(freePort()));
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(StaticBaseServerTest.allocateFreePorts(1)[0]));
     config.setValue(GlobalConfiguration.HA_ENABLED, false);
     // Fail a download on its first attempt: the exponential backoff would only make the test slow.
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
@@ -514,11 +514,5 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     final ArcadeDBServer started = new ArcadeDBServer(config);
     started.start();
     return started;
-  }
-
-  private static int freePort() throws IOException {
-    try (final ServerSocket socket = new ServerSocket(0)) {
-      return socket.getLocalPort();
-    }
   }
 }

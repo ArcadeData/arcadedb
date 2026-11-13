@@ -21,13 +21,13 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,10 +61,7 @@ class Issue7035StartServiceRuntimeFailureCleanupTest {
 
   @Test
   void runtimeFailureWhileBuildingTheServerStopsTheLeakedServiceAndReaper() throws IOException {
-    final int freePort;
-    try (final ServerSocket probe = new ServerSocket(0)) {
-      freePort = probe.getLocalPort();
-    }
+    final int freePort = StaticBaseServerTest.allocateFreePorts(1)[0];
 
     plugin = new GrpcServerPlugin() {
       @Override
