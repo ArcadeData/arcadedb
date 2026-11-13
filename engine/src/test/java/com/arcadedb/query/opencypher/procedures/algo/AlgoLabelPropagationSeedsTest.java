@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue11145LabelPropagationSeedsTest extends TestHelper {
+class AlgoLabelPropagationSeedsTest extends TestHelper {
 
   @Test
   void unknownConfigKeysAreRefused() {

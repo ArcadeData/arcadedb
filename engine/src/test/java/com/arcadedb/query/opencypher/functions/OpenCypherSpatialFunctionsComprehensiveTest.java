@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import org.assertj.core.api.Assertions;
 import static org.assertj.core.api.Assertions.within;
@@ -442,5 +444,36 @@ class OpenCypherSpatialFunctionsComprehensiveTest extends TestHelper {
     final Object height = row.getProperty("height");
     assertThat(z.doubleValue()).isCloseTo(3.0, within(0.001));
     Assertions.assertThat(height == null).isTrue();
+  }
+
+  // #4578: the 2-arg positional point(a, b) follows the GIS convention point(x, y) = point(longitude, latitude)
+  @Test
+  @SuppressWarnings("unchecked")
+  void positionalPointFollowsXYConvention() {
+    final ResultSet result = database.command("opencypher", "RETURN point(1.0, 2.0) AS p");
+    assertThat(result.hasNext()).isTrue();
+    final Map<String, Object> point = (Map<String, Object>) result.next().getProperty("p");
+    assertThat(point).isNotNull();
+    // point(x, y): first arg is x (longitude), second is y (latitude)
+    assertThat(((Number) point.get("x")).doubleValue()).isCloseTo(1.0, within(0.0001));
+    assertThat(((Number) point.get("y")).doubleValue()).isCloseTo(2.0, within(0.0001));
+    assertThat(((Number) point.get("longitude")).doubleValue()).isCloseTo(1.0, within(0.0001));
+    assertThat(((Number) point.get("latitude")).doubleValue()).isCloseTo(2.0, within(0.0001));
+  }
+
+  // #4577: point.distance() between points of different coordinate reference systems is null, as in Neo4j
+  @Test
+  void mixedCRSDistanceReturnsNull() {
+    // WGS-84 point first, Cartesian point second
+    ResultSet result = database.command("opencypher",
+        "RETURN point.distance(point({longitude: 0.0, latitude: 0.0}), point({x: 3.0, y: 4.0})) AS distance");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<Object>getProperty("distance")).isNull();
+
+    // Reverse order: Cartesian first, WGS-84 second
+    result = database.command("opencypher",
+        "RETURN point.distance(point({x: 3.0, y: 4.0}), point({longitude: 0.0, latitude: 0.0})) AS distance");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(result.next().<Object>getProperty("distance")).isNull();
   }
 }

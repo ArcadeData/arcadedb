@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue9400PartitionedTriangleOltpTest extends TestHelper {
+class PartitionedTriangleOltpTest extends TestHelper {
   private static final int PERSONS   = 60;
   private static final int CITIES    = 8;
   private static final int COUNTRIES = 3;

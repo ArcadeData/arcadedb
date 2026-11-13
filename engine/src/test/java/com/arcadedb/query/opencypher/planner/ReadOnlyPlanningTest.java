@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue11323ReadOnlyPlanningTest {
+class ReadOnlyPlanningTest {
   private static final Cypher25AntlrParser PARSER = new Cypher25AntlrParser();
 
   // A projection that reads n.k and a MATCH that filters on it: both are what a later SET n.k would conflict with
