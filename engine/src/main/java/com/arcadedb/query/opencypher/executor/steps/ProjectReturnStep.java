@@ -54,6 +54,8 @@ import java.util.regex.Pattern;
 public class ProjectReturnStep extends AbstractExecutionStep {
   private final ReturnClause returnClause;
   private final ExpressionEvaluator evaluator;
+  // A star left among other items (RETURN *, expr AS alias over a scope only known at run time, issue #11556)
+  private final boolean             hasStar;
 
   // Pattern for property access: variable.property
   private static final Pattern PROPERTY_PATTERN = Pattern.compile("(\\w+)\\.(\\w+)");
@@ -67,6 +69,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
     super(context);
     this.returnClause = returnClause;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+    this.hasStar = returnClause != null && returnClause.hasStar();
   }
 
   // Backward compatibility constructor
@@ -138,7 +141,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
             // #5789) and graph-element references sharing one RID (issue #6488) collapse together.
             if (distinct) {
               final List<String> names;
-              if (returnClause.isReturnAll()) {
+              if (returnClause.isReturnAll() || hasStar) {
                 // Distinctness is over the variables the query returns; the executor's internal
                 // bindings for anonymous pattern elements are not returned, so counting them here
                 // would keep rows that are duplicates to the caller (issue #5444).
@@ -214,6 +217,10 @@ public class ProjectReturnStep extends AbstractExecutionStep {
     // Use expression-based projection if available
     if (evaluator != null && returnClause.getReturnItems() != null && !returnClause.getReturnItems().isEmpty()) {
       for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+        // The star of a RETURN *, expr AS alias whose scope the parser could not read: the input row, copied above, is what it
+        // stands for (issue #11556)
+        if (item.isStar())
+          continue;
         final Expression expr = item.getExpression();
         final String outputName = item.getOutputName();
 

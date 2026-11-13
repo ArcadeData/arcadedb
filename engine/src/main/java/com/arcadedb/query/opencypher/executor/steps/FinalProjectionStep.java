@@ -44,16 +44,21 @@ import java.util.Set;
 public class FinalProjectionStep extends AbstractExecutionStep {
   private final Set<String> requestedProperties;
   private final boolean returnAll;
+  // A star left among other items (RETURN *, expr AS alias over a scope only known at run time, issue #11556): the row's own
+  // variables, then the items
+  private final boolean starWithItems;
 
   public FinalProjectionStep(final ReturnClause returnClause, final CommandContext context) {
     super(context);
     this.requestedProperties = new LinkedHashSet<>();
     this.returnAll = returnClause != null && returnClause.isReturnAll();
+    this.starWithItems = !returnAll && returnClause != null && returnClause.hasStar();
 
     // Collect the output names from the RETURN clause
     if (!returnAll && returnClause != null && returnClause.getReturnItems() != null) {
       for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-        requestedProperties.add(item.getOutputName());
+        if (!item.isStar())
+          requestedProperties.add(item.getOutputName());
       }
     }
   }
@@ -141,7 +146,7 @@ public class FinalProjectionStep extends AbstractExecutionStep {
   private ResultInternal filterResult(final Result inputResult) {
     final ResultInternal result = new ResultInternal();
 
-    if (returnAll) {
+    if (returnAll || starWithItems) {
       // RETURN * - pass through the query's own variables. Bindings the executor generated for
       // anonymous pattern elements are execution state, not variables the caller asked for, so they
       // stay out of the row (issue #5444).

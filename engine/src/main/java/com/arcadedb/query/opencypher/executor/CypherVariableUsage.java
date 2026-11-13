@@ -91,13 +91,14 @@ public final class CypherVariableUsage {
     // 0. RETURN * projects every variable in scope by name, so nothing is unreferenced under it.
     //    Reading only the explicit return items said otherwise and dropped the edge binding, which
     //    made the relationship column disappear from the result.
-    if (statement.getReturnClause() != null && statement.getReturnClause().isReturnAll())
+    //    The star of a RETURN *, expr AS alias left for run time does the same (issue #11556).
+    if (statement.getReturnClause() != null && statement.getReturnClause().hasStar())
       return true;
     if (statement.getClausesInOrder() != null)
       for (final ClauseEntry entry : statement.getClausesInOrder())
         if (entry.getType() == ClauseEntry.ClauseType.RETURN) {
           final ReturnClause returnClause = entry.getTypedClause();
-          if (returnClause != null && returnClause.isReturnAll())
+          if (returnClause != null && returnClause.hasStar())
             return true;
         }
 

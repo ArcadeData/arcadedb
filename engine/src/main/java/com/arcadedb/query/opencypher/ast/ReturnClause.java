@@ -87,6 +87,17 @@ public class ReturnClause {
   }
 
   /**
+   * Whether one of the items is the star, alone ({@link #isReturnAll()}) or among explicit items ({@code RETURN *, expr AS
+   * alias}, issue #11556).
+   */
+  public boolean hasStar() {
+    for (final ReturnItem item : items)
+      if (item.isStar())
+        return true;
+    return false;
+  }
+
+  /**
    * Check if any return item is or contains an aggregation function.
    * This includes both direct aggregations (e.g., COLLECT(x)) and
    * wrapped aggregations (e.g., HEAD(COLLECT(x))).
