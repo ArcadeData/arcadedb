@@ -1212,13 +1212,16 @@ public class CypherOptimizer {
       // of every edge of the bound end followed by a filter on the far one
       if (!rel.isVariableLength()) {
         final AnchorSelection farSeek = uniqueSeekOfFarEnd(logicalPlan, rel, boundVariables);
-        if (farSeek != null && farSeek.getPropertyValue() instanceof InListValues farKeys)
+        if (farSeek != null && farSeek.getPropertyValue() instanceof InListValues farKeys) {
           // Issue #11715: keyed by an IN-list, the far end is one row per key, which is worth seeking only from a bound end
-          // with more relationships than keys: the choice is made per row, at run time, where no plan-time count exists
-          seekOrWalk = createSeekOrWalkOperator(logicalPlan, rel, currentOp, farSeek, farKeys, boundVariables, sameClausePreceding,
-              needsEdgeTracking.contains(rel), edgeIsMaterialized, gavTracked.get(rel),
-              anonymousTracked ? "  anon_e_" + (syntheticEdgeCounter[0]++) : null);
-        else if (farSeek != null) {
+          // with more relationships than keys: the choice is made per row, at run time, where no plan-time count exists. The
+          // seek gives the rows grouped by far end, the walk in the order of the edge list, so only a statement whose output
+          // cannot show the order seeks; any other keeps the walk, rows and order alike
+          if (rowOrderIsInvisible(statement))
+            seekOrWalk = createSeekOrWalkOperator(logicalPlan, rel, currentOp, farSeek, farKeys, boundVariables,
+                sameClausePreceding, needsEdgeTracking.contains(rel), edgeIsMaterialized, gavTracked.get(rel),
+                anonymousTracked ? "  anon_e_" + (syntheticEdgeCounter[0]++) : null);
+        } else if (farSeek != null) {
           final PhysicalOperator seek = createAnchorOperator(farSeek);
           currentOp = new CartesianProduct(currentOp, seek, currentOp.getEstimatedCost() + seek.getEstimatedCost(),
               currentOp.getEstimatedCardinality());

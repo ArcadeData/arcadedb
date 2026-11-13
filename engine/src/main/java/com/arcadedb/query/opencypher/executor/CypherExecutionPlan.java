@@ -3109,7 +3109,8 @@ public class CypherExecutionPlan {
   /**
    * Whether every value of a property map can be read before the pattern it belongs to is matched: a value an index seek takes
    * without a row, or one reading only variables {@code boundBefore} holds, which an earlier clause bound for the row the seek
-   * runs on (issue #11699).
+   * runs on (issue #11699). Not a value two evaluations can disagree on, such as one calling {@code rand()}: the seek reads it
+   * once and the hop's filter on the vertex found once more.
    */
   private static boolean readsOnlyEarlierClauses(final Map<String, Object> properties, final Set<String> boundBefore) {
     if (properties == null)
@@ -3117,7 +3118,7 @@ public class CypherExecutionPlan {
     for (final Object value : properties.values()) {
       if (RowIndependentValues.isSeekable(value))
         continue;
-      if (!(value instanceof Expression expression))
+      if (!(value instanceof Expression expression) || !RowIndependentValues.isDeterministic(expression))
         return false;
       final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
       if (!referenced.isComplete() || !boundBefore.containsAll(referenced.getNames()))
@@ -7673,10 +7674,11 @@ public class CypherExecutionPlan {
     // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
     // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699). A key
     // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in.
-    // An IN-list on the key is one vertex per element, which the ordinary plan seeks too when the walk is the longer (#11715)
+    // An IN-list on the key is one vertex per element, which the ordinary plan seeks too when the walk is the longer and the
+    // output cannot show the row order the seek changes (#11715)
     if (hopCount == 1) {
       final PathPattern keyed = withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
-      final Map<String, Set<String>> inListKeys = whereInListKeys(whereClause);
+      final Map<String, Set<String>> inListKeys = CypherOptimizer.rowOrderIsInvisible(statement) ? whereInListKeys(whereClause) : Map.of();
       if (isUniquelyKeyed(keyed.getNode(0), inListKeys) && isUniquelyKeyed(keyed.getNode(1), inListKeys))
         return null;
     }

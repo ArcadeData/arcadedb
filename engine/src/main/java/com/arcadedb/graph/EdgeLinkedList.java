@@ -262,6 +262,16 @@ public class EdgeLinkedList {
   }
 
   /**
+   * Every entry of the list, one per step and in no particular order, no record read: for a caller that decides from how
+   * long the list is. Null when a part of the list cannot be loaded, where a read walk would skip it and the list would
+   * look shorter than it is (see {@code StripedEdgeList.addChain}). On the classic layout the list is one chain, and a
+   * chunk of it that cannot be loaded escapes as it does from every walk.
+   */
+  Iterator<RID> wholeEntryRidIterator() {
+    return entryRidIterator();
+  }
+
+  /**
    * True if the list already holds a lightweight edge of the given type reaching the given vertex. Backs the
    * {@link com.arcadedb.schema.EdgeType#isUnique()} check, which has no index to consult and therefore walks the
    * whole chain: O(degree).

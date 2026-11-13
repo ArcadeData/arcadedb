@@ -40,14 +40,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@code MATCH (a {key: $k})-[r]->(b) WHERE b.key IN $list} with a UNIQUE key on {@code b} is answered per row by the
  * cheaper of walking the relationships of {@code a} and seeking {@code b} per key, each pair then read off its shorter edge
- * list (issue #11715). It used to walk every relationship of {@code a} whatever the list.
+ * list (issue #11715). It used to walk every relationship of {@code a} whatever the list. The seek gives the rows grouped by
+ * far end, so it is planned only where the output cannot show the row order: under an ORDER BY, or an aggregation that
+ * ignores the order.
  * <p>
  * Every answer is compared with the walk itself: each vertex carries its key twice, {@code k} under a UNIQUE index and
  * {@code m} under none, and the same statement over {@code m} is the plan that walks.
  */
 class CypherFarEndInListSeekTest extends TestHelper {
   private static final int    HUB_DEGREE = 4_000;
-  private static final String FORWARD    = "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p";
+  private static final String FORWARD    = "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p";
 
   @Test
   void plansTheSeekOrWalkOnlyForAUniqueKey() {
@@ -57,20 +59,53 @@ class CypherFarEndInListSeekTest extends TestHelper {
     database.transaction(() -> database.newVertex("N").set("k", "hub").set("m", "hub").save());
 
     for (final String query : new String[] { FORWARD,
-        "MATCH (a:N)-[r:T]->(b:N) WHERE a.k = $h AND b.k IN $ts RETURN b.k AS id",
-        "MATCH (a:N {k: $h})<-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id",
-        "MATCH (a:N {k: $h})-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id",
-        "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k IN ['x1', 'x2'] RETURN b.k AS id",
-        "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k = 'x1' OR b.k = 'x2' RETURN b.k AS id",
+        "MATCH (a:N)-[r:T]->(b:N) WHERE a.k = $h AND b.k IN $ts RETURN b.k AS id ORDER BY id",
+        "MATCH (a:N {k: $h})<-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id ORDER BY id",
+        "MATCH (a:N {k: $h})-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id ORDER BY id",
+        "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k IN ['x1', 'x2'] RETURN b.k AS id ORDER BY id",
+        "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k = 'x1' OR b.k = 'x2' RETURN b.k AS id ORDER BY id",
         "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k IN $ts RETURN count(*) AS c" })
       assertThat(explain(query)).as(query).contains("SeekOrWalkExpand(a)").contains("NodeIndexSeek(b:N)");
 
     // NOT A UNIQUE KEY, OR NO INDEX: THE HOP IS NOT SOUGHT PER KEY
     for (final String query : new String[] {
-        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.nu IN $ts RETURN b.k AS id",
-        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m IN $ts RETURN b.k AS id" })
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.nu IN $ts RETURN b.k AS id ORDER BY id",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m IN $ts RETURN b.k AS id ORDER BY id" })
       assertThat(explain(query)).as(query).doesNotContain("SeekOrWalkExpand");
-    assertThat(explain("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m IN $ts RETURN b.k AS id")).contains("ExpandAll(a)-[:T]->(b:N)");
+    assertThat(explain("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m IN $ts RETURN b.k AS id ORDER BY id"))
+        .contains("ExpandAll(a)-[:T]->(b:N)");
+  }
+
+  /**
+   * The seek gives the rows of a hub grouped by far end, in the order of the keys, and the walk in the order of the hub's
+   * edge list, which a statement returning its rows as they come shows ({@link CypherOptimizer#rowOrderIsInvisible}): a
+   * {@code LIMIT} without {@code ORDER BY} picks other rows, a {@code collect()} another list. Such a statement keeps the
+   * walk, rows and order alike. Under an ORDER BY, or an aggregation that ignores the order, the far end is still sought.
+   */
+  @Test
+  void aStatementShowingTheRowOrderKeepsTheWalk() {
+    buildGraph();
+    final List<String> keys = List.of("x7", "x3", "x1500", "x9", "x2", "x3999", "x5", "x12");
+    for (final String statement : new String[] {
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p LIMIT 1",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN collect(b.k) AS id, 0 AS p",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN ['x7', 'x3', 'x1500', 'x9'] RETURN b.k AS id, r.p AS p",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k = 'x7' OR b.k = 'x1500' OR b.k = 'x3' RETURN b.k AS id, r.p AS p" }) {
+      assertThat(rowsInOrder(statement, "hub", keys)).as(statement)
+          .isEqualTo(rowsInOrder(statement.replace("b.k ", "b.m "), "hub", keys));
+      assertThat(explain(statement)).as(statement).doesNotContain("SeekOrWalkExpand").doesNotContain("NodeIndexSeek(b:N)")
+          .containsPattern("ExpandAll\\(a\\)-\\[r?:T]->\\(b:N\\)");
+    }
+
+    for (final String statement : new String[] {
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN count(*) AS id, 0 AS p",
+        "MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN $ts RETURN sum(r.p) AS id, 0 AS p" }) {
+      assertThat(explain(statement)).as(statement).contains("SeekOrWalkExpand(a)").contains("NodeIndexSeek(b:N)");
+      assertThat(rowsInOrder(statement, "hub", keys)).as(statement)
+          .isEqualTo(rowsInOrder(statement.replace("b.k ", "b.m "), "hub", keys));
+    }
   }
 
   @Test
@@ -92,18 +127,19 @@ class CypherFarEndInListSeekTest extends TestHelper {
     lists.add(List.of("hub", "x1"));                        // THE HUB'S SELF LOOP
     lists.add(List.of("r0", "r1", "x2"));                   // REVERSE RELATIONSHIPS ONLY
 
+    // EVERY STATEMENT SORTS ITS ROWS OR AGGREGATES THEM REGARDLESS OF ORDER, OR THE WALK IS KEPT AND NOTHING IS COMPARED
     final List<String> statements = List.of(FORWARD,
-        "MATCH (a:N {k: $h})<-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p",
-        "MATCH (a:N {k: $h})-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p",
-        "MATCH (a:N)-[r:T]->(b:N) WHERE a.k = $h AND b.k IN $ts RETURN b.k AS id, r.p AS p",
-        "MATCH (b:N)<-[r:T]-(a:N {k: $h}) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p",
-        "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p",
+        "MATCH (a:N {k: $h})<-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "MATCH (a:N {k: $h})-[r:T]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "MATCH (a:N)-[r:T]->(b:N) WHERE a.k = $h AND b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "MATCH (b:N)<-[r:T]-(a:N {k: $h}) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p ORDER BY id",
         "MATCH (a:N {k: $h})-[:T]->(b:N) WHERE b.k IN $ts RETURN count(*) AS id, 0 AS p",
-        "MATCH (a:N {k: $h})-[:L]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p",
-        "MATCH (a:N {k: $h})<-[:D]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p",
-        "MATCH (a:N {k: $h})-[:D]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p",
-        "MATCH (a:N {k: $h}) OPTIONAL MATCH (a)-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p",
-        "MATCH (a:N {k: $h})-[r1:T]->(b:N)-[r2:T]->(c:N) WHERE b.k IN $ts RETURN b.k + c.k AS id, r1.p AS p");
+        "MATCH (a:N {k: $h})-[:L]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p ORDER BY id",
+        "MATCH (a:N {k: $h})<-[:D]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p ORDER BY id",
+        "MATCH (a:N {k: $h})-[:D]-(b:N) WHERE b.k IN $ts RETURN b.k AS id, 0 AS p ORDER BY id",
+        "MATCH (a:N {k: $h}) OPTIONAL MATCH (a)-[r:T]->(b:N) WHERE b.k IN $ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "MATCH (a:N {k: $h})-[r1:T]->(b:N)-[r2:T]->(c:N) WHERE b.k IN $ts RETURN b.k + c.k AS id, r1.p AS p ORDER BY id, p");
 
     // THE HUB SEEKS, THE SMALL VERTEX WALKS (A FEW RELATIONSHIPS, LONG LISTS), THE MISSING ONE MATCHES NOTHING
     for (final String hub : new String[] { "hub", "small", "missing" })
@@ -114,10 +150,10 @@ class CypherFarEndInListSeekTest extends TestHelper {
 
     // KEYS IN A LIST LITERAL AND AS AN OR OF EQUALITIES
     for (final String hub : new String[] { "hub", "small" }) {
-      assertThat(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN ['x3', 'x5', null, 'free0'] RETURN b.k AS id, r.p AS p", hub, null))
-          .isEqualTo(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m IN ['x3', 'x5', null, 'free0'] RETURN b.k AS id, r.p AS p", hub, null));
-      assertThat(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k = 'x3' OR b.k = 'x8' RETURN b.k AS id, r.p AS p", hub, null))
-          .isEqualTo(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m = 'x3' OR b.m = 'x8' RETURN b.k AS id, r.p AS p", hub, null));
+      assertThat(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN ['x3', 'x5', null, 'free0'] RETURN b.k AS id, r.p AS p ORDER BY id, p", hub, null))
+          .isEqualTo(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m IN ['x3', 'x5', null, 'free0'] RETURN b.k AS id, r.p AS p ORDER BY id, p", hub, null));
+      assertThat(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k = 'x3' OR b.k = 'x8' RETURN b.k AS id, r.p AS p ORDER BY id, p", hub, null))
+          .isEqualTo(rows("MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.m = 'x3' OR b.m = 'x8' RETURN b.k AS id, r.p AS p ORDER BY id, p", hub, null));
     }
     assertThat(rows(FORWARD, "hub", List.of("x3", "x5"))).containsExactly("x3/1", "x3/2", "x5/1");
     assertThat(rows(FORWARD, "small", List.of("s1", "s1", "x3"))).containsExactly("s1/1", "x3/4");
@@ -263,6 +299,20 @@ class CypherFarEndInListSeekTest extends TestHelper {
 
   /** The rows as {@code id/p}, sorted: the plans give the same rows, not in the same order. */
   private List<String> rows(final String query, final Map<String, Object> params) {
+    final List<String> rows = rowsInOrder(query, params);
+    Collections.sort(rows);
+    return rows;
+  }
+
+  private List<String> rowsInOrder(final String query, final String hub, final List<String> list) {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("h", hub);
+    params.put("ts", list);
+    return rowsInOrder(query, params);
+  }
+
+  /** The rows as {@code id/p}, in the order the statement returns them. */
+  private List<String> rowsInOrder(final String query, final Map<String, Object> params) {
     final List<String> rows = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query, params)) {
       while (rs.hasNext()) {
@@ -270,7 +320,6 @@ class CypherFarEndInListSeekTest extends TestHelper {
         rows.add(row.getProperty("id") + "/" + row.getProperty("p"));
       }
     }
-    Collections.sort(rows);
     return rows;
   }
 

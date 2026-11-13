@@ -479,6 +479,25 @@ public class StripedEdgeList extends EdgeLinkedList {
     };
   }
 
+  /**
+   * Unlike {@link #entryRidIterator}, a stripe chain whose head cannot be loaded is not skipped: the list is answered null,
+   * not as the shorter list the other chains make. The chains are concatenated, one live cursor at a time, since a caller
+   * counting the entries has no use for the interleaved order.
+   */
+  @Override
+  Iterator<RID> wholeEntryRidIterator() {
+    final List<EdgeLinkedList> chains;
+    try {
+      chains = allChains(true);
+    } catch (final ConcurrentModificationException e) {
+      return null;
+    }
+    final MultiIterator<RID> entries = new MultiIterator<>();
+    for (final EdgeLinkedList chain : chains)
+      entries.addIterator(chain.entryRidIterator());
+    return entries;
+  }
+
   @Override
   public boolean containsEdge(final RID rid) {
     for (final EdgeLinkedList chain : allChains(false))
