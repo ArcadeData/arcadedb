@@ -2846,15 +2846,13 @@ public class CypherSemanticValidator {
    * mode names the function itself accepts.
    * <p>
    * {@code left()}/{@code right()}/{@code substring()} (issue #6609) declare their numeric arguments starting at
-   * {@link CypherFunctionHelper.NumericSignature#startArg()} rather than at position 0: the leading argument is the
-   * STRING being sliced, which this check leaves alone (out of scope for #6609, same as it was for #5798/#5901).
+   * {@link CypherFunctionHelper.NumericSignature#startArg()} rather than at position 0: the leading arguments are the
+   * STRING being sliced, so a statically-known one outside STRING is rejected with the same message as the runtime check
+   * in {@link CypherFunctionHelper#requireStringArgument} (issue #11692).
    */
   private void checkStaticallyKnownNumericArgs(final CypherFunctionHelper.NumericSignature signature,
       final List<Expression> args) {
     for (int i = 0; i < args.size(); i++) {
-      if (i < signature.startArg())
-        continue;
-
       final Expression arg = args.get(i);
       final boolean isMap = arg instanceof MapExpression;
       // A bracketed list is a ListExpression rather than a literal holding a Collection, so it has to be recognised
@@ -2872,6 +2870,9 @@ public class CypherSemanticValidator {
       if (signature.isNumericPosition(i)) {
         if (isMap || isList || !(literal instanceof Number))
           throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.NUMERIC_DOMAIN, rendered);
+      } else if (i < signature.startArg()) {
+        if (isMap || isList || !(literal instanceof CharSequence))
+          throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.STRING_DOMAIN, rendered);
       } else if ("round".equals(signature.name()))
         // A map or list literal names no rounding mode either, so it is rejected here too rather than only once the
         // query runs.
