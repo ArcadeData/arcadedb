@@ -225,6 +225,74 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
     }
   }
 
+  /** A CLASSIC index has no per-bucket statistics to score a record from: the complete search answers, with the same result. */
+  @Test
+  void aClassicIndexIsLeftToTheCompleteSearch() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Old BUCKETS 2");
+      database.command("sql", "CREATE PROPERTY Old.content STRING");
+      database.command("sql", "CREATE INDEX ON Old (content) FULL_TEXT METADATA {\"similarity\": \"CLASSIC\"}");
+      final Random random = new Random(11683);
+      for (int i = 0; i < 500; i++)
+        database.newDocument("Old").set("content", text(random, 1 + random.nextInt(30))).save();
+    });
+    final List<RID> sample = sample("Old");
+    final String condition = "SEARCH_INDEX('Old[content]', :q)";
+    final Map<RID, Float> complete = completeAnswer(condition, "Old", "alpha beta");
+    final long before = FullTextFunctionSearch.getCompleteSearchesForTesting();
+    final Map<RID, Float> rows = targetAnswer(condition, sample, "alpha beta");
+    assertThat(FullTextFunctionSearch.getCompleteSearchesForTesting()).isEqualTo(before + 1);
+    assertThat(rows).isNotEmpty().isEqualTo(restrictedTo(complete, sample));
+  }
+
+  /** A property indexed BY ITEM is scored from its items' postings: the complete search answers, with the same result. */
+  @Test
+  void aByItemPropertyIsLeftToTheCompleteSearch() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Tagged BUCKETS 2");
+      database.command("sql", "CREATE PROPERTY Tagged.tags LIST OF STRING");
+      database.command("sql", "CREATE INDEX Tagged_ft ON Tagged (tags BY ITEM) FULL_TEXT");
+      final Random random = new Random(11684);
+      for (int i = 0; i < 500; i++)
+        database.newDocument("Tagged")
+            .set("tags", List.of(text(random, 1 + random.nextInt(5)), text(random, 1 + random.nextInt(5)))).save();
+    });
+    final List<RID> sample = sample("Tagged");
+    final String condition = "SEARCH_INDEX('Tagged_ft', :q)";
+    final Map<RID, Float> complete = completeAnswer(condition, "Tagged", "alpha beta");
+    final long before = FullTextFunctionSearch.getCompleteSearchesForTesting();
+    final Map<RID, Float> rows = targetAnswer(condition, sample, "alpha beta");
+    assertThat(FullTextFunctionSearch.getCompleteSearchesForTesting()).isEqualTo(before + 1);
+    assertThat(rows).isNotEmpty().isEqualTo(restrictedTo(complete, sample));
+  }
+
+  /** A deleted record and a record of a type the index does not cover are rows of the target that never match. */
+  @Test
+  void aDeletedRecordAndARecordOfAnotherTypeInTheTarget() {
+    createCorpus("Doc", 4, false);
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Other");
+      database.command("sql", "CREATE PROPERTY Other.content STRING");
+    });
+    final List<RID> sample = sample("Doc");
+    final List<RID> target = new ArrayList<>(sample);
+    final RID deleted = sample.get(3);
+    database.transaction(() -> deleted.asDocument().delete());
+    final RID[] other = new RID[1];
+    database.transaction(() -> {
+      final var document = database.newDocument("Other").set("content", "alpha beta zeta");
+      document.save();
+      other[0] = document.getIdentity();
+    });
+    target.add(other[0]);
+
+    for (final String query : List.of("alpha", "zeta", "alpha beta", "+alpha -gamma")) {
+      final Map<RID, Float> complete = completeAnswer("SEARCH_INDEX('Doc[content]', :q)", "Doc", query);
+      final Map<RID, Float> rows = targetAnswer("SEARCH_INDEX('Doc[content]', :q)", target, query);
+      assertThat(rows).as(query).isEqualTo(restrictedTo(complete, target)).doesNotContainKeys(deleted, other[0]);
+    }
+  }
+
   private void createCorpus(final String type, final int buckets, final boolean twoProperties) {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE " + type + " BUCKETS " + buckets);
