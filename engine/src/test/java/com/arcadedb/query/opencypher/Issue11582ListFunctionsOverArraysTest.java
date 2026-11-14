@@ -80,6 +80,23 @@ class Issue11582ListFunctionsOverArraysTest extends TestHelper {
         .isEqualTo(evaluate(expression, list));
   }
 
+  @org.junit.jupiter.api.Test
+  void concreteAnswersForALongArray() {
+    final long[] array = { 3L, 1L, 2L };
+    assertThat(evaluate("isEmpty($l)", array)).isEqualTo(false);
+    assertThat(elements(evaluate("toIntegerList($l)", array))).containsExactly("3", "1", "2");
+    assertThat(elements(evaluate("coll.flatten([$l, [7]])", array))).containsExactly("3", "1", "2", "7");
+    assertThat(String.valueOf(evaluate("apoc.convert.toJson($l)", array)).replace(" ", "")).isEqualTo("[3,1,2]");
+  }
+
+  private static List<String> elements(final Object value) {
+    assertThat(value).as("a list result, got %s", value).isInstanceOf(List.class);
+    final List<String> out = new ArrayList<>();
+    for (final Object o : (List<?>) value)
+      out.add(String.valueOf(o));
+    return out;
+  }
+
   /** The value of the expression, or the class and message of the innermost exception when it fails. */
   private Object evaluate(final String expression, final Object value) {
     try (final ResultSet result = database.query("opencypher", "RETURN " + expression + " AS v", Map.of("l", value))) {
