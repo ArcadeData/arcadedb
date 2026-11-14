@@ -108,8 +108,6 @@ class StatementBuilder {
   }
 
   void addFinish() {
-    if (returnClause != null)
-      throw new CommandParsingException("UnexpectedSyntax: FINISH cannot be combined with RETURN in the same query block");
     clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.FINISH, FinishClause.INSTANCE, clauseOrder++));
   }
 
