@@ -41,6 +41,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.UnidirectionalEdgeChanges;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
@@ -2216,8 +2217,10 @@ public class TransactionContext implements Transaction {
     private long[] vertexPosition = new long[8];
     private int    size;
     // #11498: the vertex whose edge list the segment belongs to, and the direction of that list, so the commit can put the
-    // appends in a new chunk of that list when a concurrent transaction filled the segment. Null when not known (a striped
-    // super-node chunk, or appends told apart from different lists).
+    // appends in a new chunk of that list when a concurrent transaction filled the segment. #11591: also set for a striped
+    // super-node chunk, so the commit can check the segment is still in that list before replaying onto it (the overflow
+    // leaves a striped list alone: its head is a stripe directory). Null when not known (appends told apart from different
+    // lists), which refuses the replay.
     private RID     owner;
     private boolean ownerOut;
     private boolean ownerUnknown;
@@ -2569,8 +2572,8 @@ public class TransactionContext implements Transaction {
             "Edge-append rebase not possible: chunk " + segmentRID + " spans multiple pages. Please retry the operation");
 
       // Load the chunk fresh from the (now current) page, bypassing the tx record cache which still holds the
-      // stale, already-appended instance. A concurrently-vanished chunk (RecordNotFoundException) cannot happen
-      // under the held commit lock; if it ever did, fall back to a full retry rather than aborting the tx.
+      // stale, already-appended instance. A chunk freed meanwhile and not reused falls back to a full retry rather than
+      // aborting the tx.
       final MutableEdgeSegment segment;
       try {
         segment = new MutableEdgeSegment(database, segmentRID, bucket.getRecord(segmentRID).copyOfContent());
@@ -2579,8 +2582,16 @@ public class TransactionContext implements Transaction {
             "Edge-append rebase not possible: chunk " + segmentRID + " no longer exists. Please retry the operation");
       }
 
-      final int committedSize = segment.getRecordSize();
       final EdgeAppendBuffer buffer = entry.getValue();
+      // #11591: the slot may hold another chunk by now. Freeing a chunk (its vertex deleted, or the chunk emptied and unlinked)
+      // and reusing the slot for another list's chunk both commit before this lock is taken, and the newcomer can even hold
+      // the same bytes. Replaying onto it put this transaction's edge in the list of an unrelated vertex, pointing at a
+      // deleted one: only the list the chunk is linked from tells the two apart.
+      if (!isInCommittedEdgeList(buffer.owner, buffer.ownerOut, segmentRID))
+        throw new ConcurrentModificationException("Edge-append rebase not possible: chunk " + segmentRID
+            + " is no longer in the edge list it was appended to (its vertex was deleted or the chunk removed). Please retry the operation");
+
+      final int committedSize = segment.getRecordSize();
       for (int i = 0; i < buffer.size; ++i)
         // #11498: a chunk the concurrent appends filled grows by what this transaction's appends need, as long as its page
         // has room (below): refusing them sent the whole transaction to a retry, the second most common conflict of
@@ -2621,6 +2632,70 @@ public class TransactionContext implements Transaction {
     // - before the move the increment ran first and a failed compress still counted.
     database.getPageManager().incrementEdgeAppendMerges();
     return rebased;
+  }
+
+  /**
+   * Issue #11591: whether the committed edge list of {@code owner}, in direction OUT ({@code out}) or IN, still links the chunk
+   * {@code segmentRID}. Once this commit holds the lock of the chunk's file the answer cannot change before it publishes:
+   * freeing the chunk writes that file.
+   * <p>
+   * Every chunk this transaction appended to was a head of the list when it did, and a concurrent transaction only puts chunks
+   * in front of it, so the walk goes from the head(s) one hop at a time: a classic list from its head, a striped one from the
+   * head of every chain of its directory, one hop per chain in turn. A chunk still in the list is met within a few hops; only one
+   * that left it walks the whole list, on the way to a retry.
+   */
+  private boolean isInCommittedEdgeList(final RID owner, final boolean out, final RID segmentRID) {
+    if (owner == null)
+      return false;
+    final Binary ownerContent = committedRecord(owner);
+    if (ownerContent == null || ownerContent.size() < VERTEX_HEADS_END || ownerContent.getByte(0) != Vertex.RECORD_TYPE)
+      return false;
+    final RID head = edgeListHeadAt(ownerContent.toByteArray(), out ? VERTEX_OUT_HEAD_OFFSET : VERTEX_IN_HEAD_OFFSET);
+    if (head == null)
+      return false;
+    if (head.equals(segmentRID))
+      return true;
+
+    final List<RID> chains = new ArrayList<>();
+    final Binary headContent = committedRecord(head);
+    if (headContent != null && headContent.size() > 0 && headContent.getByte(0) == StripeDirectory.RECORD_TYPE) {
+      final StripeDirectory directory = new StripeDirectory(database, head, headContent.copyOfContent());
+      for (int generation = 0; generation < directory.getGenerationCount(); generation++)
+        for (int slot = 0; slot < directory.getStripes(generation); slot++) {
+          final RID stripeHead = directory.getHead(generation, slot);
+          if (stripeHead != null)
+            chains.add(stripeHead);
+        }
+    } else
+      chains.add(head);
+
+    // a chunk met twice is a cycle: its chain ends there
+    final RidHashSet visited = new RidHashSet();
+    while (!chains.isEmpty())
+      for (int i = chains.size() - 1; i >= 0; i--) {
+        final RID current = chains.get(i);
+        if (current.equals(segmentRID))
+          return true;
+        final Binary content = visited.add(current) ? committedRecord(current) : null;
+        final RID previous = content != null && content.size() >= MutableEdgeSegment.CONTENT_START_POSITION
+            && content.getByte(0) == EdgeSegment.RECORD_TYPE ?
+            new MutableEdgeSegment(database, current, content.copyOfContent()).getPreviousRID() :
+            null;
+        if (previous != null)
+          chains.set(i, previous);
+        else {
+          // the last one was walked this round already
+          chains.set(i, chains.getLast());
+          chains.removeLast();
+        }
+      }
+    return false;
+  }
+
+  /** The record at {@code rid} on the committed pages, ignoring this transaction's own images, or null when none is there. */
+  private Binary committedRecord(final RID rid) {
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
+    return bucket != null ? bucket.getRecordFromCommittedPage(rid) : null;
   }
 
   /**
