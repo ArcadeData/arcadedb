@@ -132,7 +132,9 @@ class RedisCommandArityCensusTest {
 
   /**
    * The string constants compared with {@code String.equals} in {@code method} of {@code className}: the labels of a string switch
-   * ({@code cmd.equals("LABEL")}) and the receivers of a {@code "LABEL".equals(cmd)} test alike.
+   * ({@code cmd.equals("LABEL")}) and the receivers of a {@code "LABEL".equals(cmd)} test alike. A {@code static final String}
+   * constant is folded into an {@code LDC} by javac, so {@code cmd.equals(NAME)} is seen too; a name read from a field that is not
+   * a compile-time constant ({@code GETSTATIC}) is not, and a dispatch written that way would leave the census.
    */
   private static Set<String> dispatchedCommands(final Map<String, byte[]> classes, final String className, final String method) {
     assertThat(classes).as("the census must read the " + MODULE + " module").isNotNull();
