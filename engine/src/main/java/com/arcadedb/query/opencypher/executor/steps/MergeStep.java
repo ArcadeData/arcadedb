@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -87,6 +88,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * stand-alone SET step uses.
  */
 public class MergeStep extends AbstractExecutionStep {
+  /** The far end of a relationship a MERGE created together with it, in the key of {@link #registerMergedEdgeToCreatedNode}. */
+  private static final RID CREATED_END = new RID(-2, -2);
+  /**
+   * The far end of a relationship a MERGE created between two nodes that existed, in the key it marks for each of its ends and that
+   * {@link #registerMergedEdgeToCreatedNode} checks (issue #11660).
+   */
+  private static final RID EXISTING_END = new RID(-2, -3);
+
   // Internal row flags, removed before a row leaves the step
   private static final String WAS_CREATED        = "  wasCreated";
   private static final String CREATE_SET_FOLDED  = "  createSetFolded";
@@ -1034,7 +1043,8 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private List<Result> createNewPath(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Vertex> vertices = new ArrayList<>();
-    // The nodes this MERGE creates: no other transaction can know them, so a relationship ending in one cannot be a duplicate
+    // The nodes this MERGE creates. No other transaction can know them, but a relationship from an existing node to one of them
+    // can still duplicate a concurrent MERGE's equivalent path from that node (issue #11660)
     final boolean[] createdHere = new boolean[pathPattern.getRelationshipCount() + 1];
 
     for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
@@ -1069,6 +1079,10 @@ public class MergeStep extends AbstractExecutionStep {
           ? vertices.get(i) : vertices.get(i + 1);
 
       final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult, !createdHere[i] && !createdHere[i + 1]);
+      if (createdHere[i] != createdHere[i + 1])
+        registerMergedEdgeToCreatedNode(edge, relPattern, createdHere[i + 1] ? vertices.get(i) : vertices.get(i + 1),
+            createdHere[i + 1] ? pathPattern.getNode(i + 1) : pathPattern.getNode(i), createdHere[i + 1] ? vertices.get(i + 1) : vertices.get(i),
+            createdHere[i + 1]);
       tracePathElement(trace, 2 * i + 1, edge);
       if (relPattern.getVariable() != null)
         baseResult.setProperty(relPattern.getVariable(), edge);
@@ -1077,6 +1091,45 @@ public class MergeStep extends AbstractExecutionStep {
     addPathBinding(baseResult, pathPattern, trace);
     baseResult.setProperty(WAS_CREATED, true);
     return List.of(baseResult);
+  }
+
+  /**
+   * Registers with the transaction a relationship this MERGE created between a node that existed and one it created (issue #11660).
+   * The existence check that did not find it read the edge list of the existing node, where a concurrent MERGE of the same pattern
+   * appends its own path, and two appends commute at commit. The key stands for every such path: the existing node, a placeholder
+   * for the created one, the type with its direction from the existing node, and what the relationship and the created node were
+   * matched by. So the commit refuses a transaction whose equivalent path another one committed meanwhile, and only that one: a MERGE
+   * looking for another far end is another key. It is refused as well when a concurrent MERGE committed a relationship of the type
+   * and direction from the same node to a node that existed, which may be one this pattern matches: that key is coarser, so such a
+   * commit can cost a retry the pattern did not need, never a duplicate path.
+   *
+   * @param anchor          the end that existed
+   * @param createdPattern  the pattern of the end this MERGE created
+   * @param created         that end
+   * @param anchorIsLeft    whether the existing end is the left node of the pattern
+   */
+  private void registerMergedEdgeToCreatedNode(final Edge edge, final RelationshipPattern relPattern, final Vertex anchor,
+      final NodePattern createdPattern, final Vertex created, final boolean anchorIsLeft) {
+    final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
+    if (tx == null)
+      return;
+    // Read back from the records: what was stored is what a later MATCH compares, whatever expressions produced it
+    final Map<String, Object> matchedBy = new HashMap<>();
+    if (relPattern.hasProperties())
+      for (final String key : relPattern.getProperties().keySet())
+        matchedBy.put("r." + key, edge.get(key));
+    if (createdPattern.hasLabels())
+      matchedBy.put("m:", created.getTypeName());
+    if (createdPattern.hasProperties())
+      for (final String key : createdPattern.getProperties().keySet())
+        matchedBy.put("m." + key, created.get(key));
+    final String direction = switch (relPattern.getDirection()) {
+      case OUT -> anchorIsLeft ? ">" : "<";
+      case IN -> anchorIsLeft ? "<" : ">";
+      default -> "-";
+    };
+    tx.addMergedEdge(anchor.getIdentity(), CREATED_END, edge.getTypeName() + direction, matchedBy);
+    tx.checkMergedEdge(anchor.getIdentity(), EXISTING_END, edge.getTypeName() + direction);
   }
 
   /**
@@ -1534,8 +1587,14 @@ public class MergeStep extends AbstractExecutionStep {
     if (betweenExistingNodes) {
       // The match that did not find it read an edge list a concurrent MERGE may be appending the same relationship to (#11482)
       final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
-      if (tx != null)
+      if (tx != null) {
         tx.addMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+        // A MERGE from either end that creates its far node would have found this relationship if its far node matches (#11660)
+        tx.markMergedEdge(fromVertex.getIdentity(), EXISTING_END, edge.getTypeName() + ">");
+        tx.markMergedEdge(fromVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "-");
+        tx.markMergedEdge(toVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "<");
+        tx.markMergedEdge(toVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "-");
+      }
     }
 
     final QueryStatistics stats = context.getStatistics();

@@ -5406,6 +5406,28 @@ public class TransactionContext implements Transaction {
       mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
   }
 
+  /**
+   * A key of the {@link MergedEdgeRegistry} the commit of this transaction checks without marking it (issue #11660): a relationship
+   * this transaction created that a concurrent one may have committed under a coarser key, see {@link #markMergedEdge}. Only together
+   * with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   */
+  public void checkMergedEdge(final RID from, final RID to, final String type) {
+    if (from == null || to == null || !isActive())
+      return;
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
+  /**
+   * A key of the {@link MergedEdgeRegistry} the commit of this transaction marks without checking it (issue #11660): another
+   * statement's relationship would also find what this transaction created, and checks this key, while two transactions marking it
+   * do not refuse each other. Only together with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   */
+  public void markMergedEdge(final RID from, final RID to, final String type) {
+    if (from == null || to == null || !isActive())
+      return;
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
   private static int[] append(int[] array, final int index, final int value) {
     if (array == null)
       array = new int[4];
