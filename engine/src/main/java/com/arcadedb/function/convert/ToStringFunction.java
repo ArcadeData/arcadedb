@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.List;
 import java.util.Map;
@@ -63,8 +64,9 @@ public class ToStringFunction implements StatelessFunction {
     // query passes the wrong value type to a scalar function), classified by the openCypher TCK as a
     // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer
     // reports it as a 400 client error with the descriptive message, not a 500 transaction-commit
-    // failure. See issue #5203.
-    if (args[0] instanceof List || args[0] instanceof Map
+    // failure. See issue #5203. A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, a LIST all the
+    // same: it used to answer the Java identity string "[J@..." (issue #11582).
+    if (args[0] instanceof List || MultiValue.isSequenceArray(args[0]) || args[0] instanceof Map
         || args[0] instanceof Vertex || args[0] instanceof Edge
         || args[0] instanceof Document || args[0] instanceof TraversalPath)
       throw new CommandSemanticException("TypeError: InvalidArgumentValue - toString() cannot convert " + args[0].getClass().getSimpleName());
