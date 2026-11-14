@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.BucketPageLayoutTestSupport;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Nested;
@@ -614,21 +615,254 @@ class ReplicatedApplyPublicationTest {
       }
     }
 
+    /**
+     * #11505: a proof that a publication overlapped is run again with the publications held off, so the second run reads one
+     * committed state and its verdict stands. The redo used to run under the page-manager lock, which does not exclude the
+     * replicated apply (#11283), and a publication overlapping it voided the proof as well. A publication cannot start while the
+     * hold is granted, so the second run here is not overlapped: a proof run under the hold that starts one would wait for itself.
+     */
     @Test
-    void aProofIsVoidWhenAPublicationMovesDuringIt() throws Exception {
+    void aProofOverlappedByAPublicationIsRunAgainWithThePublicationsHeld() throws Exception {
       createChunkedRecords("Read");
       final LocalBucket bucket = bucketOf("Read");
       final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
       final AtomicInteger runs = new AtomicInteger();
 
-      // The first run overlaps a publication (so the lock is taken), the second one, inside the lock, is overlapped again
       assertThat(bucket.provenAgainstOneCommit(() -> {
-        pageManager.beginPublication();
-        pageManager.endPublication();
-        runs.incrementAndGet();
+        if (runs.incrementAndGet() == 1) {
+          // only the first run is overlapped
+          pageManager.beginPublication();
+          pageManager.endPublication();
+        }
         return "broken";
-      })).isNull();
-      assertThat(runs.get()).isEqualTo(2);
+      })).as("the redo ran against one committed state, so its proof stands").isEqualTo("broken");
+      assertThat(runs.get()).as("the overlapped proof was run again").isEqualTo(2);
+      assertThat(pageManager.getPublicationSequence() & 1).isZero();
     }
+
+    /**
+     * #11505: the proof that a chunk chain is corrupt did not wait out an open publication, as its two siblings do since #11455:
+     * on a replica, where one is nearly always open, it ran at once on the odd sequence, its redo under the page-manager lock found
+     * the apply still open, and the corruption was never proven: the read retried to exhaustion and reported contention. The
+     * publication here ends a few milliseconds after the proof starts, well inside the wait.
+     */
+    @Test
+    void aProofOfCorruptionWaitsOutAnApplyThatEnds() throws Exception {
+      createChunkedRecords("Read");
+      final LocalBucket bucket = bucketOf("Read");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicBoolean released = new AtomicBoolean();
+
+      pageManager.beginPublication();
+      final long openedAt = System.nanoTime();
+      final Thread closer = new Thread(() -> {
+        while (System.nanoTime() - openedAt < TimeUnit.MILLISECONDS.toNanos(5))
+          Thread.onSpinWait();
+        if (!released.getAndSet(true))
+          pageManager.endPublication();
+      });
+      closer.start();
+      try {
+        assertThat(bucket.provenAgainstOneCommit(() -> "broken")).as("the proof waited for the apply to end and stands")
+            .isEqualTo("broken");
+      } finally {
+        if (!released.getAndSet(true))
+          pageManager.endPublication();
+        closer.join();
+      }
+    }
+
+    /**
+     * #11505: a replica applies its entries back to back, so the sequence is even only between two of them. A proof of corruption
+     * must still reach a verdict: it waits for one of those instants and, when the next apply overlaps it, runs again with the
+     * publications held off rather than under the page-manager lock, which the apply does not take.
+     */
+    @Test
+    void aProofOfCorruptionStandsWhileEntriesAreAppliedBackToBack() throws Exception {
+      createChunkedRecords("Read");
+      final LocalBucket bucket = bucketOf("Read");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
+      try {
+        for (int i = 0; i < 50; i++)
+          assertThat(bucket.provenAgainstOneCommit(() -> "broken")).as("proof %d reached a verdict", i).isEqualTo("broken");
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the proofs ran").isPositive();
+    }
+
+    /**
+     * #11505: the placeholder pointer and its content are read against one commit the same way, and did not wait for an open
+     * publication either: a placeholder read on a replica that met an apply failed with a concurrent modification although the
+     * apply ended a few milliseconds later.
+     */
+    @Test
+    void aPlaceholderReadWaitsOutAnApplyThatEnds() throws Exception {
+      final RID rid = createPlaceholder();
+      final LocalBucket bucket = bucketOf("Placeholder");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final byte[] expected = bucket.getRecordFromCommittedPage(rid).toByteArray();
+      final AtomicBoolean released = new AtomicBoolean();
+
+      pageManager.beginPublication();
+      final long openedAt = System.nanoTime();
+      final Thread closer = new Thread(() -> {
+        while (System.nanoTime() - openedAt < TimeUnit.MILLISECONDS.toNanos(5))
+          Thread.onSpinWait();
+        if (!released.getAndSet(true))
+          pageManager.endPublication();
+      });
+      closer.start();
+      try {
+        assertThat(bucket.getRecordFromCommittedPage(rid).toByteArray()).as("served once the apply ended").isEqualTo(expected);
+      } finally {
+        if (!released.getAndSet(true))
+          pageManager.endPublication();
+        closer.join();
+      }
+    }
+
+    /** #11505: a placeholder read is served while entries are applied back to back, as a multi-page read is since #11455. */
+    @Test
+    void aPlaceholderReadIsServedWhileEntriesAreAppliedBackToBack() throws Exception {
+      final RID rid = createPlaceholder();
+      final LocalBucket bucket = bucketOf("Placeholder");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final byte[] expected = bucket.getRecordFromCommittedPage(rid).toByteArray();
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
+      try {
+        for (int i = 0; i < 50; i++)
+          assertThat(bucket.getRecordFromCommittedPage(rid).toByteArray()).as("read %d served", i).isEqualTo(expected);
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the reads ran").isPositive();
+    }
+
+    private RID createPlaceholder() {
+      database.transaction(() -> database.getSchema().createDocumentType("Placeholder", 1).createProperty("v", Type.STRING));
+      final RID[] rid = new RID[1];
+      database.transaction(() -> rid[0] = database.newDocument("Placeholder").set("v", "p").save().getIdentity());
+      sealFirstPage("Placeholder");
+      database.transaction(() -> rid[0].asDocument(true).modify().set("v", "b".repeat(20 * 1024)).save());
+      assertThat((Long) bucketStats("Placeholder").get("totalPlaceholderRecords")).as("the fixture needs a placeholder").isEqualTo(1L);
+      return rid[0];
+    }
+  }
+
+  // Issue #11505: a genuinely broken chunk chain met on a replica under write load must be reported as corruption, pointing at
+  // CHECK DATABASE FIX, on the read path and on the delete path alike, instead of being retried as contention until the budget
+  // runs out. The replicated apply is played by a thread opening and closing publications back to back.
+  @Nested
+  class BrokenChainUnderApply extends BucketPageLayoutTestSupport {
+    private static final String TYPE               = "Broken";
+    /** {@code LocalBucket.FIRST_CHUNK} (-2), as the single zigzag byte it is stored as. */
+    private static final byte   FIRST_CHUNK_MARKER = 3;
+
+    @Override
+    protected boolean isCheckingDatabaseIntegrity() {
+      // every test here injects on-disk corruption, which the post-test integrity check would (correctly) flag
+      return false;
+    }
+
+    @Test
+    void aBrokenChainReadWhileEntriesAreAppliedBackToBackIsReportedAsCorruption() throws Exception {
+      final RID broken = createBrokenRecord();
+      final LocalBucket bucket = bucketOf(TYPE);
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
+      try {
+        for (int i = 0; i < 10; i++) {
+          database.begin();
+          try {
+            assertThatThrownBy(() -> bucket.getRecordInternal(broken, false)).as("read %d", i)
+                .isInstanceOf(BrokenChunkChainException.class)
+                .hasMessageContaining("CHECK DATABASE FIX");
+          } finally {
+            database.rollback();
+          }
+        }
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the reads ran").isPositive();
+    }
+
+    @Test
+    void aBrokenChainDeleteWhileEntriesAreAppliedBackToBackIsReportedAsCorruption() throws Exception {
+      final RID broken = createBrokenRecord();
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
+      try {
+        for (int i = 0; i < 10; i++) {
+          database.begin();
+          try {
+            assertThatThrownBy(() -> TestHelper.deleteRecordAtLowLevel(database, broken)).as("delete %d", i)
+                .isInstanceOf(BrokenChunkChainException.class);
+          } finally {
+            database.rollback();
+          }
+        }
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the deletes ran").isPositive();
+      assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isTrue();
+    }
+
+    /** A multi-page record whose head chunk points at a page the file does not have: broken at chunk 0. */
+    private RID createBrokenRecord() {
+      final RID[] rids = createChunkedRecords(TYPE);
+      final RID broken = rids[0];
+      final int maxRecordsInPage = bucketOf(TYPE).getMaxRecordsInPage();
+      database.transaction(() -> onSlot(broken, page -> {
+        final int recordOffset = recordOffsetOf(page, broken);
+        assertThat(page.readByte(recordOffset)).as("the record must be a multi-page head").isEqualTo(FIRST_CHUNK_MARKER);
+        // [marker][chunkSize:int][nextChunkPointer:long]
+        page.writeLong(recordOffset + 1 + Binary.INT_SERIALIZED_SIZE, 1_000_000L * maxRecordsInPage);
+        return 0L;
+      }));
+      reopenDatabase();
+      return broken;
+    }
+  }
+
+  /**
+   * Plays the replicated apply of a busy replica: publications opened and closed back to back, each held for 200 microseconds,
+   * until {@code stop} is set. The sequence is even only for the instants between two of them.
+   */
+  private static Thread applyBackToBack(final PageManager pageManager, final AtomicBoolean stop, final AtomicInteger applied) {
+    final Thread applier = new Thread(() -> {
+      while (!stop.get()) {
+        pageManager.beginPublication();
+        try {
+          final long until = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(200);
+          while (System.nanoTime() < until)
+            Thread.onSpinWait();
+        } finally {
+          pageManager.endPublication();
+        }
+        applied.incrementAndGet();
+      }
+    });
+    applier.start();
+    return applier;
   }
 }
