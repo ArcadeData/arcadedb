@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11580: {@code COMPACT INDEX} sent to {@code POST /api/v1/command} failed with "Cannot replace compacted index
@@ -118,6 +120,24 @@ class CompactIndexIssue11580Test extends TestHelper {
 
     assertThat(database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE email = 'pending'").hasNext()).isFalse();
     assertEveryKeyResolves(1000);
+  }
+
+  @Test
+  void aFailureOfTheOffThreadCompactionReachesTheCallerAndKeepsItsTransaction() {
+    database.getSchema().buildManualIndex("Issue11580Manual", new Type[] { Type.STRING }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
+        .create();
+
+    database.begin();
+    database.newDocument(TYPE_NAME).set("email", "pending").save();
+    assertThatThrownBy(() -> database.command("sql", "COMPACT INDEX `Issue11580Manual`"))
+        .isInstanceOf(IndexException.class)
+        .hasCauseInstanceOf(CommandExecutionException.class)
+        .hasRootCauseMessage("Cannot compact index 'Issue11580Manual' because it's manual and there aren't indications of what to index");
+    assertThat(database.isTransactionActive()).as("the caller's transaction survives the failure").isTrue();
+    database.rollback();
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE email = 'pending'").hasNext()).isFalse();
   }
 
   private void assertEveryKeyResolves(final long expectedCount) {
