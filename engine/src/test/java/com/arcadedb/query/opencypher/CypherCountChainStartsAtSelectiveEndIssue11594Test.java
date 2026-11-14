@@ -150,8 +150,24 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
     assertThat(count(counted)).isEqualTo(CHUNKS / RECORDS);
     assertThat(count("MATCH (c:Chunk)-[:BELONGS]->(r:Record) RETURN count(*) AS n")).isEqualTo(CHUNKS / RECORDS);
     final String plan = plan(counted);
-    if (plan.contains("COUNT CHAIN PATHS"))
-      assertThat(chainLine(plan)).startsWith("(Chunk");
+    assertThat(plan).contains("COUNT CHAIN PATHS");
+    assertThat(chainLine(plan)).startsWith("(Chunk");
+  }
+
+  /** An unlabeled first end is flipped away from (it would enumerate every vertex); an unlabeled last end is never the start. */
+  @Test
+  void anUnlabeledEndIsNeverTheStart() {
+    final String unlabeledFirst = "(x)-[:OF_RECORD]->(r:Record {external_id: 'r3'})";
+    final String unlabeledLast = "(c:Chunk)-[:OF_RECORD]->(x)";
+    for (final String pattern : new String[] { unlabeledFirst, unlabeledLast }) {
+      final String counted = "MATCH " + pattern + " RETURN count(*) AS n";
+      final String oracle = "MATCH " + pattern + " RETURN sum(1) AS n";
+      final String plan = plan(counted);
+      assertThat(plan).as(counted).contains("COUNT CHAIN PATHS");
+      assertThat(count(counted)).as(counted).isEqualTo(count(oracle));
+    }
+    assertThat(chainLine(plan("MATCH " + unlabeledFirst + " RETURN count(*) AS n"))).startsWith("(Record");
+    assertThat(chainLine(plan("MATCH " + unlabeledLast + " RETURN count(*) AS n"))).startsWith("(Chunk");
   }
 
   private long count(final String query) {
