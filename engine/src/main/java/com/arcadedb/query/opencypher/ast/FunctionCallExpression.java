@@ -22,11 +22,13 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.misc.CoalesceFunction;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -75,6 +77,17 @@ public class FunctionCallExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    // Inside the flush of an aggregation an aggregate is the value it accumulated, whichever expression evaluates it: IN,
+    // IS NULL, STARTS WITH, NOT or AND above it evaluate their operands themselves (issue #11597)
+    if (isAggregation()) {
+      final Map<String, Object> overrides = ExpressionEvaluator.currentAggregationOverrides();
+      if (overrides != null) {
+        final String key = getText();
+        if (overrides.containsKey(key))
+          return overrides.get(key);
+      }
+    }
+
     // Try to resolve the function through the context-stored resolver
     if (context != null) {
       @SuppressWarnings("unchecked")

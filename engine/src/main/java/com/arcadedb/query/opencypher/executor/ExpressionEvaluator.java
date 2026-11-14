@@ -78,6 +78,15 @@ public class ExpressionEvaluator {
   }
 
   /**
+   * The aggregated values of the aggregation flush running on this thread, keyed by the text of each aggregate call, or
+   * null outside a flush. {@link FunctionCallExpression#evaluate} reads them too, for the expressions that evaluate their
+   * operands themselves rather than through this evaluator (issue #11597).
+   */
+  public static Map<String, Object> currentAggregationOverrides() {
+    return AGGREGATION_OVERRIDES.get();
+  }
+
+  /**
    * Evaluate an expression against a result row.
    */
   public Object evaluate(final Expression expression, final Result result, final CommandContext context) {

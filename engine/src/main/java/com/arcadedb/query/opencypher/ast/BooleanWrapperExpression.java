@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.util.function.Consumer;
+
 /**
  * Wrapper that adapts a BooleanExpression to the Expression interface.
  * Used when boolean expressions need to be used in contexts that expect Expression
@@ -49,14 +51,54 @@ public class BooleanWrapperExpression implements Expression {
   }
 
   static boolean booleanContainsAggregation(final BooleanExpression expr) {
-    if (expr instanceof ComparisonExpression comp)
-      return comp.getLeft().containsAggregation() || comp.getRight().containsAggregation();
-    if (expr instanceof LogicalExpression logical) {
-      if (booleanContainsAggregation(logical.getLeft()))
-        return true;
-      return logical.getRight() != null && booleanContainsAggregation(logical.getRight());
+    final boolean[] found = new boolean[1];
+    forEachOperand(expr, operand -> found[0] |= operand.containsAggregation());
+    return found[0];
+  }
+
+  /**
+   * Hands {@code action} every operand expression of {@code expr}, descending through the boolean expressions an AND, OR
+   * or NOT joins. {@link #booleanContainsAggregation} and the aggregation steps both walk a boolean expression with it, so
+   * an aggregate under IN, IS NULL, STARTS WITH, =~ or a label check is seen by both (issue #11597).
+   */
+  public static void forEachOperand(final BooleanExpression expr, final Consumer<Expression> action) {
+    switch (expr) {
+    case null -> {
     }
-    return false;
+    case ComparisonExpression comparison -> {
+      accept(comparison.getLeft(), action);
+      accept(comparison.getRight(), action);
+    }
+    case LogicalExpression logical -> {
+      forEachOperand(logical.getLeft(), action);
+      forEachOperand(logical.getRight(), action);
+    }
+    case InExpression in -> {
+      accept(in.getExpression(), action);
+      for (final Expression element : in.getList())
+        accept(element, action);
+    }
+    case IsNullExpression isNull -> accept(isNull.getExpression(), action);
+    case StringMatchExpression match -> {
+      accept(match.getExpression(), action);
+      accept(match.getPattern(), action);
+    }
+    case RegexExpression regex -> {
+      accept(regex.getExpression(), action);
+      accept(regex.getPattern(), action);
+    }
+    case LabelCheckExpression label -> accept(label.getVariableExpression(), action);
+    case BooleanCoercionExpression coercion -> accept(coercion.getExpression(), action);
+    case IsTypedExpression typed -> accept(typed.getValueExpression(), action);
+    case IsNormalizedExpression normalized -> accept(normalized.getValueExpression(), action);
+    default -> {
+    }
+    }
+  }
+
+  private static void accept(final Expression operand, final Consumer<Expression> action) {
+    if (operand != null)
+      action.accept(operand);
   }
 
   @Override
