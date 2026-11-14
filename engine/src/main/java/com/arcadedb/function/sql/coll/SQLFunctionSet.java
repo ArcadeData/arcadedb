@@ -20,11 +20,11 @@ package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
-import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -44,13 +44,13 @@ public class SQLFunctionSet extends SQLAggregatedCollectionFunction<Set<Object>>
       final CommandContext ctx) {
     if (params.length > 1)
       // IN LINE MODE
-      context = new HashSet<Object>();
+      context = new DistinctValueSet();
 
     for (final Object value : params) {
       if (value != null) {
         if (params.length == 1 && context == null)
           // AGGREGATION MODE (STATEFULL)
-          context = new HashSet<Object>();
+          context = new DistinctValueSet();
 
         if (value instanceof Document)
           context.add(value);

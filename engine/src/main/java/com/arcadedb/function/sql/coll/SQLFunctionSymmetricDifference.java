@@ -19,11 +19,11 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -72,8 +72,8 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
     if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
-        context = new HashSet<Object>();
-        rejected = new HashSet<Object>();
+        context = new DistinctValueSet();
+        rejected = new DistinctValueSet();
       }
       if (value instanceof Collection<?>) {
         addItemsToResult((Collection<Object>) value, context, rejected);
@@ -84,8 +84,8 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
       return null;
     } else {
       // IN-LINE MODE (STATELESS)
-      final Set<Object> result = new HashSet<Object>();
-      final Set<Object> rejected = new HashSet<Object>();
+      final Set<Object> result = new DistinctValueSet();
+      final Set<Object> rejected = new DistinctValueSet();
 
       for (final Object iParameter : params) {
         if (iParameter instanceof Collection<?>) {
