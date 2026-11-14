@@ -283,7 +283,8 @@ public class CypherExecutionPlanner {
     // (MATCH → CREATE → SET → DELETE → REMOVE → MERGE → UNWIND → WITH → RETURN).
     // This breaks queries where clause ordering matters, e.g. WITH before DELETE or UNWIND before SET.
     // Fall back to ordered execution when write/mutating clauses are interleaved with WITH/UNWIND,
-    // or when MATCH appears after WITH (MATCH-WITH-MATCH pattern).
+    // or when MATCH appears after WITH or UNWIND (MATCH-WITH-MATCH, MATCH-UNWIND-MATCH): the later
+    // MATCH may read the UNWIND variable, which the optimizer would bind only after it (issue #11586).
     if (statement.getClausesInOrder() != null) {
       int mergeCount = 0;
       int deleteCount = 0;
@@ -295,7 +296,7 @@ public class CypherExecutionPlanner {
         // Validate ordering before updating state
         if ((seenWith || seenUnwind) && MUTATING_CLAUSES.contains(type))
           return false;
-        if (seenWith && type == ClauseEntry.ClauseType.MATCH)
+        if ((seenWith || seenUnwind) && type == ClauseEntry.ClauseType.MATCH)
           return false;
 
         switch (type) {
