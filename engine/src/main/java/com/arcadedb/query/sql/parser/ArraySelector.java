@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.NumberUtils;
 
 import java.lang.reflect.Array;
 import java.util.*;
@@ -62,9 +63,9 @@ public class ArraySelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number number) {
-      return number.intValue();
-    }
+    // Clamped, not narrowed: intValue() wrapped an index beyond the int range round to an element of the list (issue #11626)
+    if (result instanceof Number number)
+      return NumberUtils.saturateToInt(number);
     return result;
   }
 
@@ -81,9 +82,9 @@ public class ArraySelector extends SimpleNode {
     if (result == null) {
       return null;
     }
-    if (result instanceof Number number) {
-      return number.intValue();
-    }
+    // Clamped, not narrowed: intValue() wrapped an index beyond the int range round to an element of the list (issue #11626)
+    if (result instanceof Number number)
+      return NumberUtils.saturateToInt(number);
     return result;
   }
 

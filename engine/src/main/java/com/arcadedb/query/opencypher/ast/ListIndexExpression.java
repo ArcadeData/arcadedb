@@ -27,6 +27,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.Collection;
 import java.util.Map;
@@ -89,21 +90,23 @@ public class ListIndexExpression implements PropertyReadExpression {
       return null;
     }
 
-    // Convert index to integer — validate type for list indexing
+    // Convert index to integer, validating the type for list indexing. Clamped, not narrowed: a list holds at most
+    // Integer.MAX_VALUE elements, so a clamped index is out of range exactly when the long one is, while intValue() kept the
+    // low 32 bits and wrapped [1,2,3][4294967296] round to the first element (issue #11626)
     final int index;
     if (indexValue instanceof Long || indexValue instanceof Integer)
-      index = ((Number) indexValue).intValue();
+      index = NumberUtils.saturateToInt((Number) indexValue);
     else if (indexValue instanceof Double || indexValue instanceof Float) {
       // Float indices are a type error for lists in Cypher
       if (isListLike)
         throw new TypeMismatchException("TypeError: list index must be an integer, got FLOAT");
-      index = ((Number) indexValue).intValue();
+      index = NumberUtils.saturateToInt((Number) indexValue);
     } else if (indexValue instanceof Boolean) {
       if (isListLike)
         throw new TypeMismatchException("TypeError: list index must be an integer, got BOOLEAN");
       return null;
     } else if (indexValue instanceof Number)
-      index = ((Number) indexValue).intValue();
+      index = NumberUtils.saturateToInt((Number) indexValue);
     else {
       if (isListLike)
         throw new TypeMismatchException("TypeError: list index must be an integer, got " + CypherFunctionHelper.cypherTypeName(indexValue));
