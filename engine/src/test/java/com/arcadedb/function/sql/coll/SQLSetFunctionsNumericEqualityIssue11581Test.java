@@ -58,6 +58,14 @@ class SQLSetFunctionsNumericEqualityIssue11581Test extends TestHelper {
   }
 
   @Test
+  void inlineSetOnAListWrittenByEitherLanguage() {
+    for (final String src : new String[] { "sql", "cypher" }) {
+      assertThat(longs("SELECT set(l, [1, 3]) AS v FROM V WHERE src = '" + src + "'")).as(src)
+          .containsExactlyInAnyOrder(1L, 2L, 3L);
+    }
+  }
+
+  @Test
   void aggregatesOverListsWrittenByBothLanguages() {
     assertThat(longs("SELECT set(l) AS v FROM V")).containsExactlyInAnyOrder(1L, 2L);
     assertThat(longs("SELECT intersect(l) AS v FROM V")).containsExactlyInAnyOrder(1L, 2L);
