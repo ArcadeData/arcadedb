@@ -164,9 +164,16 @@ import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
+import com.arcadedb.query.opencypher.optimizer.AnchorSelector;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
+import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
+import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
+import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.index.IndexException;
@@ -231,6 +238,15 @@ public class CypherExecutionPlan {
   /** The rows a seeded body ({@code CALL { }}, a subquery expression) reads at a time when its caller names no demand. */
   public static final int SEEDED_BATCH_SIZE = 100;
 
+  /**
+   * How much smaller than its label an index seek's estimated rows must be for a count to be left to the ordinary plan rather than
+   * pushed down (issue #11680). The pipeline pays more per row than a push-down pays per vertex it walks: on the issue's graph an
+   * anchored chain walked a Record in about 0.25 us and a Section in about 2 us, while the seek plus expansion produced a row in
+   * at most 13 us. A factor of 100 keeps the seek ahead even at that worst ratio, so only a seek that clearly reads a small part of
+   * the label declines the push-down. With the optimizer's estimates that is a UNIQUE key, or a key of three columns or more.
+   */
+  private static final int SELECTIVE_ANCHOR_LABEL_SHARE = 100;
+
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
   private final Map<String, Object>  parameters;
@@ -247,6 +263,12 @@ public class CypherExecutionPlan {
 
   /** See {@link #foldedCountPlan()}: null until computed, empty when there is nothing to fold. */
   private volatile Optional<CypherExecutionPlan> foldedCountPlan;
+  /**
+   * The plan whose ordinary pipeline runs when the count push-downs decline this statement: this one, or, for the folded plan of
+   * {@link #foldedCountPlan()}, the plan it was folded from, which keeps the physical plan the folded one is built without
+   * (issue #11680). Set before the folded plan is published.
+   */
+  private CypherExecutionPlan pipelinePlan = this;
 
   // UNION support
   private final List<CypherExecutionPlan> unionSubqueryPlans;
@@ -6933,8 +6955,14 @@ public class CypherExecutionPlan {
     Optional<CypherExecutionPlan> folded = foldedCountPlan;
     if (folded == null) {
       final CypherStatement foldedStatement = countPushDownForm();
-      folded = foldedStatement == statement ? Optional.empty() :
-          Optional.of(new CypherExecutionPlan(database, foldedStatement, parameters, configuration, null, expressionEvaluator));
+      if (foldedStatement == statement)
+        folded = Optional.empty();
+      else {
+        final CypherExecutionPlan foldedPlan = new CypherExecutionPlan(database, foldedStatement, parameters, configuration, null,
+            expressionEvaluator);
+        foldedPlan.pipelinePlan = this;
+        folded = Optional.of(foldedPlan);
+      }
       foldedCountPlan = folded;
     }
     return folded.orElse(null);
@@ -7204,7 +7232,74 @@ public class CypherExecutionPlan {
     if (mandatoryPatternElementIsEmpty(context.getDatabase()))
       return new ConstantCountStep(0L, alias, context);
 
+    // Every operator above walks a label: the chain visits every vertex of its first node's label, the star every vertex of its
+    // central node's label, and an anchor's inline map or WHERE equality only filters what they visit. A statement whose
+    // ordinary plan starts from a selective index seek costs that seek and the expansion from it, the same at any graph size,
+    // which is what the same statement with sum(1) gets; pushed down it cost the whole label (issue #11680). A correlated body
+    // is seeded from the anchor its outer row bound, so it has no label to walk.
+    if (!correlation.isCorrelated() && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor())
+      return null;
+
     return new CSRCountStep(op, alias, context);
+  }
+
+  /**
+   * Whether the ordinary plan of this statement starts from an index seek, or a lookup by id, estimated to find a few vertices of
+   * a label (issue #11680). That plan costs the seek and the expansion from what it finds, the same at any graph size, while a
+   * count push-down walks a whole label to reach the same answer.
+   * <p>
+   * The anchor is the one the ordinary plan actually starts from, so the answer is never "seekable" for a plan that would scan:
+   * the optimizer's own anchor when its physical plan runs, which an index-backed node always wins (issue #5306), and otherwise
+   * the first node of the first MATCH clause, which is where the pipeline of {@link #buildExecutionSteps} and
+   * {@link #buildExecutionStepsWithOrder} starts. Both are judged by {@link AnchorSelector}, the estimate the optimizer plans
+   * with, rather than by a second index matcher.
+   */
+  private boolean ordinaryPlanSeeksASelectiveAnchor() {
+    final StatisticsProvider statistics = new StatisticsProvider(database);
+    if (canUseOptimizedPhysicalPlan())
+      return isSelectiveSeek(physicalPlan.getAnchor(), statistics);
+
+    final List<MatchClause> matchClauses = statement.getMatchClauses();
+    if (matchClauses == null || matchClauses.isEmpty())
+      return false;
+    final MatchClause first = matchClauses.getFirst();
+    if (first.isOptional() || !first.hasPathPatterns())
+      return false;
+    final PathPattern path = first.getPathPatterns().getFirst();
+    if (path instanceof ShortestPathPattern)
+      return false;
+    final NodePattern node = path.getFirstNode();
+    // the pipeline reads the clause's own WHERE, or the statement's when the clause has none, exactly as here
+    final WhereClause where = first.hasWhereClause() ? first.getWhereClause() : statement.getWhereClause();
+    // a lookup by id finds one record at most
+    if (node.getVariable() != null && extractIdFilter(where, node.getVariable()) != null)
+      return true;
+    // only a single static label lets the node step seek an index (MatchNodeStep.computeVertexIterator)
+    if (node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
+      return false;
+
+    // The node judged over its own pattern and WHERE alone: an OPTIONAL clause's predicates do not narrow where the pipeline starts
+    final LogicalPlan plan = LogicalPlan.fromAST(new SimpleCypherStatement("", List.of(new MatchClause(List.of(path), false, where)),
+        null, null, false, false, false));
+    statistics.collectStatistics(node.getLabels());
+    final LogicalNode firstNode = plan.getPatternNodes().values().iterator().next();
+    return isSelectiveSeek(new AnchorSelector(statistics, new CostModel(statistics)).evaluateNodeDirect(firstNode, plan), statistics);
+  }
+
+  /**
+   * Whether an anchor is an index seek estimated to find few vertices: one row of a UNIQUE index whose whole key is bound, or
+   * fewer than one row in {@link #SELECTIVE_ANCHOR_LABEL_SHARE} of the label it seeks. A range scan never is, whatever its
+   * estimate.
+   */
+  private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics) {
+    if (anchor == null || !anchor.useIndex() || anchor.isRangeScan() || anchor.getNode() == null)
+      return false;
+    final long rows = Math.max(1L, anchor.getEstimatedCardinality());
+    final IndexStatistics index = anchor.getIndex();
+    if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
+      return true;
+    final LogicalNode node = anchor.getNode();
+    return rows * SELECTIVE_ANCHOR_LABEL_SHARE < statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
   }
 
   /**
