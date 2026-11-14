@@ -31,6 +31,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
@@ -5483,6 +5484,35 @@ public class SelectExecutionPlanner {
     return expression != null && expression.isBaseIdentifier() && propertyName.equals(expression.getDefaultAlias().getStringValue());
   }
 
+  /**
+   * True when every condition the index search leaves to the filter is on {@code sortKey} itself (a comparison, a BETWEEN, an IS
+   * NOT NULL): the conditions an ordered walk of the sort key's index answers with its range, so it filters only on the equality.
+   */
+  private static boolean residualOnlyConstrainsSortKey(final BooleanExpression remaining, final String sortKey) {
+    if (remaining == null)
+      return true;
+    if (remaining instanceof AndBlock and) {
+      for (final BooleanExpression conjunct : and.getSubBlocks())
+        if (!constrainsOnly(conjunct, sortKey))
+          return false;
+      return true;
+    }
+    return constrainsOnly(remaining, sortKey);
+  }
+
+  private static boolean constrainsOnly(final BooleanExpression condition, final String property) {
+    final Expression subject;
+    if (condition instanceof BinaryCondition binary)
+      subject = binary.getLeft();
+    else if (condition instanceof BetweenCondition between)
+      subject = between.getFirst();
+    else if (condition instanceof IsNotNullCondition notNull)
+      subject = notNull.expression;
+    else
+      return false;
+    return isPropertyReference(subject, property);
+  }
+
   private boolean handleTypeAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetType,
       final Set<String> filterBuckets, final QueryPlanningInfo info, final CommandContext context) {
 
@@ -5614,11 +5644,222 @@ public class SelectExecutionPlanner {
     if (indexSearchDescriptors.contains(null))
       return null; // some blocks could not be managed with an index, fall back to full scan
 
+    // A keyset page (WHERE e = ? AND k > :after ORDER BY k LIMIT n) can cost less walking k's index in order (issue #11700)
+    if (allowDeferredLetFilter && indexSearchDescriptors.size() == 1) {
+      final IndexSearchDescriptor orderedWalk = cheaperOrderedWalk(indexSearchDescriptors.getFirst(), indexes,
+          info.flattenedWhereClause.getFirst(), typez, info, context);
+      if (orderedWalk == WALK_WHOLE_ORDER_INDEX)
+        // No condition on the sort key reaches its index: handleClassWithIndexForSortOnly() walks the whole index in order and
+        // handleWhere() filters what it returns
+        return null;
+      if (orderedWalk != null)
+        indexSearchDescriptors = List.of(orderedWalk);
+    }
+
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
 
     return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors,
         allowDeferredLetFilter);
+  }
+
+  /** What {@link #cheaperOrderedWalk} answers when the whole index of the sort key is to be walked in order. */
+  private static final IndexSearchDescriptor WALK_WHOLE_ORDER_INDEX = new IndexSearchDescriptor();
+
+  /**
+   * Weighs the index search {@code chosen} against walking the index of the sort key in order, for a statement that keeps the first
+   * rows of a single sort key: {@code WHERE e = ? AND k > :after ORDER BY k LIMIT n}, the page of a keyset walk (issue #11700).
+   * <p>
+   * The search reads the m entries the equality matches, then sorts them to keep n. The ordered walk needs no sort and stops at the
+   * n-th row that passes the equality: at its selectivity m / N, in a type of N records, it reads about n * N / m entries. It is
+   * chosen only when that is under half of m. The margin covers two things the entry counts leave out: the search loads its rows in
+   * physical order and in parallel (see GetValueFromIndexEntryStep), which costs less per row than the walk's loads in key order,
+   * and the estimate assumes that the matches spread evenly along the sort key. A walk whose matches gather at the far end of the
+   * range reads up to all of it, where the search never reads more than m. Taken together the walk wins when m * m &gt; 2 * n * N,
+   * so the matches are counted only up to one past that point: about sqrt(2 * n * N) index entries, and no record, per planning.
+   * <p>
+   * The current plan is kept without a LIMIT, with several sort keys or a sort on an expression, with an aggregation, when the search
+   * already returns the rows in order (a composite index on (e, k)), when no index leads with the sort key, and when the matches
+   * of the search cannot be counted from the statement (anything but equalities, or one IN, on literals and bound parameters).
+   *
+   * @return the search on the sort key's index, {@link #WALK_WHOLE_ORDER_INDEX} when no condition on the sort key reaches its
+   * index, or null to keep {@code chosen}
+   */
+  private IndexSearchDescriptor cheaperOrderedWalk(final IndexSearchDescriptor chosen, final List<TypeIndex> indexes,
+      final AndBlock block, final DocumentType type, final QueryPlanningInfo info, final CommandContext context) {
+    final String sortKey = singleSortKey(info);
+    if (sortKey == null)
+      return null;
+    try {
+      if (chosen.keyCondition instanceof AndBlock key && fullySorted(info, key, chosen.getIndex()))
+        return null;
+    } catch (final IndexException e) {
+      logSkippedIndex(chosen.getIndex(), e);
+      return null;
+    }
+    // The estimate below counts only the entries of the equality: a residual condition on anything but the sort key filters the
+    // walk further, by a fraction the planner does not know, and can make it read up to the whole index for one page
+    if (!residualOnlyConstrainsSortKey(chosen.getRemainingCondition(), sortKey))
+      return null;
+
+    final long rows = rowsToReturn(info, context);
+    if (rows <= 0)
+      return null;
+
+    IndexSearchDescriptor walk = null;
+    int walkProperties = 0;
+    boolean leadingIndexFound = false;
+    boolean nullsIndexed = true;
+    for (final TypeIndex index : indexes) {
+      try {
+        if (!index.supportsOrderedIterations() || holdsFoldedKeys(index))
+          continue;
+        final List<String> properties = index.getPropertyNames();
+        if (!sortKey.equals(properties.getFirst()))
+          continue;
+        leadingIndexFound = true;
+        if (index.getNullStrategy() != LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+          nullsIndexed = false;
+        final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, block, type);
+        if (candidate == null || !(candidate.keyCondition instanceof AndBlock key) || key.getSubBlocks().size() != 1
+            || candidate.requiresMultipleIndexLookups() || !fullySorted(info, key, index))
+          continue;
+        // the fewer properties the index holds, the more entries a page fits in
+        if (walk == null || properties.size() < walkProperties) {
+          walk = candidate;
+          walkProperties = properties.size();
+        }
+      } catch (final IndexException e) {
+        logSkippedIndex(index, e);
+      }
+    }
+    // A walk of the whole index also scans the type for the records the index does not hold, unless none can be returned
+    if (walk == null && (!leadingIndexFound || !(nullsIndexed || cannotHoldNull(type, sortKey, info))))
+      return null;
+
+    // The choice reads the size of the data and the values bound to the statement: like rewriteDistinctAsGroupBy(), the plan is
+    // made again for every execution, so that a type that grows or a parameter bound to another value is weighed again
+    planDependsOnInputParameters = true;
+
+    final long typeRecords = context.getDatabase().countType(type.getName(), true);
+    final double breakEven = Math.sqrt(2.0 * rows * typeRecords);
+    if (breakEven >= typeRecords)
+      // the search cannot match more records than the type holds
+      return null;
+
+    final long matches = countMatchingEntries(chosen, (long) breakEven + 1, context);
+    if (matches <= 0)
+      return null;
+    final long walked = Math.min(typeRecords, (long) Math.ceil((double) rows * typeRecords / matches));
+    if (2 * walked >= matches)
+      return null;
+    return walk != null ? walk : WALK_WHOLE_ORDER_INDEX;
+  }
+
+  /**
+   * The property of the only ORDER BY item of a statement whose first rows are its answer, or null: no LIMIT, an ORDER BY of
+   * several items or on anything but a property, or rows that are aggregated, deduplicated or multiplied before the ORDER BY.
+   */
+  private static String singleSortKey(final QueryPlanningInfo info) {
+    if (info.orderApplied || info.limit == null || info.orderBy == null || info.orderBy.getItems() == null
+        || info.orderBy.getItems().size() != 1)
+      return null;
+    if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.expand || info.unwind != null)
+      return null;
+    return resolveOrderByProperty(info.orderBy.getItems().getFirst(), info);
+  }
+
+  /** The rows the statement reads before its LIMIT stops it (SKIP included), or -1 when that is not known at planning time. */
+  private static long rowsToReturn(final QueryPlanningInfo info, final CommandContext context) {
+    try {
+      final int limit = info.limit.getValue(context);
+      final int skip = info.skip != null ? info.skip.getValue(context) : 0;
+      return limit <= 0 ? -1 : (long) limit + Math.max(0, skip);
+    } catch (final RuntimeException e) {
+      // a LIMIT or SKIP read from a variable is not known yet
+      return -1;
+    }
+  }
+
+  /**
+   * How many entries the index search reads, counted up to {@code cap}, or -1 when the statement does not tell: its key has to be
+   * made of equalities on literals and bound parameters, or of one IN on a literal list or a bound parameter.
+   */
+  private static long countMatchingEntries(final IndexSearchDescriptor search, final long cap, final CommandContext context) {
+    if (search.additionalRangeCondition != null || !(search.getIndex() instanceof TypeIndex index))
+      return -1;
+
+    final List<BooleanExpression> blocks = search.getSubBlocks();
+    final List<Object[]> keys = new ArrayList<>();
+    try {
+      final List<String> properties = index.getPropertyNames();
+      for (final String property : properties)
+        if (!Index.basePropertyName(property).equals(property))
+          return -1;
+
+      if (blocks.size() == 1 && properties.size() == 1 && blocks.getFirst() instanceof InCondition in) {
+        if (in.getRightParam() == null && (in.getRightMathExpression() == null || !in.getRightMathExpression().isLiteral(true)))
+          return -1;
+        if (!(in.evaluateRight((Result) null, context) instanceof Collection<?> values))
+          return -1;
+        for (final Object value : values) {
+          if (value == null)
+            return -1;
+          keys.add(new Object[] { value });
+        }
+      } else {
+        final Object[] key = new Object[blocks.size()];
+        for (int i = 0; i < key.length; i++) {
+          if (!(blocks.get(i) instanceof BinaryCondition condition) || !(condition.getOperator() instanceof EqualsCompareOperator))
+            return -1;
+          final Expression right = condition.getRight();
+          if (!right.isLiteral() && !isBareInputParameter(right))
+            return -1;
+          key[i] = right.execute((Result) null, context);
+          if (key[i] == null || MultiValue.isMultiValue(key[i]))
+            return -1;
+        }
+        keys.add(key);
+      }
+
+      final boolean fullKey = blocks.size() == properties.size();
+      long entries = 0;
+      for (final Object[] key : keys) {
+        if (fullKey) {
+          // A record lives in one bucket, so the sub-indexes of the buckets hold disjoint entries: counted one by one, they spare
+          // the set TypeIndex.get() merges them into
+          for (final Index bucketIndex : index.getIndexesByKeys(key)) {
+            entries += countUpTo(bucketIndex.get(key, (int) Math.min(Integer.MAX_VALUE, cap - entries)), cap - entries);
+            if (entries >= cap)
+              return entries;
+          }
+        } else {
+          entries += countUpTo(index.range(true, key, true, key, true), cap - entries);
+          if (entries >= cap)
+            return entries;
+        }
+      }
+      return entries;
+    } catch (final IndexException e) {
+      // dropped or rebuilt while counting: no estimate
+      return -1;
+    } catch (final RuntimeException e) {
+      // the same, read as the page manager's "File with id n was not found" when a drop deletes the files under the cursor
+      if (TypeIndex.isStaleRead(index, e))
+        return -1;
+      throw e;
+    }
+  }
+
+  private static long countUpTo(final IndexCursor cursor, final long max) {
+    try (cursor) {
+      long entries = 0;
+      while (entries < max && cursor.hasNext()) {
+        cursor.next();
+        ++entries;
+      }
+      return entries;
+    }
   }
 
   private List<ExecutionStepInternal> executionStepFromIndexes(final Set<String> filterClusters, final DocumentType clazz,
