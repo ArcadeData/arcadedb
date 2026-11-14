@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -65,5 +66,52 @@ class IndexRangeRowRecheckTest extends TestHelper {
     }
 
     assertThat(values).as("every row a statement returns satisfies its WHERE").allMatch(v -> v instanceof Integer i && i >= 3 && i < 5);
+  }
+
+  /**
+   * The same stale entries fed a DELETE with a range WHERE: it loaded the record a commit had moved out of the range and deleted
+   * it, with no conflict to stop it since it deleted the version it had just read.
+   */
+  @Test
+  void aRangeDeleteDoesNotDeleteARecordACommitMovedOutOfTheRange() throws Exception {
+    database.transaction(() -> {
+      final var type = database.getSchema().createDocumentType("T");
+      type.createProperty("v", Type.INTEGER);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "v");
+      for (int i = 0; i < RECORDS; i++)
+        database.newDocument("T").set("k", i).set("v", i % 10).save();
+    });
+
+    // On the first record the DELETE removes, another transaction moves every OTHER record of the range out of it and commits (the
+    // record being deleted is left alone: a concurrent change to it is the version conflict of another issue, #11733)
+    final boolean[] moved = { false };
+    final BeforeRecordDeleteListener moveOnce = record -> {
+      if (!moved[0]) {
+        moved[0] = true;
+        final FutureTask<Void> move = new FutureTask<>(() -> {
+          database.transaction(() -> database.command("sql", "UPDATE T SET v = 100 WHERE v >= 3 AND v < 5 AND @rid <> ?",
+              record.getIdentity()));
+          return null;
+        });
+        new Thread(move).start();
+        try {
+          move.get(60, TimeUnit.SECONDS);
+        } catch (final Exception e) {
+          throw new IllegalStateException(e);
+        }
+      }
+      return true;
+    };
+    database.getEvents().registerListener(moveOnce);
+    try {
+      database.transaction(() -> database.command("sql", "DELETE FROM T WHERE v >= 3 AND v < 5"));
+    } finally {
+      database.getEvents().unregisterListener(moveOnce);
+    }
+
+    try (final ResultSet rows = database.query("sql", "SELECT count(*) AS c FROM T WHERE v = 100")) {
+      assertThat(rows.next().<Number>getProperty("c").longValue())
+          .as("the records moved out of the range before the DELETE reached them are not deleted").isEqualTo(RECORDS / 5 - 1);
+    }
   }
 }
