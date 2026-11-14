@@ -72,6 +72,7 @@ import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -5741,9 +5742,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           mb.putEntries(Property.TYPE_PROPERTY, GrpcValue.newBuilder().setStringValue(element.getTypeName()).build());
       }
       try {
-        for (String k : res.getPropertyNames()) {
-          mb.putEntries(k, toGrpcValue(res.getProperty(k), pc));
-        }
+        // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+        for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(res).entrySet())
+          mb.putEntries(property.getKey(), toGrpcValue(property.getValue(), pc));
       } catch (Throwable ignore) {
       }
 
@@ -6461,8 +6462,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
     final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
-    for (String propertyName : result.getPropertyNames()) {
-      final Object value = result.getProperty(propertyName);
+    // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+    for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet()) {
+      final String propertyName = property.getKey();
+      final Object value = property.getValue();
 
       if (debug)
         LogManager.instance()

@@ -116,6 +116,29 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * Every name {@code row}'s {@link Result#getPropertyNames()} lists, with the value its {@link Result#getProperty(String)}
+   * answers, for a consumer that reads the whole row: the HTTP and gRPC row serializers (issue #11738).
+   * <p>
+   * Asking for each name in turn reads a row backed by a stored record once per property, since
+   * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a row of P
+   * properties cost P walks. A plain row is answered by {@link #toPropertyMap(boolean)} instead, which reads the record
+   * once (issue #10098). A subclass may answer a name differently from the fields that method reads, so it takes the
+   * general route, as in {@link #copyBindings}.
+   *
+   * @return a new map, in the order {@code getPropertyNames()} lists the names
+   */
+  public static Map<String, Object> propertiesOf(final Result row) {
+    if (row.getClass() == ResultInternal.class)
+      return row.toPropertyMap(false);
+
+    final Set<String> names = row.getPropertyNames();
+    final Map<String, Object> properties = new LinkedHashMap<>(names.size());
+    for (final String name : names)
+      properties.put(name, row.getProperty(name));
+    return properties;
+  }
+
+  /**
    * A new row carrying every binding of {@code source}, for an operator that extends a row with further bindings - a
    * graph expansion does it once per row it produces (issue #8537).
    * <p>

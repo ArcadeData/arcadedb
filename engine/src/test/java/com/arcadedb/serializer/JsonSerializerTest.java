@@ -19,11 +19,14 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.CountingImmutableDocument;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -38,6 +41,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Date;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -410,5 +414,40 @@ class JsonSerializerTest extends TestHelper {
       final JSONObject json = new JsonSerializer(database).serializeResult(database, rs.next());
       assertThat(json.getString("d")).isEqualTo("2026-06-12");
     }
+  }
+
+  /**
+   * Issue #11738: a row backed by a stored record was serialized one property at a time, and every
+   * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a record
+   * of P properties cost P walks: 3.5 ms per row at 1600 properties over HTTP. The guarantee is the number of passes:
+   * serializing the whole row reads the record once, and every property still comes out with its value.
+   */
+  @Test
+  void aRowBackedByARecordIsSerializedInOnePassOverTheRecord() {
+    final int properties = 40;
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("WideRow");
+      final MutableDocument doc = database.newDocument("WideRow");
+      for (int i = 0; i < properties; i++)
+        doc.set("p" + i, "value-" + i);
+      doc.set("n", 7).set("list", List.of(1, 2, 3)).set("nothing", null);
+      rid[0] = doc.save().getIdentity();
+    });
+
+    database.transaction(() -> {
+      final CountingImmutableDocument document = new CountingImmutableDocument(database, database.getSchema().getType("WideRow"), rid[0]);
+
+      final JSONObject json = jsonSerializer.serializeResult(database, new ResultInternal(document));
+
+      assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
+      assertThat(document.headerWalks()).as("passes over the record header").isEqualTo(1);
+      for (int i = 0; i < properties; i++)
+        assertThat(json.getString("p" + i)).isEqualTo("value-" + i);
+      assertThat(json.getInt("n")).isEqualTo(7);
+      assertThat(json.getJSONArray("list").length()).isEqualTo(3);
+      assertThat(json.has("nothing")).isTrue();
+      assertThat(json.getString("@rid")).isEqualTo(rid[0].toString());
+    });
   }
 }
