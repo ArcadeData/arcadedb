@@ -53,6 +53,14 @@ class CypherOrderByStepDisplayIssue11702Test extends TestHelper {
     assertThat(planLines("EXPLAIN MATCH (x:Item) RETURN x.n AS n ORDER BY n DESC LIMIT 3")).contains("+ ORDER BY n DESC (top 3)");
   }
 
+  /** LIMIT 0 does not take the top-k path (every row is sorted), so the plan must not claim a bound. */
+  @Test
+  void aZeroLimitShowsNoTopK() {
+    final List<String> lines = planLines("EXPLAIN MATCH (x:Item) RETURN x.n AS n ORDER BY n DESC LIMIT 0");
+    assertThat(lines).anyMatch(line -> line.startsWith("+ ORDER BY n DESC"));
+    assertThat(lines).noneMatch(line -> line.contains("(top "));
+  }
+
   /** The rows a sort read, on the full sort and on the top-k path: the counter used to count the one call that read them. */
   @Test
   void profileShowsTheSortsTimeAndRows() {

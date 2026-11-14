@@ -496,7 +496,8 @@ public class OrderByStep extends AbstractExecutionStep {
         builder.append(", ");
       builder.append(items.get(i).getExpression()).append(items.get(i).isAscending() ? " ASC" : " DESC");
     }
-    if (limit != null)
+    // same guard as materializeAndSort: a LIMIT 0 (or an empty clause) sorts every row, so no bound to show
+    if (limit != null && limit > 0 && !orderByClause.isEmpty())
       builder.append(" (top ").append(limit).append(")");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
