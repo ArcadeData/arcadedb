@@ -57,6 +57,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -555,6 +556,19 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final RaftHAServer raft = raftHAServer;
     if (raft != null)
       raft.waitForLocalApply();
+  }
+
+  @Override
+  public boolean awaitLocally(final BooleanSupplier condition) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return condition.getAsBoolean();
+    try {
+      return raft.awaitApplied(condition, raft.getQuorumTimeout());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return condition.getAsBoolean();
+    }
   }
 
   @Override

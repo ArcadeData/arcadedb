@@ -27,6 +27,7 @@ import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 
 /**
  * Public interface for the High Availability server plugin. Consumed by HTTP handlers,
@@ -884,6 +885,18 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default void awaitLocalApply() {
     // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Waits, bounded by the quorum timeout, until {@code condition} holds on THIS node, evaluating it again whenever the state
+   * machine applies an entry (issue #11739). For a command this node forwarded to the leader, whose effect reaches this node
+   * only when it applies the entry the leader committed. Best-effort: it returns {@code false} when the deadline passes. The
+   * default, for non-HA setups, only evaluates the condition.
+   *
+   * @return whether the condition holds
+   */
+  default boolean awaitLocally(final BooleanSupplier condition) {
+    return condition.getAsBoolean();
   }
 
   /**

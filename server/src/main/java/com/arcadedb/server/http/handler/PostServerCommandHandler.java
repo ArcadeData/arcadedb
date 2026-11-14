@@ -35,6 +35,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -117,8 +118,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       // the wire, and null is how a handler says so to AbstractServerHttpHandler.
       if (forwarded == LeaderCommandForwarder.STREAMED)
         return null;
-      if (forwarded != null)
+      if (forwarded != null) {
+        if (forwarded.getCode() == 200 && command_lc.startsWith(CREATE_DATABASE))
+          awaitForwardedCreation(extractTarget(command, CREATE_DATABASE));
         return forwarded;
+      }
     }
 
     if (command_lc.startsWith(SHUTDOWN))
@@ -489,6 +493,20 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // The cluster-wide create lives in the control plane so gRPC's CreateDatabase runs the same
     // thing rather than a second implementation that forgot the replication half (issue #7389).
     controlPlane.createDatabase(databaseName);
+  }
+
+  /**
+   * Waits, bounded by the quorum timeout, for a database whose creation this node forwarded to the leader to exist here
+   * (issue #11739). The leader answers once its entry is committed, but this node installs the database only when it applies
+   * that entry, which can be after the answer: relaying it at once let the client's next request to this node be refused with
+   * {@code DatabaseNotFoundException}. The database is created either way, so a wait that runs out still answers success.
+   */
+  private void awaitForwardedCreation(final String databaseName) {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    if (ha != null && !databaseName.isEmpty() && !ha.awaitLocally(() -> httpServer.getServer().existsDatabase(databaseName)))
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s' was created by the leader but is not installed on this server yet: a request for it here may be refused "
+              + "until it is", databaseName);
   }
 
   /**
