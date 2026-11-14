@@ -272,7 +272,8 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
   private int[] resolveTargetBuckets(final Database db) {
     if (cachedTargetBuckets != null)
       return cachedTargetBuckets;
-    final DocumentType type = db.getSchema().getType(targetLabel);
+    // A label no type carries matches no vertex: the per-neighbour check below then counts none (issue #11599)
+    final DocumentType type = db.getSchema().getTypeOrNull(targetLabel);
     if (type == null)
       return null;
     final var buckets = type.getBuckets(true);
