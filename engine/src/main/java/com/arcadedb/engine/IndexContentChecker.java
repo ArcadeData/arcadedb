@@ -56,6 +56,11 @@ final class IndexContentChecker {
   private static final long FNV_OFFSET = 0xcbf29ce484222325L;
   private static final long FNV_PRIME  = 0x100000001b3L;
 
+  private final DatabaseInternal database;
+  private final BinarySerializer serializer;
+  private final int              maxExamples;
+  private final Binary           buffer = new Binary(128);
+
   /** What the precise pass found in one index. */
   static final class Report {
     long dangling;
@@ -83,11 +88,6 @@ final class IndexContentChecker {
       return count == other.count && sum == other.sum && mixedSum == other.mixedSum;
     }
   }
-
-  private final DatabaseInternal database;
-  private final BinarySerializer serializer;
-  private final int              maxExamples;
-  private final Binary           buffer = new Binary(128);
 
   IndexContentChecker(final DatabaseInternal database, final int maxExamples) {
     this.database = database;
@@ -228,8 +228,11 @@ final class IndexContentChecker {
       return false;
     final BinaryComparator comparator = serializer.getComparator();
     for (int i = 0; i < entryKey.length; i++) {
-      if (entryKey[i] == null || recordKey[i] == null) {
-        if (entryKey[i] != recordKey[i])
+      final boolean entryNull = entryKey[i] == null;
+      final boolean recordNull = recordKey[i] == null;
+      if (entryNull || recordNull) {
+        // a null component equals only a null one
+        if (entryNull != recordNull)
           return false;
       } else
         try {
