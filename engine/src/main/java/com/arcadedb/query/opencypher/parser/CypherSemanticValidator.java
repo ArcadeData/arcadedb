@@ -1116,6 +1116,16 @@ public class CypherSemanticValidator {
       final String varName = ((PropertyAccessExpression) expr).getVariableName();
       if (isValidVariableName(varName) && !scope.contains(varName))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
+    } else if (expr instanceof ChainedPropertyAccessExpression chained) {
+      // (n {id:1}).id: the receiver of the property read is an expression of its own (issue #11693)
+      checkExpressionScope(chained.getBaseExpression(), scope);
+    } else if (expr instanceof MapProjectionExpression projection) {
+      // n {.id} reads n just as RETURN n does, so an unbound n is refused rather than projected as null (issue #11693)
+      final String varName = projection.getVariableName();
+      if (isValidVariableName(varName) && !scope.contains(varName))
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
+      for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+        checkExpressionScope(element.getExpression(), scope);
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkExpressionScope(arg, scope);
@@ -1352,9 +1362,26 @@ public class CypherSemanticValidator {
     for (final SetClause.SetItem item : setClause.getItems()) {
       if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+      final Expression target = item.getTargetExpression();
+      if (target != null) {
+        checkExpressionScope(target, scope);
+        checkSetReceiverIsNotAMap(target);
+      }
       if (item.getValueExpression() != null)
         checkExpressionScope(item.getValueExpression(), scope);
     }
+  }
+
+  /**
+   * A property is written on a node or a relationship only. A map projection ({@code SET (n {id:1}).s = ...}) or a map
+   * literal builds a fresh map, so writing into it changes nothing in the graph: Neo4j refuses the receiver before the
+   * query runs, and so does this, rather than accepting the SET as a silent no-op (issue #11693).
+   */
+  private static void checkSetReceiverIsNotAMap(final Expression target) {
+    if (target instanceof MapProjectionExpression || target instanceof MapExpression)
+      throw new CommandSemanticException(
+          "TypeError: Type mismatch: expected Node or Relationship but was Map. '" + target.getText()
+              + "' is a map, so a property cannot be set on it");
   }
 
   // ==============================
