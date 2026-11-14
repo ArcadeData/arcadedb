@@ -20,7 +20,11 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.TransactionRetryPolicy;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CreateEdgeExecutionPlanner;
@@ -29,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.util.Map;
 import java.util.Set;
@@ -41,6 +46,10 @@ public class CreateEdgeStatement extends Statement {
   public InsertBody body;
   public boolean    ifNotExists;
   public boolean    unidirectional = false;
+  /** {@code RETRY n}: the attempts the statement makes on a retryable conflict, -1 when the clause is absent (one attempt). */
+  public int        retry          = -1;
+  /** {@code WAIT ms}: the fixed pause between two attempts, -1 when absent (the configured jittered backoff applies). */
+  public long       wait           = -1;
 
   public CreateEdgeStatement() {
   }
@@ -48,44 +57,85 @@ public class CreateEdgeStatement extends Statement {
   @Override
   public ResultSet execute(final Database database, final Object[] args, final CommandContext parentcontext,
       final boolean usePlanCache) {
-    final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null)
-      context.setParentWithoutOverridingChild(parentcontext);
-
-    context.setDatabase(database);
-    context.setInputParameters(args);
-
-    final boolean implicitTransaction = beginImplicitTransaction(database);
-    boolean success = false;
-    try {
-      final InsertExecutionPlan executionPlan = createExecutionPlan(context);
-      executionPlan.executeInternal();
-      success = true;
-      return new LocalResultSet(executionPlan);
-    } finally {
-      endImplicitTransaction(database, implicitTransaction, success);
-    }
+    return executeWithRetry(database, args, null, parentcontext);
   }
 
   @Override
   public ResultSet execute(final Database database, final Map params, final CommandContext parentcontext,
       final boolean usePlanCache) {
-    final BasicCommandContext context = new BasicCommandContext();
-    if (parentcontext != null) {
-      context.setParentWithoutOverridingChild(parentcontext);
-    }
-    context.setDatabase(database);
-    context.setInputParameters(params);
+    return executeWithRetry(database, null, params, parentcontext);
+  }
 
-    final boolean implicitTransaction = beginImplicitTransaction(database);
-    boolean success = false;
+  /**
+   * Runs the statement, and again on a retryable conflict as {@code RETRY n [WAIT ms]} asks (issue #11448: the clause used to
+   * be parsed and dropped, so the statement ran once whatever it said).
+   * <p>
+   * {@code RETRY n} is the number of ATTEMPTS, the count {@code COMMIT RETRY n} and {@code Database.transaction(..., retries)}
+   * make. Each attempt builds a fresh plan on a fresh context, so the FROM/TO selections are evaluated again against what the
+   * conflicting commit left. Which failures are retried, and the single retry a duplicated key gets, is decided by
+   * {@link TransactionRetryPolicy}, as in every other retry loop. Between attempts the statement sleeps {@code WAIT} ms, or
+   * without that clause the jittered backoff of {@code arcadedb.txRetryDelay}/{@code arcadedb.txRetryDelayBase}.
+   * <p>
+   * The statement retries only the transaction it owns: the implicit one it opens in auto-transaction mode. Inside a
+   * transaction of the caller (an explicit {@code begin()}, a script, an HTTP command), re-running the statement cannot clear a
+   * conflict that belongs to the whole transaction - most are only detected when the caller commits - and rolling back to
+   * retry would discard the caller's earlier work. There the conflict propagates to the transaction owner on the first attempt,
+   * whose own retry ({@code COMMIT RETRY}, {@code Database.transaction(..., retries)}, the HTTP {@code retries}) re-runs the
+   * whole unit, the same rule {@code Database.transaction} follows for a joined transaction (#661).
+   */
+  private ResultSet executeWithRetry(final Database database, final Object[] args, final Map params,
+      final CommandContext parentContext) {
+    final int attempts = Math.max(1, retry);
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
+
+    for (int attempt = 0; ; ++attempt) {
+      final BasicCommandContext context = new BasicCommandContext();
+      if (parentContext != null)
+        context.setParentWithoutOverridingChild(parentContext);
+      context.setDatabase(database);
+      if (params != null)
+        context.setInputParameters(params);
+      else
+        context.setInputParameters(args);
+
+      final boolean implicitTransaction = beginImplicitTransaction(database);
+      try {
+        final InsertExecutionPlan executionPlan = createExecutionPlan(context);
+        executionPlan.executeInternal();
+        // Committed inside the try, so a conflict the commit detects is retried like one raised while the edges were written
+        endImplicitTransaction(database, implicitTransaction, true);
+        return new LocalResultSet(executionPlan);
+      } catch (final NeedRetryException | DuplicatedKeyException e) {
+        rollbackImplicitTransaction(database, implicitTransaction);
+        if (!implicitTransaction || attempt + 1 >= attempts || !retryPolicy.mayRetry(e))
+          throw e;
+      } catch (final RuntimeException | Error e) {
+        rollbackImplicitTransaction(database, implicitTransaction);
+        throw e;
+      }
+
+      pauseBeforeRetry(database, attempt);
+    }
+  }
+
+  /** Rolls back the statement's own transaction when it is still open: a failed commit may already have closed it. */
+  private static void rollbackImplicitTransaction(final Database database, final boolean implicitTransaction) {
+    if (implicitTransaction && database.isTransactionActive())
+      database.rollback();
+  }
+
+  private void pauseBeforeRetry(final Database database, final int attempt) {
+    if (wait < 0) {
+      RetryBackoff.sleep(attempt, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+          database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));
+      return;
+    }
+    if (wait == 0)
+      return;
     try {
-      final InsertExecutionPlan executionPlan = createExecutionPlan(context);
-      executionPlan.executeInternal();
-      success = true;
-      return new LocalResultSet(executionPlan);
-    } finally {
-      endImplicitTransaction(database, implicitTransaction, success);
+      Thread.sleep(wait);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -120,6 +170,12 @@ public class CreateEdgeStatement extends Statement {
 
     if (unidirectional)
       builder.append(" UNIDIRECTIONAL");
+
+    if (retry >= 0) {
+      builder.append(" RETRY ").append(retry);
+      if (wait >= 0)
+        builder.append(" WAIT ").append(wait);
+    }
   }
 
   @Override
@@ -131,13 +187,15 @@ public class CreateEdgeStatement extends Statement {
     result.rightExpression = rightExpression == null ? null : rightExpression.copy();
     result.ifNotExists = ifNotExists;
     result.unidirectional = unidirectional;
+    result.retry = retry;
+    result.wait = wait;
     result.body = body == null ? null : body.copy();
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, unidirectional, ifNotExists, body };
+    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, unidirectional, ifNotExists, body, retry, wait };
   }
 
   @Override
@@ -181,6 +239,16 @@ public class CreateEdgeStatement extends Statement {
 
   public InsertBody getBody() {
     return body;
+  }
+
+  /** The {@code RETRY} count, -1 when the clause is absent. */
+  public int getRetry() {
+    return retry;
+  }
+
+  /** The {@code WAIT} pause in milliseconds, -1 when the clause is absent. */
+  public long getWait() {
+    return wait;
   }
 
   @Override
