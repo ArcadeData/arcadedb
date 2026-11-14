@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -689,11 +691,13 @@ class CypherIndexOrderingTest {
     }
 
     @Test
-    void aNullableDefaultIndexKeepsTheSortDescending() {
-      // The index holds no null keys and openCypher puts the nulls first descending: the answer has to come from a scan
+    void aNullableDefaultIndexReadsTheNullKeysFromTheLabelFirstDescending() {
+      // The index holds no null keys and openCypher puts the nulls first descending: a scan of the label finds them, then
+      // the index answers the values from the top (#11701: this shape used to sort the whole label)
       final String query = "MATCH (d:D) RETURN d.x AS x ORDER BY d.x DESC LIMIT 10";
       assertThat(column(query)).containsExactlyElementsOf(expected(nullableValues, false, 0, 10));
-      assertThat(profile(query)).contains("OrderByStep");
+      assertThat(profile(query)).contains("NodeIndexRangeScan").contains("index order, descending, after null keys")
+          .doesNotContain("OrderByStep");
       // and ascending still reads the index, then the vertices with no key
       assertThat(column("MATCH (d:D) RETURN d.x AS x ORDER BY d.x LIMIT " + VERTICES))
           .containsExactlyElementsOf(expected(nullableValues, true, 0, VERTICES));
@@ -787,6 +791,163 @@ class CypherIndexOrderingTest {
       try (final ResultSet rs = database.command("opencypher", query, Map.of())) {
         while (rs.hasNext())
           values.add(rs.next().getProperty("x"));
+      }
+      return values;
+    }
+
+    private String profile(final String query) {
+      try (final ResultSet rs = database.query("opencypher", "PROFILE " + query, Map.of())) {
+        while (rs.hasNext())
+          rs.next();
+        return rs.getExecutionPlan().get().prettyPrint(0, 2);
+      }
+    }
+  }
+
+  /**
+   * Issue #11701: {@code ORDER BY v.x DESC LIMIT n} over a whole label, on a nullable key with the default null strategy,
+   * sorted every vertex of the label, while ascending was served from the index. openCypher (as Neo4j) sorts a null last
+   * ascending and FIRST descending, and the index holds no null key, so descending the vertices with none are found by a
+   * scan of the label that keeps only them and come first, then the index is read from the top: the mirror of the
+   * ascending plan, and what SQL does for its own nulls-first direction.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class Issue11701CypherDescendingNullKeysFromLabel extends TestHelper {
+    private static final int VERTICES = 2_000;
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE VERTEX TYPE R");
+      database.command("sql", "CREATE PROPERTY R.k LONG");
+      database.command("sql", "CREATE INDEX ON R (k) UNIQUE");
+    }
+
+    @Test
+    void descendingIsServedFromTheIndexWhenNoVertexLacksTheKey() {
+      final List<Long> values = load(VERTICES, 0);
+
+      final String query = "MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT 10";
+      assertThat(column(query)).containsExactlyElementsOf(expected(values, false, 0, 10));
+      assertThat(profile(query)).contains("NodeIndexRangeScan").contains("index order, descending, after null keys")
+          .doesNotContain("OrderByStep").doesNotContain("NodeByLabelScan");
+
+      // Another window, and the whole label
+      assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC SKIP 1990 LIMIT 20"))
+          .containsExactlyElementsOf(expected(values, false, 1990, 20));
+      assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT " + VERTICES))
+          .containsExactlyElementsOf(expected(values, false, 0, VERTICES));
+    }
+
+    @Test
+    void theNullKeysComeFirstThenTheValuesFromTheTop() {
+      // Every 7th vertex has no key, alternately unset and set to null: neither is in the index
+      final List<Long> values = load(VERTICES, 7);
+      final int nulls = (int) values.stream().filter(v -> v == null).count();
+      assertThat(nulls).isGreaterThan(100); // more than one fetch batch of the scan
+
+      final String query = "MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT 10";
+      assertThat(column(query)).containsExactlyElementsOf(expected(values, false, 0, 10));
+      assertThat(profile(query)).contains("after null keys").doesNotContain("OrderByStep");
+
+      // The window that straddles the last null key and the first value, and the whole label
+      assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC SKIP " + (nulls - 3) + " LIMIT 10"))
+          .containsExactlyElementsOf(expected(values, false, nulls - 3, 10));
+      assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT " + (VERTICES + 5)))
+          .containsExactlyElementsOf(expected(values, false, 0, VERTICES));
+
+      // The rows are the vertices that lack the key, each once
+      final List<Object> seqs = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", "MATCH (r:R) RETURN r.seq AS seq, r.k AS k ORDER BY r.k DESC LIMIT " + nulls,
+          Map.of())) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          assertThat((Object) row.getProperty("k")).isNull();
+          seqs.add(row.getProperty("seq"));
+        }
+      }
+      assertThat(seqs).hasSize(nulls).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void aSubTypeLackingTheKeyIsFoundThroughItsParent() {
+      final List<Long> values = load(300, 0);
+      database.command("sql", "CREATE VERTEX TYPE RChild EXTENDS R");
+      database.transaction(() -> {
+        database.newVertex("RChild").set("seq", -1).save();
+        database.newVertex("RChild").set("k", 1_000_000L).set("seq", -2).save();
+      });
+      values.add(null);
+      values.add(1_000_000L);
+
+      assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT 3")).containsExactlyElementsOf(expected(values, false, 0, 3));
+      // The subtype on its own label, seeked through the parent's index
+      assertThat(column("MATCH (r:RChild) RETURN r.k AS k ORDER BY r.k DESC LIMIT 3")).containsExactly(null, 1_000_000L);
+    }
+
+    @Test
+    void theOpenTransactionIsSeen() {
+      final List<Long> values = load(200, 0);
+      database.transaction(() -> {
+        database.newVertex("R").set("seq", -1).save();
+        database.newVertex("R").set("k", 5_000L).set("seq", -2).save();
+        values.add(null);
+        values.add(5_000L);
+        assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT 4")).containsExactlyElementsOf(expected(values, false, 0, 4));
+      });
+    }
+
+    @Test
+    void ascendingStillReadsTheIndexThenTheNullKeys() {
+      final List<Long> values = load(VERTICES, 7);
+      final String query = "MATCH (r:R) RETURN r.k AS k ORDER BY r.k LIMIT " + VERTICES;
+      assertThat(column(query)).containsExactlyElementsOf(expected(values, true, 0, VERTICES));
+      assertThat(profile(query)).contains("then null keys").doesNotContain("OrderByStep");
+    }
+
+    /**
+     * Creates {@code count} vertices with shuffled keys; when {@code nullEvery} is positive every nullEvery-th lacks the key,
+     * alternately unset and set to null.
+     *
+     * @return the keys, null for the vertices that have none
+     */
+    private List<Long> load(final int count, final int nullEvery) {
+      final List<Long> keys = new ArrayList<>();
+      for (long i = 0; i < count; i++)
+        keys.add(i * 3);
+      Collections.shuffle(keys, new Random(11));
+      final List<Long> values = new ArrayList<>();
+      database.transaction(() -> {
+        for (int i = 0; i < count; i++) {
+          final MutableVertex vertex = database.newVertex("R").set("seq", i);
+          if (nullEvery > 0 && i % nullEvery == 0) {
+            if ((i / nullEvery) % 2 == 1)
+              vertex.set("k", null);
+            values.add(null);
+          } else {
+            vertex.set("k", keys.get(i));
+            values.add(keys.get(i));
+          }
+          vertex.save();
+        }
+      });
+      return values;
+    }
+
+    /** The window of the values sorted the way openCypher (and Neo4j) sorts them: null last ascending, first descending. */
+    private static List<Object> expected(final List<Long> values, final boolean ascending, final int skip, final int limit) {
+      final List<Long> sorted = new ArrayList<>(values);
+      final Comparator<Long> nullsLast = Comparator.nullsLast(Comparator.<Long>naturalOrder());
+      sorted.sort(ascending ? nullsLast : nullsLast.reversed());
+      return new ArrayList<>(sorted.subList(Math.min(skip, sorted.size()), Math.min(skip + limit, sorted.size())));
+    }
+
+    private List<Object> column(final String query) {
+      final List<Object> values = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", query, Map.of())) {
+        while (rs.hasNext())
+          values.add(rs.next().getProperty("k"));
       }
       return values;
     }

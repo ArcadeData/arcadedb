@@ -389,10 +389,10 @@ public class CypherOptimizer {
    *   <li>a range scan whose index keys, from the first, are the ORDER BY items: its rows come in that order in either
    *   direction, and a null key never matches the range predicate the scan stands for;</li>
    *   <li>a scan of a whole label with an index on the single ORDER BY item, and no predicate but, at most,
-   *   {@code IS NOT NULL} on that item (#8724). The vertices with no key sort last ascending and first descending: they
-   *   follow the index entries ascending when the index holds none (a scan of the label finds them; descending that
-   *   scan would come first, so that shape keeps its sort), they are absent when the property is MANDATORY and NOTNULL or
-   *   the WHERE excludes them, and they are read from the index itself under NULL_STRATEGY INDEX. Taken only here,
+   *   {@code IS NOT NULL} on that item (#8724). The vertices with no key sort last ascending and first descending: when
+   *   the index holds none, a scan of the label that keeps only them follows the index entries ascending and precedes
+   *   them descending (#11701, as SQL's ascending order does), they are absent when the property is MANDATORY and NOTNULL
+   *   or the WHERE excludes them, and they are read from the index itself under NULL_STRATEGY INDEX. Taken only here,
    *   where the first rows of the index are the answer: with a filter, the index order could read the whole label one
    *   random access at a time to find the few rows a sort of the label would have found.</li>
    * </ul>
@@ -474,12 +474,10 @@ public class CypherOptimizer {
       nullKeys = nullKeysInIndex ? NodeIndexRangeScan.NullKeys.SKIPPED_IN_INDEX : NodeIndexRangeScan.NullKeys.NONE;
     else if (nullKeysInIndex)
       nullKeys = NodeIndexRangeScan.NullKeys.PLACED_FROM_INDEX;
-    else if (ascending)
-      // The index holds no null key and the null keys sort last: the vertices with none follow the index entries. Descending
-      // they would come first, and only a scan of the label finds them
-      nullKeys = NodeIndexRangeScan.NullKeys.LAST_FROM_LABEL;
     else
-      return null;
+      // The index holds no null key: only a scan of the label finds the vertices with none. They sort last, so they follow
+      // the index entries ascending and come before them descending (issue #11701: that shape used to sort the whole label)
+      nullKeys = ascending ? NodeIndexRangeScan.NullKeys.LAST_FROM_LABEL : NodeIndexRangeScan.NullKeys.FIRST_FROM_LABEL;
 
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
         index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
