@@ -297,6 +297,8 @@ public class CypherSemanticValidator {
           for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
             forget(item.getOutputName(), scope, declaredHere);
       }
+      if (subqueryClause.getReportStatusVariable() != null)
+        forget(subqueryClause.getReportStatusVariable(), scope, declaredHere);
     }
     default -> {
       // No binding of its own.
@@ -767,6 +769,9 @@ public class CypherSemanticValidator {
                 else if (item.getExpression() instanceof VariableExpression)
                   scope.add(((VariableExpression) item.getExpression()).getVariableName());
               }
+            // REPORT STATUS AS s binds s on every row (issue #11595)
+            if (subqueryClause.getReportStatusVariable() != null)
+              scope.add(subqueryClause.getReportStatusVariable());
           }
           break;
         case FOREACH:
@@ -2200,6 +2205,8 @@ public class CypherSemanticValidator {
               if (item.getOutputName() != null)
                 return true;
         }
+        if (subqueryClause.getReportStatusVariable() != null)
+          return true;
       }
       default -> {
         // No binding of its own.

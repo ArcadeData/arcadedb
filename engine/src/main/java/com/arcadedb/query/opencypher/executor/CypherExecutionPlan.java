@@ -2924,6 +2924,8 @@ public class CypherExecutionPlan {
    */
   private static void collectSubqueryOutputVariables(final SubqueryClause subqueryClause,
       final Set<String> boundVariables) {
+    if (subqueryClause.getReportStatusVariable() != null)
+      boundVariables.add(subqueryClause.getReportStatusVariable());
     final ReturnClause returnClause = subqueryClause.getInnerStatement() != null ?
         subqueryClause.getInnerStatement().getReturnClause() : null;
     if (returnClause == null)

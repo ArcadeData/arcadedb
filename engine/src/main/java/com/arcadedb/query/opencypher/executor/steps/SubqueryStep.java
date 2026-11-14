@@ -46,6 +46,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -332,12 +333,18 @@ public class SubqueryStep extends AbstractExecutionStep {
 
     // Resolve batch size
     final int batchSize = resolveBatchSize(context);
+    final SubqueryClause.OnError onError = subqueryClause.getOnError();
+    final String statusVariable = subqueryClause.getReportStatusVariable();
 
     return new ResultSet() {
       private ResultSet prevResults = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // The inner transactions run so far, which numbers each one for REPORT STATUS
+      private int batchNumber = 0;
+      // ON ERROR BREAK met a failed batch: no later batch runs (issue #11595)
+      private boolean broken = false;
 
       @Override
       public boolean hasNext() {
@@ -399,8 +406,24 @@ public class SubqueryStep extends AbstractExecutionStep {
           return;
         }
 
+        if (broken) {
+          // After ON ERROR BREAK the rows are passed on with what the subquery returns bound to null, and no transaction started
+          for (final Result outerRow : batch)
+            buffer.add(rowOfUncommittedBatch(outerRow, statusVariable, status(false, false, null, null)));
+          if (!prevResults.hasNext())
+            finished = true;
+          return;
+        }
+
         // Execute the batch in its own transaction
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
+        final String transactionId = String.valueOf(++batchNumber);
+        final boolean callerTransaction = database.isTransactionActive();
+        final int nesting = database.getNestedTransactions();
+        // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
+        // commit takes its notes back with it. Only a body that can write has any, and the map is not created for one that cannot
+        final LabelReplacements.Snapshot labelReplacements =
+            innerMayWrite && onError != SubqueryClause.OnError.FAIL ? LabelReplacements.of(context).copy() : null;
         database.begin();
         try {
           for (final Result outerRow : batch) {
@@ -416,10 +439,34 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
           }
           database.commit();
-        } catch (final Exception e) {
+        } catch (final TimeoutException e) {
+          // The statement's deadline ends it whatever ON ERROR says
           database.rollbackAllNested();
           throw e;
+        } catch (final Exception e) {
+          if (onError == SubqueryClause.OnError.FAIL) {
+            database.rollbackAllNested();
+            throw e;
+          }
+          // ON ERROR CONTINUE or BREAK (issue #11595): only the batch's own transaction is undone, never the caller's. A failed
+          // commit has already ended it
+          if (database.getNestedTransactions() > nesting || !callerTransaction && database.isTransactionActive())
+            database.rollback();
+          if (labelReplacements != null)
+            LabelReplacements.of(context).restore(labelReplacements);
+          if (onError == SubqueryClause.OnError.BREAK)
+            broken = true;
+          final Map<String, Object> status = status(true, false, transactionId,
+              e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+          for (final Result outerRow : batch) {
+            refreshOuterBindings(outerRow, context);
+            buffer.add(rowOfUncommittedBatch(outerRow, statusVariable, status));
+          }
+          if (!prevResults.hasNext())
+            finished = true;
+          return;
         }
+        final Map<String, Object> committedStatus = statusVariable != null ? status(true, true, transactionId, null) : null;
 
         // The outer bindings are refreshed only now, back in the transaction the outer rows belong to: the batch's own
         // transaction does not see what the outer one wrote and has not committed, so a refresh from inside it replaced
@@ -431,10 +478,14 @@ public class SubqueryStep extends AbstractExecutionStep {
           final List<Result> innerResults = innerResultsPerRow.get(i);
           if (innerResults.isEmpty()) {
             if (subqueryClause.isOptional())
-              buffer.add(outerRow);
+              buffer.add(committedStatus != null ? withStatus(outerRow, statusVariable, committedStatus) : outerRow);
           } else {
-            for (final Result innerRow : innerResults)
-              buffer.add(mergeResults(outerRow, innerRow));
+            for (final Result innerRow : innerResults) {
+              final ResultInternal merged = mergeResults(outerRow, innerRow);
+              if (committedStatus != null)
+                merged.setProperty(statusVariable, committedStatus);
+              buffer.add(merged);
+            }
           }
         }
 
@@ -448,6 +499,43 @@ public class SubqueryStep extends AbstractExecutionStep {
         SubqueryStep.this.close();
       }
     };
+  }
+
+  /**
+   * The row of an outer row whose batch did not commit, under ON ERROR CONTINUE or BREAK: the outer bindings, null for every
+   * variable the subquery returns, and the status when REPORT STATUS asks for it (issue #11595).
+   */
+  private Result rowOfUncommittedBatch(final Result outerRow, final String statusVariable, final Map<String, Object> status) {
+    final ResultInternal row = new ResultInternal();
+    for (final String prop : outerRow.getPropertyNames())
+      row.setProperty(prop, outerRow.getProperty(prop));
+    final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+    if (innerReturn != null)
+      for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
+        if (!item.isStar())
+          row.setProperty(item.getOutputName(), null);
+    if (statusVariable != null)
+      row.setProperty(statusVariable, status);
+    return row;
+  }
+
+  private static ResultInternal withStatus(final Result outerRow, final String statusVariable, final Map<String, Object> status) {
+    final ResultInternal row = new ResultInternal();
+    for (final String prop : outerRow.getPropertyNames())
+      row.setProperty(prop, outerRow.getProperty(prop));
+    row.setProperty(statusVariable, status);
+    return row;
+  }
+
+  /** The value REPORT STATUS binds: whether the inner transaction started and committed, its number, and its error. */
+  private static Map<String, Object> status(final boolean started, final boolean committed, final String transactionId,
+      final String errorMessage) {
+    final Map<String, Object> status = new LinkedHashMap<>(4);
+    status.put("started", started);
+    status.put("committed", committed);
+    status.put("transactionId", transactionId);
+    status.put("errorMessage", errorMessage);
+    return status;
   }
 
   private int resolveBatchSize(final CommandContext context) {

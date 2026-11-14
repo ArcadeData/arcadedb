@@ -1364,6 +1364,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse IN TRANSACTIONS parameters
     boolean inTransactions = false;
     Expression batchSize = null;
+    SubqueryClause.OnError onError = SubqueryClause.OnError.FAIL;
+    String reportStatusVariable = null;
     final Cypher25Parser.SubqueryInTransactionsParametersContext txParams = ctx.subqueryInTransactionsParameters();
     if (txParams != null) {
       inTransactions = true;
@@ -1373,9 +1375,36 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (batchCtx.expression() != null)
           batchSize = expressionBuilder.parseExpression(batchCtx.expression());
       }
+      // ON ERROR CONTINUE | BREAK | FAIL (issue #11595)
+      if (txParams.subqueryInTransactionsErrorParameters() != null && !txParams.subqueryInTransactionsErrorParameters().isEmpty()) {
+        final Cypher25Parser.SubqueryInTransactionsErrorParametersContext errorCtx =
+            txParams.subqueryInTransactionsErrorParameters(0);
+        // ON ERROR RETRY runs a batch that failed with a transient error again before its THEN mode applies. The retries are not
+        // implemented, and the THEN mode alone would skip under THEN CONTINUE, at the first transient error, a batch the statement
+        // asked to be retried: refused rather than answered with what it did not ask for
+        if (errorCtx.RETRY() != null)
+          throw new FeatureNotImplementedException(
+              "ON ERROR RETRY in CALL { ... } IN TRANSACTIONS is not supported: use ON ERROR CONTINUE, BREAK or FAIL");
+        if (errorCtx.CONTINUE() != null)
+          onError = SubqueryClause.OnError.CONTINUE;
+        else if (errorCtx.BREAK() != null)
+          onError = SubqueryClause.OnError.BREAK;
+      }
+      if (txParams.subqueryInTransactionsReportParameters() != null && !txParams.subqueryInTransactionsReportParameters().isEmpty()) {
+        reportStatusVariable = stripBackticks(txParams.subqueryInTransactionsReportParameters(0).variable().getText());
+        if (onError == SubqueryClause.OnError.FAIL)
+          throw new CommandParsingException(
+              "REPORT STATUS can only be used when specifying ON ERROR CONTINUE or ON ERROR BREAK");
+      }
     }
 
-    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize);
+    // A nested IN TRANSACTIONS fails as ON ERROR FAIL does, rolling back every level, the caller's transaction included: an outer
+    // CONTINUE or BREAK could not take that back, and would carry on without the caller's writes
+    if (onError != SubqueryClause.OnError.FAIL && innerStatement.hasSubqueryInTransactions())
+      throw new CommandParsingException(
+          "A CALL { ... } IN TRANSACTIONS with ON ERROR CONTINUE or BREAK cannot contain another CALL { ... } IN TRANSACTIONS");
+
+    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize, onError, reportStatusVariable);
   }
 
   @Override
