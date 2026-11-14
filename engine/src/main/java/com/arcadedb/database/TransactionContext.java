@@ -2599,6 +2599,15 @@ public class TransactionContext implements Transaction {
       if (edgeSegmentPageKey(segmentRID) != pageKey)
         continue;
 
+      // #11592: the vertex these appends were made for can have been deleted since the transaction began, and the vertex now at
+      // its RID be a new one whose first chunk reuses the RID of this one: replayed in place, the appends would give the new
+      // vertex these relationships
+      final RID appendsOwner = entry.getValue().owner;
+      if (appendsOwner != null && database.getTransactionManager().wasVertexDeletedSince(appendsOwner, vertexDeleteEpoch)
+          && !isCreatedInTransaction(appendsOwner))
+        throw new ConcurrentModificationException(
+            "Record " + appendsOwner + " was deleted by a concurrent transaction. Please retry the operation");
+
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
       // MULTI-PAGE / INDIRECTED CHUNK: the rebase re-derives ONE page, but a record whose content continues on

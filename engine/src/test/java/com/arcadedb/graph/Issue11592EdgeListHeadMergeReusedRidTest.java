@@ -170,7 +170,38 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
     assertThat(transactionManager.wasVertexDeletedSince(b, sequenceBefore)).isTrue();
     assertThat(transactionManager.wasVertexDeletedSince(b, transactionManager.getVertexDeleteSequence())).isFalse();
     assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
-    database.transaction(() -> assertThat(database.countType("E", false)).isZero());
+    database.transaction(() -> {
+      assertThat(database.countType("E", false)).isZero();
+      assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
+      assertThat(neighbours(a, Vertex.DIRECTION.OUT)).isEmpty();
+    });
+  }
+
+  @Test
+  void appendsReplayedInPlaceOnAChunkWithRoomUnderTheRidOfAVertexReplacedConcurrentlyConflict() throws Exception {
+    final RID a = newVertex("a");
+    final RID sink = newVertex("sink");
+    final RID target = newVertex("target");
+    final RID chunk = edgeAndOutHead(a, sink);
+    final AtomicReference<RID> replacement = new AtomicReference<>();
+    final AtomicReference<RID> replacementChunk = new AtomicReference<>();
+
+    // the transaction appends to a's chunk, which has room, so a is not written. Meanwhile a is deleted and an identical vertex
+    // takes its RID, with a first chunk at the RID of the one appended to that still has room: the edge-append merge would
+    // replay the appends on it
+    final Throwable failure = interleave(() -> vertex(a).newEdge("E", vertex(target)), () -> {
+      database.transaction(() -> vertex(a).delete());
+      replacement.set(newVertex("a"));
+      replacementChunk.set(edgeAndOutHead(a, sink));
+    });
+
+    assertThat(replacement.get()).as("the new vertex reuses the RID of the deleted one").isEqualTo(a);
+    assertThat(replacementChunk.get()).as("the new vertex's chunk reuses the RID of the one appended to").isEqualTo(chunk);
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    database.transaction(() -> {
+      assertThat(neighbours(a, Vertex.DIRECTION.OUT)).doesNotContain(target);
+      assertThat(neighbours(target, Vertex.DIRECTION.IN)).isEmpty();
+    });
   }
 
   @Test
