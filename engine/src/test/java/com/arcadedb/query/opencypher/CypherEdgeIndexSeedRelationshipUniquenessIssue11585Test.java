@@ -69,6 +69,15 @@ class CypherEdgeIndexSeedRelationshipUniquenessIssue11585Test extends TestHelper
     assertThat(count("MATCH (s)-[:REL {k: 2}]->(o), (s)-[:REL]->(o2) RETURN o2.id AS c")).isEqualTo(3L);
   }
 
+  @Test
+  void aSeparateMatchClauseMayRebindTheSeededRelationship() {
+    database.command("sql", "CREATE INDEX ON REL (k) NOTUNIQUE");
+    final String query = "MATCH (s)-[:REL {k: 2}]->(o) MATCH (s)-[]->(o2) RETURN count(*) AS c";
+
+    assertThat(plan(query)).contains("MATCH EDGE BY INDEX");
+    assertThat(count(query)).isEqualTo(1L);
+  }
+
   private long count(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       return rs.next().<Number>getProperty("c").longValue();
