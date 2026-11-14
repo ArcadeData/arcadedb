@@ -167,10 +167,11 @@ public class TraverseExecutionPlanner {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {
-        if (!(x instanceof Identifiable)) {
+        // A RID string, as a remote driver binds one, names its record here as a single bound RID string does (issue #11767)
+        final Object element = x instanceof String string && RID.is(string) ? context.getDatabase().newRID(string) : x;
+        if (!(element instanceof Identifiable identifiable))
           throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        }
-        final RID orid = ((Identifiable) x).getIdentity();
+        final RID orid = identifiable.getIdentity();
 
         final Rid rid = new Rid();
         final PInteger bucket = new PInteger();
