@@ -135,6 +135,9 @@ public class DeleteStep extends AbstractExecutionStep {
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
 
+  /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
+  private String[] rowVariables;
+
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
   }
@@ -249,6 +252,11 @@ public class DeleteStep extends AbstractExecutionStep {
               }
             }
 
+            // A relationship the row binds and the DETACH took away with one of its endpoints is as deleted as one the
+            // clause names (#11688)
+            if (deleteClause.isDetach() && deleted.hasDeletedVertices() && inputResult instanceof ResultInternal mutableResult)
+              markCascadedRelationships(mutableResult, deletedVars);
+
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
           } finally {
@@ -308,6 +316,23 @@ public class DeleteStep extends AbstractExecutionStep {
         DeleteStep.this.close();
       }
     };
+  }
+
+  /**
+   * Replaces with a {@link DeletedEntityMarker} every relationship of {@code row} not named by the clause whose endpoint
+   * this statement deleted: the DETACH deleted it with the vertex. Only the row's own columns are read, never the edge
+   * lists of the deleted vertices, so the cost does not grow with their degree. The columns are the same for every row
+   * of the step, so their names are read once.
+   */
+  private void markCascadedRelationships(final ResultInternal row, final Set<String> deletedVars) {
+    if (rowVariables == null)
+      rowVariables = row.getPropertyNames().toArray(new String[0]);
+    for (final String variable : rowVariables) {
+      if (deletedVars.contains(variable))
+        continue;
+      if (row.getProperty(variable) instanceof Edge edge && deleted.wentWithDeletedVertex(edge))
+        row.setProperty(variable, new DeletedEntityMarker(edge.getTypeName()));
+    }
   }
 
   /**
@@ -897,6 +922,20 @@ public class DeleteStep extends AbstractExecutionStep {
      */
     boolean claimJustRead(final Edge edge) {
       return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+    }
+
+    /** @return true when {@code edge} was deleted with an endpoint the statement deleted */
+    boolean wentWithDeletedVertex(final Edge edge) {
+      try {
+        return vertices.contains(edge.getOut()) || vertices.contains(edge.getIn());
+      } catch (final RecordNotFoundException e) {
+        // THE EDGE RECORD IS GONE ALREADY
+        return true;
+      }
+    }
+
+    boolean hasDeletedVertices() {
+      return !vertices.isEmpty();
     }
 
     boolean contains(final Object record) {
