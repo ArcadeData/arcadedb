@@ -706,8 +706,7 @@ createEdgeBody
       (SET updateItem (COMMA updateItem)*)?
       (CONTENT expression)?
       UNIDIRECTIONAL?
-      (RETRY INTEGER_LITERAL)?
-      (WAIT INTEGER_LITERAL)?
+      (RETRY INTEGER_LITERAL (WAIT INTEGER_LITERAL)?)?
     ;
 
 // ============================================================================

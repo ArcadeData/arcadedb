@@ -6294,6 +6294,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.unidirectional = true;
       }
 
+      // RETRY n [WAIT ms] (issue #11448): the first INTEGER_LITERAL is the RETRY count, the second the WAIT
+      if (bodyCtx.RETRY() != null) {
+        stmt.retry = Integer.parseInt(bodyCtx.INTEGER_LITERAL(0).getText());
+        if (bodyCtx.WAIT() != null)
+          stmt.wait = Long.parseLong(bodyCtx.INTEGER_LITERAL(1).getText());
+      }
+
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build CREATE EDGE statement: " + e.getMessage(), e);
     }
