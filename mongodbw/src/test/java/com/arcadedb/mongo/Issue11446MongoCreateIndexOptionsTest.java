@@ -165,6 +165,18 @@ class Issue11446MongoCreateIndexOptionsTest extends BaseMongoServerTest {
   }
 
   @Test
+  void aMalformedIndexesFieldFailsToParse() {
+    for (final Object indexes : List.<Object>of("k_1", List.of("k_1"), List.of(new Document("key", new Document("k", 1)).append("name", "k_1"), 7))) {
+      assertThatThrownBy(() -> mongoDatabase.runCommand(new Document("createIndexes", "malformed").append("indexes", indexes))).as("%s", indexes)
+          .isInstanceOfSatisfying(MongoCommandException.class, e -> {
+            assertThat(e.getErrorCode()).as("%s", indexes).isEqualTo(9);
+            assertThat(e.getErrorMessage()).as("%s", indexes).contains("'indexes'");
+          });
+    }
+    assertThat(serverDatabase().getSchema().existsType("malformed")).isFalse();
+  }
+
+  @Test
   void oneRefusedSpecificationRefusesTheWholeBatch() {
     final Document good = new Document("key", new Document("a", 1)).append("name", "a_1");
     final Document bad = new Document("key", new Document("b", 1)).append("name", "b_ttl").append("expireAfterSeconds", 60);

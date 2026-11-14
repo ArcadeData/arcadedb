@@ -466,12 +466,20 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document createIndexes(final Document document) {
     final String collectionName = document.get("createIndexes").toString();
 
-    final List<Document> indexes = (List<Document>) document.get("indexes");
+    final Object indexesValue = document.get("indexes");
+    if (indexesValue != null && !(indexesValue instanceof List))
+      throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
+          "The 'indexes' field of createIndexes must be an array of index specifications");
+    final List<Document> indexes = (List<Document>) indexesValue;
     // VALIDATE EVERY SPECIFICATION BEFORE TOUCHING THE SCHEMA: A REFUSED BATCH CREATES NEITHER THE COLLECTION NOR ANY OF ITS
     // INDEXES, SO THE CLIENT IS NOT LEFT WITH HALF OF WHAT IT ASKED FOR (ISSUE #11446)
     if (indexes != null)
-      for (final Document index : indexes)
-        validateIndexSpecification(index);
+      for (final Object index : indexes) {
+        if (!(index instanceof Document specification))
+          throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
+              "Each element of the 'indexes' field of createIndexes must be a document, found: " + index);
+        validateIndexSpecification(specification);
+      }
 
     final boolean createdCollectionAutomatically;
     if (!database.getSchema().existsType(collectionName)) {
