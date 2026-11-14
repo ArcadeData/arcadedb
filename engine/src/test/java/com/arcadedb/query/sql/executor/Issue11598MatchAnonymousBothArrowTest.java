@@ -64,6 +64,19 @@ class Issue11598MatchAnonymousBothArrowTest extends TestHelper {
     assertThat(rows("MATCH {type: A, as: a, where: (id = 1)}.(-->{where: (id = 2 OR id = 3)}) RETURN a")).isEqualTo(1);
   }
 
+  /** Typed and incoming arrows in the nested form must enter the arrow branch, not be read as a method named after the edge type. */
+  @Test
+  void nestedTypedArrows() {
+    final String from = "MATCH {type: A, as: a, where: (id = 1)}.(";
+    assertThat(rows(from + "-R->{as: b}) RETURN a")).isEqualTo(1);
+    assertThat(rows(from + "-S->{as: b}) RETURN a")).isEqualTo(0);
+    assertThat(rows(from + "-S-{as: b}) RETURN a")).isEqualTo(1);
+    assertThat(rows(from + "-R-{as: b}) RETURN a")).isEqualTo(1);
+    assertThat(rows(from + "<-S-{as: b}) RETURN a")).isEqualTo(1);
+    assertThat(rows(from + "<-R-{as: b}) RETURN a")).isEqualTo(0);
+    assertThat(rows(from + "<--{as: b}) RETURN a")).isEqualTo(1);
+  }
+
   private long rows(final String match) {
     try (final ResultSet rs = database.query("sql", match)) {
       return rs.stream().count();
