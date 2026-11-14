@@ -1,0 +1,228 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.parser;
+
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.QueryOperatorEquals;
+import com.arcadedb.schema.Type;
+
+import java.lang.reflect.Array;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * A hash over the items of a {@code CONTAINSANY} / {@code CONTAINSALL} operand that is the same on every row (a parameter, a
+ * literal, or one object met again in the same execution), so that a row costs the size of its own list instead of that size
+ * times the operand's (issue #11703). It answers only where its answer is exactly what {@link QueryOperatorEquals} would say
+ * for every item:
+ * <ul>
+ *   <li>items that are all strings, compared with strings only (a number equals the text it converts to, which no hash of the
+ *   text can answer);</li>
+ *   <li>items that are all integral numbers (a {@code Byte}, {@code Short}, {@code Integer} or {@code Long} of magnitude at most
+ *   2^53, a {@code Double} holding such an integer, or a {@code Float} holding an integer of magnitude below 2^24), kept as a
+ *   {@code Long}, compared with numbers of the same kind; there a double, and a float, hold every such integer exactly, so 1,
+ *   1L, 1.0 and 1.0f are one key as they are one value.</li>
+ * </ul>
+ * Any other operand (a null, a fraction, NaN, a collection, a map, a record or RID, a date, a {@code byte[]}, a mix of strings
+ * and numbers) has no lookup, and any other probe is answered {@link #UNKNOWN}: the caller walks the operand as before. So is
+ * a pair that {@link Type#numbersEqual} does not compare by value: a {@code Short} a byte cannot hold against a {@code Byte}
+ * (see {@link #narrows(Object)}), and a {@code Float} from 2^24 up (see {@link #MAX_EXACT_FLOAT}).
+ */
+final class ContainsLookup {
+  /** Below this size the operand is walked: the walk costs less than the hash, and nothing is remembered for it. */
+  static final int MIN_SIZE = 16;
+
+  /** A probe the lookup cannot answer exactly. */
+  static final Object UNKNOWN = new Object();
+
+  /** The key of a {@code null} probe: equal to no item, as no item of a hashed operand is null. */
+  private static final Object NULL_KEY = new Object();
+
+  private static final long MAX_EXACT = 1L << 53;
+
+  /**
+   * The bound below which a {@code Float} is a key. From 2^24 up a float no longer holds every integer and {@code =} stops
+   * comparing it by value: a {@code Double} it meets is narrowed to float ({@code 16777217d} equals {@code 16777216f}), and against
+   * an integer it is read through its shortest decimal ({@code 33554448f} reads as 33554450, so it does not equal 33554448).
+   * Below it both readings are the integer itself, and a double narrows to a float below it only when it is that integer.
+   */
+  private static final float MAX_EXACT_FLOAT = 1 << 24;
+
+  private final boolean strings;
+  private final Set<Object> keys;
+  /** Whether an item is a {@code Byte}, or a {@code Short} a byte cannot hold: see {@link #narrows(Object)}. */
+  private final boolean bytes;
+  private final boolean wideShorts;
+
+  private ContainsLookup(final boolean strings, final Set<Object> keys, final boolean bytes, final boolean wideShorts) {
+    this.strings = strings;
+    this.keys = keys;
+    this.bytes = bytes;
+    this.wideShorts = wideShorts;
+  }
+
+  /**
+   * @return the lookup over the items of {@code operand}, or null when it is no collection or array of at least {@link #MIN_SIZE}
+   *     items, or holds an item the hash cannot answer for exactly
+   */
+  static ContainsLookup of(final Object operand) {
+    final int size;
+    final Iterator<?> items;
+    if (operand instanceof Collection<?> collection) {
+      size = collection.size();
+      items = collection.iterator();
+    } else if (MultiValue.isSequenceArray(operand)) {
+      size = Array.getLength(operand);
+      items = MultiValue.getMultiValueIterator(operand);
+    } else
+      return null;
+
+    if (size < MIN_SIZE)
+      return null;
+
+    final Set<Object> keys = new HashSet<>(size * 2);
+    final Object first = items.hasNext() ? items.next() : null;
+    final boolean strings = first instanceof String;
+    boolean bytes = false;
+    boolean wideShorts = false;
+    Object item = first;
+    while (true) {
+      final Object key = strings ? (item instanceof String ? item : UNKNOWN) : numberKey(item);
+      if (key == UNKNOWN)
+        return null;
+      keys.add(key);
+      bytes |= item instanceof Byte;
+      wideShorts |= narrows(item);
+      if (!items.hasNext())
+        break;
+      item = items.next();
+    }
+    return new ContainsLookup(strings, keys, bytes, wideShorts);
+  }
+
+  /**
+   * @return the key the probe is equal to when it is an item, a key equal to no item for {@code null}, or {@link #UNKNOWN} when
+   *     the probe is of a kind the hash cannot answer for
+   */
+  Object key(final Object probe) {
+    if (probe == null)
+      return NULL_KEY;
+    if (strings)
+      return probe instanceof String ? probe : UNKNOWN;
+    // a Short meeting a Byte is narrowed, not compared by value; the side each stands on is not known here, so both are walked
+    if (probe instanceof Byte ? wideShorts : bytes && narrows(probe))
+      return UNKNOWN;
+    return numberKey(probe);
+  }
+
+  /** @return TRUE or FALSE when the probe is answered exactly, null when the caller has to walk the operand. */
+  Boolean contains(final Object probe) {
+    final Object key = key(probe);
+    return key == UNKNOWN ? null : keys.contains(key);
+  }
+
+  boolean containsKey(final Object key) {
+    return keys.contains(key);
+  }
+
+  /** The number of distinct keys: items that are equal under {@code =} share one. */
+  int size() {
+    return keys.size();
+  }
+
+  private static Object numberKey(final Object value) {
+    if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte) {
+      final long l = ((Number) value).longValue();
+      return l >= -MAX_EXACT && l <= MAX_EXACT ? (Object) l : UNKNOWN;
+    }
+    if (value instanceof Double d) {
+      // NaN and the infinities fail the range test; -0.0 becomes 0, which "=" also equals it to
+      if (d >= -MAX_EXACT && d <= MAX_EXACT && d == Math.rint(d))
+        return d.longValue();
+    } else if (value instanceof Float f) {
+      // -0.0f has no key: "=" converts a byte or a short zero to 0.0f, which Float.equals separates from it, so it is walked
+      if (f > -MAX_EXACT_FLOAT && f < MAX_EXACT_FLOAT && f == Math.rint(f) && Float.compare(f, -0.0f) != 0)
+        return f.longValue();
+    }
+    return UNKNOWN;
+  }
+
+  /**
+   * Whether {@code value} is a {@code Short} a byte cannot hold. {@link Type#castComparableNumber} narrows a {@code Short} on the
+   * left of {@code =} to the {@code Byte} on its right instead of widening the byte, so {@code (short) 256} equals
+   * {@code (byte) 0}: the walk answers that, and a key of the value cannot. A short a byte holds narrows to itself.
+   */
+  private static boolean narrows(final Object value) {
+    return value instanceof Short s && s.shortValue() != s.byteValue();
+  }
+
+  /**
+   * One operand as the last row met it, and its lookup. Immutable, and held in a volatile field of the condition, because the
+   * node of a cached plan is shared by concurrent executions and the rows of one execution can be evaluated by several threads.
+   * A memo serves only the execution that wrote it: an operand met again in a later one can be the same object changed in place
+   * since (a global variable a caller edits between two queries), so its lookup is built again from its current items.
+   *
+   * @param constant whether the operand is a literal or a parameter, whose value is the same for the whole execution
+   * @param context  the execution that wrote the memo
+   * @param params   the input parameters of that execution when a constant memo was written
+   * @param built    whether {@code lookup} was decided; an identity memo builds it only when the same object is met again
+   */
+  record Memo(boolean constant, CommandContext context, Map<String, Object> params, Object value, ContainsLookup lookup,
+              boolean built) {
+    /** @return the memo when it holds the value of a row-independent operand of this execution, otherwise null */
+    static Memo constant(final Memo memo, final CommandContext context) {
+      return memo != null && memo.constant && memo.context == context && memo.params == context.getInputParameters() ? memo : null;
+    }
+
+    /**
+     * The memo for an operand just evaluated to {@code value}. A literal or an input parameter has one value for the whole
+     * execution, so its lookup is built at once and later rows skip evaluating it. Any other operand is recognized by identity
+     * only, within the same execution, and hashed the second time the same object is met, so an operand built per row pays
+     * nothing but this check. Without an execution context nothing is remembered.
+     */
+    static Memo of(final Memo memo, final Expression expression, final Object value, final CommandContext context) {
+      if (context == null)
+        return null;
+      // an iterator is read once, so a later row cannot be given the one this row consumed
+      if (!(value instanceof Iterator<?>) && expression.isLiteral(true))
+        return new Memo(true, context, context.getInputParameters(), value, ContainsLookup.of(value), true);
+      final boolean sameExecution = memo != null && !memo.constant && memo.context == context;
+      if (sameExecution && memo.value == value) // NOPMD: the memo is keyed by the identity of the operand
+        return memo.built ? memo : new Memo(false, context, null, value, ContainsLookup.of(value), true);
+      if (!largeEnough(value))
+        return sameExecution ? memo : null;
+      return new Memo(false, context, null, value, null, false);
+    }
+
+    private static boolean largeEnough(final Object value) {
+      if (value instanceof Collection<?> collection)
+        return collection.size() >= MIN_SIZE;
+      return MultiValue.isSequenceArray(value) && Array.getLength(value) >= MIN_SIZE;
+    }
+
+    /** @return the lookup when this memo holds {@code value} */
+    ContainsLookup lookupFor(final Object value) {
+      return this.value == value ? lookup : null;
+    }
+  }
+}
