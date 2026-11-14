@@ -463,6 +463,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
                   // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369)
                   recovered.addAll(reconcile(indexStep, val.getProperty("key"), rid, context, guard));
                   nextItem = recovered.pollFirst();
+                } else if (!noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence())
+                    && !rangeRowStillMatches(indexStep, nextItem, key)) {
+                  // A commit since the scan began moved the record out of the range (issue #11790): the entry is stale
+                  nextItem = null;
                 }
               }
             } else
@@ -558,6 +562,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private boolean holdsKey(final FetchFromIndexStep indexStep, final Result row, final Object key) {
     ++verifiedRows;
     return row.getElement().map(record -> indexStep.isKeyOf(record, key)).orElse(false);
+  }
+
+  private boolean rangeRowStillMatches(final FetchFromIndexStep indexStep, final Result row, final Object entryKey) {
+    ++verifiedRows;
+    return row.getElement().map(record -> indexStep.isStillInRange(record, entryKey)).orElse(true);
   }
 
   private void loseEntry(final RID rid) {

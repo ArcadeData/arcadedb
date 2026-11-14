@@ -307,6 +307,21 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
+   * Whether a record a range entry names, loaded after a commit overlapped the scan, still belongs to the range (issue #11790):
+   * it is still indexed under the entry's key, or, where the index keys are the plain property values ({@link #canVerifyKeys}),
+   * it still satisfies the condition of the seek. A record a commit moved out of the range is not a row of the statement; one it
+   * moved to another key of the range stays a row. Where the keys cannot be checked on the record (a case-insensitive or a
+   * by-item index) the record is served as loaded, as before.
+   */
+  boolean isStillInRange(final Document record, final Object entryKey) {
+    if (isKeyOf(record, entryKey) || !canVerifyKeys())
+      return true;
+    if (!Boolean.TRUE.equals(condition.evaluate(record, context)))
+      return false;
+    return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate(record, context));
+  }
+
+  /**
    * The key of the lookup an entry of a point lookup was found by (#9902). A lookup of a prefix of a composite key reads a range
    * whose entries each carry their whole key ({@code a = 'p'} on {@code (a, b)} returns {@code [p, 0]}, {@code [p, 1]}, ...), so
    * the entry key is cut to the slots the lookup fills: what the entries of one lookup share, and what reads them all again.
