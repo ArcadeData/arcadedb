@@ -53,8 +53,8 @@ public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
 
-    @SuppressWarnings("unchecked")
-    final List<Object> points = (List<Object>) iParams[0];
+    if (!(iParams[0] instanceof List<?> points))
+      throw new IllegalArgumentException("geo.lineString() expects a list of points, got: " + iParams[0].getClass().getSimpleName());
     if (points.isEmpty())
       return null;
 

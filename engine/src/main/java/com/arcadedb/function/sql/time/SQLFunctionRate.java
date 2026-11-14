@@ -23,6 +23,7 @@ import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.DateTimeException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -128,7 +129,13 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
   static long toEpochMillis(final Object ts) {
     // Accepts the timestamp as a Number (raw millis), java.util.Date, or a temporal (e.g.
     // LocalDateTime, the representation FetchFromTimeSeriesStep exposes to SQL - issue #4385).
-    final Long millis = DateUtils.dateTimeToTimestamp(ts, ChronoUnit.MILLIS);
+    final Long millis;
+    try {
+      millis = DateUtils.dateTimeToTimestamp(ts, ChronoUnit.MILLIS);
+    } catch (final DateTimeException e) {
+      // A text that reads as no timestamp is the caller's argument, not a server fault (issue #11589)
+      throw new IllegalArgumentException("Unsupported timestamp '" + ts + "': " + e.getMessage(), e);
+    }
     if (millis == null)
       throw new IllegalArgumentException("Unsupported timestamp type: " + ts.getClass().getName());
     return millis;

@@ -60,11 +60,32 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
 
     final String[] labels;
     if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
+      labels = withoutNulls(MultiValue.array(iParameters, String.class, FileUtils::getStringContent));
     else
       labels = null;
 
     return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels, context), self, context);
+  }
+
+  /**
+   * The edge types without the nulls among them: a null type names no type, as a single null argument already meant no
+   * filter, and the hash lookup of the types failed on it with a NullPointerException (issue #11589).
+   */
+  private static String[] withoutNulls(final String[] labels) {
+    int nonNull = 0;
+    for (final String label : labels)
+      if (label != null)
+        ++nonNull;
+    if (nonNull == labels.length)
+      return labels;
+    if (nonNull == 0)
+      return null;
+    final String[] kept = new String[nonNull];
+    int i = 0;
+    for (final String label : labels)
+      if (label != null)
+        kept[i++] = label;
+    return kept;
   }
 
   protected Object v2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
