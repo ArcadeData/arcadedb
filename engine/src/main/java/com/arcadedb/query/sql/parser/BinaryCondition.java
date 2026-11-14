@@ -148,9 +148,24 @@ public class BinaryCondition extends BooleanExpression {
     return function != null && function.answersByScore();
   }
 
+  /** A bare call of a function that answers by score on either side sets {@code $score}, as evaluating it runs both sides. */
+  @Override
+  public boolean setsScore(final CommandContext context) {
+    return answersByScore(indexableFunction(left, context)) || answersByScore(indexableFunction(right, context));
+  }
+
+  private static boolean answersByScore(final IndexableSQLFunction function) {
+    return function != null && function.answersByScore();
+  }
+
   /** The function of a bare call on the left-hand side, the path {@link #executeIndexedFunction} delegates down. */
   private IndexableSQLFunction indexableFunction(final CommandContext context) {
-    if (left == null || !(left.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
+    return indexableFunction(left, context);
+  }
+
+  /** The function of {@code operand} when it is a bare call of one, otherwise null. */
+  private static IndexableSQLFunction indexableFunction(final Expression operand, final CommandContext context) {
+    if (operand == null || !(operand.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
         || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
       return null;
     return base.identifier.levelZero.functionCall.getIndexableFunction(context);

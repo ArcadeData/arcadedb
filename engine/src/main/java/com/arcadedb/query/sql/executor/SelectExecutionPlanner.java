@@ -4722,6 +4722,8 @@ public class SelectExecutionPlanner {
     boolean indexedFunctionsFound = false;
     // Decided before the branches are planned: it lets each of them take the rows the LIMIT needs (issue #10022)
     final boolean mergeByScore = branchesMergeByScore(typez, info, context);
+    // Each branch then ends with the step that gives its rows their best $score (issue #11618)
+    final boolean rescore = info.flattenedWhereClause.size() > 1 && !mergeByScore && rescoresTheBranches(typez, info, context);
 
     for (AndBlock block : info.flattenedWhereClause) {
       List<BinaryCondition> indexedFunctionConditions = block.getIndexedFunctionConditions(typez, context);
@@ -4758,6 +4760,8 @@ public class SelectExecutionPlanner {
             }
             subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
           }
+          if (rescore)
+            subPlan.chain(rescoreStep(info, remaining != null && !remaining.isEmpty() && remaining.setsScore(context), context));
           resultSubPlans.add(subPlan);
         } else {
           FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(typez.getName(), filterClusters, context, true);
@@ -4770,6 +4774,8 @@ public class SelectExecutionPlanner {
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
           }
+          if (rescore)
+            subPlan.chain(rescoreStep(info, block.setsScore(context), context));
           resultSubPlans.add(subPlan);
         }
       } else {
@@ -4863,6 +4869,8 @@ public class SelectExecutionPlanner {
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
           }
+          if (rescore)
+            subPlan.chain(rescoreStep(info, block.setsScore(context), context));
           resultSubPlans.add(subPlan);
         }
         indexedFunctionsFound = true;
@@ -4892,6 +4900,45 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * Whether the branches of the WHERE's OR, run one after the other and deduplicated, need the whole WHERE evaluated again on
+   * each of their rows to set {@code $score} (issue #11618): a branch sets it, every indexed function of every branch can be
+   * evaluated on a record, and no branch reads a per-record LET, which is evaluated inside the branches.
+   */
+  private static boolean rescoresTheBranches(final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.whereClause == null)
+      return false;
+    boolean scored = false;
+    for (final AndBlock block : info.flattenedWhereClause) {
+      if (refersToLet(block.getSubBlocks(), info.perRecordLetClause))
+        return false;
+      final List<BinaryCondition> functions = block.getIndexedFunctionConditions(type, context);
+      if (functions != null)
+        for (final BinaryCondition function : functions)
+          if (!function.canExecuteIndexedFunctionWithoutIndex(info.target, context))
+            return false;
+      scored |= block.setsScore(context);
+    }
+    return scored;
+  }
+
+  /**
+   * The step that ends a branch of the WHERE's OR when the branches are rescored (issue #11618). The DISTINCT after the
+   * branches keeps a record as the first branch to match served it, with the $score of that branch alone: the whole WHERE
+   * gives it the best score of the arms it matches, the one MergeByScoreStep serves it with. As "WHERE OR true", which sets
+   * the score and drops no row: an arm an index answered, as a full-text index answers CONTAINSTEXT, can disagree with the
+   * same condition evaluated on the record. For the same reason the step keeps the branch's own score when it is higher.
+   *
+   * @param served whether the branch's last filter evaluated its scoring condition, so that $score holds the row's score
+   */
+  private static RescoreStep rescoreStep(final QueryPlanningInfo info, final boolean served, final CommandContext context) {
+    final OrBlock rescore = new OrBlock();
+    rescore.getSubBlocks().add(info.whereClause.getBaseExpression());
+    rescore.getSubBlocks().add(BooleanExpression.TRUE);
+    return new RescoreStep(createWhereFrom(rescore), served, context);
   }
 
   /**
