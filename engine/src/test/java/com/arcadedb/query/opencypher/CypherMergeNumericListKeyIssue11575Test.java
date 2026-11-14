@@ -92,6 +92,27 @@ class CypherMergeNumericListKeyIssue11575Test extends TestHelper {
     assertThat(count("MATCH (n:B) RETURN count(n) AS c")).isEqualTo(1L);
   }
 
+  @Test
+  void mergeOnANestedListKeyMatchesAcrossNumberClasses() {
+    database.transaction(() -> database.command("opencypher", "CREATE (n:N {key: [[1, 2]]})"));
+    database.transaction(() -> database.command("opencypher", "MERGE (n:N {key: $key})", Map.of("key", List.of(List.of(1, 2)))));
+    database.transaction(() -> database.command("opencypher", "MERGE (n:N {key: $key})", Map.of("key", List.of(new long[] { 1, 2 }))));
+    assertThat(count("MATCH (n:N) RETURN count(n) AS c")).isEqualTo(1L);
+
+    database.transaction(() -> database.command("opencypher", "MERGE (n:N {key: $key})", Map.of("key", List.of(List.of(2, 1)))));
+    assertThat(count("MATCH (n:N) RETURN count(n) AS c")).isEqualTo(2L);
+  }
+
+  /** BINARY stays separate from numeric lists: a byte[] key never matches a list or long[] holding the same values. */
+  @Test
+  void aBinaryKeyNeverMatchesANumericListWithTheSameValues() {
+    database.transaction(() -> database.command("opencypher", "MERGE (n:B {key: $key})", Map.of("key", new byte[] { 1, 2, 3 })));
+    database.transaction(() -> database.command("opencypher", "MERGE (n:B {key: [1, 2, 3]})"));
+    database.transaction(() -> database.command("opencypher", "MERGE (n:B {key: $key})", Map.of("key", new long[] { 1, 2, 3 })));
+    // the list and the long[] are one numeric key; the byte[] is a second, separate node
+    assertThat(count("MATCH (n:B) RETURN count(n) AS c")).isEqualTo(2L);
+  }
+
   /** A native temporal parameter compares with a stored temporal inside a list as it does alone, and as {@code =} does. */
   @Test
   void aListOfNativeTemporalsMatchesAsEqualsDoes() {
