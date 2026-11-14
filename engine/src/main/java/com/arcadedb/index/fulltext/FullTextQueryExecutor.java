@@ -50,6 +50,7 @@ import org.apache.lucene.search.WildcardQuery;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -252,7 +253,11 @@ public class FullTextQueryExecutor {
    */
   Map<String, Float> collectScoringTokens(final String queryString) {
     resetState();
-    final Query query = parseQuery(queryString);
+    collectTokensOnly(parseQuery(queryString));
+    return Map.copyOf(scoringTokens);
+  }
+
+  private void collectTokensOnly(final Query query) {
     tokensOnly = true;
     try {
       // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
@@ -260,7 +265,138 @@ public class FullTextQueryExecutor {
     } finally {
       tokensOnly = false;
     }
-    return Map.copyOf(scoringTokens);
+  }
+
+  /**
+   * Decides whether one record matches a query from the stored keys of that record's own postings (issue #11683).
+   */
+  @FunctionalInterface
+  interface RecordMatcher {
+    /**
+     * @param keys     the stored keys the record has a posting under
+     * @param excluded its first cell is set when a MUST_NOT clause matches the record: the search subtracts what such a clause
+     *                 matches from the matches of the whole query, wherever the clause sits in it
+     */
+    boolean matches(Set<String> keys, boolean[] excluded);
+  }
+
+  /**
+   * A query decided on one record's postings (see {@link #recordQuery}), with the scoring tokens in the order the BM25 pass of
+   * this bucket sums them.
+   */
+  record RecordQuery(RecordMatcher matcher, Map<String, Float> scoringTokens) {
+  }
+
+  /**
+   * The query as {@link #collectQueryMatches} decides it, for one record at a time, or null when a clause of it is not decided by
+   * the record alone (issue #11683): a wildcard, prefix, fuzzy or regexp clause matches the keys of the whole index, and a
+   * MUST_NOT clause beside no MUST clause answers the complement of the bucket's other matches.
+   * <p>
+   * The scoring tokens are this executor's own map in its iteration order, which is the order {@link #executeQuery} hands it to
+   * the BM25 pass: the tokens-only walk records the same tokens in the same order as the matching walk, since both visit the
+   * positive clauses in order and the matching walk records nothing while it collects the MUST_NOT clauses.
+   */
+  RecordQuery recordQuery(final String queryString) {
+    resetState();
+    final Query query = parseQuery(queryString);
+    final RecordMatcher matcher = recordMatcher(query);
+    if (matcher == null)
+      return null;
+    collectTokensOnly(query);
+    return new RecordQuery(matcher, new LinkedHashMap<>(scoringTokens));
+  }
+
+  /** {@link #collectMatches} for one record, or null for a query it cannot decide on the record alone. */
+  private RecordMatcher recordMatcher(final Query query) {
+    if (query instanceof final BooleanQuery bq) {
+      final List<RecordMatcher> exclusions = new ArrayList<>();
+      final List<RecordMatcher> musts = new ArrayList<>();
+      final List<RecordMatcher> shoulds = new ArrayList<>();
+      for (final BooleanClause clause : bq.clauses()) {
+        final RecordMatcher matcher = switch (clause.occur()) {
+          case MUST_NOT -> exclusionMatcher(clause.query());
+          case MUST, SHOULD -> recordMatcher(clause.query());
+          // collectMatches ignores a FILTER clause: no parser of ours writes one, so it is left to the index
+          case FILTER -> null;
+        };
+        if (matcher == null)
+          return null;
+        switch (clause.occur()) {
+          case MUST_NOT -> exclusions.add(matcher);
+          case MUST -> musts.add(matcher);
+          default -> shoulds.add(matcher);
+        }
+      }
+      // Without a MUST clause, MUST_NOT clauses answer the whole bucket minus what they match when no SHOULD clause matches any
+      // record of the bucket: a fact about the other records
+      if (!exclusions.isEmpty() && musts.isEmpty())
+        return null;
+      final boolean conjunction = !musts.isEmpty();
+      return (keys, excluded) -> {
+        for (final RecordMatcher exclusion : exclusions)
+          if (exclusion.matches(keys, excluded))
+            excluded[0] = true;
+        // Every clause is decided, as collectMatches collects every one: a MUST_NOT clause nested in any of them excludes the
+        // record from the whole answer
+        boolean all = true;
+        for (final RecordMatcher must : musts)
+          if (!must.matches(keys, excluded))
+            all = false;
+        boolean any = false;
+        for (final RecordMatcher should : shoulds)
+          if (should.matches(keys, excluded))
+            any = true;
+        return conjunction ? all : any;
+      };
+    }
+    if (query instanceof final BoostQuery bq)
+      return recordMatcher(bq.getQuery());
+    if (query instanceof final TermQuery tq) {
+      final String key = buildSearchKey(tq.getTerm().field(), tq.getTerm().text());
+      return (keys, excluded) -> keys.contains(key);
+    }
+    if (query instanceof final PhraseQuery pq) {
+      // collectPhraseMatches requires every term and not their order
+      final Term[] terms = pq.getTerms();
+      final String[] phraseKeys = new String[terms.length];
+      for (int i = 0; i < terms.length; i++)
+        phraseKeys[i] = buildSearchKey(terms[i].field(), terms[i].text());
+      return (keys, excluded) -> {
+        if (phraseKeys.length == 0)
+          return false;
+        for (final String key : phraseKeys)
+          if (!keys.contains(key))
+            return false;
+        return true;
+      };
+    }
+    return null;
+  }
+
+  /** {@link #collectTermsForExclusion} for one record: whether the record is among what a MUST_NOT clause excludes. */
+  private RecordMatcher exclusionMatcher(final Query query) {
+    if (query instanceof final BooleanQuery bq) {
+      final List<RecordMatcher> parts = new ArrayList<>();
+      for (final BooleanClause clause : bq.clauses()) {
+        if (clause.occur() == BooleanClause.Occur.MUST_NOT)
+          continue;
+        final RecordMatcher part = exclusionMatcher(clause.query());
+        if (part == null)
+          return null;
+        parts.add(part);
+      }
+      return (keys, excluded) -> {
+        for (final RecordMatcher part : parts)
+          if (part.matches(keys, excluded))
+            return true;
+        return false;
+      };
+    }
+    final RecordMatcher leaf = recordMatcher(query);
+    if (leaf == null)
+      return null;
+    // collectTermsForExclusion matches a leaf with an exclusion set of its own, which it then drops
+    return (keys, excluded) -> leaf.matches(keys, new boolean[1]);
   }
 
   /**
