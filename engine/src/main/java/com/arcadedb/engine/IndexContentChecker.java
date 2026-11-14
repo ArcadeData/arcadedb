@@ -26,7 +26,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -58,6 +57,7 @@ import java.util.function.Consumer;
 final class IndexContentChecker {
   private static final long FNV_OFFSET = 0xcbf29ce484222325L;
   private static final long FNV_PRIME  = 0x100000001b3L;
+  private static final int  MAX_EXAMPLES_PER_INDEX = 10;
 
   private final DatabaseInternal database;
   private final BinarySerializer serializer;
@@ -69,6 +69,8 @@ final class IndexContentChecker {
     long dangling;
     long stale;
     long missing;
+    /** Candidates whose judgement could not be made under the commit locks: neither a finding nor proof of health. */
+    long inconclusive;
     final List<String> examples = new ArrayList<>();
 
     boolean isInconsistent() {
@@ -95,7 +97,9 @@ final class IndexContentChecker {
   IndexContentChecker(final DatabaseInternal database, final int maxExamples) {
     this.database = database;
     this.serializer = database.getSerializer();
-    this.maxExamples = maxExamples;
+    // a handful of examples per index says what is wrong, the counters say how much: an index missing every key would otherwise
+    // name each of its records
+    this.maxExamples = Math.min(maxExamples, MAX_EXAMPLES_PER_INDEX);
   }
 
   /**
@@ -140,7 +144,7 @@ final class IndexContentChecker {
         continue;
 
       final Report report = comparePrecisely(bucket, type, index, tick);
-      if (report.isInconsistent()) {
+      if (report.isInconsistent() || report.inconclusive > 0) {
         if (reports == null)
           reports = new LinkedHashMap<>();
         reports.put(index, report);
@@ -200,9 +204,11 @@ final class IndexContentChecker {
         example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not hold that key"
             + (recordKeys.isEmpty() ? " (it has no key in this index)" : " (its key: " + String.join(", ", recordKeys) + ")"));
       }
+      case INCONCLUSIVE -> ++report.inconclusive;
       case GONE -> {
         // removed since the walk: no finding
       }
+      default -> throw new IllegalStateException("Unexpected verdict " + verdict);
       }
     });
 
@@ -222,7 +228,9 @@ final class IndexContentChecker {
           return holds[0] && !isIndexed(index, keys, rid) ? Verdict.MISSING : Verdict.GONE;
         });
         valid.add(fingerprint);
-        if (verdict == Verdict.MISSING) {
+        if (verdict == Verdict.INCONCLUSIVE)
+          ++report.inconclusive;
+        else if (verdict == Verdict.MISSING) {
           ++report.missing;
           example(report, "record " + rid + " has no entry for key " + Arrays.toString(keys));
         }
@@ -231,13 +239,13 @@ final class IndexContentChecker {
     return report;
   }
 
-  private enum Verdict {VALID, GONE, DANGLING, STALE, MISSING}
+  private enum Verdict {VALID, GONE, DANGLING, STALE, MISSING, INCONCLUSIVE}
 
   /**
    * Runs {@code judgement} holding the commit locks of the bucket and of every file of the index, which a commit writing the record
    * or its entries takes from before it validates until after it is visible. When the locks cannot be had in time (a database too
-   * busy to pause the writes to one bucket), the judgement runs without them: it has already been made twice by then, once on the
-   * walk and once again here.
+   * busy to pause the writes to one bucket) the answer is {@link Verdict#INCONCLUSIVE}: a judgement made without them can be fooled
+   * by a record that changes back and forth between the two reads, so it is neither reported as a finding nor taken as health.
    */
   private Verdict underCommitLocks(final Bucket bucket, final LSMTreeIndex index, final Callable<Verdict> judgement) {
     final List<Integer> files = new ArrayList<>(index.getFileIds());
@@ -245,11 +253,7 @@ final class IndexContentChecker {
     try {
       return database.executeLockingFiles(files, judgement);
     } catch (final NeedRetryException e) {
-      try {
-        return judgement.call();
-      } catch (final Exception inner) {
-        throw new IndexException("Error comparing the entries of index '" + index.getName() + "' with the records", inner);
-      }
+      return Verdict.INCONCLUSIVE;
     }
   }
 

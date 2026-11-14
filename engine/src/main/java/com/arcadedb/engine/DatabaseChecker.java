@@ -2579,6 +2579,12 @@ public class DatabaseChecker {
         for (final Map.Entry<LSMTreeIndex, IndexContentChecker.Report> found : reports.entrySet()) {
           final LSMTreeIndex index = found.getKey();
           final IndexContentChecker.Report report = found.getValue();
+          if (report.inconclusive > 0)
+            addWarning("index '" + index.getName() + "': " + report.inconclusive + " entries or keys that look out of step with the "
+                + "records of bucket '" + bucket.getName() + "' could not be confirmed, because the bucket was too busy to lock: run "
+                + "CHECK DATABASE again when it is quieter");
+          if (!report.isInconsistent())
+            continue;
           corruptedIndexes.add(index);
           corruptedIndexNames.add(index.getName());
           result.put("danglingIndexEntries", (Long) result.get("danglingIndexEntries") + report.dangling);

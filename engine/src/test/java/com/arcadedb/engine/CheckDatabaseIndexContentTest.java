@@ -19,18 +19,22 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -105,6 +109,37 @@ class CheckDatabaseIndexContentTest extends TestHelper {
     assertThat(after.<Collection<?>>getProperty("corruptedIndexes")).isEmpty();
     assertThat(values("SELECT v FROM T WHERE v = 20")).containsOnly(20);
     assertThat(values("SELECT v FROM T WHERE v = 1")).hasSize(RECORDS / 50);
+  }
+
+  /**
+   * A candidate the check cannot judge under the commit locks of its bucket (held by somebody else past the lock timeout) is
+   * neither a finding nor health: it is reported as unconfirmed, and the next check, with the bucket free, finds it.
+   */
+  @Test
+  @Tag("slow")
+  void aCandidateThatCannotBeJudgedUnderTheLocksIsUnconfirmedNotAFinding() throws Exception {
+    final RID gone = deletedRid();
+    final CountDownLatch locked = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread holder = new Thread(() -> ((DatabaseInternal) database).executeLockingFiles(List.of(gone.getBucketId()), () -> {
+      locked.countDown();
+      release.await();
+      return null;
+    }));
+    holder.start();
+    try {
+      assertThat(locked.await(30, TimeUnit.SECONDS)).isTrue();
+      final Result busy = check("CHECK DATABASE");
+      assertThat(busy.<Long>getProperty("danglingIndexEntries")).isZero();
+      assertThat(busy.<Collection<?>>getProperty("corruptedIndexes")).isEmpty();
+      assertThat(busy.<Collection<String>>getProperty("warnings")).anyMatch(w -> w.contains("could not be confirmed"));
+    } finally {
+      release.countDown();
+      holder.join();
+    }
+
+    assertThat(check("CHECK DATABASE").<Long>getProperty("danglingIndexEntries")).isEqualTo(1L);
+    check("CHECK DATABASE FIX");
   }
 
   @Test
