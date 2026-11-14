@@ -546,9 +546,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     READ_CONSISTENCY_CONTEXT.remove();
   }
 
+  /**
+   * The read-your-writes bookmark: the index of the last entry this node's state machine applied (a transaction, a schema or
+   * a security change), not the Ratis applied index (issue #11742). The Ratis index also counts the metadata entry Ratis
+   * appends after an entry to record that it committed, and a follower learns that this metadata entry is committed only with
+   * the leader's next append: on a quiet cluster the next heartbeat, about 2.5 s later. A read that waited for a bookmark
+   * pointing at it waited for that heartbeat rather than for the write, which a follower applies within milliseconds. A
+   * metadata entry carries no data, so leaving it out loses nothing a read could see. The Ratis index stands in while the
+   * state machine has applied nothing yet.
+   */
   @Override
   public long getLastAppliedIndex() {
-    return raftHAServer != null ? raftHAServer.getLastAppliedIndex() : -1;
+    if (raftHAServer == null)
+      return -1;
+    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+    final long applied = stateMachine != null ? stateMachine.readAppliedIndexCounter() : -1;
+    return applied >= 0 ? applied : raftHAServer.getLastAppliedIndex();
   }
 
   private final ArcadeDBServer server;
