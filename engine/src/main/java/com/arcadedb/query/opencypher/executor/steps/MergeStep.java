@@ -24,6 +24,7 @@ import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -551,9 +552,8 @@ public class MergeStep extends AbstractExecutionStep {
 
   /**
    * Returns an edge between {@code candidate} and {@code anchor} satisfying the
-   * pattern direction and properties, walking {@code candidate}'s edges (which
-   * are expected to be few - the index point-lookup typically returns a small
-   * set). Returns {@code null} when no such edge exists.
+   * pattern direction and properties, read off whichever of the two has the
+   * shorter edge list (issue #11699). Returns {@code null} when no such edge exists.
    *
    * @param unboundIdx position of {@code candidate} in the pattern: 0 means the
    *                   candidate is on the left of the edge, 1 means on the right.
@@ -588,14 +588,37 @@ public class MergeStep extends AbstractExecutionStep {
     return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, relType);
   }
 
+  /**
+   * {@link #edgesOf(Vertex, Vertex.DIRECTION, String)} narrowed to the edges that reach the vertex the row already binds
+   * {@code farNode} to, when it binds one: the walk drops every other edge at its bound-node check anyway. Without this a
+   * MERGE between a hub and a leaf read the hub's whole edge list, one record load and property check per edge, whichever
+   * end the pattern was written from (issue #11699).
+   */
+  private Iterable<Edge> edgesOf(final Vertex vertex, final Vertex.DIRECTION direction, final String relType,
+      final NodePattern farNode, final Result row) {
+    final Object far = farNode.getVariable() != null ? row.getProperty(farNode.getVariable()) : null;
+    if (far instanceof Vertex farVertex && farVertex.getIdentity() != null && vertex instanceof VertexInternal internal)
+      return edgesBetween(internal, direction, farVertex.getIdentity(), relType);
+    return edgesOf(vertex, direction, relType);
+  }
+
+  /**
+   * The edges joining {@code from} to {@code to} in {@code direction}: the engine reads them off whichever end has the
+   * shorter edge list (issue #11699). An edge type declared unidirectional stores no incoming side, so its edges are
+   * looked for from the end that stores them, or MERGE would not find them and create a second one (issue #8625).
+   */
+  private Iterable<Edge> edgesBetween(final VertexInternal from, final Vertex.DIRECTION direction, final RID to,
+      final String relType) {
+    if (IncomingEdgeLookup.isIncomingSideMissing(context.getDatabase().getSchema(), direction, relType))
+      return () -> IncomingEdgeLookup.getEdgesConnectedTo(from, direction, to, relType);
+    return () -> ((DatabaseInternal) context.getDatabase()).getGraphEngine().getEdgesConnectedTo(from, direction, to, relType);
+  }
+
   private Edge findFirstEdgeTo(final Vertex from, final Vertex target,
       final Vertex.DIRECTION fromDir, final Vertex.DIRECTION otherEnd,
       final String relType, final Map<String, Object> relProps) {
-    // An edge type declared unidirectional stores no incoming side: with both ends bound, the edge is looked for from
-    // the end that stores it, or MERGE would not find it and create a second one (issue #8625)
-    final Iterable<Edge> candidates = fromDir == Vertex.DIRECTION.IN && from instanceof VertexInternal internal
-        && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), fromDir, relType) ?
-        () -> IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, target.getIdentity(), relType) :
+    final Iterable<Edge> candidates = from instanceof VertexInternal internal && target.getIdentity() != null ?
+        edgesBetween(internal, fromDir, target.getIdentity(), relType) :
         from.getEdges(fromDir, relType);
     for (final Edge edge : candidates) {
       try {
@@ -732,7 +755,7 @@ public class MergeStep extends AbstractExecutionStep {
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
-    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType)) {
+    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType, nextPattern, current)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
       final Vertex nextV = edge.getVertex(otherEnd);
@@ -797,7 +820,7 @@ public class MergeStep extends AbstractExecutionStep {
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final ResultInternal current, final Object[] trace, final List<Result> results) {
-    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType)) {
+    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType, prevPattern, current)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
       final Vertex prevV = edge.getVertex(otherEnd);
@@ -982,7 +1005,8 @@ public class MergeStep extends AbstractExecutionStep {
     final Vertex.DIRECTION edgeDir = inbound ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
     final Vertex.DIRECTION otherEnd = inbound ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
 
-    for (final Edge edge : edgesOf(vertex, edgeDir, relType)) {
+    final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
+    for (final Edge edge : edgesOf(vertex, edgeDir, relType, nextPattern, currentResult)) {
       try {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
@@ -1005,7 +1029,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     // For undirected patterns also traverse the reverse direction
     if (relPattern.getDirection() == Direction.BOTH) {
-      for (final Edge edge : edgesOf(vertex, Vertex.DIRECTION.IN, relType)) {
+      for (final Edge edge : edgesOf(vertex, Vertex.DIRECTION.IN, relType, nextPattern, currentResult)) {
         try {
           if (relProps != null && !matchesProperties(edge, relProps))
             continue;

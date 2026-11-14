@@ -2790,6 +2790,17 @@ public class CypherExecutionPlan {
             directionOverride = null;
           }
 
+          // Issue #11699: a target pinned by an equality on every column of a UNIQUE index is one vertex at most. Seeking
+          // it before the hop binds both ends, so the hop reads the edges joining the pair off the shorter edge list
+          // instead of every edge of the source and a filter on the target. Only from a source that is itself one vertex
+          // per row (bound already, or uniquely keyed too), where the seek costs one index lookup per row at most, and with
+          // key values readable before the hop: a literal, a parameter, or a variable an earlier clause bound (an UNWIND or WITH
+          // row, which the seek reads off the row it runs on). One naming a variable of this pattern has nothing to read yet
+          final boolean seekTarget = !isOptional && !reversed && i == 0 && !relPattern.isVariableLength()
+              && !(relPattern instanceof QuantifiedPathPattern) && !boundVariables.contains(effectiveTargetVar)
+              && !matchVariables.contains(effectiveTargetVar) && (sourceAlreadyBound || isUniquelyKeyed(sourceNode))
+              && isUniquelyKeyed(effectiveTargetNode) && readsOnlyEarlierClauses(effectiveTargetNode.getProperties(), boundVariables);
+
           // Track relationship and target variables for cross-MATCH uniqueness scoping.
           // Only add variables that are NEW to this MATCH clause — already-bound variables
           // (from previous MATCHes or WITH) should not be treated as new match variables,
@@ -2798,6 +2809,11 @@ public class CypherExecutionPlan {
             matchVariables.add(relVar);
           if (!boundVariables.contains(effectiveTargetVar))
             matchVariables.add(effectiveTargetVar);
+          if (seekTarget) {
+            final MatchNodeStep targetSeek = new MatchNodeStep(effectiveTargetVar, effectiveTargetNode, context);
+            targetSeek.setPrevious(currentStep);
+            currentStep = targetSeek;
+          }
 
           AbstractExecutionStep nextStep;
           if (relPattern instanceof QuantifiedPathPattern quantified) {
@@ -3045,6 +3061,68 @@ public class CypherExecutionPlan {
       final Map<String, Object> pinned = new LinkedHashMap<>();
       EdgeIndexSeedPlanner.collectWherePredicates(var, where, pinned);
       return pinned.isEmpty();
+    }
+    return true;
+  }
+
+  /**
+   * Whether a node pattern pins its node by an equality on every column of a UNIQUE index of its one label, so a seek of it
+   * finds one vertex at most (issue #11699).
+   */
+  private boolean isUniquelyKeyed(final NodePattern node) {
+    return isUniquelyKeyed(node, Map.of());
+  }
+
+  /**
+   * {@link #isUniquelyKeyed(NodePattern)}, with one column of the index allowed to be keyed by an IN-list of the
+   * {@code WHERE} instead ({@link #whereInListKeys}): a seek of the node then finds one vertex per key (issue #11715).
+   */
+  private boolean isUniquelyKeyed(final NodePattern node, final Map<String, Set<String>> inListKeys) {
+    final Set<String> listed = node.getVariable() != null ? inListKeys.getOrDefault(node.getVariable(), Set.of()) : Set.of();
+    if ((!node.hasProperties() && listed.isEmpty()) || node.getPropertiesParameterName() != null || node.hasDynamicLabels()
+        || !node.hasLabels() || node.getLabels().size() != 1)
+      return false;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(node.getLabels().getFirst()))
+      return false;
+    final Set<String> inline = node.hasProperties() ? node.getProperties().keySet() : Set.of();
+    for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys == null)
+        continue;
+      int listedOnly = 0;
+      boolean covered = true;
+      for (final String key : keys) {
+        if (inline.contains(key))
+          continue;
+        if (listed.contains(key))
+          ++listedOnly;
+        else
+          covered = false;
+      }
+      if (covered && listedOnly <= 1)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether every value of a property map can be read before the pattern it belongs to is matched: a value an index seek takes
+   * without a row, or one reading only variables {@code boundBefore} holds, which an earlier clause bound for the row the seek
+   * runs on (issue #11699). Not a value two evaluations can disagree on, such as one calling {@code rand()}: the seek reads it
+   * once and the hop's filter on the vertex found once more.
+   */
+  private static boolean readsOnlyEarlierClauses(final Map<String, Object> properties, final Set<String> boundBefore) {
+    if (properties == null)
+      return true;
+    for (final Object value : properties.values()) {
+      if (RowIndependentValues.isSeekable(value))
+        continue;
+      if (!(value instanceof Expression expression) || !RowIndependentValues.isDeterministic(expression))
+        return false;
+      final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
+      if (!referenced.isComplete() || !boundBefore.containsAll(referenced.getNames()))
+        return false;
     }
     return true;
   }
@@ -6251,6 +6329,31 @@ public class CypherExecutionPlan {
     return result;
   }
 
+  /**
+   * The properties of each variable a top-level {@code v.key IN <list>} conjunct of a {@code WHERE} keys, when the list is one
+   * an index seek takes: a parameter, or a non-empty list literal of literals and parameters (issue #11715).
+   */
+  private static Map<String, Set<String>> whereInListKeys(final WhereClause where) {
+    if (where == null || where.getConditionExpression() == null)
+      return Map.of();
+    final Map<String, Set<String>> keys = new HashMap<>();
+    for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where.getConditionExpression())) {
+      if (!(conjunct instanceof InExpression in) || !(in.getExpression() instanceof PropertyAccessExpression property))
+        continue;
+      List<Expression> list = in.getList();
+      if (list != null && list.size() == 1 && list.getFirst() instanceof ListExpression literal)
+        list = literal.getElements();
+      if (list == null || list.isEmpty())
+        continue;
+      boolean seekable = true;
+      for (final Expression element : list)
+        seekable &= RowIndependentValues.isSeekable(element);
+      if (seekable)
+        keys.computeIfAbsent(property.getVariableName(), k -> new HashSet<>()).add(property.getPropertyName());
+    }
+    return keys;
+  }
+
   /** Whether the hop is pinned to zero edges, and so binds none at all. */
   private static boolean bindsNoEdge(final RelationshipPattern rel) {
     final Integer maxHops = rel.getMaxHops();
@@ -7599,6 +7702,18 @@ public class CypherExecutionPlan {
     // every position were free, so (x)-[:K]->(x) would count every K edge instead of the self-loops (issue #8941)
     if (repeatsNodeVariable(pathPattern))
       return null;
+
+    // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
+    // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699). A key
+    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in.
+    // An IN-list on the key is one vertex per element, which the ordinary plan seeks too when the walk is the longer and the
+    // output cannot show the row order the seek changes (#11715)
+    if (hopCount == 1) {
+      final PathPattern keyed = withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
+      final Map<String, Set<String>> inListKeys = CypherOptimizer.rowOrderIsInvisible(statement) ? whereInListKeys(whereClause) : Map.of();
+      if (isUniquelyKeyed(keyed.getNode(0), inListKeys) && isUniquelyKeyed(keyed.getNode(1), inListKeys))
+        return null;
+    }
 
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
