@@ -29,9 +29,14 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * IN expression for WHERE clauses.
@@ -47,8 +52,32 @@ public class InExpression implements BooleanExpression {
   /** {@code 2^53}: the first magnitude at which a double stops representing every long exactly. */
   private static final double EXACT_DOUBLE_LIMIT = 9007199254740992d;
 
+  /**
+   * The size above which a list met again on a later row is answered from a {@link ListLookup}. A short list is walked: the
+   * walk costs less than the hash, and the memo is then never written, so a small list built per row ({@code x IN [a, b]})
+   * pays nothing for it.
+   */
+  private static final int LOOKUP_MIN_SIZE = 16;
+
+  /** The contexts a {@link ListMemo} remembers at most, beyond which it forgets them and they build their lookup again. */
+  private static final int MAX_MEMO_OWNERS = 64;
+
   private final Expression expression;
   private final List<Expression> list;
+
+  /**
+   * The right side when it is a list literal of literals ({@code x IN ['a', 'b', ...]}): one list for every row, so the
+   * lookup built for it is reused (issue #11682). Evaluating the literal builds a new list per row, which no lookup would
+   * ever recognize. Null for any other right side.
+   */
+  private final List<Object> literalList;
+
+  /**
+   * The list the last row was asked about, and its lookup once built; see {@link #lookupFor}. One immutable holder in a
+   * volatile field, because the node of a cached plan is shared by concurrent executions, and the rows of one execution can
+   * be evaluated by several threads, each in its own context (the workers of a parallel scan) or in one (a parallel walk).
+   */
+  private volatile ListMemo listMemo;
 
   // Membership is equality against each element, so the element check reuses the = operator's
   // comparator (issue #5293) rather than a second, drifting implementation. Held per AST node so no
@@ -58,6 +87,7 @@ public class InExpression implements BooleanExpression {
   public InExpression(final Expression expression, final List<Expression> list) {
     this.expression = expression;
     this.list = list;
+    this.literalList = literalList(list);
   }
 
   @Override
@@ -83,13 +113,27 @@ public class InExpression implements BooleanExpression {
       // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3]). Evaluate and unwrap.
       final Expression listItem = list.get(0);
       final Object listValue;
-      if (listItem instanceof FunctionCallExpression)
+      if (literalList != null)
+        listValue = literalList;
+      else if (listItem instanceof FunctionCallExpression)
         listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
       else
         listValue = listItem.evaluate(result, context);
 
       if (listValue == null)
         return null; // x IN null -> null
+
+      // A list that is the same on every row (a parameter, a literal, a value bound before the MATCH) is answered from a
+      // hash built once, instead of walked once per row: an index seek on c.key IN $ids re-checks every id it found against
+      // the whole list, which made the statement quadratic in the list (issue #11682)
+      if (value != null) {
+        final ListLookup lookup = lookupFor(listValue, context);
+        if (lookup != null) {
+          final Boolean known = lookup.contains(value);
+          if (known != null)
+            return known;
+        }
+      }
       valuesToCheck = listOperand(listValue);
     } else {
       // Multiple expressions (parsed list literal items)
@@ -266,6 +310,163 @@ public class InExpression implements BooleanExpression {
 
     // Anything else is of a different type than a Long, and for = that is simply not equal.
     return Boolean.FALSE;
+  }
+
+  /**
+   * The lookup answering membership in {@code listValue}, or null when the list is walked. A list is hashed the second time a
+   * row asks about it: a list built per row ({@code x IN n.tags}) is never met twice, and so never pays for a hash it would
+   * not reuse.
+   * <p>
+   * A lookup is reused only in the contexts that built it or found it equal to what they built. A context is one execution,
+   * or one worker of it, and a caller may hand the same list object, changed in between, to a later execution of this cached
+   * plan: that execution builds its own lookup, once, and replaces a stale one. The workers of a parallel scan each build it
+   * once too, and then share the memo instead of evicting each other's.
+   */
+  private ListLookup lookupFor(final Object listValue, final CommandContext context) {
+    if (context == null || listValue instanceof LongRangeList || sizeOf(listValue) <= LOOKUP_MIN_SIZE)
+      return null;
+
+    final ListMemo memo = listMemo;
+    if (memo == null || memo.list() != listValue) {
+      listMemo = new ListMemo(listValue, null, new CommandContext[] { context });
+      return null;
+    }
+    if (memo.lookup() != null && memo.isOwnedBy(context))
+      return memo.lookup();
+
+    // A benign race: two threads may both build it, and a context an update loses only builds it again
+    final ListLookup built = ListLookup.of(listOperand(listValue));
+    final boolean unchanged = memo.lookup() == null || built.sameAs(memo.lookup());
+    listMemo = new ListMemo(listValue, built, unchanged ? memo.withOwner(context) : new CommandContext[] { context });
+    return built;
+  }
+
+  /** The number of elements of a right side that is a list, or 0 for any other value, which {@link #listOperand} refuses. */
+  private static int sizeOf(final Object listValue) {
+    if (listValue instanceof Collection<?> collection)
+      return collection.size();
+    return MultiValue.isSequenceArray(listValue) ? Array.getLength(listValue) : 0;
+  }
+
+  /** The values of a right side written as a list literal of literals only, see {@link #literalList}; null otherwise. */
+  private static List<Object> literalList(final List<Expression> list) {
+    if (list.size() != 1 || !(list.get(0) instanceof ListExpression literal))
+      return null;
+    final List<Object> values = new ArrayList<>(literal.getElements().size());
+    for (final Expression element : literal.getElements()) {
+      if (!(element instanceof LiteralExpression constant))
+        return null;
+      values.add(constant.getValue());
+    }
+    return Collections.unmodifiableList(values);
+  }
+
+  /**
+   * The key a value is hashed under when {@code =} compares it the way {@link Object#equals} compares the key: a boolean as
+   * itself, an integral number as a {@code Long}, a {@code Double} holding a long exactly as that {@code Long}, since
+   * {@code 1 = 1.0}. Null for anything else, a text included, which is hashed as itself apart from these.
+   * <p>
+   * Any two numbers keyed here meet in {@code =} either as longs or as doubles that are exact, below {@code 2^53}, so equal
+   * keys are exactly the equal numbers. A {@code Float} is not keyed: {@code =} widens it through its decimal form.
+   */
+  private static Object hashKey(final Object value) {
+    if (value instanceof Boolean || value instanceof Long)
+      return value;
+    if (value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return ((Number) value).longValue();
+    if (value instanceof Double number) {
+      final double asDouble = number;
+      if (asDouble == Math.rint(asDouble) && Math.abs(asDouble) < EXACT_DOUBLE_LIMIT)
+        return (long) asDouble;
+    }
+    return null;
+  }
+
+  /**
+   * A list as met by {@link #lookupFor}, its lookup (null until the list is met a second time), and the contexts that met it
+   * with the content the lookup was built from.
+   */
+  private record ListMemo(Object list, ListLookup lookup, CommandContext[] owners) {
+    boolean isOwnedBy(final CommandContext context) {
+      for (final CommandContext owner : owners)
+        if (owner == context)
+          return true;
+      return false;
+    }
+
+    CommandContext[] withOwner(final CommandContext context) {
+      if (isOwnedBy(context))
+        return owners;
+      if (owners.length >= MAX_MEMO_OWNERS)
+        return new CommandContext[] { context };
+      final CommandContext[] extended = Arrays.copyOf(owners, owners.length + 1);
+      extended[owners.length] = context;
+      return extended;
+    }
+  }
+
+  /**
+   * Membership in a list answered from a hash set of its elements (issue #11682), for the lists whose answer the hash can give
+   * exactly as the walk does, and for the values it can give it for; {@link #contains} answers null for the rest, which the
+   * walk then answers.
+   * <p>
+   * Only a list of texts, booleans and numbers keyed by {@link #hashKey} is hashed. A list holding a null is not: a miss there
+   * is null, not false. Neither is one holding a NaN, a fraction, a list, a map, a temporal or any other value, whose equality
+   * is not that of a hash key. A text against a list holding a non-text, and a non-text against a list holding a text, are
+   * walked as well: the walk compares a stored value with what the element would be stored as in a declared property
+   * (issues #9695, #9794), and a RID spelled as text with the id it denotes.
+   */
+  private static final class ListLookup {
+    /** The lookup of a list that cannot be hashed: it answers nothing, and the list is walked. */
+    private static final ListLookup UNHASHABLE = new ListLookup(null, false, false);
+
+    private final Set<Object> members;
+    private final boolean     hasText;
+    private final boolean     hasNonText;
+
+    private ListLookup(final Set<Object> members, final boolean hasText, final boolean hasNonText) {
+      this.members = members;
+      this.hasText = hasText;
+      this.hasNonText = hasNonText;
+    }
+
+    static ListLookup of(final Iterable<?> elements) {
+      final Set<Object> members = new HashSet<>();
+      boolean hasText = false;
+      boolean hasNonText = false;
+      for (final Object element : elements) {
+        if (element instanceof String) {
+          hasText = true;
+          members.add(element);
+          continue;
+        }
+        final Object key = hashKey(element);
+        if (key == null)
+          return UNHASHABLE;
+        hasNonText = true;
+        members.add(key);
+      }
+      return new ListLookup(members, hasText, hasNonText);
+    }
+
+    /** Whether the two answer every value alike: they hold the same keys, or neither holds any. */
+    boolean sameAs(final ListLookup other) {
+      if (members == null || other.members == null)
+        return members == null && other.members == null;
+      return hasText == other.hasText && hasNonText == other.hasNonText && members.equals(other.members);
+    }
+
+    /** Whether the value is an element, or null when the walk has to answer it. */
+    Boolean contains(final Object value) {
+      if (members == null)
+        return null;
+      if (value instanceof String)
+        return hasNonText ? null : members.contains(value);
+      if (hasText)
+        return null;
+      final Object key = hashKey(value);
+      return key == null ? null : members.contains(key);
+    }
   }
 
   /**
