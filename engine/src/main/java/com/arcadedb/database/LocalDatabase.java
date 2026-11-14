@@ -32,6 +32,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PageVersionReservations;
@@ -2210,10 +2211,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       if (record instanceof Document document) {
         try {
-          indexer.deleteDocument(document);
+          // #11733: the entries to remove are those of the record as it is now, which a concurrent commit may have changed
+          // since the caller read it
+          final Document current = currentImageForCleanup(bucket, document);
+          indexer.deleteDocument(current);
           // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
           // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
-          cascadeDeleteExternalValues(document);
+          cascadeDeleteExternalValues(current);
         } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
                        | IndexOutOfBoundsException | IllegalArgumentException e) {
           // The record buffer is corrupted (e.g. written by a version affected by issue #4319 in HA), so its indexed
@@ -2331,6 +2335,37 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   private void doomAfterRefusedDelete(final Record record, final SecurityException e) {
     getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+  }
+
+  /**
+   * The image of {@code document} whose index entries and EXTERNAL values its delete removes (issue #11733).
+   * <p>
+   * Under READ_COMMITTED a record read, then changed by a transaction that commits before the delete reaches it, still holds
+   * the values it was read with. Cleaning up with those removes the entries the concurrent change already replaced and keeps
+   * the ones it added, now naming a record that is gone; once the RID is reused, an indexed lookup returns a record holding
+   * another value. The page is pinned here, as an update pins it (#6950), so the commit-time version check covers what is
+   * compared now, and when the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
+   * The delete itself is unchanged: it removes the record by its RID, as before.
+   */
+  private Document currentImageForCleanup(final LocalBucket bucket, final Document document) {
+    final RID rid = document.getIdentity();
+    if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
+      return document;
+    final Binary readImage = base.getBuffer();
+    if (readImage == null)
+      return document;
+
+    try {
+      final MutablePage page = bucket.fetchPageInTransaction(rid);
+      if (page == null || !bucket.hasRecordChangedSinceRead(rid, page, readImage))
+        return document;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on delete the record " + rid, e);
+    }
+
+    final Binary current = bucket.getRecord(rid);
+    return (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getTypeByBucketId(rid.getBucketId()), rid,
+        current.copyOfContent(), null);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
