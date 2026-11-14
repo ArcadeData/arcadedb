@@ -381,6 +381,10 @@ public class OrderByStep extends AbstractExecutionStep {
           return Integer.compare(l1.size(), l2.size());
         }
 
+        // Maps by size, keys, then values, as min() and max() order them: their toString() put {a: 10} before {a: 9}
+        if (v1 instanceof Map<?, ?> m1 && v2 instanceof Map<?, ?> m2)
+          return CypherFunctionHelper.compareMaps(m1, m2, this::compareValues);
+
         // Compare booleans: false < true
         if (v1 instanceof Boolean && v2 instanceof Boolean)
           return Boolean.compare((Boolean) v1, (Boolean) v2);
