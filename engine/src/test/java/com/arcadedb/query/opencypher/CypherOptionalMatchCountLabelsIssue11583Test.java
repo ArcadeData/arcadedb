@@ -105,6 +105,53 @@ class CypherOptionalMatchCountLabelsIssue11583Test extends TestHelper {
     }
   }
 
+  /** Undirected self loop on a vertex that carries the counted label: one relationship, counted once on each labelled path. */
+  @Test
+  void anUndirectedSelfLoopOnALabelledEndIsCountedOnce() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (s:Loopy {id: 10}), (s)-[:LOOPS]->(s), (s)-[:LOOPS]->(:Chunk {id: 11})"));
+    final Object[][] cases = {
+        { "MATCH (e:Loopy) OPTIONAL MATCH (e)-[:LOOPS]-(c:Loopy) WITH e, count(c) AS occ RETURN occ", 1L },
+        { "MATCH (e:Loopy) OPTIONAL MATCH (e)-[:LOOPS]-(c:Chunk) WITH e, count(c) AS occ RETURN occ", 1L },
+        { "MATCH (e:Loopy) OPTIONAL MATCH (e)-[:LOOPS]-(c) WITH e, count(c) AS occ RETURN occ", 2L } };
+    checkWithAndWithoutView(cases, "gav11583loop");
+  }
+
+  /** A subtype-labelled neighbour counts for the parent label, and a unidirectional edge type counts on its incoming side. */
+  @Test
+  void aSubtypeNeighbourAndAUnidirectionalEdgeTypeAreCounted() {
+    database.command("sql", "CREATE VERTEX TYPE SubChunk EXTENDS Chunk");
+    database.command("sql", "CREATE EDGE TYPE Uni UNIDIRECTIONAL");
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (t:Target {id: 20}), (:SubChunk {id: 21})-[:MENTIONS]->(t), "
+          + "(:Chunk {id: 22})-[:MENTIONS]->(t), (:Note {id: 23})-[:MENTIONS]->(t)");
+      database.command("opencypher", "CREATE (t:Target2 {id: 30}), (:Chunk {id: 31})-[:Uni]->(t), (:Note {id: 32})-[:Uni]->(t)");
+    });
+    final Object[][] cases = {
+        { "MATCH (t:Target) OPTIONAL MATCH (t)<-[:MENTIONS]-(c:Chunk) WITH t, count(c) AS occ RETURN occ", 2L },
+        { "MATCH (t:Target) OPTIONAL MATCH (t)<-[:MENTIONS]-(c:SubChunk) WITH t, count(c) AS occ RETURN occ", 1L },
+        { "MATCH (t:Target) OPTIONAL MATCH (t)-[:MENTIONS]-(c:Chunk) WITH t, count(c) AS occ RETURN occ", 2L },
+        { "MATCH (t:Target2) OPTIONAL MATCH (t)<-[:Uni]-(c:Chunk) WITH t, count(c) AS occ RETURN occ", 1L },
+        { "MATCH (t:Target2) OPTIONAL MATCH (t)-[:Uni]-(c:Chunk) WITH t, count(c) AS occ RETURN occ", 1L },
+        { "MATCH (t:Target2) OPTIONAL MATCH (t)<-[:Uni]-(c) WITH t, count(c) AS occ RETURN occ", 2L } };
+    checkWithAndWithoutView(cases, "gav11583sub");
+  }
+
+  private void checkWithAndWithoutView(final Object[][] cases, final String viewName) {
+    for (final Object[] testCase : cases)
+      assertThat(count((String) testCase[0])).as((String) testCase[0]).isEqualTo(testCase[1]);
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW " + viewName);
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, viewName);
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (!view.isReady() && System.currentTimeMillis() < deadline)
+      Thread.onSpinWait();
+    assertThat(view.isReady()).isTrue();
+
+    for (final Object[] testCase : cases)
+      assertThat(count((String) testCase[0])).as("with a view: %s", testCase[0]).isEqualTo(testCase[1]);
+  }
+
   private long count(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       return rs.next().<Number>getProperty("occ").longValue();
