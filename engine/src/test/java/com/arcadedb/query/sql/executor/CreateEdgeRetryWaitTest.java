@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.BeforeRecordCreateListener;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
@@ -135,6 +136,27 @@ class CreateEdgeRetryWaitTest extends TestHelper {
   }
 
   @Test
+  void anInterruptedThreadStopsRetrying() {
+    // A terminated command or a shutdown interrupts the thread: the remaining attempts and their pauses must not run
+    database.getSchema().getType("RetryE").getEvents().registerListener((BeforeRecordCreateListener) record -> {
+      attempts.incrementAndGet();
+      Thread.currentThread().interrupt();
+      throw new ConcurrentModificationException("provoked conflict");
+    });
+
+    try {
+      assertThatThrownBy(() -> database.command("sql", createEdge(" RETRY 5 WAIT 10000")).close())
+          .isInstanceOf(ConcurrentModificationException.class);
+      assertThat(Thread.currentThread().isInterrupted()).as("the interrupt is kept for the caller").isTrue();
+    } finally {
+      Thread.interrupted();
+    }
+
+    assertThat(attempts.get()).as("attempts after the thread was interrupted").isEqualTo(1);
+    assertThat(edges()).isZero();
+  }
+
+  @Test
   void insideTheCallersTransactionTheConflictGoesToTheTransactionOwner() {
     failFirstAttempts(1);
 
@@ -205,7 +227,7 @@ class CreateEdgeRetryWaitTest extends TestHelper {
   @Test
   void waitWithoutRetryIsRefused() {
     // The documented syntax is RETRY <n> [WAIT <ms>]: a pause between retries that never happen has nothing to mean
-    assertThatThrownBy(() -> parse("CREATE EDGE E FROM #1:0 TO #2:0 WAIT 5")).isNotNull();
+    assertThatThrownBy(() -> parse("CREATE EDGE E FROM #1:0 TO #2:0 WAIT 5")).isInstanceOf(CommandSQLParsingException.class);
   }
 
   private static Statement parse(final String sql) {

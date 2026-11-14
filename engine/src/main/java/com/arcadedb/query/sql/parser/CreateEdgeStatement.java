@@ -109,12 +109,14 @@ public class CreateEdgeStatement extends Statement {
         rollbackImplicitTransaction(database, implicitTransaction);
         if (!implicitTransaction || attempt + 1 >= attempts || !retryPolicy.mayRetry(e))
           throw e;
+
+        // An interrupted thread (a terminated command, a shutdown) stops retrying: the conflict is the answer it gets
+        if (!pauseBeforeRetry(database, attempt))
+          throw e;
       } catch (final RuntimeException | Error e) {
         rollbackImplicitTransaction(database, implicitTransaction);
         throw e;
       }
-
-      pauseBeforeRetry(database, attempt);
     }
   }
 
@@ -124,19 +126,23 @@ public class CreateEdgeStatement extends Statement {
       database.rollback();
   }
 
-  private void pauseBeforeRetry(final Database database, final int attempt) {
-    if (wait < 0) {
+  /**
+   * Sleeps {@code WAIT} ms, or the configured jittered backoff without that clause. Returns false when the thread is
+   * interrupted, before or during the pause, with the interrupt flag kept: the caller then stops retrying.
+   */
+  private boolean pauseBeforeRetry(final Database database, final int attempt) {
+    if (Thread.currentThread().isInterrupted())
+      return false;
+    if (wait < 0)
       RetryBackoff.sleep(attempt, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
           database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));
-      return;
-    }
-    if (wait == 0)
-      return;
-    try {
-      Thread.sleep(wait);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
+    else if (wait > 0)
+      try {
+        Thread.sleep(wait);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    return !Thread.currentThread().isInterrupted();
   }
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
