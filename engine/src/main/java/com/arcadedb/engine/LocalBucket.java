@@ -45,6 +45,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -715,6 +716,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public void updateRecord(final Record record, final boolean discardRecordAfter) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+    FailPoints.hit(FailPoints.BUCKET_UPDATE_RECORD);
     updateRecordInternal(record, record.getIdentity(), false, discardRecordAfter);
   }
 
@@ -842,6 +844,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public void deleteRecord(final RID rid) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+    FailPoints.hit(FailPoints.BUCKET_DELETE_RECORD);
     deleteRecordInternal(rid, false, false, false);
   }
 
@@ -869,6 +872,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   public void deleteRecord(final RID rid, final boolean force) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+    FailPoints.hit(FailPoints.BUCKET_DELETE_RECORD);
     deleteRecordInternal(rid, false, false, force);
   }
 
@@ -3277,6 +3281,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
+    FailPoints.hit(FailPoints.BUCKET_CREATE_RECORD);
     final Binary buffer = database.getSerializer().serialize(database, record);
     final RID rid = createRecordInternal(buffer, isPlaceHolder);
     if (!discardRecordAfter)
