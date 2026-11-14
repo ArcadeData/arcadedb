@@ -2917,12 +2917,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @param fireEvents {@code false} to read the content a placeholder points to: the before-read events are about the
-   *                   record the caller asked for, under the RID it knows, and already ran for it. Firing them again for
-   *                   the internal position of its content notified a listener twice, the second time with a RID no
-   *                   user ever sees (#8312)
+   * @param fireEvents {@code false} to read without the before-read events. For the content a placeholder points to: the
+   *                   before-read events are about the record the caller asked for, under the RID it knows, and already ran
+   *                   for it. Firing them again for the internal position of its content notified a listener twice, the second
+   *                   time with a RID no user ever sees (#8312). For the image a granted delete cleans its index entries up
+   *                   with (#11733): a listener hiding the record from users must not decide which entries the delete removes
    */
-  Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
+  public Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
     // INVOKE EVENT CALLBACKS
     if (fireEvents && !fireBeforeReadEvents(rid))
       return null;

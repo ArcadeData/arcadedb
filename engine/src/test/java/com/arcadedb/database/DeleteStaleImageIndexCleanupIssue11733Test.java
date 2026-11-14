@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -82,8 +83,36 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     assertThat(entries("V[v]", 9)).hasSize(1);
   }
 
+  /**
+   * The cleanup reads the record without firing the before-read events: a listener hiding the record would otherwise send the
+   * cleanup back to the image the caller read, and the entry the concurrent change added would stay.
+   */
+  @Test
+  void aBeforeReadListenerHidingTheRecordDoesNotSendTheCleanupBackToTheImageRead() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D");
+      database.command("sql", "CREATE PROPERTY D.v INTEGER");
+      database.command("sql", "CREATE INDEX ON D (v) NOTUNIQUE");
+    });
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("D").set("v", 1).save().getIdentity());
+
+    final BeforeRecordReadListener hide = record -> !record.equals(rid[0]);
+    deleteAfterAConcurrentUpdate(rid[0], () -> database.getEvents().registerListener(hide));
+    database.getEvents().unregisterListener(hide);
+
+    assertThat(entries("D[v]", 1)).isEmpty();
+    assertThat(entries("D[v]", 2)).isEmpty();
+  }
+
   /** Reads the record, lets another transaction set {@code v = 2} and commit, then deletes the record as it was read. */
   private void deleteAfterAConcurrentUpdate(final RID rid) throws Exception {
+    deleteAfterAConcurrentUpdate(rid, () -> {
+    });
+  }
+
+  /** As {@link #deleteAfterAConcurrentUpdate(RID)}, running {@code beforeDelete} right before the delete. */
+  private void deleteAfterAConcurrentUpdate(final RID rid, final Runnable beforeDelete) throws Exception {
     database.begin();
     final Document readBefore = rid.asDocument(true);
     assertThat(readBefore.getInteger("v")).isEqualTo(1);
@@ -99,6 +128,7 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     new Thread(concurrent).start();
     assertThat(concurrent.get()).as("the value the concurrent transaction committed").isEqualTo(2);
 
+    beforeDelete.run();
     readBefore.delete();
     database.commit();
     assertThat(database.existsRecord(rid)).isFalse();
