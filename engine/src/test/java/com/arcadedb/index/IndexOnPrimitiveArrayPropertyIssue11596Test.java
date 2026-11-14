@@ -73,6 +73,31 @@ class IndexOnPrimitiveArrayPropertyIssue11596Test extends TestHelper {
     assertThat(ids("SELECT id FROM T WHERE k = [1.5] ORDER BY id")).containsExactly(2);
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = { "ARRAY_OF_FLOATS", "ARRAY_OF_DOUBLES" })
+  void fractionalKeysAndRangeAgreeWithAScan(final String type) {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.k " + type);
+    final Runnable insert = () -> database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET id = 1, k = [0.5, 0.25]");
+      database.command("sql", "INSERT INTO T SET id = 2, k = [0.5]");
+      database.command("sql", "INSERT INTO T SET id = 3, k = [0.75]");
+      database.command("sql", "INSERT INTO T SET id = 4, k = [0.5, 0.5]");
+      database.command("sql", "INSERT INTO T SET id = 5, k = [0.125, 9.0]");
+    });
+    insert.run();
+    final List<Integer> range = ids("SELECT id FROM T WHERE k > [0.5] ORDER BY id");
+    final List<Integer> eq = ids("SELECT id FROM T WHERE k = [0.5, 0.25] ORDER BY id");
+
+    database.transaction(() -> database.command("sql", "DELETE FROM T"));
+    database.command("sql", "CREATE INDEX ON T (k) NOTUNIQUE");
+    insert.run();
+
+    assertThat(ids("SELECT id FROM T WHERE k > [0.5] ORDER BY id")).as("scan range: " + range).containsExactly(1, 3, 4);
+    assertThat(ids("SELECT id FROM T WHERE k = [0.5, 0.25] ORDER BY id")).isEqualTo(eq);
+    assertThat(eq).containsExactly(1);
+  }
+
   @Test
   void indexBuiltOverExistingArrays() {
     database.command("sql", "CREATE DOCUMENT TYPE T");
@@ -89,6 +114,8 @@ class IndexOnPrimitiveArrayPropertyIssue11596Test extends TestHelper {
         Map.of("id", 2, "embedding", new double[] { 0.3, 0.4 }), Map.of("id", 3, "embedding", new double[] { 0.1, 0.2 })));
     database.transaction(() -> database.command("opencypher", "UNWIND $rows AS row CREATE (:Doc {id: row.id, embedding: row.embedding})",
         params));
+    assertThat(ids("SELECT id FROM Doc WHERE embedding = [0.1, 0.2] ORDER BY id")).as("scan before index").containsExactly(1, 3);
+    database.command("sql", "CREATE PROPERTY Doc.embedding IF NOT EXISTS ARRAY_OF_DOUBLES");
     database.command("opencypher", "CREATE INDEX FOR (n:Doc) ON (n.embedding)");
     assertThat(ids("SELECT id FROM Doc WHERE embedding = [0.1, 0.2] ORDER BY id")).containsExactly(1, 3);
   }
