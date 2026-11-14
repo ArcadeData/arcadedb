@@ -1164,15 +1164,18 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         && JsonlExporterFormat.EXPORT_DESCRIPTION.equals(content.get("description"));
   }
 
+  /** How the first line of an ArcadeDB export opens after its <code>{</code>, see {@link #opensExportHeader}. */
+  private static final String EXPORT_HEADER_HEAD =
+      "\"t\":\"info\",\"c\":{\"description\":\"" + JsonlExporterFormat.EXPORT_DESCRIPTION + "\"";
+
   /**
-   * Whether {@code firstObjectHead}, what the first line of a source holds between its opening <code>{</code> and the first
-   * <code>}</code>, opens the {@code "info"} header of an ArcadeDB export. The exporter writes the header compact with
-   * {@code "t"} first and the description first in {@code "c"}, so the start of the line decides, as it does for the OrientDB
-   * and Neo4j exports (issue #11729).
+   * Whether {@code firstObjectHead}, what the first line of a source holds after its opening <code>{</code>, opens the
+   * {@code "info"} header of an ArcadeDB export: the description inside its {@code "c"} object, as {@link #isExportHeader} reads
+   * it. The exporter writes the header compact with {@code "t"} first and the description first in {@code "c"}, so the start of
+   * the line decides, as it does for the OrientDB and Neo4j exports (issue #11729).
    */
   public static boolean opensExportHeader(final CharSequence firstObjectHead) {
-    final String head = firstObjectHead.toString();
-    return head.startsWith("\"t\":\"info\"") && head.contains("\"description\":\"" + JsonlExporterFormat.EXPORT_DESCRIPTION + "\"");
+    return firstObjectHead.toString().startsWith(EXPORT_HEADER_HEAD);
   }
 
   @Override

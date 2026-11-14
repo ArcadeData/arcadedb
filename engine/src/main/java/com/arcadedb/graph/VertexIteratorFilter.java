@@ -50,7 +50,7 @@ public class VertexIteratorFilter extends IteratorFilterBase<Vertex> {
       if (takeValidatedRecord() instanceof Vertex vertex)
         // THE LOOKUP hasNext() DID TO VALIDATE THE RID IS THE ONE THIS CALL WOULD DO AGAIN
         return vertex;
-      return (Vertex) database.lookupThroughGraph(next);
+      return (Vertex) database.lookupThroughGraph(next, walkMark);
     } catch (final SchemaException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading vertex %s from edge %s", e, next, nextEdge);
       throw e;

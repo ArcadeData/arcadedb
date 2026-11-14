@@ -28,6 +28,7 @@ import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
@@ -77,25 +78,44 @@ public interface DatabaseInternal extends Database {
 
   /**
    * The record a graph reference names - an adjacency entry, the endpoint of an edge - looked up without reading it, like
-   * {@code lookupByRID(rid, false)}, and marked as reached through the graph (issue #11713). A walk reads the reference, and the
-   * record only when somebody reads a property of it: a transaction that commits in between can delete both, and the record is
-   * then gone by the time it is read. The record is marked with the commits published when the walk began, so its read answers
-   * that case with a retryable {@link com.arcadedb.exception.ConcurrentModificationException}. A reference that was dangling
-   * already, and a record looked up by a caller that named the RID itself, keep answering
-   * {@link com.arcadedb.exception.RecordNotFoundException}.
+   * {@code lookupByRID(rid, false)}, and marked as reached through the graph (issue #11713), with the mark of a walk that begins
+   * now: see {@link #lookupThroughGraph(RID, char)}.
    */
   default Record lookupThroughGraph(final RID rid) {
-    final Record record = lookupByRID(rid, false);
-    if (record instanceof ImmutableDocument document) {
-      // THE REFERENCE WAS READ AFTER THE TRANSACTION BEGAN, BUT POSSIBLY FROM A SEGMENT READ LONG BEFORE THIS LOOKUP: THE WALK
-      // HOLDS ITS IMAGE ACROSS COMMITS. THE BEGIN OF THE TRANSACTION IS THE POINT NO REFERENCE IT READ PREDATES; A WALK WITH NO
-      // TRANSACTION HAS ONLY NOW
-      final TransactionContext tx = getTransactionIfExists();
-      document.markReachedThroughGraph(tx != null && tx.isActive() ?
-          tx.getPublishedCommitsAtBegin() :
-          getTransactionManager().getPublishedCommits());
+    return lookupThroughGraph(rid, graphWalkMark());
+  }
+
+  /**
+   * The record a graph reference names, looked up without reading it and marked with {@code walkMark}, the mark of the walk that
+   * read the reference (issue #11713). A walk reads the reference, and the record only when somebody reads a property of it: a
+   * transaction that commits in between can delete both, and the record is then gone by the time it is read. Marked, its read
+   * answers that case with a retryable {@link com.arcadedb.exception.ConcurrentModificationException}, and so does this lookup when
+   * it reads the record at once (REPEATABLE_READ). A reference that was dangling already, and a record looked up by a caller that
+   * named the RID itself, keep answering {@link com.arcadedb.exception.RecordNotFoundException}: see
+   * {@link ImmutableDocument#missingGraphRecord}.
+   */
+  default Record lookupThroughGraph(final RID rid, final char walkMark) {
+    final Record record;
+    try {
+      record = lookupByRID(rid, false);
+    } catch (final RecordNotFoundException e) {
+      throw ImmutableDocument.missingGraphRecord(this, rid, walkMark, e);
     }
+    if (record instanceof ImmutableDocument document)
+      document.markReachedThroughGraph(walkMark);
     return record;
+  }
+
+  /**
+   * The mark of a graph walk that begins now ({@link ImmutableDocument#commitMark}): the commits published when the open
+   * transaction began, which no reference it reads can predate, or the commits published now for a walk with no transaction.
+   * Taken once per walk and handed to {@link #lookupThroughGraph(RID, char)} for every reference it reads.
+   */
+  default char graphWalkMark() {
+    final TransactionContext tx = getTransactionIfExists();
+    return ImmutableDocument.commitMark(tx != null && tx.isActive() ?
+        tx.getPublishedCommitsAtBegin() :
+        getTransactionManager().getPublishedCommits());
   }
 
   default TransactionContext getTransaction() {

@@ -411,8 +411,10 @@ public class TransactionContext implements Transaction {
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
   private       long                                 beginSequence         = -1;
-  // ISSUE #11713: THE COMMITS PUBLISHED WHEN THIS TRANSACTION BEGAN, SEE getPublishedCommitsAtBegin()
+  // ISSUE #11713: THE COMMITS PUBLISHED WHEN THIS TRANSACTION BEGAN, SEE getPublishedCommitsAtBegin(), AND HOW MANY OF THE ONES
+  // PUBLISHED SINCE WERE TRANSACTIONS NESTED IN IT, SEE getNestedPublications()
   private       long                                 publishedCommitsAtBegin = -1;
+  private       long                                 nestedPublications;
   /**
    * The position of the replication log the node had applied when this transaction began, or {@code -1} when none was
    * recorded (issue #8686). Stamped by the replicated database AFTER {@link #begin}, which clears it, so a transaction
@@ -541,6 +543,7 @@ public class TransactionContext implements Transaction {
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
     publishedCommitsAtBegin = database.getTransactionManager().getPublishedCommits();
+    nestedPublications = 0;
     mergedEdgeEpoch = database.getTransactionManager().getMergedEdges().getSequence();
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
@@ -1686,6 +1689,25 @@ public class TransactionContext implements Transaction {
    */
   public long getPublishedCommitsAtBegin() {
     return publishedCommitsAtBegin;
+  }
+
+  /**
+   * How many of the commits published since this transaction began were transactions nested in it, on its own thread: a name the
+   * dictionary registers for a record this transaction saves is one. They are not concurrent with it, and a record it reached
+   * through the graph and finds gone is not a conflict because of them (issue #11713).
+   */
+  public long getNestedPublications() {
+    return nestedPublications;
+  }
+
+  /** Counts this commit's publication in every transaction it is nested in, see {@link #getNestedPublications()}. */
+  private void countPublicationInEnclosingTransactions() {
+    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (current == null || current.transactions.size() < 2)
+      return;
+    for (final TransactionContext enclosing : current.transactions)
+      if (enclosing != this && enclosing.isActive())
+        ++enclosing.nestedPublications;
   }
 
   /**
@@ -4101,6 +4123,7 @@ public class TransactionContext implements Transaction {
           publishPagesWithColumnarMarks(columnar, columnarProjected, changes, pagesToPublish);
       } finally {
         database.getTransactionManager().commitPublished();
+        countPublicationInEnclosingTransactions();
       }
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not

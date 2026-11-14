@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.handler.PostCommandHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -56,23 +57,45 @@ class Issue11728HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
   @Test
   void plainCommandImportCommitsItsOwnBatches() throws Exception {
     writeSource();
-    final long commits = importAndCountCommits(null);
+    final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath(), null);
+
+    assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(RECORDS);
+    assertImported();
+  }
+
+  /** Comments the SQL grammar hides do not hide the statement from the handler's probe. */
+  @Test
+  void importAfterLeadingCommentsCommitsItsOwnBatches() throws Exception {
+    writeSource();
+    final long commits = importAndCountCommits("/* restore */ -- from the nightly export\n  IMPORT DATABASE file://" + source.getAbsolutePath(),
+        null);
 
     assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(RECORDS);
     assertImported();
   }
 
   @Test
+  void leadingSpaceAndCommentsAreSkippedAsTheGrammarHidesThem() {
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("import")).isEqualTo(0);
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments(" \t\nimport")).isEqualTo(3);
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("/* a */import")).isEqualTo(7);
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("-- a\n/* b */ import")).isEqualTo(13);
+    // A LINE COMMENT IS TWO DASHES AND A SPACE, AS IN THE LEXER: '--import' IS NOT ONE
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("--import")).isEqualTo(0);
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("/* never closed import")).isEqualTo(22);
+  }
+
+  @Test
   void explicitAutoCommitKeepsTheImportInsideTheRequestTransaction() throws Exception {
     writeSource();
-    final long commits = importAndCountCommits(Boolean.TRUE);
+    final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath(), Boolean.TRUE);
 
     // THE CALLER ASKED FOR ONE TRANSACTION: THE IMPORT LEAVES IT TO THE HANDLER, WHICH COMMITS IT ONCE AT THE END (#6561)
     assertThat(commits).as("an import inside a transaction the caller asked for commits nothing itself").isLessThan(RECORDS);
     assertImported();
   }
 
-  private long importAndCountCommits(final Boolean autoCommit) throws Exception {
+  private long importAndCountCommits(final String command, final Boolean autoCommit) throws Exception {
     final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
     final long before = ((Number) database.getStats().get("writeTx")).longValue();
 
@@ -81,8 +104,7 @@ class Issue11728HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
-    final JSONObject payload = new JSONObject().put("language", "sql")
-        .put("command", "  import database file://" + source.getAbsolutePath());
+    final JSONObject payload = new JSONObject().put("language", "sql").put("command", command);
     if (autoCommit != null)
       payload.put("autoCommit", autoCommit);
     formatPayload(connection, payload);

@@ -70,6 +70,30 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * parsed statement then decides, through the statement cache the execution reads too. A command that does not parse is left to
    * the execution, which reports its error.
    */
+  /**
+   * The position of the first character of {@code command} that is neither whitespace nor inside a comment the SQL grammar hides:
+   * a {@code /* ... *}{@code /} block, or a {@code -- } line comment (two dashes and a space, as {@code LINE_COMMENT} in the
+   * lexer). An unterminated block comment hides the rest of the text.
+   */
+  public static int skipLeadingSpaceAndComments(final String command) {
+    final int length = command.length();
+    int pos = 0;
+    while (pos < length) {
+      final char c = command.charAt(pos);
+      if (Character.isWhitespace(c))
+        ++pos;
+      else if (command.startsWith("/*", pos)) {
+        final int end = command.indexOf("*/", pos + 2);
+        pos = end < 0 ? length : end + 2;
+      } else if (command.startsWith("-- ", pos)) {
+        final int end = command.indexOf('\n', pos + 3);
+        pos = end < 0 ? length : end + 1;
+      } else
+        break;
+    }
+    return pos;
+  }
+
   @Override
   protected boolean managesItsOwnTransactions(final DatabaseInternal database, final JSONObject payload) {
     if (database == null || payload == null || !"sql".equalsIgnoreCase(payload.getString("language", null)))
@@ -79,15 +103,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (command == null)
       return false;
 
-    int start = 0;
-    while (start < command.length() && Character.isWhitespace(command.charAt(start)))
-      ++start;
-    if (!command.regionMatches(true, start, "import", 0, 6))
+    if (!command.regionMatches(true, skipLeadingSpaceAndComments(command), "import", 0, 6))
       return false;
 
     try {
       return database.getQueryEngine("sql").analyze(command.trim()).managesItsOwnTransactions();
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not analyze the command to decide on the auto-commit wrapper: %s", e,
+          e.getMessage());
       return false;
     }
   }

@@ -167,6 +167,15 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     return super.getIfPresent(propertyName, absentValue);
   }
 
+
+  /**
+   * The mark the endpoints of this edge are looked up with: the walk's that reached this edge, whose references they are, or one
+   * taken now for an edge the caller looked up itself (issue #11713, see {@link DatabaseInternal#lookupThroughGraph(RID, char)}).
+   */
+  private char endpointMark() {
+    final char walkMark = getReachedAtCommit();
+    return walkMark != 0 ? walkMark : database.graphWalkMark();
+  }
   @Override
   public synchronized RID getOut() {
     if (out == null)
@@ -178,7 +187,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized Vertex getOutVertex() {
     if (out == null)
       checkForLazyLoading();
-    return (Vertex) database.lookupThroughGraph(out);
+    return (Vertex) database.lookupThroughGraph(out, endpointMark());
   }
 
   @Override
@@ -192,7 +201,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized Vertex getInVertex() {
     if (in == null)
       checkForLazyLoading();
-    return (Vertex) database.lookupThroughGraph(in);
+    return (Vertex) database.lookupThroughGraph(in, endpointMark());
   }
 
   @Override
@@ -200,9 +209,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     if (out == null || in == null)
       checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
-      return (Vertex) database.lookupThroughGraph(out);
+      return (Vertex) database.lookupThroughGraph(out, endpointMark());
     else
-      return (Vertex) database.lookupThroughGraph(in);
+      return (Vertex) database.lookupThroughGraph(in, endpointMark());
   }
 
   @Override

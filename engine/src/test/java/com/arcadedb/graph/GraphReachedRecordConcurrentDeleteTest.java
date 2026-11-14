@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -83,6 +84,66 @@ class GraphReachedRecordConcurrentDeleteTest extends TestHelper {
     } finally {
       database.rollback();
     }
+  }
+
+  /**
+   * Under REPEATABLE_READ the lookup reads the record at once, so a concurrent delete fails there, before any mark is set. The
+   * source is of another type than the hub, so its page is not one the transaction pinned by reading the hub: a pinned page would
+   * serve it from the snapshot, which is the repeatable read working.
+   */
+  @Test
+  void repeatableReadLookupOfAVertexDeletedConcurrentlyIsARetryableConflict() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Hub");
+      database.getSchema().createVertexType("Source");
+      database.getSchema().createEdgeType("TRANSFERS");
+    });
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("Hub").set("number", 0).save();
+      final MutableVertex source = database.newVertex("Source").set("number", 1).save();
+      source.newEdge("TRANSFERS", hub);
+      rids[0] = hub.getIdentity();
+      rids[1] = source.getIdentity();
+    });
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      // THE ITERATOR HOLDS THE HEAD SEGMENT, AND SO THE ENTRY, BEFORE THE DELETE COMMITS
+      final Iterator<Vertex> walk = rids[0].asVertex(true).getVertices(Vertex.DIRECTION.IN, "TRANSFERS").iterator();
+
+      deleteInAnotherTransaction(rids[1]);
+
+      assertThatThrownBy(walk::hasNext).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
+   * With no transaction, the endpoint of an edge a walk reached carries the walk's mark, not one taken when the endpoint is looked
+   * up: only the endpoint record is deleted, after the walk, and the endpoint read is the conflict it is.
+   */
+  @Test
+  void endpointOfAnEdgeReachedWithoutATransactionCarriesTheWalkMark() throws Exception {
+    checkIntegrity = false;
+    final RID[] rids = buildPair();
+    final Edge edge = rids[0].asVertex(true).getEdges(Vertex.DIRECTION.IN, "TRANSFERS").iterator().next();
+
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread writer = new Thread(() -> {
+      try {
+        database.transaction(() -> database.getSchema().getBucketById(rids[1].getBucketId()).deleteRecord(rids[1]));
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    }, "concurrent-deleter");
+    writer.start();
+    writer.join();
+    assertThat(failure.get()).isNull();
+
+    final Vertex source = edge.getOutVertex();
+    assertThatThrownBy(() -> source.get("number")).isInstanceOf(ConcurrentModificationException.class);
   }
 
   @Test

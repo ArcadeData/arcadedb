@@ -664,6 +664,8 @@ public final class IncomingEdgeLookup {
     private final long[]                    sourcePositions;
     private final int[]                     edgeBuckets;
     private final long[]                    edgePositions;
+    // THE MARK OF THE WALK THIS SCAN IS, FOR THE RECORDS IT HANDS OUT FROM ITS ENTRIES (ISSUE #11713)
+    private final char                      walkMark;
 
     private Snapshot(final String typeName, final UnidirectionalEdgeChanges builtBy, final DatabaseInternal database,
         final Builder builder) {
@@ -682,6 +684,7 @@ public final class IncomingEdgeLookup {
       this.sourcePositions = builder.sourcePositions;
       this.edgeBuckets = builder.edgeBuckets;
       this.edgePositions = builder.edgePositions;
+      this.walkMark = database.graphWalkMark();
     }
 
     static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
@@ -890,7 +893,7 @@ public final class IncomingEdgeLookup {
       return new RangeIterator<>(from, target) {
         @Override
         Vertex get(final int i) {
-          return (Vertex) database.lookupThroughGraph(database.newRID(sourceBuckets[i], sourcePositions[i]));
+          return (Vertex) database.lookupThroughGraph(database.newRID(sourceBuckets[i], sourcePositions[i]), walkMark);
         }
       };
     }
@@ -985,11 +988,12 @@ public final class IncomingEdgeLookup {
       if (edgePositions[i] == LIGHTWEIGHT_POSITION) {
         final ImmutableLightEdge light = new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(edgeBuckets[i]),
             edgeBuckets[i], source, target);
+        light.markReachedThroughGraph(walkMark);
         numberTwins(i, (LightEdgeRID) light.getIdentity());
         return light;
       }
 
-      final Edge edge = (Edge) database.lookupThroughGraph(database.newRID(edgeBuckets[i], edgePositions[i]));
+      final Edge edge = (Edge) database.lookupThroughGraph(database.newRID(edgeBuckets[i], edgePositions[i]), walkMark);
       if (edge instanceof ImmutableEdge immutable)
         immutable.setEndpointsFromEdgeList(source, target);
       return edge;

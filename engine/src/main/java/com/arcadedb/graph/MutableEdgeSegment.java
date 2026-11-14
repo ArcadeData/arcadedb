@@ -614,15 +614,18 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
    * <p>
    * Three answers that are not a segment:
    * <ul>
-   * <li>the committed image still names the missing segment: the chain itself is broken, not raced, and the
-   * {@link RecordNotFoundException} is reported as it always was (CHECK DATABASE repairs it);</li>
+   * <li>the image read again still names the missing segment: with no commit in flight or published since the walk began the
+   * chain itself is broken, not raced, and the {@link RecordNotFoundException} is reported as it always was (CHECK DATABASE
+   * repairs it); otherwise the image is one that predates the delete or is only half published, and the conflict is answered
+   * (see {@link ImmutableDocument#missingGraphRecord});</li>
    * <li>this segment was deleted too, or the newest image keeps naming segments that disappear before they are read: the walk has
    * lost its place in the chain, which is a conflict with a concurrent writer and is answered with the retryable
    * {@link ConcurrentModificationException};</li>
    * <li>the committed image is the end of the chain.</li>
    * </ul>
-   * Under REPEATABLE_READ the newest image a lookup answers is the one the transaction pinned, which still names the missing
-   * segment, so that isolation level gets the conflict: it cannot be served the chain it began on.
+   * Under REPEATABLE_READ the image a lookup answers is the one the transaction pinned, and a segment the transaction wrote is its
+   * own copy: both can still name the missing segment, and both get the conflict when a commit was published since the walk
+   * began, since the chain they began on cannot be served.
    */
   private EdgeSegment previousOfCommittedImage(final RID missingPrevious, final RecordNotFoundException notFound) {
     final RID self = getIdentity();
@@ -643,7 +646,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       if (previous == null)
         return null;
       if (previous.equals(missing))
-        throw notFound;
+        // THE IMAGE READ AGAIN STILL NAMES THE MISSING SEGMENT. THAT IS A BROKEN CHAIN ONLY WHEN NO COMMIT WAS IN FLIGHT OR PUBLISHED
+        // SINCE THE WALK BEGAN: THE IMAGE CAN BE THE TRANSACTION'S OWN COPY, A PAGE IT PINNED (REPEATABLE_READ), OR THE PAGE OF A
+        // COMMIT THAT HAS PUBLISHED THE DELETE BUT NOT YET THE RELINK, AND THEN IT IS A CONFLICT TO RETRY
+        throw ImmutableDocument.missingGraphRecord(database, missing, database.graphWalkMark(), notFound);
 
       try {
         return (EdgeSegment) database.lookupByRID(previous, true);

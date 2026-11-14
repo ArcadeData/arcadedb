@@ -531,46 +531,64 @@ public class ImmutableDocument extends BaseDocument {
   /**
    * Marks this record as handed out from a graph reference without being read, see {@link DatabaseInternal#lookupThroughGraph}.
    *
-   * @param publishedCommits the commits published when the walk that read the reference began, see
-   *                         {@link com.arcadedb.engine.TransactionManager#getPublishedCommits()}
+   * @param walkMark {@link #commitMark} of the commits published when the walk that read the reference began
    */
-  public void markReachedThroughGraph(final long publishedCommits) {
-    reachedAtCommit = commitMark(publishedCommits);
+  public void markReachedThroughGraph(final char walkMark) {
+    reachedAtCommit = walkMark;
   }
 
-  /** {@code publishedCommits} folded into the 16 bits {@link #reachedAtCommit} has, never 0, which means "not marked". */
-  private static char commitMark(final long publishedCommits) {
+  /** The mark {@link #markReachedThroughGraph} set, or 0 for a record not handed out from a graph reference. */
+  public char getReachedAtCommit() {
+    return reachedAtCommit;
+  }
+
+  /**
+   * {@code publishedCommits} ({@link com.arcadedb.engine.TransactionManager#getPublishedCommits()}) folded into the 16 bits a
+   * record keeps it in, never 0, which means "not marked". After a multiple of 65535 commits a mark reads as none, and a record
+   * deleted in between answers that it is not found, as it did before issue #11713.
+   */
+  public static char commitMark(final long publishedCommits) {
     return (char) (Math.floorMod(publishedCommits, 65535L) + 1);
   }
 
   /**
-   * The content of a record handed out without it, read now (issue #11713). A record reached through the graph that is gone when
-   * it is read was deleted either by a transaction that committed after the walk read the reference to it, or before: the delete
-   * of a vertex removes the edges to it in the same commit, so only a reference read before that commit can still name it, and
-   * one read after it is dangling. The first is a conflict with a concurrent writer and answers the retryable
-   * {@link ConcurrentModificationException}; the second, told by no commit having been in flight or published since the walk
-   * began, answers the {@link RecordNotFoundException} it always did, which is what the checks and the walks that skip a dangling
-   * entry expect. So does a delete of the open transaction itself, and a record looked up by a caller that named its RID.
-   * <p>
-   * The commit is compared on 16 bits: after a multiple of 65535 commits in between it reads as none, and the read answers that
-   * the record is not found, as it did before.
+   * What a read of a record reached through the graph answers when the record is gone (issue #11713), whether the read is the
+   * lazy load of its content or a lookup that reads it at once (under REPEATABLE_READ). A record reached through the graph that is
+   * gone was deleted either by a commit published after the walk that read the reference to it began, or before: the delete of a
+   * vertex removes the edges to it in the same commit, so only a reference read before that commit can still name it, and one
+   * read after it is dangling. The first is a conflict with a concurrent writer and answers the retryable
+   * {@link ConcurrentModificationException}; the second, told by as many commits having started publishing now as had finished
+   * when the walk began - none was in flight then and none has started since - answers the {@link RecordNotFoundException} it
+   * always did, which is what the checks and the walks that skip a dangling entry expect. So does a delete of the open
+   * transaction itself, and a record looked up by a caller that named its RID (walkMark 0).
+   *
+   * @return the exception to throw
    */
+  public static RuntimeException missingGraphRecord(final DatabaseInternal database, final RID rid, final char walkMark,
+      final RecordNotFoundException notFound) {
+    if (walkMark == 0)
+      return notFound;
+    final TransactionContext tx = database.getTransactionIfExists();
+    // A COMMIT NESTED IN THE OPEN TRANSACTION, ON THIS THREAD - A NAME THE DICTIONARY REGISTERED FOR A RECORD IT SAVED - IS NOT A
+    // CONCURRENT ONE: IT CANNOT HAVE DELETED A RECORD BEHIND THE WALK'S BACK
+    final long publishing = database.getTransactionManager().getPublishingCommits() - (tx != null && tx.isActive() ?
+        tx.getNestedPublications() :
+        0L);
+    if (commitMark(publishing) == walkMark)
+      return notFound;
+    if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
+      return notFound;
+    return new ConcurrentModificationException(
+        "Record " + rid + " was deleted by a concurrent transaction after it was reached through the graph: retry the operation",
+        notFound);
+  }
+
+  /** The content of a record handed out without it, read now: see {@link #missingGraphRecord} for a record that is gone. */
   private Binary readContentOfLazyRecord() {
     try {
       return database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
     } catch (final RecordNotFoundException e) {
-      if (reachedAtCommit == 0)
-        throw e;
-      final DatabaseInternal internal = (DatabaseInternal) database;
-      if (commitMark(internal.getTransactionManager().getPublishingCommits()) == reachedAtCommit)
-        // AS MANY COMMITS HAVE STARTED PUBLISHING AS HAD FINISHED WHEN THE WALK BEGAN: NONE WAS IN FLIGHT THEN AND NONE HAS STARTED
-        // SINCE, SO THE RECORD WAS ALREADY GONE, AND THE REFERENCE IS DANGLING
-        throw e;
-      final TransactionContext tx = internal.getTransactionIfExists();
-      if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
-        throw e;
-      throw new ConcurrentModificationException("Record " + rid + " was deleted by a concurrent transaction after it was "
-          + "reached through the graph: retry the operation", e);
+      throw missingGraphRecord((DatabaseInternal) database, rid, reachedAtCommit, e);
     }
   }
 

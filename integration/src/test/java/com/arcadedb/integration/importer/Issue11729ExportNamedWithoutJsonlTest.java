@@ -60,7 +60,8 @@ class Issue11729ExportNamedWithoutJsonlTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = { "issue11729-backup.tgz", "issue11729-backup.gz", "issue11729-backup.json.tgz" })
+  @ValueSource(strings = { "issue11729-backup.tgz", "issue11729-backup.gz", "issue11729-backup.json.tgz", "issue11729-backup.csv",
+      "issue11729-backup.csv.gz" })
   void exportIsRecognisedByItsHeaderWhateverItsName(final String fileName) {
     final File export = new File("target/" + fileName);
     export.delete();
@@ -124,6 +125,44 @@ class Issue11729ExportNamedWithoutJsonlTest {
       assertThatThrownBy(() -> new Importer(("-url file://" + source.getAbsolutePath() + " -database " + RESTORE_PATH
           + " -forceDatabaseCreate true -fileType json").split(" ")).load())
           .hasStackTraceContaining("ArcadeDB export").hasStackTraceContaining("jsonl");
+    } finally {
+      source.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /**
+   * An object that merely carries {@code "t":"info"} and the description at its top level is not an export header, whose
+   * description is inside its {@code "c"} object: it is a JSON document and is imported as one.
+   */
+  @Test
+  void objectThatOnlyResemblesTheHeaderIsImportedAsJson() throws Exception {
+    final File source = new File("target/issue11729-lookalike");
+    Files.writeString(source.toPath(), "{\"t\":\"info\",\"description\":\"ArcadeDB Database Export\",\"id\":1}\n", StandardCharsets.UTF_8);
+    try {
+      new Importer(("-url file://" + source.getAbsolutePath() + " -database " + RESTORE_PATH + " -forceDatabaseCreate true").split(" "))
+          .load();
+      try (final Database db = new DatabaseFactory(RESTORE_PATH).open()) {
+        assertThat(db.countType("Document", true)).isEqualTo(1);
+      }
+    } finally {
+      source.delete();
+      TestHelper.checkActiveDatabases();
+    }
+  }
+
+  /** A file type the user set is the user's choice: an export forced to CSV is not rerouted to the export importer. */
+  @Test
+  void explicitFileTypeIsNotOverruledByTheHeader() throws Exception {
+    final File source = new File("target/issue11729-forced.csv");
+    Files.writeString(source.toPath(), """
+        {"t":"info","c":{"description":"ArcadeDB Database Export","exporterVersion":2}}
+        {"t":"db","c":{"name":"x"}}
+        """, StandardCharsets.UTF_8);
+    try {
+      assertThatThrownBy(() -> new Importer(("-url file://" + source.getAbsolutePath() + " -database " + RESTORE_PATH
+          + " -forceDatabaseCreate true -fileType json").split(" ")).load())
+          .hasStackTraceContaining("ArcadeDB export");
     } finally {
       source.delete();
       TestHelper.checkActiveDatabases();
