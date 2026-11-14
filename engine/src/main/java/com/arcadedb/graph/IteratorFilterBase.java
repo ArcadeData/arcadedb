@@ -112,7 +112,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           // VALIDATE RID
           if (nextEdge.getPosition() > -1) {
             try {
-              validatedRecord = database.lookupByRID(nextEdge, false);
+              validatedRecord = database.lookupThroughGraph(nextEdge);
             } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;
@@ -126,7 +126,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
           // VALIDATE RID
           try {
-            validatedRecord = database.lookupByRID(nextVertex, false);
+            validatedRecord = database.lookupThroughGraph(nextVertex);
           } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;

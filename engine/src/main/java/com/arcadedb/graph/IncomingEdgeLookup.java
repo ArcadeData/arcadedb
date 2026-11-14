@@ -890,7 +890,7 @@ public final class IncomingEdgeLookup {
       return new RangeIterator<>(from, target) {
         @Override
         Vertex get(final int i) {
-          return (Vertex) database.lookupByRID(database.newRID(sourceBuckets[i], sourcePositions[i]), false);
+          return (Vertex) database.lookupThroughGraph(database.newRID(sourceBuckets[i], sourcePositions[i]));
         }
       };
     }
@@ -989,7 +989,7 @@ public final class IncomingEdgeLookup {
         return light;
       }
 
-      final Edge edge = (Edge) database.lookupByRID(database.newRID(edgeBuckets[i], edgePositions[i]), false);
+      final Edge edge = (Edge) database.lookupThroughGraph(database.newRID(edgeBuckets[i], edgePositions[i]));
       if (edge instanceof ImmutableEdge immutable)
         immutable.setEndpointsFromEdgeList(source, target);
       return edge;

@@ -1095,6 +1095,10 @@ public class SourceDiscovery {
         return new OrientDBImporterFormat();
       else if (buffer.toString().startsWith("\"type\":\"node\",\"id\":\""))
         return new Neo4jImporterFormat();
+      else if (JsonlImporterFormat.opensExportHeader(buffer))
+        // AN ARCADEDB EXPORT, WHATEVER ITS NAME. ONLY THE .jsonl EXTENSION USED TO ROUTE IT HERE, SO AN EXPORT WRITTEN AS
+        // backup.tgz WAS READ AS JSON: ITS HEADER LINE BECAME ONE DOCUMENT AND EVERY RECORD AFTER IT WAS DROPPED (ISSUE #11729)
+        return new JsonlImporterFormat();
 
       return new JSONImporterFormat();
 

@@ -100,6 +100,9 @@ public class TransactionManager {
   private final String                       logContext;
   private volatile ScheduledFuture<?>        housekeeping;
   private final AtomicLong                   transactionIds      = new AtomicLong();
+  // ISSUE #11713: MOVED BEFORE AND AFTER A COMMIT'S PAGES ARE PUBLISHED, SEE getPublishedCommits()
+  private final AtomicLong                   publishingCommits   = new AtomicLong();
+  private final AtomicLong                   publishedCommits    = new AtomicLong();
   // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
   private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
@@ -1572,7 +1575,13 @@ public class TransactionManager {
       // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
       // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
       bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
-      return applyChangesInternal(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+      // A REPLICATED OR RECOVERED COMMIT BECOMES VISIBLE HERE, AS A LOCAL ONE DOES WHEN ITS PAGES ARE PUBLISHED (ISSUE #11713)
+      commitPublishing();
+      try {
+        return applyChangesInternal(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+      } finally {
+        commitPublished();
+      }
     } finally {
       if (bucketLocks != null) {
         // After the fold: a recompute that published while the pages were being written is discarded (#8640)
@@ -2178,6 +2187,32 @@ public class TransactionManager {
     if (!cleanWALFiles(false, true))
       LogManager.instance()
           .log(this, Level.WARNING, "Error on removing all transaction files during kill. Remained: %s", null, inactiveWALFilePool);
+  }
+
+  /**
+   * How many commits have made their pages visible, moved once a commit has published its pages or a replicated or recovered
+   * transaction has been applied (issue #11713). Together with {@link #getPublishingCommits()}, moved before the first of those
+   * pages becomes visible, it tells a reader whether any commit became visible since it took this count: if as many commits have
+   * started publishing now as had finished then, none was in flight then and none has started since. The transaction id cannot
+   * tell that: a commit takes it in its first phase, long before its pages are visible.
+   */
+  public long getPublishedCommits() {
+    return publishedCommits.get();
+  }
+
+  /** How many commits have started to make their pages visible, see {@link #getPublishedCommits()}. */
+  public long getPublishingCommits() {
+    return publishingCommits.get();
+  }
+
+  /** Called before the first page of a commit becomes visible, see {@link #getPublishedCommits()}. */
+  public void commitPublishing() {
+    publishingCommits.incrementAndGet();
+  }
+
+  /** Called once every page of a commit is visible, or its publication failed, see {@link #getPublishedCommits()}. */
+  public void commitPublished() {
+    publishedCommits.incrementAndGet();
   }
 
   public long getNextTransactionId() {

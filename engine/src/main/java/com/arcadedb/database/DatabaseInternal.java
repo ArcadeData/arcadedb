@@ -75,6 +75,29 @@ public interface DatabaseInternal extends Database {
     SCHEMA_AFTER_FILE_CHANGES
   }
 
+  /**
+   * The record a graph reference names - an adjacency entry, the endpoint of an edge - looked up without reading it, like
+   * {@code lookupByRID(rid, false)}, and marked as reached through the graph (issue #11713). A walk reads the reference, and the
+   * record only when somebody reads a property of it: a transaction that commits in between can delete both, and the record is
+   * then gone by the time it is read. The record is marked with the commits published when the walk began, so its read answers
+   * that case with a retryable {@link com.arcadedb.exception.ConcurrentModificationException}. A reference that was dangling
+   * already, and a record looked up by a caller that named the RID itself, keep answering
+   * {@link com.arcadedb.exception.RecordNotFoundException}.
+   */
+  default Record lookupThroughGraph(final RID rid) {
+    final Record record = lookupByRID(rid, false);
+    if (record instanceof ImmutableDocument document) {
+      // THE REFERENCE WAS READ AFTER THE TRANSACTION BEGAN, BUT POSSIBLY FROM A SEGMENT READ LONG BEFORE THIS LOOKUP: THE WALK
+      // HOLDS ITS IMAGE ACROSS COMMITS. THE BEGIN OF THE TRANSACTION IS THE POINT NO REFERENCE IT READ PREDATES; A WALK WITH NO
+      // TRANSACTION HAS ONLY NOW
+      final TransactionContext tx = getTransactionIfExists();
+      document.markReachedThroughGraph(tx != null && tx.isActive() ?
+          tx.getPublishedCommitsAtBegin() :
+          getTransactionManager().getPublishedCommits());
+    }
+    return record;
+  }
+
   default TransactionContext getTransaction() {
     final TransactionContext tx = getTransactionIfExists();
     if (tx == null)

@@ -64,6 +64,35 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   /**
+   * A SQL {@code IMPORT DATABASE} commits its own batches, so it runs without the auto-commit wrapper (issue #11728): inside it
+   * the importer took the wrapper for its caller's transaction, which it never commits piecemeal (#6561), and held the whole
+   * import in memory until it ended. The text is probed first, so every other command pays a prefix test and nothing more; the
+   * parsed statement then decides, through the statement cache the execution reads too. A command that does not parse is left to
+   * the execution, which reports its error.
+   */
+  @Override
+  protected boolean managesItsOwnTransactions(final DatabaseInternal database, final JSONObject payload) {
+    if (database == null || payload == null || !"sql".equalsIgnoreCase(payload.getString("language", null)))
+      return false;
+
+    final String command = payload.getString("command", null);
+    if (command == null)
+      return false;
+
+    int start = 0;
+    while (start < command.length() && Character.isWhitespace(command.charAt(start)))
+      ++start;
+    if (!command.regionMatches(true, start, "import", 0, 6))
+      return false;
+
+    try {
+      return database.getQueryEngine("sql").analyze(command.trim()).managesItsOwnTransactions();
+    } catch (final Exception e) {
+      return false;
+    }
+  }
+
+  /**
    * Tells whether the given command needs an automatic trailing {@code LIMIT} pushed down, i.e. whether it is a
    * SELECT/MATCH SQL command that states no LIMIT of its own. A command that already carries one has expressed
    * the caller's own expectation, and that expectation - not the default cap - decides how many rows are

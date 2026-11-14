@@ -178,7 +178,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized Vertex getOutVertex() {
     if (out == null)
       checkForLazyLoading();
-    return (Vertex) database.lookupByRID(out, false);
+    return (Vertex) database.lookupThroughGraph(out);
   }
 
   @Override
@@ -192,7 +192,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public synchronized Vertex getInVertex() {
     if (in == null)
       checkForLazyLoading();
-    return (Vertex) database.lookupByRID(in, false);
+    return (Vertex) database.lookupThroughGraph(in);
   }
 
   @Override
@@ -200,9 +200,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     if (out == null || in == null)
       checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
-      return (Vertex) database.lookupByRID(out, false);
+      return (Vertex) database.lookupThroughGraph(out);
     else
-      return (Vertex) database.lookupByRID(in, false);
+      return (Vertex) database.lookupThroughGraph(in);
   }
 
   @Override

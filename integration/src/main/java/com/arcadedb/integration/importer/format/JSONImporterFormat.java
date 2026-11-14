@@ -48,6 +48,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
+import com.google.gson.stream.MalformedJsonException;
 
 import java.io.IOException;
 import java.util.*;
@@ -98,6 +99,11 @@ public class JSONImporterFormat implements FormatImporter {
           // REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID NOT
           // KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
           parseRecords(reader, parser, database, settings, context, null, false);
+          // THE RECORDS OF THE ARRAY ARE IN: SAYING SO NOW IS THE ONLY WAY LEFT NOT TO DROP WHAT FOLLOWS IT IN SILENCE (ISSUE #11729)
+          if (!endsAfterTopLevelValue(reader))
+            throw new ImportException("The JSON source holds one top-level array, which was imported, but more content follows it "
+                + "and was not imported: a JSON document is one value. If the source is newline-delimited JSON, split it into "
+                + "one document per file or wrap its objects in an array", null);
           return;
         }
 
@@ -117,6 +123,15 @@ public class JSONImporterFormat implements FormatImporter {
           final Object record = parseRecord(reader, settings, context, database, mapping, false, recordFailed);
           if (recordFailed.get())
             throw new ImportException("A value of the single top-level JSON object failed to import, aborting the import", null);
+          // CHECKED BEFORE THE RECORD IS SAVED: AN IMPORT THAT READ ONE OBJECT, DROPPED EVERYTHING AFTER IT AND REPORTED OK IS
+          // WHAT TURNED AN ARCADEDB EXPORT NAMED WITHOUT .jsonl INTO ONE DOCUMENT MADE OF ITS HEADER LINE (ISSUE #11729)
+          if (!endsAfterTopLevelValue(reader))
+            throw new ImportException(record instanceof Map<?, ?> map && JsonlImporterFormat.isExportHeader(map) ?
+                "The source is an ArcadeDB export, which is newline-delimited JSON: import it with the file type 'jsonl' "
+                    + "(-fileType jsonl, or WITH fileType = 'jsonl') or name it with the .jsonl extension" :
+                "The JSON source holds more than one top-level value: the first object was read and more content follows it. "
+                    + "A JSON document is one value: if the source is newline-delimited JSON, wrap its objects in an array",
+                null);
           if (record instanceof Map)
             saveTopLevelRecord(database, settings, context, (Map<String, Object>) record);
           return;
@@ -142,6 +157,19 @@ public class JSONImporterFormat implements FormatImporter {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Whether the source ends after the top-level value just read, whitespace aside. The reader is strict, so content after that
+   * value - a second object of a newline-delimited source above all - does not parse as a token and is answered here as "it does
+   * not end", without being read any further.
+   */
+  private static boolean endsAfterTopLevelValue(final JsonReader reader) throws IOException {
+    try {
+      return reader.peek() == JsonToken.END_DOCUMENT;
+    } catch (final MalformedJsonException e) {
+      return false;
     }
   }
 

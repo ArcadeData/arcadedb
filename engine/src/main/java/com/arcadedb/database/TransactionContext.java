@@ -411,6 +411,8 @@ public class TransactionContext implements Transaction {
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
   private       long                                 beginSequence         = -1;
+  // ISSUE #11713: THE COMMITS PUBLISHED WHEN THIS TRANSACTION BEGAN, SEE getPublishedCommitsAtBegin()
+  private       long                                 publishedCommitsAtBegin = -1;
   /**
    * The position of the replication log the node had applied when this transaction began, or {@code -1} when none was
    * recorded (issue #8686). Stamped by the replicated database AFTER {@link #begin}, which clears it, so a transaction
@@ -538,6 +540,7 @@ public class TransactionContext implements Transaction {
       unidirectionalEdgeChanges.transactionEnded();
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
+    publishedCommitsAtBegin = database.getTransactionManager().getPublishedCommits();
     mergedEdgeEpoch = database.getTransactionManager().getMergedEdges().getSequence();
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
@@ -1674,6 +1677,15 @@ public class TransactionContext implements Transaction {
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING, "Error abandoning the commit order of a post-commit callback: %s", e, e.getMessage());
         }
+  }
+
+  /**
+   * The commits published when this transaction began ({@link com.arcadedb.engine.TransactionManager#getPublishedCommits()}). A
+   * record this transaction reached through the graph and finds gone when it reads it was deleted by a concurrent commit if a
+   * commit was published since, and was already missing otherwise (issue #11713, see {@link DatabaseInternal#lookupThroughGraph}).
+   */
+  public long getPublishedCommitsAtBegin() {
+    return publishedCommitsAtBegin;
   }
 
   /**
@@ -4079,11 +4091,17 @@ public class TransactionContext implements Transaction {
       // inserted them twice. Raised by the page manager once its waits for flush capacity are over, right before the first page
       // is handed over: a wait that fails or is interrupted has published nothing, and is still rolled back. Both publication
       // paths below pass it: the columnar one writes its first mark before, so a refused NOWAL marker is still rolled back
-      if (columnar == null) {
-        database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
-        raisePageCounts();
-      } else
-        publishPagesWithColumnarMarks(columnar, columnarProjected, changes, pagesToPublish);
+      // #11713: AROUND THE PUBLICATION, SO A READER CAN TELL A RECORD THIS COMMIT DELETED FROM ONE THAT WAS ALREADY MISSING
+      database.getTransactionManager().commitPublishing();
+      try {
+        if (columnar == null) {
+          database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
+          raisePageCounts();
+        } else
+          publishPagesWithColumnarMarks(columnar, columnarProjected, changes, pagesToPublish);
+      } finally {
+        database.getTransactionManager().commitPublished();
+      }
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them

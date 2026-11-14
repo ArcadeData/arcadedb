@@ -20,8 +20,10 @@ package com.arcadedb.database;
 
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -65,6 +67,11 @@ public class ImmutableDocument extends BaseDocument {
   // allocation size and cost ~10% of a vertex scan. Written without synchronization like the rest of the record state:
   // an instance shared by threads can at worst gain or miss one retryable conflict.
   private int readInTransaction = -1;
+  // ISSUE #11713: 0, OR THE COMMITS PUBLISHED (SEE commitMark()) WHEN THE WALK THAT HANDED THIS RECORD OUT FROM A GRAPH REFERENCE
+  // - AN ADJACENCY ENTRY, THE ENDPOINT OF AN EDGE - WITHOUT READING IT BEGAN: A LAZY LOAD THAT FINDS IT GONE AFTER A COMMIT MET A
+  // CONCURRENT DELETE (SEE readContentOfLazyRecord()). TWO BYTES OF THE FOUR OF PADDING THIS CLASS ENDS WITH: NEITHER THIS CLASS,
+  // NOR ImmutableVertex, NOR ImmutableEdge GROWS BY IT (48, 56 AND 56 BYTES WITH COMPRESSED POINTERS)
+  private char reachedAtCommit;
 
   protected ImmutableDocument(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
@@ -522,6 +529,52 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Marks this record as handed out from a graph reference without being read, see {@link DatabaseInternal#lookupThroughGraph}.
+   *
+   * @param publishedCommits the commits published when the walk that read the reference began, see
+   *                         {@link com.arcadedb.engine.TransactionManager#getPublishedCommits()}
+   */
+  public void markReachedThroughGraph(final long publishedCommits) {
+    reachedAtCommit = commitMark(publishedCommits);
+  }
+
+  /** {@code publishedCommits} folded into the 16 bits {@link #reachedAtCommit} has, never 0, which means "not marked". */
+  private static char commitMark(final long publishedCommits) {
+    return (char) (Math.floorMod(publishedCommits, 65535L) + 1);
+  }
+
+  /**
+   * The content of a record handed out without it, read now (issue #11713). A record reached through the graph that is gone when
+   * it is read was deleted either by a transaction that committed after the walk read the reference to it, or before: the delete
+   * of a vertex removes the edges to it in the same commit, so only a reference read before that commit can still name it, and
+   * one read after it is dangling. The first is a conflict with a concurrent writer and answers the retryable
+   * {@link ConcurrentModificationException}; the second, told by no commit having been in flight or published since the walk
+   * began, answers the {@link RecordNotFoundException} it always did, which is what the checks and the walks that skip a dangling
+   * entry expect. So does a delete of the open transaction itself, and a record looked up by a caller that named its RID.
+   * <p>
+   * The commit is compared on 16 bits: after a multiple of 65535 commits in between it reads as none, and the read answers that
+   * the record is not found, as it did before.
+   */
+  private Binary readContentOfLazyRecord() {
+    try {
+      return database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+    } catch (final RecordNotFoundException e) {
+      if (reachedAtCommit == 0)
+        throw e;
+      final DatabaseInternal internal = (DatabaseInternal) database;
+      if (commitMark(internal.getTransactionManager().getPublishingCommits()) == reachedAtCommit)
+        // AS MANY COMMITS HAVE STARTED PUBLISHING AS HAD FINISHED WHEN THE WALK BEGAN: NONE WAS IN FLIGHT THEN AND NONE HAS STARTED
+        // SINCE, SO THE RECORD WAS ALREADY GONE, AND THE REFERENCE IS DANGLING
+        throw e;
+      final TransactionContext tx = internal.getTransactionIfExists();
+      if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
+        throw e;
+      throw new ConcurrentModificationException("Record " + rid + " was deleted by a concurrent transaction after it was "
+          + "reached through the graph: retry the operation", e);
+    }
+  }
+
+  /**
    * Materialises the record if it has not been loaded yet.
    * <p>
    * <b>Postcondition:</b> on return, either {@code buffer} is {@code null} - the record was filtered away by an
@@ -555,7 +608,7 @@ public class ImmutableDocument extends BaseDocument {
       if (rid == null)
         throw new DatabaseOperationException("Document cannot be loaded because RID is null");
 
-      content = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      content = readContentOfLazyRecord();
       // PUBLISH BEFORE FIRING THE EVENTS: A LISTENER READS THIS RECORD'S PROPERTIES OFF THE FIELD
       buffer = content;
       content.position(propertiesStartingPosition);

@@ -78,7 +78,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
       // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. THE LOOKUP hasNext() DID TO VALIDATE THE RID IS THE ONE
       // THIS CALL WOULD DO AGAIN (#10163). NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-      final Edge edge = takeValidatedRecord() instanceof Edge validated ? validated : next.asEdge(false);
+      final Edge edge = takeValidatedRecord() instanceof Edge validated ? validated : (Edge) database.lookupThroughGraph(next);
       if (endpointsFromList && edge instanceof ImmutableEdge immutable) {
         if (direction == Vertex.DIRECTION.OUT)
           immutable.setEndpointsFromEdgeList(vertex.getIdentity(), nextVertex);

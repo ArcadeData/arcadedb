@@ -108,7 +108,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Vertex getOutVertex() {
     checkForLazyLoading();
-    return (Vertex) database.lookupByRID(out, false);
+    return (Vertex) database.lookupThroughGraph(out);
   }
 
   @Override
@@ -120,16 +120,16 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Vertex getInVertex() {
     checkForLazyLoading();
-    return (Vertex) database.lookupByRID(in, false);
+    return (Vertex) database.lookupThroughGraph(in);
   }
 
   @Override
   public Vertex getVertex(final Vertex.DIRECTION iDirection) {
     checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
-      return (Vertex) database.lookupByRID(out, false);
+      return (Vertex) database.lookupThroughGraph(out);
     else
-      return (Vertex) database.lookupByRID(in, false);
+      return (Vertex) database.lookupThroughGraph(in);
   }
 
   @Override

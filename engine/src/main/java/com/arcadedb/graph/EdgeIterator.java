@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -101,7 +102,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
             continue;
           }
           try {
-            nextEdgeRecord = currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
+            nextEdgeRecord = ((DatabaseInternal) currentContainer.getDatabase()).lookupThroughGraph(nextEdgeRID);
           } catch (final RecordNotFoundException e) {
             // SKIP DANGLING EDGE
             nextEdgeRID = null;

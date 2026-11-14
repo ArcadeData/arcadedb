@@ -42,6 +42,7 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
+import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ConsoleLogger;
@@ -1152,6 +1153,26 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     return new SourceSchema(this, parser.getSource(), analyzedSchema);
 
+  }
+
+  /**
+   * Whether {@code record}, a JSON object read whole, is the {@code "info"} header the first line of an ArcadeDB export carries:
+   * the JSON importer, reading such a source as one top-level value, refuses it naming this format (issue #11729).
+   */
+  public static boolean isExportHeader(final Map<?, ?> record) {
+    return "info".equals(record.get("t")) && record.get("c") instanceof Map<?, ?> content
+        && JsonlExporterFormat.EXPORT_DESCRIPTION.equals(content.get("description"));
+  }
+
+  /**
+   * Whether {@code firstObjectHead}, what the first line of a source holds between its opening <code>{</code> and the first
+   * <code>}</code>, opens the {@code "info"} header of an ArcadeDB export. The exporter writes the header compact with
+   * {@code "t"} first and the description first in {@code "c"}, so the start of the line decides, as it does for the OrientDB
+   * and Neo4j exports (issue #11729).
+   */
+  public static boolean opensExportHeader(final CharSequence firstObjectHead) {
+    final String head = firstObjectHead.toString();
+    return head.startsWith("\"t\":\"info\"") && head.contains("\"description\":\"" + JsonlExporterFormat.EXPORT_DESCRIPTION + "\"");
   }
 
   @Override
