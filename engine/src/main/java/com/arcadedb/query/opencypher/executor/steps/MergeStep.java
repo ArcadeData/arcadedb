@@ -94,7 +94,7 @@ public class MergeStep extends AbstractExecutionStep {
    * The far end of a relationship a MERGE created between two nodes that existed, in the key it marks for each of its ends and that
    * {@link #registerMergedEdgeToCreatedNode} checks (issue #11660).
    */
-  private static final RID EXISTING_END = new RID(-2, -3);
+  private static final RID EXISTING_END = TransactionContext.MERGED_EDGE_EXISTING_END;
 
   // Internal row flags, removed before a row leaves the step
   private static final String WAS_CREATED        = "  wasCreated";
@@ -1588,12 +1588,8 @@ public class MergeStep extends AbstractExecutionStep {
       // The match that did not find it read an edge list a concurrent MERGE may be appending the same relationship to (#11482)
       final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
       if (tx != null) {
-        tx.addMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
-        // A MERGE from either end that creates its far node would have found this relationship if its far node matches (#11660)
-        tx.markMergedEdge(fromVertex.getIdentity(), EXISTING_END, edge.getTypeName() + ">");
-        tx.markMergedEdge(fromVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "-");
-        tx.markMergedEdge(toVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "<");
-        tx.markMergedEdge(toVertex.getIdentity(), EXISTING_END, edge.getTypeName() + "-");
+        // Also marks the keys a MERGE from either end that creates its far node checks (#11660)
+        tx.addMergedEdgeBetweenExistingNodes(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
       }
     }
 

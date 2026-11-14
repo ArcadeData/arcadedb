@@ -5002,6 +5002,9 @@ public class TransactionContext implements Transaction {
     });
   }
 
+  /** Placeholder far end of the keys {@link #addMergedEdgeBetweenExistingNodes} marks and a far-end-creating MERGE checks (issue #11660). */
+  public static final RID MERGED_EDGE_EXISTING_END = new RID(-2, -3);
+
   /**
    * Remembers a relationship this transaction created because a match-or-create did not find it (issue #11482): a Cypher
    * {@code MERGE}, {@code merge.relationship}, SQL {@code CREATE EDGE ... IF NOT EXISTS}. Nothing a page version sees protects the
@@ -5046,6 +5049,21 @@ public class TransactionContext implements Transaction {
     if (from == null || to == null || !isActive())
       return;
     mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
+  /**
+   * Remembers a relationship a match-or-create created between two vertices that both existed (issue #11660): {@link #addMergedEdge}
+   * plus the keys of each end that a concurrent MERGE creating its far node checks ({@link #checkMergedEdge} against
+   * {@link #MERGED_EDGE_EXISTING_END}), so every statement that does this marks the same four keys.
+   */
+  public void addMergedEdgeBetweenExistingNodes(final RID from, final RID to, final String type, final Map<String, ?> matchedBy) {
+    if (from == null || to == null || !isActive())
+      return;
+    addMergedEdge(from, to, type, matchedBy);
+    markMergedEdge(from, MERGED_EDGE_EXISTING_END, type + ">");
+    markMergedEdge(from, MERGED_EDGE_EXISTING_END, type + "-");
+    markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "<");
+    markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
   }
 
   private static int[] append(int[] array, final int index, final int value) {

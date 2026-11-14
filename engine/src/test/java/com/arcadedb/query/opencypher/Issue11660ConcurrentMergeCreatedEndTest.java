@@ -124,8 +124,25 @@ class Issue11660ConcurrentMergeCreatedEndTest {
    */
   @Test
   void aMergeCreatingTheFarEndIsRefusedByAConcurrentMergeToAnExistingMatch() throws Exception {
-    final List<String> creators = List.of("MERGE (n)-[r:T]->(m:M {k: 1})", "MERGE (m:M {k: 1})<-[r:T]-(n)",
-        "MERGE (n)-[r:T]-(m:M {k: 1})");
+    assertCreatorRefused(List.of("MERGE (n)-[r:T]->(m:M {k: 1})", "MERGE (m:M {k: 1})<-[r:T]-(n)", "MERGE (n)-[r:T]-(m:M {k: 1})"),
+        "MATCH (n:N {uuid: $uuid}), (b:M {existing: $uuid}) MERGE (n)-[:T]->(b)");
+  }
+
+  /** The anchor is the TARGET of the concurrent MERGE between existing nodes: the keys marked for the to-vertex are checked. */
+  @Test
+  void aMergeCreatingTheFarEndIsRefusedByAConcurrentMergeIntoTheAnchor() throws Exception {
+    assertCreatorRefused(List.of("MERGE (n)<-[r:T]-(m:M {k: 1})", "MERGE (m:M {k: 1})-[r:T]->(n)", "MERGE (n)-[r:T]-(m:M {k: 1})"),
+        "MATCH (n:N {uuid: $uuid}), (b:M {existing: $uuid}) MERGE (b)-[:T]->(n)");
+  }
+
+  /** The same relationship created by merge.relationship is found by the creating MERGE after its retry. */
+  @Test
+  void aMergeCreatingTheFarEndIsRefusedByAConcurrentMergeRelationshipProcedure() throws Exception {
+    assertCreatorRefused(List.of("MERGE (n)-[r:T]->(m:M {k: 1})"),
+        "MATCH (n:N {uuid: $uuid}), (b:M {existing: $uuid}) CALL merge.relationship(n, 'T', {}, {}, b) YIELD rel RETURN rel");
+  }
+
+  private void assertCreatorRefused(final List<String> creators, final String concurrent) throws Exception {
     final ExecutorService executor = Executors.newSingleThreadExecutor();
     try {
       for (int i = 0; i < creators.size(); i++) {
@@ -135,8 +152,7 @@ class Issue11660ConcurrentMergeCreatedEndTest {
 
         database.begin();
         database.command("opencypher", create, params);
-        executor.submit(() -> database.transaction(() -> database.command("opencypher",
-            "MATCH (n:N {uuid: $uuid}), (b:M {existing: $uuid}) MERGE (n)-[:T]->(b)", params))).get(30, TimeUnit.SECONDS);
+        executor.submit(() -> database.transaction(() -> database.command("opencypher", concurrent, params))).get(30, TimeUnit.SECONDS);
         assertThatThrownBy(() -> database.commit()).isInstanceOf(NeedRetryException.class);
 
         database.transaction(() -> database.command("opencypher", create, params));
