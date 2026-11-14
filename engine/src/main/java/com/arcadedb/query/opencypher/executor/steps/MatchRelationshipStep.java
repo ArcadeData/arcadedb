@@ -341,7 +341,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                     currentVertices = null;
                     currentEdges = null;
                     seenEdges = null;
-                  } else {
+                  } else if (getBoundTargetRID(lastResult) == null || !(sourceObj instanceof VertexInternal)) {
                     // Regular fast path: load vertices via getVertices()
                     if (sourceVertex == null)
                       sourceVertex = (Vertex) sourceObj;
@@ -349,8 +349,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
                     currentGavNeighborIds = null;
                     currentEdges = null;
                     seenEdges = null;
-                  }
-                } else {
+                  } else
+                    // A bound target is reached over the edges joining the pair, read off the shorter of the two
+                    // edge lists (issue #11699): the neighbour walk would read every neighbour of the source
+                    useFastPath = false;
+                }
+                if (!useFastPath) {
                   // Standard path: load edges (needs full Vertex)
                   if (sourceVertex == null)
                     sourceVertex = (Vertex) sourceObj;
@@ -760,9 +764,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // for instance the NOT EXISTS a loader wraps around each insert - the edge list can be filtered on
     // the neighbour pointer held in the segment. Without this the step materialises every edge of the
     // source and only rejects it at the bound-target check below, which on a super-node means hundreds
-    // of thousands of record loads to answer a question about one edge. Over an edge type declared
-    // unidirectional, which stores no incoming side, the edges are looked for from the end that stores them
-    // (issue #8625).
+    // of thousands of record loads to answer a question about one edge. The engine reads the pair off
+    // whichever end has the shorter edge list, so a hub source costs the degree of the target (issue #11699).
+    // Over an edge type declared unidirectional, which stores no incoming side, the edges are looked for from
+    // the end that stores them (issue #8625).
     final RID boundTarget = getBoundTargetRID(lastResult);
     if (boundTarget != null && vertex instanceof VertexInternal internalVertex) {
       if (IncomingEdgeLookup.isIncomingSideMissing(context.getDatabase().getSchema(), direction.toArcadeDirection(), types))

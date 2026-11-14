@@ -111,6 +111,10 @@ public class GraphEngine {
   private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
   private static final boolean[]        SKIP_SELF_LOOPS  = { true };
 
+  // THE ENTRIES THE EDGE LIST OF THE NEAR END OF A BOUND PAIR IS WALKED ALONE BEFORE THE FAR END IS LOOKED AT, SEE
+  // shorterFarEnd(): A SHORT LIST ANSWERS WITHOUT LOADING THE OTHER VERTEX OR ITS LIST (ISSUE #11699)
+  private static final int              BOUND_PAIR_HEAD_START = 64;
+
   // THE ENTRIES OF A VERTEX WITH NO EDGE LIST IN A DIRECTION
   private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
     @Override
@@ -2869,7 +2873,15 @@ public class GraphEngine {
    * a non-matching edge costs a pointer comparison instead of a record load and a property deserialization. The walk
    * itself is not free - the segment still yields an RID per entry, as it always did - but on a super-node dropping
    * the per-edge record load is the difference between the probe being unusable and being cheap.
-   *
+   * <p>
+   * Every edge joining two vertices sits in the edge list of both, so the pair is read off whichever end's list is the
+   * shorter (issue #11699): the walk costs O(min(degree(vertex), degree(target))) entries in the hop's direction rather
+   * than the degree of the end the caller named first, which on a super-node is the difference between a probe about
+   * one edge and a scan of hundreds of thousands. No list keeps a count, so the two lists are stepped in turn and the
+   * first one to run out is the shorter (see {@link #shorterFarEnd}). The edges returned are the same either way;
+   * read from the target's list they come in the order that list holds them. A self-loop and a hop over an edge type
+   * declared unidirectional, whose incoming side no vertex stores (issue #8625), are always read off {@code vertex}.
+   * <p>
    * Under {@link Vertex.DIRECTION#BOTH} a self-loop is returned twice, once from each list, exactly as
    * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} does. A caller that cares must de-duplicate by
    * edge identity, as the Cypher expansion does.
@@ -2892,34 +2904,143 @@ public class GraphEngine {
     // resolution belongs here.
     final VertexInternal source = getMostUpdatedVertex(vertex);
 
+    final VertexInternal farEnd = shorterFarEnd(source, direction, targetRID, edgeTypes);
+    if (farEnd != null)
+      return edgesConnectedTo(farEnd, mirror(direction), source.getIdentity(), edgeTypes, true);
+    return edgesConnectedTo(source, direction, targetRID, edgeTypes, false);
+  }
+
+  /**
+   * The edges of {@code owner}'s list(s) in {@code direction} that reach {@code neighbour}. Under
+   * {@link Vertex.DIRECTION#BOTH} the outgoing list is read first, or the incoming one when {@code incomingFirst}: a
+   * pair read off its far end then comes in the order its near end would have given it.
+   */
+  private Iterator<Edge> edgesConnectedTo(final VertexInternal owner, final Vertex.DIRECTION direction, final RID neighbour,
+      final String[] edgeTypes, final boolean incomingFirst) {
     switch (direction) {
       case BOTH: {
         // No countEntries override here, unlike the BOTH branch of getEdges: that one delegates to
         // EdgeLinkedList.count, which filters by edge type only. There is no neighbour-keyed count, so an
         // override could do nothing cheaper than the walk MultiIterator already falls back to.
         final MultiIterator<Edge> result = new MultiIterator<>();
-        final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
-        if (outEdges != null)
-          result.addIterator(outEdges.edgeIteratorConnectedTo(targetRID, edgeTypes));
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
-        if (inEdges != null)
-          result.addIterator(inEdges.edgeIteratorConnectedTo(targetRID, edgeTypes));
+        final EdgeLinkedList firstEdges = getEdgeHeadChunk(owner, incomingFirst ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
+        if (firstEdges != null)
+          result.addIterator(firstEdges.edgeIteratorConnectedTo(neighbour, edgeTypes));
+        final EdgeLinkedList secondEdges = getEdgeHeadChunk(owner, incomingFirst ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN);
+        if (secondEdges != null)
+          result.addIterator(secondEdges.edgeIteratorConnectedTo(neighbour, edgeTypes));
         return result;
       }
 
-      case OUT: {
-        final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
-        return outEdges != null ? outEdges.edgeIteratorConnectedTo(targetRID, edgeTypes) : Collections.emptyIterator();
-      }
-
+      case OUT:
       case IN: {
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
-        return inEdges != null ? inEdges.edgeIteratorConnectedTo(targetRID, edgeTypes) : Collections.emptyIterator();
+        final EdgeLinkedList edges = getEdgeHeadChunk(owner, direction);
+        return edges != null ? edges.edgeIteratorConnectedTo(neighbour, edgeTypes) : Collections.emptyIterator();
       }
 
       default:
         throw new IllegalArgumentException("Invalid direction " + direction);
     }
+  }
+
+  /**
+   * The far end of a hop between two bound vertices when its edge list is the shorter of the two, so the edges joining
+   * them are read off it; null when they are read off {@code source}, as they always were (issue #11699).
+   * <p>
+   * No edge list keeps a count of its entries, and walking one to count it costs what the walk it would save costs. So
+   * the lists are stepped entry by entry in turn, the far one in the mirrored direction, and the first to run out is the
+   * shorter: the race costs at most twice the shorter list, plus {@link #BOUND_PAIR_HEAD_START} entries the near list
+   * walks alone first so that the common short list answers without loading the far vertex or its list at all. Every
+   * entry counts, whatever its type: the type filter of the walk that follows reads them all the same.
+   * <p>
+   * The far vertex is read again through the database rather than taken from the caller's handle: a handle loaded before
+   * another transaction appended to its list would hide the newest edges, and a MERGE deciding on that would create a
+   * second one (issues #6461, #7174). A far vertex that cannot be read leaves the walk on {@code source}, and so does a
+   * list of either end whose head, or the head of one of whose stripes, is present but cannot be loaded (a concurrent
+   * commit not yet fully published, see {@link #getEdgeHeadChunkForWrite}): read as empty or as short, it would win the
+   * race and hide the edges the unreadable part holds.
+   */
+  private VertexInternal shorterFarEnd(final VertexInternal source, final Vertex.DIRECTION direction, final RID targetRID,
+      final String[] edgeTypes) {
+    // A SELF-LOOP HAS ONE VERTEX TO READ IT OFF, AND A UNIDIRECTIONAL TYPE IS STORED ON ITS SOURCE ONLY (#8625)
+    if (targetRID == null || targetRID.equals(source.getIdentity())
+        || IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), edgeTypes))
+      return null;
+
+    final Iterator<RID> nearEntries = entriesOf(source, direction);
+    if (nearEntries == null)
+      return null;
+    for (int i = 0; i < BOUND_PAIR_HEAD_START; i++) {
+      if (!nearEntries.hasNext())
+        return null;
+      nearEntries.next();
+    }
+
+    final VertexInternal far;
+    try {
+      if (!(database.lookupByRID(targetRID, true) instanceof VertexInternal loaded))
+        return null;
+      far = loaded;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+
+    final Iterator<RID> farEntries = entriesOf(far, mirror(direction));
+    if (farEntries == null)
+      return null;
+    while (true) {
+      if (!nearEntries.hasNext())
+        return null;
+      nearEntries.next();
+      if (!farEntries.hasNext())
+        return far;
+      farEntries.next();
+    }
+  }
+
+  /**
+   * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list, or a
+   * stripe of one, whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
+   */
+  private Iterator<RID> entriesOf(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    if (direction != Vertex.DIRECTION.BOTH)
+      return entriesOfList(vertex, direction);
+    final Iterator<RID> outEntries = entriesOfList(vertex, Vertex.DIRECTION.OUT);
+    if (outEntries == null)
+      return null;
+    final Iterator<RID> inEntries = entriesOfList(vertex, Vertex.DIRECTION.IN);
+    if (inEntries == null)
+      return null;
+    final MultiIterator<RID> both = new MultiIterator<>();
+    both.addIterator(outEntries);
+    both.addIterator(inEntries);
+    return both;
+  }
+
+  /** {@link #entriesOf} in {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}. */
+  private Iterator<RID> entriesOfList(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    final EdgeLinkedList edges = getEdgeHeadChunk(vertex, direction);
+    if (edges != null)
+      return edges.wholeEntryRidIterator();
+    return hasNoEdgeList(vertex, direction) ? Collections.emptyIterator() : null;
+  }
+
+  /** Whether {@code vertex} names no head chunk in {@code direction}: false too when the vertex itself cannot be read. */
+  private static boolean hasNoEdgeList(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    try {
+      return (direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk()) == null;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  /** The direction the far end of a hop sees it in. */
+  private static Vertex.DIRECTION mirror(final Vertex.DIRECTION direction) {
+    return switch (direction) {
+      case OUT -> Vertex.DIRECTION.IN;
+      case IN -> Vertex.DIRECTION.OUT;
+      case BOTH -> Vertex.DIRECTION.BOTH;
+    };
   }
 
   /**
