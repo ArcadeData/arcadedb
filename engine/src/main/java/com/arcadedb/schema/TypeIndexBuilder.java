@@ -42,6 +42,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -88,6 +89,20 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
     this.metadata = new IndexMetadata(typeName, propertyNames, -1);
+  }
+
+  /**
+   * Reads a PERSISTED index definition into {@code target}, the metadata of this builder, and keeps the type and the
+   * properties the builder was created for. A type index is persisted as one definition per bucket, and the definition
+   * of a bucket a subtype owns names that subtype: taken over, it made {@link #create()} build a second index on the
+   * subtype (issue #11577). Used by the {@code withPersistedMetadata} of the specialised builders.
+   */
+  protected final void readPersistedDefinition(final IndexMetadata target, final JSONObject json) {
+    final String typeName = target.typeName;
+    final List<String> propertyNames = target.propertyNames;
+    target.fromJSON(json);
+    target.typeName = typeName;
+    target.propertyNames = propertyNames;
   }
 
   /**
