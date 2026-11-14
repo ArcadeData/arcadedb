@@ -686,7 +686,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           // Try to find an index that matches the property constraints
           // Support composite indexes with partial keys (leftmost prefix matching)
-          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult, false);
           if (indexedIter != null)
             return indexedIter;
         }
@@ -700,9 +700,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // that cannot be resolved without an input row are skipped inside extractEqualityPredicates,
         // falling back to the full scan + row-level whereFilter, so correctness is preserved.
         if (type != null && whereFilter != null) {
-          final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult, false);
           if (indexedIter != null)
             return indexedIter;
+        }
+
+        // OPTIMIZATION: no whole-key index answers the pattern or the WHERE clause, so a leading prefix of a composite index
+        // may (issue #11576). Tried only after every whole-key choice: an exact lookup beats a range, a UNIQUE one included.
+        if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
+          final Iterator<Identifiable> prefixIter = tryFindAndUseIndex(type, label, currentInputResult, true);
+          if (prefixIter != null)
+            return prefixIter;
+        }
+        if (type != null && whereFilter != null) {
+          final Iterator<Identifiable> prefixIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult, true);
+          if (prefixIter != null)
+            return prefixIter;
         }
 
         // OPTIMIZATION: Partition-aware bucket pruning. When the type uses a partitioned bucket
@@ -861,7 +874,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label,
-      final Result currentInputResult) {
+      final Result currentInputResult, final boolean prefixOnly) {
     // Prepare property names and values from the pattern
     final Map<String, Object> properties = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
@@ -881,7 +894,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     // Find the best index (longest leftmost prefix match): index [a,b,c] can be used for [a], [a,b], or [a,b,c] but not [b] or
     // [a,c]
-    final IndexChoice best = bestKeyIndex(type, properties.keySet());
+    final IndexChoice best = bestKeyIndex(type, properties.keySet(), prefixOnly);
     if (best == null)
       return null;
 
@@ -900,11 +913,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
-   * The key index of {@code type} whose longest leftmost prefix {@code bound} covers, an index covering all its properties
-   * preferred at equal length. A prefix shorter than the key is only usable on an index that walks its keys in order, since
-   * it is read as the range of the keys that start with it (issue #11576); a hash index answers a whole key only.
+   * The key index of {@code type} whose longest leftmost prefix {@code bound} covers. With {@code prefixOnly} false only an
+   * index whose every property is bound is a candidate (an exact lookup); with it true only an index left partly unbound is,
+   * so the caller tries every exact lookup before any range. A prefix shorter than the key is only usable on an index that
+   * walks its keys in order, since it is read as the range of the keys that start with it (issue #11576); a hash index
+   * answers a whole key only.
    */
-  private IndexChoice bestKeyIndex(final DocumentType type, final Set<String> bound) {
+  private IndexChoice bestKeyIndex(final DocumentType type, final Set<String> bound, final boolean prefixOnly) {
     IndexChoice best = null;
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
       final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
@@ -918,10 +933,17 @@ public class MatchNodeStep extends AbstractExecutionStep {
         continue;
 
       final boolean wholeKey = matchCount == indexProperties.size();
-      if (!wholeKey && !index.supportsOrderedIterations())
+      if (wholeKey == prefixOnly)
         continue;
-      if (best == null || matchCount > best.matchedProperties().size()
-          || matchCount == best.matchedProperties().size() && wholeKey && !best.wholeKey())
+      if (!wholeKey) {
+        try {
+          if (!index.supportsOrderedIterations())
+            continue;
+        } catch (final IndexException e) {
+          continue; // dropped or rebuilt since it was checked: not a candidate, the scan answers
+        }
+      }
+      if (best == null || matchCount > best.matchedProperties().size())
         best = new IndexChoice(index, indexProperties.subList(0, matchCount), wholeKey);
     }
     return best;
@@ -955,9 +977,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private Iterator<Identifiable> prefixSeek(final TypeIndex index, final String label, final Object[] prefix) {
     final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
     final List<Identifiable> found = new ArrayList<>();
-    try (final IndexCursor cursor = index.range(true, prefix, true, prefix, true)) {
-      while (cursor.hasNext())
-        found.add(cursor.next());
+    IndexCursor rest = null;
+    try {
+      final IndexCursor cursor = index.range(true, prefix, true, prefix, true);
+      try {
+        // Up to MAX_ENTRIES entries are read whole, as seekKeys does; a prefix is less selective than a whole key, so past
+        // that the rest streams as the caller pulls and a LIMIT stops the read early
+        while (found.size() < ConsistentKeyLookup.MAX_ENTRIES && cursor.hasNext())
+          found.add(cursor.next());
+        if (cursor.hasNext())
+          rest = cursor;
+      } finally {
+        if (rest == null)
+          cursor.close();
+      }
     } catch (final IndexException e) {
       return null;
     } catch (final IllegalArgumentException e) {
@@ -965,10 +998,39 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return null;
       throw e;
     }
-    if (!index.isUnchangedSince(subIndexes))
+    if (!index.isUnchangedSince(subIndexes)) {
+      if (rest != null)
+        rest.close();
       return null;
-    final Iterator<Identifiable> cursor = found.iterator();
-    return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(cursor, context.getDatabase(), label) : cursor;
+    }
+    Iterator<Identifiable> result = found.iterator();
+    if (rest != null) {
+      final DistinctKeySeek tail = new DistinctKeySeek(index, List.of(), rest, 0, false);
+      openSeek = tail;
+      result = new HeadThenTail(result, tail);
+    }
+    return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(result, context.getDatabase(), label) : result;
+  }
+
+  /** The entries read whole, then the rest of the same range streamed. */
+  private static final class HeadThenTail implements Iterator<Identifiable> {
+    private final Iterator<Identifiable> head;
+    private final Iterator<Identifiable> tail;
+
+    private HeadThenTail(final Iterator<Identifiable> head, final Iterator<Identifiable> tail) {
+      this.head = head;
+      this.tail = tail;
+    }
+
+    @Override
+    public boolean hasNext() {
+      return head.hasNext() || tail.hasNext();
+    }
+
+    @Override
+    public Identifiable next() {
+      return head.hasNext() ? head.next() : tail.next();
+    }
   }
 
   /**
@@ -1029,16 +1091,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * With index lookup, it's O(log N) per row.
    */
   private Iterator<Identifiable> tryFindAndUseIndexFromWhere(final DocumentType type, final String label,
-      final Result currentInputResult) {
+      final Result currentInputResult, final boolean prefixOnly) {
     // Extract equality predicates: variable.property = <expression>
     final Map<String, Object> equalityPredicates = new LinkedHashMap<>();
     extractEqualityPredicates(whereFilter, equalityPredicates, currentInputResult);
 
     if (equalityPredicates.isEmpty())
-      return tryInListIndexSeek(type, label, currentInputResult);
+      return prefixOnly ? null : tryInListIndexSeek(type, label, currentInputResult);
 
     // Find the best matching index (longest leftmost prefix)
-    final IndexChoice best = bestKeyIndex(type, equalityPredicates.keySet());
+    final IndexChoice best = bestKeyIndex(type, equalityPredicates.keySet(), prefixOnly);
     if (best != null) {
       final String[] propertyNames = best.matchedProperties().toArray(new String[0]);
       final Object[] propertyValues = new Object[propertyNames.length];
@@ -1047,7 +1109,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return seekChosenIndex(best, label, propertyNames, propertyValues);
     }
 
-    return tryInListIndexSeek(type, label, currentInputResult);
+    return prefixOnly ? null : tryInListIndexSeek(type, label, currentInputResult);
   }
 
   /**
@@ -1208,7 +1270,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       throw e;
     }
     // A new seek is only opened once the one before it is drained, so there is never more than one to close
-    final DistinctKeySeek distinct = new DistinctKeySeek(index, keys, first, nextKey);
+    final DistinctKeySeek distinct = new DistinctKeySeek(index, keys, first, nextKey, true);
     openSeek = distinct;
     return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(distinct, context.getDatabase(), label) : distinct;
   }
@@ -1223,16 +1285,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
     private final List<Object[]>     keys;
     private final WorkGuard          guard         = WorkGuard.forCommandDeadline(context);
     private final OperationHeapLimit seenHeapLimit = OperationHeapLimit.of(context, "record addresses", "MatchNodeStep");
-    private       RidHashSet         seen          = new RidHashSet();
+    private       RidHashSet         seen;
     private       IndexCursor        cursor;
     private       int                nextKey;
     private       Identifiable       next;
 
-    private DistinctKeySeek(final TypeIndex index, final List<Object[]> keys, final IndexCursor first, final int nextKey) {
+    /** @param dedupe false for one range whose entries are distinct already: nothing is remembered then */
+    private DistinctKeySeek(final TypeIndex index, final List<Object[]> keys, final IndexCursor first, final int nextKey,
+        final boolean dedupe) {
       this.index = index;
       this.keys = keys;
       this.cursor = first;
       this.nextKey = nextKey;
+      this.seen = dedupe ? new RidHashSet() : null;
     }
 
     @Override
@@ -1241,7 +1306,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
         guard.check();
         if (cursor.hasNext()) {
           final Identifiable identifiable = cursor.next();
-          if (seen.add(identifiable.getIdentity())) {
+          if (seen == null) {
+            if (identifiable != null)
+              next = identifiable;
+          } else if (seen.add(identifiable.getIdentity())) {
             seenHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
             next = identifiable;
           }

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -48,6 +49,84 @@ class CypherCompositeIndexPrefixSeekIssue11576Test extends TestHelper {
       for (int i = 0; i < 200; i++)
         database.newVertex("T").set("a", "k" + (i % 50)).set("b", i).save();
     });
+  }
+
+  private void createUnbalancedTypes() {
+    // a hash composite index: it answers a whole key only
+    database.command("sql", "CREATE VERTEX TYPE H");
+    database.command("sql", "CREATE PROPERTY H.a STRING");
+    database.command("sql", "CREATE PROPERTY H.b INTEGER");
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.HASH, false, "H", "a", "b");
+    // an index declared on a supertype, queried through a subtype that has a sibling
+    database.command("sql", "CREATE VERTEX TYPE P");
+    database.command("sql", "CREATE PROPERTY P.a STRING");
+    database.command("sql", "CREATE PROPERTY P.b INTEGER");
+    database.command("sql", "CREATE INDEX ON P (a, b) NOTUNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE C1 EXTENDS P");
+    database.command("sql", "CREATE VERTEX TYPE C2 EXTENDS P");
+    // a unique single-column index next to a composite one
+    database.command("sql", "CREATE VERTEX TYPE U");
+    database.command("sql", "CREATE PROPERTY U.id INTEGER");
+    database.command("sql", "CREATE PROPERTY U.a STRING");
+    database.command("sql", "CREATE PROPERTY U.b INTEGER");
+    database.command("sql", "CREATE PROPERTY U.c INTEGER");
+    database.command("sql", "CREATE INDEX ON U (id) UNIQUE");
+    database.command("sql", "CREATE INDEX ON U (a, b, c) NOTUNIQUE");
+    // a prefix holding more entries than one eager read
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.a STRING");
+    database.command("sql", "CREATE PROPERTY W.b INTEGER");
+    database.command("sql", "CREATE INDEX ON W (a, b) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++) {
+        database.newVertex("H").set("a", "k" + (i % 4)).set("b", i).save();
+        database.newVertex("C1").set("a", "k" + (i % 4)).set("b", i).save();
+        database.newVertex("C2").set("a", "k" + (i % 4)).set("b", 1000 + i).save();
+        database.newVertex("U").set("id", i).set("a", "k" + (i % 4)).set("b", i % 2).set("c", i).save();
+      }
+      for (int i = 0; i < 600; i++)
+        database.newVertex("W").set("a", "same").set("b", i).save();
+    });
+  }
+
+  @Test
+  void aHashIndexDeclinesAPartialKey() {
+    createUnbalancedTypes();
+    final String query = "WITH 1 AS one MATCH (n:H {a: $x}) RETURN n.b AS b ORDER BY b";
+    assertThat(values(query, Map.of("x", "k1"))).containsExactly(1, 5, 9, 13, 17);
+    assertThat(profile(query, Map.of("x", "k1"))).doesNotContain("prefix:");
+  }
+
+  @Test
+  void anInheritedIndexDoesNotReturnSiblingRecords() {
+    createUnbalancedTypes();
+    final String query = "WITH 1 AS one MATCH (n:C1 {a: $x}) RETURN n.b AS b ORDER BY b";
+    assertThat(values(query, Map.of("x", "k1"))).containsExactly(1, 5, 9, 13, 17);
+    assertThat(profile(query, Map.of("x", "k1"))).contains("prefix: a");
+  }
+
+  @Test
+  void aWholeKeyBeatsAPrefixOfAnotherIndex() {
+    createUnbalancedTypes();
+    final Map<String, Object> params = Map.of("x", "k3", "y", 1, "id", 7);
+    final String inline = "WITH 1 AS one MATCH (n:U {a: $x, b: $y}) WHERE n.id = $id RETURN n.c AS b";
+    assertThat(values(inline, params)).containsExactly(7);
+    assertThat(profile(inline, params)).contains("U[id]").doesNotContain("prefix:");
+    final String mixed = "WITH 1 AS one MATCH (n:U {id: $id, a: $x}) RETURN n.c AS b";
+    assertThat(values(mixed, params)).containsExactly(7);
+    assertThat(profile(mixed, params)).contains("U[id]").doesNotContain("prefix:");
+  }
+
+  @Test
+  void aPrefixHoldingManyEntriesIsStreamed() {
+    createUnbalancedTypes();
+    final String query = "WITH 1 AS one MATCH (n:W {a: $x}) RETURN n.b AS b ORDER BY b";
+    final List<Integer> all = new ArrayList<>();
+    for (int i = 0; i < 600; i++)
+      all.add(i);
+    assertThat(values(query, Map.of("x", "same"))).containsExactlyElementsOf(all);
+    assertThat(profile(query, Map.of("x", "same"))).contains("prefix: a");
+    assertThat(values("WITH 1 AS one MATCH (n:W {a: $x}) RETURN n.b AS b LIMIT 3", Map.of("x", "same"))).hasSize(3);
   }
 
   @Test
