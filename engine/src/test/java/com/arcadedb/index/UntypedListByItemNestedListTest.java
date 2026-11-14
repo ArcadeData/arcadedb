@@ -125,6 +125,33 @@ class UntypedListByItemNestedListTest extends TestHelper {
   }
 
   @Test
+  void aNestedByItemPathOverADeclaredItemTypeWithAListField() {
+    database.command("sql", "CREATE DOCUMENT TYPE Tag");
+    database.command("sql", "CREATE PROPERTY Tag.id LIST");
+    for (final String type : List.of("TIndexed", "TPlain")) {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".tags LIST OF Tag");
+      database.command("sql", "CREATE PROPERTY " + type + ".k INTEGER");
+    }
+    database.command("sql", "CREATE INDEX ON TIndexed (`tags.id` BY ITEM) NOTUNIQUE");
+    database.transaction(() -> {
+      for (final String type : List.of("TIndexed", "TPlain")) {
+        database.command("sql", "INSERT INTO " + type + " SET k = 0, tags = [{'@type': 'Tag', 'id': [3]}]");
+        database.command("sql", "INSERT INTO " + type + " SET k = 1, tags = [{'@type': 'Tag', 'id': [4]}]");
+        database.command("sql", "INSERT INTO " + type + " SET k = 2, tags = [{'@type': 'Tag', 'id': ['[3]']}]");
+      }
+    });
+    for (final String where : List.of("tags.id CONTAINS [3]", "tags.id CONTAINS [[3]]", "tags.id CONTAINS '[3]'")) {
+      assertThat(keys("TIndexed", where, Map.of())).as(where).isEqualTo(keys("TPlain", where, Map.of()));
+      final String plan = database.query("sql", "EXPLAIN SELECT k FROM TIndexed WHERE " + where).next().getProperty("executionPlan")
+          .toString();
+      assertThat(plan).as(where).contains("FETCH FROM INDEX TIndexed[tags.idbyitem]");
+    }
+    // the nested list [3] is found through the whole-operand lookup, which a scalar lookup alone would miss
+    assertThat(keys("TIndexed", "tags.id CONTAINS [[3]]", Map.of())).contains(0).doesNotContain(1);
+  }
+
+  @Test
   void theIndexIsStillUsed() {
     for (final String where : List.of("tags CONTAINS 3", "tags CONTAINS [3]", "tags CONTAINS '[3]'")) {
       final String plan = database.query("sql", "EXPLAIN SELECT k FROM Indexed WHERE " + where).next().getProperty("executionPlan")

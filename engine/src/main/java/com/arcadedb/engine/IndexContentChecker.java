@@ -24,7 +24,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -35,6 +37,7 @@ import com.arcadedb.utility.LongHashSet;
 
 import java.math.BigDecimal;
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.function.Consumer;
 
 /**
@@ -174,37 +177,80 @@ final class IndexContentChecker {
         return;
       }
 
-      // The entry was read before the record: a commit in between (the check takes no lock) can have changed both. A finding is
-      // reported only when the entry is still there and the record, read again, still does not stand for it
-      if (!isIndexed(index, keys, rid))
-        return;
-      final Document now = loadDocument(rid);
-      if (now == null) {
+      // The entry was read before the record, and the check takes no lock: a commit in between can have changed both. The
+      // candidate is judged again under the commit locks of the bucket and of the index, where no commit can land between the
+      // two reads, so both see one committed state
+      recordKeys.clear();
+      final Verdict verdict = underCommitLocks(bucket, index, () -> {
+        if (!isIndexed(index, keys, rid))
+          return Verdict.GONE;
+        final Document now = loadDocument(rid);
+        if (now == null)
+          return Verdict.DANGLING;
+        return holdsKey(index, now, fingerprint, keys, valid, recordKeys) ? Verdict.VALID : Verdict.STALE;
+      });
+      switch (verdict) {
+      case VALID -> valid.add(fingerprint);
+      case DANGLING -> {
         ++report.dangling;
         example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not exist");
-        return;
       }
-      recordKeys.clear();
-      if (holdsKey(index, now, fingerprint, keys, valid, recordKeys)) {
-        valid.add(fingerprint);
-        return;
+      case STALE -> {
+        ++report.stale;
+        example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not hold that key"
+            + (recordKeys.isEmpty() ? " (it has no key in this index)" : " (its key: " + String.join(", ", recordKeys) + ")"));
       }
-      ++report.stale;
-      example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not hold that key"
-          + (recordKeys.isEmpty() ? " (it has no key in this index)" : " (its key: " + String.join(", ", recordKeys) + ")"));
+      case GONE -> {
+        // removed since the walk: no finding
+      }
+      }
     });
 
     scanRecords(bucket, type, document -> {
       tick.run();
+      final RID rid = document.getIdentity();
       forEachRecordPair(index, document, (fingerprint, keys) -> {
-        if (valid.contains(fingerprint) || isIndexed(index, keys, document.getIdentity()))
+        if (valid.contains(fingerprint) || isIndexed(index, keys, rid))
           return;
+        // the same judgement under the commit locks: the record still holds the key and the index still has no entry for it
+        final Verdict verdict = underCommitLocks(bucket, index, () -> {
+          final Document now = loadDocument(rid);
+          if (now == null)
+            return Verdict.GONE;
+          final boolean[] holds = new boolean[1];
+          forEachRecordPair(index, now, (recordFingerprint, recordKey) -> holds[0] |= recordFingerprint == fingerprint);
+          return holds[0] && !isIndexed(index, keys, rid) ? Verdict.MISSING : Verdict.GONE;
+        });
         valid.add(fingerprint);
-        ++report.missing;
-        example(report, "record " + document.getIdentity() + " has no entry for key " + Arrays.toString(keys));
+        if (verdict == Verdict.MISSING) {
+          ++report.missing;
+          example(report, "record " + rid + " has no entry for key " + Arrays.toString(keys));
+        }
       });
     });
     return report;
+  }
+
+  private enum Verdict {VALID, GONE, DANGLING, STALE, MISSING}
+
+  /**
+   * Runs {@code judgement} holding the commit locks of the bucket and of every file of the index, which a commit writing the record
+   * or its entries takes from before it validates until after it is visible. When the locks cannot be had in time (a database too
+   * busy to pause the writes to one bucket), the judgement runs without them: it has already been made twice by then, once on the
+   * walk and once again here.
+   */
+  private Verdict underCommitLocks(final Bucket bucket, final LSMTreeIndex index, final Callable<Verdict> judgement) {
+    final List<Integer> files = new ArrayList<>(index.getFileIds());
+    files.add(bucket.getFileId());
+    try {
+      return database.executeLockingFiles(files, judgement);
+    } catch (final NeedRetryException e) {
+      try {
+        return judgement.call();
+      } catch (final Exception inner) {
+        throw new IndexException("Error comparing the entries of index '" + index.getName() + "' with the records", inner);
+      }
+    }
   }
 
   /**
