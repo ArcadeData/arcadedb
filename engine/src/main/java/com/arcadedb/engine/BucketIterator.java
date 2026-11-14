@@ -138,11 +138,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     this.positions = positions;
     this.positionIndex = positionsFrom;
     this.positionsEnd = positionsTo;
-    this.totalPages = bucket.pageCount.get();
-
-    final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.fileId);
-    if (txPageCounter != null && txPageCounter > totalPages)
-      this.totalPages = txPageCounter;
+    this.totalPages = bucket.getReadablePageCount();
 
     if (toPage > -1 && toPage < this.totalPages) {
       if (!forwardDirection)
