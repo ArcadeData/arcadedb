@@ -32,6 +32,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -41,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #11739: {@code create database} sent to a follower is forwarded to the leader, and the follower relayed the leader's 200
  * at once. It installs the database only when it applies the entry the leader committed, so the client's next request to the
  * same follower was refused with {@code DatabaseNotFoundException}. The follower's apply thread is held off the new database
- * here for two seconds, which makes that window certain.
+ * here until the test has seen the leader create it and the follower's answer still pending, which makes that window certain.
  */
 @Tag("slow")
 class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
@@ -65,16 +66,17 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int followerIndex = (leaderIndex + 1) % getServerCount();
 
-    // Hold the follower's apply thread off the new database for two seconds: the install apply gate is the lock it takes before
+    // Hold the follower's apply thread off the new database until released: the install apply gate is the lock it takes before
     // applying an entry for a database, the one that installs it included. The leader still commits with the other follower.
     final ArcadeStateMachine followerMachine = getRaftPlugin(followerIndex).getRaftHAServer().getStateMachine();
     final CountDownLatch held = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
     final Thread gateHolder = new Thread(() -> {
       final ArcadeStateMachine.InstallApplyGate gate = followerMachine.installApplyGate(NEW_DATABASE);
       gate.lock();
       try {
         held.countDown();
-        Thread.sleep(2_000);
+        release.await(60, TimeUnit.SECONDS);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       } finally {
@@ -84,20 +86,31 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
     gateHolder.start();
     assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
 
+    final CompletableFuture<HttpResponse<String>> created;
     try {
-      final HttpResponse<String> created = post(followerIndex, "/server", new JSONObject().put("command", "create database " + NEW_DATABASE));
-      assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
+      created = send(followerIndex, "/server", new JSONObject().put("command", "create database " + NEW_DATABASE));
 
-      final HttpResponse<String> next = post(followerIndex, "/command/" + NEW_DATABASE,
-          new JSONObject().put("language", "sql").put("command", "CREATE DOCUMENT TYPE AfterCreation"));
-      assertThat(next.statusCode()).as("the request right after the creation, to the same follower, was refused: %s", next.body())
-          .isEqualTo(200);
+      final long deadline = System.currentTimeMillis() + 30_000;
+      while (!getServer(leaderIndex).existsDatabase(NEW_DATABASE) && System.currentTimeMillis() < deadline)
+        Thread.sleep(50);
+      assertThat(getServer(leaderIndex).existsDatabase(NEW_DATABASE)).as("the leader must have created the database").isTrue();
+      Thread.sleep(500);
+      assertThat(created.isDone()).as("the follower must not answer the creation before it holds the database").isFalse();
     } finally {
+      release.countDown();
       gateHolder.join(TimeUnit.SECONDS.toMillis(30));
     }
+
+    final HttpResponse<String> answer = created.get(30, TimeUnit.SECONDS);
+    assertThat(answer.statusCode()).as("create database failed: %s", answer.body()).isEqualTo(200);
+
+    final HttpResponse<String> next = send(followerIndex, "/command/" + NEW_DATABASE,
+        new JSONObject().put("language", "sql").put("command", "CREATE DOCUMENT TYPE AfterCreation")).get(30, TimeUnit.SECONDS);
+    assertThat(next.statusCode()).as("the request right after the creation, to the same follower, was refused: %s", next.body())
+        .isEqualTo(200);
   }
 
-  private HttpResponse<String> post(final int serverIndex, final String path, final JSONObject body) throws Exception {
+  private CompletableFuture<HttpResponse<String>> send(final int serverIndex, final String path, final JSONObject body) {
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1" + path))
         .timeout(HTTP_TIMEOUT)
@@ -106,6 +119,6 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
         .build();
-    return HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build().send(request, HttpResponse.BodyHandlers.ofString());
+    return HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build().sendAsync(request, HttpResponse.BodyHandlers.ofString());
   }
 }
