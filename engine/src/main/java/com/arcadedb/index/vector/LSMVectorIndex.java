@@ -9010,7 +9010,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // mapping (issue #4581).
     boolean added = false;
 
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < ordinalMap.length) {
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListShare(allowedRIDs, ordinalMap.length) < ordinalMap.length) {
       // Walk the allow-list instead of every ordinal (issue #5748). An allow-list narrower than k never meets the
       // caller's expected-result threshold, so the fallback fires on every query and the full ordinal walk costs
       // O(index) each time. Resolving each allowed RID to its ordinals costs O(allow-list * log index) and reads
@@ -9059,7 +9059,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved
     // through its lookup for as long as that graph is the resident one
     final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    // A member of another bucket has no vector in this sub-index (issue #11765)
+    final int bucketId = metadata.associatedBucketId;
     for (final RID rid : allowedRIDs) {
+      if (bucketId >= 0 && rid.getBucketId() != bucketId)
+        continue;
       for (final int vectorId : locations.getVectorIdsForRid(rid)) {
         final int ordinal =
             lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId);
@@ -9209,7 +9213,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return new PreFilterPlan(candidates.rids(), candidates.exact() ? candidates.rids() : allowedRIDs);
       }
     }
-    return allowedRIDs.size() <= maxCandidates ? new PreFilterPlan(allowedRIDs, allowedRIDs) : null;
+    // A plain list counts by its members in this bucket (issue #11765): the type's whole list overstated them by the number of
+    // buckets it is spread over, so a filter selective in every bucket walked every graph instead
+    return allowListShare(allowedRIDs, (int) maxCandidates + 1) <= maxCandidates ? new PreFilterPlan(allowedRIDs, allowedRIDs) : null;
+  }
+
+  /**
+   * How many members of the allow-list {@code allowedRIDs} lie in this sub-index's bucket, counted up to {@code cap}
+   * (issue #11765). A type's vector index has one sub-index per bucket, and each is searched with the type's whole list, so
+   * the list's own size overstates what one sub-index can answer with by the number of buckets the list is spread over. A
+   * predicate decides its members one candidate at a time and has no such count: its size is answered as it is.
+   */
+  private int allowListShare(final Set<RID> allowedRIDs, final int cap) {
+    final int bucketId = metadata.associatedBucketId;
+    if (bucketId < 0 || allowedRIDs instanceof PredicateRidSet)
+      return allowedRIDs.size();
+    int share = 0;
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId && ++share >= cap)
+        break;
+    return share;
   }
 
   /**
@@ -9787,8 +9810,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
           expectedResults = Math.min(k, availableVectors);
         }
+        // A plain allow-list answers with no more rows than it holds in this bucket (issue #11765). Counted against the whole
+        // list, a filter spread over a type's buckets left every sub-index short of rows that are in the other buckets, so
+        // each search scanned every bucket after its walk and logged a WARNING about a healthy graph
+        final int requested = expectedResults;
+        final int share = results.size() < expectedResults && allowedRIDs != null && !allowedRIDs.isEmpty()
+            && !(allowedRIDs instanceof PredicateRidSet) ? allowListShare(allowedRIDs, expectedResults) : expectedResults;
+        expectedResults = Math.min(expectedResults, share);
         if (results.size() < expectedResults) {
-          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
+          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs, share, requested);
           metrics.incrementBruteForceScans();
           bruteForceScan(scorer, k, allowedRIDs, results, ordinalMap, overlay, guard);
         }
@@ -9819,22 +9849,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * The log line of the issue #3722 shortfall fallback, before the scan that completes the answer. Issue #6502: see
-   * {@link #shortfallIsAllowListDriven}'s javadoc for why it is split.
+   * {@link #shortfallIsAllowListDriven}'s javadoc for why it is split. {@code bucketShare} is how many members of a plain
+   * allow-list this bucket holds, and {@code requested} the rows asked of it before that share capped them (issue #11765): a
+   * list spread over a type's buckets can be narrower than requested in each of them while its total size is not.
    */
   private void logShortfallCompletion(final int found, final int expectedResults, final int availableVectors,
-      final Set<RID> allowedRIDs) {
+      final Set<RID> allowedRIDs, final int bucketShare, final int requested) {
     if (allowedRIDs instanceof PredicateRidSet)
       LogManager.instance().log(this, Level.FINE, """
               Graph search returned only %d results (expected %d, available %d) for index %s - the allow-list is a \
               predicate the walk met too few matches of, so completing the answer with a brute-force scan is the \
               expected cost of a selective predicate, not a sign the graph needs rebuilding""", found, expectedResults,
           availableVectors, indexName);
-    else if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
+    else if (shortfallIsAllowListDriven(allowedRIDs, requested) || bucketShare < requested)
       LogManager.instance().log(this, Level.FINE, """
               Graph search returned only %d results (expected %d, available %d) for index %s - the RID \
-              allow-list has only %d entries, which is fewer than requested, so completing the answer with a \
-              brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""", found,
-          expectedResults, availableVectors, indexName, allowedRIDs.size());
+              allow-list has only %d entries, %d of them in this bucket, which is fewer than requested, so completing the \
+              answer with a brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""", found,
+          expectedResults, availableVectors, indexName, allowedRIDs.size(), bucketShare);
     else
       LogManager.instance().log(this, Level.WARNING, """
               Graph search returned only %d results (expected %d, available %d) for index %s - \

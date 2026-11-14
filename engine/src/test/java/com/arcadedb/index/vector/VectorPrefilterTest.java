@@ -89,9 +89,9 @@ class VectorPrefilterTest {
    *   <li>{@link #shortfallIsAllowListDrivenClassifiesBothDirections} - direct coverage of the predicate that decides
    *       whether the issue #3722 shortfall log line is the expected FINE case or the WARNING one, since a logic
    *       inversion there would otherwise pass the rest of the suite silently.</li>
-   *   <li>{@link #aNarrowAllowListWithThePlanDisabledLogsAtFineNotWarning} - the end-to-end path into that predicate:
-   *       selectivity 0 forces a narrow allow-list past the pre-filter plan and into the shortfall log, which must
-   *       come out at FINE, not the graph-degradation WARNING.</li>
+   *   <li>{@link #aNarrowAllowListWithThePlanDisabledNeitherScansNorWarns} - the end-to-end path into the shortfall check:
+   *       selectivity 0 forces a narrow allow-list past the pre-filter plan into the walk, which answers with every member
+   *       of the list, so the search neither scans nor logs the graph-degradation WARNING.</li>
    * </ul>
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -272,14 +272,15 @@ class VectorPrefilterTest {
         final LSMVectorIndex index = vectorIndex();
         final float[] query = embedding(7);
 
-        // Every real RID (100% of the index) plus enough RIDs from a bucket this index knows nothing about to push
-        // the allow-list past availableVectors (100) but comfortably under an unclamped 5.0x threshold (500). Only a
-        // literal (unclamped) selectivity would route this to the pre-filter plan.
+        // Every real RID (100% of the index) plus enough RIDs of this index's bucket that hold no record to push the
+        // allow-list's share of the bucket past availableVectors (100) but comfortably under an unclamped 5.0x threshold
+        // (500). Only a literal (unclamped) selectivity would route this to the pre-filter plan. Members of another bucket
+        // would not do: a sub-index counts only the members of its own bucket (issue #11765).
         final Set<RID> allWithExtra = new HashSet<>();
         for (int i = 0; i < VERTICES; i++)
           allWithExtra.add(ridOf("doc" + i));
         for (int i = 0; i < 50; i++)
-          allWithExtra.add(new RID(9999, i));
+          allWithExtra.add(new RID(index.getAssociatedBucketId(), 1_000_000 + i));
         assertThat(allWithExtra.size()).as("must exceed availableVectors to distinguish clamped from unclamped")
             .isGreaterThan(VERTICES);
 
@@ -324,12 +325,13 @@ class VectorPrefilterTest {
     }
 
     /**
-     * End-to-end path into the predicate above: disabling the pre-filter plan is the only way to make a narrow
-     * allow-list reach the shortfall log at all (the plan would otherwise answer it directly first), so this pins
-     * that the log level it lands on is FINE, and that the graph-degradation WARNING text does not also fire.
+     * End-to-end path into the shortfall check: disabling the pre-filter plan is the only way to make a narrow allow-list
+     * reach the walk at all (the plan would otherwise answer it directly first). The walk returns every member of the list,
+     * which is all a list narrower than k can give, so the search neither scans nor logs the graph-degradation WARNING
+     * (issue #11765: the expectation is capped at the list's members in this bucket).
      */
     @Test
-    void aNarrowAllowListWithThePlanDisabledLogsAtFineNotWarning() {
+    void aNarrowAllowListWithThePlanDisabledNeitherScansNorWarns() {
       createSchemaAndData();
       database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
 
@@ -341,14 +343,15 @@ class VectorPrefilterTest {
       final Logger originalLogger = LogManager.instance().getLogger();
       LogManager.instance().setLogger(new LevelInclusiveCapturingLogger(captured, originalLogger));
       try {
+        final long scansBefore = index.getStats().getOrDefault("bruteForceScans", 0L);
         final List<Pair<RID, Float>> results = index.findNeighborsFromVector(query, K, -1, allowed);
 
         assertThat(results).hasSize(3);
+        assertThat(index.getStats().get("bruteForceScans"))
+            .as("the walk answered with every member of the list, so nothing is left for a scan to find")
+            .isEqualTo(scansBefore);
         assertThat(captured)
-            .as("a shortfall forced purely by allow-list width must log at FINE, saying so")
-            .anyMatch(m -> m != null && m.contains("allow-list has only 3 entries"));
-        assertThat(captured)
-            .as("and must NOT also log the graph-degradation WARNING - only one of the two may fire")
+            .as("and must NOT log the graph-degradation WARNING")
             .noneMatch(m -> m != null && m.contains("graph may need rebuilding"));
       } finally {
         LogManager.instance().setLogger(originalLogger);
