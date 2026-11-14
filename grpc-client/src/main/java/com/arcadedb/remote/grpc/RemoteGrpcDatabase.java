@@ -181,6 +181,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private final    SessionPartialCommitInterceptor                   partialCommitInterceptor =
       new SessionPartialCommitInterceptor(this);
+  /**
+   * The packed array negotiation (issue #11714): asks for {@code float[]} / {@code double[]} results packed, and learns from
+   * the responses whether the server decodes packed requests, which an older one reads as nulls. Applied in
+   * {@link #rebuildStubs()} for the reason {@link #partialCommitInterceptor} is, but one per channel generation: what the
+   * server behind one channel announced says nothing about the server a reconnect reaches, so a new channel starts with
+   * lists, and a call of the replaced channel that answers late only informs the instance nothing reads any more.
+   */
+  private          PackedArraysNegotiationInterceptor                packedArrays;
 
   public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort,
                             final int httpPort,
@@ -213,8 +221,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * single place a subclass customises stub construction.
    */
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub() {
-    if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
-      rebuildStubs();
+    followChannelGeneration();
     return blockingStub;
   }
 
@@ -230,9 +237,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   /** @see #blockingStub() */
   private ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub() {
+    followChannelGeneration();
+    return asyncStub;
+  }
+
+  private void followChannelGeneration() {
     if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
       rebuildStubs();
-    return asyncStub;
   }
 
   /**
@@ -242,12 +253,25 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private void rebuildStubs() {
     final long generation = remoteGrpcServer.channelGeneration();
+    // #11714: a new channel may reach another server, so the negotiation starts over with it
+    packedArrays = new PackedArraysNegotiationInterceptor();
     // #8134: the partial-commit interceptor is attached HERE rather than inside createBlockingStub() /
     // createAsyncStub(), which exist to be overridden - a subclass customising stub construction would
     // otherwise drop the guard and silently go back to replaying a block whose earlier half is durable.
-    blockingStub = createBlockingStub().withInterceptors(partialCommitInterceptor);
-    asyncStub = createAsyncStub().withInterceptors(partialCommitInterceptor);
+    blockingStub = createBlockingStub().withInterceptors(partialCommitInterceptor, packedArrays);
+    asyncStub = createAsyncStub().withInterceptors(partialCommitInterceptor, packedArrays);
     stubChannelGeneration = generation;
+  }
+
+  /**
+   * Whether this database sends a {@code float[]} / {@code double[]} packed: only once a response on the CURRENT channel
+   * announced that its server decodes the packed kinds (issue #11714), lists until then. Called while a request is being
+   * encoded, so it follows a channel change first, as {@link #blockingStub()} does when the request is sent: an answer the
+   * replaced channel gave must not decide the encoding of the first request on the new one.
+   */
+  boolean sendsPackedArrays() {
+    followChannelGeneration();
+    return packedArrays.serverDecodesPackedArrays();
   }
 
   /**
@@ -1384,7 +1408,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   public boolean updateRecord(String rid, Record dbRecord, long timeoutMs) {
-    GrpcRecord record = ProtoUtils.toProtoRecord(dbRecord);
+    GrpcRecord record = ProtoUtils.toProtoRecord(dbRecord, sendsPackedArrays());
     return updateRecordFull(rid, record, timeoutMs);
   }
 
@@ -2070,15 +2094,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // Domain Record (storage) -> GrpcRecord
   private GrpcRecord toProtoRecordFromDbRecord(Record rec) {
     // Use ProtoUtils for proper conversion
-    GrpcRecord out = ProtoUtils.toProtoRecord(rec);
+    GrpcRecord out = ProtoUtils.toProtoRecord(rec, sendsPackedArrays());
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "CLIENT toProtoRecordFromDbRecord: %s", summarize(out));
     return out;
   }
 
-  // Convert Java object -> GrpcValue (extend as needed)
-  private GrpcValue objectToGrpcValue(Object v) {
-    return ProtoUtils.toGrpcValue(v);
+  // Convert Java object -> GrpcValue, a float[] / double[] packed only for a server that announced it decodes it
+  GrpcValue objectToGrpcValue(final Object v) {
+    return ProtoUtils.toGrpcValue(v, sendsPackedArrays());
   }
 
   public DatabaseCredentials buildCredentials() {
@@ -2357,6 +2381,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
       case TIMESTAMP_VALUE -> "TIMESTAMP";
       case LIST_VALUE -> "LIST[" + v.getListValue().getValuesCount() + "]";
+      case FLOAT_ARRAY_VALUE -> "FLOAT_ARRAY[" + v.getFloatArrayValue().getValuesCount() + "]";
+      case DOUBLE_ARRAY_VALUE -> "DOUBLE_ARRAY[" + v.getDoubleArrayValue().getValuesCount() + "]";
       case MAP_VALUE -> "MAP[" + v.getMapValue().getEntriesCount() + "]";
       case EMBEDDED_VALUE -> "EMBEDDED";
       case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
