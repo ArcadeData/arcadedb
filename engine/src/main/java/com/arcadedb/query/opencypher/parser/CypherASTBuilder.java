@@ -1281,23 +1281,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     validateNoParameterProperties(List.of(pathPattern), "MERGE");
 
-    // Parse ON CREATE SET and ON MATCH SET actions
-    SetClause onCreateSet = null;
-    SetClause onMatchSet = null;
+    // Parse ON CREATE SET and ON MATCH SET actions: each repetition stays a SET of its own, applied in order
+    final List<SetClause> onCreateActions = new ArrayList<>(1);
+    final List<SetClause> onMatchActions = new ArrayList<>(1);
 
     for (final Cypher25Parser.MergeActionContext actionCtx : ctx.mergeAction()) {
       final SetClause setClause = visitSetClause(actionCtx.setClause());
 
-      if (actionCtx.CREATE() != null) {
-        // ON CREATE SET
-        onCreateSet = setClause;
-      } else if (actionCtx.MATCH() != null) {
-        // ON MATCH SET
-        onMatchSet = setClause;
-      }
+      if (actionCtx.CREATE() != null)
+        onCreateActions.add(setClause);
+      else if (actionCtx.MATCH() != null)
+        onMatchActions.add(setClause);
     }
 
-    return new MergeClause(pathPattern, onCreateSet, onMatchSet);
+    return new MergeClause(pathPattern, onCreateActions, onMatchActions);
   }
 
   @Override
