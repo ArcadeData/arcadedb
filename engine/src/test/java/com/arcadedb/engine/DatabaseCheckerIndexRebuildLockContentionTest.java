@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -85,23 +86,36 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
 
     final List<Integer> fileIds = bucketSubIndexFileIds(db);
 
+    // Taken when the rebuild step BEGINS, not before the check: the passes before it (the index content comparison waits for
+    // the same lock, #11734) would otherwise spend the 6 s window and let the first rebuild attempt through, never reaching
+    // the retry. Held 6 s from there, past the 5 s lock timeout of the first attempt and short of the second one
     final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 6_000);
-    holder.start();
+    final boolean[] heldAtRebuild = new boolean[1];
     try {
-      assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
-          .as("background thread must acquire the lock before FIX runs").isTrue();
-
-      final ResultSet result = database.command("sql", "check database fix");
-      assertThat(result.hasNext()).isTrue();
-      final Result row = result.next();
-      assertThat(row.<Long>getProperty("autoFix")).isGreaterThan(0L);
+      final Map<String, Object> row = new DatabaseChecker(database).setFix(true)
+          .setProgressCallback((stepName, stepIndex, totalSteps, done, total) -> {
+            if ("Rebuilding indexes".equals(stepName) && !heldAtRebuild[0]) {
+              heldAtRebuild[0] = true;
+              holder.start();
+              try {
+                assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
+                    .as("background thread must acquire the lock before the rebuild runs").isTrue();
+              } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
+            }
+          }).check();
+      assertThat(heldAtRebuild[0]).as("the rebuild step must have run under the held lock").isTrue();
+      assertThat((Long) row.get("autoFix")).isGreaterThan(0L);
       // rebuiltIndexes names the BUCKET sub-index DatabaseChecker actually rebuilds (e.g. "Doc_0_<nanoTime>"),
       // not the logical TypeIndex wrapper "myIdx" - it must be non-empty, i.e. the rebuild was recorded as done.
       @SuppressWarnings("unchecked")
-      final Set<String> rebuiltIndexes = (Set<String>) row.getProperty("rebuiltIndexes");
+      final Set<String> rebuiltIndexes = (Set<String>) row.get("rebuiltIndexes");
       assertThat(rebuiltIndexes).isNotEmpty();
     } finally {
-      holder.join(15_000);
+      if (heldAtRebuild[0])
+        holder.join(15_000);
     }
     assertThat(holder.isAlive()).isFalse();
     assertThat(holder.error.get()).isNull();
