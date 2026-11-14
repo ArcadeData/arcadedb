@@ -167,32 +167,31 @@ final class IndexContentChecker {
         return;
       }
 
+      final List<String> recordKeys = new ArrayList<>(2);
       final Document document = loadDocument(rid);
-      if (document == null) {
+      if (document != null && holdsKey(index, document, fingerprint, keys, valid, recordKeys)) {
+        valid.add(fingerprint);
+        return;
+      }
+
+      // The entry was read before the record: a commit in between (the check takes no lock) can have changed both. A finding is
+      // reported only when the entry is still there and the record, read again, still does not stand for it
+      if (!isIndexed(index, keys, rid))
+        return;
+      final Document now = loadDocument(rid);
+      if (now == null) {
         ++report.dangling;
         example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not exist");
         return;
       }
-
-      final boolean[] holdsKey = new boolean[1];
-      final List<String> recordKeys = new ArrayList<>(2);
-      forEachRecordPair(index, document, (recordFingerprint, recordKey) -> {
-        if (recordFingerprint == fingerprint)
-          holdsKey[0] = true;
-        else if (sameKey(keys, recordKey, index.getBinaryKeyTypes())) {
-          // one key under the index's comparator that the fingerprint spells two ways: valid, and so is the record's pair
-          holdsKey[0] = true;
-          valid.add(recordFingerprint);
-        } else if (recordKeys.size() < 4)
-          recordKeys.add(Arrays.toString(recordKey));
-      });
-      if (holdsKey[0])
+      recordKeys.clear();
+      if (holdsKey(index, now, fingerprint, keys, valid, recordKeys)) {
         valid.add(fingerprint);
-      else {
-        ++report.stale;
-        example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not hold that key"
-            + (recordKeys.isEmpty() ? " (it has no key in this index)" : " (its key: " + String.join(", ", recordKeys) + ")"));
+        return;
       }
+      ++report.stale;
+      example(report, "entry " + Arrays.toString(keys) + " -> " + rid + " names a record that does not hold that key"
+          + (recordKeys.isEmpty() ? " (it has no key in this index)" : " (its key: " + String.join(", ", recordKeys) + ")"));
     });
 
     scanRecords(bucket, type, document -> {
@@ -209,14 +208,38 @@ final class IndexContentChecker {
   }
 
   /**
-   * Whether the index holds the pair after all: a record written after the walk, which the scan met, is not a missing entry.
+   * Whether {@code document} holds the key of the entry whose pair has {@code fingerprint}. The record's other keys are collected
+   * in {@code recordKeys} for the report (at most four).
+   */
+  private boolean holdsKey(final LSMTreeIndex index, final Document document, final long fingerprint, final Object[] keys,
+      final LongHashSet valid, final List<String> recordKeys) {
+    final boolean[] holds = new boolean[1];
+    forEachRecordPair(index, document, (recordFingerprint, recordKey) -> {
+      if (recordFingerprint == fingerprint)
+        holds[0] = true;
+      else if (sameKey(keys, recordKey, index.getBinaryKeyTypes())) {
+        // one key under the index's comparator that the fingerprint spells two ways: valid, and so is the record's pair
+        holds[0] = true;
+        valid.add(recordFingerprint);
+      } else if (recordKeys.size() < 4)
+        recordKeys.add(Arrays.toString(recordKey));
+    });
+    return holds[0];
+  }
+
+  /**
+   * Whether the index holds the pair now: a record written after the walk, which the scan met, is not a missing entry, and an
+   * entry removed after the walk is no finding.
    */
   private boolean isIndexed(final LSMTreeIndex index, final Object[] keys, final RID rid) {
     final IndexCursor cursor = index.get(keys);
     try {
-      while (cursor.hasNext())
-        if (rid.equals(cursor.next().getIdentity()))
+      while (cursor.hasNext()) {
+        // the contract of IndexCursor says next() is never null: guarded anyway, a null must not abort the comparison
+        final Identifiable entry = cursor.next();
+        if (entry != null && rid.equals(entry.getIdentity()))
           return true;
+      }
       return false;
     } finally {
       cursor.close();
@@ -311,6 +334,9 @@ final class IndexContentChecker {
     try {
       while (cursor.hasNext()) {
         final Identifiable entry = cursor.next();
+        if (entry == null)
+          // the contract of IndexCursor says next() is never null: guarded anyway, a null must not abort the comparison
+          continue;
         final RID rid = entry.getIdentity();
         final Object[] keys = cursor.getKeys();
         consumer.accept(fingerprint(keys, keyTypes, rid), rid, keys);

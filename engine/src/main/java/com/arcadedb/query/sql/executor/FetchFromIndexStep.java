@@ -1297,10 +1297,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     boolean expand = slotKind == SLOT_MULTI_VALUE && !(value instanceof Identifiable) && MultiValue.isMultiValue(value);
     if (slotKind == SLOT_ITEM_OR_WHOLE && (keyValue instanceof Collection || MultiValue.isSequenceArray(keyValue))) {
       // `tags CONTAINS [3]` holds for the element 3 and for the element [3], which the index keys apart: one lookup each. The
-      // planner hands a one-item operand only; a sub-query row or a record stays one lookup, as it was
+      // planner hands a one-item operand only; a sub-query row stays one lookup, as it was (a link held in a nested list is keyed
+      // with it, so a RID item looks the list up too)
       final List<?> whole = keyValue instanceof Collection<?> collection ? new ArrayList<>(collection) : CollectionUtils.arrayToList(keyValue);
       final Object item = whole.isEmpty() ? null : whole.getFirst();
-      if (item != null && !(item instanceof Result) && !(item instanceof Identifiable)) {
+      if (item != null && !(item instanceof Result)) {
         value = List.of(item, whole);
         expand = true;
       }

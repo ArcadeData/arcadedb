@@ -87,6 +87,8 @@ class CheckDatabaseIndexContentTest extends TestHelper {
     assertThat(check.<Long>getProperty("staleIndexEntries")).isEqualTo(1L);
     assertThat(check.<Long>getProperty("missingIndexEntries")).isEqualTo(1L);
     assertThat(check.<Long>getProperty("totalErrors")).isGreaterThanOrEqualTo(3L);
+    // the summary and the three examples are counted like every other warning
+    assertThat(check.<Long>getProperty("totalWarnings")).isGreaterThanOrEqualTo(4L);
     assertThat(check.<Collection<String>>getProperty("corruptedIndexes")).containsExactly(index.getName());
     assertThat(String.join("\n", check.<Collection<String>>getProperty("warnings")))//
         .contains("entry [7] -> " + gone + " names a record that does not exist")//

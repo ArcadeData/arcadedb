@@ -93,6 +93,38 @@ class UntypedListByItemNestedListTest extends TestHelper {
   }
 
   @Test
+  void aNestedListOfRecordLinksIsFoundByAOneItemOperand() {
+    final List<Object> rids = new ArrayList<>();
+    for (final String type : List.of("Indexed", "Plain"))
+      database.transaction(() -> {
+        final var target = database.newDocument(type).set("k", 100).save();
+        database.newDocument(type).set("k", 101).set("tags", new ArrayList<>(List.of(List.of(target.getIdentity())))).save();
+        rids.add(target.getIdentity());
+      });
+    assertThat(keys("Plain", "tags CONTAINS :v", Map.of("v", List.of(rids.get(1))))).isEqualTo(List.of(101));
+    assertThat(keys("Indexed", "tags CONTAINS :v", Map.of("v", List.of(rids.get(0))))).isEqualTo(List.of(101));
+  }
+
+  @Test
+  void aNestedByItemPathKeepsTheRecheckAndTheWholeOperandLookup() {
+    for (final String type : List.of("NIndexed", "NPlain")) {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".tags LIST");
+      database.command("sql", "CREATE PROPERTY " + type + ".k INTEGER");
+    }
+    database.command("sql", "CREATE INDEX ON NIndexed (`tags.id` BY ITEM) NOTUNIQUE");
+    database.transaction(() -> {
+      for (final String type : List.of("NIndexed", "NPlain")) {
+        database.newDocument(type).set("k", 0).set("tags", new ArrayList<>(List.of(Map.of("id", 3)))).save();
+        database.newDocument(type).set("k", 1).set("tags", new ArrayList<>(List.of(Map.of("id", List.of(3))))).save();
+        database.newDocument(type).set("k", 2).set("tags", new ArrayList<>(List.of(Map.of("id", "[3]")))).save();
+      }
+    });
+    for (final String where : List.of("tags.id CONTAINS 3", "tags.id CONTAINS [3]", "tags.id CONTAINS '[3]'"))
+      assertThat(keys("NIndexed", where, Map.of())).as(where).isEqualTo(keys("NPlain", where, Map.of()));
+  }
+
+  @Test
   void theIndexIsStillUsed() {
     for (final String where : List.of("tags CONTAINS 3", "tags CONTAINS [3]", "tags CONTAINS '[3]'")) {
       final String plan = database.query("sql", "EXPLAIN SELECT k FROM Indexed WHERE " + where).next().getProperty("executionPlan")

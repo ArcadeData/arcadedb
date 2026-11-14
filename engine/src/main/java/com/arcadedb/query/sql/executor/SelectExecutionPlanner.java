@@ -6419,7 +6419,7 @@ public class SelectExecutionPlanner {
           // that spells them: CONTAINS also looks up a one-item operand as that nested list, and is checked on what comes back
           // (issue #11730)
           final boolean nestedItems = keyExp instanceof ContainsCondition contains && info.isIndexByItem()
-              && TypeIndexBuilder.listItemsMayNest(clazz.getPolymorphicPropertyIfExists(baseFieldName));
+              && TypeIndexBuilder.byItemValuesMayNest(clazz, baseFieldName);
           if (nestedItems)
             ((ContainsCondition) keyExp).lookUpWholeOperand = true;
           if (nestedItems || singleExp.needsRecheckAfterIndexLookup() || (ciCollation && needsLowerCaseResidual(singleExp, info))) {

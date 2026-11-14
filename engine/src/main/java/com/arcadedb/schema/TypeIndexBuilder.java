@@ -136,6 +136,32 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * {@link #listItemsMayNest} for the path a {@code BY ITEM} index reads, which can reach into the items ({@code tags.id}): then
+   * the value keyed is the field of each item, and it can nest unless the schema declares that field, through the embedded types
+   * of the path, as a scalar. An undeclared step answers true, so the condition is checked on what the index returns.
+   */
+  public static boolean byItemValuesMayNest(final DocumentType type, final String path) {
+    final int dot = path.indexOf('.');
+    if (dot < 0)
+      return listItemsMayNest(type.getPolymorphicPropertyIfExists(path));
+
+    final Property root = type.getPolymorphicPropertyIfExists(path.substring(0, dot));
+    DocumentType current = root != null && root.getOfType() != null ? type.getSchema().getTypeOrNull(root.getOfType()) : null;
+    final String[] steps = path.substring(dot + 1).split("\\.");
+    for (int i = 0; i < steps.length; i++) {
+      if (current == null)
+        return true;
+      final Property step = current.getPolymorphicPropertyIfExists(steps[i]);
+      if (step == null)
+        return true;
+      if (i == steps.length - 1)
+        return step.getType() == Type.LIST || step.getType() == Type.MAP || step.getType() == Type.EMBEDDED;
+      current = step.getOfType() != null ? type.getSchema().getTypeOrNull(step.getOfType()) : null;
+    }
+    return true;
+  }
+
+  /**
    * The one copy constructor of the whole builder hierarchy: the specialised builders {@link #withType} swaps in -
    * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder},
    * {@link TypeGeoIndexBuilder} and {@link TypeColumnarIndexBuilder} - all delegate here, each supplying only the two things

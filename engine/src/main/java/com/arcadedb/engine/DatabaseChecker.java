@@ -2502,7 +2502,7 @@ public class DatabaseChecker {
       }
     }
 
-    checkIndexContent(contentChecked, corruptedIndexes, corruptedIndexNames, warnings);
+    checkIndexContent(contentChecked, corruptedIndexes, corruptedIndexNames);
 
     // A type index that lacks the bucket index of a bucket of its type misses every record of that bucket and, for a UNIQUE one, does
     // not refuse a duplicate there (the state a rebuild interrupted by an earlier version left behind). FIX repairs it at the end
@@ -2553,7 +2553,7 @@ public class DatabaseChecker {
    * would only add noise.
    */
   private void checkIndexContent(final Map<Integer, List<LSMTreeIndex>> contentChecked, final Set<Index> corruptedIndexes,
-      final Set<String> corruptedIndexNames, final List<String> warnings) {
+      final Set<String> corruptedIndexNames) {
     if (contentChecked.isEmpty())
       return;
 
@@ -2572,7 +2572,7 @@ public class DatabaseChecker {
           reports = checker.check(bucket, indexes, this::stepTick);
         } catch (final RuntimeException e) {
           // a bucket or an index that cannot be read here is reported by the passes that read it for what it is
-          warnings.add("bucket '" + bucket.getName() + "': index entries could not be compared with the records: " + e.getMessage());
+          addWarning("bucket '" + bucket.getName() + "': index entries could not be compared with the records: " + e.getMessage());
           continue;
         }
 
@@ -2587,11 +2587,11 @@ public class DatabaseChecker {
           final Long errors = (Long) result.get("totalErrors");
           result.put("totalErrors", (errors != null ? errors : 0L) + report.dangling + report.stale + report.missing);
 
-          warnings.add("index '" + index.getName() + "': its entries do not match the records of bucket '" + bucket.getName() + "' ("
+          addWarning("index '" + index.getName() + "': its entries do not match the records of bucket '" + bucket.getName() + "' ("
               + report.dangling + " for records that do not exist, " + report.stale + " with a key the record does not hold, "
               + report.missing + " keys of records with no entry)" + (fix ? "" : ". Run CHECK DATABASE FIX to rebuild it"));
           for (final String example : report.examples)
-            warnings.add("index '" + index.getName() + "': " + example);
+            addWarning("index '" + index.getName() + "': " + example);
         }
       }
     } finally {
