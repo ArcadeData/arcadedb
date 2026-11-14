@@ -151,6 +151,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /** The most buckets one type creation takes: the rest of an exported type's buckets are added after it exists. */
   private static final int MAX_BUCKETS_PER_CREATION = 32;
 
+  /** How the first line of an ArcadeDB export opens after its <code>{</code>, see {@link #opensExportHeader}. */
+  private static final String EXPORT_HEADER_HEAD =
+      "\"t\":\"info\",\"c\":{\"description\":\"" + JsonlExporterFormat.EXPORT_DESCRIPTION + "\"";
+
   /**
    * TIMESERIES samples appended since the last commit. One {@code "ts"} line carries a whole chunk of samples
    * (up to {@code JsonlExporterFormat}'s own chunk size), so counting LINES the way {@code context.parsed} does
@@ -1163,10 +1167,6 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     return "info".equals(record.get("t")) && record.get("c") instanceof Map<?, ?> content
         && JsonlExporterFormat.EXPORT_DESCRIPTION.equals(content.get("description"));
   }
-
-  /** How the first line of an ArcadeDB export opens after its <code>{</code>, see {@link #opensExportHeader}. */
-  private static final String EXPORT_HEADER_HEAD =
-      "\"t\":\"info\",\"c\":{\"description\":\"" + JsonlExporterFormat.EXPORT_DESCRIPTION + "\"";
 
   /**
    * Whether {@code firstObjectHead}, what the first line of a source holds after its opening <code>{</code>, opens the
