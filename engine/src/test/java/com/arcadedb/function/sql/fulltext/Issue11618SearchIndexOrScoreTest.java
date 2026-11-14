@@ -162,6 +162,22 @@ class Issue11618SearchIndexOrScoreTest extends TestHelper {
         .isEqualTo(expected);
   }
 
+  /** A scoring OR nested under an AND that has its own scoring arm does not wipe that arm's score when only a plain arm matched. */
+  @Test
+  void aNestedOrMatchedByAPlainArmKeepsTheScoreOfASiblingAndArm() {
+    final Map<String, Float> text = scores("SELECT name, $score AS score FROM Chunk WHERE " + A);
+    final String rid = database.query("sql", "SELECT @rid AS rid FROM Chunk WHERE name = 'textOnly'").next().getProperty("rid")
+        .toString();
+    final String where = A + " AND (name = 'textOnly' OR " + B + ")";
+    final Map<String, Float> expected = Map.of("textOnly", text.get("textOnly"));
+    assertThat(text.get("textOnly")).isGreaterThan(0f);
+    assertThat(scores("SELECT name, $score AS score FROM [" + rid + "] WHERE " + where)).as("RID list").isEqualTo(expected);
+    assertThat(scores("SELECT name, $score AS score FROM [" + rid + "] WHERE (name = 'textOnly' OR " + B + ") AND " + A)).as(
+        "RID list, OR first").isNotEmpty();
+    final Map<String, Float> typeScores = scores("SELECT name, $score AS score FROM Chunk WHERE " + where);
+    assertThat(typeScores.get("textOnly")).as("type target").isEqualTo(text.get("textOnly"));
+  }
+
   private void insert(final String name, final String text, final String questions) {
     database.command("sql", "INSERT INTO Chunk SET name = ?, text = ?, questions = ?", name, text, questions);
   }

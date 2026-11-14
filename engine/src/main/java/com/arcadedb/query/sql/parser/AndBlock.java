@@ -30,7 +30,11 @@ import java.util.List;
 import java.util.Map;
 
 public class AndBlock extends BooleanExpression {
+  private static final boolean[] NO_SCORING_CHILD = new boolean[0];
+
   public final List<BooleanExpression> subBlocks;
+  // Which children set $score, worked out on the first evaluation
+  private boolean[] scoringChildren;
 
   public AndBlock() {
     this.subBlocks = new ArrayList<>();
@@ -48,17 +52,51 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
+    final boolean[] scoring = scoringChildren(context);
+    Float kept = null;
     Boolean hasNull = false;
-    for (final BooleanExpression block : subBlocks) {
-      final Boolean result = block.evaluate(currentRecord, context);
+    for (int i = 0; i < subBlocks.size(); i++) {
+      final Boolean result = subBlocks.get(i).evaluate(currentRecord, context);
       if (result == null) {
         hasNull = true;
       } else if (!result) {
         return false;
-      }
+      } else if (scoring != NO_SCORING_CHILD && scoring[i])
+        kept = keepScore(kept, context);
     }
     // If any operand was null and none were false, return null (SQL three-valued logic)
     return hasNull ? null : true;
+  }
+
+  /**
+   * A scoring child that matched through an arm that does not score (a nested OR) leaves 0 in {@code $score}: it must not
+   * wipe the score a sibling scoring child already set for the record.
+   *
+   * @return the score the record has after this child
+   */
+  private static Float keepScore(final Float kept, final CommandContext context) {
+    if (!(context.getVariable("$score") instanceof Number score))
+      return kept;
+    final float current = score.floatValue();
+    if (kept != null && current == 0f && kept > 0f) {
+      context.setVariable("$score", kept);
+      return kept;
+    }
+    return current;
+  }
+
+  /** Which children set {@code $score}, worked out once: {@link #NO_SCORING_CHILD} when none does. */
+  private boolean[] scoringChildren(final CommandContext context) {
+    boolean[] children = scoringChildren;
+    if (children == null) {
+      children = new boolean[subBlocks.size()];
+      boolean any = false;
+      for (int i = 0; i < children.length; i++)
+        any |= children[i] = subBlocks.get(i).setsScore(context);
+      // benign race: a concurrent execution computes the same value
+      scoringChildren = children = any ? children : NO_SCORING_CHILD;
+    }
+    return children;
   }
 
   @Override
@@ -67,13 +105,17 @@ public class AndBlock extends BooleanExpression {
       return true;
 
     // UNKNOWN AND FALSE is FALSE: a later false operand still decides the result (SQL three-valued logic)
+    final boolean[] scoring = scoringChildren(context);
+    Float kept = null;
     boolean hasNull = false;
-    for (final BooleanExpression block : subBlocks) {
-      final Boolean result = block.evaluate(currentRecord, context);
+    for (int i = 0; i < subBlocks.size(); i++) {
+      final Boolean result = subBlocks.get(i).evaluate(currentRecord, context);
       if (result == null)
         hasNull = true;
       else if (!result)
         return false;
+      else if (scoring != NO_SCORING_CHILD && scoring[i])
+        kept = keepScore(kept, context);
     }
     return hasNull ? null : true;
   }
