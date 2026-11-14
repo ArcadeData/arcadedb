@@ -152,6 +152,7 @@ class LSMTreeIndexFullCompactionTest extends TestHelper {
 
     database.transaction(() -> assertThat(index.get(new Object[] { 77 }).hasNext()).isFalse());
     assertThat(countRange(0, 2_000)).isEqualTo(1_999);
+    rebuildIndexesFromRecords();
   }
 
   @Test

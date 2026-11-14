@@ -107,6 +107,7 @@ class IndexCompactionRegressionTest extends TestHelper {
               + "getTotalPages() includes the header/root page, which is fine for a pacing-only signal), "
               + "otherwise auto-compaction is deferred by a full threshold every restart")
           .isEqualTo(after.getTotalPages());
+      rebuildIndexesFromRecords();
     }
 
     private LSMTreeIndexMutable bucketMutableIndex() {

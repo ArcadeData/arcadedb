@@ -133,6 +133,50 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * Whether a {@code BY ITEM} index over this LIST property can hold a nested list, map or embedded document as an item: a list
+   * with no declared item type, or one declared of such a type. Its key is then the item's text, the very key of the string that
+   * spells it, so a lookup there answers a superset of the rows and the condition is checked on them (issue #11730).
+   *
+   * @param property the indexed LIST property, null when the schema does not declare it (a nested path such as {@code tags.id})
+   */
+  public static boolean listItemsMayNest(final Property property) {
+    if (property == null || property.getType() != Type.LIST)
+      return false;
+    final String ofType = property.getOfType();
+    if (ofType == null)
+      return true;
+    final Type itemType = Type.getTypeByName(ofType);
+    // a type name that is no Type is an embedded document type
+    return itemType == null || itemType == Type.LIST || itemType == Type.MAP || itemType == Type.EMBEDDED;
+  }
+
+  /**
+   * {@link #listItemsMayNest} for the path a {@code BY ITEM} index reads, which can reach into the items ({@code tags.id}): then
+   * the value keyed is the field of each item, and it can nest unless the schema declares that field, through the embedded types
+   * of the path, as a scalar. An undeclared step answers true, so the condition is checked on what the index returns.
+   */
+  public static boolean byItemValuesMayNest(final DocumentType type, final String path) {
+    final int dot = path.indexOf('.');
+    if (dot < 0)
+      return listItemsMayNest(type.getPolymorphicPropertyIfExists(path));
+
+    final Property root = type.getPolymorphicPropertyIfExists(path.substring(0, dot));
+    DocumentType current = root != null && root.getOfType() != null ? type.getSchema().getTypeOrNull(root.getOfType()) : null;
+    final String[] steps = path.substring(dot + 1).split("\\.");
+    for (int i = 0; i < steps.length; i++) {
+      if (current == null)
+        return true;
+      final Property step = current.getPolymorphicPropertyIfExists(steps[i]);
+      if (step == null)
+        return true;
+      if (i == steps.length - 1)
+        return step.getType() == Type.LIST || step.getType() == Type.MAP || step.getType() == Type.EMBEDDED;
+      current = step.getOfType() != null ? type.getSchema().getTypeOrNull(step.getOfType()) : null;
+    }
+    return true;
+  }
+
+  /**
    * The one copy constructor of the whole builder hierarchy: the specialised builders {@link #withType} swaps in -
    * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder},
    * {@link TypeGeoIndexBuilder} and {@link TypeColumnarIndexBuilder} - all delegate here, each supplying only the two things

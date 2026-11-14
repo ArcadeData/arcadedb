@@ -51,6 +51,7 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.ContainsCondition;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
@@ -117,6 +118,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
@@ -6457,9 +6459,17 @@ public class SelectExecutionPlanner {
         BooleanExpression singleExp = blockIterator.next();
         if (singleExp.isIndexAware(info) && !hasLossyDecimalLiteralBound(singleExp, clazz, baseFieldName, context)) {
           indexFieldFound = true;
-          indexKeyValue.getSubBlocks().add(singleExp.copy());
+          final BooleanExpression keyExp = singleExp.copy();
+          indexKeyValue.getSubBlocks().add(keyExp);
           blockIterator.remove();
-          if (singleExp.needsRecheckAfterIndexLookup() || (ciCollation && needsLowerCaseResidual(singleExp, info))) {
+          // A BY ITEM index over a LIST that can hold nested lists or maps keys them by their text, under the key of the string
+          // that spells them: CONTAINS also looks up a one-item operand as that nested list, and is checked on what comes back
+          // (issue #11730)
+          final boolean nestedItems = keyExp instanceof ContainsCondition contains && info.isIndexByItem()
+              && TypeIndexBuilder.byItemValuesMayNest(clazz, baseFieldName);
+          if (nestedItems)
+            ((ContainsCondition) keyExp).lookUpWholeOperand = true;
+          if (nestedItems || singleExp.needsRecheckAfterIndexLookup() || (ciCollation && needsLowerCaseResidual(singleExp, info))) {
             if (rechecks == null)
               rechecks = new ArrayList<>(2);
             rechecks.add(singleExp);

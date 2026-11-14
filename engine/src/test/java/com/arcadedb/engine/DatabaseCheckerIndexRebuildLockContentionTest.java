@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -85,23 +86,36 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
 
     final List<Integer> fileIds = bucketSubIndexFileIds(db);
 
+    // Taken when the rebuild step BEGINS, not before the check: the passes before it (the index content comparison waits for
+    // the same lock, #11734) would otherwise spend the 6 s window and let the first rebuild attempt through, never reaching
+    // the retry. Held 6 s from there, past the 5 s lock timeout of the first attempt and short of the second one
     final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 6_000);
-    holder.start();
+    final boolean[] heldAtRebuild = new boolean[1];
     try {
-      assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
-          .as("background thread must acquire the lock before FIX runs").isTrue();
-
-      final ResultSet result = database.command("sql", "check database fix");
-      assertThat(result.hasNext()).isTrue();
-      final Result row = result.next();
-      assertThat(row.<Long>getProperty("autoFix")).isGreaterThan(0L);
+      final Map<String, Object> row = new DatabaseChecker(database).setFix(true)
+          .setProgressCallback((stepName, stepIndex, totalSteps, done, total) -> {
+            if ("Rebuilding indexes".equals(stepName) && !heldAtRebuild[0]) {
+              heldAtRebuild[0] = true;
+              holder.start();
+              try {
+                assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
+                    .as("background thread must acquire the lock before the rebuild runs").isTrue();
+              } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
+            }
+          }).check();
+      assertThat(heldAtRebuild[0]).as("the rebuild step must have run under the held lock").isTrue();
+      assertThat((Long) row.get("autoFix")).isGreaterThan(0L);
       // rebuiltIndexes names the BUCKET sub-index DatabaseChecker actually rebuilds (e.g. "Doc_0_<nanoTime>"),
       // not the logical TypeIndex wrapper "myIdx" - it must be non-empty, i.e. the rebuild was recorded as done.
       @SuppressWarnings("unchecked")
-      final Set<String> rebuiltIndexes = (Set<String>) row.getProperty("rebuiltIndexes");
+      final Set<String> rebuiltIndexes = (Set<String>) row.get("rebuiltIndexes");
       assertThat(rebuiltIndexes).isNotEmpty();
     } finally {
-      holder.join(15_000);
+      if (heldAtRebuild[0])
+        holder.join(15_000);
     }
     assertThat(holder.isAlive()).isFalse();
     assertThat(holder.error.get()).isNull();
@@ -140,8 +154,9 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
 
     final List<Integer> fileIds = bucketSubIndexFileIds(db);
 
-    // Worst case for 5 attempts: 5 * 5000ms wait + (400+600+800+1000)ms backoff = 27800ms. Held comfortably past it.
-    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 29_000);
+    // Worst case for 5 attempts: 5 * 5000ms wait + (400+600+800+1000)ms backoff = 27800ms, on top of whatever the passes before
+    // the rebuild spend (the index content comparison waits for the same lock, #11734). Held until FIX returns, with a ceiling
+    final LockHoldingThread holder = new LockHoldingThread(db, fileIds, 120_000);
     holder.start();
     try {
       assertThat(holder.lockAcquired.await(5, TimeUnit.SECONDS))
@@ -163,6 +178,7 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
       assertThat(warnings).anyMatch(w -> w.contains("did not finish rebuilding")
           && w.contains("the index lock could not be acquired; the index itself is unchanged"));
     } finally {
+      holder.release();
       holder.join(35_000);
     }
     assertThat(holder.isAlive()).isFalse();
@@ -177,6 +193,15 @@ class DatabaseCheckerIndexRebuildLockContentionTest extends TestHelper {
       final ResultSet rs = database.query("sql", "SELECT FROM Doc WHERE name = 'beta'");
       assertThat(rs.hasNext()).isTrue();
     });
+
+    // Untouched, it still holds the entry of the corrupted record FIX removed: the next check names it, and the next FIX, with
+    // the lock free, rebuilds the index without it (#11734)
+    try (final ResultSet rs = database.command("sql", "check database")) {
+      assertThat(rs.next().<Long>getProperty("danglingIndexEntries")).isEqualTo(1L);
+    }
+    try (final ResultSet rs = database.command("sql", "check database fix")) {
+      assertThat(rs.next().<Set<String>>getProperty("rebuiltIndexes")).isNotEmpty();
+    }
   }
 
   private String plan(final String query) {

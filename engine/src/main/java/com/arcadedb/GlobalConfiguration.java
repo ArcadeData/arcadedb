@@ -227,7 +227,11 @@ public enum GlobalConfiguration {
       Boolean.class, true),
 
   TX_WAL_FLUSH("arcadedb.txWalFlush", SCOPE.DATABASE,
-      "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
+      """
+      Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync). \
+      A replicated commit of an HA cluster is made durable by the replication log, which a majority of the nodes flushes \
+      before the commit completes: its WAL record is written on the node that originated it without a flush, whatever this \
+      setting says, and the other nodes write none""",
       Integer.class, 0),
 
   FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """

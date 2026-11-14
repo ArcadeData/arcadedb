@@ -1178,6 +1178,8 @@ class IndexRangeBoundsTest extends TestHelper {
         remaining.add(k);
       c.close();
     }
+    // DELETE FROM INDEX took entries out of the index alone: put them back so the integrity check judges the database
+    rebuildIndexesFromRecords();
     return remaining;
   }
 

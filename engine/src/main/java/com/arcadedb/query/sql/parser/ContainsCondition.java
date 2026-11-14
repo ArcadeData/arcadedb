@@ -37,6 +37,12 @@ public class ContainsCondition extends BooleanExpression {
   public Expression        left;
   public Expression        right;
   public BooleanExpression condition;
+  /**
+   * Set by the planner on the key condition of a BY ITEM index whose items can be nested lists or maps: a one-item operand is
+   * looked up as its item AND as the nested list it spells, the two elements {@link #execute(Object, Object)} accepts for it
+   * (issue #11730).
+   */
+  public boolean           lookUpWholeOperand;
 
   public ContainsCondition() {
   }
@@ -98,8 +104,12 @@ public class ContainsCondition extends BooleanExpression {
             return false;
         }
       }
+      // A nested list or map is an element of its own kind, as containsValue() reads it for a list operand: `[[3]] CONTAINS 3`
+      // asked whether the element [3] "=" 3, which the scalar-into-list conversion of "=" answers true, while the BY ITEM index
+      // holds no entry 3 for that row (issue #11730). The operand is no collection here, so a nested list is never the element
+      final boolean rightIsMap = right instanceof Map;
       for (final Object o : (Collection<?>) left) {
-        if (equalsInContainsSpace(o, right))
+        if (!(o instanceof List) && (o instanceof Map) == rightIsMap && equalsInContainsSpace(o, right))
           return true;
       }
       return false;
@@ -260,6 +270,7 @@ public class ContainsCondition extends BooleanExpression {
     result.left = left == null ? null : left.copy();
     result.right = right == null ? null : right.copy();
     result.condition = condition == null ? null : condition.copy();
+    result.lookUpWholeOperand = lookUpWholeOperand;
     return result;
   }
 

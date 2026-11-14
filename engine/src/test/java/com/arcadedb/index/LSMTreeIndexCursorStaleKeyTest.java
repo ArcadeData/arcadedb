@@ -99,6 +99,7 @@ class LSMTreeIndexCursorStaleKeyTest extends TestHelper {
       assertThat(exclusive).as("exclusive lower bound must not drop the entry right after the removed minimum")
           .containsExactlyInAnyOrderElementsOf(expectedTail);
     });
+    rebuildIndexesFromRecords();
   }
 
   /**
@@ -143,6 +144,7 @@ class LSMTreeIndexCursorStaleKeyTest extends TestHelper {
         expectedTail.add(i);
       assertThat(exclusive).containsExactlyInAnyOrderElementsOf(expectedTail);
     });
+    rebuildIndexesFromRecords();
   }
 
   private void createSchema() {

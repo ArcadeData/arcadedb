@@ -38,6 +38,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnarSchemaEvent;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -269,6 +270,12 @@ public class DatabaseChecker {
     // unreadable list gets, after which the full-scope orphan reclaim removes the superseded directory.
     result.put("unreadableStripeDirectories", new LinkedHashSet<RID>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
+    // Issue #11734: index entries compared with the records they point at, per LSM-Tree bucket index. danglingIndexEntries names a
+    // record that does not exist, staleIndexEntries one that does not hold the entry's key, missingIndexEntries counts the keys a
+    // record holds that have no entry. An index with any of them is in corruptedIndexes, and FIX rebuilds it
+    result.put("danglingIndexEntries", 0L);
+    result.put("staleIndexEntries", 0L);
+    result.put("missingIndexEntries", 0L);
     // type indexes that lack the bucket index of some bucket of their type (left by an interrupted rebuild of an earlier version)
     result.put("incompleteIndexes", new LinkedHashSet<String>());
     // Issue #6340: the TimeSeries pass, seeded like every other family so a clean run publishes zeros rather than
@@ -2449,13 +2456,27 @@ public class DatabaseChecker {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking index metadata...");
 
-    stepBegin("Checking indexes", database.getSchema().getIndexes().length);
+    // Issue #11734: the LSM-Tree bucket indexes whose entries are compared with the records, grouped by bucket so one scan of the
+    // bucket serves all of them. Counted into the step up front: the comparison reads every record of those buckets and walks
+    // every entry, the bulk of the step
+    final Index[] allIndexes = database.getSchema().getIndexes();
+    final Map<Integer, List<LSMTreeIndex>> contentChecked = new LinkedHashMap<>();
+    long contentWork = 0;
+    for (final Index index : allIndexes)
+      if (isContentCheckable(index))
+        contentChecked.computeIfAbsent(index.getAssociatedBucketId(), k -> new ArrayList<>()).add((LSMTreeIndex) index);
+    for (final Map.Entry<Integer, List<LSMTreeIndex>> entry : contentChecked.entrySet()) {
+      final long records = database.getSchema().getBucketById(entry.getKey()).count();
+      contentWork += records * (1 + entry.getValue().size());
+    }
+
+    stepBegin("Checking indexes", allIndexes.length + contentWork);
 
     final List<String> warnings = new ArrayList<>();
     final Set<String>  corruptedIndexNames = new LinkedHashSet<>();
     final Set<Index>   corruptedIndexes    = new HashSet<>();
 
-    for (final Index index : database.getSchema().getIndexes()) {
+    for (final Index index : allIndexes) {
       stepTick();
       if (types != null && !types.isEmpty()) {
         final String typeName = index.getTypeName();
@@ -2480,6 +2501,8 @@ public class DatabaseChecker {
           warnings.add("index '" + index.getName() + "': " + problem);
       }
     }
+
+    checkIndexContent(contentChecked, corruptedIndexes, corruptedIndexNames);
 
     // A type index that lacks the bucket index of a bucket of its type misses every record of that bucket and, for a UNIQUE one, does
     // not refuse a duplicate there (the state a rebuild interrupted by an earlier version left behind). FIX repairs it at the end
@@ -2509,6 +2532,77 @@ public class DatabaseChecker {
     stepComplete();
 
     return corruptedIndexes;
+  }
+
+  /**
+   * Whether {@code CHECK DATABASE} compares the entries of {@code index} with the records of its bucket (issue #11734): an
+   * automatic LSM-Tree bucket index of a type in scope, the kind whose entries an insert derives from the record. A FULL_TEXT,
+   * vector, geospatial or columnar index derives other things than the property values (tokens, a graph, cells, a projection),
+   * a MANUAL index has no record to derive from, and a HASH index has no entry walk yet.
+   */
+  private boolean isContentCheckable(final Index index) {
+    if (!(index instanceof LSMTreeIndex) || index.getType() != Schema.INDEX_TYPE.LSM_TREE || !index.isAutomatic()
+        || index.getAssociatedBucketId() < 0 || index.getTypeName() == null || !((LSMTreeIndex) index).isValid())
+      return false;
+    return types == null || types.isEmpty() || types.contains(index.getTypeName());
+  }
+
+  /**
+   * Compares the entries of every index of {@code contentChecked} with the records of its bucket, see {@link IndexContentChecker}.
+   * An index whose structure is already reported corrupt is not compared: its rebuild is due anyway, and a walk of broken pages
+   * would only add noise.
+   */
+  private void checkIndexContent(final Map<Integer, List<LSMTreeIndex>> contentChecked, final Set<Index> corruptedIndexes,
+      final Set<String> corruptedIndexNames) {
+    if (contentChecked.isEmpty())
+      return;
+
+    final IndexContentChecker checker = new IndexContentChecker((DatabaseInternal) database, maxWarnings);
+    database.begin();
+    try {
+      for (final Map.Entry<Integer, List<LSMTreeIndex>> entry : contentChecked.entrySet()) {
+        final List<LSMTreeIndex> indexes = new ArrayList<>(entry.getValue());
+        indexes.removeIf(corruptedIndexes::contains);
+        if (indexes.isEmpty())
+          continue;
+
+        final Bucket bucket = database.getSchema().getBucketById(entry.getKey());
+        final Map<LSMTreeIndex, IndexContentChecker.Report> reports;
+        try {
+          reports = checker.check(bucket, indexes, this::stepTick);
+        } catch (final RuntimeException e) {
+          // a bucket or an index that cannot be read here is reported by the passes that read it for what it is
+          addWarning("bucket '" + bucket.getName() + "': index entries could not be compared with the records: " + e.getMessage());
+          continue;
+        }
+
+        for (final Map.Entry<LSMTreeIndex, IndexContentChecker.Report> found : reports.entrySet()) {
+          final LSMTreeIndex index = found.getKey();
+          final IndexContentChecker.Report report = found.getValue();
+          if (report.inconclusive > 0)
+            addWarning("index '" + index.getName() + "': " + report.inconclusive + " entries or keys that look out of step with the "
+                + "records of bucket '" + bucket.getName() + "' could not be confirmed, because the bucket was too busy to lock: run "
+                + "CHECK DATABASE again when it is quieter");
+          if (!report.isInconsistent())
+            continue;
+          corruptedIndexes.add(index);
+          corruptedIndexNames.add(index.getName());
+          result.put("danglingIndexEntries", (Long) result.get("danglingIndexEntries") + report.dangling);
+          result.put("staleIndexEntries", (Long) result.get("staleIndexEntries") + report.stale);
+          result.put("missingIndexEntries", (Long) result.get("missingIndexEntries") + report.missing);
+          final Long errors = (Long) result.get("totalErrors");
+          result.put("totalErrors", (errors != null ? errors : 0L) + report.dangling + report.stale + report.missing);
+
+          addWarning("index '" + index.getName() + "': its entries do not match the records of bucket '" + bucket.getName() + "' ("
+              + report.dangling + " for records that do not exist, " + report.stale + " with a key the record does not hold, "
+              + report.missing + " keys of records with no entry)" + (fix ? "" : ". Run CHECK DATABASE FIX to rebuild it"));
+          for (final String example : report.examples)
+            addWarning("index '" + index.getName() + "': " + example);
+        }
+      }
+    } finally {
+      database.rollback();
+    }
   }
 
   private void checkBuckets(final Map<String, Object> result) {
