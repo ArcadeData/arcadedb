@@ -68,15 +68,30 @@ class IndexExtremeValuesTest extends TestHelper {
         database.command("sql", "INSERT INTO T SET k = ?, indexed = ?, scanned = ?", k, values.get(k), values.get(k));
     });
 
-    assertThat(keys("SELECT k FROM T ORDER BY indexed, k")).isEqualTo(keys("SELECT k FROM T ORDER BY scanned, k"));
-    assertThat(keys("SELECT k FROM T ORDER BY indexed DESC, k")).isEqualTo(keys("SELECT k FROM T ORDER BY scanned DESC, k"));
+    // every value list is distinct, so ordering by the indexed property alone is deterministic and the one-field index serves it
+    assertThat(plan("SELECT k FROM T ORDER BY indexed")).as("%s ascending order", type).contains("FETCH FROM INDEX");
+    assertThat(plan("SELECT k FROM T ORDER BY indexed DESC")).as("%s descending order", type).contains("FETCH FROM INDEX");
+    assertThat(keys("SELECT k FROM T ORDER BY indexed")).isEqualTo(keys("SELECT k FROM T ORDER BY scanned"));
+    assertThat(keys("SELECT k FROM T ORDER BY indexed DESC")).isEqualTo(keys("SELECT k FROM T ORDER BY scanned DESC"));
     for (final Object value : values)
-      for (final String operator : OPERATORS)
+      for (final String operator : OPERATORS) {
+        if (!"<>".equals(operator))
+          assertThat(plan("SELECT k FROM T WHERE indexed " + operator + " ? ORDER BY k", value)).as("%s %s %s plan", type, operator, value)
+              .contains("FETCH FROM INDEX");
         assertThat(keys("SELECT k FROM T WHERE indexed " + operator + " ? ORDER BY k", value)).as("%s %s %s", type, operator, value)
             .isEqualTo(keys("SELECT k FROM T WHERE scanned " + operator + " ? ORDER BY k", value));
+      }
     // every value finds itself, and no other, through the index
     for (int k = 0; k < values.size(); k++)
       assertThat(keys("SELECT k FROM T WHERE indexed = ?", values.get(k))).as("%s = %s", type, values.get(k)).containsExactly(k);
+  }
+
+  private String plan(final String query, final Object... args) {
+    try (final ResultSet rs = database.query("sql", query, args)) {
+      rs.forEachRemaining(r -> {
+      });
+      return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+    }
   }
 
   private List<Integer> keys(final String query, final Object... args) {
