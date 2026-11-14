@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -212,6 +213,19 @@ class GraphReachedRecordConcurrentDeleteTest extends TestHelper {
     } finally {
       database.rollback();
     }
+  }
+
+  /** The 16-bit mark never reads as "not marked" and folds 65535 commits apart onto the same value, as its Javadoc says. */
+  @Test
+  void commitMarkIsNeverZeroAndWrapsEvery65535Commits() {
+    assertThat((int) ImmutableDocument.commitMark(0)).isEqualTo(1);
+    assertThat((int) ImmutableDocument.commitMark(65534)).isEqualTo(65535);
+    assertThat((int) ImmutableDocument.commitMark(65535)).isEqualTo(1);
+    assertThat(ImmutableDocument.commitMark(Long.MAX_VALUE)).isNotEqualTo((char) 0);
+    for (long published = 0; published < 200_000; published += 997)
+      assertThat(ImmutableDocument.commitMark(published)).isNotEqualTo((char) 0)
+          .isEqualTo(ImmutableDocument.commitMark(published + 65535));
+    assertThat(ImmutableDocument.commitMark(41)).isNotEqualTo(ImmutableDocument.commitMark(42));
   }
 
   /** The hub and one source vertex with an edge into it. */
