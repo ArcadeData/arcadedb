@@ -21,10 +21,14 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.exception.RecordNotFoundException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,32 +41,64 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
 
   @Test
-  void aRecordAnotherTransactionDeletedAfterTheScanIsSkipped() throws InterruptedException {
+  void aRecordAnotherTransactionDeletedAfterTheScanIsSkipped() throws InterruptedException, ExecutionException {
+    final RID[] rids = createThree();
+
+    database.begin();
+    final List<Record> found = scanAll();
+
+    // ANOTHER TRANSACTION DELETES ONE OF THE RECORDS THE SCAN FOUND AND COMMITS, BEFORE THE TRUNCATE REACHES IT
+    final FutureTask<Void> concurrent = new FutureTask<>(() -> database.transaction(() -> rids[1].asDocument().delete()), null);
+    new Thread(concurrent).start();
+    concurrent.get();
+
+    assertThat(deleteAll(found)).isNull();
+    database.commit();
+
+    assertThat(database.query("sql", "SELECT count(@rid) AS c FROM T").next().<Long>getProperty("c")).isZero();
+  }
+
+  @Test
+  void anotherRecordFoundMissingDuringTheDeleteFailsTheTruncate() {
+    final RID[] rids = createThree();
+    final RID elsewhere = new RID(rids[0].getBucketId(), 1_000_000L);
+    database.getSchema().getType("T").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
+      if (record.getIdentity().equals(rids[1]))
+        throw new RecordNotFoundException("Record " + elsewhere + " not found", elsewhere);
+      return true;
+    });
+
+    database.begin();
+    final RuntimeException failure = deleteAll(scanAll());
+    database.rollback();
+
+    assertThat(failure).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) failure).getRID()).isEqualTo(elsewhere);
+    assertThat(database.existsRecord(rids[1])).isTrue();
+  }
+
+  private RID[] createThree() {
     database.transaction(() -> database.getSchema().createDocumentType("T"));
     final RID[] rids = new RID[3];
     database.transaction(() -> {
       for (int i = 0; i < rids.length; i++)
         rids[i] = database.newDocument("T").set("v", i).save().getIdentity();
     });
+    return rids;
+  }
 
-    database.begin();
+  private List<Record> scanAll() {
     final List<Record> found = new ArrayList<>();
     database.scanType("T", false, record -> found.add(record));
     assertThat(found).hasSize(3);
+    return found;
+  }
 
-    // ANOTHER TRANSACTION DELETES ONE OF THE RECORDS THE SCAN FOUND AND COMMITS, BEFORE THE TRUNCATE REACHES IT
-    final Thread concurrent = new Thread(() -> database.transaction(() -> rids[1].asDocument().delete()));
-    concurrent.start();
-    concurrent.join();
-
-    final RuntimeException failure = TruncateRecordDeleter.deleteAll(database, 0, callback -> {
+  private RuntimeException deleteAll(final List<Record> found) {
+    return TruncateRecordDeleter.deleteAll(database, 0, callback -> {
       for (final Record record : found)
         if (!callback.test(record))
           return;
     });
-    assertThat(failure).isNull();
-    database.commit();
-
-    assertThat(database.countType("T", false)).isZero();
   }
 }

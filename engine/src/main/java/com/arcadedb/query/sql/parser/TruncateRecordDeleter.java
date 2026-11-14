@@ -106,7 +106,10 @@ final class TruncateRecordDeleter {
           record.delete();
         } catch (final RecordNotFoundException e) {
           // A concurrent transaction deleted it after the scan found it and committed: it is gone, which is what the truncate is
-          // for. Failing the statement here reported a record it never named as not found (issue #11731)
+          // for. Failing the statement here reported a record it never named as not found (issue #11731). Another record found
+          // missing during this delete (by a listener, a cascade) is a failure of the delete, which the scan must surface
+          if (!record.getIdentity().equals(e.getRID()))
+            throw e;
           return true;
         }
         if (own != null && batchSize > 0 && ++count[0] % batchSize == 0) {
