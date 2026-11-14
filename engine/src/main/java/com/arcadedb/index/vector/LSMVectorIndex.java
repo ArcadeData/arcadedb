@@ -4808,6 +4808,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
+    } finally {
+      // The published graph keeps the build reader reachable through jvector's score provider (issue #11747): its vectors go
+      // now, after the persistence above read through it, rather than staying beside the search cache with the graph
+      if (vectors instanceof final ArcadePageVectorValues buildReader)
+        buildReader.releaseBuildVectors();
     }
   }
 
