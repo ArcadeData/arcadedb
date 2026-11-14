@@ -2345,7 +2345,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * the ones it added, now naming a record that is gone; once the RID is reused, an indexed lookup returns a record holding
    * another value. The page is pinned here, as an update pins it (#6950), so the commit-time version check covers what is
    * compared now, and when the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
-   * The delete itself is unchanged: it removes the record by its RID, as before.
+   * The delete itself is unchanged: it removes the record by its RID, as before. The slot is read without the READ_RECORD check
+   * a user read takes: the delete was granted, and the image only tells the delete which entries to remove.
    */
   private Document currentImageForCleanup(final LocalBucket bucket, final Document document) {
     final RID rid = document.getIdentity();
@@ -2363,7 +2364,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new DatabaseOperationException("Error on delete the record " + rid, e);
     }
 
-    final Binary current = bucket.getRecord(rid);
+    final Binary current = bucket.getRecordInternal(rid, false);
+    if (current == null)
+      // A before-read listener hides the record: the cleanup keeps the image the caller read, as it did before
+      return document;
     return (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getTypeByBucketId(rid.getBucketId()), rid,
         current.copyOfContent(), null);
   }

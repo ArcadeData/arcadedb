@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.FutureTask;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
 
   @Test
-  void aDocumentChangedAfterItsReadLeavesNoIndexEntry() throws InterruptedException {
+  void aDocumentChangedAfterItsReadLeavesNoIndexEntry() throws Exception {
     database.transaction(() -> {
       database.getSchema().createDocumentType("D");
       database.command("sql", "CREATE PROPERTY D.v INTEGER");
@@ -54,7 +55,7 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
   }
 
   @Test
-  void aVertexAndAnEdgeChangedAfterTheirReadLeaveNoIndexEntry() throws InterruptedException {
+  void aVertexAndAnEdgeChangedAfterTheirReadLeaveNoIndexEntry() throws Exception {
     database.transaction(() -> {
       database.getSchema().createVertexType("V");
       database.command("sql", "CREATE PROPERTY V.v INTEGER");
@@ -82,14 +83,21 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
   }
 
   /** Reads the record, lets another transaction set {@code v = 2} and commit, then deletes the record as it was read. */
-  private void deleteAfterAConcurrentUpdate(final RID rid) throws InterruptedException {
+  private void deleteAfterAConcurrentUpdate(final RID rid) throws Exception {
     database.begin();
     final Document readBefore = rid.asDocument(true);
     assertThat(readBefore.getInteger("v")).isEqualTo(1);
 
-    final Thread concurrent = new Thread(() -> database.transaction(() -> rid.asDocument().modify().set("v", 2).save()));
-    concurrent.start();
-    concurrent.join();
+    // get() rethrows a failure of the concurrent transaction, which would otherwise leave the record unchanged and this test
+    // deleting it as it was read, proving nothing
+    final FutureTask<Integer> concurrent = new FutureTask<>(() -> {
+      database.transaction(() -> rid.asDocument().modify().set("v", 2).save());
+      final int[] committed = new int[1];
+      database.transaction(() -> committed[0] = rid.asDocument().getInteger("v"));
+      return committed[0];
+    });
+    new Thread(concurrent).start();
+    assertThat(concurrent.get()).as("the value the concurrent transaction committed").isEqualTo(2);
 
     readBefore.delete();
     database.commit();
