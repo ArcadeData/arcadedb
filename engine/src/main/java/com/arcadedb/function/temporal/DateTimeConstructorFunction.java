@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -79,7 +80,13 @@ public class DateTimeConstructorFunction implements StatelessFunction {
       }
     }
     if (args[0] instanceof Map)
-      return CypherDateTime.fromMap((Map<String, Object>) args[0]);
+      try {
+        return CypherDateTime.fromMap((Map<String, Object>) args[0]);
+      } catch (final DateTimeException | IllegalArgumentException e) {
+        // A field outside its range (month 13, week 54 of any year, February 30, nanosecond 10^9) is the caller's error, not an
+        // internal one. TemporalUtil range-checks the sub-second fields with an IllegalArgumentException (#11655)
+        throw new CommandSemanticException("datetime() " + e.getMessage());
+      }
     if (args[0] instanceof CypherDateTime)
       return args[0];
     if (args[0] instanceof CypherLocalDateTime)

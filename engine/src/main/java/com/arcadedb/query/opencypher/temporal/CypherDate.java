@@ -62,10 +62,7 @@ public class CypherDate implements CypherTemporalValue {
         final int year = Integer.parseInt(m.group(1));
         final int week = Integer.parseInt(m.group(2));
         final int dow = m.group(3) != null ? Integer.parseInt(m.group(3)) : 1;
-        LocalDate d = LocalDate.of(year, 1, 4); // Jan 4 always in week 1
-        d = d.with(WeekFields.ISO.weekOfWeekBasedYear(), week);
-        d = d.with(WeekFields.ISO.dayOfWeek(), dow);
-        return d;
+        return isoWeekDate(year, week, dow);
       }
     }
     // Ordinal date: 2015-202 or 2015202
@@ -113,10 +110,7 @@ public class CypherDate implements CypherTemporalValue {
       int year = map.containsKey("year") ? toInt(map.get("year")) : (base != null ? base.get(WeekFields.ISO.weekBasedYear()) : LocalDate.now().getYear());
       final int dayOfWeek = map.containsKey("dayOfWeek") ? toInt(map.get("dayOfWeek")) : (base != null ? base.getDayOfWeek().getValue() : 1);
 
-      LocalDate result = LocalDate.of(year, 1, 4); // Jan 4 is always in week 1 by ISO
-      result = result.with(WeekFields.ISO.weekOfWeekBasedYear(), week);
-      result = result.with(WeekFields.ISO.dayOfWeek(), dayOfWeek);
-      return new CypherDate(result);
+      return new CypherDate(isoWeekDate(year, week, dayOfWeek));
     }
 
     // Quarter-based date construction
@@ -125,8 +119,7 @@ public class CypherDate implements CypherTemporalValue {
       final int year = map.containsKey("year") ? toInt(map.get("year")) : (base != null ? base.getYear() : LocalDate.now().getYear());
       final int quarterStartMonth = (quarter - 1) * 3 + 1;
       if (map.containsKey("dayOfQuarter")) {
-        final int dayOfQuarter = toInt(map.get("dayOfQuarter"));
-        return new CypherDate(LocalDate.of(year, quarterStartMonth, 1).plusDays(dayOfQuarter - 1));
+        return new CypherDate(withDayOfQuarter(LocalDate.of(year, quarterStartMonth, 1), toInt(map.get("dayOfQuarter"))));
       }
       if (base != null && !map.containsKey("month") && !map.containsKey("day")) {
         // Preserve relative position within quarter from base
@@ -157,8 +150,25 @@ public class CypherDate implements CypherTemporalValue {
     if (map.containsKey("dayOfWeek"))
       result = result.with(WeekFields.ISO.dayOfWeek(), toInt(map.get("dayOfWeek")));
     if (map.containsKey("dayOfQuarter"))
-      result = result.with(IsoFields.DAY_OF_QUARTER, toInt(map.get("dayOfQuarter")));
+      result = withDayOfQuarter(result, toInt(map.get("dayOfQuarter")));
     return new CypherDate(result);
+  }
+
+  /**
+   * The day of an ISO week date. The week is checked against the weeks its own year has: with() checks only the 1-53 every
+   * week-based year may have, so week 53 of a year with 52 rolled over into the next year, where Neo4j refuses it.
+   */
+  static LocalDate isoWeekDate(final int year, final int week, final int dayOfWeek) {
+    final LocalDate january4 = LocalDate.of(year, 1, 4); // always in week 1
+    WeekFields.ISO.weekOfWeekBasedYear().rangeRefinedBy(january4).checkValidValue(week, WeekFields.ISO.weekOfWeekBasedYear());
+    WeekFields.ISO.dayOfWeek().range().checkValidValue(dayOfWeek, WeekFields.ISO.dayOfWeek());
+    return january4.with(WeekFields.ISO.weekOfWeekBasedYear(), week).with(WeekFields.ISO.dayOfWeek(), dayOfWeek);
+  }
+
+  /** {@code date} moved to the given day of its quarter, checked against the days that quarter has (90 to 92). */
+  private static LocalDate withDayOfQuarter(final LocalDate date, final int dayOfQuarter) {
+    IsoFields.DAY_OF_QUARTER.rangeRefinedBy(date).checkValidValue(dayOfQuarter, IsoFields.DAY_OF_QUARTER);
+    return date.with(IsoFields.DAY_OF_QUARTER, dayOfQuarter);
   }
 
   public LocalDate getValue() {
