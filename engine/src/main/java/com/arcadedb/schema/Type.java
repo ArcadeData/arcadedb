@@ -493,19 +493,6 @@ public enum Type {
    * {@code convertOrNull()} here instead would swallow those too, silently indexing a genuinely mismatched value
    * under a null key - a widening that has nothing to do with the date parsing this rule exists for.
    */
-  /** The text of an array's elements, as {@code List.toString()} writes the list of the same elements. */
-  private static String arrayText(final Object array) {
-    final int length = Array.getLength(array);
-    final StringBuilder text = new StringBuilder(2 + 4 * length).append('[');
-    for (int i = 0; i < length; i++) {
-      if (i > 0)
-        text.append(", ");
-      final Object element = Array.get(array, i);
-      text.append(element != null && element.getClass().isArray() ? arrayText(element) : String.valueOf(element));
-    }
-    return text.append(']').toString();
-  }
-
   public static Object convertIndexKeyOrNull(final Database database, final Object value, final Class<?> targetClass) {
     try {
       return convert(database, value, targetClass);
@@ -734,6 +721,19 @@ public enum Type {
     }
 
     return item;
+  }
+
+  /** The text of an array's elements, as {@code List.toString()} writes the list of the same elements. */
+  private static String arrayText(final Object array) {
+    final int length = Array.getLength(array);
+    final StringBuilder text = new StringBuilder(2 + 4 * length).append('[');
+    for (int i = 0; i < length; i++) {
+      if (i > 0)
+        text.append(", ");
+      final Object element = Array.get(array, i);
+      text.append(element != null && element.getClass().isArray() ? arrayText(element) : String.valueOf(element));
+    }
+    return text.append(']').toString();
   }
 
   /**
