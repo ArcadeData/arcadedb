@@ -92,10 +92,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * read instead of {@code ordinalToVectorId} + cache slot + {@code Entry} + vector. {@code null} for a search (the
    * index-scoped cache is shared and bounded there) and for a build whose cache is smaller than the corpus, so the
    * array never pins vectors the cache's budget has evicted. Slots left {@code null} fall through to the cache.
-   * The array itself costs one reference per ordinal (4 to 8 bytes) on top of the cache budget, and it lives only as
-   * long as this reader, which a build drops when it ends.
+   * The array itself costs one reference per ordinal (4 to 8 bytes) on top of the cache budget. The reader outlives the
+   * build (the graph it publishes keeps it), so the build empties the array and the cache when it ends (issue #11747).
    */
   private final VectorFloat<?>[] byOrdinal;
+
+  // Raised once the build that read through this reader is over (issue #11747): from then on a read caches nothing
+  private volatile boolean buildVectorsReleased;
 
   private ArcadePageVectorValues(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex locations, final boolean graphBuilding,
@@ -430,10 +433,28 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   }
 
   private void cache(final int vectorId, final VectorFloat<?> vector) {
+    if (buildVectorsReleased)
+      return;
     if (vectorCache != null)
       vectorCache.put(vectorId, vector);
     else if (searchCache != null)
       searchCache.put(vectorId, vector);
+  }
+
+  /**
+   * Drops the vectors this build reader holds, once the build that read through it and the persistence of its graph are
+   * over (issue #11747). The graph a build publishes does not let go of the reader: jvector's on-heap graph keeps the score
+   * provider it was built with, through the diversity provider of every layer, and the provider keeps the reader. Its cache
+   * and {@link #byOrdinal} held every vector the build read, a second copy beside the search cache, for as long as that
+   * graph was the live one. A published graph is never changed in place, so nothing reads through the reader afterwards; a
+   * read that did would find nothing cached and go to the pages, and would cache nothing either.
+   */
+  void releaseBuildVectors() {
+    buildVectorsReleased = true;
+    if (vectorCache != null)
+      vectorCache.clear();
+    if (byOrdinal != null)
+      Arrays.fill(byOrdinal, null);
   }
 
   /**
