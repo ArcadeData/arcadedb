@@ -159,6 +159,50 @@ class CypherDetachDeleteHubIssue11681Test extends TestHelper {
     assertIntegrityClean();
   }
 
+  /** The FOREACH deferred flush shares the helper: same counts, one listener report per relationship, hub lists dropped whole. */
+  @Test
+  void foreachDetachDeleteOfAHubCountsEachRelationshipOnce() {
+    buildHub();
+    final long[] degreeBefore = new long[1];
+    database.transaction(() -> degreeBefore[0] = hubDegree());
+
+    final List<Long> degreeSeenAtEachEdgeDelete = new ArrayList<>();
+    final BeforeRecordDeleteListener probe = record -> {
+      if (record instanceof Edge)
+        degreeSeenAtEachEdgeDelete.add(hubDegree());
+      return true;
+    };
+    database.getEvents().registerListener(probe);
+    final QueryStatistics stats;
+    try {
+      stats = stats("MATCH (r:Record {id: 'r0'}) WITH collect(r) AS xs FOREACH (x IN xs | DETACH DELETE x)");
+    } finally {
+      database.getEvents().unregisterListener(probe);
+    }
+
+    assertThat(stats.getNodesDeleted()).isEqualTo(1);
+    assertThat(stats.getRelationshipsDeleted()).isEqualTo(HUB_DEGREE);
+    assertThat(degreeSeenAtEachEdgeDelete).hasSize(HUB_DEGREE);
+    assertThat(degreeSeenAtEachEdgeDelete).containsOnly(degreeBefore[0]);
+    assertThat(count("MATCH (r:Record) RETURN count(*) AS n")).isZero();
+    assertThat(count("MATCH ()-[r]->() RETURN count(r) AS n")).isZero();
+    assertIntegrityClean();
+  }
+
+  /** Both endpoints of the same relationships in one FOREACH batch: each relationship is counted once. */
+  @Test
+  void foreachDetachDeleteOfBothEndpointsCountsEachRelationshipOnce() {
+    createSchema();
+    createPair();
+    final QueryStatistics stats = stats(
+        "MATCH (a:Record {id: 'a'}), (b:Chunk {n: -1}) WITH collect(a) + collect(b) AS xs FOREACH (x IN xs | DETACH DELETE x)");
+    assertThat(stats.getNodesDeleted()).isEqualTo(2);
+    assertThat(stats.getRelationshipsDeleted()).isEqualTo(4);
+    assertThat(count("MATCH (n) RETURN count(n) AS n")).isZero();
+    assertThat(count("MATCH ()-[r]->() RETURN count(r) AS n")).isZero();
+    assertIntegrityClean();
+  }
+
   private void createSchema() {
     database.command("sql", "CREATE VERTEX TYPE Record");
     database.command("sql", "CREATE VERTEX TYPE Chunk");
