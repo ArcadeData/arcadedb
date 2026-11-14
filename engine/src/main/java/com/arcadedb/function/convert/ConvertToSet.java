@@ -19,10 +19,10 @@
 package com.arcadedb.function.convert;
 
 import com.arcadedb.function.DistinctNumericKey;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -58,12 +58,12 @@ public class ConvertToSet extends AbstractConvertFunction {
     if (args[0] == null)
       return null;
 
-    if (!(args[0] instanceof Collection)) {
+    // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, and is the same LIST to every list function (issue #11582)
+    final List<Object> source = CypherFunctionHelper.asListOrNull(args[0]);
+    if (source == null)
       throw new IllegalArgumentException("convert.toSet() requires a list or collection");
-    }
 
     // Values equal under Cypher's '=' (1 and 1.0) are one member, the first one met is kept (same as coll.toSet, issue #8933)
-    final Collection<?> source = (Collection<?>) args[0];
     final Set<Object> seen = new HashSet<>();
     final List<Object> result = new ArrayList<>(source.size());
     for (final Object element : source)
