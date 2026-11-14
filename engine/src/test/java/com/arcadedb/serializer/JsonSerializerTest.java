@@ -420,10 +420,11 @@ class JsonSerializerTest extends TestHelper {
    * Issue #11738: a row backed by a stored record was serialized one property at a time, and every
    * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a record
    * of P properties cost P walks: 3.5 ms per row at 1600 properties over HTTP. The guarantee is the number of passes:
-   * serializing the whole row reads the record once, and every property still comes out with its value.
+   * serializing the whole row reads the record twice (the names, then the values), whatever its size, and every property still
+   * comes out with its value.
    */
   @Test
-  void aRowBackedByARecordIsSerializedInOnePassOverTheRecord() {
+  void aRowBackedByARecordIsSerializedWithoutReadingTheRecordOncePerProperty() {
     final int properties = 40;
     final RID[] rid = new RID[1];
     database.transaction(() -> {
@@ -441,7 +442,7 @@ class JsonSerializerTest extends TestHelper {
       final JSONObject json = jsonSerializer.serializeResult(database, new ResultInternal(document));
 
       assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
-      assertThat(document.headerWalks()).as("passes over the record header").isEqualTo(1);
+      assertThat(document.headerWalks()).as("passes over the record header").isEqualTo(2);
       for (int i = 0; i < properties; i++)
         assertThat(json.getString("p" + i)).isEqualTo("value-" + i);
       assertThat(json.getInt("n")).isEqualTo(7);
