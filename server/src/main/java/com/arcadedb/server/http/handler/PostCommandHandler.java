@@ -64,13 +64,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   /**
-   * A SQL {@code IMPORT DATABASE} commits its own batches, so it runs without the auto-commit wrapper (issue #11728): inside it
-   * the importer took the wrapper for its caller's transaction, which it never commits piecemeal (#6561), and held the whole
-   * import in memory until it ended. The text is probed first, so every other command pays a prefix test and nothing more; the
-   * parsed statement then decides, through the statement cache the execution reads too. A command that does not parse is left to
-   * the execution, which reports its error.
-   */
-  /**
    * The position of the first character of {@code command} that is neither whitespace nor inside a comment the SQL grammar hides:
    * a {@code /* ... *}{@code /} block, or a {@code -- } line comment (two dashes and a space, as {@code LINE_COMMENT} in the
    * lexer). An unterminated block comment hides the rest of the text.
@@ -96,6 +89,13 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return pos;
   }
 
+  /**
+   * A SQL {@code IMPORT DATABASE} commits its own batches, so it runs without the auto-commit wrapper (issue #11728): inside it
+   * the importer took the wrapper for its caller's transaction, which it never commits piecemeal (#6561), and held the whole
+   * import in memory until it ended. The text is probed first, so every other command pays a prefix test and nothing more; the
+   * parsed statement then decides, through the statement cache the execution reads too (both parse the trimmed text). A command that does not parse is left to
+   * the execution, which reports its error.
+   */
   @Override
   protected boolean managesItsOwnTransactions(final DatabaseInternal database, final JSONObject payload) {
     if (database == null || payload == null || !"sql".equalsIgnoreCase(payload.getString("language", null)))
