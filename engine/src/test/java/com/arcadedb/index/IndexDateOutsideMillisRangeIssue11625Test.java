@@ -20,10 +20,16 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.DateUtils;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,6 +65,31 @@ class IndexDateOutsideMillisRangeIssue11625Test extends TestHelper {
         LocalDate.parse("-999999999-01-01"));
     assertThat(dates("SELECT d FROM T WHERE d = ?", LocalDate.parse("+292278994-01-01"))).containsExactly(
         LocalDate.parse("+292278994-01-01"));
+  }
+
+  @Test
+  void anExtremeDateComparedToADateTimeOrAStringSaturatesInsteadOfThrowing() {
+    final BinaryComparator comparator = new BinaryComparator();
+    final LocalDate min = LocalDate.MIN;
+    final LocalDate max = LocalDate.MAX;
+    final LocalDateTime now = LocalDateTime.of(2024, 1, 1, 0, 0);
+
+    assertThat(comparator.compare(min, BinaryTypes.TYPE_DATE, now, BinaryTypes.TYPE_DATETIME)).isNegative();
+    assertThat(comparator.compare(max, BinaryTypes.TYPE_DATE, now, BinaryTypes.TYPE_DATETIME)).isPositive();
+    assertThat(comparator.compare(now, BinaryTypes.TYPE_DATETIME, min, BinaryTypes.TYPE_DATE)).isPositive();
+    assertThat(comparator.compare(now, BinaryTypes.TYPE_DATETIME, max, BinaryTypes.TYPE_DATE)).isNegative();
+    assertThat(comparator.compare(min, BinaryTypes.TYPE_DATE, "2024-01-01", BinaryTypes.TYPE_STRING)).isNegative();
+    assertThat(comparator.compare(max, BinaryTypes.TYPE_DATE, "2024-01-01", BinaryTypes.TYPE_STRING)).isPositive();
+    assertThat(comparator.compare("2024-01-01", BinaryTypes.TYPE_STRING, max, BinaryTypes.TYPE_DATE)).isNegative();
+  }
+
+  @Test
+  void dateToTimestampSaturatesAtEveryPrecision() {
+    for (final ChronoUnit unit : new ChronoUnit[] { ChronoUnit.MILLIS, ChronoUnit.MICROS, ChronoUnit.NANOS }) {
+      assertThat(DateUtils.dateTimeToTimestamp(LocalDate.MIN, unit)).isEqualTo(Long.MIN_VALUE);
+      assertThat(DateUtils.dateTimeToTimestamp(LocalDate.MAX, unit)).isEqualTo(Long.MAX_VALUE);
+    }
+    assertThat(DateUtils.dateTimeToTimestamp(LocalDate.of(1970, 1, 2), ChronoUnit.SECONDS)).isEqualTo(86_400L);
   }
 
   private List<LocalDate> dates(final String query, final Object... args) {
