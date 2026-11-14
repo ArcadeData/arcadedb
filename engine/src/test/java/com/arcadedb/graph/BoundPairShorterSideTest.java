@@ -95,6 +95,60 @@ class BoundPairShorterSideTest extends TestHelper {
         .isLessThanOrEqualTo(smallPages + 2);
   }
 
+  /**
+   * The probe is made from the end that is already the shorter one, and that list is longer than the head start: the
+   * race runs out on the named end first and the walk goes back over it. The cost stays a small multiple of the
+   * named end's own list, whatever the other end holds.
+   */
+  @Test
+  void costDoesNotGrowWithTheLongerListWhenTheNamedEndIsTheShorterOne() {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 0);
+    database.command("sql", "CREATE VERTEX TYPE N");
+    database.command("sql", "CREATE EDGE TYPE T");
+    final RID[] small = leafWithOwnEdgesTowardHub(2_000);
+    final RID[] large = leafWithOwnEdgesTowardHub(32_000);
+
+    final long smallPages = probeFromLeaf(small);
+    final long largePages = probeFromLeaf(large);
+    assertThat(largePages).as("pages read probing from the shorter end towards a 32,000-edge hub, against %d for a 2,000-edge one",
+        smallPages).isLessThanOrEqualTo(smallPages + 2);
+  }
+
+  private RID[] leafWithOwnEdgesTowardHub(final int hubDegree) {
+    final RID[] ends = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("N").save();
+      final MutableVertex leaf = database.newVertex("N").save();
+      // THE LEAF'S OUTGOING LIST HOLDS MORE THAN THE HEAD START, THE HUB'S INCOMING LIST FAR MORE
+      for (int i = 0; i < 100; i++)
+        leaf.newEdge("T", database.newVertex("N").save());
+      leaf.newEdge("T", hub);
+      for (int i = 0; i < hubDegree; i++)
+        database.newVertex("N").save().newEdge("T", hub);
+      ends[0] = hub.getIdentity();
+      ends[1] = leaf.getIdentity();
+    });
+    return ends;
+  }
+
+  private long probeFromLeaf(final RID[] ends) {
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+    final long[] pages = new long[1];
+    for (int round = 0; round < 2; round++) {
+      final int r = round;
+      database.transaction(() -> {
+        final VertexInternal hub = (VertexInternal) ends[0].asVertex();
+        final VertexInternal leaf = (VertexInternal) ends[1].asVertex();
+        final PageManager.PPageManagerStats before = pageManager.getStats();
+        assertThat(drain(engine().getEdgesConnectedTo(leaf, Vertex.DIRECTION.OUT, hub, "T"))).hasSize(1);
+        final PageManager.PPageManagerStats after = pageManager.getStats();
+        if (r == 1)
+          pages[0] = after.cacheHits + after.cacheMiss - before.cacheHits - before.cacheMiss;
+      });
+    }
+    return pages[0];
+  }
+
   @Test
   void answersAsTheWalkOfEitherEnd() {
     database.command("sql", "CREATE VERTEX TYPE N");
