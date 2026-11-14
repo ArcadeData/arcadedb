@@ -385,8 +385,7 @@ public final class ColumnarValueExtractor {
       if (!(raw instanceof Number number))
         return failed(sink);
       final double value = raw instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
-      // -0.0 and 0.0 are one GROUP BY key (Long 0)
-      sink.doubleValue(value == 0d ? 0d : value);
+      sink.doubleValue(value);
       return 0;
     }
     default -> throw new IllegalStateException("Unknown column kind " + column.kind());

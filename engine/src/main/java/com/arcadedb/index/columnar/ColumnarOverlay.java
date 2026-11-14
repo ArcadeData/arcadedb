@@ -243,23 +243,35 @@ final class ColumnarOverlay {
           final boolean isDouble = columns[k].kind() == ColumnKind.DOUBLE;
           long low = Long.MAX_VALUE;
           long high = Long.MIN_VALUE;
+          double lowDouble = Double.POSITIVE_INFINITY;
+          double highDouble = Double.NEGATIVE_INFINITY;
           for (final OverlayPageBlock block : blocks) {
             final long blockLow = block.min(k);
             final long blockHigh = block.max(k);
-            if (blockLow > blockHigh)
-              continue; // no value in the block
-            if (low > high) {
-              low = blockLow;
-              high = blockHigh;
-            } else if (isDouble) {
-              if (Double.longBitsToDouble(blockLow) < Double.longBitsToDouble(low))
-                low = blockLow;
-              if (Double.longBitsToDouble(blockHigh) > Double.longBitsToDouble(high))
-                high = blockHigh;
+            if (isDouble) {
+              final double bLow = Double.longBitsToDouble(blockLow);
+              final double bHigh = Double.longBitsToDouble(blockHigh);
+              if (Double.compare(bLow, bHigh) > 0)
+                continue; // no value in the block
+              if (Double.compare(bLow, lowDouble) < 0)
+                lowDouble = bLow;
+              if (!Double.isNaN(bHigh) && Double.compare(bHigh, highDouble) > 0)
+                highDouble = bHigh;
             } else {
-              low = Math.min(low, blockLow);
-              high = Math.max(high, blockHigh);
+              if (blockLow > blockHigh)
+                continue; // no value in the block
+              if (low > high) {
+                low = blockLow;
+                high = blockHigh;
+              } else {
+                low = Math.min(low, blockLow);
+                high = Math.max(high, blockHigh);
+              }
             }
+          }
+          if (isDouble && Double.compare(lowDouble, highDouble) <= 0) {
+            low = Double.doubleToLongBits(lowDouble);
+            high = Double.doubleToLongBits(highDouble);
           }
           result[2 * k] = low;
           result[2 * k + 1] = high;
