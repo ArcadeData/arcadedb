@@ -60,14 +60,19 @@ final class ClusteredVectorDataset {
   /**
    * Generates {@code numData} data vectors (cluster {@code i % numClusters} for the i-th) and {@code numQueries} query
    * vectors, each a fresh sample of a randomly chosen centroid of the same set. Deterministic for a given seed.
+   * <p>
+   * More clusters than data vectors would leave centroids no data vector was drawn from, and a query drawn from one of
+   * them would be out of distribution again: the cluster count is capped at {@code numData} for the data and the queries
+   * alike, and {@link #numClusters} is the count used.
    */
-  static ClusteredVectorDataset generate(final int numData, final int numQueries, final int dims, final int numClusters,
+  static ClusteredVectorDataset generate(final int numData, final int numQueries, final int dims, final int requestedClusters,
       final float spread, final long seed) {
-    if (numData < 1 || numQueries < 1 || dims < 1 || numClusters < 1)
+    if (numData < 1 || numQueries < 1 || dims < 1 || requestedClusters < 1)
       throw new IllegalArgumentException(
           "numData, numQueries, dims and numClusters must be positive: " + numData + ", " + numQueries + ", " + dims + ", "
-              + numClusters);
+              + requestedClusters);
 
+    final int numClusters = Math.min(requestedClusters, numData);
     final Random rng = new Random(seed);
     final float[][] centroids = new float[numClusters][];
     for (int c = 0; c < numClusters; c++) {

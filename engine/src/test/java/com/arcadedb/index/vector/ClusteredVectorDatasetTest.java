@@ -102,6 +102,18 @@ class ClusteredVectorDatasetTest {
   }
 
   @Test
+  void moreClustersThanDataVectorsAreCappedForTheQueriesToo() {
+    // 10 data vectors cannot represent 1000 clusters: every query must still come from a centroid some data vector has
+    final ClusteredVectorDataset ds = ClusteredVectorDataset.generate(10, 200, DIMS, 1_000,
+        ClusteredVectorDataset.defaultSpread(DIMS), 5L);
+    assertThat(ds.numClusters).isEqualTo(10);
+
+    final int[][] nearest = ds.exactNeighbors(1);
+    for (int q = 0; q < ds.queries.length; q++)
+      assertThat(ClusteredVectorDataset.dot(ds.queries[q], ds.data[nearest[q][0]])).isGreaterThan(0.35f);
+  }
+
+  @Test
   void recallCountsTheExpectedNeighborsFound() {
     assertThat(ClusteredVectorDataset.recall(new int[] { 1, 2, 3, 4 }, new int[] { 4, 9, 1 })).isEqualTo(0.5);
     assertThat(ClusteredVectorDataset.recall(new int[] { 1, 2 }, new int[0])).isEqualTo(0.0);
