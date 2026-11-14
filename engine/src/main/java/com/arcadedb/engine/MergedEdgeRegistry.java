@@ -19,8 +19,12 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.LongLongHashMap;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -35,29 +39,36 @@ import java.util.concurrent.atomic.AtomicLong;
  * learned of the other. The page-level remedy, refusing to merge such pages, would refuse every unrelated append that shares the
  * page, the very retry storm those merges exist to remove.
  * <p>
- * The answer is a predicate check instead of a page check, kept in memory: a relationship is identified by a KEY, the unordered pair
- * of its endpoints, its type and the properties the statement matched it by, hashed into one of {@link #STRIPES} stripes. Each
- * stripe holds the sequence of the last commit that created a relationship hashing to it, and how many commits are creating one
- * right now. A transaction holding the sequence of its begin refuses to commit when a stripe it created a relationship in moved
- * since, or is being written by another commit, so its retry reads again and finds the relationship.
+ * The answer is a predicate check instead of a page check, kept in memory: a relationship is identified by a KEY, a 64-bit hash of
+ * the unordered pair of its endpoints, its type and the properties the statement matched it by. A transaction holding the sequence of
+ * its begin refuses to commit when a key it created a relationship under was committed since, or is being committed by another
+ * transaction now, so its retry reads again and finds the relationship.
  * <p>
- * Two stripes per created relationship: the one of its own key, which the commit checks and marks, and the one of the same pair and
- * type with NO properties, which it only marks. A statement that matches by type alone finds any relationship of the type between
- * the pair, so it checks that second stripe and is refused by any concurrent commit of the pair and type, whatever properties that
- * one matched by. The reverse is not needed: a relationship created by type alone is not one a statement matching by properties
- * would have found, so committing both is the serial order in which the property statement runs second.
+ * The keys are first looked up in one of {@link #STRIPES} stripes, the low bits of the key: each stripe holds the sequence of the
+ * last commit of a key in it, and how many commits are writing one right now. A stripe that has not moved answers at once. A stripe
+ * that has moved is decided on the key itself (issue #11782): by the keys committed since {@link #exactSince}, a table of at most
+ * {@link #EXACT_KEYS} keys started over once full, and by the keys of the commits in flight. A stripe answered alone refused every
+ * commit whose relationships shared a stripe with ANY relationship committed meanwhile, and with E relationships per transaction
+ * the refusals grew with E squared: 70% of the commits of 4 writers creating 200 each, none of them twice.
+ * <p>
+ * Two keys per created relationship: its own, which the commit checks and marks, and the one of the same pair and type with NO
+ * properties, which it only marks. A statement that matches by type alone finds any relationship of the type between the pair, so
+ * it checks that second key and is refused by any concurrent commit of the pair and type, whatever properties that one matched by.
+ * The reverse is not needed: a relationship created by type alone is not one a statement matching by properties would have found,
+ * so committing both is the serial order in which the property statement runs second.
  * <p>
  * What it costs and what it trades:
  * <ul>
  * <li>a transaction that never matched-or-created a relationship pays one volatile read at begin, and nothing at commit;</li>
- * <li>a stripe shared by two keys (a hash collision) refuses a commit that did not conflict: a retry, never a wrong answer;</li>
+ * <li>two keys that share their 64 bits, or a transaction that began before the table of committed keys last started over and finds
+ * its stripe moved, refuse a commit that did not conflict: a retry, never a wrong answer;</li>
  * <li>two transactions creating the same relationship at the same moment: the second to reach its commit is refused, never both,
  * because the check and the mark are one step under this registry's monitor;</li>
  * <li>a relationship whose identifying properties are a SUPERSET of the ones another statement matched it by, created by a
  * concurrent statement with the larger map, is not seen by the one with the smaller (non-empty) map. A unique constraint on the
  * identifying property is exact in every case, and remains the declaration to use where it applies.</li>
  * </ul>
- * The monitor guards only the two arrays: no I/O and no other lock is ever taken while holding it, which is what makes it safe to take
+ * The monitor guards only the tables: no I/O and no other lock is ever taken while holding it, which is what makes it safe to take
  * under the commit file locks without a lock-order inversion. Keep it that way.
  * <p>
  * In memory, per database and per server: a transaction originated on another member of a cluster commits through its own leader
@@ -66,13 +77,20 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class MergedEdgeRegistry {
-  /** A power of two: a stripe is the low bits of the key's hash. 16K stripes, 192KB per database, allocated on the first use. */
-  public static final int STRIPES = 1 << 14;
+  /** A power of two: a stripe is the low bits of the key. 16K stripes, 192KB per database, allocated on the first use. */
+  public static final int STRIPES    = 1 << 14;
+  /** How many committed keys the exact table holds before it starts over: 32K keys, about 1MB once full. */
+  static final        int EXACT_KEYS = 1 << 15;
 
-  private final AtomicLong sequence = new AtomicLong();
+  private final AtomicLong      sequence     = new AtomicLong();
   // Guarded by this. Allocated on the first commit that creates a relationship this way: most databases never do
-  private       long[]     lastCommit;
-  private       int[]      inFlight;
+  private       long[]          lastCommit;
+  private       int[]           inFlight;
+  // Every key committed after exactSince, with the sequence of its last commit
+  private       LongLongHashMap committedKeys;
+  private       long            exactSince;
+  // The marked keys of each commit in flight, sorted
+  private final List<long[]>    reservations = new ArrayList<>();
 
   /** The sequence a transaction takes at its begin: a relationship committed after it is one the transaction could not have read. */
   public long getSequence() {
@@ -80,77 +98,119 @@ public final class MergedEdgeRegistry {
   }
 
   /**
-   * Under the commit locks of the transaction, before its pages are validated: refuses it when a stripe it checks moved after
-   * {@code since} or is being written by another commit, and otherwise marks every stripe it creates in as being written, until
-   * {@link #committed} or {@link #release} is called with the same stripes.
+   * Under the commit locks of the transaction, before its pages are validated: refuses it when a key it checks was committed after
+   * {@code since} or is being written by another commit, and otherwise marks every key it creates under as being written, until
+   * {@link #committed} or {@link #release} is called with the same keys.
    *
-   * @param checked      the stripes of the relationships the transaction created, by the key they were matched with
+   * @param checked      the keys of the relationships the transaction created, by the properties they were matched with
    * @param checkedCount how many of {@code checked} are set
-   * @param marked       the stripes the transaction's relationships will be found under once committed
+   * @param marked       the keys the transaction's relationships will be found under once committed
    * @param markedCount  how many of {@code marked} are set
    * @param since        the sequence the transaction took at its begin
    *
-   * @return true when the stripes are reserved, false when the transaction has to be retried
+   * @return true when the keys are reserved, false when the transaction has to be retried
    */
-  public synchronized boolean reserve(final int[] checked, final int checkedCount, final int[] marked, final int markedCount,
+  public synchronized boolean reserve(final long[] checked, final int checkedCount, final long[] marked, final int markedCount,
       final long since) {
     if (lastCommit == null) {
       lastCommit = new long[STRIPES];
       inFlight = new int[STRIPES];
+      committedKeys = new LongLongHashMap();
     }
 
-    // Every check before the first mark: two relationships of the same transaction can share a stripe, and the transaction is not
-    // its own conflict
+    // Every check before the first mark: two relationships of the same transaction can share a key, and the transaction is not its
+    // own conflict
     for (int i = 0; i < checkedCount; i++) {
-      final int stripe = checked[i];
-      if (lastCommit[stripe] > since || inFlight[stripe] > 0)
+      final long key = checked[i];
+      final int stripe = stripeOf(key);
+      if (lastCommit[stripe] > since && committedSince(key, since))
+        return false;
+      if (inFlight[stripe] > 0 && beingCommitted(key))
         return false;
     }
 
+    final long[] reserved = Arrays.copyOf(marked, markedCount);
+    Arrays.sort(reserved);
+    reservations.add(reserved);
     for (int i = 0; i < markedCount; i++)
-      ++inFlight[marked[i]];
+      ++inFlight[stripeOf(marked[i])];
     return true;
   }
 
   /**
    * Called once the transaction's pages are published, before its file locks are released: the relationships it created are visible
-   * to any read that starts from now on, and a transaction that began before is refused by the stripes moving past its sequence.
+   * to any read that starts from now on, and a transaction that began before is refused by the keys moving past its sequence.
    */
-  public synchronized void committed(final int[] marked, final int markedCount) {
+  public synchronized void committed(final long[] marked, final int markedCount) {
     final long committedAt = sequence.incrementAndGet();
-    for (int i = 0; i < markedCount; i++) {
-      final int stripe = marked[i];
-      lastCommit[stripe] = committedAt;
-      unmark(stripe);
+    if (committedKeys.size() + markedCount > EXACT_KEYS) {
+      // Started over: the table holds every key committed from this commit on, and a transaction that began before it decides a
+      // moved stripe alone
+      committedKeys = new LongLongHashMap();
+      exactSince = committedAt - 1;
     }
+    for (int i = 0; i < markedCount; i++) {
+      final long key = marked[i];
+      lastCommit[stripeOf(key)] = committedAt;
+      committedKeys.put(storable(key), committedAt);
+    }
+    unreserve(marked, markedCount);
   }
 
-  /** Called when a transaction that reserved its stripes does not publish: what it marked is no longer being written. */
-  public synchronized void release(final int[] marked, final int markedCount) {
+  /** Called when a transaction that reserved its keys does not publish: what it marked is no longer being written. */
+  public synchronized void release(final long[] marked, final int markedCount) {
     if (inFlight == null)
       return;
-    for (int i = 0; i < markedCount; i++)
-      unmark(marked[i]);
-  }
-
-  /** Never below zero: a stripe left marked by a double release would refuse every later commit in it, for the life of the database. */
-  private void unmark(final int stripe) {
-    if (inFlight[stripe] > 0)
-      --inFlight[stripe];
-  }
-
-  /** How many commits are writing the stripe now, for the tests. */
-  synchronized int inFlight(final int stripe) {
-    return inFlight == null ? 0 : inFlight[stripe];
+    unreserve(marked, markedCount);
   }
 
   /**
-   * The stripe of a relationship between two vertices: the pair is unordered, so the key of {@code (a)-[:T]->(b)} is the key of
+   * Whether {@code key}, whose stripe moved after {@code since}, was itself committed after it. A transaction that began before the
+   * table of committed keys started over cannot tell, and is refused.
+   */
+  private boolean committedSince(final long key, final long since) {
+    return since < exactSince || committedKeys.get(storable(key), 0L) > since;
+  }
+
+  private boolean beingCommitted(final long key) {
+    for (final long[] reserved : reservations)
+      if (Arrays.binarySearch(reserved, key) >= 0)
+        return true;
+    return false;
+  }
+
+  /**
+   * Removes the reservation of {@code marked}. Only a reservation still held is removed: a second release of the same keys finds none
+   * and changes nothing, so it cannot leave a stripe counted below the commits writing it.
+   */
+  private void unreserve(final long[] marked, final int markedCount) {
+    final long[] keys = Arrays.copyOf(marked, markedCount);
+    Arrays.sort(keys);
+    for (int r = 0; r < reservations.size(); r++)
+      if (Arrays.equals(reservations.get(r), keys)) {
+        reservations.remove(r);
+        for (int i = 0; i < markedCount; i++)
+          --inFlight[stripeOf(marked[i])];
+        return;
+      }
+  }
+
+  /** How many commits are writing {@code key} now, for the tests. */
+  synchronized int inFlight(final long key) {
+    int writing = 0;
+    for (final long[] reserved : reservations)
+      if (Arrays.binarySearch(reserved, key) >= 0)
+        ++writing;
+    return writing;
+  }
+
+  /**
+   * The key of a relationship between two vertices: the pair is unordered, so the key of {@code (a)-[:T]->(b)} is the key of
    * {@code (b)-[:T]-(a)} too, which an undirected match finds whichever way the relationship points.
    *
    * @param properties the properties the relationship was matched by, null or empty for a match by type alone
    */
-  public static int stripeOf(final RID a, final RID b, final String type, final Map<String, ?> properties) {
+  public static long keyOf(final RID a, final RID b, final String type, final Map<String, ?> properties) {
     final long first = pack(a);
     final long second = pack(b);
     long hash = mix(Math.min(first, second)) * 31 + mix(Math.max(first, second));
@@ -162,7 +222,21 @@ public final class MergedEdgeRegistry {
         entries += mix(entry.getKey().hashCode() * 0x9E3779B97F4A7C15L + valueHash(entry.getValue()));
       hash = hash * 31 + entries;
     }
-    return (int) (mix(hash) & (STRIPES - 1));
+    return mix(hash);
+  }
+
+  /** The stripe of the relationship {@link #keyOf} keys. */
+  public static int stripeOf(final RID a, final RID b, final String type, final Map<String, ?> properties) {
+    return stripeOf(keyOf(a, b, type, properties));
+  }
+
+  private static int stripeOf(final long key) {
+    return (int) (key & (STRIPES - 1));
+  }
+
+  /** {@link LongLongHashMap} reserves {@link Long#MIN_VALUE} for its empty slots: that one key shares the entry of its neighbour. */
+  private static long storable(final long key) {
+    return key == Long.MIN_VALUE ? Long.MIN_VALUE + 1 : key;
   }
 
   private static long pack(final RID rid) {
