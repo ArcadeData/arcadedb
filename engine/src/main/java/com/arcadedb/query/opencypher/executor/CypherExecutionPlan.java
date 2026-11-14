@@ -2629,7 +2629,7 @@ public class CypherExecutionPlan {
         // path. Only attempted as the leading (seed) step of a non-optional MATCH whose WHERE clause is
         // re-applied above, so the index seek is always a safe prefilter.
         if (!isOptional && currentStep == null) {
-          final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPattern,
+          final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPatterns, patternIndex,
               boundVariables, matchVariables, context);
           if (edgeIndexSeed != null) {
             currentStep = edgeIndexSeed;
@@ -2974,8 +2974,9 @@ public class CypherExecutionPlan {
    * checked by the step itself, so the seek can never let through a row the unoptimised plan would have rejected.
    */
   private MatchEdgeByIndexStep tryBuildEdgeIndexScanSeed(final MatchClause matchClause,
-      final PathPattern pathPattern, final Set<String> boundVariables, final Set<String> matchVariables,
-      final CommandContext context) {
+      final List<PathPattern> pathPatterns, final int patternIndex, final Set<String> boundVariables,
+      final Set<String> matchVariables, final CommandContext context) {
+    final PathPattern pathPattern = pathPatterns.get(patternIndex);
     if (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
       return null;
 
@@ -3033,12 +3034,18 @@ public class CypherExecutionPlan {
     final String effectiveTargetVar = tgtNode.getVariable() != null ? tgtNode.getVariable()
         : ("  tgt" + anonymousVarCounter++);
 
+    // An anonymous relationship gets an internal variable when another hop of this MATCH could bind the same edge, as the
+    // ordinary hop builder gives it: the later hops' relationship uniqueness compares against what the clause binds, and a
+    // relationship bound under no name was free to be bound again (issue #11585)
+    final String seededEdgeVar = namedEdge ? edgeVar
+        : computeHopEdgeTrackingNeeds(pathPatterns, patternIndex)[0] ? "  rel" + anonymousVarCounter++ : null;
+
     matchVariables.add(effectiveSourceVar);
     matchVariables.add(effectiveTargetVar);
-    if (namedEdge)
-      matchVariables.add(edgeVar);
+    if (seededEdgeVar != null)
+      matchVariables.add(seededEdgeVar);
 
-    return new MatchEdgeByIndexStep(seeks, dir, effectiveSourceVar, namedEdge ? edgeVar : null, effectiveTargetVar,
+    return new MatchEdgeByIndexStep(seeks, dir, effectiveSourceVar, seededEdgeVar, effectiveTargetVar,
         EdgeIndexSeedPlanner.EndpointFilter.of(srcNode), EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode), relProperties, context);
   }
 
