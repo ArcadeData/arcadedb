@@ -456,7 +456,8 @@ public class SubqueryStep extends AbstractExecutionStep {
             LabelReplacements.of(context).restore(labelReplacements);
           if (onError == SubqueryClause.OnError.BREAK)
             broken = true;
-          final Map<String, Object> status = status(true, false, transactionId, e.getMessage());
+          final Map<String, Object> status = status(true, false, transactionId,
+              e.getMessage() != null ? e.getMessage() : e.getClass().getName());
           for (final Result outerRow : batch) {
             refreshOuterBindings(outerRow, context);
             buffer.add(rowOfUncommittedBatch(outerRow, statusVariable, status));

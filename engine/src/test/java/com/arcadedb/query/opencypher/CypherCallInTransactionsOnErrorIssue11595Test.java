@@ -167,6 +167,74 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
     assertThat(single("MATCH (n:A {id: 25}) RETURN labels(n) AS l").<List<Object>>getProperty("l")).containsExactly("A");
   }
 
+  /** The failure comes from the body while it runs (division by zero at i = 25), after earlier rows of the batch wrote. */
+  private static final String FAILING_BODY =
+      "UNWIND range(1, 50) AS i CALL { WITH i CREATE (:Y {i: i, v: 100 / (i - 25)}) } IN TRANSACTIONS OF 10 ROWS ";
+
+  @Test
+  void aBatchFailingWhileItsBodyRunsIsUndoneUnderContinue() {
+    assertThat(single(FAILING_BODY + "ON ERROR CONTINUE RETURN count(*) AS c").<Number>getProperty("c").longValue()).isEqualTo(50L);
+    assertThat(countLabel("Y")).isEqualTo(40L);
+  }
+
+  @Test
+  void aBatchFailingWhileItsBodyRunsIsUndoneUnderBreak() {
+    assertThat(single(FAILING_BODY + "ON ERROR BREAK RETURN count(*) AS c").<Number>getProperty("c").longValue()).isEqualTo(50L);
+    assertThat(countLabel("Y")).isEqualTo(20L);
+  }
+
+  @Test
+  void aBodyFailureInsideACallerTransactionKeepsTheCallersWritesUnderContinue() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Pre {v: 1})");
+      database.command("opencypher", FAILING_BODY + "ON ERROR CONTINUE");
+      assertThat(countLabel("Pre")).isEqualTo(1L);
+    });
+    assertThat(countLabel("Pre")).isEqualTo(1L);
+    assertThat(countLabel("Y")).isEqualTo(40L);
+  }
+
+  @Test
+  void aBodyFailureInsideACallerTransactionKeepsTheCallersWritesUnderBreak() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Pre {v: 1})");
+      database.command("opencypher", FAILING_BODY + "ON ERROR BREAK");
+      assertThat(countLabel("Pre")).isEqualTo(1L);
+    });
+    assertThat(countLabel("Pre")).isEqualTo(1L);
+    assertThat(countLabel("Y")).isEqualTo(20L);
+  }
+
+  @Test
+  void aCommittedRowReportsItsStatus() {
+    final List<Result> committed = rows(
+        "UNWIND range(1, 5) AS i CALL { WITH i CREATE (:Z {i: i}) } IN TRANSACTIONS OF 5 ROWS ON ERROR CONTINUE "
+            + "REPORT STATUS AS s RETURN i, s");
+    assertThat(committed).hasSize(5);
+    for (final Result row : committed) {
+      final Map<?, ?> status = row.getProperty("s");
+      assertThat(status.get("started")).isEqualTo(true);
+      assertThat(status.get("committed")).isEqualTo(true);
+      assertThat(status.get("transactionId")).isNotNull();
+      assertThat(status.get("errorMessage")).isNull();
+    }
+  }
+
+  @Test
+  void anOptionalCallWithNoInnerRowReportsItsStatus() {
+    final List<Result> result = rows(
+        "UNWIND range(1, 3) AS i OPTIONAL CALL { WITH i MATCH (x:X {i: i + 1000}) RETURN x.i AS v } IN TRANSACTIONS OF 2 ROWS "
+            + "ON ERROR CONTINUE REPORT STATUS AS s RETURN i, v, s");
+    assertThat(result).hasSize(3);
+    for (final Result row : result) {
+      final Map<?, ?> status = row.getProperty("s");
+      assertThat(row.<Object>getProperty("v")).isNull();
+      assertThat(status.get("committed")).isEqualTo(true);
+      assertThat(status.get("transactionId")).isNotNull();
+      assertThat(status.get("errorMessage")).isNull();
+    }
+  }
+
   private long countX() {
     return countLabel("X");
   }
