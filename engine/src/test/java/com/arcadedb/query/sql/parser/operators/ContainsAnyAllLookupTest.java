@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -290,6 +292,65 @@ class ContainsAnyAllLookupTest extends TestHelper {
           assertThat(where.matchesFilters(result, context)).as("%s, operand ending with %s, row %s", condition, last, row)
               .isEqualTo(row.equals(last));
       }
+    }
+  }
+
+  /** An inline array literal of 16 or more items is a constant operand too: the answers stay those of the walk. */
+  @ParameterizedTest
+  @ValueSource(ints = { 3, 20 })
+  void inlineLiteralOperand(final int size) {
+    final String type = "Doc11703_literal" + size;
+    database.getSchema().createDocumentType(type);
+    database.transaction(() -> {
+      database.newDocument(type).set("name", "hit").set("v", List.of("a", "b")).save();
+      database.newDocument(type).set("name", "miss").set("v", List.of("a", "c")).save();
+      database.newDocument(type).set("name", "all").set("v", padded(size, false, "b")).save();
+    });
+    final StringBuilder literal = new StringBuilder("[");
+    for (final Object item : padded(size, false, "b"))
+      literal.append(literal.length() > 1 ? "," : "").append('\'').append(item).append('\'');
+    literal.append(']');
+    final Map<String, Object> none = Map.of();
+
+    assertThat(names("SELECT name FROM " + type + " WHERE v CONTAINSANY " + literal + " ORDER BY name", none)).containsExactly(
+        "all", "hit");
+    assertThat(names("SELECT name FROM " + type + " WHERE " + literal + " CONTAINSANY v ORDER BY name", none)).containsExactly(
+        "all", "hit");
+    assertThat(names("SELECT name FROM " + type + " WHERE v CONTAINSALL " + literal, none)).containsExactly("all");
+    assertThat(names("SELECT name FROM " + type + " WHERE " + literal + " CONTAINSALL v ORDER BY name", none)).containsExactly(
+        "all");
+  }
+
+  /** The Identifiable overloads of the conditions carry their own copy of the logic: a saved document gives the same answers. */
+  @ParameterizedTest
+  @ValueSource(ints = { 3, 100 })
+  void identifiableOverloadsAnswerAsTheResultOnes(final int size) {
+    final String type = "Doc11703_ident" + size;
+    database.getSchema().createDocumentType(type);
+    final List<Object> p = padded(size, false, "b");
+    final List<Object> all = new ArrayList<>(p);
+    all.add("extra");
+    final Document[] docs = new Document[3];
+    database.transaction(() -> {
+      docs[0] = database.newDocument(type).set("v", List.of("a", "b")).save();
+      docs[1] = database.newDocument(type).set("v", List.of("a", "c")).save();
+      docs[2] = database.newDocument(type).set("v", all).save();
+    });
+    final Map<String, Boolean[]> expected = new HashMap<>();
+    expected.put("v CONTAINSANY $p", new Boolean[] { true, false, true });
+    expected.put("$p CONTAINSANY v", new Boolean[] { true, false, true });
+    expected.put("v CONTAINSALL $p", new Boolean[] { false, false, true });
+    expected.put("$p CONTAINSALL v", new Boolean[] { false, false, false });
+    for (final Map.Entry<String, Boolean[]> e : expected.entrySet()) {
+      final WhereClause where = new SQLAntlrParser(database).parseCondition(e.getKey());
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      context.setVariable("p", p);
+      // three passes so that the operand is met more than once, as it is hashed the second time
+      for (int pass = 0; pass < 3; pass++)
+        for (int i = 0; i < docs.length; i++)
+          assertThat(where.matchesFilters((Identifiable) docs[i], context)).as("%s, doc %d, pass %d", e.getKey(), i, pass)
+              .isEqualTo(e.getValue()[i]);
     }
   }
 
