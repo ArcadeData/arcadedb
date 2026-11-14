@@ -110,7 +110,7 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public Vertex getOutVertex() {
-    return (Vertex) database.lookupByRID(out, false);
+    return (Vertex) database.lookupThroughGraph(out);
   }
 
   @Override
@@ -120,15 +120,15 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public Vertex getInVertex() {
-    return (Vertex) database.lookupByRID(in, false);
+    return (Vertex) database.lookupThroughGraph(in);
   }
 
   @Override
   public Vertex getVertex(final Vertex.DIRECTION iDirection) {
     if (iDirection == Vertex.DIRECTION.OUT)
-      return (Vertex) database.lookupByRID(out, false);
+      return (Vertex) database.lookupThroughGraph(out);
     else
-      return (Vertex) database.lookupByRID(in, false);
+      return (Vertex) database.lookupThroughGraph(in);
   }
 
   @Override

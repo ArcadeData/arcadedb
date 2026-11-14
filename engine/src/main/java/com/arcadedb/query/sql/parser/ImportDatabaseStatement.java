@@ -51,6 +51,17 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   public ImportDatabaseStatement() {
   }
 
+  /**
+   * The importer commits every {@code commitEvery} records when it owns the transaction, and leaves a transaction its caller
+   * opened alone, uncommitted, by design (#6561). The second must be what the caller asked for, not a wrapper opened for it:
+   * inside the auto-commit transaction of {@code POST /api/v1/command} a whole import was held in memory until it ended, and a
+   * large one ran the server out of heap (issue #11728).
+   */
+  @Override
+  public boolean managesItsOwnTransactions() {
+    return true;
+  }
+
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     // IMPORT DATABASE can create schema, overwrite data and read local files / remote URLs (SSRF/LFI surface), so it is

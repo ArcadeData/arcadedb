@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -101,7 +102,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
             continue;
           }
           try {
-            nextEdgeRecord = currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
+            nextEdgeRecord = ((DatabaseInternal) currentContainer.getDatabase()).lookupThroughGraph(nextEdgeRID, walkMark);
           } catch (final RecordNotFoundException e) {
             // SKIP DANGLING EDGE
             nextEdgeRID = null;
@@ -147,12 +148,14 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
       // CREATE LIGHTWEIGHT EDGE
       final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
-      if (direction == Vertex.DIRECTION.OUT)
-        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID,
-            currentContainer.getIdentity(), lastElementPosition, direction, currentContainer.getUsed(), lightEdgeCensus());
-      else
-        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex,
-            currentContainer.getIdentity(), lastElementPosition, direction, currentContainer.getUsed(), lightEdgeCensus());
+      final ImmutableLightEdge light = direction == Vertex.DIRECTION.OUT ?
+          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID,
+              currentContainer.getIdentity(), lastElementPosition, direction, currentContainer.getUsed(), lightEdgeCensus()) :
+          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex,
+              currentContainer.getIdentity(), lastElementPosition, direction, currentContainer.getUsed(), lightEdgeCensus());
+      // ITS ENDPOINTS ARE REFERENCES THIS WALK READ (ISSUE #11713)
+      light.markReachedThroughGraph(walkMark);
+      return light;
     }
 
     ++browsed;

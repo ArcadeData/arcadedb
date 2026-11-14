@@ -42,6 +42,7 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
+import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ConsoleLogger;
@@ -149,6 +150,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
   /** The most buckets one type creation takes: the rest of an exported type's buckets are added after it exists. */
   private static final int MAX_BUCKETS_PER_CREATION = 32;
+
+  /** How the first line of an ArcadeDB export opens after its <code>{</code>, see {@link #opensExportHeader}. */
+  private static final String EXPORT_HEADER_HEAD =
+      "\"t\":\"info\",\"c\":{\"description\":\"" + JsonlExporterFormat.EXPORT_DESCRIPTION + "\"";
 
   /**
    * TIMESERIES samples appended since the last commit. One {@code "ts"} line carries a whole chunk of samples
@@ -1152,6 +1157,25 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     return new SourceSchema(this, parser.getSource(), analyzedSchema);
 
+  }
+
+  /**
+   * Whether {@code record}, a JSON object read whole, is the {@code "info"} header the first line of an ArcadeDB export carries:
+   * the JSON importer, reading such a source as one top-level value, refuses it naming this format (issue #11729).
+   */
+  public static boolean isExportHeader(final Map<?, ?> record) {
+    return "info".equals(record.get("t")) && record.get("c") instanceof Map<?, ?> content
+        && JsonlExporterFormat.EXPORT_DESCRIPTION.equals(content.get("description"));
+  }
+
+  /**
+   * Whether {@code firstObjectHead}, what the first line of a source holds after its opening <code>{</code>, opens the
+   * {@code "info"} header of an ArcadeDB export: the description inside its {@code "c"} object, as {@link #isExportHeader} reads
+   * it. The exporter writes the header compact with {@code "t"} first and the description first in {@code "c"}, so the start of
+   * the line decides, as it does for the OrientDB and Neo4j exports (issue #11729).
+   */
+  public static boolean opensExportHeader(final CharSequence firstObjectHead) {
+    return firstObjectHead.toString().startsWith(EXPORT_HEADER_HEAD);
   }
 
   @Override

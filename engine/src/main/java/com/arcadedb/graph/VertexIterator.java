@@ -70,7 +70,7 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
       try {
         // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-        final Vertex result = (Vertex) database.lookupByRID(rid, false);
+        final Vertex result = (Vertex) database.lookupThroughGraph(rid, walkMark);
         entryReturned(currentContainer, begin, currentPosition.get(), edgeRID, rid);
         return result;
       } catch (final RecordNotFoundException e) {

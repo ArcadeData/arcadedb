@@ -64,6 +64,11 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   // 2: RECORDS CARRY THE TYPES OF THEIR UNDECLARED VALUES (issue #10201)
   private final static int                VERSION    = 2;
   /**
+   * What the first line of every export says it is, in its {@code "info"} header. Read back by the importer's content sniffing,
+   * which recognises an export by it whatever the file is named (issue #11729).
+   */
+  public static final  String             EXPORT_DESCRIPTION = "ArcadeDB Database Export";
+  /**
    * Samples per {@code "ts"} line. One line per sample would multiply the per-line envelope by the sample count
    * (a TimeSeries type is the one place where records are counted in millions); one line for the whole type would
    * make the reader hold it all in memory.
@@ -101,7 +106,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
-      writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//
+      writeJsonLine("info", new JSONObject().put("description", EXPORT_DESCRIPTION).put("exporterVersion", VERSION)//
           .put("dbVersion", Constants.getRawVersion()).put("dbBranch", Constants.getBranch())
           .put("dbBuild", Constants.getBuildNumber()).put("dbTimestamp", Constants.getTimestamp()));
 

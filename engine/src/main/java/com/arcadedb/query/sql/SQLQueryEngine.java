@@ -349,6 +349,11 @@ public class SQLQueryEngine implements QueryEngine {
       }
 
       @Override
+      public boolean managesItsOwnTransactions() {
+        return statement.managesItsOwnTransactions();
+      }
+
+      @Override
       public Set<OperationType> getOperationTypes() {
         return statement.getOperationTypes();
       }

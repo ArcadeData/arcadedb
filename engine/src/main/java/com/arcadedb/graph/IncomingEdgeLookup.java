@@ -664,9 +664,11 @@ public final class IncomingEdgeLookup {
     private final long[]                    sourcePositions;
     private final int[]                     edgeBuckets;
     private final long[]                    edgePositions;
+    // THE MARK OF THE WALK THIS SCAN IS, FOR THE RECORDS IT HANDS OUT FROM ITS ENTRIES (ISSUE #11713)
+    private final char                      walkMark;
 
     private Snapshot(final String typeName, final UnidirectionalEdgeChanges builtBy, final DatabaseInternal database,
-        final Builder builder) {
+        final Builder builder, final char walkMark) {
       builder.sortByTarget();
       this.typeName = typeName;
       this.builtBy = builtBy;
@@ -682,6 +684,7 @@ public final class IncomingEdgeLookup {
       this.sourcePositions = builder.sourcePositions;
       this.edgeBuckets = builder.edgeBuckets;
       this.edgePositions = builder.edgePositions;
+      this.walkMark = walkMark;
     }
 
     static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
@@ -690,8 +693,10 @@ public final class IncomingEdgeLookup {
       final Schema schema = database.getSchema();
       final Map<String, Builder> builders = new HashMap<>();
       final List<Builder> lightweight = new ArrayList<>();
+      // BEFORE THE SCANS: EVERY REFERENCE THEY READ IS READ AFTER IT (ISSUE #11713)
+      final char walkMark = database.graphWalkMark();
       try {
-        return build(database, typeNames, builtBy, context, schema, builders, lightweight, unchecked);
+        return build(database, typeNames, builtBy, context, schema, builders, lightweight, unchecked, walkMark);
       } catch (final RuntimeException | Error e) {
         // A SCAN THAT FAILED (THE HEAP CAP, AN UNREADABLE RECORD) GIVES BACK WHAT ITS BUILDERS CHARGED AT ONCE
         for (final Builder builder : builders.values())
@@ -702,7 +707,7 @@ public final class IncomingEdgeLookup {
 
     private static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
         final UnidirectionalEdgeChanges builtBy, final CommandContext context, final Schema schema,
-        final Map<String, Builder> builders, final List<Builder> lightweight, final boolean unchecked) {
+        final Map<String, Builder> builders, final List<Builder> lightweight, final boolean unchecked, final char walkMark) {
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       for (final String typeName : typeNames) {
         final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
@@ -732,7 +737,7 @@ public final class IncomingEdgeLookup {
         // A query that pays for a scan says so: it is the cost a slow query over such a type is made of
         LogManager.instance().log(IncomingEdgeLookup.class, Level.FINE,
             "Scanned %d edges of the unidirectional edge type '%s' to answer its incoming side", builder.size, typeName);
-        result.add(new Snapshot(typeName, builtBy, database, builder));
+        result.add(new Snapshot(typeName, builtBy, database, builder, walkMark));
       }
       return result;
     }
@@ -890,7 +895,7 @@ public final class IncomingEdgeLookup {
       return new RangeIterator<>(from, target) {
         @Override
         Vertex get(final int i) {
-          return (Vertex) database.lookupByRID(database.newRID(sourceBuckets[i], sourcePositions[i]), false);
+          return (Vertex) database.lookupThroughGraph(database.newRID(sourceBuckets[i], sourcePositions[i]), walkMark);
         }
       };
     }
@@ -985,11 +990,12 @@ public final class IncomingEdgeLookup {
       if (edgePositions[i] == LIGHTWEIGHT_POSITION) {
         final ImmutableLightEdge light = new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(edgeBuckets[i]),
             edgeBuckets[i], source, target);
+        light.markReachedThroughGraph(walkMark);
         numberTwins(i, (LightEdgeRID) light.getIdentity());
         return light;
       }
 
-      final Edge edge = (Edge) database.lookupByRID(database.newRID(edgeBuckets[i], edgePositions[i]), false);
+      final Edge edge = (Edge) database.lookupThroughGraph(database.newRID(edgeBuckets[i], edgePositions[i]), walkMark);
       if (edge instanceof ImmutableEdge immutable)
         immutable.setEndpointsFromEdgeList(source, target);
       return edge;

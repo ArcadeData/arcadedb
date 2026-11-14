@@ -99,6 +99,15 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
     throw new IllegalStateException("Lightweight edges cannot be modified");
   }
 
+
+  /**
+   * The mark the endpoints of this edge are looked up with: the walk's that reached this edge, whose references they are, or one
+   * taken now for an edge the caller looked up itself (issue #11713, see {@link DatabaseInternal#lookupThroughGraph(RID, char)}).
+   */
+  private char endpointMark() {
+    final char walkMark = getReachedAtCommit();
+    return walkMark != 0 ? walkMark : database.graphWalkMark();
+  }
   @Override
   public RID getOut() {
     checkForLazyLoading();
@@ -108,7 +117,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Vertex getOutVertex() {
     checkForLazyLoading();
-    return (Vertex) database.lookupByRID(out, false);
+    return (Vertex) database.lookupThroughGraph(out, endpointMark());
   }
 
   @Override
@@ -120,16 +129,16 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Vertex getInVertex() {
     checkForLazyLoading();
-    return (Vertex) database.lookupByRID(in, false);
+    return (Vertex) database.lookupThroughGraph(in, endpointMark());
   }
 
   @Override
   public Vertex getVertex(final Vertex.DIRECTION iDirection) {
     checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
-      return (Vertex) database.lookupByRID(out, false);
+      return (Vertex) database.lookupThroughGraph(out, endpointMark());
     else
-      return (Vertex) database.lookupByRID(in, false);
+      return (Vertex) database.lookupThroughGraph(in, endpointMark());
   }
 
   @Override
