@@ -118,6 +118,24 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * Whether a {@code BY ITEM} index over this LIST property can hold a nested list, map or embedded document as an item: a list
+   * with no declared item type, or one declared of such a type. Its key is then the item's text, the very key of the string that
+   * spells it, so a lookup there answers a superset of the rows and the condition is checked on them (issue #11730).
+   *
+   * @param property the indexed LIST property, null when the schema does not declare it (a nested path such as {@code tags.id})
+   */
+  public static boolean listItemsMayNest(final Property property) {
+    if (property == null || property.getType() != Type.LIST)
+      return false;
+    final String ofType = property.getOfType();
+    if (ofType == null)
+      return true;
+    final Type itemType = Type.getTypeByName(ofType);
+    // a type name that is no Type is an embedded document type
+    return itemType == null || itemType == Type.LIST || itemType == Type.MAP || itemType == Type.EMBEDDED;
+  }
+
+  /**
    * The one copy constructor of the whole builder hierarchy: the specialised builders {@link #withType} swaps in -
    * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder},
    * {@link TypeGeoIndexBuilder} and {@link TypeColumnarIndexBuilder} - all delegate here, each supplying only the two things

@@ -147,6 +147,7 @@ public class TransactionManager {
   private final AtomicLong                   statsGroupSyncs     = new AtomicLong();
   private final AtomicLong                   statsGroupCommitPageWaits = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
+  private final AtomicLong                   statsForcedWrites   = new AtomicLong();
   /**
    * Serializes the housekeeping pass (rotation and retirement of WAL files) against the code that replaces or
    * retires the pool outside the commit path: recovery ({@link #checkIntegrity()}), {@link #close} and
@@ -1516,6 +1517,7 @@ public class TransactionManager {
     // added on the fly without persisting them. Also guards the read-only case (no active pool).
     long pagesWritten = statsPagesWritten.get();
     long bytesWritten = statsBytesWritten.get();
+    long forcedWrites = statsForcedWrites.get();
 
     final WALFile[] pool = activeWALFilePool;
     if (pool != null)
@@ -1524,10 +1526,13 @@ public class TransactionManager {
           final Map<String, Object> stats = file.getStats();
           pagesWritten += (Long) stats.get("pagesWritten");
           bytesWritten += (Long) stats.get("bytesWritten");
+          forcedWrites += (Long) stats.get("forcedWrites");
         }
 
     map.put("pagesWritten", pagesWritten);
     map.put("bytesWritten", bytesWritten);
+    // commits that forced their WAL record in their own write (txWalFlush 1 or 2 without a group commit, issue #11746)
+    map.put("forcedWALWrites", forcedWrites);
     // group commit: how many commits deferred their WAL flush, and how many flushes served them
     map.put("groupCommits", statsGroupCommits.get());
     map.put("groupCommitSyncs", statsGroupSyncs.get());
@@ -2739,6 +2744,7 @@ public class TransactionManager {
           final Map<String, Object> fileStats = file.getStats();
           statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
           statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
+          statsForcedWrites.addAndGet((Long) fileStats.get("forcedWrites"));
 
           if (dropFiles) {
             file.drop();

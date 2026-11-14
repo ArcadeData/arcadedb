@@ -64,6 +64,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -85,6 +86,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte   SLOT_MULTI_VALUE             = 0;
   private static final byte   SLOT_SCALAR                  = 1;
   private static final byte   SLOT_FIRST_ITEM              = 2;
+  /** A CONTAINS over items that can nest: a one-item operand is its item and also the nested list it spells (issue #11730). */
+  private static final byte   SLOT_ITEM_OR_WHOLE           = 3;
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -689,6 +692,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static byte keySlotKind(final BooleanExpression exp) {
     if (exp instanceof BinaryCondition || exp instanceof BetweenCondition || exp instanceof ContainsValueCondition)
       return SLOT_SCALAR;
+    if (exp instanceof ContainsCondition contains && contains.lookUpWholeOperand)
+      return SLOT_ITEM_OR_WHOLE;
     if (exp instanceof ContainsAllCondition || exp instanceof ContainsCondition)
       return SLOT_FIRST_ITEM;
     return SLOT_MULTI_VALUE;
@@ -1286,9 +1291,21 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // other way) is treated as a multi-value one, the behaviour before #9370
     final byte slotKind = slot < slotKinds.length ? slotKinds[slot] : SLOT_MULTI_VALUE;
     // the planner hands a CONTAINSALL with a lookup item only, and a CONTAINS with exactly one item
-    final Object value = slotKind == SLOT_FIRST_ITEM ? unwrapSubQueryResult(ContainsAllCondition.firstLookupItem(keyValue)) : keyValue;
-    final Expression nextElementInKey = slotKind == SLOT_FIRST_ITEM ? toExpression(value) : keyExpression;
-    if (slotKind == SLOT_MULTI_VALUE && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
+    final boolean firstItem = slotKind == SLOT_FIRST_ITEM || slotKind == SLOT_ITEM_OR_WHOLE;
+    Object value = firstItem ? unwrapSubQueryResult(ContainsAllCondition.firstLookupItem(keyValue)) : keyValue;
+    final Expression nextElementInKey = firstItem ? toExpression(value) : keyExpression;
+    boolean expand = slotKind == SLOT_MULTI_VALUE && !(value instanceof Identifiable) && MultiValue.isMultiValue(value);
+    if (slotKind == SLOT_ITEM_OR_WHOLE && (keyValue instanceof Collection || MultiValue.isSequenceArray(keyValue))) {
+      // `tags CONTAINS [3]` holds for the element 3 and for the element [3], which the index keys apart: one lookup each. The
+      // planner hands a one-item operand only; a sub-query row or a record stays one lookup, as it was
+      final List<?> whole = keyValue instanceof Collection<?> collection ? new ArrayList<>(collection) : CollectionUtils.arrayToList(keyValue);
+      final Object item = whole.isEmpty() ? null : whole.getFirst();
+      if (item != null && !(item instanceof Result) && !(item instanceof Identifiable)) {
+        value = List.of(item, whole);
+        expand = true;
+      }
+    }
+    if (expand) {
       final List<PCollection> result = new ArrayList<>();
       // `tail` does not depend on `elemInKey`: it is `key` with its (already-consumed) first expression
       // dropped, the same for every element `value` expands into. Computing it once here instead of once

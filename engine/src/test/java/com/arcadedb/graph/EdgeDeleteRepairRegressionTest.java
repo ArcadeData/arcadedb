@@ -555,6 +555,13 @@ class EdgeDeleteRepairRegressionTest {
       database.transaction(() -> database.lookupByRID(rid[0], true).asDocument().delete());
 
       database.transaction(() -> assertThat(database.countType("doc", false)).isEqualTo(0L));
+
+      // 3) The entry keyed by the unreadable value outlives the record (best effort), and CHECK DATABASE reports it, so FIX can
+      //    rebuild the index without it (issue #11734)
+      try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+        assertThat(rs.next().<Long>getProperty("danglingIndexEntries")).isEqualTo(1L);
+      }
+      database.command("sql", "CHECK DATABASE FIX").close();
     }
 
     // 4_294_967_245L == (2^32 - 51); cast to int it becomes -51, the exact value reported in issue #4420.

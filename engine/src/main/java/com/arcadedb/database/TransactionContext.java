@@ -328,6 +328,9 @@ public class TransactionContext implements Transaction {
   // Group commit (arcadedb.txWalGroupCommit): raised by commit() around its 2nd phase, the only path that waits for the
   // deferred flush. The ticket is what that flush owes this transaction, 0 when nothing is owed
   private       boolean                              deferWALSync;
+  // Set by publishReplicatedCommittedPages for the length of the publication: the replication log is what makes the commit
+  // durable, so its WAL record is written without a flush (issue #11746)
+  private       boolean                              replicatedPublication;
   private       long                                 deferredWALSyncTicket;
   private final boolean                              configuredGroupCommit;
   private       Boolean                              asyncFlush;
@@ -3994,6 +3997,25 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * Publishes the pages of a commit the replication log has already made durable, on the node that originated it (the HA leader
+   * applying its own entry, issue #11746). The WAL record is written as {@link #publishCommittedPages} writes it, but never
+   * flushed, whatever {@code arcadedb.txWalFlush} says: the entry is in the Raft log a majority flushed before it committed, a
+   * restart replays every entry past the last snapshot marker from that log (with the same page deltas and the same page-version
+   * rule this WAL's recovery would apply), and the snapshot that moves the marker forces the data files first. That is how every
+   * other node applies the same entry, with no WAL record at all. Forcing it here added nothing to that, and put one flush per
+   * commit on the single thread that applies the entries of every database of the node, which halved the commit rate of a
+   * cluster with {@code txWalFlush} 1 against the same cluster with 0.
+   */
+  public void publishReplicatedCommittedPages(final TransactionPhase1 changes) {
+    replicatedPublication = true;
+    try {
+      publishCommittedPages(changes);
+    } finally {
+      replicatedPublication = false;
+    }
+  }
+
   private void publishCommittedPagesInternal(final TransactionPhase1 changes) {
     try {
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
@@ -4030,7 +4052,7 @@ public class TransactionContext implements Transaction {
 
       if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
-        final WALFile.FlushType walFlush = getWALFlush();
+        final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
         if (deferWALSync && walFlush != WALFile.FlushType.NO)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)

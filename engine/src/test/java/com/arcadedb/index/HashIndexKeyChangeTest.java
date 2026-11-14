@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -189,6 +190,15 @@ class HashIndexKeyChangeTest {
         assertThat(database.getSchema().getType(t).getPolymorphicIndexByProperties("k").countEntries()).as(kind).isEqualTo(1);
         assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 0")).as(kind).isZero();
       }
+
+      // The record committed k = 2 while its LSM entry says 1: CHECK DATABASE compares the two and reports it (issue #11734). The
+      // HASH index has no entry walk, so only the LSM one is compared
+      try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+        final Result check = rs.next();
+        assertThat(check.<Long>getProperty("staleIndexEntries")).isEqualTo(1L);
+        assertThat(check.<Long>getProperty("missingIndexEntries")).isEqualTo(1L);
+      }
+      rebuildIndexesFromRecords();
     }
   }
 

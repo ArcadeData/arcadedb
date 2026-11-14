@@ -128,6 +128,7 @@ class TypeIndexSchemaTest {
       });
       assertThat(reloaded.get(new Object[] { TOTAL }).hasNext())
           .as("a degraded index must still serve its mutable content").isTrue();
+      rebuildIndexesFromRecords();
     }
 
     /**

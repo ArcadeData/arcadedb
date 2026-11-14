@@ -222,6 +222,15 @@ public abstract class TestHelper {
     }
   }
 
+  /**
+   * For a test that writes index entries no record stands for, using a type's index as a plain key-value map (raw RIDs, key-wide
+   * removes): rebuilds every index from the records, so the integrity check at the end, which compares the entries of an index
+   * with the records (issue #11734), judges the database and not the fixture.
+   */
+  protected void rebuildIndexesFromRecords() {
+    database.command("sql", "REBUILD INDEX *").close();
+  }
+
   protected void checkDatabaseIntegrity() {
     final ResultSet result = database.command("sql", "check database");
     while (result.hasNext()) {
