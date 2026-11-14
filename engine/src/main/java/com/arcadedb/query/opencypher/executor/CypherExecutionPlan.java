@@ -5236,7 +5236,7 @@ public class CypherExecutionPlan {
     final RelationshipPattern relPattern = pathPattern.getRelationship(0);
     if (relPattern.isVariableLength())
       return null;
-    if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+    if (relPattern.hasProperties())
       return null;
     // An inline predicate on the relationship, -[r:R WHERE r.w = 1]->, filters the edges the step would count, and the step
     // counts every edge of the anchor (issue #11584)
@@ -5262,10 +5262,10 @@ public class CypherExecutionPlan {
       return null;
 
     // Target node must not have property filters (would need filtering)
-    if (targetNode.getProperties() != null && !targetNode.getProperties().isEmpty())
+    if (targetNode.hasProperties())
       return null;
     // Source node must not have property filters
-    if (sourceNode.getProperties() != null && !sourceNode.getProperties().isEmpty())
+    if (sourceNode.hasProperties())
       return null;
 
     // Classify RETURN items into grouping and aggregation
