@@ -518,6 +518,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
 
+  /**
+   * The highest read-your-writes bookmark the leader answered with for the writes the request served on this thread forwarded
+   * to it (issue #11740), or {@code null} when it forwarded none. Cleared with the read-consistency context at the end of the
+   * request.
+   */
+  private static final ThreadLocal<Long> FORWARDED_WRITE_BOOKMARK = new ThreadLocal<>();
+
   public static ReadConsistencyContext getReadConsistencyContext() {
     return READ_CONSISTENCY_CONTEXT.get();
   }
@@ -544,11 +551,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void clearReadConsistencyContext() {
     READ_CONSISTENCY_CONTEXT.remove();
+    FORWARDED_WRITE_BOOKMARK.remove();
   }
 
   @Override
   public long getLastAppliedIndex() {
     return raftHAServer != null ? raftHAServer.getLastAppliedIndex() : -1;
+  }
+
+  /**
+   * This node's applied index, raised to the leader's bookmark for a write the request forwarded (issue #11740). A write
+   * forwarded to the leader is applied here only when this node learns it was committed, and with a majority quorum the leader
+   * can commit it before this node has it: this node's own index then stands below the write, and a read that waits for it
+   * does not see the write, here or on any other node. The leader's bookmark is at or past the write.
+   */
+  @Override
+  public long getCommitIndexBookmark() {
+    final long applied = getLastAppliedIndex();
+    final Long forwarded = FORWARDED_WRITE_BOOKMARK.get();
+    return forwarded != null ? Math.max(applied, forwarded) : applied;
   }
 
   private final ArcadeDBServer server;
@@ -5226,13 +5247,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Forwards a DDL or leader-only command to the Raft leader via HTTP POST to
+   * Forwards a client's DDL or leader-only command to the Raft leader via HTTP POST to
    * {@code /api/v1/command/{dbName}}. The response JSON is parsed back into a
    * {@link ResultSet} so the caller sees results transparently.
+   * <p>
+   * The bookmark the leader answers with is kept for the request (issue #11740), so the one this node answers the client with
+   * covers the write: see {@link #getCommitIndexBookmark()}.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
-    return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, null);
+    final AtomicLong leaderBookmark = new AtomicLong(-1L);
+    try {
+      return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, leaderBookmark);
+    } finally {
+      // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
+      final long bookmark = leaderBookmark.get();
+      final Long previous = FORWARDED_WRITE_BOOKMARK.get();
+      if (bookmark >= 0 && (previous == null || previous < bookmark))
+        FORWARDED_WRITE_BOOKMARK.set(bookmark);
+    }
   }
 
   /**

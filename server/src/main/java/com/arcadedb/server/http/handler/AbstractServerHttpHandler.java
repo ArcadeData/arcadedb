@@ -2495,9 +2495,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    final long lastApplied = haDb.getLastAppliedIndex();
-    if (lastApplied >= 0)
-      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(lastApplied));
+    // Not the bare applied index: a write this request forwarded to the leader may not be applied here yet (issue #11740)
+    final long bookmark = haDb.getCommitIndexBookmark();
+    if (bookmark >= 0)
+      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(bookmark));
   }
 
   /**
