@@ -53,6 +53,18 @@ public class BackupRetentionManager {
   private static final FilenameFilter    BACKUP_FILE_FILTER      =
       (dir, name) -> name.endsWith(".zip") && name.contains("-backup-");
 
+  /**
+   * The suffix a backup adds to the name of its archive until the archive is complete (issue #11736). The integration module
+   * writes it ({@code FullBackupFormat.PARTIAL_SUFFIX}); this module does not depend on that one, hence the copy.
+   */
+  static final String PARTIAL_SUFFIX = ".partial";
+
+  /** How long a partial archive must have gone unwritten before it is taken for what a backup cut by a crash left. */
+  static final long STALE_PARTIAL_MILLIS = TimeUnit.HOURS.toMillis(1);
+
+  private static final FilenameFilter PARTIAL_FILE_FILTER =
+      (dir, name) -> name.endsWith(".zip" + PARTIAL_SUFFIX) && name.contains("-backup-");
+
   private final String                            backupDirectory;
   private final Map<String, DatabaseBackupConfig> databaseConfigs;
 
@@ -122,6 +134,10 @@ public class BackupRetentionManager {
    * @return number of backup files deleted
    */
   public int applyRetention(final String databaseName, final DatabaseBackupConfig config) {
+    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
+    if (dbBackupDir.isDirectory())
+      deleteStalePartialArchives(dbBackupDir);
+
     final DatabaseBackupConfig.RetentionConfig retention = config.getRetention();
     if (retention == null) {
       LogManager.instance().log(this, Level.FINE,
@@ -129,8 +145,7 @@ public class BackupRetentionManager {
       return 0;
     }
 
-    final File dbBackupDir = Paths.get(backupDirectory, databaseName).toFile();
-    if (!dbBackupDir.exists() || !dbBackupDir.isDirectory())
+    if (!dbBackupDir.isDirectory())
       return 0;
 
     // Get all backup files sorted by timestamp (oldest first)
@@ -177,6 +192,31 @@ public class BackupRetentionManager {
         databaseName, filesToKeep.size(), deletedCount);
 
     return deletedCount;
+  }
+
+  /**
+   * Deletes the partial archives that backups cut by a crash left behind (issue #11736). Nothing else removes them: no reader
+   * of the directory takes them for backups, so neither does the policy above. A backup that is still running keeps writing
+   * its partial archive, so one left unwritten for {@link #STALE_PARTIAL_MILLIS} belongs to no running backup. The age, not a
+   * lock, is what spares the archive another server is writing into a shared directory.
+   */
+  private void deleteStalePartialArchives(final File dbBackupDir) {
+    final File[] partials = dbBackupDir.listFiles(PARTIAL_FILE_FILTER);
+    if (partials == null)
+      return;
+
+    final long staleBefore = System.currentTimeMillis() - STALE_PARTIAL_MILLIS;
+    for (final File partial : partials) {
+      if (partial.lastModified() >= staleBefore)
+        continue;
+      try {
+        if (Files.deleteIfExists(partial.toPath()))
+          LogManager.instance().log(this, Level.INFO, "Deleted '%s', left by a backup that did not complete", partial.getName());
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Failed to delete '%s', left by a backup that did not complete: %s",
+            partial.getName(), e.getMessage());
+      }
+    }
   }
 
   // Maximum number of backup files to process to prevent unbounded memory usage

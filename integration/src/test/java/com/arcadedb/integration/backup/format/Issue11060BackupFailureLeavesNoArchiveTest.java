@@ -36,9 +36,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.zip.ZipFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,6 +58,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * failure, so the backup went on to write the central directory of a truncated archive and reported success.
  * <p>
  * The failure is injected through the sealed-store seam of #8738, which both paths run through, mid-archive.
+ * <p>
+ * Issue #11736: a process that dies during a backup runs none of the cleanup tested here, so what a crash leaves is what is
+ * on disk while the archive is written. The archive is written under a partial name and takes its own only once complete.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -61,6 +69,7 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
   private static final String BACKUP_DIR    = "target/issue11060-backups";
   private static final String BACKUP_FILE   = BACKUP_DIR + "/backup-11060.zip";
   private static final String TYPE          = "Reading11060";
+  private static final String PARTIAL_FILE  = BACKUP_FILE + FullBackupFormat.PARTIAL_SUFFIX;
   private static final int    SAMPLES       = 2_000;
   private static final long   BASE_TS       = 1_700_000_000_000L;
 
@@ -94,6 +103,7 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
 
       assertThat(thrown.get()).as("the fixture must have reached the sealed store, or this proves nothing").isTrue();
       assertThat(new File(BACKUP_FILE)).as("a failed backup must not leave a partial archive behind").doesNotExist();
+      assertThat(new File(PARTIAL_FILE)).as("nor the file it was written under").doesNotExist();
 
       // THE DATABASE IS STILL BACKED UP CLEANLY AFTERWARDS: THE FAILED ATTEMPT RELEASED THE FLUSH SUSPENSION AND THE PATH
       FullBackupFormat.beforeSealedStoreReadForTesting = null;
@@ -123,7 +133,7 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
       try {
         final Throwable failure = catchFailure(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase());
         // A SUPERUSER, OR A FILESYSTEM WITHOUT POSIX PERMISSIONS, DELETES FROM A READ-ONLY DIRECTORY ANYWAY
-        assumeTrue(new File(BACKUP_FILE).exists(), "the filesystem did not refuse the delete");
+        assumeTrue(new File(PARTIAL_FILE).exists(), "the filesystem did not refuse the delete");
 
         assertThat(failure).isInstanceOf(BackupException.class).hasStackTraceContaining("failure injected by issue #11060");
         assertThat(Arrays.stream(allSuppressed(failure)).map(Throwable::getMessage))
@@ -163,21 +173,79 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
     TestHelper.checkActiveDatabases();
   }
 
-  /** The counterweight: once the output is opened the previous backup is truncated, and the partial one is deleted. */
+  /**
+   * Issue #11736: once the output is opened too, the previous backup is left as it was. The new archive is written under the
+   * partial name and replaces the previous one only once complete, so a failure deletes the partial file and nothing else.
+   */
   @ParameterizedTest
   @ValueSource(booleans = { true, false })
-  void aFailureAfterTheOutputIsOpenedDeletesThePartialArchiveWithOverwrite(final boolean snapshot) throws Exception {
+  void aFailureAfterTheOutputIsOpenedKeepsThePreviousBackupWithOverwrite(final boolean snapshot) throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
 
     try (final Database database = createDatabase()) {
       new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+      final byte[] previous = Files.readAllBytes(new File(BACKUP_FILE).toPath());
       FullBackupFormat.beforeSealedStoreReadForTesting = file -> {
         throw new IllegalStateException("failure injected by issue #11060");
       };
 
       assertThatThrownBy(() -> overwritingBackup(database, new ConsoleLogger(0, message -> {
       })).backupDatabase()).hasMessageContaining("failure injected by issue #11060");
-      assertThat(new File(BACKUP_FILE)).as("the truncated archive must not be left behind").doesNotExist();
+      assertThat(Files.readAllBytes(new File(BACKUP_FILE).toPath())).as("the previous backup must survive the failure").isEqualTo(previous);
+      assertThat(new File(PARTIAL_FILE)).as("the partial archive must not be left behind").doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * Issue #11736: what a crash in the middle of the archive leaves on disk is what the directory holds at that moment. Nothing
+   * there may carry the archive's name, which "list backups" and the retention policy take for a complete backup.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void whileTheArchiveIsWrittenNothingCarriesItsName(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      final List<String> midArchive = new ArrayList<>();
+      FullBackupFormat.beforeSealedStoreReadForTesting = file -> midArchive.addAll(Arrays.asList(new File(BACKUP_DIR).list()));
+
+      new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+
+      assertThat(midArchive).as("the fixture must have reached the sealed store, or this proves nothing").isNotEmpty();
+      assertThat(midArchive).doesNotContain(new File(BACKUP_FILE).getName());
+      assertThat(new File(BACKUP_DIR).list()).containsExactly(new File(BACKUP_FILE).getName());
+      try (final ZipFile archive = new ZipFile(BACKUP_FILE)) {
+        assertThat(archive.getEntry("schema.json")).as("the published archive is the complete one").isNotNull();
+      }
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /** Issue #11736, with {@code -o}: until the new archive is complete, the name keeps holding the previous one, whole. */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void whileTheArchiveIsWrittenWithOverwriteTheNameHoldsThePreviousBackup(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+      final byte[] previous = Files.readAllBytes(new File(BACKUP_FILE).toPath());
+      final List<byte[]> midArchive = new ArrayList<>();
+      FullBackupFormat.beforeSealedStoreReadForTesting = file -> {
+        try {
+          midArchive.add(Files.readAllBytes(new File(BACKUP_FILE).toPath()));
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      };
+
+      overwritingBackup(database, new ConsoleLogger(0, message -> {
+      })).backupDatabase();
+
+      assertThat(midArchive).as("the fixture must have reached the sealed store, or this proves nothing").isNotEmpty();
+      assertThat(midArchive).allSatisfy(bytes -> assertThat(bytes).isEqualTo(previous));
+      assertThat(new File(PARTIAL_FILE)).doesNotExist();
     }
     TestHelper.checkActiveDatabases();
   }

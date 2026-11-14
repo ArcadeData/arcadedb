@@ -97,10 +97,14 @@ public class FullBackupFormat extends AbstractBackupFormat {
   private boolean schemaArchived;
 
   /**
-   * Whether this backup has opened its output, which truncates whatever the path held. Until then a failure has written
-   * nothing, so with {@code -o} the archive already at the path is still the previous, complete backup and must survive it.
+   * The suffix of the name a backup writes its archive under until the archive is complete (issue #11736). A process that dies
+   * during a backup (kill -9, an OOM kill, a container stop that times out) runs no cleanup, and an archive it left under the
+   * final name was listed by {@code list backups} and selected by retention, whose tiered policy keeps the OLDEST archive of a
+   * bucket: when the cut backup was the first of its hour, the partial archive became that hour's restore point and the
+   * complete archives of the hour were deleted. No reader of a backup directory matches this suffix: they all look for
+   * {@code *-backup-*.zip}.
    */
-  private boolean outputOpened;
+  static final String PARTIAL_SUFFIX = ".partial";
 
   private interface BackupCallback {
     void backup(BackupArchiveWriter archive) throws Exception;
@@ -124,6 +128,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
       fileName = settings.directory + File.separator + fileName;
 
     final File backupFile = new File(fileName);
+    final File partialFile = new File(backupFile.getPath() + PARTIAL_SUFFIX);
 
     if (backupFile.getParentFile() != null) {
       // createDirectories, not mkdirs: it is idempotent and does not report "already there" as a failure, so a
@@ -142,26 +147,47 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final int compressionThreads = resolveThreads();
     final int maxMBPerSecond = resolveSetting(settings.maxMBPerSecond, GlobalConfiguration.BACKUP_MAX_MB_PER_SECOND);
 
-    // LAST THING BEFORE THE WRITE, SO THAT A BACKUP REJECTED BY ONE OF THE CHECKS ABOVE LEAVES NO EMPTY ARCHIVE FOR
-    // RETENTION TO COUNT AND FOR AN OPERATOR TO MISTAKE FOR A BACKUP
-    claimBackupFile(backupFile);
+    // LAST THING BEFORE THE WRITE, SO THAT A BACKUP REJECTED BY ONE OF THE CHECKS ABOVE LEAVES NO EMPTY FILE BEHIND
+    claimBackupFile(backupFile, partialFile);
 
     // ONE CLEANUP ARM FOR EVERY WAY OUT THAT IS NOT A COMPLETED ARCHIVE, Error INCLUDED (ISSUE #11060): THE TWO PER-BRANCH
     // DELETES THIS REPLACES CAUGHT Exception ONLY, SO AN OutOfMemoryError - THE REALISTIC FAILURE ON A LARGE ARCHIVE - LEFT
-    // THE CLAIMED, PARTIALLY WRITTEN FILE ON DISK FOR RETENTION TO COUNT AND FOR AN OPERATOR TO RESTORE FROM
-    outputOpened = false;
+    // THE PARTIALLY WRITTEN FILE ON DISK. THE FILE DELETED IS THE PARTIAL ONE, NEVER THE ARCHIVE AT THE FINAL NAME: WITH -o
+    // THAT IS THE PREVIOUS BACKUP, WHICH A FAILED ONE NOW LEAVES AS IT WAS
     try {
-      writeBackup(backupFile, compressionLevel, compressionThreads, maxMBPerSecond);
+      writeBackup(partialFile, backupFile, compressionLevel, compressionThreads, maxMBPerSecond);
+      publishBackupFile(partialFile, backupFile);
     } catch (final Throwable t) {
-      // WITHOUT -o THE FILE IS THIS BACKUP'S OWN CLAIM, EMPTY OR PARTIAL, AND GOES EITHER WAY. WITH -o IT IS DELETED ONLY ONCE THIS
-      // ATTEMPT OPENED IT: A FAILURE BEFORE THAT (THE LOG LINE, THE COMPACTION PAUSE) HAS NOT TOUCHED THE PREVIOUS BACKUP
-      if (outputOpened || !settings.overwriteFile)
-        deletePartialArchive(backupFile, t);
+      deletePartialArchive(partialFile, t);
       throw t;
     }
   }
 
-  private void writeBackup(final File backupFile, final int compressionLevel, final int compressionThreads,
+  /**
+   * Gives the complete archive its final name (issue #11736). Its bytes are synced first, so the name never stands for an
+   * archive a machine crash can still cut, and the directory after the rename, so the name itself survives one. Without
+   * {@code -o} the move refuses a name that another backup took since the claim (issue #6753), and this backup fails; with
+   * {@code -o} it replaces the previous archive in one rename.
+   */
+  private void publishBackupFile(final File partialFile, final File backupFile) throws IOException {
+    FileUtils.syncFile(partialFile);
+    if (settings.overwriteFile)
+      FileUtils.publishAtomically(partialFile.toPath(), backupFile.toPath().toAbsolutePath(), true);
+    else {
+      try {
+        Files.move(partialFile.toPath(), backupFile.toPath());
+      } catch (final FileAlreadyExistsException e) {
+        throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(backupFile));
+      }
+      FileUtils.forceDirectory(backupFile.toPath().toAbsolutePath().getParent());
+    }
+  }
+
+  /**
+   * @param output     the file the archive is written to, which takes the name {@code backupFile} only once it is complete
+   * @param backupFile the name the archive is published under, the one the log line tells the operator about
+   */
+  private void writeBackup(final File output, final File backupFile, final int compressionLevel, final int compressionThreads,
       final int maxMBPerSecond) throws Exception {
     logger.logLine(0, "Executing full backup of database to '%s' (compression level %d, %s%s)...", backupFile,
         compressionLevel, compressionThreads > 0 ? compressionThreads + " threads" : "single threaded",
@@ -185,7 +211,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
       final boolean snapshotAttempt = useSnapshot;
 
       try (final TimeSeriesCompactionPause pause = pauseCompaction()) {
-        writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive -> {
+        writeArchive(output, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive -> {
           if (snapshotAttempt)
             // #6114: NO DATABASE READ LOCK OVER THE TRANSFER. The lock this path used to hold for its WHOLE duration
             // existed only to keep the two configuration files consistent with the page files, by excluding the DDL that
@@ -242,7 +268,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
     final long origSize = databaseOrigSize.get();
-    final long databaseCompressedSize = backupFile.length();
+    final long databaseCompressedSize = output.length();
 
     logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
         FileUtils.getSizeAsString(origSize), FileUtils.getSizeAsString(databaseCompressedSize),
@@ -815,26 +841,35 @@ public class FullBackupFormat extends AbstractBackupFormat {
   }
 
   /**
-   * Takes ownership of the target path before a single byte is written, by creating the file itself rather than by
-   * asking whether it exists. The check-then-create it replaces was a TOCTOU: two backups of the same database landing
-   * on the same name - the scheduler's periodic tick and an operator's "backup now", two nodes writing to a shared
-   * directory - both saw a free path, both opened their own stream on it, and interleaved their output into one
-   * unreadable archive that each of them reported as a success (issue #6753). Whoever loses the create now fails
-   * before it can touch the winner's file, including its delete-on-failure cleanup.
+   * Takes ownership of the path the archive is written to before a single byte is written, by creating the file itself
+   * rather than by asking whether it exists. The check-then-create it replaces was a TOCTOU: two backups of the same
+   * database landing on the same name - the scheduler's periodic tick and an operator's "backup now", two nodes writing to a
+   * shared directory - both saw a free path, both opened their own stream on it, and interleaved their output into one
+   * unreadable archive that each of them reported as a success (issue #6753). Whoever loses the create now fails before it
+   * can touch the winner's file, including its delete-on-failure cleanup.
    * <p>
-   * With {@code -o} the caller has asked for the existing file to be replaced, so there is nothing to claim and the
-   * write below truncates whatever is there.
+   * The path claimed is the partial one the archive is written under (issue #11736). An archive already published under the
+   * final name refuses the backup here, and one published there by another backup after this check refuses it at
+   * {@link #publishBackupFile}, so the loser still never replaces the winner's archive.
+   * <p>
+   * With {@code -o} the caller has asked for the existing file to be replaced, so there is nothing to claim and the write
+   * below truncates whatever is at the partial path, including one a cut backup left behind.
    */
-  private void claimBackupFile(final File backupFile) {
+  private void claimBackupFile(final File backupFile, final File partialFile) {
     if (settings.overwriteFile)
       return;
 
-    try {
-      Files.createFile(backupFile.toPath());
-    } catch (final FileAlreadyExistsException e) {
-      // THE RESOLVED PATH, NOT settings.file: THE POINT OF THIS MESSAGE IS TO TELL AN OPERATOR WHICH ARCHIVE IS IN
-      // THE WAY, AND THE NAME THE CALLER TYPED IS RELATIVE TO A DIRECTORY THEY DID NOT NECESSARILY CHOOSE
+    // THE RESOLVED PATH, NOT settings.file: THE POINT OF THESE MESSAGES IS TO TELL AN OPERATOR WHICH FILE IS IN THE WAY,
+    // AND THE NAME THE CALLER TYPED IS RELATIVE TO A DIRECTORY THEY DID NOT NECESSARILY CHOOSE
+    if (backupFile.exists())
       throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(backupFile));
+
+    try {
+      Files.createFile(partialFile.toPath());
+    } catch (final FileAlreadyExistsException e) {
+      throw new BackupException(
+          "The backup file '%s' is being written by another backup, or '%s' was left by a backup that was cut: delete it to retry".formatted(
+              backupFile, partialFile));
     } catch (final IOException e) {
       throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile), e);
     }
@@ -846,7 +881,6 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   private void encryptFile(final File backupFile, final StreamCallback callback) throws Exception {
     try (final FileOutputStream fos = new FileOutputStream(backupFile)) {
-      outputOpened = true;
       final OutputStream archiveStream;
       if (settings.encryptionKey != null) {
         // Generate a random salt (e.g., 16 bytes)
