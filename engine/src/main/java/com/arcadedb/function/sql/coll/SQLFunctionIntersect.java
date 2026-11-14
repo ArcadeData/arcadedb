@@ -54,7 +54,9 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
       // AGGREGATION MODE (STATEFUL)
       if (context == null) {
         // ADD ALL THE ITEMS OF THE FIRST COLLECTION
-        if (value instanceof Collection collection) {
+        if (value instanceof Map<?, ?> map) {
+          context = map.values().iterator();
+        } else if (value instanceof Collection collection) {
           context = collection.iterator();
         } else if (value instanceof Iterator) {
           context = value;
@@ -76,7 +78,7 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
     }
 
     // IN-LINE MODE (STATELESS)
-    Iterator iterator = MultiValue.getMultiValueIterator(value, false);
+    Iterator iterator = value instanceof byte[] ? List.of(value).iterator() : MultiValue.getMultiValueIterator(value, false);
 
     for (int i = 1; i < params.length; ++i) {
       value = params[i];
@@ -98,20 +100,18 @@ public class SQLFunctionIntersect extends SQLAggregatedCollectionFunction<Object
 
   @Override
   public Object getResult() {
-    return MultiValue.toSet(context);
+    return CanonicalSet.from(context);
   }
 
-  static Collection intersectWith(final Iterator current, Object value) {
-    final HashSet tempSet = new HashSet();
+  static Collection intersectWith(final Iterator current, final Object value) {
+    final Set<Object> tempSet = new CanonicalSet();
+    final Object toConvert = value instanceof Map<?, ?> map ? map.values() : value;
+    final Set<Object> valueSet = CanonicalSet.from(toConvert);
 
-    if (!(value instanceof Set))
-      value = MultiValue.toSet(value);
-
-    for (final Iterator it = current; it.hasNext(); ) {
-      final Object curr = it.next();
-
-      if (value instanceof Collection collection) {
-        if (collection.contains(curr))
+    if (current != null) {
+      while (current.hasNext()) {
+        final Object curr = current.next();
+        if (valueSet.contains(curr))
           tempSet.add(curr);
       }
     }

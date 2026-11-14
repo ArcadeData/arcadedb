@@ -20,16 +20,15 @@ package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
-import java.util.HashSet;
 import java.util.Set;
 
 /**
  * This operator add an item in a set. The set doesn't accept duplicates, so adding multiple times the same value has no effect: the
- * value is contained only once.
+ * value is contained only once. Numerically equal values (e.g. Long 1 and Integer 1) are treated as equal.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -44,13 +43,13 @@ public class SQLFunctionSet extends SQLAggregatedCollectionFunction<Set<Object>>
       final CommandContext ctx) {
     if (params.length > 1)
       // IN LINE MODE
-      context = new HashSet<Object>();
+      context = new CanonicalSet();
 
     for (final Object value : params) {
       if (value != null) {
         if (params.length == 1 && context == null)
           // AGGREGATION MODE (STATEFULL)
-          context = new HashSet<Object>();
+          context = new CanonicalSet();
 
         if (value instanceof Document)
           context.add(value);
