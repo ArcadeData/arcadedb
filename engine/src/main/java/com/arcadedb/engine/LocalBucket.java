@@ -3935,9 +3935,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * The committed content behind the placeholder POINTER at {@code rid} (#10304). The pointer and the content record
-   * live on two pages, which a commit publishes one at a time, so the two are read with no publication in between:
-   * optimistically, and again under the publication lock when one overlapped the read, with the sequence checked again inside it
-   * because the lock does not exclude the replicated apply of a replica (#11283).
+   * live on two pages, which a commit publishes one at a time, so the two are read with no publication in between: once no
+   * publication is open (waiting up to {@link #PUBLICATION_WAIT_NANOS} for one to end), and again with the publications held off
+   * ({@link #callAgainstOneCommit}) when one overlapped the read. The page-manager lock the redo took before did not exclude the
+   * replicated apply of a replica (#11283), which on a busy replica was open again on every attempt (#11505).
    */
   private Binary committedPlaceholderContent(final RID rid) throws IOException {
     return committedPlaceholderContent(rid, null);
@@ -3945,33 +3946,33 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private Binary committedPlaceholderContent(final RID rid, final OffPagePages offPages) throws IOException {
     final PageManager pageManager = database.getPageManager();
-    final long sequence = pageManager.getPublicationSequence();
+    // #11505: WAIT OUT A PUBLICATION IN FLIGHT, AS validateChainReadAgainstOneCommit DOES (#11455): A REPLICA UNDER WRITE LOAD ALWAYS
+    // HAS ONE OPEN
+    final long sequence = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
     if ((sequence & 1) == 0) {
       final Binary content = readCommittedPlaceholderContent(rid, offPages);
       if (pageManager.getPublicationSequence() == sequence)
         return content;
     }
-    try {
-      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
-      return (Binary) pageManager.executeInLock(() -> {
-        // #11283: the lock excludes a local commit but not the replicated apply of a replica, so the lock alone proves nothing
-        final long locked = pageManager.getPublicationSequence();
-        final Binary content = (locked & 1) == 0 ? readCommittedPlaceholderContent(rid, offPages) : null;
-        if ((locked & 1) != 0 || pageManager.getPublicationSequence() != locked) {
-          final String message = "Record " + rid
-                  + " was being replicated while it was read: the pointer and its content may belong to different commits";
-          if (offPages != null)
-            // see committedMultiPageRecord (#11364)
-            throw new CommittedReadInMotionException(message);
-          throw new ConcurrentModificationException(message);
-        }
-        return content;
-      });
-    } catch (final RuntimeException e) {
-      if (e.getCause() instanceof IOException ioException)
-        throw ioException;
-      throw e;
-    }
+    // The content can be null (the pointer no longer leads to a record), so whether the redo ran is told apart from what it read
+    final boolean[] ran = new boolean[1];
+    final Binary content = callAgainstOneCommit(() -> {
+      // A hold is granted only with no publication open and none can start under it: a move here is a publisher that bypassed it
+      final long held = pageManager.getPublicationSequence();
+      if ((held & 1) != 0)
+        return null;
+      final Binary heldContent = readCommittedPlaceholderContent(rid, offPages);
+      ran[0] = pageManager.getPublicationSequence() == held;
+      return heldContent;
+    });
+    if (ran[0])
+      return content;
+    final String message = "Record " + rid
+            + " was being replicated while it was read: the pointer and its content may belong to different commits";
+    if (offPages != null)
+      // see committedMultiPageRecord (#11364)
+      throw new CommittedReadInMotionException(message);
+    throw new ConcurrentModificationException(message);
   }
 
   private Binary readCommittedPlaceholderContent(final RID rid, final OffPagePages offPages) throws IOException {
@@ -6967,7 +6968,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  /** How long {@link #validateAgainstOneCommit} waits for an open publication to end before it gives the attempt up. */
+  /** How long a read or proof against one committed state waits for an open publication to end before it gives the attempt up. */
   private static final long PUBLICATION_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(20);
 
   /**
@@ -7150,25 +7151,30 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Runs a proof that a chunk chain is broken against ONE committed state. The proof walks the newest committed images, and a
    * commit being published puts its pages there one at a time: a head chunk already pointing at a slot its commit has not
    * published yet reads as a cleaned slot, and that is a permanent verdict, the record reported as corrupted and handed to
-   * CHECK DATABASE FIX. A proof that a publication overlapped is run again under the publication lock,
-   * which excludes a local commit but not the replicated apply of a replica (#11283), so the sequence is checked inside it too and a
-   * proof that a publication still overlapped is void. A proof that finds nothing broken is never doubted: it is the one that changes nothing.
+   * CHECK DATABASE FIX. The proof runs once no publication is open (waiting up to {@link #PUBLICATION_WAIT_NANOS} for one to end), and
+   * a proof that a publication overlapped is run again with the publications held off ({@link #callAgainstOneCommit}), the sequence
+   * checked inside it too; a proof that a publication still overlapped, or that found no moment without one, is void. A proof that
+   * finds nothing broken is never doubted: it is the one that changes nothing.
    */
   // Package-private: visible for testing
   String provenAgainstOneCommit(final Callable<String> proof) throws Exception {
     final PageManager pageManager = database.getPageManager();
-    final long sequence = pageManager.getPublicationSequence();
+    // #11505: WAIT OUT A PUBLICATION IN FLIGHT BEFORE PROVING, AS validateChainReadAgainstOneCommit DOES (#11455). A REPLICA UNDER
+    // WRITE LOAD ALWAYS HAS ONE OPEN, AND WITHOUT THE WAIT A GENUINELY BROKEN CHAIN WAS NEVER PROVEN: THE READ RETRIED TO EXHAUSTION
+    // AND REPORTED CONTENTION INSTEAD OF POINTING AT CHECK DATABASE FIX
+    final long sequence = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
     final String reason = proof.call();
     if (reason == null || ((sequence & 1) == 0 && pageManager.getPublicationSequence() == sequence))
       return reason;
-    return (String) pageManager.executeInLock(() -> {
-      // #11283: the lock excludes a local commit but not the replicated apply of a replica. A publication open or moved
-      // here makes a proof of corruption void: not proven, so the caller falls back to its retry rather than condemn a record
-      final long locked = pageManager.getPublicationSequence();
-      if ((locked & 1) != 0)
+    // #11505: THE REDO HOLDS THE PUBLICATIONS OFF. THE PAGE-MANAGER LOCK IT RAN UNDER BEFORE EXCLUDED A LOCAL COMMIT BUT NOT THE
+    // REPLICATED APPLY (#11283), WHICH A BUSY REPLICA HAD OPEN AGAIN ON EVERY ATTEMPT. A PUBLICATION OPEN OR MOVED HERE STILL MAKES
+    // THE PROOF VOID: NOT PROVEN, SO THE CALLER FALLS BACK TO ITS RETRY RATHER THAN CONDEMN A RECORD
+    return callAgainstOneCommit(() -> {
+      final long held = pageManager.getPublicationSequence();
+      if ((held & 1) != 0)
         return null;
-      final String lockedReason = proof.call();
-      return lockedReason == null || pageManager.getPublicationSequence() == locked ? lockedReason : null;
+      final String heldReason = proof.call();
+      return heldReason == null || pageManager.getPublicationSequence() == held ? heldReason : null;
     });
   }
 
