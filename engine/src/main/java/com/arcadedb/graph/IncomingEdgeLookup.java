@@ -668,7 +668,7 @@ public final class IncomingEdgeLookup {
     private final char                      walkMark;
 
     private Snapshot(final String typeName, final UnidirectionalEdgeChanges builtBy, final DatabaseInternal database,
-        final Builder builder) {
+        final Builder builder, final char walkMark) {
       builder.sortByTarget();
       this.typeName = typeName;
       this.builtBy = builtBy;
@@ -684,7 +684,7 @@ public final class IncomingEdgeLookup {
       this.sourcePositions = builder.sourcePositions;
       this.edgeBuckets = builder.edgeBuckets;
       this.edgePositions = builder.edgePositions;
-      this.walkMark = database.graphWalkMark();
+      this.walkMark = walkMark;
     }
 
     static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
@@ -693,8 +693,10 @@ public final class IncomingEdgeLookup {
       final Schema schema = database.getSchema();
       final Map<String, Builder> builders = new HashMap<>();
       final List<Builder> lightweight = new ArrayList<>();
+      // BEFORE THE SCANS: EVERY REFERENCE THEY READ IS READ AFTER IT (ISSUE #11713)
+      final char walkMark = database.graphWalkMark();
       try {
-        return build(database, typeNames, builtBy, context, schema, builders, lightweight, unchecked);
+        return build(database, typeNames, builtBy, context, schema, builders, lightweight, unchecked, walkMark);
       } catch (final RuntimeException | Error e) {
         // A SCAN THAT FAILED (THE HEAP CAP, AN UNREADABLE RECORD) GIVES BACK WHAT ITS BUILDERS CHARGED AT ONCE
         for (final Builder builder : builders.values())
@@ -705,7 +707,7 @@ public final class IncomingEdgeLookup {
 
     private static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
         final UnidirectionalEdgeChanges builtBy, final CommandContext context, final Schema schema,
-        final Map<String, Builder> builders, final List<Builder> lightweight, final boolean unchecked) {
+        final Map<String, Builder> builders, final List<Builder> lightweight, final boolean unchecked, final char walkMark) {
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       for (final String typeName : typeNames) {
         final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
@@ -735,7 +737,7 @@ public final class IncomingEdgeLookup {
         // A query that pays for a scan says so: it is the cost a slow query over such a type is made of
         LogManager.instance().log(IncomingEdgeLookup.class, Level.FINE,
             "Scanned %d edges of the unidirectional edge type '%s' to answer its incoming side", builder.size, typeName);
-        result.add(new Snapshot(typeName, builtBy, database, builder));
+        result.add(new Snapshot(typeName, builtBy, database, builder, walkMark));
       }
       return result;
     }

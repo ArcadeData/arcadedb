@@ -86,8 +86,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
         final int end = command.indexOf("*/", pos + 2);
         pos = end < 0 ? length : end + 2;
       } else if (command.startsWith("-- ", pos)) {
-        final int end = command.indexOf('\n', pos + 3);
-        pos = end < 0 ? length : end + 1;
+        // ENDED BY A CARRIAGE RETURN OR A LINE FEED, AS THE LEXER ENDS IT; THE OTHER ONE OF A CRLF IS WHITESPACE
+        pos += 3;
+        while (pos < length && command.charAt(pos) != '\r' && command.charAt(pos) != '\n')
+          ++pos;
       } else
         break;
     }

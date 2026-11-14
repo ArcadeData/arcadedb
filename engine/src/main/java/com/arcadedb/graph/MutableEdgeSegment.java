@@ -595,13 +595,22 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
    */
   @Override
   public EdgeSegment getPrevious() {
+    return getPrevious((char) 0);
+  }
+
+  /**
+   * @param walkMark the mark of the walk ({@link DatabaseInternal#graphWalkMark()}), or 0 for a caller with none, which then takes
+   *                 one when it needs it
+   */
+  @Override
+  public EdgeSegment getPrevious(final char walkMark) {
     final RID previousRID = previousRIDInTransaction(this);
     if (previousRID == null)
       return null;
     try {
       return (EdgeSegment) database.lookupByRID(previousRID, true);
     } catch (final RecordNotFoundException e) {
-      return previousOfCommittedImage(previousRID, e);
+      return previousOfCommittedImage(previousRID, e, walkMark);
     }
   }
 
@@ -627,7 +636,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
    * own copy: both can still name the missing segment, and both get the conflict when a commit was published since the walk
    * began, since the chain they began on cannot be served.
    */
-  private EdgeSegment previousOfCommittedImage(final RID missingPrevious, final RecordNotFoundException notFound) {
+  private EdgeSegment previousOfCommittedImage(final RID missingPrevious, final RecordNotFoundException notFound,
+      final char walkMark) {
     final RID self = getIdentity();
     if (self == null)
       throw notFound;
@@ -649,7 +659,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
         // THE IMAGE READ AGAIN STILL NAMES THE MISSING SEGMENT. THAT IS A BROKEN CHAIN ONLY WHEN NO COMMIT WAS IN FLIGHT OR PUBLISHED
         // SINCE THE WALK BEGAN: THE IMAGE CAN BE THE TRANSACTION'S OWN COPY, A PAGE IT PINNED (REPEATABLE_READ), OR THE PAGE OF A
         // COMMIT THAT HAS PUBLISHED THE DELETE BUT NOT YET THE RELINK, AND THEN IT IS A CONFLICT TO RETRY
-        throw ImmutableDocument.missingGraphRecord(database, missing, database.graphWalkMark(), notFound);
+        throw ImmutableDocument.missingGraphRecord(database, missing, walkMark != 0 ? walkMark : database.graphWalkMark(), notFound);
 
       try {
         return (EdgeSegment) database.lookupByRID(previous, true);

@@ -54,7 +54,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         boolean          invalidated;
   // THE MARK OF THIS WALK, TAKEN WHEN IT BEGINS: EVERY RECORD IT HANDS OUT FROM AN ENTRY CARRIES IT (ISSUE #11713, SEE
   // DatabaseInternal.lookupThroughGraph())
-  protected       char             walkMark;
+  protected final char             walkMark;
   // THE LIST THIS ITERATION READS, WHICH COUNTS THE TWINS OF ITS LIGHTWEIGHT EDGES WHEN ASKED (ISSUE #10008)
   private         EdgeLinkedList   censusSource;
 
@@ -127,8 +127,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
 
   @Override
   public void reset() {
+    // THE MARK STAYS: THE WALK STARTS AGAIN FROM THE SEGMENT IMAGE IT BEGAN WITH, READ WHEN THE MARK WAS TAKEN
     this.currentContainer = walkable(initialContainer);
-    walkMark = ((DatabaseInternal) initialContainer.getDatabase()).graphWalkMark();
     cycleGuard = null;
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
     browsed = 0;
@@ -356,7 +356,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     final RID currentIdentity = currentContainer.getIdentity();
     if (cycleGuard == null)
       cycleGuard = new ChainCycleGuard(initialContainer.getIdentity());
-    currentContainer = walkable(currentContainer.getPrevious());
+    currentContainer = walkable(currentContainer.getPrevious(walkMark));
     if (currentContainer != null) {
       final RID previousIdentity = currentContainer.getIdentity();
       // THE CHUNK'S "previous" POINTER NAMES ITSELF, OR THE CHAIN CLOSES ON A CHUNK ALREADY WALKED: STOP INSTEAD OF LOOPING FOREVER

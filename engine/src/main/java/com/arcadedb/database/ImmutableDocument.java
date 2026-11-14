@@ -568,14 +568,16 @@ public class ImmutableDocument extends BaseDocument {
       final RecordNotFoundException notFound) {
     if (walkMark == 0)
       return notFound;
-    final TransactionContext tx = database.getTransactionIfExists();
     // A COMMIT NESTED IN THE OPEN TRANSACTION, ON THIS THREAD - A NAME THE DICTIONARY REGISTERED FOR A RECORD IT SAVED - IS NOT A
-    // CONCURRENT ONE: IT CANNOT HAVE DELETED A RECORD BEHIND THE WALK'S BACK
-    final long publishing = database.getTransactionManager().getPublishingCommits() - (tx != null && tx.isActive() ?
-        tx.getNestedPublications() :
+    // CONCURRENT ONE: IT CANNOT HAVE DELETED A RECORD BEHIND THE WALK'S BACK. COUNTED BY THE OUTERMOST TRANSACTION, THE ONE THE
+    // WALK MARK WAS TAKEN FROM, SO THE TWO SHARE ONE BASELINE
+    final TransactionContext outermost = database.outermostActiveTransaction();
+    final long publishing = database.getTransactionManager().getPublishingCommits() - (outermost != null ?
+        outermost.getNestedPublications() :
         0L);
     if (commitMark(publishing) == walkMark)
       return notFound;
+    final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
       return notFound;
     return new ConcurrentModificationException(

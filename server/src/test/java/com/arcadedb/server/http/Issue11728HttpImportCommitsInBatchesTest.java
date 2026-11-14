@@ -80,6 +80,8 @@ class Issue11728HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
     assertThat(PostCommandHandler.skipLeadingSpaceAndComments(" \t\nimport")).isEqualTo(3);
     assertThat(PostCommandHandler.skipLeadingSpaceAndComments("/* a */import")).isEqualTo(7);
     assertThat(PostCommandHandler.skipLeadingSpaceAndComments("-- a\n/* b */ import")).isEqualTo(13);
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("-- a\rimport")).isEqualTo(5);
+    assertThat(PostCommandHandler.skipLeadingSpaceAndComments("-- a\r\nimport")).isEqualTo(6);
     // A LINE COMMENT IS TWO DASHES AND A SPACE, AS IN THE LEXER: '--import' IS NOT ONE
     assertThat(PostCommandHandler.skipLeadingSpaceAndComments("--import")).isEqualTo(0);
     assertThat(PostCommandHandler.skipLeadingSpaceAndComments("/* never closed import")).isEqualTo(22);

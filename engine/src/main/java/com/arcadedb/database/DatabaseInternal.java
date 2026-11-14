@@ -107,15 +107,29 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
-   * The mark of a graph walk that begins now ({@link ImmutableDocument#commitMark}): the commits published when the open
+   * The mark of a graph walk that begins now ({@link ImmutableDocument#commitMark}): the commits published when the outermost open
    * transaction began, which no reference it reads can predate, or the commits published now for a walk with no transaction.
    * Taken once per walk and handed to {@link #lookupThroughGraph(RID, char)} for every reference it reads.
    */
   default char graphWalkMark() {
-    final TransactionContext tx = getTransactionIfExists();
-    return ImmutableDocument.commitMark(tx != null && tx.isActive() ?
-        tx.getPublishedCommitsAtBegin() :
-        getTransactionManager().getPublishedCommits());
+    final TransactionContext tx = outermostActiveTransaction();
+    return ImmutableDocument.commitMark(tx != null ? tx.getPublishedCommitsAtBegin() : getTransactionManager().getPublishedCommits());
+  }
+
+  /**
+   * The outermost transaction open on this thread, or null. A walk and the read of what it handed out are judged against it, and
+   * against it alone, whatever transaction is nested in it at either moment: it began before any of them, and it counts every
+   * commit nested in it since (see {@link TransactionContext#getNestedPublications()}), so the mark and the commits discounted
+   * from it share one baseline (issue #11713).
+   */
+  default TransactionContext outermostActiveTransaction() {
+    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(getDatabasePath());
+    if (current == null)
+      return null;
+    for (final TransactionContext tx : current.transactions)
+      if (tx.isActive())
+        return tx;
+    return null;
   }
 
   default TransactionContext getTransaction() {
