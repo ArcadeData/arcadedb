@@ -507,6 +507,8 @@ public class TransactionContext implements Transaction {
   private       Map<String, Object>                  attachments                 = null;
   // #10040: the client opened this transaction and ends it with its own COMMIT/ROLLBACK, see setClientManaged()
   private       boolean                              clientManaged               = false;
+  // #11588: a server opened this transaction around one request, as its auto-commit, see setImplicit()
+  private       boolean                              implicit                    = false;
 
   // #5279: above this many tracked insert reservations the parallel arrays are dropped instead of being reused, so a
   // one-off bulk insert does not keep its (per-record) tracking arrays alive on a long-lived transaction context.
@@ -1535,6 +1537,23 @@ public class TransactionContext implements Transaction {
   /** Declares this transaction opened by the client. See {@link #isClientManaged()}. */
   public void setClientManaged(final boolean clientManaged) {
     this.clientManaged = clientManaged;
+  }
+
+  /**
+   * Whether a server opened this transaction around one request on the client's behalf, as its auto-commit: the HTTP
+   * command handler, the gRPC auto-wrap, the MCP tools, the implicit block of a Postgres pipeline. Neo4j calls it an
+   * implicit transaction. Every other transaction belongs to its caller, an embedded {@code begin()} or
+   * {@code transaction()} included, and is not one: a {@code CALL { ... } IN TRANSACTIONS} commits its batches on their
+   * own and is refused there, since the caller's rollback could not undo them (issue #11588). A transaction the client
+   * later declares its own ({@link #isClientManaged()}) stops being implicit. Released by {@link #reset()}.
+   */
+  public boolean isImplicit() {
+    return implicit && !clientManaged;
+  }
+
+  /** Declares this transaction opened by a server around one request. See {@link #isImplicit()}. */
+  public void setImplicit(final boolean implicit) {
+    this.implicit = implicit;
   }
 
   public boolean hasCallbackKey(final String key) {
@@ -5094,6 +5113,7 @@ public class TransactionContext implements Transaction {
     afterCompletionOwner = null;
     attachments = null;
     clientManaged = false;
+    implicit = false;
     commitLockTimeout = null;
     useWALOverride = null;
     appendOnlyInserts = false;

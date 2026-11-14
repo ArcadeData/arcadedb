@@ -855,7 +855,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // contending writers from colliding again in lock step, the same call the HTTP handler makes
     final int retries = Math.max(1, serverConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
     final AtomicReference<ExecuteCommandResponse> response = new AtomicReference<>();
-    ((DatabaseInternal) db).transaction(() -> response.set(executeCommandInternal(req, t0, db, false)), false, retries);
+    ((DatabaseInternal) db).transaction(() -> {
+      // Opened by this server around one request: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs (issue #11588)
+      ((DatabaseInternal) db).getTransaction().setImplicit(true);
+      response.set(executeCommandInternal(req, t0, db, false));
+    }, false, retries);
     return response.get();
   }
 

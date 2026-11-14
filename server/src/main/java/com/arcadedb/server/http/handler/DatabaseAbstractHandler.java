@@ -404,6 +404,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final DatabaseInternal database, final JSONObject payload, final AtomicReference<ExecutionResponse> response,
       final int retries) {
     database.transaction(() -> {
+      // Opened by this server around one request: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs (issue #11588)
+      database.getTransaction().setImplicit(true);
       // Each attempt forwards to the leader under the same request ids as the first, so a retried write is
       // deduplicated there against the attempt that may already have applied it (issue #8323).
       ForwardedRequestIdContext.restartOrdinals();

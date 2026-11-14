@@ -5326,8 +5326,12 @@ public class PostgresNetworkExecutor extends Thread {
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;
-    if (!database.isTransactionActive())
+    if (!database.isTransactionActive()) {
       database.begin();
+      // Opened by this server, not by a client BEGIN: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs
+      // (issue #11588). A BEGIN that joins it later declares it the client's, which ends that
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+    }
   }
 
   /**
