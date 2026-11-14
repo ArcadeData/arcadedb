@@ -36,6 +36,7 @@ import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -197,8 +198,10 @@ public class JsonSerializer {
 
     final StringBuilder propertyTypes = includeTypeHints ? new StringBuilder() : null;
 
-    for (final String propertyName : result.getPropertyNames()) {
-      Object value = result.getProperty(propertyName);
+    // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+    for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet()) {
+      final String propertyName = property.getKey();
+      Object value = property.getValue();
 
       // Property type from the document's schema only - issue #4149: getTypeByClass(LocalDateTime)
       // collapses every datetime variant onto DATETIME (millis), so the schema lookup is the
