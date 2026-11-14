@@ -66,6 +66,21 @@ class CypherIndexJoinBooleanKeyIssue11587Test extends TestHelper {
     }
   }
 
+  @Test
+  void booleanKeyJoinsThroughThePrefixOfACompositeIndex() {
+    database.command("opencypher", "CREATE INDEX FOR (n:D) ON (n.flag, n.other)");
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:C {flag: true}), (:C {flag: false}), (:C {flag: 'true'}), "
+            + "(:D {flag: true, other: 1}), (:D {flag: false, other: 2}), (:D {flag: true, other: 3}), (:D {flag: 'true', other: 4})"));
+    final String query = "MATCH (a:C), (b:D) WHERE b.flag = a.flag RETURN count(*) AS c";
+    assertThat(plan(query)).as(query).contains("IndexNestedLoopJoin");
+    assertThat(count(query)).as(query).isEqualTo(4L);
+
+    database.command("sql", "DROP INDEX `D[flag,other]`");
+    assertThat(plan(query)).as(query).doesNotContain("IndexNestedLoopJoin");
+    assertThat(count(query)).as(query).isEqualTo(4L);
+  }
+
   private long count(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       return rs.next().<Number>getProperty("c").longValue();
