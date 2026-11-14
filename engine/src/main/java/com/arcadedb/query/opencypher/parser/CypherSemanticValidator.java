@@ -762,10 +762,17 @@ public class CypherSemanticValidator {
                       body instanceof UnionStatement union ? union.getQueries().getFirst() : body);
                   if (exported != null)
                     scope.addAll(exported);
-                } else if (item.getAlias() != null)
-                  scope.add(item.getAlias());
-                else if (item.getExpression() instanceof VariableExpression)
-                  scope.add(((VariableExpression) item.getExpression()).getVariableName());
+                } else {
+                  final String exportedName = item.getAlias() != null ? item.getAlias()
+                      : item.getExpression() instanceof VariableExpression variable ? variable.getVariableName() : null;
+                  if (exportedName == null)
+                    continue;
+                  // A subquery cannot export a name the outer scope already binds, imported or not (issue #11689)
+                  if (scope.contains(exportedName))
+                    throw new CommandParsingException(
+                        "VariableAlreadyBound: Variable '" + exportedName + "' already declared in outer scope");
+                  scope.add(exportedName);
+                }
               }
           }
           break;
