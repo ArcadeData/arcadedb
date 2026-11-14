@@ -31,6 +31,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -437,6 +440,156 @@ class CypherForeachTest {
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<Number>getProperty("v").intValue()).isEqualTo(3);
       }
+    }
+  }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/11684
+   * <p>
+   * A write inside FOREACH must be observable, later in the same statement, through every alias of the node it wrote:
+   * #5114 covered the node variable and #10890 the path, this covers a node held in a {@code collect()} list and read
+   * back through {@code UNWIND}, and an outer variable whose node the body wrote through a MERGE-bound alias.
+   */
+  @Nested
+  class Issue11684ForeachAliasRefresh extends TestHelper {
+    @Override
+    protected void beginTest() {
+      database.transaction(() -> database.command("opencypher", """
+          CREATE (a:Node {id:1,v:1,s:'a',b:true,l:[1,2]})
+          CREATE (b:Node {id:2,v:2,s:'b',b:false,l:[]})
+          CREATE (c:Node {id:3,v:3,s:'c',b:true,l:[3]})
+          CREATE (a)-[:R {k:1}]->(b)
+          CREATE (b)-[:R {k:2}]->(c)""").close());
+    }
+
+    /** The reporter's first query: the nodes written through the FOREACH loop variable are read back through UNWIND. */
+    @Test
+    void listBoundNodesObserveForeachWrite() {
+      database.transaction(() -> assertThat(idToV("""
+          MATCH (a:Node) WHERE a.id <= 2
+          WITH collect(a) AS ns
+          FOREACH (n IN ns | SET n.v = n.v + 10)
+          WITH ns UNWIND ns AS m
+          RETURN m.id AS id, m.v AS v ORDER BY id""")).containsExactly(1L, 11L, 2L, 12L));
+
+      assertThat(committedV()).containsExactly(1L, 11L, 2L, 12L, 3L, 3L);
+    }
+
+    /** The reporter's second query: the body writes the node through the MERGE-bound m, the outer n is read after it. */
+    @Test
+    void outerVariableObservesWriteThroughMergeAlias() {
+      database.transaction(() -> assertThat(single("""
+          MATCH (n:Node {id:3})
+          FOREACH (x IN [1] | MERGE (m:Node {id:3}) SET m.v = 99)
+          RETURN n.v AS nv""", "nv")).isEqualTo(99L));
+
+      assertThat(committedV()).containsExactly(1L, 1L, 2L, 2L, 3L, 99L);
+    }
+
+    /** Each iteration reads the outer n, so the write the previous iteration made through m must already show through it. */
+    @Test
+    void mergeAliasWriteAccumulatesAcrossIterations() {
+      database.transaction(() -> assertThat(single("""
+          MATCH (n:Node {id:3})
+          FOREACH (x IN [1, 2, 3] | MERGE (m:Node {id:3}) SET m.v = n.v + 1)
+          RETURN n.v AS nv""", "nv")).isEqualTo(6L));
+
+      assertThat(committedV()).containsExactly(1L, 1L, 2L, 2L, 3L, 6L);
+    }
+
+    /** A list carrying the same node twice: both writes land on it, and every element of the list reads the result. */
+    @Test
+    void listWithDuplicateNodeObservesEveryWrite() {
+      database.transaction(() -> assertThat(idToV("""
+          MATCH (a:Node {id:1})
+          WITH [a, a] AS ns
+          FOREACH (n IN ns | SET n.v = n.v + 10)
+          UNWIND ns AS m
+          RETURN m.id AS id, m.v AS v""")).containsExactly(1L, 21L, 1L, 21L));
+
+      assertThat(committedV()).containsExactly(1L, 21L, 2L, 2L, 3L, 3L);
+    }
+
+    /** A node nested in a list of lists and in a map is the same node, so it reads the write too. */
+    @Test
+    void nestedListAndMapObserveForeachWrite() {
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", """
+            MATCH (a:Node {id:1})
+            WITH collect(a) AS ns, [[a]] AS nested, {node: a} AS holder
+            FOREACH (n IN ns | SET n.v = 42)
+            RETURN nested[0][0].v AS nestedV, holder.node.v AS mapV""")) {
+          final Result row = rs.next();
+          assertThat(row.<Number>getProperty("nestedV").longValue()).isEqualTo(42L);
+          assertThat(row.<Number>getProperty("mapV").longValue()).isEqualTo(42L);
+          assertThat(rs.hasNext()).isFalse();
+        }
+      });
+    }
+
+    /** The write is made by a nested FOREACH: the outer one must still hand the refreshed list on. */
+    @Test
+    void nestedForeachWriteReachesList() {
+      database.transaction(() -> assertThat(idToV("""
+          MATCH (a:Node) WHERE a.id <= 2
+          WITH collect(a) AS ns
+          FOREACH (x IN [1] | FOREACH (n IN ns | SET n.v = n.v + 10))
+          UNWIND ns AS m
+          RETURN m.id AS id, m.v AS v ORDER BY id""")).containsExactly(1L, 11L, 2L, 12L));
+    }
+
+    /** Control: FOREACH over one node with SET, read back through the node variable itself (#5114). */
+    @Test
+    void singleNodeForeachSetVisibleToReturn() {
+      database.transaction(() -> assertThat(single("""
+          MATCH (n:Node {id:2})
+          FOREACH (x IN [1] | SET n.v = 7)
+          RETURN n.v AS nv""", "nv")).isEqualTo(7L));
+
+      assertThat(committedV()).containsExactly(1L, 1L, 2L, 7L, 3L, 3L);
+    }
+
+    /** Control: a FOREACH that writes nothing leaves the list as it was. */
+    @Test
+    void readOnlyForeachBodyLeavesListUnchanged() {
+      database.transaction(() -> assertThat(idToV("""
+          MATCH (a:Node) WHERE a.id <= 2
+          WITH collect(a) AS ns
+          FOREACH (n IN ns | CREATE (:Log {id: n.id}))
+          UNWIND ns AS m
+          RETURN m.id AS id, m.v AS v ORDER BY id""")).containsExactly(1L, 1L, 2L, 2L));
+    }
+
+    private long single(final String query, final String column) {
+      try (final ResultSet rs = database.command("opencypher", query)) {
+        final long value = rs.next().<Number>getProperty(column).longValue();
+        assertThat(rs.hasNext()).isFalse();
+        return value;
+      }
+    }
+
+    /** The rows of a statement returning id and v, flattened as id, v, id, v... */
+    private List<Long> idToV(final String query) {
+      try (final ResultSet rs = database.command("opencypher", query)) {
+        return flatten(rs);
+      }
+    }
+
+    /** What an independent query reads after the commit. */
+    private List<Long> committedV() {
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n:Node) RETURN n.id AS id, n.v AS v ORDER BY id")) {
+        return flatten(rs);
+      }
+    }
+
+    private List<Long> flatten(final ResultSet rs) {
+      final List<Long> values = new ArrayList<>();
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        values.add(row.<Number>getProperty("id").longValue());
+        values.add(row.<Number>getProperty("v").longValue());
+      }
+      return values;
     }
   }
 }
