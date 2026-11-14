@@ -530,7 +530,7 @@ public class GraphEngine {
     // the vertex FILE into the commit lock set of EVERY append and serialising all writers on a hot vertex
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
-    getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
+    appendToEdgeList(fromVertex, Vertex.DIRECTION.OUT, edge.getIdentity(), toVertex.getIdentity());
     if (edge instanceof LightEdge) {
       lightEdgeEntryAppended(fromVertex.getIdentity(), Vertex.DIRECTION.OUT, edge.getIdentity().getBucketId(), toVertex.getIdentity());
       // A lightweight edge is an entry in the edge lists of its two vertices and no record of its own: see DeferredExistenceChecks
@@ -636,7 +636,15 @@ public class GraphEngine {
       return edges;
 
     // No eager modify() - see connectOutgoingEdge.
-    getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    // #11590: inside the edge-append window, see appendToEdgeList
+    if (tx != null)
+      tx.beginEdgeAppend();
+    try {
+      getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    } finally {
+      if (tx != null)
+        tx.endEdgeAppend();
+    }
 
     if (inEdgePairs != null)
       for (int i = 0; i < inEdgePairs.size(); ++i) {
@@ -652,7 +660,7 @@ public class GraphEngine {
     // No eager modify() - see connectOutgoingEdge. On a super-node target the eager MutableVertex would
     // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
     // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
-    getOrCreateEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+    appendToEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN, edgeRID, fromVertexRID);
     // ONLY THE RID REACHES HERE: A LIGHTWEIGHT EDGE HAS NO RECORD, SO ITS RID CARRIES A NEGATIVE POSITION (see disconnectEndpoint)
     if (edgeRID.getPosition() < 0)
       lightEdgeEntryAppended(toVertex.getIdentity(), Vertex.DIRECTION.IN, edgeRID.getBucketId(), fromVertexRID);
@@ -748,12 +756,12 @@ public class GraphEngine {
 
     for (final Edge e : outEdgesToReconnect) {
       final MutableVertex vertex = e.getOutVertex().modify();
-      getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
+      appendToEdgeList(vertex, Vertex.DIRECTION.OUT, e.getIdentity(), e.getIn());
     }
 
     for (final Edge e : inEdgesToReconnect) {
       final MutableVertex vertex = e.getInVertex().modify();
-      getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
+      appendToEdgeList(vertex, Vertex.DIRECTION.IN, e.getIdentity(), e.getOut());
     }
 
     relinkAll(lightOut, Vertex.DIRECTION.OUT);
@@ -951,7 +959,7 @@ public class GraphEngine {
    * lightweight entry appended by a transaction needs (see {@link #lightEdgeEntryAppended}).
    */
   void relinkEdgeListEntry(final Vertex vertex, final Vertex.DIRECTION direction, final RID edgeRID, final RID other) {
-    getOrCreateEdgeList(vertex.modify(), direction).add(edgeRID, other);
+    appendToEdgeList(vertex.modify(), direction, edgeRID, other);
     if (edgeRID.getPosition() < 0)
       lightEdgeEntryAppended(vertex.getIdentity(), direction, edgeRID.getBucketId(), other);
   }
@@ -1004,6 +1012,27 @@ public class GraphEngine {
           null, targetRid, unrecoverable);
 
     return targetRid.asVertex(true);
+  }
+
+  /**
+   * Appends one entry to the edge list of {@code vertex} in {@code direction}, as {@code getOrCreateEdgeList(vertex,
+   * direction).add(edgeRID, otherRID)} does, inside the transaction's edge-append window (#11590): the reads the append makes for
+   * itself, the head pointer and the chunk it appends to, are not taken for reads of the application, which the commit-time merges
+   * validate. A blind append to a chunk another transaction appended to meanwhile still merges.
+   */
+  private void appendToEdgeList(final VertexInternal vertex, final Vertex.DIRECTION direction, final RID edgeRID,
+      final RID otherRID) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null) {
+      getOrCreateEdgeList(vertex, direction).add(edgeRID, otherRID);
+      return;
+    }
+    tx.beginEdgeAppend();
+    try {
+      getOrCreateEdgeList(vertex, direction).add(edgeRID, otherRID);
+    } finally {
+      tx.endEdgeAppend();
+    }
   }
 
   /**

@@ -547,12 +547,17 @@ public class EdgeLinkedList {
     // addAll batches its updateRecord calls and does not register individual appends: every touched segment is
     // written as a rewrite, excluding its page from the append-merge so a concurrent-append rebase can never lose these
     // edges.
+    final TransactionContext tx = database.getTransactionIfExists();
     for (final Record r : recordsToUpdate) {
       // A vertex is in the set for its head pointer only: its own bookkeeping, which no listener hears (issue #10207)
       if (r instanceof MutableVertex)
         database.updateRecordWithoutEvents(r);
-      else if (r instanceof EdgeSegment segment)
+      else if (r instanceof EdgeSegment segment) {
         updateRewrittenSegment(database, segment);
+        // #11590: the batch read this chunk to append to it, which is not a read of the application
+        if (tx != null && segment.getIdentity() != null)
+          tx.noteChunkAppendedInWindow(segment.getIdentity());
+      }
       else
         // THE SET HOLDS NOTHING BUT THE VERTEX AND THE SEGMENTS THE BATCH WROTE TO
         throw new IllegalStateException("Unexpected record " + r.getIdentity() + " in the batch of edge list " + direction

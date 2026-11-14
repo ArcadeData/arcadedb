@@ -798,7 +798,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return 0L;
     }
 
-    final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+    final TransactionContext transaction = database.getTransaction();
+    final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+    // #11590: an answer read from the transaction's own image of the page may be stale, which its commit has to know
+    transaction.trackReadFromPage(page, positionInPage);
 
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     if (positionInPage >= recordCountInPage)
@@ -1210,7 +1213,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
-        final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+        final TransactionContext transaction = database.getTransaction();
+        final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+        transaction.trackScanOfPage(page);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -2904,9 +2909,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private boolean dispatchBeforeRead(final RID rid, final RecordEventsRegistry databaseEvents,
       final LocalDocumentType typeEvents) {
-    if (!databaseEvents.onBeforeRead(rid))
-      return false;
-    return typeEvents == null || typeEvents.fireBeforeRead(rid);
+    // #11590: only reached when a before-read listener is registered. The listener is the application, so its reads inside an
+    // edge-append window are recorded as the application's (see TransactionContext#suspendEdgeAppend())
+    final TransactionContext tx = database.getTransactionIfExists();
+    final int edgeAppend = tx != null ? tx.suspendEdgeAppend() : 0;
+    try {
+      if (!databaseEvents.onBeforeRead(rid))
+        return false;
+      return typeEvents == null || typeEvents.fireBeforeRead(rid);
+    } finally {
+      if (edgeAppend > 0)
+        tx.resumeEdgeAppend(edgeAppend);
+    }
   }
 
   /**
@@ -2946,6 +2960,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // ONE LOOKUP OF THE TRANSACTION'S PAGES PER RECORD, NOT TWO: getPage() WOULD ASK THEM AGAIN (#11007). EVERY READ OF THE
       // PAGE BELOW IS AT AN ABSOLUTE POSITION, THE CONTENT IS HANDED OUT AS A VIEW OF ITS OWN: THE SHARED VIEW SERVES IT (#10820)
       final BasePage page = heldPage != null ? heldPage : readTransaction.getPageNotHeldForAbsoluteReads(headPageId, pageSize);
+      // #11590: a record read from the transaction's own image of the page, which misses what others committed there after its
+      // first write, is recorded so the commit does not merge the page when this read may have been stale. A slot found empty
+      // too: the record may have been committed there since
+      if (heldPage != null)
+        readTransaction.trackReadFromPage(heldPage, positionInPage);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -3033,7 +3052,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     final PageId id = recentPageId != null && recentPageId.getPageNumber() == pageId && recentPageId.getFileId() == file.getFileId()
         && recentPageId.getDatabase() == database ? recentPageId : new PageId(database, file.getFileId(), pageId);
-    final BasePage page = database.getTransaction().getPageForAbsoluteReads(id, pageSize);
+    final TransactionContext transaction = database.getTransaction();
+    final BasePage page = transaction.getPageForAbsoluteReads(id, pageSize);
+    // #11590: see getRecordInternal
+    transaction.trackReadFromPage(page, positionInPage);
     if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
       return null;
 
@@ -3062,8 +3084,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final int txPageCount = getTotalPages();
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
-        final BasePage page = database.getTransaction()
-            .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageId), pageSize);
+        final TransactionContext transaction = database.getTransaction();
+        final BasePage page = transaction.getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageId), pageSize);
+        transaction.trackScanOfPage(page);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
         for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
           final long recordSize;
@@ -4276,6 +4299,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           .log(this, Level.FINE, "Cannot read back the record in slot %d of page %s for the slot merge", e, positionInPage,
               page.getPageId());
       return null;
+    }
+  }
+
+  /** The number of slots in the record table of {@code page}, free ones included (#11590). */
+  public int getSlotCountInPage(final BasePage page) {
+    return page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+  }
+
+  /**
+   * Whether {@code positionInPage} of {@code page} holds no record: past the record table, a freed entry or a deleted record. A
+   * slot that cannot be read answers false. The commit compares a slot a transaction read from its own image of a page with the
+   * committed page through it (#11590).
+   */
+  public boolean isSlotFree(final BasePage page, final int positionInPage) {
+    try {
+      if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return true;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      return recordPositionInPage == 0 || page.readNumber(recordPositionInPage) == 0;
+    } catch (final IOException e) {
+      return false;
     }
   }
 
