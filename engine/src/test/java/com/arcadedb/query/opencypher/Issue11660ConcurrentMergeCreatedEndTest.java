@@ -142,7 +142,19 @@ class Issue11660ConcurrentMergeCreatedEndTest {
         "MATCH (n:N {uuid: $uuid}), (b:M {existing: $uuid}) CALL merge.relationship(n, 'T', {}, {}, b) YIELD rel RETURN rel");
   }
 
+  /** SQL CREATE EDGE ... IF NOT EXISTS between existing nodes marks the same keys as a MERGE between existing nodes. */
+  @Test
+  void aMergeCreatingTheFarEndIsRefusedByAConcurrentCreateEdgeIfNotExists() throws Exception {
+    assertCreatorRefused(List.of("MERGE (n)-[r:T]->(m:M {k: 1})"),
+        "CREATE EDGE T FROM (SELECT FROM N WHERE uuid = :uuid) TO (SELECT FROM M WHERE existing = :uuid) IF NOT EXISTS", "sql");
+  }
+
   private void assertCreatorRefused(final List<String> creators, final String concurrent) throws Exception {
+    assertCreatorRefused(creators, concurrent, "opencypher");
+  }
+
+  private void assertCreatorRefused(final List<String> creators, final String concurrent, final String concurrentLanguage)
+      throws Exception {
     final ExecutorService executor = Executors.newSingleThreadExecutor();
     try {
       for (int i = 0; i < creators.size(); i++) {
@@ -152,7 +164,7 @@ class Issue11660ConcurrentMergeCreatedEndTest {
 
         database.begin();
         database.command("opencypher", create, params);
-        executor.submit(() -> database.transaction(() -> database.command("opencypher", concurrent, params))).get(30, TimeUnit.SECONDS);
+        executor.submit(() -> database.transaction(() -> database.command(concurrentLanguage, concurrent, params))).get(30, TimeUnit.SECONDS);
         assertThatThrownBy(() -> database.commit()).isInstanceOf(NeedRetryException.class);
 
         database.transaction(() -> database.command("opencypher", create, params));
