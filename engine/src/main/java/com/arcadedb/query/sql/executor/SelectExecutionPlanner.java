@@ -5445,7 +5445,10 @@ public class SelectExecutionPlanner {
    * considered: both fall back to the null sub-plan, which is always correct.
    */
   private static boolean cannotHoldNull(final DocumentType type, final String propertyName, final QueryPlanningInfo info) {
-    final Property property = type.getPropertyIfExists(propertyName);
+    // Polymorphic: a subtype inherits the MANDATORY NOTNULL property of its supertype, whose index then holds every one of
+    // its records too. Looking only at the subtype's own properties sent ORDER BY k ASC on the subtype to a scan of it for
+    // null keys that cannot exist (#11701)
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     // NOTNULL alone only rejects an explicit null: a record that never sets the property is legal and is not in the index
     // either (#8701). Only NOTNULL together with MANDATORY rules out both cases the index does not hold.
     if (property != null && property.isNotNull() && property.isMandatory())
