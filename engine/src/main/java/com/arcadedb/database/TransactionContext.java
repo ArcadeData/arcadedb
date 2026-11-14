@@ -406,14 +406,14 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
-  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the stripes of the relationships it created by a
+  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the keys of the relationships it created by a
   // match-or-create: the ones its commit checks, and the ones it marks. Primitive arrays grown on demand, null until the first
   private       long                                 mergedEdgeEpoch;
-  private       int[]                                mergedEdgeChecked;
+  private       long[]                               mergedEdgeChecked;
   private       int                                  mergedEdgeCheckedCount;
-  private       int[]                                mergedEdgeMarked;
+  private       long[]                               mergedEdgeMarked;
   private       int                                  mergedEdgeMarkedCount;
-  // #11482: the stripes are reserved in the registry, so they have to be marked committed or released when the transaction ends
+  // #11482: the keys are reserved in the registry, so they have to be marked committed or released when the transaction ends
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
@@ -5461,17 +5461,17 @@ public class TransactionContext implements Transaction {
     // Outside a transaction the read was not covered by the epoch its begin takes, and nothing would commit the relationship anyway
     if (from == null || to == null || !isActive())
       return;
-    final int own = MergedEdgeRegistry.stripeOf(from, to, type, matchedBy);
+    final long own = MergedEdgeRegistry.keyOf(from, to, type, matchedBy);
     mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, own);
     mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, own);
     if (matchedBy != null && !matchedBy.isEmpty())
       // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
-      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
-  private static int[] append(int[] array, final int index, final int value) {
+  private static long[] append(long[] array, final int index, final long value) {
     if (array == null)
-      array = new int[4];
+      array = new long[4];
     else if (index == array.length)
       array = Arrays.copyOf(array, index * 2);
     array[index] = value;
