@@ -29,6 +29,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -78,6 +79,9 @@ public class InExpression implements BooleanExpression {
    * be evaluated by several threads, each in its own context (the workers of a parallel scan) or in one (a parallel walk).
    */
   private volatile ListMemo listMemo;
+
+  /** The identity hash of the last list {@link #lookupFor} was asked about and did not find in the memo; a heuristic, racy on purpose. */
+  private int lastSeenIdentity;
 
   // Membership is equality against each element, so the element check reuses the = operator's
   // comparator (issue #5293) rather than a second, drifting implementation. Held per AST node so no
@@ -328,15 +332,24 @@ public class InExpression implements BooleanExpression {
 
     final ListMemo memo = listMemo;
     if (memo == null || memo.list() != listValue) {
-      listMemo = new ListMemo(listValue, null, new CommandContext[] { context });
-      return null;
+      // Not the list of the memo: it is hashed only when it is the one the previous call saw. The identity hash is a plain
+      // int, so a list that differs on every row (x IN n.tags) allocates nothing and writes nothing shared; a collision only
+      // hashes a list one row early
+      final int identity = System.identityHashCode(listValue);
+      if (lastSeenIdentity != identity) {
+        lastSeenIdentity = identity;
+        return null;
+      }
+      final ListLookup built = ListLookup.of(listOperand(listValue));
+      listMemo = new ListMemo(listValue, built, new CommandContext[] { context });
+      return built;
     }
-    if (memo.lookup() != null && memo.isOwnedBy(context))
+    if (memo.isOwnedBy(context))
       return memo.lookup();
 
     // A benign race: two threads may both build it, and a context an update loses only builds it again
     final ListLookup built = ListLookup.of(listOperand(listValue));
-    final boolean unchanged = memo.lookup() == null || built.sameAs(memo.lookup());
+    final boolean unchanged = built.sameAs(memo.lookup());
     listMemo = new ListMemo(listValue, built, unchanged ? memo.withOwner(context) : new CommandContext[] { context });
     return built;
   }
@@ -386,22 +399,72 @@ public class InExpression implements BooleanExpression {
    * A list as met by {@link #lookupFor}, its lookup (null until the list is met a second time), and the contexts that met it
    * with the content the lookup was built from.
    */
-  private record ListMemo(Object list, ListLookup lookup, CommandContext[] owners) {
+  private static final class ListMemo {
+    // The list and the contexts are held weakly: the node lives as long as the cached plan, and the memo must not keep the
+    // list, nor the database, variables and parameters of a finished execution, reachable after the query ends
+    private final WeakReference<Object>           listRef;
+    private final ListLookup                      lookup;
+    private final WeakReference<CommandContext>[] owners;
+
+    private ListMemo(final Object list, final ListLookup lookup, final WeakReference<CommandContext>[] owners) {
+      this.listRef = new WeakReference<>(list);
+      this.lookup = lookup;
+      this.owners = owners;
+    }
+
+    ListMemo(final Object list, final ListLookup lookup, final CommandContext[] contexts) {
+      this(list, lookup, weak(contexts));
+    }
+
+    Object list() {
+      return listRef.get();
+    }
+
+    ListLookup lookup() {
+      return lookup;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static WeakReference<CommandContext>[] weak(final CommandContext[] contexts) {
+      final WeakReference<CommandContext>[] refs = new WeakReference[contexts.length];
+      for (int i = 0; i < contexts.length; i++)
+        refs[i] = new WeakReference<>(contexts[i]);
+      return refs;
+    }
+
     boolean isOwnedBy(final CommandContext context) {
-      for (final CommandContext owner : owners)
-        if (owner == context)
+      for (final WeakReference<CommandContext> owner : owners)
+        if (owner.get() == context)
           return true;
       return false;
     }
 
+    /** The owners when the context is one of them, or those that are still alive with it. */
     CommandContext[] withOwner(final CommandContext context) {
-      if (isOwnedBy(context))
-        return owners;
-      if (owners.length >= MAX_MEMO_OWNERS)
+      final CommandContext[] alive = new CommandContext[owners.length + 1];
+      int n = 0;
+      for (final WeakReference<CommandContext> owner : owners) {
+        final CommandContext existing = owner.get();
+        if (existing == context)
+          return owners();
+        if (existing != null)
+          alive[n++] = existing;
+      }
+      if (n >= MAX_MEMO_OWNERS)
         return new CommandContext[] { context };
-      final CommandContext[] extended = Arrays.copyOf(owners, owners.length + 1);
-      extended[owners.length] = context;
-      return extended;
+      alive[n++] = context;
+      return Arrays.copyOf(alive, n);
+    }
+
+    private CommandContext[] owners() {
+      final CommandContext[] alive = new CommandContext[owners.length];
+      int n = 0;
+      for (final WeakReference<CommandContext> owner : owners) {
+        final CommandContext existing = owner.get();
+        if (existing != null)
+          alive[n++] = existing;
+      }
+      return Arrays.copyOf(alive, n);
     }
   }
 

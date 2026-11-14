@@ -193,7 +193,39 @@ class CypherInListLookupIssue11682Test extends TestHelper {
     return list;
   }
 
-  private void assertAnswer(final Object value, final List<Object> list, final Boolean expected) {
+  /** A primitive array parameter (issue #4284) is boxed for the lookup and must answer as the walk does, over several rows. */
+  @Test
+  void aPrimitiveArrayIsAnsweredAsTheWalk() {
+    final long[] longs = new long[100];
+    for (int i = 0; i < longs.length; i++)
+      longs[i] = i + 1000;
+    longs[0] = 1L;
+    longs[1] = 2L;
+    assertAnswer(1L, longs, true);
+    assertAnswer(2.0, longs, true);
+    assertAnswer(2.5, longs, false);
+    assertAnswer(7L, longs, false);
+
+    final double[] doubles = new double[100];
+    for (int i = 0; i < doubles.length; i++)
+      doubles[i] = i + 1000.0;
+    doubles[0] = Double.NaN;
+    doubles[1] = 1.0;
+    assertAnswer(1L, doubles, true);
+    assertAnswer(Double.NaN, doubles, false);
+    assertAnswer(2.5, doubles, false);
+    assertAnswer(1005L, doubles, true);
+    assertAnswer("a", doubles, false);
+
+    final double[] exact = new double[100];
+    for (int i = 0; i < exact.length; i++)
+      exact[i] = i + 1000.0;
+    exact[0] = 3.0;
+    assertAnswer(3L, exact, true);
+    assertAnswer(4L, exact, false);
+  }
+
+  private void assertAnswer(final Object value, final Object list, final Boolean expected) {
     final Map<String, Object> params = new HashMap<>();
     params.put("v", value);
     params.put("list", list);
