@@ -38,6 +38,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -67,6 +68,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.mockito.invocation.Invocation;
 
+import java.io.EOFException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -158,6 +160,12 @@ class Issue6201ErrorStatusParityTest {
       new MappedFailure("TransactionCommittedRemotelyException", 409,
           () -> new TransactionCommittedRemotelyException("committed cluster-wide, do not retry",
               new IllegalStateException("simulated local apply failure"))),
+      // Issue #11887: a write handed on - by the leader to the replication, or by a follower to a leader whose connection was
+      // lost mid-request - whose outcome is unknown. It was a 500 "Error on transaction commit" naming the cause
+      // (java.io.EOFException on the follower), which a client cannot tell from a server fault.
+      new MappedFailure("TransactionOutcomeUnknownException", 504,
+          () -> new TransactionOutcomeUnknownException("The connection to the leader was lost before it answered",
+              new EOFException("EOF reached while reading"))),
       new MappedFailure("ServerIsNotTheLeaderException", 400,
           () -> new ServerIsNotTheLeaderException("Not the leader", "192.168.0.1:2480")),
       new MappedFailure("SecurityException", 403, () -> new SecurityException("Not allowed")),
@@ -541,6 +549,23 @@ class Issue6201ErrorStatusParityTest {
         assertThat(handle(failure.factory().get()).responseHeaders.getFirst("Retry-After"))
             .as("%s must not carry a Retry-After", failure.name())
             .isNull();
+  }
+
+  /**
+   * Issue #11887: an outcome-unknown write is reported as itself with a label that says the write may have been applied, not
+   * as the transport failure under it, and without the Retry-After that would invite a blind retry.
+   */
+  @Test
+  void anOutcomeUnknownIsAGatewayTimeoutThatSaysTheWriteMayHaveBeenApplied() {
+    final HandledResponse sent = handle(new TransactionException("Error on executing command",
+        new TransactionOutcomeUnknownException("The connection to the leader was lost before it answered",
+            new EOFException("EOF reached while reading"))));
+    final JSONObject body = new JSONObject(sent.body);
+
+    assertThat(sent.statusCode).isEqualTo(504);
+    assertThat(body.getString("error")).contains("outcome unknown").contains("may have been applied");
+    assertThat(body.getString("exception")).isEqualTo(TransactionOutcomeUnknownException.class.getName());
+    assertThat(sent.responseHeaders.getFirst("Retry-After")).isNull();
   }
 
   /**

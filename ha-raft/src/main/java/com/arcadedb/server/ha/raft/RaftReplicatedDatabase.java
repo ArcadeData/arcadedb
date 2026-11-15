@@ -68,6 +68,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
@@ -156,6 +157,8 @@ import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
+
+import javax.net.ssl.SSLHandshakeException;
 
 /**
  * A {@link DatabaseInternal} wrapper that intercepts commit() to submit WAL changes through Raft consensus.
@@ -426,8 +429,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // #8481: neither of the two outcomes that follow a DISPATCHED entry is retryable, and neither is a
       // NeedRetryException any more: MajorityCommittedAllFailedException means the entry IS committed (the leader answers
       // it 409 "do not retry", as the TransactionCommittedRemotelyException it now is, and it is rebuilt as itself so this
-      // node answers its client the same), and ReplicationDispatchedTimeoutException that it may yet be. The latter keeps
-      // the TransactionException fallback, which is non-retryable too.
+      // node answers its client the same), and ReplicationDispatchedTimeoutException that it may yet be.
+      // #11887: the latter is rebuilt as the engine's TransactionOutcomeUnknownException, so this node answers its client the
+      // 504 "outcome unknown" the leader answers, not a 500. Not as the HA type itself: on this node that type means one of
+      // ITS OWN entries is indeterminate, which the commit and schema paths reconcile locally.
       Map.entry(MajorityCommittedAllFailedException.class.getName(), MajorityCommittedAllFailedException::new),
       Map.entry(ReplicatedPageConflictException.class.getName(), ReplicatedPageConflictException::new),
       // #8686: the refusal of a transaction prepared before a schema change the leader has applied. Same as the page conflict
@@ -436,6 +441,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(ReplicationQueueFullException.class.getName(), ReplicationQueueFullException::new),
       Map.entry(QuorumNotReachedException.class.getName(), QuorumNotReachedException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
+      Map.entry(ReplicationDispatchedTimeoutException.class.getName(), TransactionOutcomeUnknownException::new),
+      Map.entry(TransactionOutcomeUnknownException.class.getName(), TransactionOutcomeUnknownException::new),
       Map.entry(TransactionException.class.getName(), TransactionException::new),
       // #5064: preserves the 'committed cluster-wide, do NOT retry' contract when a follower forwards a
       // write to the leader - without this entry the 409 body would collapse to a generic
@@ -5627,19 +5634,28 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new NeedRetryException("Cannot connect to the leader at " + leaderUrl + ": " + e.getMessage(), e);
     } catch (final HttpTimeoutException e) {
       // The leader accepted the connection but did not answer within the deadline computed above - the
-      // failure #7527/#7543 were filed about. Deliberately TransactionException, NOT NeedRetryException,
-      // unlike the connect-timeout/refused arms above (review finding on PR #7650): a connect failure means
-      // the command never left this node, so retrying is provably safe, but a response timeout means the
-      // leader may already have applied a non-idempotent write before the answer was lost - the outcome is
-      // unknown, not "safe to retry". NeedRetryException here would resend it through
-      // RemoteDatabase.transaction's automatic retry (NeedRetryException -> HTTP 503 ->
-      // RemoteHttpComponent.reconstructException -> NeedRetryException again) and could double-apply an
-      // already-committed write. TransactionCommittedRemotelyException is the codebase's established shape
-      // for a KNOWN outcome; this one is unknown, so it stays a plain TransactionException like the generic
-      // arm below - an error the caller sees and must decide about, not one anything retries for it.
-      throw new TransactionException(
+      // failure #7527/#7543 were filed about. NOT NeedRetryException, unlike the connect-timeout/refused arms above
+      // (review finding on PR #7650): a connect failure means the command never left this node, so retrying is
+      // provably safe, but a response timeout means the leader may already have applied a non-idempotent write before
+      // the answer was lost. NeedRetryException here would resend it through RemoteDatabase.transaction's automatic
+      // retry (NeedRetryException -> HTTP 503 -> RemoteHttpComponent.reconstructException -> NeedRetryException again)
+      // and could double-apply an already-committed write. TransactionCommittedRemotelyException is the codebase's
+      // shape for a KNOWN outcome; this one is unknown, which the HTTP layer answers 504 (issue #11887).
+      throw new TransactionOutcomeUnknownException(
           "The leader at " + leaderUrl + " did not answer within " + deadlineMs
               + "ms; whether the command reached the leader is unknown - it must not be blindly retried", e);
+    } catch (final SSLHandshakeException e) {
+      // No byte of the request leaves this node before the handshake completes: the write did not reach the leader
+      throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
+    } catch (final IOException e) {
+      // The connection was lost after it was established - the leader died, or its connection was reset, while the
+      // request was in flight (issue #11887). The leader may have committed the write before it went away: measured with
+      // a killed leader, 3 of 12 such writes were stored. Outcome unknown, like the deadline above, and not a server fault:
+      // as a plain TransactionException it left as a 500 naming java.io.EOFException. A retry with the same X-Request-Id
+      // does not settle it either, since the leader's idempotency cache lives in the memory of the process that died.
+      throw new TransactionOutcomeUnknownException(
+          "The connection to the leader at " + leaderUrl + " was lost before it answered (" + e
+              + "); the write may have been applied there - check before retrying it", e);
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     } finally {
