@@ -548,6 +548,18 @@ public class MongoDBToSqlTranslator {
     return result;
   }
 
+  /**
+   * The properties a sort reads of a stored record, as the client reads them ({@link #convertDocumentToMongoDB}): an ObjectId
+   * {@code _id} is an ObjectId, which sorts after every string (issue #12069).
+   */
+  static Document toSortDocument(final Map<String, Object> map, final Set<String> properties) {
+    final Document result = new Document();
+    for (final String p : properties)
+      if (map.containsKey(p) && !isRecordMetadata(p))
+        result.put(p, "_id".equals(p) ? convertIdToMongoDB(map.get(p)) : toBsonValue(map.get(p)));
+    return result;
+  }
+
   static boolean isRecordMetadata(final String property) {
     return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property);
   }

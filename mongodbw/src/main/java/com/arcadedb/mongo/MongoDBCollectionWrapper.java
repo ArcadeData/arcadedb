@@ -37,6 +37,7 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
+import de.bwaldvogel.mongo.backend.DocumentComparator;
 import de.bwaldvogel.mongo.backend.Index;
 import de.bwaldvogel.mongo.backend.QueryParameters;
 import de.bwaldvogel.mongo.backend.QueryResult;
@@ -46,11 +47,14 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -611,30 +615,77 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
       filter.appendCandidateWhere(sql, params, database.getSchema().getTypeOrNull(collectionName));
 
-      // known cost: with a filter that narrows by neither the _id nor a declared scalar field (see MongoFilter), every row of the
-      // type is sorted before the filter discards most of them
-      if (hasOrderBy) {
-        sql.append(" order by ");
-        int i = 0;
-        for (final String p : orderBy.keySet()) {
-          if (i > 0)
-            sql.append(", ");
-          sql.append(MongoDBToSqlTranslator.quoteFieldPath(p));
-          sql.append(' ');
-          sql.append(((Number) orderBy.get(p)).intValue() == 1 ? "asc" : "desc");
-          ++i;
-        }
-      }
-
       try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        if (filter.isEmpty())
-          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rs);
+        final Iterator<?> rows = filter.isEmpty() ? rs : new FilteredIterator(rs, filter);
+        if (hasOrderBy)
+          sortedPage(rows, orderBy, numberToSkip, numberToReturn, result);
         else
-          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, new FilteredIterator(rs, filter));
+          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rows);
       }
     }
 
     return result;
+  }
+
+  /**
+   * A matching row and what it is sorted by: the properties the sort reads, as BSON values. The sequence number keeps the order of
+   * the rows that sort equal the one they were read in.
+   */
+  private record SortCandidate(Object row, Document keys, int sequence) {
+  }
+
+  /**
+   * Pages the rows in MongoDB's order (issue #12069): the BSON comparison order of the library's {@link DocumentComparator}, which
+   * compares the type bracket first (null before numbers before strings before documents before arrays before ObjectIds before
+   * booleans before dates), an array by its smallest element ascending and its largest descending, a path into an array of
+   * documents by the values it reaches, and numbers of different types by value. SQL ORDER BY follows none of these. Only the
+   * properties the sort reads are converted for the comparison, and only the rows of the page as a whole; with a limit, the
+   * first skip + limit rows are kept in a bounded heap rather than every match.
+   */
+  private static void sortedPage(final Iterator<?> rows, final Document orderBy, final int numberToSkip, final int numberToReturn,
+      final List<Document> result) {
+    final Set<String> properties = new HashSet<>();
+    for (final String path : orderBy.keySet()) {
+      final int dot = path.indexOf('.');
+      properties.add(dot < 0 ? path : path.substring(0, dot));
+    }
+
+    final DocumentComparator byKeys = new DocumentComparator(orderBy);
+    final Comparator<SortCandidate> order = Comparator.comparing(SortCandidate::keys, byKeys).thenComparingInt(SortCandidate::sequence);
+    final int skip = Math.max(numberToSkip, 0);
+    final int keep = numberToReturn > 0 ? (int) Math.min(Integer.MAX_VALUE - 1L, (long) skip + numberToReturn) : 0;
+    final PriorityQueue<SortCandidate> heap = keep > 0 ? new PriorityQueue<>(order.reversed()) : null;
+    final List<SortCandidate> candidates = new ArrayList<>();
+
+    int sequence = 0;
+    while (rows.hasNext()) {
+      final Object row = rows.next();
+      final SortCandidate candidate = new SortCandidate(row, MongoDBToSqlTranslator.toSortDocument(propertiesOf(row), properties), sequence++);
+      if (heap == null)
+        candidates.add(candidate);
+      else {
+        heap.add(candidate);
+        if (heap.size() > keep)
+          heap.poll();
+      }
+    }
+    if (heap != null)
+      candidates.addAll(heap);
+    candidates.sort(order);
+
+    final List<Object> page = new ArrayList<>();
+    for (int i = skip; i < candidates.size() && (numberToReturn <= 0 || page.size() < numberToReturn); i++)
+      page.add(candidates.get(i).row());
+    MongoDBToSqlTranslator.fillResultSet(0, 0, result, page.iterator());
+  }
+
+  // com.arcadedb.database.Document is spelled out in full: its simple name is the one of the MongoDB Document imported here
+  private static Map<String, Object> propertiesOf(final Object row) {
+    if (row instanceof Result result)
+      return result.toPropertyMap(false);
+    if (row instanceof com.arcadedb.database.Document document)
+      return document.toMap(false);
+    throw new IllegalArgumentException("Object not supported: " + (row != null ? row.getClass().getName() : null));
   }
 
   // com.arcadedb.database.Document is spelled out in full below: its simple name is the one of the MongoDB Document imported here
