@@ -4543,7 +4543,8 @@ public class TransactionContext implements Transaction {
         FailPoints.hit(FailPoints.COMMIT_BEFORE_WAL);
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
-        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+        final boolean walQueued = deferWALSync && walFlush != WALFile.FlushType.NO;
+        if (walQueued)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
@@ -4555,7 +4556,9 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
-        FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
+        // a queued record is written after the publication below, so only a record written here has reached the WAL at this point
+        if (!walQueued)
+          FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
       } else if (embedded != null && !pagesToPublish.isEmpty()) {
         // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
         // One volatile read once recorded; nothing more on a database without a COLUMNAR index

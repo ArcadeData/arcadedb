@@ -33,7 +33,11 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class FailPoints {
   /** Before a commit writes its WAL record: the transaction has validated its pages and holds its file locks. */
   public static final String COMMIT_BEFORE_WAL     = "commit.beforeWal";
-  /** After a commit wrote its WAL record and before it publishes its pages. */
+  /**
+   * After a commit wrote its WAL record and before it publishes its pages. Not reached by a group commit
+   * ({@code arcadedb.txWalGroupCommit} with {@code arcadedb.txWalFlush} 1 or 2), which only queues its record here and writes it
+   * after the publication.
+   */
   public static final String COMMIT_AFTER_WAL      = "commit.afterWal";
   /** After a commit published its pages, before it releases its file locks. */
   public static final String COMMIT_AFTER_PUBLISH  = "commit.afterPublish";
@@ -47,12 +51,6 @@ public final class FailPoints {
   /** Exit code of {@link #HALT}, the one a killed test child reports. */
   public static final int HALT_EXIT_CODE = 73;
 
-  /** What an armed point does when it is reached. */
-  @FunctionalInterface
-  public interface Action {
-    void run(String point);
-  }
-
   /** Throws a {@link FailPointException}. */
   public static final Action THROW = point -> {
     throw new FailPointException(point);
@@ -60,13 +58,6 @@ public final class FailPoints {
 
   /** Ends the process as a kill would: no shutdown hook, no close. */
   public static final Action HALT = point -> Runtime.getRuntime().halt(HALT_EXIT_CODE);
-
-  /** Raised by a point armed with {@link #THROW}. */
-  public static final class FailPointException extends RuntimeException {
-    public FailPointException(final String point) {
-      super("Fail point '" + point + "' reached");
-    }
-  }
 
   private static final Map<String, Action> ARMED = new ConcurrentHashMap<>();
   private static volatile boolean          active;
@@ -97,18 +88,33 @@ public final class FailPoints {
       action.run(point);
   }
 
-  public static void arm(final String point, final Action action) {
+  // The mutations are serialized, so active always ends up matching ARMED: a disarmAll() that cleared the map cannot reset active
+  // after an arm() that ran in between, and hit() keeps its one volatile read while nothing is armed
+  public static synchronized void arm(final String point, final Action action) {
     ARMED.put(point, action);
     active = true;
   }
 
-  public static void disarm(final String point) {
+  public static synchronized void disarm(final String point) {
     ARMED.remove(point);
     active = !ARMED.isEmpty();
   }
 
-  public static void disarmAll() {
+  public static synchronized void disarmAll() {
     ARMED.clear();
     active = false;
+  }
+
+  /** What an armed point does when it is reached. */
+  @FunctionalInterface
+  public interface Action {
+    void run(String point);
+  }
+
+  /** Raised by a point armed with {@link #THROW}. */
+  public static final class FailPointException extends RuntimeException {
+    public FailPointException(final String point) {
+      super("Fail point '" + point + "' reached");
+    }
   }
 }

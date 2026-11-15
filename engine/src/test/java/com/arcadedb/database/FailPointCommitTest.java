@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.index.CrashingChildJvm;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FailPoints;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +32,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -66,7 +68,7 @@ class FailPointCommitTest extends TestHelper {
     FailPoints.disarmAll();
 
     assertThat(sum()).isEqualTo((long) ACCOUNTS * BALANCE);
-    assertThat(count("SELECT count(*) AS c FROM Account")).isEqualTo(ACCOUNTS);
+    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS);
     assertThat(count("SELECT count(*) AS c FROM Account WHERE id >= " + ACCOUNTS)).isZero();
 
     // the database takes the next transaction as if nothing happened
@@ -87,7 +89,7 @@ class FailPointCommitTest extends TestHelper {
     })).satisfies(e -> assertThat(rootCause(e)).isInstanceOf(FailPoints.FailPointException.class));
     FailPoints.disarmAll();
 
-    assertThat(count("SELECT count(*) AS c FROM Account")).isEqualTo(ACCOUNTS);
+    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS);
     assertThat(sum()).isEqualTo((long) ACCOUNTS * BALANCE);
   }
 
@@ -110,6 +112,7 @@ class FailPointCommitTest extends TestHelper {
 
     final AtomicInteger committed = new AtomicInteger();
     final AtomicInteger injected = new AtomicInteger();
+    final List<Throwable> unexpected = Collections.synchronizedList(new ArrayList<>());
     final List<Thread> writers = new ArrayList<>();
     for (int w = 0; w < 4; w++) {
       final int writer = w;
@@ -132,8 +135,11 @@ class FailPointCommitTest extends TestHelper {
           } catch (final ConcurrentModificationException e) {
             // a conflict with another writer that outlasted the retries: rolled back, which keeps the invariant
           } catch (final RuntimeException e) {
-            if (!(rootCause(e) instanceof FailPoints.FailPointException))
-              throw e;
+            if (!(rootCause(e) instanceof FailPoints.FailPointException)) {
+              // recorded for the test thread, which a join() alone would not tell
+              unexpected.add(e);
+              return;
+            }
             injected.incrementAndGet();
           }
         }
@@ -144,10 +150,27 @@ class FailPointCommitTest extends TestHelper {
       writer.join();
     FailPoints.disarmAll();
 
+    assertThat(unexpected).as("writer failures other than the injected ones").isEmpty();
     assertThat(injected.get()).as("failures injected").isGreaterThan(10);
     assertThat(committed.get()).as("transfers committed").isGreaterThan(100);
     assertThat(sum()).as("the balances still add up after %d injected failures", injected.get()).isEqualTo((long) ACCOUNTS * BALANCE);
     assertThat(count("SELECT count(*) AS c FROM Transfer WHERE amount % 2 = 0")).as("logs deleted in their own transaction").isZero();
+  }
+
+  /**
+   * A group commit only queues its WAL record where {@link FailPoints#COMMIT_AFTER_WAL} sits and writes it after the publication, so
+   * the point, which promises a record already on the WAL, is not reached on that path.
+   */
+  @Test
+  void aGroupCommitDoesNotReachTheAfterWalPoint() {
+    createAccounts();
+    database.setWALFlush(WALFile.FlushType.YES_NOMETADATA);
+
+    FailPoints.arm(FailPoints.COMMIT_AFTER_WAL, FailPoints.THROW);
+    database.transaction(() -> database.newDocument("Account").set("id", ACCOUNTS).set("balance", 0).save());
+    FailPoints.disarmAll();
+
+    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + 1);
   }
 
   /** The child: arms {@code args[1]} to halt the process, then commits a transaction that reaches it. */
@@ -180,7 +203,7 @@ class FailPointCommitTest extends TestHelper {
     assertThat(child.exitCode()).as("child output: %s", child.output()).isEqualTo(FailPoints.HALT_EXIT_CODE);
 
     database = factory.open();
-    assertThat(count("SELECT count(*) AS c FROM Account")).isEqualTo(ACCOUNTS + (recovered ? 1_000 : 0));
+    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + (recovered ? 1_000 : 0));
     assertThat(sum()).isEqualTo((long) ACCOUNTS * BALANCE + (recovered ? 1_000 - 10 : 0));
   }
 
