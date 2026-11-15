@@ -34,6 +34,21 @@ public final class PromQLFunctions {
   }
 
   /**
+   * Whether the range function {@code function} answers anything for {@code series} (issue #11980). Prometheus emits NO sample for
+   * a series {@code rate()}/{@code increase()} cannot compute a rate for - fewer than two samples in the window - nor for one whose
+   * last two samples {@code irate()} cannot divide by; every other range function answers any series the selector returned.
+   * The window's samples are in timestamp order (see {@code evaluateMatrixSelector}).
+   */
+  public static boolean answers(final String function, final RangeSeries series) {
+    final List<double[]> values = series.values();
+    return switch (function) {
+      case "rate", "increase" -> values.size() >= 2 && values.getLast()[0] > values.getFirst()[0];
+      case "irate" -> values.size() >= 2 && values.getLast()[0] > values.get(values.size() - 2)[0];
+      default -> true;
+    };
+  }
+
+  /**
    * Per-second rate of increase, with counter-reset handling.
    * <p>
    * Extrapolates the sampled increase to the full matrix range window, matching Prometheus
