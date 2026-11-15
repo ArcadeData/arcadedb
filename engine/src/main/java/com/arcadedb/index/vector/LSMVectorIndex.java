@@ -4527,10 +4527,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
 
-        // Keep only delta entries inserted DURING the rebuild (vectorId >= snapshot)
+        // Keep the delta entries this build did not incorporate: the ones inserted DURING it (vectorId >= snapshot), and
+        // the ones before its snapshot that it could not read but are still live (issue #11962). A commit replays its
+        // vectors into the location index and the delta before its pages and records are published - on a Raft leader for
+        // the whole quorum round trip - so a build in that window finds neither, and validation drops the vector like a
+        // deleted one. Trimmed here as well, it was in neither the graph nor the delta once its commit completed, and no
+        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay).
+        final VectorLocationIndex liveLocations = vectorIndex();
         final List<DeltaVectorEntry> remaining = new ArrayList<>();
         for (final DeltaVectorEntry e : deltaVectors)
-          if (e.vectorId >= deltaSnapshotId)
+          if (e.vectorId >= deltaSnapshotId || (e.vector != null && Arrays.binarySearch(finalActiveVectorIds, e.vectorId) < 0
+              && liveLocations.isLive(e.vectorId)))
             remaining.add(e);
 
         // Entries inserted DURING the rebuild are genuinely pending: a later rebuild incorporates them, so they
