@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -249,6 +250,98 @@ class PaginatedComponentFileSyncStateTest {
   }
 
   @Test
+  void syncOfOneFileDoesNotWaitForAPassStuckOnAnotherFile() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    final ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      final PaginatedComponentFile stuck = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("stuck"));
+      final PaginatedComponentFile mine = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID + 1,
+          tempDir.resolve("mine." + (FILE_ID + 1) + "." + PAGE_SIZE + ".v0.arc").toString());
+      writePage(stuck, 0);
+      final ReentrantReadWriteLock channelLock = channelLock(stuck);
+
+      final Future<Boolean> pass;
+      channelLock.writeLock().lock();
+      try {
+        // A pass over every file (the WAL housekeeping's) gets stuck on one of them, holding the syncFiles() lock.
+        pass = executor.submit(fileManager::syncFiles);
+        awaitQueued(channelLock, 1);
+
+        // A writer that owes the durability of ANOTHER file only must not wait for that pass (issue #11932).
+        final AtomicReference<Thread> syncThread = new AtomicReference<>();
+        final Future<Boolean> sync = executor.submit(() -> {
+          syncThread.set(Thread.currentThread());
+          return fileManager.syncFile(FILE_ID + 1);
+        });
+        final ReentrantLock syncLock = syncLock(fileManager);
+        final StallAwareStopwatch wait = StallAwareStopwatch.start();
+        while (!sync.isDone()) {
+          assertThat(syncThread.get() != null && syncLock.hasQueuedThread(syncThread.get()))
+              .as("the sync of one file queued behind a pass over the other files (issue #11932)").isFalse();
+          wait.assertGaveUpWithin(30_000L, "a sync of one file that returns from one that never does");
+          Thread.sleep(1);
+        }
+        assertThat(sync.get()).isTrue();
+        assertThat(mine.isModifiedSinceLastSync()).isFalse();
+        assertThat(pass.isDone()).as("the pass is still stuck on the other file").isFalse();
+      } finally {
+        channelLock.writeLock().unlock();
+      }
+      assertThat(pass.get(30, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void syncOfOneFileWaitsForThePassForcingItAndSeesItsFailure() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    final ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("shared"));
+      writePage(file, 0);
+      final ReentrantReadWriteLock channelLock = channelLock(file);
+
+      final Future<Boolean> pass;
+      final Future<Boolean> sync;
+      final AtomicReference<Thread> syncThread = new AtomicReference<>();
+      channelLock.writeLock().lock();
+      try {
+        // The pass claims the file and queues behind the channel lock, its fsync not done yet.
+        pass = executor.submit(fileManager::syncFiles);
+        awaitQueued(channelLock, 1);
+
+        // The sync of that same file must not find it clean and report it durable: it waits for the pass's fsync.
+        sync = executor.submit(() -> {
+          syncThread.set(Thread.currentThread());
+          return fileManager.syncFile(FILE_ID);
+        });
+        final ReentrantLock forceLock = forceLock(file);
+        final StallAwareStopwatch wait = StallAwareStopwatch.start();
+        while (syncThread.get() == null || !forceLock.hasQueuedThread(syncThread.get())) {
+          assertThat(sync.isDone()).as("the sync returned while the pass's fsync of the file was still in flight").isFalse();
+          wait.assertGaveUpWithin(30_000L, "a sync that queues on the file's force lock from one that never does");
+          Thread.sleep(1);
+        }
+
+        // Now make the in-flight fsync fail, as #4934 does: channel closed underneath and the OS file gone.
+        breakFile(file);
+      } finally {
+        channelLock.writeLock().unlock();
+      }
+
+      assertThat(pass.get(30, TimeUnit.SECONDS)).isFalse();
+      assertThat(sync.get(30, TimeUnit.SECONDS))
+          .as("a sync that waited for a failed fsync of its file must not report the file durable").isFalse();
+      assertThat(file.isModifiedSinceLastSync()).isTrue();
+    } finally {
+      executor.shutdownNow();
+      fileManager.close();
+    }
+  }
+
+  @Test
   void concurrentWritesAndSyncsLoseNeitherPagesNorPendingState() throws Exception {
     final int writers = 4;
     final int syncers = 2;
@@ -351,9 +444,7 @@ class PaginatedComponentFileSyncStateTest {
    */
   private static void awaitQueuedOnSyncLock(final FileManager fileManager, final AtomicReference<Thread> thread,
       final Future<?> future) throws Exception {
-    final Field field = FileManager.class.getDeclaredField("syncLock");
-    field.setAccessible(true);
-    final ReentrantLock syncLock = (ReentrantLock) field.get(fileManager);
+    final ReentrantLock syncLock = syncLock(fileManager);
 
     final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
     while (thread.get() == null || !syncLock.hasQueuedThread(thread.get())) {
@@ -361,6 +452,18 @@ class PaginatedComponentFileSyncStateTest {
       assertThat(System.nanoTime()).as("the second sync never queued on the sync lock").isLessThan(deadline);
       Thread.sleep(1);
     }
+  }
+
+  private static ReentrantLock syncLock(final FileManager fileManager) throws Exception {
+    final Field field = FileManager.class.getDeclaredField("syncLock");
+    field.setAccessible(true);
+    return (ReentrantLock) field.get(fileManager);
+  }
+
+  private static ReentrantLock forceLock(final PaginatedComponentFile file) throws Exception {
+    final Field field = PaginatedComponentFile.class.getDeclaredField("forceLock");
+    field.setAccessible(true);
+    return (ReentrantLock) field.get(file);
   }
 
   private static void breakFile(final PaginatedComponentFile file) throws Exception {

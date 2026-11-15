@@ -362,7 +362,13 @@ public class FileManager {
   /**
    * Forces ONE file to disk when it was written, created or renamed since its last successful fsync, and its directory
    * when the file was created or renamed (issue #11805). For a writer that owes the durability of its own file only: the
-   * other files keep what they owe for the next {@link #syncFiles()}. Serialized with it, for the same reason.
+   * other files keep what they owe for the next {@link #syncFiles()}.
+   * <p>
+   * NOT serialized with {@link #syncFiles()} (issue #11932): a pass forces every file the database wrote, several
+   * hundred after a schema change, and a writer of one file waiting for all of it took seconds. The race that
+   * serialization prevents is per file, and {@link PaginatedComponentFile#forceIfModified()} serializes the claim and the
+   * fsync of each file: this call waits only when a pass is forcing this very file, and sees its outcome. The pass forces
+   * the directories after every file, so a file it already forced may still owe its directory entry: forced here then.
    *
    * @return {@code true} when the file is durable (or is not a paginated file of this database any more); {@code false}
    *     when its fsync failed
@@ -371,29 +377,27 @@ public class FileManager {
     if (!(fileIdMap.get(fileId) instanceof PaginatedComponentFile pcf))
       return true;
 
-    syncLock.lock();
     try {
       final int synced = pcf.forceIfModified();
-      if (synced != PaginatedComponentFile.SYNC_CLEAN) {
+      if (synced != PaginatedComponentFile.SYNC_CLEAN)
         syncedFiles.incrementAndGet();
-        if (synced == PaginatedComponentFile.SYNC_METADATA) {
-          final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-          if (parent != null)
-            FileUtils.forceDirectory(parent.toPath());
-        }
+      if (synced == PaginatedComponentFile.SYNC_METADATA || pcf.isDirectorySyncPending()) {
+        final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
+        if (parent != null)
+          FileUtils.forceDirectory(parent.toPath());
+        pcf.directorySynced();
       }
       return true;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, pcf.getFileName());
       return false;
-    } finally {
-      syncLock.unlock();
     }
   }
 
   private boolean syncFilesSerialized() {
     boolean allSynced = true;
     Set<Path> directoriesToSync = null;
+    List<PaginatedComponentFile> owingTheirDirectory = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
@@ -408,9 +412,12 @@ public class FileManager {
               // WHICH AN FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES
               final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
               if (parent != null) {
-                if (directoriesToSync == null)
+                if (directoriesToSync == null) {
                   directoriesToSync = new HashSet<>();
+                  owingTheirDirectory = new ArrayList<>();
+                }
                 directoriesToSync.add(parent.toPath());
+                owingTheirDirectory.add(pcf);
               }
             }
           }
@@ -421,9 +428,13 @@ public class FileManager {
       }
     }
 
-    if (directoriesToSync != null)
+    if (directoriesToSync != null) {
       for (final Path dir : directoriesToSync)
         FileUtils.forceDirectory(dir);
+      // #11932: A syncFile() OF ONE OF THESE FILES NO LONGER HAS TO FORCE ITS DIRECTORY ITSELF
+      for (final PaginatedComponentFile pcf : owingTheirDirectory)
+        pcf.directorySynced();
+    }
 
     return allSynced;
   }
