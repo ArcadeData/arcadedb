@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -111,7 +112,8 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
         } finally {
           readDone.countDown();
         }
-        commitNow.await();
+        if (!commitNow.await(WAIT_S, TimeUnit.SECONDS))
+          throw new IllegalStateException("the apply did not reach its hook within " + WAIT_S + "s");
         vertex(a).newEdge("E", readB.get());
         database.commit();
       } catch (final Throwable e) {
@@ -124,11 +126,12 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
     }, "first");
     thread.start();
     try {
-      readDone.await();
+      assertThat(readDone.await(WAIT_S, TimeUnit.SECONDS)).as("the first transaction read b").isTrue();
       applyReplicatedRewriteOfPageOf(b);
     } finally {
       commitNow.countDown();
-      thread.join();
+      thread.join(TimeUnit.SECONDS.toMillis(WAIT_S));
+      assertThat(thread.isAlive()).as("the first transaction finished").isFalse();
     }
 
     assertThat(committedDuringApply.get()).as("the commit ran while the entry was being applied").isTrue();
@@ -168,7 +171,9 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
 
   private void assertNoRelationship(final RID a, final RID b) {
     database.transaction(() -> {
-      assertThat(database.countType("E", false)).isZero();
+      try (final ResultSet result = database.query("sql", "SELECT count(*) AS c FROM E")) {
+        assertThat(result.next().<Number>getProperty("c").longValue()).isZero();
+      }
       assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
       assertThat(neighbours(a, Vertex.DIRECTION.OUT)).isEmpty();
     });
@@ -193,7 +198,8 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
         } finally {
           firstStarted.countDown();
         }
-        secondDone.await();
+        if (!secondDone.await(WAIT_S, TimeUnit.SECONDS))
+          throw new IllegalStateException("the second step did not finish within " + WAIT_S + "s");
         then.run();
         database.commit();
       } catch (final Throwable e) {
@@ -203,12 +209,13 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
       }
     }, "first");
     thread.start();
-    firstStarted.await();
+    assertThat(firstStarted.await(WAIT_S, TimeUnit.SECONDS)).as("the first transaction started").isTrue();
     try {
       second.run();
     } finally {
       secondDone.countDown();
-      thread.join();
+      thread.join(TimeUnit.SECONDS.toMillis(WAIT_S));
+      assertThat(thread.isAlive()).as("the first transaction finished").isFalse();
     }
     return failure.get();
   }

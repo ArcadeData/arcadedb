@@ -25,12 +25,14 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -43,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with a retryable conflict again, as it was before #11498 and as it still is with the slot merge off.
  */
 class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
+  private static final long WAIT_S = 30;
 
   @Override
   protected void beginTest() {
@@ -80,7 +83,7 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
     assertThat(replacement.get()).as("the new vertex reuses the RID of the deleted one").isEqualTo(b);
     assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
     database.transaction(() -> {
-      assertThat(database.countType("E", false)).isZero();
+      assertThat(edgeCount()).isZero();
       assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
     });
   }
@@ -204,7 +207,7 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
     assertThat(replacement.get()).as("the new vertex reuses the RID of the deleted one").isEqualTo(b);
     assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
     database.transaction(() -> {
-      assertThat(database.countType("E", false)).isZero();
+      assertThat(edgeCount()).isZero();
       assertThat(neighbours(a, Vertex.DIRECTION.OUT)).isEmpty();
       assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
       assertThat(vertex(b).getString("name")).isEqualTo(replacementName);
@@ -239,7 +242,8 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
         } finally {
           firstStarted.countDown();
         }
-        secondCommitted.await();
+        if (!secondCommitted.await(WAIT_S, TimeUnit.SECONDS))
+          throw new IllegalStateException("the second step did not finish within " + WAIT_S + "s");
         then.run();
         database.commit();
       } catch (final Throwable e) {
@@ -249,14 +253,22 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
       }
     }, "first");
     thread.start();
-    firstStarted.await();
+    assertThat(firstStarted.await(WAIT_S, TimeUnit.SECONDS)).as("the first transaction started").isTrue();
     try {
       second.run();
     } finally {
       secondCommitted.countDown();
-      thread.join();
+      thread.join(TimeUnit.SECONDS.toMillis(WAIT_S));
+      assertThat(thread.isAlive()).as("the first transaction finished").isFalse();
     }
     return failure.get();
+  }
+
+  /** The relationships in the type, counted by a query rather than read from the bucket record counter. */
+  private long edgeCount() {
+    try (final ResultSet result = database.query("sql", "SELECT count(*) AS c FROM E")) {
+      return result.next().<Number>getProperty("c").longValue();
+    }
   }
 
   private RID newVertex(final String name) {
