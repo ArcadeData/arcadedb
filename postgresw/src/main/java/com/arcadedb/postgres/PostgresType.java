@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
@@ -599,6 +600,8 @@ public enum PostgresType {
   }
 
   public static PostgresType getTypeForValue(Object val) {
+    // a Cypher date, time or datetime is typed as the java.time value it wraps, as SQL reads the same property (issue #11955)
+    val = CypherTemporalValue.toJavaTime(val);
     if (val == null) {
       return PostgresType.VARCHAR;
     } else if (val instanceof Float) {
@@ -789,7 +792,8 @@ public enum PostgresType {
    * column in text format, and what {@code COPY ... TO STDOUT} in text or CSV format escapes and delimits
    * (issue #7188). Null for a SQL NULL.
    */
-  public String toText(final PostgresType pgType, final Object value) {
+  public String toText(final PostgresType pgType, final Object rawValue) {
+    final Object value = CypherTemporalValue.toJavaTime(rawValue);
     String serializedValue = null;
     final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
     if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
@@ -848,7 +852,8 @@ public enum PostgresType {
    * Used when a client requests binary results via Bind message format codes. Types without a
    * binary mapping fall back to {@link #serializeAsText}.
    */
-  public void serializeAsBinary(final PostgresType pgType, final Binary typeBuffer, final Object value) {
+  public void serializeAsBinary(final PostgresType pgType, final Binary typeBuffer, final Object rawValue) {
+    final Object value = CypherTemporalValue.toJavaTime(rawValue);
     if (value == null) {
       typeBuffer.putInt(-1);
       return;

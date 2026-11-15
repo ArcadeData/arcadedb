@@ -28,12 +28,8 @@ import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
-import com.arcadedb.query.opencypher.temporal.CypherDate;
-import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
-import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.CollectionUtils;
@@ -472,7 +468,8 @@ public class BoltStructureMapper {
    * (Date, Time, LocalTime, LocalDateTime, Duration) are version-invariant and stay on {@link BoltTemporalStructure}.
    */
   static PackStreamStructure toTemporalStructure(final Object rawValue) {
-    final Object value = unwrapCypherTemporal(rawValue);
+    // a CypherDuration stays as it is and is emitted as a SIG_DURATION struct below
+    final Object value = CypherTemporalValue.toJavaTime(rawValue);
 
     if (value instanceof LocalDate d)
       return new BoltTemporalStructure(SIG_DATE, d.toEpochDay());
@@ -516,23 +513,6 @@ public class BoltStructureMapper {
     // localEpoch: wall clock treated as UTC (legacy basis). utcEpoch: the true instant (5.0+ basis).
     return BoltDateTimeStructure.offset(local.toEpochSecond(ZoneOffset.UTC), local.toEpochSecond(offset),
         local.getNano(), offset.getTotalSeconds());
-  }
-
-  private static Object unwrapCypherTemporal(final Object value) {
-    if (value instanceof CypherDate d)
-      return d.getValue();
-    if (value instanceof CypherLocalTime t)
-      return t.getValue();
-    if (value instanceof CypherTime t)
-      return t.getValue();
-    if (value instanceof CypherLocalDateTime ldt)
-      return ldt.getValue();
-    if (value instanceof CypherDateTime dt)
-      return dt.getValue();
-    // NOTE: CypherDuration is intentionally not unwrapped to a java.time value - Bolt has a native Duration
-    // struct but there is no single java.time type for it (months + days + seconds together). It is matched
-    // directly as CypherDuration in toTemporalStructure below and emitted as a SIG_DURATION struct.
-    return value;
   }
 
   /**

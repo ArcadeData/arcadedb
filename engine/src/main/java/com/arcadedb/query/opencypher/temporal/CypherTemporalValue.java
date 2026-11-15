@@ -30,4 +30,21 @@ public interface CypherTemporalValue extends Comparable<CypherTemporalValue> {
    * For example, date.year, time.hour, duration.months, etc.
    */
   Object getTemporalProperty(String name);
+
+  /**
+   * The {@code java.time} value a Cypher date, time or datetime wraps, or {@code value} itself for anything else. The one conversion
+   * the wire protocols (Bolt, gRPC, Postgres) apply before they encode a value, so a property read through Cypher is sent as the
+   * same type as through SQL (issue #11955). A {@link CypherDuration} is returned as is: no single {@code java.time} type holds
+   * its months, days and seconds, and each protocol has its own encoding for it.
+   */
+  static Object toJavaTime(final Object value) {
+    return switch (value) {
+      case CypherDate date -> date.getValue();
+      case CypherLocalDateTime localDateTime -> localDateTime.getValue();
+      case CypherDateTime dateTime -> dateTime.getValue();
+      case CypherLocalTime localTime -> localTime.getValue();
+      case CypherTime time -> time.getValue();
+      case null, default -> value;
+    };
+  }
 }
