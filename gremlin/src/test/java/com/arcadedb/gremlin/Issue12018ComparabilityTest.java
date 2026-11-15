@@ -1,0 +1,122 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.gremlin;
+
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.apache.tinkerpop.gremlin.process.traversal.P;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.util.GremlinValueComparator;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #12018: ArcadeDB's copy of {@link GremlinValueComparator} lacked two rules of TinkerPop 3.8.2's {@code comparable()}:
+ * NaN is not comparable, and two lists, sets or maps are comparable only when their contents are. {@code lt/lte/gt/gte} raised
+ * {@code IllegalStateException} instead of answering false, so a single stored NaN made every range {@code has()} on the
+ * property fail, and two maps whose values are not comparable compared as ordered. The deliberate date handling of the copy
+ * (every date/time class compared by the instant it denotes) stays.
+ */
+class Issue12018ComparabilityTest {
+  private ArcadeGraph graph;
+
+  @BeforeEach
+  void setup() {
+    graph = ArcadeGraph.open("./target/testgremlin-12018");
+    graph.getDatabase().getSchema().createVertexType("P");
+    graph.getDatabase().transaction(() -> {
+      graph.getDatabase().newVertex("P").set("n", 1).set("x", 2.5).save();
+      graph.getDatabase().newVertex("P").set("n", 2).set("x", 0.5).save();
+      graph.getDatabase().newVertex("P").set("n", 3).set("x", Double.NaN).save();
+    });
+  }
+
+  @AfterEach
+  void teardown() {
+    if (graph != null)
+      graph.drop();
+  }
+
+  @Test
+  void aStoredNaNDoesNotBreakARangeFilter() {
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.V().has("x", P.gt(1)).values("n").toList()).containsExactly(1);
+    assertThat(g.V().has("x", P.lt(1)).values("n").toList()).containsExactly(2);
+    assertThat(g.V().hasLabel("P").has("x", P.gte(0)).values("n").toList()).containsExactlyInAnyOrder(1, 2);
+    assertThat(g.V().has("x", P.between(0, 3)).count().next()).isEqualTo(2L);
+    try (final ResultSet rs = graph.gremlin("g.V().has('x', gt(1)).count()").execute()) {
+      assertThat(rs.next().<Long>getProperty("result")).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void nanIsNeitherLessNorGreater() {
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.inject(Double.NaN).is(P.lt(1)).count().next()).isZero();
+    assertThat(g.inject(1).is(P.gt(Double.NaN)).count().next()).isZero();
+    assertThat(g.inject(Double.NaN).is(P.lte(Double.NaN)).count().next()).isZero();
+    assertThat(g.inject(Double.NaN).is(P.eq(Double.NaN)).count().next()).isZero();
+    assertThat(g.inject(Double.NaN).is(P.neq(1)).count().next()).isEqualTo(1L);
+  }
+
+  @Test
+  void collectionsWithIncomparableContentsAreNotOrdered() {
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.inject(List.of(1, "a")).is(P.lt(List.of(1, 2))).count().next()).isZero();
+    assertThat(g.inject(List.of(1, 2)).is(P.gte(List.of(1, "a"))).count().next()).isZero();
+    assertThat(g.inject(Set.of(1, 2)).is(P.lt(Set.of("a", 1))).count().next()).isZero();
+    assertThat(g.inject(Map.of("a", "x")).is(P.gt(Map.of("a", 1))).count().next()).isZero();
+    // THE KEYS DIFFER BUT THE VALUES ARE NOT COMPARABLE: NOT ORDERED EITHER (WAS lt = true)
+    assertThat(g.inject(Map.of("a", "x")).is(P.lt(Map.of("b", 1))).count().next()).isZero();
+    // COMPARABLE CONTENTS STILL ORDER ELEMENT BY ELEMENT
+    assertThat(g.inject(List.of(1, 2)).is(P.lt(List.of(1, 3))).count().next()).isEqualTo(1L);
+    assertThat(g.inject(Map.of("a", 1)).is(P.lt(Map.of("a", 2))).count().next()).isEqualTo(1L);
+  }
+
+  @Test
+  void dateClassesStillCompareByInstant() {
+    final OffsetDateTime offset = OffsetDateTime.parse("2020-01-01T00:00:00Z");
+    final Date date = Date.from(offset.toInstant());
+    final LocalDateTime local = LocalDateTime.parse("2020-01-01T00:00:00");
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(date, offset)).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(local, date)).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.compare(date, Date.from(offset.toInstant().plusSeconds(1)))).isNegative();
+    assertThat(GremlinValueComparator.comparable(local, offset)).isTrue();
+  }
+
+  @Test
+  void comparableFollowsTinkerPop() {
+    assertThat(GremlinValueComparator.comparable(Double.NaN, 1)).isFalse();
+    assertThat(GremlinValueComparator.comparable(List.of(1, "a"), List.of(1, 2))).isFalse();
+    assertThat(GremlinValueComparator.comparable(List.of(1, 2), List.of(1L, 2.5))).isTrue();
+    // AN ARRAY IS A LIST TO ORDER, AS IN TINKERPOP, BUT ITS HASH CODE TELLS IT APART FROM A LIST FOR eq, AS IN TINKERPOP
+    assertThat(GremlinValueComparator.comparable(new int[] { 1, 2 }, List.of(1, 2))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.compare(new int[] { 1, 2 }, List.of(1, 3))).isNegative();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new int[] { 1, 2 }, List.of(1, 2))).isFalse();
+  }
+}
