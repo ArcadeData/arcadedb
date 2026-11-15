@@ -1450,7 +1450,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private <T> T publishOutsideTheLog(final Callable<T> commit) throws Exception {
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
-    return stateMachine != null ? stateMachine.publishOutsideTheLog(getName(), commit) : commit.call();
+    return stateMachine != null ? stateMachine.publishOutsideTheLog(proxied, commit) : commit.call();
   }
 
   /**

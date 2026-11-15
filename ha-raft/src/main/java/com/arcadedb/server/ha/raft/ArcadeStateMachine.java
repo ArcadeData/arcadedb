@@ -4124,9 +4124,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.release(databaseName, null, walData);
   }
 
-  /** Runs a commit that publishes its pages here ahead of the log under the validation of the database, see {@link PageVersionLedger#publishOutsideTheLog}. */
-  <T> T publishOutsideTheLog(final String databaseName, final Callable<T> commit) throws Exception {
-    return pageVersions.publishOutsideTheLog(databaseName, commit);
+  /**
+   * Runs a commit that publishes its pages here ahead of the log under the validation of the database, see
+   * {@link PageVersionLedger#publishOutsideTheLog}. The ledger's reservation hook is installed on the database first: the
+   * commit takes the validation lock at its first version check, through that hook, and a database no entry was validated
+   * on yet has none, so the commit would check and publish without the lock (issue #11921).
+   */
+  <T> T publishOutsideTheLog(final DatabaseInternal db, final Callable<T> commit) throws Exception {
+    installReservations(db);
+    return pageVersions.publishOutsideTheLog(db.getName(), commit);
   }
 
   /**
@@ -4167,13 +4173,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs
-   * the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
-   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}).
+   * Installs the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
+   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}), and a commit
+   * {@link #publishOutsideTheLog} runs takes the validation lock at its first version check.
    */
-  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+  private void installReservations(final DatabaseInternal db) {
     if (db.getEmbedded() instanceof LocalDatabase local && !(local.getPageVersionReservations() instanceof LedgerReservations))
       local.setPageVersionReservations(new LedgerReservations(local.getName(), raftHAServer, this));
+  }
+
+  /** The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs the ledger. */
+  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+    installReservations(db);
 
     final FileManager fileManager = db.getFileManager();
     final PageManager pageManager = db.getPageManager();
