@@ -62,6 +62,13 @@ public class PostgresPortal {
    */
   public boolean                   columnsDescribed     = false;
   /**
+   * True when {@link #columns} is the layout a {@code Describe('P')} of one portal of this statement took from that portal's rows
+   * (issue #11838), rather than one the schema names. Such a layout types an undeclared property from the values it held, so it
+   * stays true only for rows of the same types: a later portal executed under it without a Describe of its own is first checked
+   * against it, and refused as PostgreSQL refuses a cached plan whose result type changed when it does not fit.
+   */
+  public boolean                   columnsFromRows      = false;
+  /**
    * True when a {@code Describe('S')} of this statement answered {@code NoData}: a promise that its portals return no
    * result set, which {@code executeCommand()} must keep, because a DataRow is only legal after a RowDescription and
    * Execute never sends one (issue #8379). Set on the prepared-statement template; a bound portal reads it through
@@ -234,6 +241,7 @@ public class PostgresPortal {
     portal.fullResultSet = readOnly(template.fullResultSet);
     portal.columns = template.columns;
     portal.columnsDescribed = template.columnsDescribed;
+    portal.columnsFromRows = template.columnsFromRows;
     portal.statement = template;
     portal.queryTargetType = template.queryTargetType;
     portal.queryTargetTypeResolved = template.queryTargetTypeResolved;
