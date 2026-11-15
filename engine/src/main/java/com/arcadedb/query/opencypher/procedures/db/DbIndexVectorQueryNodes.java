@@ -98,7 +98,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   public static final String NAME = "db.index.vector.querynodes";
   /** {@link #NAME} is lower-cased for registry lookup; error messages quote the call the way the caller wrote it. */
   private static final String DISPLAY_NAME = "db.index.vector.queryNodes";
-  private static final Set<String> OPTIONS = Set.of("where", "filter");
+  private static final Set<String> OPTIONS = Set.of("where", "filter", "efSearch", "rerank");
 
   @Override
   public String getName() {
@@ -118,7 +118,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   @Override
   public String getDescription() {
     return "Performs approximate nearest neighbor vector search using an HNSW index (Neo4j-compatible), optionally pre-filtered "
-        + "by an options map {where: <map or condition>, filter: [<node or rid>, ...]}";
+        + "and tuned by an options map {where: <map or condition>, filter: [<node or rid>, ...], efSearch: <int>, rerank: <int>}";
   }
 
   @Override
@@ -156,7 +156,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * (issue #10782). Each becomes the allow-list the indexes test every candidate against; given together, a candidate must
    * satisfy both.
    *
-   * @param options the {@code {where, filter}} map of the procedure's fourth argument, {@code null} for none
+   * @param options the {@code {where, filter, efSearch, rerank}} map of the procedure's fourth argument, {@code null} for none
    */
   private static List<Result> search(final String indexSpec, final Object kArg, Object vectorArg, final Object options,
       final Predicate<Document> filter, final CommandContext context, final String caller) {
@@ -172,7 +172,8 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
     // Resolved after the index, so a bad index spec stays loud. A filter that matched nothing is not "no filter": no record can
     // satisfy it (issue #8959)
-    final Set<RID> optionRIDs = parseOptions(options, context);
+    final SearchOptions searchOptions = parseOptions(options, context);
+    final Set<RID> optionRIDs = searchOptions.allowedRIDs();
     if (optionRIDs != null && optionRIDs.isEmpty())
       return List.of();
 
@@ -198,23 +199,41 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // graph build (issue #9896)
     final WorkGuard guard = WorkGuard.forCommand(context, caller);
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, allowedRIDs, guard,
-            staleSkipped, saturated));
+        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, searchOptions.efSearch(),
+            searchOptions.rerank(), allowedRIDs, guard, staleSkipped, saturated));
   }
 
   /**
-   * Reads the optional options map into the allow-list the index tests each candidate against, exactly as
-   * {@code vector.neighbors} reads its own {@code where} and {@code filter} (issue #10685). {@code null} or an empty map is
-   * the three-argument form.
+   * The procedure's options: the allow-list ({@code null} for none), and the search breadth and re-rank depth as
+   * {@code vector.neighbors} takes them ({@code -1} for the index's own).
    */
-  private static Set<RID> parseOptions(final Object options, final CommandContext context) {
+  private record SearchOptions(Set<RID> allowedRIDs, int efSearch, int rerank) {
+    private static final SearchOptions NONE = new SearchOptions(null, -1, -1);
+  }
+
+  /**
+   * Reads the optional options map exactly as {@code vector.neighbors} reads the same keys: {@code where} and {@code filter}
+   * into the allow-list the index tests each candidate against (issue #10685), {@code efSearch} into the breadth of the graph
+   * walk and {@code rerank} into the candidates per neighbour a PRODUCT or BINARY index scores again on the stored vectors.
+   * Without {@code efSearch} the procedure could only widen the walk by asking for more rows than it wanted, so the same
+   * index answered a Cypher caller with lower recall than a SQL one. {@code null} or an empty map is the three-argument form.
+   */
+  private static SearchOptions parseOptions(final Object options, final CommandContext context) {
     if (options == null)
-      return null;
+      return SearchOptions.NONE;
     if (!(options instanceof Map<?, ?> map))
       throw new CommandSQLParsingException(
           DISPLAY_NAME + "(): options must be a map such as {where: {tenant: $tenant}}, got " + options.getClass().getSimpleName());
     final FunctionOptions opts = new FunctionOptions(DISPLAY_NAME, map, OPTIONS);
-    return SQLFunctionVectorAbstract.parsePreFilter(opts.getList("filter"), opts.get("where"), DISPLAY_NAME, context);
+    final int efSearch = opts.getInt("efSearch", -1);
+    if (opts.get("efSearch") != null && efSearch < 1)
+      throw new CommandSQLParsingException(DISPLAY_NAME + "(): efSearch must be >= 1, got " + efSearch);
+    final int rerank = opts.getInt("rerank", -1);
+    if (opts.get("rerank") != null && rerank < 0)
+      throw new CommandSQLParsingException(DISPLAY_NAME + "(): rerank must be >= 0, got " + rerank);
+    final Set<RID> allowedRIDs = SQLFunctionVectorAbstract.parsePreFilter(opts.getList("filter"), opts.get("where"), DISPLAY_NAME,
+        context);
+    return new SearchOptions(allowedRIDs, efSearch, rerank);
   }
 
   /**
@@ -222,13 +241,14 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * records, counting in {@code staleSkipped} the candidates whose record no longer exists.
    */
   private static List<Result> searchAndLoad(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final Set<RID> allowedRIDs, final WorkGuard guard, final int[] staleSkipped, final boolean[] saturated) {
+      final int fetchK, final int efSearch, final int rerank, final Set<RID> allowedRIDs, final WorkGuard guard,
+      final int[] staleSkipped, final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      // The search vector.neighbors takes by default: a PRODUCT index walks on its PQ codes and re-ranks as its rerankOversample
-      // says (issue #10514), any other quantization walks exactly
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, -1, -1, allowedRIDs, guard);
+      // The search vector.neighbors takes: a PRODUCT index walks on its PQ codes and re-ranks as rerank (or its rerankOversample)
+      // says (issue #10514), any other quantization walks exactly, as wide as efSearch (or the index's default) says
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, efSearch, rerank, allowedRIDs, guard);
       allNeighbors.addAll(neighbors);
       if (neighbors.size() >= fetchK)
         saturated[0] = true;
