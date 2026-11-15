@@ -95,10 +95,8 @@ class AlgoMaxFlowTest {
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
     final Object val = result.getProperty("maxFlow");
-    // Flow is undirected in our model: S->A->T and S->B->T give 20, but reversed edges add more
-    // With undirected handling, each edge adds capacity in both directions
-    // So we verify it's positive and >= 10 (at least one path found)
-    assertThat(((Number) val).doubleValue()).isGreaterThan(0.0);
+    // S->A->T and S->B->T, 10 each.
+    assertThat(((Number) val).doubleValue()).isEqualTo(20.0);
   }
 
   @Test

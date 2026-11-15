@@ -30,17 +30,23 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.maxFlow(sourceNode, sinkNode, relTypes?, capacityProperty?)
+ * Procedure: algo.maxFlow(sourceNode, sinkNode, relTypes?, capacityProperty?, direction?)
  * <p>
  * Computes the maximum flow between two nodes using the Edmonds-Karp algorithm
  * (BFS-based Ford-Fulkerson). Returns the maximum flow value along with source
  * and sink node identities.
  * </p>
  * <p>
+ * {@code direction} (default {@code OUT}) sets which way each relationship carries flow: {@code OUT} along the
+ * relationship (from its start node to its end node), {@code IN} against it, {@code BOTH} in either direction
+ * (undirected, each direction with the full capacity). Parallel relationships add their capacities; self loops
+ * carry no flow. Any other value is refused.
+ * </p>
+ * <p>
  * Example:
  * <pre>
  * MATCH (s:Station {name:'A'}), (t:Station {name:'Z'})
- * CALL algo.maxFlow(s, t, 'PIPE', 'capacity')
+ * CALL algo.maxFlow(s, t, 'PIPE', 'capacity', 'OUT')
  * YIELD maxFlow, sourceId, sinkId
  * RETURN maxFlow
  * </pre>
@@ -63,12 +69,12 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 4;
+    return 5;
   }
 
   @Override
   public String getDescription() {
-    return "Computes maximum flow between two nodes using the Edmonds-Karp algorithm";
+    return "Computes maximum flow between two nodes using the Edmonds-Karp algorithm, along relationship direction (OUT default, IN or BOTH)";
   }
 
   @Override
@@ -84,6 +90,7 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
     final Vertex sinkNode         = extractVertex(args[1], "sinkNode");
     final String[] relTypes       = extractRelTypes(argOrDefault(args, 2, null), context);
     final String capacityProperty = extractString(argOrDefault(args, 3, null), "capacityProperty");
+    final Vertex.DIRECTION direction = extractDirection(argOrDefault(args, 4, null), Vertex.DIRECTION.OUT);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -121,10 +128,13 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
       final double[] rowWeights = weights[i];
       for (int k = 0; k < row.length; k++) {
         final int j = row[k];
+        if (i == j)
+          continue; // a self loop carries no flow
         final double cap = rowWeights[k];
-        capacity[i][j] += cap;
-        // For undirected: also add reverse capacity
-        capacity[j][i] += cap;
+        if (direction != Vertex.DIRECTION.IN)
+          capacity[i][j] += cap;
+        if (direction != Vertex.DIRECTION.OUT)
+          capacity[j][i] += cap;
       }
     }
 

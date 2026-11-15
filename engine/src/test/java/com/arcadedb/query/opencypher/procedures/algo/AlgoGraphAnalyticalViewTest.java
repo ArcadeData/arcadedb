@@ -325,8 +325,34 @@ class AlgoGraphAnalyticalViewTest {
       }
     }
 
+    @Test
+    void maxFlowFollowsDirectionOnOLTPAndCSR() {
+      // Issue #11910: a single S->T edge carries no flow from T to S unless direction is IN or BOTH.
+      database.transaction(() -> node("S").newEdge("E", node("T"), true, new Object[] { "w", 5.0 }).save());
+
+      assertThat(maxFlowValue(newContext(), "T", "S", null)).isEqualTo(0.0);
+      assertThat(maxFlowValue(newContext(), "T", "S", "BOTH")).isEqualTo(5.0);
+
+      final GraphAnalyticalView view = buildView("maxflow-dir-view");
+      try {
+        final BasicCommandContext csrContext = newContext();
+        assertThat(maxFlowValue(csrContext, "T", "S", null)).isEqualTo(0.0);
+        assertCSRAccelerated(csrContext);
+        assertThat(maxFlowValue(newContext(), "S", "T", null)).isEqualTo(5.0);
+        assertThat(maxFlowValue(newContext(), "T", "S", "IN")).isEqualTo(5.0);
+        assertThat(maxFlowValue(newContext(), "T", "S", "BOTH")).isEqualTo(5.0);
+      } finally {
+        view.drop();
+      }
+    }
+
     private double maxFlowValue(final CommandContext context) {
-      final List<Result> rows = drain(new AlgoMaxFlow().execute(new Object[] { named("S"), named("T"), null, "w" }, null, context));
+      return maxFlowValue(context, "S", "T", null);
+    }
+
+    private double maxFlowValue(final CommandContext context, final String from, final String to, final String direction) {
+      final List<Result> rows = drain(
+          new AlgoMaxFlow().execute(new Object[] { named(from), named(to), null, "w", direction }, null, context));
       assertThat(rows).hasSize(1);
       return rows.getFirst().<Number>getProperty("maxFlow").doubleValue();
     }
