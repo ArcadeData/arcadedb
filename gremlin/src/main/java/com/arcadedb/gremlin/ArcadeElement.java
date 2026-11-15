@@ -89,13 +89,29 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
       }
     } else {
       props = new ArrayList<>(propertyKeys.length);
-      for (final String p : propertyKeys) {
+      for (int i = 0; i < propertyKeys.length; i++) {
+        final String p = propertyKeys[i];
+        if (isRepeatedKey(propertyKeys, i))
+          continue;
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(value);
       }
     }
     return props.iterator();
+  }
+
+  /**
+   * Whether the key at {@code index} was already named earlier in {@code keys}: {@code values()} and {@code properties()} return
+   * each property of the element once, however many times its key is named, as TinkerPop's reference graph does (issue #12026).
+   * A linear scan: the key list of a step is a handful of names.
+   */
+  protected static boolean isRepeatedKey(final String[] keys, final int index) {
+    final String key = keys[index];
+    for (int i = 0; i < index; i++)
+      if (key.equals(keys[i]))
+        return true;
+    return false;
   }
 
   @Override

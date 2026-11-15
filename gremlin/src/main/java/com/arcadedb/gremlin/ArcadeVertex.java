@@ -205,7 +205,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
       }
     } else {
       props = new ArrayList<>(propertyKeys.length);
-      for (final String p : propertyKeys) {
+      for (int i = 0; i < propertyKeys.length; i++) {
+        final String p = propertyKeys[i];
+        if (isRepeatedKey(propertyKeys, i))
+          continue;
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeVertexProperty<>(this, p, value));
