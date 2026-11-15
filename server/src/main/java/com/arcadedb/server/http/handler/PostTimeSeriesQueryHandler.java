@@ -331,7 +331,7 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
       final JSONArray values = new JSONArray();
       for (int r = 0; r < requests.size(); r++)
         // NOT values.put(double): an absent MIN/MAX answers NaN, which that overload rewrites to 0.
-        putSampleValue(values, aggResult.getValue(ts, r));
+        putSampleValue(values, aggResult.getWireValue(ts, r));
       bucket.put("values", values);
       buckets.put(bucket);
     }
