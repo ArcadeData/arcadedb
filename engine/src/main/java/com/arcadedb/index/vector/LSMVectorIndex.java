@@ -4531,12 +4531,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // vectors into the location index and the delta before its pages and records are published - on a Raft leader for
         // the whole quorum round trip - so a build in that window finds neither, and validation drops the vector like a
         // deleted one. Trimmed here as well, it was in neither the graph nor the delta once its commit completed, and no
-        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay).
+        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay). A vector the
+        // build leaves out by its value - one this index cannot score, such as an all-zero placeholder under COSINE - is
+        // not kept: the delta scan would score it as NaN, which is why the graph leaves it out in the first place.
         final VectorLocationIndex liveLocations = vectorIndex();
         final List<DeltaVectorEntry> remaining = new ArrayList<>();
         for (final DeltaVectorEntry e : deltaVectors)
           if (e.vectorId >= deltaSnapshotId || (e.vector != null && Arrays.binarySearch(finalActiveVectorIds, e.vectorId) < 0
-              && liveLocations.isLive(e.vectorId)))
+              && liveLocations.isLive(e.vectorId) && e.vector.length() == metadata.dimensions && !isUnscorable(e.vector)))
             remaining.add(e);
 
         // Entries inserted DURING the rebuild are genuinely pending: a later rebuild incorporates them, so they
