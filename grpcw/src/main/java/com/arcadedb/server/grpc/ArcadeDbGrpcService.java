@@ -581,6 +581,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // transaction's thread, so the slot goes with it there, where a forward to the leader or a wait on an explicit lock
     // gives it back (issue #10140). Left behind, those releases read an empty thread and hold the slot for the whole wait
     final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+    // The call's read consistency, read here for the same reason, and applied on the transaction's thread, where the
+    // statement reads (issue #11948)
+    final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -590,12 +593,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // where GrpcProtocolContextInterceptor tags the work, and RaftReplicatedDatabase tells a client from the
         // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
         ProtocolContext.set(GRPC_PROTOCOL);
+        if (readConsistency != null)
+          readConsistency.applyTo(txCtx.db);
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
         final QueryAdmissionGate.Adoption adoption = admission.adopt();
         try {
           return task.call();
         } finally {
           adoption.close();
+          if (readConsistency != null)
+            readConsistency.clear();
           if (binding != null)
             binding.close();
           if (runningQuery != null && runningQuery.isTerminated())
@@ -2113,6 +2120,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
       // submitToActiveTransaction
       final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+      // The response carries the read-your-writes bookmark of this commit (issue #11948)
+      final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+      if (readConsistency != null)
+        readConsistency.bind(txCtx.db);
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
         // A statement of this transaction was terminated while this commit waited behind it: what it wrote was rolled
@@ -6076,6 +6087,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         DatabaseContext.INSTANCE.init((DatabaseInternal) db);
 
         bindPrincipalToCurrentThread(db, resolvedUsername(credentials));
+
+        // The call's read consistency, on the thread that runs its statements, and the database whose applied index
+        // its response carries (issue #11948). GrpcReadConsistencyInterceptor clears it when the callback ends
+        final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+        if (readConsistency != null)
+          readConsistency.applyTo(db);
 
         return db;
       }
