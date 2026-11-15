@@ -301,6 +301,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile long                      globalAppliedIndex   = -1;
   private volatile boolean                   appliedIndexLoaded   = false;
   private final    Object                    appliedIndexFileLock = new Object();
+  // The index of the INSTALL_DATABASE_ENTRY that created the copy of each database this node holds (issue #11919), kept
+  // beside the per-database applied index, in the same file and under the same lock, and evicted with it by a drop. An
+  // entry naming the database at a LOWER index belongs to an incarnation a drop removed and that create replaced: a replay
+  // from a snapshot marker older than the drop must not apply it to the copy the later create made.
+  private final    Map<String, Long>         createdIndexByDb     = new ConcurrentHashMap<>();
   // Which writes of the applied-index file are fsynced (issue #11517), both guarded by appliedIndexFileLock: whether
   // the file on disk carries a quarantine or a read floor (so the write that clears them must be durable too), and
   // whether this instance has made one durable write yet (the file's existence is what the offline-bootstrap gate reads)
@@ -2128,8 +2133,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
       }
 
+      // An entry of an incarnation of this database that a drop removed and a later create replaced (issue #11919): the
+      // replay of a log from a snapshot marker older than that drop. Its effect is superseded by the drop, and applied it
+      // would reach the copy the later create made - the old create is skipped because the name exists, its schema
+      // entries reload the old schema over the new files, and its drop renames the new copy away. Skipped like an entry
+      // the copy already carries (issue #8579): nothing is applied, the applied position still advances.
+      final boolean ofEarlierIncarnation = !namesNoDatabase && isOfEarlierIncarnation(decoded.databaseName(), index);
+
       // Not applied to a copy an install is replacing (issue #7958): see installApplyGates.
-      final InstallApplyGate installGate = enterInstallApplyGate(decoded.databaseName(), index);
+      final InstallApplyGate installGate = ofEarlierIncarnation ? null : enterInstallApplyGate(decoded.databaseName(), index);
       if (installGate != null && index <= installGate.installedIndex()) {
         // Covered by a snapshot an install already brought this database's copy to (issue #8577): this is either
         // this node's own pre-install local log being replayed after a restart, or a duplicate notification.
@@ -2174,7 +2186,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       };
       boolean staleNoDatabaseEntry = false;
       try {
-        if (carriedByServedCopy)
+        if (ofEarlierIncarnation)
+          logEntryOfEarlierIncarnation(decoded, index);
+        else if (carriedByServedCopy)
           LogManager.instance().log(this, Level.FINE,
               "Not re-applying entry %d to database '%s': the copy installed from the leader, served at applied index %d, "
                   + "already carries it (issue #8579)", index, decoded.databaseName(), installGate.servedCopyIndex());
@@ -2202,7 +2216,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
       // After the apply, so the proposer persists its swap over a state the entry is already applied to (issue #11240)
-      if (decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
+      if (!ofEarlierIncarnation && decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
         confirmPublication(decoded, termIndex.getTerm(), index);
 
       final long previousApplied;
@@ -2221,12 +2235,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // position advances and its per-database entry is evicted in a single atomic write (avoids
         // growing the map for the node lifetime with names of dropped databases).
         final boolean drop = decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY;
-        if (belowInstall)
+        if (ofEarlierIncarnation) {
+          // Issue #11919: the database's own position, and its create index, stay those of the copy the later create made
+          if (!belowInstall)
+            writePersistedAppliedIndex(index, null);
+        } else if (belowInstall)
           writePersistedDatabaseAppliedIndex(index, decoded.databaseName(), drop);
         else if (drop)
           writePersistedAppliedIndexDroppingDatabase(index, decoded.databaseName());
         else
           writePersistedAppliedIndex(index, decoded.databaseName());
+        // What a replay tells the entries of an earlier incarnation apart by (issue #11919)
+        if (!ofEarlierIncarnation && createdDatabase(decoded))
+          recordDatabaseCreated(index, decoded.databaseName());
       }
 
       // A security document pinned by a failed write is written again from time to time, on this thread, so a volume
@@ -8663,9 +8684,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
-      if (drop)
+      if (drop) {
         appliedIndexByDb.remove(dbName);
-      else
+        createdIndexByDb.remove(dbName);
+      } else
         appliedIndexByDb.put(dbName, index);
       persistAppliedIndexFile();
     }
@@ -8683,10 +8705,59 @@ public class ArcadeStateMachine extends BaseStateMachine {
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
       globalAppliedIndex = index;
-      if (dbName != null)
+      if (dbName != null) {
         appliedIndexByDb.remove(dbName);
+        // The copy the create made is gone: a create of the same name starts the next incarnation (issue #11919)
+        createdIndexByDb.remove(dbName);
+      }
       persistAppliedIndexFile();
     }
+  }
+
+  /**
+   * Records that the {@code INSTALL_DATABASE_ENTRY} at {@code index} made the copy of {@code dbName} this node holds (issue
+   * #11919), the boundary {@link #isOfEarlierIncarnation} tells a replayed entry of a dropped incarnation by. A replay of
+   * the same create records nothing new. Written durably: a create is rare, and the boundary has to survive whatever
+   * restart replays the drop before it. Package-private for tests.
+   */
+  void recordDatabaseCreated(final long index, final String dbName) {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      final Long previous = createdIndexByDb.get(dbName);
+      if (previous != null && previous >= index)
+        return;
+      createdIndexByDb.put(dbName, index);
+      persistAppliedIndexFile(true);
+    }
+  }
+
+  /**
+   * Whether the entry at {@code index} naming {@code dbName} belongs to an incarnation of the database that a drop removed
+   * before the create that made the copy this node holds (issue #11919). Only a replay of the log from a snapshot marker
+   * older than that drop gets here with such an entry: the live log only moves past a create.
+   */
+  boolean isOfEarlierIncarnation(final String dbName, final long index) {
+    ensureAppliedIndexLoaded();
+    final Long created = createdIndexByDb.get(dbName);
+    return created != null && index < created;
+  }
+
+  /** Whether {@code decoded} is a create (not a restore) whose database exists here once it is applied. */
+  private boolean createdDatabase(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final ArcadeDBServer srv = server;
+    return decoded.type() == RaftLogEntryType.INSTALL_DATABASE_ENTRY && !decoded.forceSnapshot() && srv != null
+        && srv.existsDatabase(decoded.databaseName());
+  }
+
+  /**
+   * Says why an entry of a dropped incarnation is not applied (issue #11919): the drop, whose replay used to rename the
+   * current copy away, at INFO, the rest of what that incarnation wrote at FINE.
+   */
+  private void logEntryOfEarlierIncarnation(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+    LogManager.instance().log(this, decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY ? Level.INFO : Level.FINE,
+        "Not applying the %s entry at index %d to database '%s': it belongs to an incarnation that was dropped before the "
+            + "copy this node holds was created at index %d (issue #11919)", decoded.type(), index, decoded.databaseName(),
+        createdIndexByDb.get(decoded.databaseName()));
   }
 
   /**
@@ -8750,6 +8821,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               final JSONObject perDb = json.getJSONObject("db", new JSONObject());
               for (final String name : perDb.keySet())
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
+              final JSONObject created = json.getJSONObject("created", new JSONObject());
+              for (final String name : created.keySet())
+                createdIndexByDb.put(name, created.getLong(name, -1));
               restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
               restorePersistedFloors(json.getJSONObject("floors", new JSONObject()));
               // The write that clears what was restored must be durable, or a power loss brings it back (issue #11517)
@@ -8907,6 +8981,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       for (final Map.Entry<String, Long> entry : appliedIndexByDb.entrySet())
         perDb.put(entry.getKey(), entry.getValue());
       json.put("db", perDb);
+      // The index each database was created at (issue #11919), omitted when none was recorded
+      if (!createdIndexByDb.isEmpty()) {
+        final JSONObject created = new JSONObject();
+        for (final Map.Entry<String, Long> entry : createdIndexByDb.entrySet())
+          created.put(entry.getKey(), entry.getValue().longValue());
+        json.put("created", created);
+      }
       // The quarantine travels in the SAME atomic write as the applied position it qualifies (issue #7735), so a
       // crash can never leave a file that says "applied up to N" without saying "and database X was skipped on the
       // way". Omitted when nothing is quarantined, which is the overwhelmingly common case, so the file shape an
