@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -111,9 +112,14 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
     assertThat(row.<Number>getProperty("rows").longValue()).isEqualTo(50L);
   }
 
+  /**
+   * The writes of the transaction the statement runs in survive a failed batch: the outer transaction succeeds under CONTINUE
+   * and BREAK, as in Neo4j. That transaction is an implicit one, the one a server opens around one request: in a transaction
+   * its caller owns the statement is refused (issue #11588), see {@link CallInTransactionsExplicitTxIssue11588Test}.
+   */
   @Test
   void aFailedBatchDoesNotRollBackTheCallersTransaction() {
-    database.transaction(() -> {
+    inImplicitTransaction(() -> {
       database.command("opencypher", "CREATE (:Pre {v: 1})");
       database.command("opencypher", BODY + "ON ERROR CONTINUE");
       assertThat(countLabel("Pre")).isEqualTo(1L);
@@ -185,7 +191,7 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
 
   @Test
   void aBodyFailureInsideACallerTransactionKeepsTheCallersWritesUnderContinue() {
-    database.transaction(() -> {
+    inImplicitTransaction(() -> {
       database.command("opencypher", "CREATE (:Pre {v: 1})");
       database.command("opencypher", FAILING_BODY + "ON ERROR CONTINUE");
       assertThat(countLabel("Pre")).isEqualTo(1L);
@@ -196,13 +202,34 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
 
   @Test
   void aBodyFailureInsideACallerTransactionKeepsTheCallersWritesUnderBreak() {
-    database.transaction(() -> {
+    inImplicitTransaction(() -> {
       database.command("opencypher", "CREATE (:Pre {v: 1})");
       database.command("opencypher", FAILING_BODY + "ON ERROR BREAK");
       assertThat(countLabel("Pre")).isEqualTo(1L);
     });
     assertThat(countLabel("Pre")).isEqualTo(1L);
     assertThat(countLabel("Y")).isEqualTo(20L);
+  }
+
+  /** ON ERROR CONTINUE and BREAK handle the failure of a batch, not the refusal of the statement in a caller's transaction. */
+  @Test
+  void continueOrBreakDoesNotRunInsideACallerOwnedTransaction() {
+    for (final String mode : new String[] { "CONTINUE", "BREAK" }) {
+      assertThatThrownBy(() -> database.transaction(() -> {
+        database.command("opencypher", "CREATE (:Pre {v: 1})");
+        database.command("opencypher", BODY + "ON ERROR " + mode);
+      })).as(mode).hasStackTraceContaining("can only be executed in an implicit transaction");
+      assertThat(countLabel("Pre")).as(mode).isZero();
+      assertThat(countX()).as(mode).isEqualTo(1L);
+    }
+  }
+
+  /** Runs the body in a transaction marked as the HTTP command handler marks the one it opens around a request. */
+  private void inImplicitTransaction(final Runnable body) {
+    database.transaction(() -> {
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+      body.run();
+    });
   }
 
   @Test
