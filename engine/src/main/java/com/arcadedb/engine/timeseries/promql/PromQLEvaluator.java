@@ -322,7 +322,13 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
     }
 
-    return new InstantVector(new ArrayList<>(latestByLabels.values()));
+    // A series whose newest sample in the lookback is a staleness marker has ENDED: Prometheus answers nothing for it, where the
+    // marker read as a NaN measurement kept it in the vector for the whole lookback and made sum() NaN (issue #11991)
+    final List<VectorSample> samples = new ArrayList<>(latestByLabels.size());
+    for (final VectorSample sample : latestByLabels.values())
+      if (!isStaleMarker(sample.value()))
+        samples.add(sample);
+    return new InstantVector(samples);
   }
 
   /**
@@ -375,10 +381,13 @@ public class PromQLEvaluator {
       engine.forEachRow(queryStart, queryEnd, null, tagFilter, readMetrics, row -> {
         if (!matchesRow(row, rowMatchers))
           return true;
+        final double value = extractValue(row, columns);
+        // A staleness marker ends a series, it is not a sample of it: Prometheus leaves it out of every range (issue #11991)
+        if (isStaleMarker(value))
+          return true;
         final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
         final String key = labelKey(labels);
-        seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>())
-            .add(new double[] { (long) row[0], extractValue(row, columns) });
+        seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { (long) row[0], value });
         labelsMap.putIfAbsent(key, labels);
         return true;
       });
@@ -1048,6 +1057,15 @@ public class PromQLEvaluator {
   }
 
   /**
+   * Whether {@code value} is Prometheus' staleness marker (issue #11991): the NaN with bit pattern {@link #STALE_NAN_BITS}, which a
+   * Prometheus remote write sends when a series disappears. The store keeps a double's raw bits (Gorilla XOR on the sealed side), so
+   * the marker reads back as itself, apart from an ordinary NaN - which Prometheus answers as a value.
+   */
+  static boolean isStaleMarker(final double value) {
+    return Double.doubleToRawLongBits(value) == STALE_NAN_BITS;
+  }
+
+  /**
    * Logs a warning if the given column list has more than one FIELD column,
    * since PromQL evaluation only uses the first one. Logged once per type name.
    */
@@ -1306,6 +1324,8 @@ public class PromQLEvaluator {
   private static final String METRIC_NAME_LABEL = "__name__";
   private static final int    MAX_TYPE_NAME_LENGTH   = 256;
   private static final Pattern VALID_TYPE_NAME_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+  /** Prometheus' {@code value.StaleNaN}: the bits of the staleness marker a remote write carries (issue #11991). */
+  static final long            STALE_NAN_BITS          = 0x7ff0000000000002L;
 
   /** Prometheus' own wording, so a client matching on it sees the same error from either server. */
   private static final String SCALAR_COMPARISON_WITHOUT_BOOL = "comparisons between scalars must use BOOL modifier";
