@@ -25,7 +25,7 @@
     "@popperjs/core": "^2.11.8",
     "bootstrap": "^5.3.8",
     "codemirror": "^5.65.21",
-    "cytoscape": "^3.34.4",
+    "cytoscape": "^3.35.0",
     "cytoscape-cxtmenu": "^3.5.0",
     "cytoscape-fcose": "^2.2.0",
     "cytoscape-node-html-label": "^1.2.2",
