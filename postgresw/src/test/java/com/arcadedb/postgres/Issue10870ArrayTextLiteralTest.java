@@ -26,10 +26,8 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -153,8 +151,8 @@ class Issue10870ArrayTextLiteralTest {
     values.put(PostgresType.ARRAY_BPCHAR, strings);
     values.put(PostgresType.ARRAY_JSON, Arrays.asList("{\"k\":1}", null, "[1,\"a,b\"]"));
     values.put(PostgresType.ARRAY_BYTEA, Arrays.asList(new byte[] { 1, 2, (byte) 0xff }, null, new byte[0]));
-    values.put(PostgresType.ARRAY_DATE,
-        Arrays.asList(Date.from(LocalDate.of(2024, 2, 29).atStartOfDay(ZoneOffset.UTC).toInstant()), null));
+    // a date element decodes to the LocalDate it names (issue #11956)
+    values.put(PostgresType.ARRAY_DATE, Arrays.asList(LocalDate.of(2024, 2, 29), null));
     values.put(PostgresType.ARRAY_TIMESTAMP, Arrays.asList(LocalDateTime.of(2024, 2, 29, 13, 14, 15, 123456000), null));
 
     for (final PostgresType type : PostgresType.values()) {
@@ -196,7 +194,6 @@ class Issue10870ArrayTextLiteralTest {
     for (final Object element : (List<?>) list)
       normalized.add(switch (element) {
         case byte[] bytes -> Arrays.toString(bytes);
-        case Date date -> date.getTime();
         case null -> null;
         default -> element;
       });

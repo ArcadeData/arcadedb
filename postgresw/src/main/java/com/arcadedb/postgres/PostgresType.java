@@ -66,7 +66,7 @@ public enum PostgresType {
   DOUBLE(701, "float8", 0, 1022, Double.class, 8, value -> Double.parseDouble(value)),
   CHAR(18, "char", 0, 1002, Character.class, 1, value -> value.charAt(0)),
   BOOLEAN(16, "bool", 0, 1000, Boolean.class, 1, value -> parseBooleanText(value)),
-  DATE(1082, "date", 0, 1182, Date.class, 4, value -> parseDateText(value)),
+  DATE(1082, "date", 0, 1182, LocalDate.class, 4, value -> parseDateText(value)),
   TIMESTAMP(1114, "timestamp", 0, 1115, LocalDateTime.class, 8, value -> parseTimestampText(value)),
   VARCHAR(1043, "varchar", 0, 1015, String.class, -1, value -> value),
   TEXT(25, "text", 0, 1009, String.class, -1, value -> value),
@@ -269,11 +269,16 @@ public enum PostgresType {
     };
   }
 
-  private static Date parseDateText(final String value) {
+  /**
+   * A DATE parameter as the {@link LocalDate} it names, the engine's default DATE value (arcadedb.dateImplementation) and what
+   * a Bolt date decodes to. A {@link Date} at UTC midnight was a datetime to the engine: a Cypher equality on a DATE property
+   * never matched it and an undeclared property stored it as a DATETIME (issue #11956).
+   */
+  private static LocalDate parseDateText(final String value) {
     if (value == null)
       throw new PostgresProtocolException("Cannot parse null DATE text value");
     try {
-      return Date.from(LocalDate.parse(value).atStartOfDay(ZoneOffset.UTC).toInstant());
+      return LocalDate.parse(value);
     } catch (final DateTimeParseException e) {
       throw unparsableTemporal("DATE", value, e);
     }
@@ -1395,7 +1400,7 @@ public enum PostgresType {
       case DATE -> {
         // PostgreSQL binary DATE: int32 days since 2000-01-01
         final int days = buffer.getInt();
-        yield Date.from(LocalDate.ofEpochDay(POSTGRES_EPOCH_DAYS + days).atStartOfDay(ZoneOffset.UTC).toInstant());
+        yield LocalDate.ofEpochDay(POSTGRES_EPOCH_DAYS + days);
       }
       case TIMESTAMP -> {
         // PostgreSQL binary TIMESTAMP: int64 microseconds since 2000-01-01T00:00:00Z
