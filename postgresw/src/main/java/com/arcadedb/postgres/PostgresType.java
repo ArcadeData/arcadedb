@@ -28,7 +28,15 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.google.gson.Strictness;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -318,7 +326,9 @@ public enum PostgresType {
   /** Adds {@code amount} of {@code unit}: whole months and days into {@code monthsAndDays}, the rest answered in microseconds. */
   private static BigDecimal addAmount(final BigDecimal amount, final String unit, final long[] monthsAndDays, final String value) {
     return switch (unit) {
-      case "year", "years", "y", "yr", "yrs" -> addMonths(amount.multiply(BigDecimal.valueOf(12)), monthsAndDays);
+      // a fraction of a year is rounded to whole months, as PostgreSQL does (1.1 years is 13 months), not spilled into days
+      case "year", "years", "y", "yr", "yrs" ->
+          addMonths(amount.multiply(BigDecimal.valueOf(12)).setScale(0, RoundingMode.HALF_EVEN), monthsAndDays);
       case "mon", "mons", "month", "months" -> addMonths(amount, monthsAndDays);
       case "week", "weeks", "w" -> addDays(amount.multiply(BigDecimal.valueOf(7)), monthsAndDays);
       case "day", "days", "d" -> addDays(amount, monthsAndDays);
@@ -380,12 +390,33 @@ public enum PostgresType {
       return new JSONArray(trimmed).toList();
     if (!trimmed.isEmpty() && trimmed.charAt(0) == '{')
       return new JSONObject(value);
-    // a scalar is read as the one element of an array, whose reader converts a JSON value to its Java value
-    final List<Object> scalar = new JSONArray("[" + trimmed + "]").toList();
-    if (scalar.size() != 1)
-      throw new IllegalArgumentException(
-          "Invalid input syntax for type json: '" + (trimmed.length() > 40 ? trimmed.substring(0, 40) + "..." : trimmed) + "'");
-    return scalar.getFirst();
+    return parseJsonScalar(trimmed);
+  }
+
+  /**
+   * A scalar json document, read strictly: the whole text must be one JSON value, so {@code not_json} (an unquoted string a
+   * lenient reader would take as one) is refused. Converted to its Java value by the same reader that converts a JSON array's
+   * elements, so a number has the type it would have inside an array.
+   */
+  private static Object parseJsonScalar(final String text) {
+    try {
+      final JsonReader reader = new JsonReader(new StringReader(text));
+      reader.setStrictness(Strictness.STRICT);
+      final JsonElement element = JsonParser.parseReader(reader);
+      if (reader.peek() != JsonToken.END_DOCUMENT)
+        throw new IllegalArgumentException("Invalid input syntax for type json: '" + abbreviate(text) + "'");
+      final JsonArray holder = new JsonArray(1);
+      holder.add(element);
+      return new JSONArray(holder).toList().getFirst();
+    } catch (final IllegalArgumentException e) {
+      throw e;
+    } catch (final IOException | RuntimeException e) {
+      throw new IllegalArgumentException("Invalid input syntax for type json: '" + abbreviate(text) + "'", e);
+    }
+  }
+
+  private static String abbreviate(final String text) {
+    return text.length() > 40 ? text.substring(0, 40) + "..." : text;
   }
 
   /**

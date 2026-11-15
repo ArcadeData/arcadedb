@@ -150,6 +150,25 @@ class Issue11960BindTemporalTypesTest {
   }
 
   @Test
+  void malformedScalarJsonIsRefused() {
+    for (final int oid : new int[] { 114, 3802 })
+      for (final String malformed : new String[] { "not_json", "'s'", "1 2", "tru", "\"a\" x" })
+        assertThatThrownBy(() -> text(oid, malformed)).as("%d %s", oid, malformed).isInstanceOf(IllegalArgumentException.class);
+    final byte[] versioned = ByteBuffer.allocate(9).put((byte) 1).put("not_json".getBytes(StandardCharsets.UTF_8)).array();
+    assertThatThrownBy(() -> binary(3802, versioned)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void aFractionOfAYearIsRoundedToWholeMonths() {
+    // PostgreSQL: 1.1 years is 13 months (13.2 rounded), with no days spilled from the fraction
+    assertThat(text(1186, "1.1 years")).isEqualTo(duration(13, 0, 0, 0));
+    assertThat(text(1186, "P1.1Y")).isEqualTo(duration(13, 0, 0, 0));
+    assertThat(text(1186, "1.5 years")).isEqualTo(duration(18, 0, 0, 0));
+    // a fraction of a month still spills into days of 30
+    assertThat(text(1186, "1.5 months")).isEqualTo(duration(1, 15, 0, 0));
+  }
+
+  @Test
   void jsonbReadsLikeJson() {
     assertThat(((JSONObject) text(3802, "{\"a\": 1}")).getInt("a")).isEqualTo(1);
     final byte[] json = "{\"a\": 1}".getBytes(StandardCharsets.UTF_8);
