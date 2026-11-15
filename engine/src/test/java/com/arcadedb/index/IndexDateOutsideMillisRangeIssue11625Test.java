@@ -67,6 +67,30 @@ class IndexDateOutsideMillisRangeIssue11625Test extends TestHelper {
         LocalDate.parse("+292278994-01-01"));
   }
 
+  /**
+   * A DATE and a DATETIME past the millisecond range: both saturated to Long.MAX_VALUE milliseconds, so two different
+   * instants compared equal. They compare by the instant itself.
+   */
+  @Test
+  void anExtremeDateAndAnExtremeDateTimeCompareByTheirInstant() {
+    final BinaryComparator comparator = new BinaryComparator();
+    final LocalDate date = LocalDate.parse("+300000000-01-01");
+    final LocalDateTime later = LocalDateTime.parse("+400000000-01-01T00:00");
+    final LocalDateTime sameInstant = date.atStartOfDay();
+    final LocalDateTime earlyBefore = LocalDateTime.parse("-400000000-01-01T00:00");
+    final LocalDate earlyDate = LocalDate.parse("-300000000-01-01");
+
+    assertThat(comparator.compare(date, BinaryTypes.TYPE_DATE, later, BinaryTypes.TYPE_DATETIME)).isNegative();
+    assertThat(comparator.compare(later, BinaryTypes.TYPE_DATETIME, date, BinaryTypes.TYPE_DATE)).isPositive();
+    assertThat(comparator.compare(date, BinaryTypes.TYPE_DATE, sameInstant, BinaryTypes.TYPE_DATETIME)).isZero();
+    assertThat(comparator.compare(date, BinaryTypes.TYPE_DATE, sameInstant.plusNanos(1), BinaryTypes.TYPE_DATETIME_NANOS))
+        .isNegative();
+    assertThat(comparator.compare(earlyDate, BinaryTypes.TYPE_DATE, earlyBefore, BinaryTypes.TYPE_DATETIME)).isPositive();
+    assertThat(comparator.compare(earlyBefore, BinaryTypes.TYPE_DATETIME_MICROS, earlyDate, BinaryTypes.TYPE_DATE)).isNegative();
+    assertThat(comparator.compare(LocalDate.MAX, BinaryTypes.TYPE_DATE, LocalDateTime.MAX, BinaryTypes.TYPE_DATETIME)).isNegative();
+    assertThat(comparator.compare(LocalDate.MIN, BinaryTypes.TYPE_DATE, LocalDateTime.MIN, BinaryTypes.TYPE_DATETIME)).isZero();
+  }
+
   @Test
   void anExtremeDateComparedToADateTimeOrAStringSaturatesInsteadOfThrowing() {
     final BinaryComparator comparator = new BinaryComparator();

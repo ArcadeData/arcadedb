@@ -29,10 +29,13 @@ import com.arcadedb.utility.DateUtils;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
@@ -213,9 +216,19 @@ public class BinaryComparator {
       // so both directions agree (issue #7754).
       if (type2 == BinaryTypes.TYPE_BOOLEAN || value2 instanceof Boolean)
         throw unsupportedPair(type1, type2);
-      // Two dates compare by their day: a DATE holds days the epoch-millisecond conversion below overflows on (issue #11625)
+      // A DATE holds days the epoch-millisecond conversion below saturates on (issue #11625): two dates compare by their day,
+      // and a date against another point in time by the instant, or two instants past the range would compare equal
       if (value1 instanceof LocalDate date1 && value2 instanceof LocalDate date2)
         return date1.compareTo(date2);
+      if (value1 instanceof LocalDate || value2 instanceof LocalDate) {
+        // the other operand first: a string or a number has no exact instant here and keeps the conversion below
+        final boolean dateFirst = value1 instanceof LocalDate;
+        final Instant other = exactInstant(dateFirst ? value2 : value1);
+        if (other != null) {
+          final Instant date = exactInstant(dateFirst ? value1 : value2);
+          return dateFirst ? date.compareTo(other) : other.compareTo(date);
+        }
+      }
       final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
       final Long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
       final Long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
@@ -377,6 +390,26 @@ public class BinaryComparator {
   /** An {@code OffsetDateTime} is serialized as the zoned datetime whose zone is its offset, so it compares as that. */
   private static ZonedDateTime zonedOf(final Object value) {
     return value instanceof OffsetDateTime offset ? offset.toZonedDateTime() : (ZonedDateTime) value;
+  }
+
+  /**
+   * The instant of a DATE (its UTC midnight) or of a date-time, which the full range of either has: null for any other value,
+   * left to the timestamp conversion.
+   */
+  private static Instant exactInstant(final Object value) {
+    if (value instanceof LocalDate date)
+      return Instant.ofEpochSecond(date.toEpochDay() * 86_400L);
+    if (value instanceof LocalDateTime dateTime)
+      return dateTime.toInstant(ZoneOffset.UTC);
+    if (value instanceof Instant instant)
+      return instant;
+    if (value instanceof ZonedDateTime zoned)
+      return zoned.toInstant();
+    if (value instanceof OffsetDateTime offset)
+      return offset.toInstant();
+    if (value instanceof Date date)
+      return date.toInstant();
+    return null;
   }
 
   private static IllegalArgumentException unsupportedPair(final byte type1, final byte type2) {
