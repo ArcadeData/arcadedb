@@ -74,7 +74,7 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
       created = send(followerIndex, "/server", new JSONObject().put("command", "create database " + NEW_DATABASE));
 
       awaitOnServer(leaderIndex, NEW_DATABASE, true);
-      Thread.sleep(500);
+      awaitAnswerOrLocalWait(created);
       assertThat(created.isDone()).as("the follower must not answer the creation before it holds the database").isFalse();
     } finally {
       release.countDown();
@@ -112,7 +112,7 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
       dropped = send(followerIndex, "/server", new JSONObject().put("command", "drop database " + DROPPED_DATABASE));
 
       awaitOnServer(leaderIndex, DROPPED_DATABASE, false);
-      Thread.sleep(500);
+      awaitAnswerOrLocalWait(dropped);
       assertThat(dropped.isDone()).as("the follower must not answer the drop while it still holds the database").isFalse();
     } finally {
       release.countDown();
@@ -157,6 +157,27 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
       Thread.sleep(50);
     assertThat(getServer(serverIndex).existsDatabase(database)).as("database '%s' exists on server %d", database, serverIndex)
         .isEqualTo(exists);
+  }
+
+  /**
+   * Waits until {@code request} is answered or a handler waits in {@link RaftHAPlugin#awaitLocally}, which it enters only once the
+   * leader's answer to the command it forwarded has arrived. A follower that relays that answer at once ends the request instead,
+   * so the check after this does not depend on how long the forwarded answer takes.
+   */
+  private static void awaitAnswerOrLocalWait(final CompletableFuture<?> request) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    while (!request.isDone() && !aHandlerAwaitsLocally() && System.currentTimeMillis() < deadline)
+      Thread.sleep(20);
+    assertThat(request.isDone() || aHandlerAwaitsLocally()).as("the follower got the leader's answer").isTrue();
+  }
+
+  /** Whether a thread of this JVM, which runs every server of the test, is in {@link RaftHAPlugin#awaitLocally}. */
+  private static boolean aHandlerAwaitsLocally() {
+    for (final StackTraceElement[] stack : Thread.getAllStackTraces().values())
+      for (final StackTraceElement frame : stack)
+        if (frame.getClassName().equals(RaftHAPlugin.class.getName()) && frame.getMethodName().equals("awaitLocally"))
+          return true;
+    return false;
   }
 
   private CompletableFuture<HttpResponse<String>> send(final int serverIndex, final String path, final JSONObject body) {
