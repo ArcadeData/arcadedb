@@ -86,6 +86,25 @@ class Issue11589FunctionArgumentErrorsTest extends TestHelper {
   }
 
   @Test
+  void aPatternFieldTheValueLacksANullTemporalAndANullSourceAreHandled() {
+    // a pattern naming a field the value does not carry: UnsupportedTemporalTypeException reached the client as a 500
+    assertThat(failureOf("opencypher", "RETURN format(date('2026-01-02'), 'HH') AS v")).startsWith("VALIDATION InvalidArgumentException");
+    assertThat(failureOf("opencypher", "RETURN format(date('2026-01-02'), 'yyyy') AS v")).isEqualTo("OK");
+
+    // a null temporal value is a null answer, as a null unit is, on every truncate function
+    for (final String function : List.of("date", "localtime", "time", "localdatetime", "datetime"))
+      try (final ResultSet rs = database.query("opencypher", "RETURN " + function + ".truncate('day', null) AS v")) {
+        assertThat((Object) rs.next().getProperty("v")).as(function).isNull();
+      }
+
+    // a null field name or source RID inside the list is the caller's mistake, not a NullPointerException
+    for (final String sql : List.of("SELECT fulltext.searchFieldsMore([null], [#1:0]) AS v FROM V WHERE id = 1",
+        "SELECT fulltext.searchFieldsMore(['id'], [null]) AS v FROM V WHERE id = 1",
+        "SELECT fulltext.searchIndexMore('x', [null]) AS v FROM V WHERE id = 1"))
+      assertThat(failureOf("sql", sql)).as(sql).startsWith("VALIDATION InvalidArgumentException");
+  }
+
+  @Test
   void aLargeArgumentIsNotEchoedBackInFull() {
     // the caller's value is quoted in the message, capped: a whole document handed to a parser must not come back in full
     final String large = "x".repeat(100_000);

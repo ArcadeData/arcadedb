@@ -220,13 +220,11 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
     final List<String> fieldNames = new ArrayList<>();
 
     if (fieldsParam instanceof Collection) {
-      for (final Object f : (Collection<?>) fieldsParam) {
-        fieldNames.add(f.toString());
-      }
-    } else if (fieldsParam.getClass().isArray()) {
-      for (final Object f : (Object[]) fieldsParam) {
-        fieldNames.add(f.toString());
-      }
+      for (final Object f : (Collection<?>) fieldsParam)
+        fieldNames.add(fieldName(f));
+    } else if (fieldsParam instanceof Object[] array) {
+      for (final Object f : array)
+        fieldNames.add(fieldName(f));
     } else {
       fieldNames.add(fieldsParam.toString());
     }
@@ -234,11 +232,19 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
     return fieldNames;
   }
 
+  private static String fieldName(final Object field) {
+    if (field == null)
+      throw new InvalidArgumentException("SEARCH_FIELDS_MORE() field names cannot be null");
+    return field.toString();
+  }
+
   private Set<RID> parseSourceRIDs(final Object sourceRIDsParam) {
     final Set<RID> result = new HashSet<>();
 
     if (sourceRIDsParam instanceof Collection) {
       for (final Object item : (Collection<?>) sourceRIDsParam) {
+        if (item == null)
+          throw new InvalidArgumentException(NAME + "() source RIDs cannot be null");
         if (item instanceof RID) {
           result.add((RID) item);
         } else if (item instanceof Identifiable) {

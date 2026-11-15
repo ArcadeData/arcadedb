@@ -57,8 +57,9 @@ public class DateTimeTruncateFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    // issue #11589: a null unit is a null answer, as a null temporal value is, not a NullPointerException
-    if (args[0] == null)
+    // issue #11589: a null unit or a null temporal value is a null answer, as Cypher propagates a null argument, not a
+    // NullPointerException or a type error
+    if (args[0] == null || args[1] == null)
       return null;
     final String unit = args[0].toString();
     final ZonedDateTime dt;

@@ -224,6 +224,8 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
 
     if (sourceRIDsParam instanceof Collection) {
       for (final Object item : (Collection<?>) sourceRIDsParam) {
+        if (item == null)
+          throw new InvalidArgumentException(NAME + "() source RIDs cannot be null");
         if (item instanceof RID) {
           result.add((RID) item);
         } else if (item instanceof Identifiable) {

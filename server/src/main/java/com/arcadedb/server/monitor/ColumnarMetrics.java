@@ -253,7 +253,9 @@ public final class ColumnarMetrics implements AutoCloseable {
 
   /** Marks the type, and every subtype of it, as covered for the property. */
   private static void cover(final Map<String, Set<String>> covered, final DocumentType type, final String typeName, final String property) {
-    covered.computeIfAbsent(typeName, k -> new HashSet<>()).add(property);
+    // a type reached by two inheritance paths is walked once per property
+    if (!covered.computeIfAbsent(typeName, k -> new HashSet<>()).add(property))
+      return;
     if (type != null)
       for (final DocumentType subType : type.getSubTypes())
         cover(covered, subType, subType.getName(), property);

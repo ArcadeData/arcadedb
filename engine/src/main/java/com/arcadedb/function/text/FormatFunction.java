@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.DateTimeException;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAccessor;
 
@@ -91,6 +92,12 @@ public class FormatFunction implements StatelessFunction {
     else
       throw new TypeMismatchException("format() requires a temporal value as first argument");
 
-    return formatter.format(temporal);
+    try {
+      return formatter.format(temporal);
+    } catch (final DateTimeException e) {
+      // a pattern naming a field the value does not carry ('HH' on a date) is the caller's mistake (issue #11589)
+      throw new InvalidArgumentException("format() pattern '" + InvalidArgumentException.quote(pattern) + "' cannot format "
+          + args[0].getClass().getSimpleName() + ": " + e.getMessage(), e);
+    }
   }
 }
