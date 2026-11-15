@@ -887,6 +887,22 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Creates {@code databaseName} on every node through the replicated log, and returns once THIS node has it (issue #11848).
+   * <p>
+   * Log first, files second: the entry is submitted before any node creates the database, and its apply creates it on every
+   * node, the submitting one included. A create that created the database here first and replicated it second left a copy
+   * no other node had whenever the entry never committed (the followers unreachable, then this node lost the leadership
+   * before a quorum appended it), and nothing ever removed it. An entry the cluster gave up on is now one no node applied, and
+   * an entry that commits after the caller gave up waiting creates the database everywhere, this node included.
+   *
+   * @return {@code false} when this implementation replicates no database creation, so the caller creates the database on
+   * this node only; {@code true} once the database is created and this node has applied the entry
+   */
+  default boolean createDatabaseInCluster(final String databaseName) {
+    return false;
+  }
+
+  /**
    * Holds {@code databaseName} for a restore that has claimed it on this server (issue #10974): from now until
    * {@link #releaseReplicatedWritesForRestore}, writes other nodes replicate to it through this one are refused with a
    * retryable error, and the call returns once the ones already accepted - which no local commit wait sees - are applied here,
