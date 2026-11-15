@@ -300,11 +300,14 @@ public class ImmutableDocument extends BaseDocument {
    * <p>
    * A record a concurrent transaction deleted is left with the content it was read with (a vertex reload drops it first), so the
    * delete that follows finds it gone and reports it as it always did (issue #8984).
+   * <p>
+   * With no transaction open there is no page image to pin to, as for {@link #prepareForModify(String)}: the delete opens its own
+   * implicit transaction and checks there, in {@link #prepareForDelete()}, that the content is still the one read.
    *
    * @return whether the content now differs from the one read, or no content had been read
    */
   public boolean pinForDelete() {
-    if (rid == null || rid.getPosition() < 0)
+    if (rid == null || rid.getPosition() < 0 || !database.getTransaction().isActive())
       return false;
     final Binary readImage = buffer;
     try {
