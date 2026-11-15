@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -113,6 +114,7 @@ class OneHopPatternIssue11891Test extends TestHelper {
         "MATCH (p:P) RETURN COUNT { (p)-[:K]->(p) } AS c",
         "MATCH (p:P) RETURN COUNT { (p:Q)-[:K]->() } AS c",
         "MATCH (p:P) RETURN COUNT { (p)-[:K*1..2]->() } AS c",
+        "MATCH (p:P) RETURN COUNT { (p)-[:K*1..1]->() } AS c",
         "MATCH (p:P) RETURN COUNT { (p)-[:K]->()-[:K]->() } AS c",
         "MATCH (p:P) RETURN COUNT { MATCH (p)-[:K]->() RETURN 1 LIMIT 1 } AS c",
         "MATCH (p:P), (x:Q) RETURN COUNT { (p)-[:K]->(x) } AS c",
@@ -210,6 +212,55 @@ class OneHopPatternIssue11891Test extends TestHelper {
       final Result row = rs.next();
       assertThat(row.<Object>getProperty("f")).isEqualTo(row.getProperty("g"));
       assertThat(row.<Object>getProperty("fe")).isEqualTo(row.getProperty("ge"));
+    }
+  }
+
+  /**
+   * Edge-list entries whose edge record is gone (ghosts), answered as the general path answers them. A variable-length hop,
+   * {@code [:K*1..1]} included, is a walk that skips a ghost where the fixed hop's count follows it, so it stays on the general
+   * path. An undirected self loop sits in both lists of its vertex: two self loops are read as K, L, K, L, so it is told apart
+   * by its identity before its presence is asked, or a ghost K hid the live L (or a ghost L doubled the live K).
+   */
+  @Test
+  void ghostEntriesAreAnsweredAsTheGeneralPathAnswersThem() {
+    database.command("sql", "CREATE VERTEX TYPE G");
+    final List<RID> ghosts = new ArrayList<>();
+    database.transaction(() -> {
+      // 1: a ghost K to one vertex, a live K to another
+      final MutableVertex a = database.newVertex("G").set("g", 1).save();
+      ghosts.add(a.newEdge("K", database.newVertex("G").set("g", 90).save()).getIdentity());
+      a.newEdge("K", database.newVertex("G").set("g", 91).save());
+      // 2: two self loops, the first one a ghost
+      final MutableVertex b = database.newVertex("G").set("g", 2).save();
+      ghosts.add(b.newEdge("K", b).getIdentity());
+      b.newEdge("K", b);
+      // 3: two self loops, the second one a ghost
+      final MutableVertex c = database.newVertex("G").set("g", 3).save();
+      c.newEdge("K", c);
+      ghosts.add(c.newEdge("K", c).getIdentity());
+      // 4: two live self loops
+      final MutableVertex d = database.newVertex("G").set("g", 4).save();
+      d.newEdge("K", d);
+      d.newEdge("K", d);
+    });
+    database.transaction(() -> {
+      for (final RID ghost : ghosts)
+        TestHelper.deleteRecordAtLowLevel(database, ghost);
+    });
+
+    try {
+      final String rows = "MATCH (p:G) WHERE p.g < 10 RETURN p.g AS id, %s AS v ORDER BY id";
+      assertThat(perVertex(rows.formatted("COUNT { (p)-[:K*1..1]->() }"))).containsExactly("1=1", "2=1", "3=1", "4=2");
+      assertThat(perVertex(rows.formatted("COUNT { (p)-[:K*1..1]-() }"))).containsExactly("1=1", "2=1", "3=1", "4=2");
+
+      final long before = OneHopPattern.rowsAnswered();
+      assertThat(perVertex(rows.formatted("size([(p)-[:K]-() | 1])"))).containsExactly("1=1", "2=1", "3=1", "4=2");
+      assertThat(perVertex("MATCH (p:G) WHERE p.g IN [2, 3] AND (p)-[:K]-() RETURN p.g AS id, 1 AS v ORDER BY id"))
+          .containsExactly("2=1", "3=1");
+      assertThat(OneHopPattern.rowsAnswered() - before).as("the self loops are read off the edge list").isPositive();
+    } finally {
+      // the ghosts are this test's fixture: repaired, so the integrity check after it judges the rest of the database
+      database.command("sql", "CHECK DATABASE FIX").close();
     }
   }
 

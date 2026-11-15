@@ -25,6 +25,7 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Schema;
@@ -110,9 +111,9 @@ public final class OneHopPattern {
     if (relationship.getClass() != RelationshipPattern.class || relationship.getVariable() != null
         || relationship.hasProperties() || relationship.hasWhereExpression())
       return UNSUPPORTED;
-    // [*1..1] is the hop itself; any other length is a walk
-    if (relationship.isVariableLength()
-        && (relationship.getEffectiveMinHops() != 1 || relationship.getEffectiveMaxHops() != 1))
+    // Any variable-length relationship, [*1..1] included, is a walk, which skips an edge-list entry whose edge record is gone
+    // where the fixed hop's count follows it: the general path answers it
+    if (relationship.isVariableLength())
       return UNSUPPORTED;
 
     final NodePattern first = path.getNode(0);
@@ -231,23 +232,21 @@ public final class OneHopPattern {
    * {@link #countLabelled} over the relationships whose record is there, for the paths that load each relationship they walk:
    * an edge-list entry whose edge record is gone (a ghost) is skipped as those paths skip it, and asking the bucket whether
    * the record is there asks the current user's permission to read it, as loading it does. No record is loaded; a
-   * lightweight relationship has no record and is taken as it is.
+   * lightweight relationship has no record and is taken as it is. An undirected self loop sits in both lists of its vertex:
+   * two of them are read K, L, K, L, so each is told apart by its identity before its presence is asked, not by parity.
    */
   private long countPresentEdges(final VertexInternal vertex, final DatabaseInternal database, final Side side,
       final boolean any) {
     final Schema schema = database.getSchema();
     final RID identity = vertex.getIdentity();
     final boolean undirected = side.direction == Vertex.DIRECTION.BOTH;
-    int selfSeen = 0;
     long count = 0;
-    for (final Iterator<Edge> edges = database.getGraphEngine().getEdgesKnowingEndpoints(vertex, side.direction, edgeTypes);
-        edges.hasNext(); ) {
+    final Iterator<Edge> entries = database.getGraphEngine().getEdgesKnowingEndpoints(vertex, side.direction, edgeTypes);
+    for (final Iterator<Edge> edges = undirected ? SelfLoops.deduplicatingEdges(entries) : entries; edges.hasNext(); ) {
       final Edge edge = edges.next();
       final RID far = side.direction == Vertex.DIRECTION.IN || (undirected && !identity.equals(edge.getOut())) ?
           edge.getOut() :
           edge.getIn();
-      if (undirected && identity.equals(far) && (++selfSeen & 1) == 0)
-        continue;
       final RID edgeRid = edge.getIdentity();
       if (edgeRid.getPosition() >= 0 && !schema.getBucketById(edgeRid.getBucketId()).existsRecord(edgeRid))
         continue;
