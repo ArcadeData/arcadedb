@@ -31,6 +31,7 @@ import com.arcadedb.query.facet.FacetMemoryBudget;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -785,10 +786,10 @@ class HierarchyManagerTest extends TestHelper {
         throw new RejectedExecutionException("saturated");
       };
       try {
-        final long start = System.nanoTime();
+        final StallAwareStopwatch clock = StallAwareStopwatch.start();
         assertThat(manager.view(System.currentTimeMillis() + HANG_MS)).isNull();
         // a hang detector, not a latency bound: the wait for HANG_MS is what it must not do
-        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isLessThan(HANG_MS / 2);
+        clock.assertGaveUpWithin(HANG_MS / 2, "returning null promptly from hanging for HANG_MS");
         assertThat(manager.unavailableReason()).isNull();
         assertThat(manager.deadlineReason()).isEqualTo(HierarchyManager.BEING_REBUILT);
       } finally {

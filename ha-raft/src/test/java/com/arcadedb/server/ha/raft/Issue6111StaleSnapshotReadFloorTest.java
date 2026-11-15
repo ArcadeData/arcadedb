@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.DivisionInfo;
@@ -290,16 +291,14 @@ class Issue6111StaleSnapshotReadFloorTest {
         raft.notifyApplied();
       }, 300, TimeUnit.MILLISECONDS);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
       assertThatNoException().isThrownBy(() -> raft.waitForAppliedIndex(SNAPSHOT_INDEX, true));
-      final long elapsed = System.currentTimeMillis() - start;
 
-      assertThat(elapsed)
+      assertThat(clock.elapsedMs())
           .as("the wait really was held by the floor until the resync cleared it")
           .isGreaterThanOrEqualTo(250L);
-      assertThat(elapsed)
-          .as("clearing the floor releases the waiter promptly, not at the quorum timeout")
-          .isLessThan(5_000L);
+      // Clearing the floor releases the waiter promptly, not at the quorum timeout
+      clock.assertGaveUpWithin(5_000L, "release when the floor clears from the quorum timeout");
     } finally {
       scheduler.shutdownNow();
     }
@@ -320,11 +319,10 @@ class Issue6111StaleSnapshotReadFloorTest {
         .as("the clamp must be in force, otherwise the waiter never enters the loop and proves nothing")
         .isEqualTo(PERSISTED_APPLIED);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     assertThatNoException().isThrownBy(() -> raft.waitForAppliedIndex(SNAPSHOT_INDEX, false));
-    assertThat(System.currentTimeMillis() - start)
-        .as("waiting cannot help while the floor stands, so the lenient waiter degrades at once")
-        .isLessThan(2_000L);
+    // Waiting cannot help while the floor stands, so the lenient waiter degrades at once
+    clock.assertGaveUpWithin(2_000L, "the lenient waiter degrading at once from waiting out the floor");
   }
 
   /** Same for {@link RaftHAServer#waitForLocalApply()}, which is always lenient. */
@@ -339,9 +337,9 @@ class Issue6111StaleSnapshotReadFloorTest {
         .as("the clamp must be in force, otherwise the waiter never enters the loop and proves nothing")
         .isEqualTo(PERSISTED_APPLIED);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     raft.waitForLocalApply();
-    assertThat(System.currentTimeMillis() - start).isLessThan(2_000L);
+    clock.assertGaveUpWithin(2_000L, "the lenient waiter degrading at once from waiting out the floor");
   }
 
   /** With no floor outstanding the trusted index is the raw Ratis one - no behaviour change at all. */

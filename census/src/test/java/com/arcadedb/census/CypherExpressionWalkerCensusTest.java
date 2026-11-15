@@ -58,9 +58,13 @@ class CypherExpressionWalkerCensusTest {
   private static final List<String> EXPRESSIONS = List.of(AST + "Expression", AST + "BooleanExpression", AST + "PropertyReadExpression");
   private static final String       WALKER      = "com/arcadedb/query/opencypher/parser/CypherExpressionWalker";
 
-  /** Expression types that genuinely nest nothing, so the walker's {@code default} arm is the right answer for them. */
+  /**
+   * Expression types that genuinely nest nothing, so the walker's {@code default} arm is the right answer for them. The two
+   * {@code SQLASTBuilder} adapters wrap a SQL expression for the openCypher operators: no openCypher AST inside.
+   */
   private static final Set<String> LEAF_EXPRESSIONS = Set.of("LiteralExpression", "VariableExpression", "ParameterExpression",
-      "CaseOperandExpression", "PropertyAccessExpression", "StarExpression");
+      "CaseOperandExpression", "PropertyAccessExpression", "StarExpression", "SQLASTBuilder$SqlExpressionAsCypherExpression",
+      "SQLASTBuilder$WhereClauseAsCypherExpression");
 
   /**
    * The classes that write an expression as an anonymous class, which no case can name, each with why it nests no expression the
@@ -68,8 +72,7 @@ class CypherExpressionWalkerCensusTest {
    */
   private static final Map<String, String> ANONYMOUS_EXPRESSIONS = Map.of(//
       "com/arcadedb/query/opencypher/optimizer/CypherOptimizer",
-      "the label filter of an expand target, built by the optimizer after the walk: it reads a vertex's type, nests nothing",//
-      "com/arcadedb/query/sql/antlr/SQLASTBuilder", "wraps a SQL expression for the openCypher operators: no openCypher AST inside");
+      "the label filter of an expand target, built by the optimizer after the walk: it reads a vertex's type, nests nothing");
 
   @Test
   void everyExpressionTypeIsEitherWalkedOrDeclaredALeaf() throws Exception {

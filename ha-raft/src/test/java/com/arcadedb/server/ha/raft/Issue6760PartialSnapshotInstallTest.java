@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -291,11 +292,10 @@ class Issue6760PartialSnapshotInstallTest {
         .as("the clamp must be in force, otherwise the waiter never enters the loop and proves nothing")
         .isEqualTo(PERSISTED_APPLIED);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     assertThatNoException().isThrownBy(() -> raft.waitForAppliedIndex(STALE_DB, SNAPSHOT_INDEX, false));
-    assertThat(System.currentTimeMillis() - start)
-        .as("waiting cannot help while the floor stands, so the lenient waiter degrades at once")
-        .isLessThan(2_000L);
+    // Waiting cannot help while the floor stands, so the lenient waiter degrades at once
+    clock.assertGaveUpWithin(2_000L, "the lenient waiter degrading at once from waiting out the floor");
   }
 
   /** With no floor anywhere the trusted index is the raw Ratis one, named database or not. */
