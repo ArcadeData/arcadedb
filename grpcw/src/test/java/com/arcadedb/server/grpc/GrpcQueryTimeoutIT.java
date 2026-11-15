@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.utility.StallAwareStopwatch;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -37,7 +38,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -107,11 +107,10 @@ public class GrpcQueryTimeoutIT extends BaseGrpcServerTest {
         .setTimeoutMs(200)
         .build();
 
-    final long start = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> stub.withDeadlineAfter(60, TimeUnit.SECONDS).executeQuery(request))
         .isInstanceOf(StatusRuntimeException.class)
         .hasMessageContaining("imeout");
-    assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).as("stopped near its 200 ms budget")
-        .isLessThan(10_000);
+    stopwatch.assertGaveUpWithin(10_000, "a query stopped by its 200 ms timeout_ms from one running its seconds of work to the end");
   }
 }
