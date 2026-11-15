@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -57,11 +58,28 @@ public class BinaryCondition extends BooleanExpression {
   /**
    * A comparison with a null operand is unknown (null), not false, so {@code NOT (k = 5)} and {@code k <> 5} leave out a record
    * with no {@code k}, as {@code k NOT IN [5]} does (issue #8979).
+   * <p>
+   * Two values of one class that has no order, such as two rows compared with {@code <}, make the operator throw
+   * ClassCastException (the contract the operator tests pin). That is the statement's mistake, so it is reported as a type
+   * mismatch, a client error, rather than a server fault (issue #11893).
    */
   private Boolean compare(final CommandContext context, final Object leftVal, final Object rightVal) {
     if ((leftVal == null || rightVal == null) && operator.isUnknownOnNull())
       return null;
-    return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+    try {
+      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+    } catch (final ClassCastException e) {
+      throw new TypeMismatchException(
+          "Cannot compare " + kindOf(leftVal) + " with " + kindOf(rightVal) + " using '" + operator + "': the values have no order", e);
+    }
+  }
+
+  private static String kindOf(final Object value) {
+    if (value == null)
+      return "null";
+    if (value instanceof Result || value instanceof Identifiable)
+      return "a record";
+    return value.getClass().getSimpleName();
   }
 
   /**

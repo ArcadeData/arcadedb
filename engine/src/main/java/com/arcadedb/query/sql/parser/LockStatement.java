@@ -4,6 +4,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionExplicitLock;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -42,7 +44,14 @@ public class LockStatement extends SimpleExecStatement {
     }
 
     if (explicitLock != null)
-      explicitLock.lock();
+      try {
+        explicitLock.lock();
+      } catch (final TransactionException e) {
+        // The transaction refuses the lock for where the statement stands in it - after a modification, or a second LOCK -
+        // which is the script's mistake, not the server's (issue #11893). A lock timeout or a conflict is no
+        // TransactionException and keeps its own type
+        throw new CommandSemanticException("Cannot execute " + this + ": " + e.getMessage(), e);
+      }
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal(database);
