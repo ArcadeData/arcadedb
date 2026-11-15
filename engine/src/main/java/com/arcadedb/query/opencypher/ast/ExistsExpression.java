@@ -42,6 +42,8 @@ public class ExistsExpression implements Expression {
   private final String          subquery;
   private final String          text;
   private final CypherStatement parsedSubquery;
+  // Whether the body is a one-hop pattern the edge list answers, decided on the first row (issue #11891)
+  private volatile OneHopPattern oneHop;
 
   /**
    * Used by the runtime paths that synthesize an existential subquery from a pattern already held as an AST
@@ -60,6 +62,12 @@ public class ExistsExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    // A one-hop body asks whether the bound vertex has such an edge, read off its edge list without planning (#11891)
+    // The body this replaces is not refused for a relationship type the user cannot read, so no permission is asked
+    final long found = oneHop().count(result, context, true, false);
+    if (found != OneHopPattern.NOT_ANSWERED)
+      return found > 0;
+
     if (CorrelatedSubqueryRunner.canRun(parsedSubquery)) {
       try (final ResultSet resultSet = CorrelatedSubqueryRunner.run(parsedSubquery, result, context)) {
         return resultSet.hasNext();
@@ -72,6 +80,15 @@ public class ExistsExpression implements Expression {
     try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
       return resultSet.hasNext();
     }
+  }
+
+  private OneHopPattern oneHop() {
+    OneHopPattern pattern = oneHop;
+    if (pattern == null) {
+      pattern = OneHopPattern.ofBody(parsedSubquery);
+      oneHop = pattern;
+    }
+    return pattern;
   }
 
   /**
