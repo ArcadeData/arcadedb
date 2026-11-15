@@ -266,7 +266,7 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
 
   /** The relationships in the type, counted by a query rather than read from the bucket record counter. */
   private long edgeCount() {
-    try (final ResultSet result = database.query("sql", "SELECT count(*) AS c FROM E")) {
+    try (final ResultSet result = database.query("sql", "SELECT count(@rid) AS c FROM E")) {
       return result.next().<Number>getProperty("c").longValue();
     }
   }

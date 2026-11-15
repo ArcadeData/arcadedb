@@ -124,6 +124,7 @@ public class TransactionManager {
   // published, and how many applies are writing one of them now (#11592). An entry carries page images, not the records it
   // deleted: a vertex it deleted, or gave to a new vertex, is one whose page it wrote. Allocated on the first such apply
   private volatile ReplicatedVertexPages     replicatedVertexPages;
+  private final AtomicLong                   vertexPageAppliesStarted = new AtomicLong();
   // Sequence of the bucket indexes bound to their type, and the number each of them took (#10588): what a transaction that began
   // before an index existed asks at its commit to know which indexes it owes entries to
   private final AtomicLong                   indexRegistrationSequence = new AtomicLong();
@@ -296,6 +297,15 @@ public class TransactionManager {
   }
 
   /**
+   * How many replicated (or recovered) entries reaching a vertex bucket started being applied (#11592). Moved after the entry's pages
+   * are marked and before the first one is written, so a commit that checked a vertex before an apply marked its page and read that
+   * page after the apply wrote it reads a different count after the read than before the check.
+   */
+  public long getVertexPageAppliesStarted() {
+    return vertexPageAppliesStarted.get();
+  }
+
+  /**
    * Called after a transaction published the deletes of {@code deleted}, and while their files are still locked, so a transaction
    * that writes one of those RIDs and holds its lock at the commit sees the stripe moved (#11592).
    */
@@ -349,6 +359,7 @@ public class TransactionManager {
       }
     final int[] marked = count == stripes.length ? stripes : Arrays.copyOf(stripes, count);
     replicated.applying(marked);
+    vertexPageAppliesStarted.incrementAndGet();
     return marked;
   }
 

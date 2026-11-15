@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -62,6 +63,7 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
   @AfterEach
   void clearHook() {
     TransactionManager.applyChangesHookForTesting = null;
+    TransactionContext.afterEdgeListHeadMergeForTesting = null;
   }
 
   @Test
@@ -140,6 +142,37 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
   }
 
   @Test
+  void aReplicatedApplyOfTheVertexPageStartedAfterTheCheckRefusesTheCommit() throws Exception {
+    final RID a = newVertex("a");
+    final RID b = newVertex("b");
+    final AtomicReference<Vertex> readB = new AtomicReference<>();
+    final AtomicBoolean applied = new AtomicBoolean();
+
+    // the commit checked b and merged the heads; only then the entry rewriting b's page is applied, whole, before the deferred writes
+    // and the page-version checks: without a barrier the slot merge replays b onto the page the entry wrote
+    TransactionContext.afterEdgeListHeadMergeForTesting = () -> {
+      TransactionContext.afterEdgeListHeadMergeForTesting = null;
+      final Thread apply = new Thread(() -> {
+        applyReplicatedRewriteOfPageOf(b);
+        applied.set(true);
+      }, "apply");
+      apply.start();
+      try {
+        apply.join(TimeUnit.SECONDS.toMillis(WAIT_S));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+
+    final Throwable failure = interleave(() -> readB.set(vertex(b)), () -> {
+    }, () -> vertex(a).newEdge("E", readB.get()));
+
+    assertThat(applied.get()).as("the entry was applied between the check and the page-version checks").isTrue();
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertNoRelationship(a, b);
+  }
+
+  @Test
   void aReplicatedApplyOfAnotherVertexPageLeavesTheHeadMergeAlone() throws Exception {
     final RID a = newVertex("a");
     final RID b = newVertex("b");
@@ -171,7 +204,7 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
 
   private void assertNoRelationship(final RID a, final RID b) {
     database.transaction(() -> {
-      try (final ResultSet result = database.query("sql", "SELECT count(*) AS c FROM E")) {
+      try (final ResultSet result = database.query("sql", "SELECT count(@rid) AS c FROM E")) {
         assertThat(result.next().<Number>getProperty("c").longValue()).isZero();
       }
       assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
