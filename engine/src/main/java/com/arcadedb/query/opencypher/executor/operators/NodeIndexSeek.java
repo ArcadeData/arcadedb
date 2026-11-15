@@ -44,8 +44,10 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.NoSuchElementException;
 
 /**
@@ -75,6 +77,11 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
   private BooleanExpression whereFilter;
   /** Whether the statement can write a key of the index, see {@link #setStatementWritesKey}. */
   private boolean statementWritesKey;
+  /**
+   * Whether the calling thread's last execution read the label instead of seeking (issue #11890), for the PROFILE that follows it.
+   * Per thread because the operator belongs to a cached plan that concurrent executions share, as in {@code NodeByLabelScan}.
+   */
+  private final ThreadLocal<Boolean> readLabel = new ThreadLocal<>();
 
   public NodeIndexSeek(final String variable, final String label, final String propertyName,
                       final Object propertyValue, final String indexName,
@@ -124,8 +131,65 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     this.statementWritesKey = statementWritesKey;
   }
 
+  /**
+   * The value of each list of the IN computed from constants ({@code x IN range(1, 3)}, issue #11890), evaluated once for the
+   * execution, by identity of its expression; null when there is none. A parameter, or a part of one, is not computed.
+   */
+  private Map<Expression, Object> resolveComputedLists(final CommandContext context) {
+    if (!(propertyValue instanceof InListValues inList))
+      return null;
+    Map<Expression, Object> computed = null;
+    for (final Expression element : inList.getValues())
+      if (inList.isWholeList(element) && !RowIndependentValues.isParameterDerived(element)) {
+        if (computed == null)
+          computed = new IdentityHashMap<>();
+        computed.put(element, RowIndependentValues.resolve(element, context));
+      }
+    return computed;
+  }
+
+  /** Whether every computed list is sought key by key, see {@link #seeksComputedList}; a null list seeks nothing. */
+  private boolean seeksComputedLists(final Map<Expression, Object> computed, final CommandContext context) {
+    for (final Object list : computed.values())
+      // A value that is not a list is refused, as the evaluation of the IN refuses it (issue #10541)
+      if (list != null && !seeksComputedList(InExpression.listOperand(list), context))
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether a list computed from constants ({@code x IN range(1, 3)}, issue #11890) is sought key by key; when not, the label is
+   * read, and the predicate, which the seek never drops, decides each vertex. Not when the list has more items than the label
+   * has vertices: a seek per item then costs more than reading each vertex once, and a {@code range()} of a billion items would
+   * be materialised as keys. Not when an item is of a kind no list literal holds (a temporal value, a point, a list, a map):
+   * the index key conversion of those does not decide what Cypher's equality decides (issues #8572, #9647, #9794), and a row
+   * the seek missed would be lost.
+   */
+  private boolean seeksComputedList(final Iterable<?> items, final CommandContext context) {
+    if (items instanceof Collection<?> collection && collection.size() > vertexCount(context))
+      return false;
+    for (final Object item : items)
+      if (item != null && !(item instanceof Number || item instanceof String || item instanceof Boolean))
+        return false;
+    return true;
+  }
+
+  /** The vertices of the label, its subtypes included; none when the type is gone, which the scan then answers with no row. */
+  private long vertexCount(final CommandContext context) {
+    return context.getDatabase().getSchema().existsType(label) ? context.getDatabase().countType(label, true) : 0L;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // A list computed from constants that the seek declines: the label is read as the plan without the index reads it, by the
+    // same operator, with the predicates pushed into the seek (issue #11890)
+    final Map<Expression, Object> computedLists = resolveComputedLists(context);
+    if (computedLists != null && !seeksComputedLists(computedLists, context)) {
+      readLabel.set(true);
+      return new NodeByLabelScan(variable, label, estimatedCost, estimatedCardinality, whereFilter).execute(context, nRecords);
+    }
+    readLabel.remove();
+
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
@@ -144,8 +208,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       private int bufferIndex = 0;
       private boolean initialized = false;
       private boolean finished = false;
-      /** The scan that answers instead of the seek a computed IN-list declined, see {@link #seeksComputedList}. */
-      private ResultSet labelScan = null;
 
       @Override
       public boolean hasNext() {
@@ -213,22 +275,17 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         if (propertyValue instanceof InListValues inList) {
           seen = newSeen();
           for (final Expression element : inList.getValues()) {
-            final Object resolved = resolveValue(element);
+            final Object resolved = computedLists != null && computedLists.containsKey(element) ?
+                computedLists.get(element) :
+                resolveValue(element);
             if (inList.isScalar(element) || resolved == null)
               addSeekKey(resolved, trailing);
-            else if (inList.isWholeList(element)) {
+            else if (inList.isWholeList(element))
               // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
               // to be taken for one key, which answered no rows where the scan refuses
-              final Iterable<?> items = InExpression.listOperand(resolved);
-              if (!RowIndependentValues.isParameterDerived(element) && !seeksComputedList(items)) {
-                releaseSeen();
-                labelScan = new NodeByLabelScan(variable, label, estimatedCost, estimatedCardinality, whereFilter).execute(context,
-                    nRecords);
-                return;
-              }
-              for (final Object v : items)
+              for (final Object v : InExpression.listOperand(resolved))
                 addSeekKey(v, trailing);
-            } else
+            else
               // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no
               // property holds, and the index answers it with no row, as the comparison of the scan does
               addSeekKey(resolved, trailing);
@@ -243,23 +300,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           finished = true;
         else if (seen == null && statementWritesKey && !wholeKey)
           seen = newSeen();
-      }
-
-      /**
-       * Whether a list computed from constants ({@code x IN range(1, 3)}, issue #11890) is sought key by key; when not, the label is
-       * scanned, and the predicate, which the seek never drops, decides each vertex. Not when the list has more items than the label
-       * has vertices: a seek per item then costs more than reading each vertex once, and a {@code range()} of a billion items would
-       * be materialised as keys. Not when an item is of a kind no list literal holds (a temporal value, a point, a list, a map):
-       * the index key conversion of those does not decide what Cypher's equality decides (issues #8572, #9647, #9794), and a row
-       * the seek missed would be lost.
-       */
-      private boolean seeksComputedList(final Iterable<?> items) {
-        if (items instanceof Collection<?> collection && collection.size() > context.getDatabase().countType(label, true))
-          return false;
-        for (final Object item : items)
-          if (item != null && !(item instanceof Number || item instanceof String || item instanceof Boolean))
-            return false;
-        return true;
       }
 
       private RidHashSet newSeen() {
@@ -299,14 +339,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           initialize();
           if (finished)
             return;
-        }
-
-        if (labelScan != null) {
-          while (buffer.size() < n && labelScan.hasNext())
-            buffer.add(labelScan.next());
-          if (!labelScan.hasNext())
-            finished = true;
-          return;
         }
 
         while (buffer.size() < n) {
@@ -379,10 +411,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           cursor = null;
         }
         releaseSeen();
-        if (labelScan != null) {
-          labelScan.close();
-          labelScan = null;
-        }
       }
     };
   }
@@ -406,6 +434,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           .append("=").append(keyValues.get(i) instanceof Expression expression ? expression.getText() : keyValues.get(i));
     if (whereFilter != null)
       sb.append(", filter: ").append(whereFilter.getText());
+    if (Boolean.TRUE.equals(readLabel.get()))
+      sb.append(", read the label: computed list larger than the label or not of index key kinds");
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

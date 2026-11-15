@@ -87,6 +87,7 @@ class CypherInConstantListIndexSeekIssue11890Test extends TestHelper {
       "p.id IN range(1, 3) OR p.g IN [5]" })
   void aListComputedFromConstantsIsSought(final String predicate) {
     assertThat(plan(predicate)).contains("NodeIndexSeek").doesNotContain("NodeByLabelScan");
+    assertThat(profile("MATCH (p:P) WHERE " + predicate + " RETURN p.id")).doesNotContain("read the label");
     assertAnswersAsTheScan(predicate, Map.of());
   }
 
@@ -134,8 +135,42 @@ class CypherInConstantListIndexSeekIssue11890Test extends TestHelper {
     assertThat(ids("P", "p.id IN range(-50000000, 50000000) AND p.g = 3", Map.of())).hasSize(VERTICES / 20);
   }
 
+  /**
+   * An aggregation over a seek that reads the label instead counts the rows the scan of the same statement counts, and PROFILE says
+   * the label was read.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "p.id IN range(0, 10000000)",
+      "p.id IN range(-10000000, 10000000) AND p.g = 3",
+      "p.d IN [date('2024-01-02')] + []" })
+  void anAggregationOverTheLabelReadInsteadAnswersAsTheScan(final String predicate) {
+    for (final String returned : List.of("count(p) AS c", "count(*) AS c", "sum(p.id) AS c", "p.g AS g, count(p) AS c ORDER BY g")) {
+      final String query = " WHERE " + predicate + " RETURN " + returned;
+      assertThat(rows("MATCH (p:P)" + query)).as(query).isEqualTo(rows("MATCH (p:Q)" + query));
+    }
+    assertThat(profile("MATCH (p:P) WHERE " + predicate + " RETURN count(p)")).contains("NodeIndexSeek").contains("read the label");
+  }
+
+  private String profile(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "PROFILE " + query)) {
+      while (rs.hasNext())
+        rs.next();
+      return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+    }
+  }
+
   private void assertAnswersAsTheScan(final String predicate, final Map<String, Object> params) {
     assertThat(ids("P", predicate, params)).isEqualTo(ids("Q", predicate, params));
+  }
+
+  private List<Map<String, Object>> rows(final String query) {
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext())
+        rows.add(rs.next().toMap());
+    }
+    return rows;
   }
 
   private List<Object> ids(final String label, final String predicate, final Map<String, Object> params) {
