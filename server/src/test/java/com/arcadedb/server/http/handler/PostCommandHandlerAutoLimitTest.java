@@ -181,10 +181,37 @@ class PostCommandHandlerAutoLimitTest {
     assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V", 21)).isEqualTo("SELECT FROM V limit 21");
     assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5000", 21)).isEqualTo("SELECT FROM V limit 21 TIMEOUT 5000");
     assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V ORDER BY a\ntimeout 5000 EXCEPTION", 21))
-        .isEqualTo("SELECT FROM V ORDER BY a limit 21\ntimeout 5000 EXCEPTION");
+        .isEqualTo("SELECT FROM V ORDER BY a\nlimit 21 timeout 5000 EXCEPTION");
     // A literal is not a clause: only a TIMEOUT the text ends with moves the LIMIT
     assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V WHERE note = 'timeout 5000'", 21))
         .isEqualTo("SELECT FROM V WHERE note = 'timeout 5000' limit 21");
+  }
+
+  /** Comments between the words of a trailing TIMEOUT clause are skipped as the lexer skips them, and a LIMIT stays out of them. */
+  @Test
+  void aTrailingTimeoutClauseIsFoundAcrossComments() {
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT /* budget */ 5000", 21))
+        .isEqualTo("SELECT FROM V limit 21 TIMEOUT /* budget */ 5000");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5000 -- ms\nRETURN", 21))
+        .isEqualTo("SELECT FROM V limit 21 TIMEOUT 5000 -- ms\nRETURN");
+    // A line comment before the clause: the LIMIT goes after the line break that ends it, not into the comment text
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V -- note\nTIMEOUT 5000", 21))
+        .isEqualTo("SELECT FROM V -- note\nlimit 21 TIMEOUT 5000");
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V LIMIT 2 /* cap */ TIMEOUT 5000", "sql", LIMIT, null))
+        .isFalse();
+    // Words in a comment or a quoted identifier are not a clause
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V /* TIMEOUT 5000 */", 21))
+        .isEqualTo("SELECT FROM V /* TIMEOUT 5000 */ limit 21");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT `timeout 5000` FROM V", 21))
+        .isEqualTo("SELECT `timeout 5000` FROM V limit 21");
+  }
+
+  /** The clause is found in one pass: a long run of spaces (here inside a literal) costs no rescan from each of its characters. */
+  @Test
+  void findingTheTrailingTimeoutIsLinear() {
+    final String command = "SELECT FROM V WHERE note = '" + " ".repeat(2_000_000) + "x'";
+    assertThat(PostCommandHandler.trailingTimeout(command)).isNull();
+    assertThat(PostCommandHandler.withAutomaticLimit(command + " TIMEOUT 5000", 21)).endsWith("x' limit 21 TIMEOUT 5000");
   }
 
   @Test

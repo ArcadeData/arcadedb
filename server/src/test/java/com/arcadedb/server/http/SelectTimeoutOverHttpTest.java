@@ -44,7 +44,9 @@ class SelectTimeoutOverHttpTest extends BaseGraphServerTest {
           "SELECT n FROM Timed ORDER BY n timeout 5000 return", 3, //
           "SELECT n FROM (SELECT n FROM Timed) TIMEOUT 5000", 3, //
           "SELECT n FROM Timed LIMIT 2 TIMEOUT 5000 EXCEPTION", 2, //
-          "SELECT n FROM Timed SKIP 1 LIMIT 1 TIMEOUT 5000 RETURN", 1);
+          "SELECT n FROM Timed SKIP 1 LIMIT 1 TIMEOUT 5000 RETURN", 1, //
+          "SELECT n FROM Timed TIMEOUT /* budget */ 5000", 3, //
+          "SELECT n FROM Timed -- note\nTIMEOUT 5000", 3);
       for (final Map.Entry<String, Integer> statement : expectedRows.entrySet()) {
         final JSONObject response = executeCommand(serverIndex, "sql", statement.getKey());
         assertThat(response).as("refused over HTTP: %s", statement.getKey()).isNotNull();

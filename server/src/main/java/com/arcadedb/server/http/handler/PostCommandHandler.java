@@ -52,18 +52,12 @@ import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
   // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
-  private static final Pattern LINE_BREAK       = Pattern.compile("\\R");
-  /**
-   * The TIMEOUT clause a SELECT ends with ({@code TIMEOUT <ms> [RETURN | EXCEPTION]}): the automatic LIMIT goes before it, since a
-   * LIMIT after it does not parse (issue #11804).
-   */
-  private static final Pattern TRAILING_TIMEOUT = Pattern.compile("(?i)\\s+timeout\\s+\\d+(?:\\s+(?:return|exception))?$");
+  private static final Pattern LINE_BREAK = Pattern.compile("\\R");
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -184,17 +178,92 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   /** {@code command} without the TIMEOUT clause it ends with, or {@code command} itself when it ends with none. */
   private static String withoutTrailingTimeout(final String command) {
-    final Matcher timeout = TRAILING_TIMEOUT.matcher(command);
-    return timeout.find() ? command.substring(0, timeout.start()) : command;
+    final int[] timeout = trailingTimeout(command);
+    return timeout == null ? command : command.substring(0, timeout[1]);
   }
 
   /**
-   * {@code command} with the automatic {@code LIMIT probeLimit}: appended, or placed before the TIMEOUT clause the statement ends
-   * with, where a LIMIT has to stand (issue #11804: appended after it, the statement no longer parsed).
+   * {@code command} with the automatic {@code LIMIT probeLimit}: appended, or placed right before the keyword of the TIMEOUT clause
+   * the statement ends with, where a LIMIT has to stand (issue #11804: appended after it, the statement no longer parsed). Placed
+   * at the keyword, the LIMIT stays out of a line comment that precedes the clause.
    */
   static String withAutomaticLimit(final String command, final int probeLimit) {
-    final String clauses = withoutTrailingTimeout(command);
-    return clauses + " limit " + probeLimit + command.substring(clauses.length());
+    final int[] timeout = trailingTimeout(command);
+    if (timeout == null)
+      return command + " limit " + probeLimit;
+    return command.substring(0, timeout[0]) + "limit " + probeLimit + " " + command.substring(timeout[0]);
+  }
+
+  /**
+   * The TIMEOUT clause a SELECT ends with ({@code TIMEOUT <ms> [RETURN | EXCEPTION]}), read on the SQL tokens so that whitespace and
+   * comments between its words are skipped as the lexer skips them: {start of the TIMEOUT keyword, end of the token before it}, or
+   * null when the text ends with no such clause. A word inside a string literal, a quoted identifier or a comment is not a token.
+   * One pass over the text.
+   */
+  static int[] trailingTimeout(final String command) {
+    final int length = command.length();
+    // THE LAST FOUR TOKENS, IN A RING INDEXED BY THE TOKEN COUNT
+    final int[] starts = new int[4];
+    final int[] ends = new int[4];
+    int tokens = 0;
+    int pos = 0;
+    while (pos < length) {
+      final char c = command.charAt(pos);
+      final int start = pos;
+      if (Character.isWhitespace(c)) {
+        ++pos;
+        continue;
+      }
+      if (command.startsWith("/*", pos)) {
+        final int end = command.indexOf("*/", pos + 2);
+        pos = end < 0 ? length : end + 2;
+        continue;
+      }
+      if (command.startsWith("-- ", pos)) {
+        pos += 3;
+        while (pos < length && command.charAt(pos) != '\r' && command.charAt(pos) != '\n')
+          ++pos;
+        continue;
+      }
+      if (c == '\'' || c == '"' || c == '`') {
+        ++pos;
+        while (pos < length && command.charAt(pos) != c)
+          pos += command.charAt(pos) == '\\' ? 2 : 1;
+        pos = Math.min(pos + 1, length);
+      } else if (isWordChar(c)) {
+        while (pos < length && isWordChar(command.charAt(pos)))
+          ++pos;
+      } else
+        ++pos;
+      starts[tokens & 3] = start;
+      ends[tokens & 3] = pos;
+      ++tokens;
+    }
+
+    if (tokens < 3)
+      return null;
+    final int last = (tokens - 1) & 3;
+    final boolean withAction = isToken(command, starts[last], ends[last], "return") || isToken(command, starts[last], ends[last],
+        "exception");
+    final int clauseTokens = withAction ? 3 : 2;
+    if (tokens <= clauseTokens)
+      return null;
+    final int keyword = (tokens - clauseTokens) & 3;
+    final int millis = (tokens - clauseTokens + 1) & 3;
+    if (!isToken(command, starts[keyword], ends[keyword], "timeout"))
+      return null;
+    for (int i = starts[millis]; i < ends[millis]; ++i)
+      if (!Character.isDigit(command.charAt(i)))
+        return null;
+    return new int[] { starts[keyword], ends[(tokens - clauseTokens - 1) & 3] };
+  }
+
+  private static boolean isWordChar(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_';
+  }
+
+  private static boolean isToken(final String command, final int start, final int end, final String word) {
+    return end - start == word.length() && command.regionMatches(true, start, word, 0, word.length());
   }
 
   /**
