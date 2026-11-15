@@ -104,6 +104,52 @@ class Issue11960BindTemporalTypesTest {
   }
 
   @Test
+  void intervalSqlStandardFields() {
+    assertThat(text(1186, "1-2")).isEqualTo(duration(14, 0, 0, 0));
+    assertThat(text(1186, "-1-2")).isEqualTo(duration(-14, 0, 0, 0));
+    assertThat(text(1186, "3 4:05:06")).isEqualTo(duration(0, 3, 4 * 3600 + 5 * 60 + 6, 0));
+    assertThat(text(1186, "1-2 3 4:05:06")).isEqualTo(duration(14, 3, 4 * 3600 + 5 * 60 + 6, 0));
+    // a lone number is seconds
+    assertThat(text(1186, "5")).isEqualTo(duration(0, 0, 5, 0));
+  }
+
+  @Test
+  void isoFractionalMonthSpillsIntoDaysOfThirty() {
+    // as "1.5 months": no hours from an average month length
+    assertThat(text(1186, "P1.5M")).isEqualTo(duration(1, 15, 0, 0));
+    assertThat(text(1186, "P1.5D")).isEqualTo(duration(0, 1, 12 * 3600, 0));
+    assertThat(text(1186, "-P1Y2M")).isEqualTo(duration(-14, 0, 0, 0));
+    assertThat(text(1186, "PT1M30S")).isEqualTo(duration(0, 0, 90, 0));
+    // the alternative format
+    assertThat(text(1186, "P0001-02-03T04:05:06")).isEqualTo(duration(14, 3, 4 * 3600 + 5 * 60 + 6, 0));
+  }
+
+  @Test
+  void intervalAmountsOfUnboundedMagnitudeAreRefusedBeforeAnyArithmetic() {
+    // each of these used to make setScale build a number of about a hundred million digits
+    for (final String huge : new String[] { "1e100000000 months", "1e100000000 days", "1e-100000000 seconds", "1e100000000:00" })
+      assertThatThrownBy(() -> text(1186, huge)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void timestamptzRefusesADateTheCalendarDoesNotHave() {
+    assertThatThrownBy(() -> text(1184, "2024-02-30 12:00:00+00")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> text(1184, "2023-02-29 12:00:00+00")).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void scalarJsonDocuments() {
+    for (final int oid : new int[] { 114, 3802 }) {
+      assertThat(text(oid, "42")).isEqualTo(42);
+      assertThat(text(oid, "\"s\"")).isEqualTo("s");
+      assertThat(text(oid, "true")).isEqualTo(true);
+      assertThat(text(oid, "null")).isNull();
+    }
+    final byte[] versioned = ByteBuffer.allocate(3).put((byte) 1).put("42".getBytes(StandardCharsets.UTF_8)).array();
+    assertThat(binary(3802, versioned)).isEqualTo(42);
+  }
+
+  @Test
   void jsonbReadsLikeJson() {
     assertThat(((JSONObject) text(3802, "{\"a\": 1}")).getInt("a")).isEqualTo(1);
     final byte[] json = "{\"a\": 1}".getBytes(StandardCharsets.UTF_8);

@@ -43,6 +43,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -180,9 +181,10 @@ public enum PostgresType {
   private static final DateTimeFormatter OFFSET_FORMATTER          = new DateTimeFormatterBuilder().parseLenient()
       .appendOffset("+HH:MM:ss", "Z").toFormatter();
   private static final Pattern           COMPACT_OFFSET            = Pattern.compile("([+-]\\d{2})(\\d{2})(\\d{2})?$");
+  // STRICT: a date the calendar does not have (2024-02-30) is refused, not moved to the last day of the month
   private static final DateTimeFormatter TIMESTAMPTZ_FORMATTER     = new DateTimeFormatterBuilder()
       .append(DateTimeFormatter.ISO_LOCAL_DATE).appendLiteral('T').append(DateTimeFormatter.ISO_LOCAL_TIME)
-      .optionalStart().append(OFFSET_FORMATTER).optionalEnd().toFormatter();
+      .optionalStart().append(OFFSET_FORMATTER).optionalEnd().toFormatter().withResolverStyle(ResolverStyle.STRICT);
   private static final DateTimeFormatter TIMETZ_FORMATTER          = new DateTimeFormatterBuilder()
       .append(DateTimeFormatter.ISO_LOCAL_TIME).append(OFFSET_FORMATTER).toFormatter();
 
@@ -229,64 +231,112 @@ public enum PostgresType {
 
   private static final BigDecimal MICROS_PER_SECOND = BigDecimal.valueOf(1_000_000L);
   private static final BigDecimal MICROS_PER_DAY    = BigDecimal.valueOf(86_400_000_000L);
+  // The digits an interval amount may have on either side of the point. Far more than any interval holds (PostgreSQL counts months
+  // and days in an int32 and the rest in int64 microseconds), and few enough that no scaling of an amount costs anything: an
+  // exponent such as 1e100000000 would otherwise make setScale build a number of a hundred million digits.
+  private static final int        MAX_AMOUNT_DIGITS = 18;
+  private static final String     ISO_AMOUNT        = "([-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))";
+  private static final Pattern    ISO_INTERVAL      = Pattern.compile(
+      "([-+])?P(?:" + ISO_AMOUNT + "Y)?(?:" + ISO_AMOUNT + "M)?(?:" + ISO_AMOUNT + "W)?(?:" + ISO_AMOUNT + "D)?(?:T(?:" + ISO_AMOUNT
+          + "H)?(?:" + ISO_AMOUNT + "M)?(?:" + ISO_AMOUNT + "S)?)?", Pattern.CASE_INSENSITIVE);
+  private static final String[]   ISO_UNITS         = { "years", "months", "weeks", "days", "hours", "minutes", "seconds" };
+  // the year-month field of the SQL-standard form, 1-2 for one year and two months
+  private static final Pattern    YEAR_MONTH_FIELD  = Pattern.compile("([-+]?)(\\d+)-(\\d+)");
 
   /**
-   * An interval parameter (issue #11960) in the forms PostgreSQL reads: ISO 8601 ({@code P1DT5S}), the postgres style psycopg sends
-   * ({@code 1 day 0:00:05}, {@code -1 day 23:59:55}), the verbose one pgjdbc sends ({@code 0 years 0 mons 1 days 0 hours 0 mins
-   * 5.0 secs}, {@code @ 1 day ago}) and the signed sql_standard one ({@code +1 day +5 second +0 microsecond}). A fraction of a month
-   * spills into days of 30 and a fraction of a day into hours, as in PostgreSQL. The result is the engine's DURATION value.
+   * An interval parameter (issue #11960) in the forms PostgreSQL reads: ISO 8601 ({@code P1DT5S}, and the alternative
+   * {@code P0001-02-03T04:05:06}), the postgres style psycopg sends ({@code 1 day 0:00:05}, {@code -1 day 23:59:55}), the verbose one
+   * pgjdbc sends ({@code 0 years 0 mons 1 days 0 hours 0 mins 5.0 secs}, {@code @ 1 day ago}), the signed sql_standard one
+   * ({@code +1 day +5 second +0 microsecond}) and the SQL-standard fields ({@code 1-2} for one year two months, {@code 3 4:05:06}
+   * for three days and a time, a lone number for seconds). A fraction of a month spills into days of 30 and a fraction of a day into
+   * hours, as in PostgreSQL, in the ISO form too. The result is the engine's DURATION value.
    */
   static CypherDuration parseIntervalText(final String value) {
     final String text = value.trim();
-    if (text.startsWith("P") || text.startsWith("-P") || text.startsWith("+P"))
-      try {
-        return CypherDuration.parse(text);
-      } catch (final RuntimeException e) {
-        throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
-      }
-
-    final String[] tokens = (text.startsWith("@") ? text.substring(1) : text).trim().toLowerCase(Locale.ENGLISH).split("\\s+");
-    int count = tokens.length;
-    final boolean ago = count > 0 && tokens[count - 1].equals("ago");
-    if (ago)
-      count--;
-    if (count == 0 || tokens[0].isEmpty())
-      throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
-
     final long[] monthsAndDays = new long[2];
     BigDecimal micros = BigDecimal.ZERO;
+    boolean negate = false;
     try {
-      for (int i = 0; i < count; i++) {
-        final String token = tokens[i];
-        if (token.indexOf(':') >= 0) {
-          micros = micros.add(timeOfIntervalInMicros(token));
-          continue;
+      if (text.startsWith("P") || text.startsWith("-P") || text.startsWith("+P") || text.startsWith("p")) {
+        final Matcher iso = ISO_INTERVAL.matcher(text);
+        if (!iso.matches())
+          // the alternative format, P0001-02-03T04:05:06, whose fields are whole numbers
+          try {
+            return CypherDuration.parse(text);
+          } catch (final RuntimeException e) {
+            throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
+          }
+        boolean any = false;
+        for (int i = 0; i < ISO_UNITS.length; i++) {
+          final String amount = iso.group(i + 2);
+          if (amount != null) {
+            micros = micros.add(addAmount(amount(amount), ISO_UNITS[i], monthsAndDays, value));
+            any = true;
+          }
         }
-        if (i + 1 >= count)
-          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value + " (a number without a unit)");
-        final BigDecimal amount = new BigDecimal(token);
-        final String unit = tokens[++i];
-        micros = micros.add(switch (unit) {
-          case "year", "years", "y", "yr", "yrs" -> addMonths(amount.multiply(BigDecimal.valueOf(12)), monthsAndDays);
-          case "mon", "mons", "month", "months" -> addMonths(amount, monthsAndDays);
-          case "week", "weeks", "w" -> addDays(amount.multiply(BigDecimal.valueOf(7)), monthsAndDays);
-          case "day", "days", "d" -> addDays(amount, monthsAndDays);
-          case "hour", "hours", "h", "hr", "hrs" -> amount.multiply(BigDecimal.valueOf(3_600_000_000L));
-          case "minute", "minutes", "min", "mins", "m" -> amount.multiply(BigDecimal.valueOf(60_000_000L));
-          case "second", "seconds", "sec", "secs", "s" -> amount.multiply(MICROS_PER_SECOND);
-          case "millisecond", "milliseconds", "msec", "msecs", "ms" -> amount.multiply(BigDecimal.valueOf(1_000L));
-          case "microsecond", "microseconds", "usec", "usecs", "us" -> amount;
-          default -> throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value + " (unknown unit '" + unit + "')");
-        });
+        if (!any)
+          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
+        negate = "-".equals(iso.group(1));
+      } else {
+        final String[] tokens = (text.startsWith("@") ? text.substring(1) : text).trim().toLowerCase(Locale.ENGLISH).split("\\s+");
+        int count = tokens.length;
+        negate = count > 0 && tokens[count - 1].equals("ago");
+        if (negate)
+          count--;
+        if (count == 0 || tokens[0].isEmpty())
+          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
+
+        for (int i = 0; i < count; i++) {
+          final String token = tokens[i];
+          final Matcher yearMonth = YEAR_MONTH_FIELD.matcher(token);
+          if (yearMonth.matches()) {
+            final BigDecimal months = amount(yearMonth.group(2)).multiply(BigDecimal.valueOf(12)).add(amount(yearMonth.group(3)));
+            micros = micros.add(addMonths("-".equals(yearMonth.group(1)) ? months.negate() : months, monthsAndDays));
+          } else if (token.indexOf(':') >= 0)
+            micros = micros.add(timeOfIntervalInMicros(token));
+          else if (i + 1 >= count)
+            // a lone trailing number is seconds, as PostgreSQL reads '5'
+            micros = micros.add(amount(token).multiply(MICROS_PER_SECOND));
+          else if (tokens[i + 1].indexOf(':') >= 0)
+            // a number before the time field is the day field: 3 4:05:06
+            micros = micros.add(addDays(amount(token), monthsAndDays));
+          else {
+            final BigDecimal amount = amount(token);
+            micros = micros.add(addAmount(amount, tokens[++i], monthsAndDays, value));
+          }
+        }
       }
-    } catch (final NumberFormatException e) {
+      final long totalMicros = micros.setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+      final int sign = negate ? -1 : 1;
+      return new CypherDuration(sign * monthsAndDays[0], sign * monthsAndDays[1], sign * Math.floorDiv(totalMicros, 1_000_000L),
+          sign * Math.floorMod(totalMicros, 1_000_000L) * 1_000L);
+    } catch (final NumberFormatException | ArithmeticException e) {
       throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
     }
+  }
 
-    final long totalMicros = micros.setScale(0, RoundingMode.HALF_EVEN).longValueExact();
-    final int sign = ago ? -1 : 1;
-    return new CypherDuration(sign * monthsAndDays[0], sign * monthsAndDays[1], sign * Math.floorDiv(totalMicros, 1_000_000L),
-        sign * Math.floorMod(totalMicros, 1_000_000L) * 1_000L);
+  /** Adds {@code amount} of {@code unit}: whole months and days into {@code monthsAndDays}, the rest answered in microseconds. */
+  private static BigDecimal addAmount(final BigDecimal amount, final String unit, final long[] monthsAndDays, final String value) {
+    return switch (unit) {
+      case "year", "years", "y", "yr", "yrs" -> addMonths(amount.multiply(BigDecimal.valueOf(12)), monthsAndDays);
+      case "mon", "mons", "month", "months" -> addMonths(amount, monthsAndDays);
+      case "week", "weeks", "w" -> addDays(amount.multiply(BigDecimal.valueOf(7)), monthsAndDays);
+      case "day", "days", "d" -> addDays(amount, monthsAndDays);
+      case "hour", "hours", "h", "hr", "hrs" -> amount.multiply(BigDecimal.valueOf(3_600_000_000L));
+      case "minute", "minutes", "min", "mins", "m" -> amount.multiply(BigDecimal.valueOf(60_000_000L));
+      case "second", "seconds", "sec", "secs", "s" -> amount.multiply(MICROS_PER_SECOND);
+      case "millisecond", "milliseconds", "msec", "msecs", "ms" -> amount.multiply(BigDecimal.valueOf(1_000L));
+      case "microsecond", "microseconds", "usec", "usecs", "us" -> amount;
+      default -> throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value + " (unknown unit '" + unit + "')");
+    };
+  }
+
+  /** One number of an interval, refused before any arithmetic when it has more digits than {@link #MAX_AMOUNT_DIGITS} allows. */
+  private static BigDecimal amount(final String token) {
+    final BigDecimal amount = new BigDecimal(token);
+    if (amount.scale() > MAX_AMOUNT_DIGITS || amount.precision() - amount.scale() > MAX_AMOUNT_DIGITS)
+      throw new IllegalArgumentException("INTERVAL amount out of range: " + (token.length() > 40 ? token.substring(0, 40) + "..." : token));
+    return amount;
   }
 
   /** Adds the whole months to {@code monthsAndDays[0]} and answers the microseconds of what a fraction spills into days of 30. */
@@ -310,17 +360,17 @@ public enum PostgresType {
     final String[] parts = unsigned.split(":");
     if (parts.length < 2 || parts.length > 3)
       throw new IllegalArgumentException("Cannot parse INTERVAL time '" + token + "'");
-    BigDecimal micros = new BigDecimal(parts[0]).multiply(BigDecimal.valueOf(3_600_000_000L))
-        .add(new BigDecimal(parts[1]).multiply(BigDecimal.valueOf(60_000_000L)));
+    BigDecimal micros = amount(parts[0]).multiply(BigDecimal.valueOf(3_600_000_000L))
+        .add(amount(parts[1]).multiply(BigDecimal.valueOf(60_000_000L)));
     if (parts.length == 3)
-      micros = micros.add(new BigDecimal(parts[2]).multiply(MICROS_PER_SECOND));
+      micros = micros.add(amount(parts[2]).multiply(MICROS_PER_SECOND));
     return negative ? micros.negate() : micros;
   }
 
-
   /**
-   * Parses an inbound json value. A list of documents is sent to the client as a json array (issue #5366), so
-   * the same payload must be accepted back: an array yields a List, anything else a {@link JSONObject}.
+   * Parses an inbound json or jsonb value. A list of documents is sent to the client as a json array (issue #5366), so
+   * the same payload must be accepted back: an array yields a List, an object a {@link JSONObject}, and a scalar document (a
+   * number, a string, {@code true}, {@code false} or {@code null}, which PostgreSQL accepts as json too) its value.
    */
   private static Object parseJsonText(final String value) {
     if (value == null)
@@ -328,7 +378,14 @@ public enum PostgresType {
     final String trimmed = value.trim();
     if (!trimmed.isEmpty() && trimmed.charAt(0) == '[')
       return new JSONArray(trimmed).toList();
-    return new JSONObject(value);
+    if (!trimmed.isEmpty() && trimmed.charAt(0) == '{')
+      return new JSONObject(value);
+    // a scalar is read as the one element of an array, whose reader converts a JSON value to its Java value
+    final List<Object> scalar = new JSONArray("[" + trimmed + "]").toList();
+    if (scalar.size() != 1)
+      throw new IllegalArgumentException(
+          "Invalid input syntax for type json: '" + (trimmed.length() > 40 ? trimmed.substring(0, 40) + "..." : trimmed) + "'");
+    return scalar.getFirst();
   }
 
   /**
