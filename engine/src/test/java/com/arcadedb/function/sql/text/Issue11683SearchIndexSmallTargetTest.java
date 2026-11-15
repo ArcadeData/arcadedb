@@ -20,10 +20,14 @@ package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextRecordScorer;
 import com.arcadedb.index.fulltext.FullTextSearch;
+import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -36,6 +40,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -290,6 +295,60 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
       final Map<RID, Float> complete = completeAnswer("SEARCH_INDEX('Doc[content]', :q)", "Doc", query);
       final Map<RID, Float> rows = targetAnswer("SEARCH_INDEX('Doc[content]', :q)", target, query);
       assertThat(rows).as(query).isEqualTo(restrictedTo(complete, target)).doesNotContainKeys(deleted, other[0]);
+    }
+  }
+
+  /**
+   * A record of the target that a concurrent commit deletes after the target fetched it and before its row is scored: the row
+   * holds a record not loaded yet, which can no longer be read, and the complete search answers for it instead of the read
+   * failing the statement.
+   */
+  @Test
+  void aTargetRecordDeletedConcurrentlyBeforeItsScoreIsLeftToTheCompleteSearch() {
+    createCorpus("Doc", 4, false);
+    final List<RID> sample = sample("Doc");
+    final RID deleted = sample.get(3);
+    final AtomicReference<Throwable> writerFailure = new AtomicReference<>();
+    final String function = "deleteConcurrently11683";
+    final SQLQueryEngine sql = (SQLQueryEngine) database.getQueryEngine("sql");
+    sql.getFunctionFactory().register(new SQLFunctionAbstract(function) {
+      @Override
+      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+          final CommandContext context) {
+        if (deleted.equals(params[0])) {
+          final Thread writer = new Thread(() -> {
+            try {
+              database.transaction(() -> deleted.asDocument().delete());
+            } catch (final Throwable e) {
+              writerFailure.set(e);
+            }
+          });
+          writer.start();
+          try {
+            writer.join();
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+          }
+        }
+        return true;
+      }
+
+      @Override
+      public String getSyntax() {
+        return function + "(<rid>)";
+      }
+    });
+    try {
+      final Map<RID, Float> rows = targetAnswer(function + "(@rid) = true AND SEARCH_INDEX('Doc[content]', :q)", sample, "alpha");
+      assertThat(writerFailure.get()).isNull();
+      assertThat(database.existsRecord(deleted)).isFalse();
+      final Map<RID, Float> complete = completeAnswer("SEARCH_INDEX('Doc[content]', :q)", "Doc", "alpha");
+      // The matches, not the scores: the rows scored before the delete used the statistics of the corpus that still held the
+      // deleted record, the complete search computed after it does not
+      assertThat(rows.keySet()).isEqualTo(restrictedTo(complete, sample).keySet()).doesNotContain(deleted).isNotEmpty();
+    } finally {
+      sql.getFunctionFactory().unregister(function);
     }
   }
 
