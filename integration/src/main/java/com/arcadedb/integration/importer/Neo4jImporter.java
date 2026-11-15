@@ -409,8 +409,8 @@ public class Neo4jImporter {
             ++totalVerticesParsed;
             if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
               final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
-              log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
-                  context.skippedEdges.get(), context.createdVertices.get() / elapsed * 1000);
+              log("- Status update: created %,d vertices (%,d vertices/sec)", context.createdVertices.get(),
+                  context.createdVertices.get() / elapsed * 1000);
             }
 
             final Pair<String, List<String>> type = typeNameFromLabels(json);
@@ -459,7 +459,8 @@ public class Neo4jImporter {
             break;
 
           case "relationship":
-            context.skippedEdges.incrementAndGet();
+            // READ IN THE EDGE PASS. NOT COUNTED AS SKIPPED: skippedEdges IS WHAT THE REPORT CALLS THE EDGES THE IMPORT
+            // DROPPED, AND COUNTING EVERY RELATIONSHIP HERE REPORTED ALL OF THEM, CREATED OR NOT (ISSUE #12047)
             break;
           }
 
@@ -514,8 +515,8 @@ public class Neo4jImporter {
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
 
-    log("- Creation of vertices completed: created %,d vertices, skipped %,d edges (%,d vertices/sec elapsed=%,d secs)",
-        context.createdVertices.get(), context.skippedEdges.get(),
+    log("- Creation of vertices completed: created %,d vertices (%,d vertices/sec elapsed=%,d secs)",
+        context.createdVertices.get(),
         elapsedInSecs > 0 ? (context.createdVertices.get() / elapsedInSecs) : 0, elapsedInSecs);
     log("- ID mapping mode: %s", useNumericIds ? "numeric (primitive long[])" : "string (HashMap)");
   }
@@ -593,7 +594,7 @@ public class Neo4jImporter {
           final String type = json.has("label") && !json.isNull("label") ? validateLabel(json.getString("label")) : null;
           if (type == null) {
             log("- found edge in line %d without labels. Skip it.", lineNumber.get());
-            context.warnings.incrementAndGet();
+            context.skippedEdges.incrementAndGet();
             return null;
           }
 
@@ -602,7 +603,8 @@ public class Neo4jImporter {
           final long fromPacked = getId(startId);
           if (fromPacked == LongLongMap.EMPTY) {
             log("- cannot create relationship with id '%s'. Vertex id '%s' not found. Skip it.", json.getString("id"), startId);
-            context.warnings.incrementAndGet();
+            // THE EDGE IS DROPPED: skippedEdges, THE COUNTER THE CSV ROUTE REPORTS THE SAME CASE IN (ISSUE #12047)
+            context.skippedEdges.incrementAndGet();
             return null;
           }
 
@@ -611,7 +613,7 @@ public class Neo4jImporter {
           final long toPacked = getId(endId);
           if (toPacked == LongLongMap.EMPTY) {
             log("- cannot create relationship with id '%s'. Vertex id '%s' not found. Skip it.", json.getString("id"), endId);
-            context.warnings.incrementAndGet();
+            context.skippedEdges.incrementAndGet();
             return null;
           }
 
