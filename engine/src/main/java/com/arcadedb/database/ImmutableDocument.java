@@ -327,14 +327,15 @@ public class ImmutableDocument extends BaseDocument {
 
   /**
    * Whether this record's content was read by the current transaction, stale or not (issue #8610's marker), checked before
-   * {@link #prepareForModify} reloads it.
+   * {@link #prepareForModify} reloads it. A record stamped but not loaded ({@code lookupByRID(rid, false)} in READ_COMMITTED)
+   * read nothing from the bucket, so it does not count; the stale marker is only set after a read, so it does.
    */
   protected boolean readInCurrentTransaction() {
     final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
     if (tx == null || readInTransaction == -1)
       return false;
     final int id = readTransactionId(tx.getBeginSequence());
-    return id >= 0 && (readInTransaction == id || readInTransaction == STALE_READ - id);
+    return id >= 0 && ((readInTransaction == id && buffer != null) || readInTransaction == STALE_READ - id);
   }
 
   /**

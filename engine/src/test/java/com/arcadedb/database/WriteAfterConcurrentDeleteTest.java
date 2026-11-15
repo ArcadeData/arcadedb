@@ -92,7 +92,7 @@ class WriteAfterConcurrentDeleteTest extends TestHelper {
 
     assertThat(Race.PENDING.get()).isNull();
     assertThat(rows.get()).isZero();
-    assertThat(database.query("sql", "SELECT count(*) AS c FROM R").next().<Long>getProperty("c")).isZero();
+    assertThat(database.query("sql", "SELECT count(@rid) AS c FROM R").next().<Long>getProperty("c")).isZero();
   }
 
   /** A record read by an earlier transaction and deleted since is gone for good: no retry can find it, it stays not-found. */
@@ -104,6 +104,24 @@ class WriteAfterConcurrentDeleteTest extends TestHelper {
 
     assertThatThrownBy(() -> database.transaction(() -> held[0].modify().set("n", 1).save(), false, 0))
         .isInstanceOf(RecordNotFoundException.class);
+  }
+
+  /**
+   * A record only referenced in this transaction (lookupByRID without loading its content, which stamps it without reading the
+   * bucket) proves nothing was read: deleted before the transaction began, it stays not-found, never a conflict a retry repeats.
+   */
+  @Test
+  void anUnloadedLookupOfARecordDeletedBeforeTheTransactionKeepsTheNotFound() {
+    final RID vertex = database.query("sql", "SELECT FROM R WHERE k = 'r0'").next().getIdentity().get();
+    final RID document = database.query("sql", "SELECT FROM D WHERE k = 'd0'").next().getIdentity().get();
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM R WHERE k = 'r0'").close();
+      database.command("sql", "DELETE FROM D WHERE k = 'd0'").close();
+    });
+
+    for (final RID rid : new RID[] { vertex, document })
+      assertThatThrownBy(() -> database.transaction(() -> database.lookupByRID(rid, false).asDocument().modify().set("n", 1).save(),
+          false, 0)).as("modify of %s", rid).isInstanceOf(RecordNotFoundException.class);
   }
 
   /** Run in a transaction that commits {@code concurrentCommand} from another thread when {@code body} calls race.interleave. */
