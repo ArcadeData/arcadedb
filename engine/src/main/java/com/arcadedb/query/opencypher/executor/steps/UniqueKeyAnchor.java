@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 
 import java.util.Arrays;
@@ -37,6 +38,10 @@ public final class UniqueKeyAnchor {
   private final TypeIndex index;
   private final Object[]  key;
 
+  /**
+   * @param key one value per column of {@code index}, converted to index keys. Held as it is, not copied: the caller builds it for
+   *            this anchor alone and never writes to it again
+   */
   public UniqueKeyAnchor(final TypeIndex index, final Object[] key) {
     if (!index.isUnique())
       throw new IllegalArgumentException("Index '" + index.getName() + "' is not unique");
@@ -49,7 +54,7 @@ public final class UniqueKeyAnchor {
   /**
    * The record holding the key, as the lookup loaded it, or null when no record holds it. Read against one committed state: the
    * caller checks and walks that record rather than reading it again, since a commit after the lookup could have moved the key
-   * to another record. Refused with the {@link com.arcadedb.index.IndexException} of {@link TypeIndex#getForQuery} when a
+   * to another record. Refused with the {@link IndexException} of {@link TypeIndex#getForQuery} when a
    * concurrent DDL left the index unable to answer whole: the caller then walks the label, which applies the same equality as a
    * predicate.
    */
