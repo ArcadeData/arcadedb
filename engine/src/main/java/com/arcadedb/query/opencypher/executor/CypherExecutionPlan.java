@@ -38,6 +38,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.AllReduceExpression;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
@@ -158,12 +159,14 @@ import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TriangleCountOp;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
+import com.arcadedb.query.opencypher.executor.steps.UniqueKeyAnchor;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.AnchorSelector;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
@@ -3101,18 +3104,52 @@ public class CypherExecutionPlan {
    * finds one vertex at most (issue #11699).
    */
   private boolean isUniquelyKeyed(final NodePattern node) {
+    return uniqueKeyIndexOf(node) != null;
+  }
+
+  /**
+   * A UNIQUE index of the one label of a node pattern whose every column the pattern's property map pins by an equality, or null
+   * when there is none (issues #11699, #11594).
+   */
+  private TypeIndex uniqueKeyIndexOf(final NodePattern node) {
     if (!node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels()
         || node.getLabels().size() != 1)
-      return false;
+      return null;
     final Schema schema = database.getSchema();
     if (!schema.existsType(node.getLabels().getFirst()))
-      return false;
+      return null;
     for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
       final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
       if (keys != null && node.getProperties().keySet().containsAll(keys))
-        return true;
+        return index;
     }
-    return false;
+    return null;
+  }
+
+  /**
+   * The vertex a node pattern pins by an equality on every column of a UNIQUE index, as a key to look up when the count runs
+   * (issue #11594), or null when there is no such index or a value of the key is not a literal or a parameter given a scalar
+   * value. A null key is not a key: the index holds an entry per record whose key is null, while the equality matches none.
+   */
+  private UniqueKeyAnchor uniqueKeyAnchorOf(final NodePattern node, final CommandContext context) {
+    final TypeIndex index = uniqueKeyIndexOf(node);
+    // a document or an edge type holding the key is no vertex: the label walk matches nothing there, as a node pattern must
+    if (index != null && !(database.getSchema().getType(node.getLabels().getFirst()) instanceof VertexType))
+      return null;
+    final List<String> keys = index != null ? index.getPropertyNamesIfExactKeyLookup() : null;
+    if (keys == null)
+      return null;
+    final Object[] key = new Object[keys.size()];
+    for (int i = 0; i < key.length; i++) {
+      final Object declared = node.getProperties().get(keys.get(i));
+      if (!RowIndependentValues.isSeekable(declared))
+        return null;
+      final Object value = InlineProperties.resolve(declared, null, context);
+      if (value == null || value instanceof Collection || value instanceof Map || value.getClass().isArray())
+        return null;
+      key[i] = TemporalUtil.toIndexKey(value);
+    }
+    return new UniqueKeyAnchor(index, key);
   }
 
   /**
@@ -7333,8 +7370,10 @@ public class CypherExecutionPlan {
     // central node's label, and an anchor's inline map or WHERE equality only filters what they visit. A statement whose
     // ordinary plan starts from a selective index seek costs that seek and the expansion from it, the same at any graph size,
     // which is what the same statement with sum(1) gets; pushed down it cost the whole label (issue #11680). A correlated body
-    // is seeded from the anchor its outer row bound, so it has no label to walk.
-    if (!correlation.isCorrelated() && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor())
+    // is seeded from the anchor its outer row bound, and a chain from the vertex a UNIQUE key pins (issue #11594), so neither
+    // has a label to walk: that walk costs the seek and the paths of one vertex, without a row per path.
+    if (!correlation.isCorrelated() && !(op instanceof PropagateChainOp chain && chain.isSeeded())
+        && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor())
       return null;
 
     return new CSRCountStep(op, alias, context);
@@ -7796,6 +7835,15 @@ public class CypherExecutionPlan {
       nodePredicates[i] = predicates.predicateFor(pathPattern.getNode(i));
 
     if (!correlation.isCorrelated()) {
+      // An end pinned by a UNIQUE key is one vertex at most: looked up when the count runs, the chain is walked from it alone,
+      // which costs the seek and that vertex's paths, not a walk of either label (issue #11594). The seeded walk has no
+      // inequality to apply, so a chain carrying one is left to what follows
+      if (inequalityVar1 == null) {
+        final CountOp keyed = uniqueKeySeededChainOp(db, pathPattern, whereClause, nodeLabels, edgeTypes, directions, nodePredicates,
+            context);
+        if (keyed != null)
+          return keyed;
+      }
       // The propagation enumerates the label of its first position. Written in the direction of the edge, a chain often
       // puts the anchored node last, (c:Chunk)-[:OF_RECORD]->(r:Record {external_id: $id}), which enumerated every chunk
       // to keep the paths of one record (issue #11594). The far end is reached by reading the same arrays the other way,
@@ -7810,6 +7858,28 @@ public class CypherExecutionPlan {
 
     return seededChainOp(db, correlation, pathPattern, nodeLabels, edgeTypes, directions, nodePredicates,
         inequalityVar1 != null);
+  }
+
+  /**
+   * The chain seeded from the end that an equality on every column of a UNIQUE index pins to one vertex, the first end
+   * preferred, or null when neither end is pinned (issue #11594). A key written in WHERE pins the node as an inline one does.
+   * The last end is reached by reading the chain the other way, as {@link #seededChainOp} does, which a chain over an edge
+   * type declared unidirectional cannot be: the incoming side is stored on no vertex.
+   */
+  private CountOp uniqueKeySeededChainOp(final Database db, final PathPattern pathPattern, final WhereClause where,
+      final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+      final VertexPredicate[] nodePredicates, final CommandContext context) {
+    final PathPattern keyed = withWhereEqualities(List.of(pathPattern), where).getFirst();
+    final UniqueKeyAnchor first = uniqueKeyAnchorOf(keyed.getNode(0), context);
+    if (first != null)
+      return new PropagateChainOp(nodeLabels, edgeTypes, directions, first, nodePredicates);
+    if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
+      return null;
+    final UniqueKeyAnchor last = uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length), context);
+    if (last == null)
+      return null;
+    return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), last,
+        reversed(nodePredicates));
   }
 
   /**
