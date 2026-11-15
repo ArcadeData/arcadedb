@@ -29,6 +29,7 @@ import com.arcadedb.utility.FileUtils;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -1033,6 +1034,41 @@ public class PageManagerFlushThread extends Thread {
       pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
     }
     return true;
+  }
+
+  /**
+   * The pages of {@code fileId} in {@code [0, pageCount)} that are in the flush pipeline (queued, in flight or refused by
+   * the disk), waiting until {@code deadlineMillis} for the ones found at the call to leave it. Pages of other files are
+   * not waited for: a caller that needs one file durable (a graph committed without the WAL) used to wait for the whole
+   * database's backlog, which under writes to other types it does not depend on is most of the wait.
+   *
+   * @return the page numbers of the file still in the pipeline when the wait ended, empty when none is
+   */
+  int[] pagesOfFileInPipeline(final Database database, final int fileId, final int pageCount, final long deadlineMillis)
+      throws InterruptedException {
+    int[] pending = new int[0];
+    int count = 0;
+    for (int pageNumber = 0; pageNumber < pageCount; ++pageNumber)
+      if (getCachedPageFromMutablePageInQueue(new PageId(database, fileId, pageNumber)) != null) {
+        if (count == pending.length)
+          pending = Arrays.copyOf(pending, Math.max(16, count * 2));
+        pending[count++] = pageNumber;
+      }
+
+    while (count > 0) {
+      final long remaining = deadlineMillis - System.currentTimeMillis();
+      if (remaining <= 0)
+        break;
+      // The drain signal fires only when the database's whole pipeline empties, which under sustained writes may never
+      // happen: the poll interval is what re-checks this file's pages in that case
+      pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
+      int stillPending = 0;
+      for (int i = 0; i < count; ++i)
+        if (getCachedPageFromMutablePageInQueue(new PageId(database, fileId, pending[i])) != null)
+          pending[stillPending++] = pending[i];
+      count = stillPending;
+    }
+    return count == pending.length ? pending : Arrays.copyOf(pending, count);
   }
 
   /**

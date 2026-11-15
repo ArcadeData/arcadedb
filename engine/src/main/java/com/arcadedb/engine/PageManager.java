@@ -619,11 +619,16 @@ public class PageManager extends LockContext {
    * wrote them leaves the file without them, and the first WAL-logged change of one of those pages then leaves recovery a
    * version gap it cannot bridge.
    * <p>
-   * Waits up to {@code maxWaitMillis} for the pages pending at the call to reach the disk (not at all while the flush of
-   * the database is suspended: a backup holds the files still, the pages are deferred until it ends), forces the files of
-   * the database, and answers the pages of {@code fileId} that are still not on the disk: queued, in flight, deferred by
-   * a suspension or refused by the disk. The caller writes those through the WAL instead. The pending pages are
-   * collected BEFORE the files are forced, so a page the flush writes in between is either forced or answered.
+   * Waits up to {@code maxWaitMillis} for the pages of {@code fileId} pending at the call to reach the disk (not at all while
+   * the flush of the database is suspended: a backup holds the files still, the pages are deferred until it ends), forces
+   * that file, and answers its pages that are still not on the disk: queued, in flight, deferred by a suspension or refused
+   * by the disk. The caller writes those through the WAL instead. The pending pages are collected BEFORE the file is forced,
+   * so a page the flush writes in between is either forced or answered.
+   * <p>
+   * Only {@code fileId} is waited for and forced. This used to wait for the whole database's flush backlog and force every
+   * file of the database written since its last fsync, so under writes to other types the caller (a vector graph build,
+   * which holds the build lock that concurrent searches of the index queue on) paid one fsync per file those writers
+   * touched.
    *
    * @param totalPages the pages of the file to look at, {@code [0, totalPages)}
    *
@@ -632,28 +637,28 @@ public class PageManager extends LockContext {
   public int[] flushAndSyncWithoutWAL(final DatabaseInternal database, final int fileId, final int totalPages,
       final long maxWaitMillis) {
     final PageManagerFlushThread thread = flushThread;
-    if (thread != null && !thread.isSuspended(database))
-      waitPagesPendingNowOfDatabaseAreFlushed(database, maxWaitMillis);
-
     int[] notOnDisk = new int[0];
-    int count = 0;
     if (thread != null)
-      for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber)
-        if (thread.getCachedPageFromMutablePageInQueue(new PageId(database, fileId, pageNumber)) != null) {
-          if (count == notOnDisk.length)
-            notOnDisk = Arrays.copyOf(notOnDisk, Math.max(16, count * 2));
-          notOnDisk[count++] = pageNumber;
-        }
+      try {
+        notOnDisk = thread.pagesOfFileInPipeline(database, fileId, totalPages,
+            thread.isSuspended(database) ? 0L : System.currentTimeMillis() + maxWaitMillis);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        notOnDisk = allPages(totalPages);
+      }
 
-    if (!database.getFileManager().syncFiles()) {
+    if (!database.getFileManager().syncFile(fileId))
       // WRITTEN BUT NOT FORCED: NONE OF THE PAGES OF THE FILE CAN BE TAKEN FOR DURABLE
-      notOnDisk = new int[totalPages];
-      for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber)
-        notOnDisk[pageNumber] = pageNumber;
-      return notOnDisk;
-    }
+      return allPages(totalPages);
 
-    return count == notOnDisk.length ? notOnDisk : Arrays.copyOf(notOnDisk, count);
+    return notOnDisk;
+  }
+
+  private static int[] allPages(final int totalPages) {
+    final int[] pages = new int[totalPages];
+    for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber)
+      pages[pageNumber] = pageNumber;
+    return pages;
   }
 
   /**

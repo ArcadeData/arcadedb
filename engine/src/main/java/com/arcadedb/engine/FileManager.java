@@ -359,6 +359,39 @@ public class FileManager {
     }
   }
 
+  /**
+   * {@link #syncFiles()} for one file: forces {@code fileId} if it was written, created or renamed since its last
+   * successful fsync, and its directory when it was created or renamed. For a caller that needs only that file durable
+   * (pages committed without the WAL): forcing every file of the database instead costs one fsync per file other writers
+   * touched, which under concurrent writes is most of the time the caller waits. Serialized with {@link #syncFiles()} for
+   * the same reason that one is.
+   *
+   * @return {@code true} when the file owed nothing or was fsynced; {@code false} when the fsync failed or the file is not
+   *     an open paginated file of this database
+   */
+  public boolean syncFile(final int fileId) {
+    if (!(fileIdMap.get(fileId) instanceof PaginatedComponentFile pcf))
+      return false;
+    syncLock.lock();
+    try {
+      final int synced = pcf.forceIfModified();
+      if (synced != PaginatedComponentFile.SYNC_CLEAN) {
+        syncedFiles.incrementAndGet();
+        if (synced == PaginatedComponentFile.SYNC_METADATA) {
+          final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
+          if (parent != null)
+            FileUtils.forceDirectory(parent.toPath());
+        }
+      }
+      return true;
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, pcf.getFileName());
+      return false;
+    } finally {
+      syncLock.unlock();
+    }
+  }
+
   private boolean syncFilesSerialized() {
     boolean allSynced = true;
     Set<Path> directoriesToSync = null;
