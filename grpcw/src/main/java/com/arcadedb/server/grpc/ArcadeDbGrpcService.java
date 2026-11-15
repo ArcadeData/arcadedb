@@ -102,7 +102,6 @@ import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-import org.jspecify.annotations.NonNull;
 
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.StringUtils;
@@ -867,7 +866,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private ExecuteCommandResponse executeCommandInternal(ExecuteCommandRequest req, long t0,
                                                         Database db, boolean isExternalTransaction) {
-
+    // the encoding the client asked for, as ExecuteQuery and StreamQuery honour it (issue #11959)
+    final ProjectionConfig projectionConfig = projectionConfigOf(req.hasProjectionSettings(), req.getProjectionSettings());
     boolean beganHere = false;
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
@@ -965,8 +965,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
               final long serRowStart = System.nanoTime();
               // Convert Result to GrpcRecord, preserving aliases and all properties
-              GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
-                  new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
+              GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db, projectionConfig);
               out.addRecords(grpcRecord);
               serializationAccum += System.nanoTime() - serRowStart;
 
@@ -1722,7 +1721,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     String profileLanguage = null;
     try {
       final long deserStart = System.nanoTime();
-      ProjectionConfig projectionConfig = getProjectionConfig(request);
+      ProjectionConfig projectionConfig = projectionConfigOf(request.hasProjectionSettings(), request.getProjectionSettings());
 
       LogManager.instance().log(this, Level.FINE, """
               executeQuery(): projectionConfig.include = %s projectionConfig\
@@ -1831,27 +1830,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  private @NonNull ProjectionConfig getProjectionConfig(ExecuteQueryRequest request) {
-    ProjectionConfig projectionConfig;
-    if (request.hasProjectionSettings()) {
-
-      var projectionSettings = request.getProjectionSettings();
-
-      final boolean includeProjections = projectionSettings.getIncludeProjections();
-      final var projMode = projectionSettings.getProjectionEncoding();
-
-      int softLimit = projectionSettings.hasSoftLimitBytes() ?
-          projectionSettings.getSoftLimitBytes().getValue() :
-          0; // choose your
-      // default
-      // or 0 =
-      // unlimited
-      projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
-    } else {
-
-      projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-    }
-    return projectionConfig;
+  /**
+   * The projection encoding a request asks for, or the JSON default when it sets none. The one reading of the settings that
+   * ExecuteQuery, StreamQuery and ExecuteCommand share, so the three RPCs encode one statement's nested records alike (issue #11959).
+   */
+  private static ProjectionConfig projectionConfigOf(final boolean hasSettings, final ProjectionSettings settings) {
+    if (!hasSettings)
+      return new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+    // 0 = no soft limit
+    final int softLimit = settings.hasSoftLimitBytes() ? settings.getSoftLimitBytes().getValue() : 0;
+    return new ProjectionConfig(settings.getIncludeProjections(), settings.getProjectionEncoding(), softLimit);
   }
 
   /**
@@ -2250,7 +2238,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     ProtocolContext.set("grpc");
     try {
-      final ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
+      final ProjectionConfig projectionConfig = projectionConfigOf(request.hasProjectionSettings(), request.getProjectionSettings());
 
       final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
       scso.setOnCancelHandler(() -> cancelled.set(true));
@@ -2609,29 +2597,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       b.setTotalRecordsInBatch(end - i).setRunningTotalEmitted(running).setIsLastBatch(last);
       safeOnNext(scso, cancelled, (last ? withFacets(b, facets) : b).build());
     }
-  }
-
-  private ProjectionConfig getProjectionConfigFromRequest(StreamQueryRequest request) {
-
-    ProjectionConfig projectionConfig = null;
-
-    if (request.hasProjectionSettings()) {
-
-      var projectionSettings = request.getProjectionSettings();
-
-      final boolean includeProjections = projectionSettings.getIncludeProjections();
-      final var projMode = projectionSettings.getProjectionEncoding();
-
-      int softLimit = projectionSettings.hasSoftLimitBytes() ? projectionSettings.getSoftLimitBytes().getValue() : 0; // choose your
-      // default
-      // or 0 = unlimited
-      projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
-    } else {
-
-      projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-    }
-
-    return projectionConfig;
   }
 
   private void safeOnNext(ServerCallStreamObserver<QueryResult> scso, AtomicBoolean cancelled, QueryResult payload) {
