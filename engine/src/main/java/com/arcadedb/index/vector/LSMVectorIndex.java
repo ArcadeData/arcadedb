@@ -127,6 +127,7 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.WeakHashMap;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
@@ -9584,7 +9585,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return new DefaultSearchScoreProvider(walk, reranker);
   }
 
-  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
+  /**
+   * Runs a search under the database read lock and this index's read lock, taken in that order (issue #11836).
+   * <p>
+   * A search reads the vectors it scores through the database ({@code readStoredVectorInPlace}, the record fallback of
+   * {@link ArcadePageVectorValues}), which takes the database read lock, while it holds this index's lock. Every writer of the
+   * index takes the two the other way round: a commit applies its index changes under the database read lock, and a schema
+   * change holds the database write lock. Taking the index lock first deadlocked a search with a DROP INDEX of its index (the
+   * drop held the database lock and waited for the index lock, the search the opposite), and with a schema change of any
+   * other type too: the database lock is fair, so a new reader waits behind a queued writer, the schema change waited for a
+   * commit to leave the database read lock, and the commit waited for the index lock the search held. Taken first, the
+   * database read lock is held for the whole search, so every read of the walk re-enters it and none of them waits.
+   * <p>
+   * Not around the graph build a search may wait for ({@code ensureGraphAvailable}, {@code rebuildGraphBeforeSearch}): a
+   * build reads through the database while it holds {@code graphBuildLock}, so a search waiting for that lock under the
+   * database read lock would deadlock with it behind a queued schema change.
+   *
+   * @param failure what a failure of the search is reported as
+   */
+  private <T> T underSearchLocks(final String failure, final Callable<T> search) {
+    return getDatabase().executeInReadLock(() -> {
+      lock.readLock().lock();
+      try {
+        return search.call();
+      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
+        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
+        throw e;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, failure, e);
+        throw new IndexException(failure, e);
+      } finally {
+        lock.readLock().unlock();
+      }
+    });
+  }
+
+  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
@@ -9593,8 +9629,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
+      if (requestedK < 0)
+        throw new IllegalArgumentException("k must be >= 0, got " + requestedK);
 
       if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
@@ -9614,7 +9650,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // reranking (NodeQueue.rerank), not an ArcadeDB exception. Short-circuit here, matching the
       // limit <= 0 behavior SQLFunctionVectorNeighbors already applies before ever calling in, and
       // skip the graph build/lock entirely since there is nothing left to search for.
-      if (k == 0)
+      if (requestedK == 0)
         return Collections.emptyList();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
@@ -9648,12 +9684,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Integer.MAX_VALUE, not a k one larger than the live count. Subtracting would cost a pass over the
       // superseded set on every search to tighten an allocation by a handful of entries, and an under-estimate
       // here would drop rows the caller asked for.
-      k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
-      boolean readLockHeld = false;
-      lock.readLock().lock();
-      readLockHeld = true;
-      try {
+      return underSearchLocks("Error performing vector search", () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet — still return delta-only results if available, and the calling transaction's own
           // uncommitted rows are such results too (issue #7378): an empty index written to inside one transaction
@@ -9798,18 +9831,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 results.size(),
                 skippedOutOfBounds, skippedDeletedOrNull);
         return results;
-
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
-        throw new IndexException("Error performing vector search", e);
-      } finally {
-        if (readLockHeld) {
-          lock.readLock().unlock();
-        }
-      }
+      });
     } finally {
       // Track search latency
       final long elapsed = System.currentTimeMillis() - startTime;
@@ -10170,10 +10192,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       final int maxRows = (int) Math.min((long) limit * groupSize,
           Math.max(vectorIndex().size(), 0) + (long) deltaVectors.size() + pendingCount(overlay));
-      boolean readLockHeld = false;
-      lock.readLock().lock();
-      readLockHeld = true;
-      try {
+      return underSearchLocks("Error performing grouped vector search", () -> {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         // Volatile read pinned for the whole query, taken under the read lock because writers mutate this list in
@@ -10398,17 +10417,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 deltaSnapshot.size(), state.outOfBounds, state.deletedOrNull, state.groupFull, state.unresolvedGroup,
                 state.duplicates);
         return results;
-
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing grouped vector search", e);
-        throw new IndexException("Error performing grouped vector search", e);
-      } finally {
-        if (readLockHeld)
-          lock.readLock().unlock();
-      }
+      });
     } finally {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
@@ -10910,8 +10919,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param rerankOversample candidates per requested neighbour to re-rank exactly; {@code 0} for the PQ scores alone, which
    *                        needs no record read. {@link #DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} is a good start
    */
-  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k, final int efSearch,
-      final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int requestedK,
+      final int efSearch, final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
     checkIsValid();
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
@@ -10924,7 +10933,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Fall back to exact search
       LogManager.instance().log(this, Level.FINE,
           "PQ not available for index %s, falling back to exact search", indexName);
-      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
+      return findNeighborsFromVector(queryVector, requestedK, efSearch, allowedRIDs, guard);
     }
 
     // Track search metrics. Both halves are recorded together in the finally below rather than the count here and
@@ -10939,8 +10948,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
+      if (requestedK < 0)
+        throw new IllegalArgumentException("k must be >= 0, got " + requestedK);
 
       if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
@@ -10953,7 +10962,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #6531 follow-up: see findNeighborsFromVector's matching short-circuit - k == 0 must not
       // reach GraphSearcher.search() with topK == 0, which NPEs inside JVector's reranking.
-      if (k == 0)
+      if (requestedK == 0)
         return Collections.emptyList();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
@@ -10973,10 +10982,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
       // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
-      k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
-      lock.readLock().lock();
-      try {
+      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet - still return delta-only results if available.
           //
@@ -11136,22 +11144,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return results;
         }
 
-        // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
-        // own: the exact search below is the search, and it keeps its own books.
-        handedOffToExactSearch = true;
+        // No answer: the guard refused the graph/PQ pair, and the exact search below answers instead
+        return null;
+      });
+      if (answered != null)
+        return answered;
 
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
-        throw new IndexException("Error performing PQ approximate search", e);
-      } finally {
-        lock.readLock().unlock();
-      }
+      // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
+      // own: the exact search below is the search, and it keeps its own books.
+      handedOffToExactSearch = true;
 
       // Reached only when the guard above refused the graph/PQ pair - every other path returns from inside the
-      // block. Outside the read lock on purpose: this can rebuild, which takes the write lock.
+      // block. Outside the locks on purpose: this can rebuild, which takes the write lock.
       return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
     } finally {
       if (!handedOffToExactSearch) {
@@ -11223,9 +11227,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Issue #3679: rebuild graph if needed (sync for first build or small graphs, async for large graphs)
     rebuildGraphBeforeSearch(guard);
 
-    boolean readLockHeld = false;
-    lock.readLock().lock();
-    readLockHeld = true;
+    // Not under this index's lock: findNeighborsFromVector takes the database lock and then this one around its walk (issue
+    // #11836), and held across the call this lock would be held while the search takes the database lock and while it waits
+    // for a graph build. The emptiness check is the same unlocked read the clamp of every search makes.
     try {
       // Perform scored search via findNeighborsFromVector (includes delta scan)
       final List<RID> resultRIDs;
@@ -11295,10 +11299,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
       throw new IndexException("Error performing vector search", e);
-    } finally {
-      if (readLockHeld) {
-        lock.readLock().unlock();
-      }
     }
   }
 
@@ -13494,6 +13494,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return Total number of records indexed
    */
   public long build(final BuildIndexCallback callback, final GraphBuildCallback graphCallback,
+      final boolean chunkedCommitAllowed) {
+    // The database read lock before this index's lock, the order a search takes them in (issue #11836): the build scans the
+    // bucket and commits its chunks through the database while it holds the index lock. Re-entrant under the schema write lock
+    // CREATE INDEX builds under; a direct call outside a schema change makes a schema change wait for the build, instead of
+    // deadlocking with it and with the searches waiting for this index.
+    return getDatabase().executeInReadLock(() -> buildUnderIndexLock(callback, graphCallback, chunkedCommitAllowed));
+  }
+
+  private long buildUnderIndexLock(final BuildIndexCallback callback, final GraphBuildCallback graphCallback,
       final boolean chunkedCommitAllowed) {
     final long totalRecords;
 
