@@ -95,8 +95,17 @@ public final class SelectionPredicates {
   }
 
   /**
-   * Refuses, with a retryable {@link ConcurrentModificationException}, the write of the record {@code rid}, which {@code modify()}
-   * reloaded with content a concurrent commit changed since the row read it, when a predicate that reads the record (through any
+   * Whether there is no predicate at all: a write then has nothing to evaluate again, and a DELETE nothing to reload its targets for.
+   */
+  public boolean isEmpty() {
+    if (inlineMaps == null)
+      collect();
+    return inlineMaps.isEmpty() && conditions.isEmpty();
+  }
+
+  /**
+   * Refuses, with a retryable {@link ConcurrentModificationException}, the write of the record {@code rid}, which was reloaded with
+   * content a concurrent commit changed since the row read it, when a predicate that reads the record (through any
    * variable of {@code row} bound to it) no longer holds on {@code row}, which binds the reloaded record already. A predicate that
    * also reads other variables reads them as the row holds them. A predicate is evaluated again as it was the first time, so a
    * function with side effects runs once more.

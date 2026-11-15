@@ -292,6 +292,36 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Pins the record's page in the current transaction, so a commit that lands from now on is refused at commit, and reloads the
+   * content if it changed since it was read, for a caller about to delete the record that decided to on the content it read
+   * (issue #11818). A delete pins the page itself, but only then: a commit landing between the read and the delete was not seen,
+   * so a conditional delete removed a record that no longer satisfied its condition, and cleaned up the index entries of the
+   * content it read rather than of the one it deleted. A record-less RID (a lightweight edge) has no page to pin.
+   * <p>
+   * A record a concurrent transaction deleted is left with the content it was read with (a vertex reload drops it first), so the
+   * delete that follows finds it gone and reports it as it always did (issue #8984).
+   *
+   * @return whether the content now differs from the one read, or no content had been read
+   */
+  public boolean pinForDelete() {
+    if (rid == null || rid.getPosition() < 0)
+      return false;
+    final Binary readImage = buffer;
+    try {
+      pinPageAndReloadIfStale();
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reloading record " + rid + " to delete it", e);
+    }
+    final Binary current = buffer;
+    if (current == null) {
+      buffer = readImage;
+      return false;
+    }
+    return readImage == null || current != readImage && (current.size() != readImage.size() || !readImage.isSameRegionAs(0, current, 0,
+        readImage.size()));
+  }
+
+  /**
    * Whether this record's content was read from its bucket by the transaction that began with {@code transactionBeginSequence}
    * (issue #8984). A record that was only referenced (not yet loaded) proves nothing about the bucket, so it does not count.
    * <p>

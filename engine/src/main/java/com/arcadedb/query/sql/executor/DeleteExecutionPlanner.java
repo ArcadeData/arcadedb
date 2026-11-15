@@ -199,8 +199,12 @@ public class DeleteExecutionPlanner {
     return false;
   }
 
+  /**
+   * The delete step evaluates the WHERE again on a record a concurrent commit changed after the source read it (issue #11818). It
+   * gets its own copy: the source plan is built from this one.
+   */
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context, returnProjection, returnBefore));
+    result.chain(new DeleteStep(context, returnProjection, returnBefore, whereClause != null ? whereClause.copy() : null));
   }
 
   private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {

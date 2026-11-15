@@ -1535,7 +1535,7 @@ public class CypherExecutionPlan {
           final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty()) {
             final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
-                matchClausesNeedEagerDelete(currentSegmentMatchClauses));
+                matchClausesNeedEagerDelete(currentSegmentMatchClauses), SelectionPredicates.before(clausesInOrder, deleteClause));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
             eagerness.observeWriteClause();
@@ -2073,7 +2073,8 @@ public class CypherExecutionPlan {
         if (!deleteClause.isEmpty() && currentStep != null) {
           final boolean eagerMaterialize = matchClausesNeedEagerDelete(currentSegmentMatchClauses)
               || deleteMayTargetTaintedVariable(deleteClause.getVariables(), disconnectedTaintedVariables);
-          final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
+          final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize,
+              SelectionPredicates.before(clausesInOrder, deleteClause));
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
           eagerness.observeWriteClause();
