@@ -1241,7 +1241,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         // Parse property expression: variable.property
         if (propExpr.contains(".")) {
           final String[] parts = propExpr.split("\\.", 2);
-          items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
+          items.add(new RemoveClause.RemoveItem(stripBackticks(parts[0]), stripBackticks(parts[1])));
         }
       } else if (itemCtx instanceof Cypher25Parser.RemoveDynamicPropContext dynCtx) {
         // REMOVE n[keyExpr] — dynamic property removal (issue #5141)
