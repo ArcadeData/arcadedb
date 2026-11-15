@@ -184,8 +184,8 @@ public class AlterPropertyStatement extends DDLStatement {
       throw new CommandSQLParsingException(
           "The type of property " + type.getName() + "." + property.getName() + " cannot be changed: a property keeps the type it "
               + "was created with. To change it, create a property of the new type, copy the values with UPDATE " + type.getName()
-              + " SET <newProperty> = " + property.getName() + ", then drop the old property and rename the new one. ALTER "
-              + "PROPERTY can change " + supported);
+              + " SET <newProperty> = " + property.getName() + ", drop the old property (with FORCE to drop its indexes too), "
+              + "rename the new one and recreate the indexes on it. ALTER PROPERTY can change " + supported);
 
     throw new CommandSQLParsingException("Setting '" + setting + "' not supported by ALTER PROPERTY, which can change " + supported
         + ", or a custom attribute with CUSTOM <name> = <value>");
