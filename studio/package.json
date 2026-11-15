@@ -23,7 +23,7 @@
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.1",
     "@popperjs/core": "^2.11.8",
-    "bootstrap": "^5.3.8",
+    "bootstrap": "^5.3.9",
     "codemirror": "^5.65.21",
     "cytoscape": "^3.34.4",
     "cytoscape-cxtmenu": "^3.5.0",
