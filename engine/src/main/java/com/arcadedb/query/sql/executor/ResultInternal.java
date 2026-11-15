@@ -657,8 +657,9 @@ public class ResultInternal implements Result {
 
   @Override
   public Optional<RID> getIdentity() {
+    // a record not saved yet has no identity (issue #11850: @rid read by an INSERT's SET threw a NullPointerException)
     if (element != null)
-      return Optional.of(element.getIdentity());
+      return Optional.ofNullable(element.getIdentity());
 
     if (hasProperty(RID_PROPERTY)) {
       final Object rid = getProperty(RID_PROPERTY);
