@@ -1463,6 +1463,16 @@ public class DateUtils {
     if (date.getClass().equals(dateImplementation))
       return date;
 
+    // dateTimeToTimestamp() saturates a DATE past the millisecond range, which orders it right in a comparison but is another
+    // instant as a converted value (issue #11625): a date-time takes the date's midnight exactly, and a Date or a Calendar,
+    // which hold milliseconds, refuse it as they did before
+    if (date instanceof LocalDate localDate) {
+      if (dateImplementation.equals(LocalDateTime.class))
+        return localDate.atStartOfDay();
+      if (dateImplementation.equals(Date.class) || dateImplementation.equals(Calendar.class))
+        Math.multiplyExact(localDate.toEpochDay(), DateUtils.MS_IN_A_DAY);
+    }
+
     final long timestamp = DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS);
 
     if (dateImplementation.equals(Date.class))

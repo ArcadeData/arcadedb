@@ -30,9 +30,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #11625: a DATE index compared its keys through epoch milliseconds, so a date the millisecond range
@@ -105,6 +108,16 @@ class IndexDateOutsideMillisRangeIssue11625Test extends TestHelper {
     assertThat(comparator.compare(min, BinaryTypes.TYPE_DATE, "2024-01-01", BinaryTypes.TYPE_STRING)).isNegative();
     assertThat(comparator.compare(max, BinaryTypes.TYPE_DATE, "2024-01-01", BinaryTypes.TYPE_STRING)).isPositive();
     assertThat(comparator.compare("2024-01-01", BinaryTypes.TYPE_STRING, max, BinaryTypes.TYPE_DATE)).isNegative();
+  }
+
+  /** A DATE converted to another date implementation keeps its instant or fails; it never takes the saturated milliseconds. */
+  @Test
+  void anExtremeDateConvertedToADateTimeKeepsItsDayAndToADateFails() {
+    assertThat(DateUtils.getDate(LocalDate.MAX, LocalDateTime.class)).isEqualTo(LocalDate.MAX.atStartOfDay());
+    assertThat(DateUtils.getDate(LocalDate.MIN, LocalDateTime.class)).isEqualTo(LocalDate.MIN.atStartOfDay());
+    assertThatThrownBy(() -> DateUtils.getDate(LocalDate.MAX, Date.class)).isInstanceOf(ArithmeticException.class);
+    assertThatThrownBy(() -> DateUtils.getDate(LocalDate.MIN, Calendar.class)).isInstanceOf(ArithmeticException.class);
+    assertThat(((Date) DateUtils.getDate(LocalDate.of(2024, 1, 1), Date.class)).getTime()).isEqualTo(1_704_067_200_000L);
   }
 
   @Test
