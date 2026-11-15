@@ -163,13 +163,14 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
    * has vertices: a seek per item then costs more than reading each vertex once, and a {@code range()} of a billion items would
    * be materialised as keys. Not when an item is of a kind no list literal holds (a temporal value, a point, a list, a map):
    * the index key conversion of those does not decide what Cypher's equality decides (issues #8572, #9647, #9794), and a row
-   * the seek missed would be lost.
+   * the seek missed would be lost. Nor when an item is the text of a RID ({@code '#0:1'}), which Cypher's equality compares with a
+   * number as the id it encodes (issue #4183) and the index key conversion of a number refuses.
    */
   private boolean seeksComputedList(final Iterable<?> items, final CommandContext context) {
     if (items instanceof Collection<?> collection && collection.size() > vertexCount(context))
       return false;
     for (final Object item : items)
-      if (item != null && !(item instanceof Number || item instanceof String || item instanceof Boolean))
+      if (item != null && !(item instanceof Number || item instanceof Boolean || item instanceof String text && !RID.is(text)))
         return false;
     return true;
   }

@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
+import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -37,6 +38,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -74,6 +76,16 @@ public class InExpression implements BooleanExpression {
   private final List<Object> literalList;
 
   /**
+   * Whether the right side is one value computed from constants ({@code x IN range(1, 3)}, {@code x IN [i IN $ids | i * 10]}): the
+   * same for every row of an execution, so it is evaluated once per execution, see {@link #computedList} (issue #11890). A seek over
+   * it finds a vertex per item and the predicate decides each, which rebuilt the list per vertex, quadratic in the list.
+   */
+  private final boolean computedRightSide;
+
+  /** The value of the computed right side in the execution that last asked; see {@link #computedList}. */
+  private volatile ComputedList computedListMemo;
+
+  /**
    * The list the last row was asked about, and its lookup once built; see {@link #lookupFor}. One immutable holder in a
    * volatile field, because the node of a cached plan is shared by concurrent executions, and the rows of one execution can
    * be evaluated by several threads, each in its own context (the workers of a parallel scan) or in one (a parallel walk).
@@ -92,6 +104,8 @@ public class InExpression implements BooleanExpression {
     this.expression = expression;
     this.list = list;
     this.literalList = literalList(list);
+    this.computedRightSide = literalList == null && list.size() == 1 && !(list.getFirst() instanceof LiteralExpression)
+        && !(list.getFirst() instanceof ParameterExpression) && RowIndependentValues.isRowIndependent(list.getFirst());
   }
 
   @Override
@@ -119,10 +133,10 @@ public class InExpression implements BooleanExpression {
       final Object listValue;
       if (literalList != null)
         listValue = literalList;
-      else if (listItem instanceof FunctionCallExpression)
-        listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
+      else if (computedRightSide)
+        listValue = computedList(listItem, result, context);
       else
-        listValue = listItem.evaluate(result, context);
+        listValue = evaluateOperand(listItem, result, context);
 
       if (listValue == null)
         return null; // x IN null -> null
@@ -314,6 +328,35 @@ public class InExpression implements BooleanExpression {
 
     // Anything else is of a different type than a Long, and for = that is simply not equal.
     return Boolean.FALSE;
+  }
+
+  private static Object evaluateOperand(final Expression operand, final Result result, final CommandContext context) {
+    if (operand instanceof FunctionCallExpression)
+      return OpenCypherQueryEngine.getExpressionEvaluator().evaluate(operand, result, context);
+    return operand.evaluate(result, context);
+  }
+
+  /**
+   * The value of the computed right side in this execution: evaluated by the first row that asks, and read back by the others. An
+   * execution is its context and its parameters, both held weakly, so a cached plan keeps neither alive; a later execution, or a
+   * worker of a parallel scan with a context of its own, evaluates it again. The value reads no row and calls only deterministic
+   * functions ({@link RowIndependentValues#isRowIndependent}), so every evaluation in one execution gives the same value, and a
+   * race between two threads only evaluates it twice.
+   */
+  private Object computedList(final Expression operand, final Result result, final CommandContext context) {
+    if (context == null)
+      return evaluateOperand(operand, result, null);
+    final Map<String, Object> parameters = context.getInputParameters();
+    final ComputedList memo = computedListMemo;
+    if (memo != null && memo.context().get() == context && memo.parameters().get() == parameters)
+      return memo.value();
+    final Object value = evaluateOperand(operand, result, context);
+    computedListMemo = new ComputedList(new WeakReference<>(context), new WeakReference<>(parameters), value);
+    return value;
+  }
+
+  /** The value of a computed right side, and the execution it belongs to; see {@link #computedList}. */
+  private record ComputedList(WeakReference<CommandContext> context, WeakReference<Map<String, Object>> parameters, Object value) {
   }
 
   /**

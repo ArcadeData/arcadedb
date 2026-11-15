@@ -28,6 +28,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.LocalDate;
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -117,15 +118,55 @@ class CypherInConstantListIndexSeekIssue11890Test extends TestHelper {
 
   /**
    * A computed list of temporal values, lists or maps is not sought: the index key conversion of those is not Cypher's equality.
-   * The seek reads the label instead, and the predicate decides each vertex.
+   * Nor is one holding the text of a RID, which Cypher's equality compares with a number as the id it encodes ({@code 1 = '#0:1'},
+   * issue #4183) and the index key conversion of a number refuses. The seek reads the label instead, and the predicate decides each
+   * vertex.
    */
   @ParameterizedTest
   @ValueSource(strings = {
       "p.d IN [date('2024-01-02')] + []",
       "p.d IN [x IN range(1, 2) | date({year: 2024, month: 1, day: x})]",
-      "p.id IN [[1], 2] + [3]" })
+      "p.id IN [[1], 2] + [3]",
+      "p.id IN [x IN ['#0:1', '#0:2'] | x]",
+      "p.id IN ['#0:3'] + [4]" })
   void aComputedListOfOtherKindsAnswersAsTheScan(final String predicate) {
     assertAnswersAsTheScan(predicate, Map.of());
+  }
+
+  /**
+   * The predicate the seek keeps evaluates a list computed from constants once per execution, as the seek does: it used to rebuild
+   * the list for every vertex it decided, quadratic in the list for a seek that finds a vertex per item.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "P", "Q" })
+  void aComputedListIsEvaluatedOncePerExecution(final String label) {
+    final List<Object> elements = new ArrayList<>();
+    for (long i = 0; i < VERTICES; i++)
+      elements.add(i);
+    final CountingList ids = new CountingList(elements);
+    assertThat(this.ids(label, "p.id IN [x IN $ids | x]", Map.of("ids", ids))).hasSize(VERTICES);
+    assertThat(ids.reads).as("elements of a %d-element list read on %s", VERTICES, label).isLessThanOrEqualTo(4L * VERTICES);
+  }
+
+  /** A list that counts the elements read from it, by index or through its iterator. */
+  private static final class CountingList extends AbstractList<Object> {
+    private final List<Object> elements;
+    private       long         reads;
+
+    private CountingList(final List<Object> elements) {
+      this.elements = elements;
+    }
+
+    @Override
+    public Object get(final int index) {
+      reads++;
+      return elements.get(index);
+    }
+
+    @Override
+    public int size() {
+      return elements.size();
+    }
   }
 
   /**
