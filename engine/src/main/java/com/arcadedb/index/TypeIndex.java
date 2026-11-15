@@ -212,6 +212,39 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return cursor;
   }
 
+  /**
+   * {@link #getForQuery} for the entries whose leading key columns equal {@code prefix}, a key shorter than the index's (issue
+   * #11576): the range of the keys that start with it, so only an index that walks its keys in order answers it. A range cursor
+   * reads lazily, so the entries are collected before the check after the read, which is what makes that check sound; at the
+   * tail of a range whose remaining keys are all deleted the cursor answers null, which is not an entry.
+   */
+  public IndexCursor prefixForQuery(final Object[] prefix) {
+    if (!isReadyForQueries())
+      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+
+    final long changesBefore = subIndexChanges.get();
+    if ((changesBefore & 1) != 0)
+      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+    final List<IndexCursorEntry> entries = new ArrayList<>();
+    try (final IndexCursor cursor = range(true, prefix, true, prefix, true)) {
+      while (cursor.hasNext()) {
+        final Identifiable entry = cursor.next();
+        if (entry != null)
+          entries.add(new IndexCursorEntry(prefix, entry, 1));
+      }
+    } catch (final IndexException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      if (isStaleRead(this, e))
+        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+      throw e;
+    }
+
+    if (!valid || dropping || subIndexChanges.get() != changesBefore)
+      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+    return new TempIndexCursor(entries);
+  }
+
   @Override
   public IndexCursor get(final Object[] keys) {
     checkIsValid();

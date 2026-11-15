@@ -24,7 +24,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,7 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every chunk of the database to keep the ones of one record. An uncorrelated chain now starts from its far end when that
  * end carries the only node predicate, or, with predicates on neither or both ends, when its label holds fewer vertices.
  * The count is the same read either way; each one is checked against the row pipeline, reached through a {@code sum(1)}
- * that the push-downs decline.
+ * that the push-downs decline. An end pinned by a UNIQUE key is not walked at all: the vertex is looked up when the count runs
+ * and the chain walked from it alone.
  */
 class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
 
@@ -79,6 +82,8 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
     for (final String query : queries) {
       final String plan = plan(query);
       assertThat(plan).as(query).contains("COUNT CHAIN PATHS");
+      // the record is looked up by its key, not found by walking the label: the count costs the seek and its own chunks
+      assertThat(plan).as(query).contains("seeded anchor: unique key Record[external_id] = [r7]");
       assertThat(chainLine(plan)).as(query).startsWith("(Record");
       assertThat(count(query)).as(query).isEqualTo(CHUNKS / RECORDS);
     }
@@ -121,8 +126,6 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
   void aFlippedChainKeepsItsInequality() {
     final String[] patterns = {
         "(c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record) WHERE c1 <> c2",
-        "(c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record {external_id: 'r3'}) "
-            + "WHERE c1 <> c2",
         "(c:Chunk)-[:MENTIONS]->(e:Entity) WHERE c <> e" };
     for (final String pattern : patterns) {
       final String counted = "MATCH " + pattern + " RETURN count(*) AS n";
@@ -132,12 +135,63 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
       assertThat(chainLine(plan)).as(counted).doesNotStartWith("(Chunk");
       assertThat(count(counted)).as(counted).isEqualTo(count(oracle));
     }
+    // The walk seeded from a key applies no inequality, and a walk of the Record label to apply it would read every record to
+    // keep one: the ordinary plan seeks the key instead (issue #11680), and counts the same
+    final String keyed = "MATCH (c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record {external_id: 'r3'}) "
+        + "WHERE c1 <> c2";
+    assertThat(plan(keyed + " RETURN count(*) AS n")).doesNotContain("COUNT CHAIN PATHS");
+    assertThat(count(keyed + " RETURN count(*) AS n")).isEqualTo(count(keyed + " RETURN sum(1) AS n")).isPositive();
     // the inequality removes the paths that come back to the same chunk over its two parallel mentions: a count that ignored it
     // would be larger
     final String withInequality = "MATCH " + patterns[0] + " RETURN count(*) AS n";
     final String without = "MATCH (c2:Chunk)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(c1:Chunk)-[:OF_RECORD]->(r:Record) "
         + "RETURN sum(1) AS n";
     assertThat(count(withInequality)).isLessThan(count(without));
+  }
+
+  /**
+   * The record is looked up when the count runs, not when it is planned, and the count sees what the transaction wrote: a key no
+   * record holds counts 0, a record and its chunks created in the same transaction are counted, and so are the chunks of a
+   * record found by a parameter.
+   */
+  @Test
+  void theSeededRecordIsLookedUpWhenTheCountRuns() {
+    final String query = "MATCH (c:Chunk)-[:OF_RECORD]->(r:Record {external_id: $id}) RETURN count(c) AS n";
+    assertThat(plan(query, Map.of("id", "nope"))).contains("seeded anchor: unique key Record[external_id] = [nope]");
+    assertThat(count(query, Map.of("id", "nope"))).isZero();
+    assertThat(count(query, Map.of("id", "r4"))).isEqualTo(CHUNKS / RECORDS);
+
+    database.begin();
+    try {
+      database.command("opencypher", "CREATE (r:Record {external_id: 'fresh'}) WITH r UNWIND range(1, 3) AS i "
+          + "CREATE (:Chunk {i: -i})-[:OF_RECORD]->(r)");
+      assertThat(count(query, Map.of("id", "fresh"))).isEqualTo(3);
+      database.command("opencypher", "MATCH (c:Chunk {i: -1}) DETACH DELETE c");
+      assertThat(count(query, Map.of("id", "fresh"))).isEqualTo(2);
+    } finally {
+      database.rollback();
+    }
+    assertThat(count(query, Map.of("id", "fresh"))).isZero();
+  }
+
+  /** A key that cannot pin one vertex is not looked up: the chain is walked as before and counts the same. */
+  @Test
+  void aKeyThatPinsNoVertexIsNotSeeded() {
+    // a null key matches nothing, while a unique index holds an entry per record whose key is null
+    database.transaction(() -> database.newVertex("Record").save());
+    final String nullKey = "MATCH (c:Chunk)-[:OF_RECORD]->(r:Record {external_id: $id}) RETURN count(*) AS n";
+    final Map<String, Object> nullParam = new HashMap<>();
+    nullParam.put("id", null);
+    assertThat(plan(nullKey, nullParam)).doesNotContain("seeded anchor");
+    assertThat(count(nullKey, nullParam)).isZero();
+    // a computed key is a filter, never a seek of the index (RowIndependentValues.isSeekable)
+    final String computed = "MATCH (c:Chunk)-[:OF_RECORD]->(r:Record {external_id: 'r' + '5'}) RETURN count(*) AS n";
+    assertThat(plan(computed, Map.of())).doesNotContain("seeded anchor");
+    assertThat(count(computed, Map.of())).isEqualTo(CHUNKS / RECORDS);
+    // a property the index does not cover
+    final String unindexed = "MATCH (c:Chunk {i: 6})-[:OF_RECORD]->(r:Record) RETURN count(*) AS n";
+    assertThat(plan(unindexed, Map.of())).contains("COUNT CHAIN PATHS").doesNotContain("seeded anchor");
+    assertThat(count(unindexed, Map.of())).isEqualTo(1);
   }
 
   /** The incoming side of a unidirectional edge type is stored on no vertex: such a chain keeps its written orientation. */
@@ -171,14 +225,22 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
   }
 
   private long count(final String query) {
-    try (final ResultSet rs = database.query("opencypher", query)) {
+    return count(query, Map.of());
+  }
+
+  private long count(final String query, final Map<String, Object> params) {
+    try (final ResultSet rs = database.query("opencypher", query, params)) {
       final Number n = rs.next().getProperty("n");
       return n == null ? 0L : n.longValue();
     }
   }
 
   private String plan(final String query) {
-    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+    return plan(query, Map.of());
+  }
+
+  private String plan(final String query, final Map<String, Object> params) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query, params)) {
       return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
   }

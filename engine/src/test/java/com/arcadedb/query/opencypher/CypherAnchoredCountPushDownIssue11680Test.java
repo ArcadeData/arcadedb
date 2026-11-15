@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * taken by a CSR count push-down ({@code COUNT CHAIN PATHS}, {@code COUNT STAR JOIN}), which walks a whole label to count the
  * neighbours of that one vertex, so its cost grew with the graph while the answer did not. Such a statement is now left to the
  * ordinary plan, an index seek plus an expansion from it, which is what the same statement with {@code sum(1)} already got.
+ * A chain with an end pinned by a UNIQUE key keeps its push-down, walked from the one vertex the key names (issue #11594).
  * <p>
  * Every {@code Record} has 10 {@code Section}s (chained by {@code PARENT_OF}) and 2 {@code Chunk}s; {@code Record.external_id}
  * has a UNIQUE index. A count with no selective anchor keeps its push-down.
@@ -67,14 +68,19 @@ class CypherAnchoredCountPushDownIssue11680Test extends TestHelper {
     });
   }
 
+  /**
+   * A chain is the one push-down that can start from one vertex: an end pinned by a UNIQUE key is looked up when the count
+   * runs and the chain is walked from it alone (issue #11594), which costs what the seek plus expansion costs without a row per
+   * path, so it keeps the push-down whichever end the key is written on.
+   */
   @Test
-  void aChainAnchoredByAUniqueKeyIsNotPushedDown() {
-    assertAnchored("MATCH (r:Record {external_id: 'r5'})<-[:OF_RECORD]-(s:Section) RETURN count(*) AS c", 10);
-    assertAnchored("MATCH (r:Record {external_id: 'r5'})<-[:OF_RECORD]-(s:Section)<-[:PARENT_OF]-(p:Section) RETURN count(*) AS c",
-        9);
-    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: 'r5'}) RETURN count(*) AS c", 10);
-    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record) WHERE r.external_id = 'r5' RETURN count(*) AS c", 10);
-    assertAnchored("MATCH (s:Section)-[:LOF_RECORD]->(r:Record {external_id: 'r5'}) RETURN count(*) AS c", 10);
+  void aChainAnchoredByAUniqueKeyIsSeededFromTheKey() {
+    assertSeeded("MATCH (r:Record {external_id: 'r5'})<-[:OF_RECORD]-(s:Section) RETURN count(*) AS c", Map.of(), 10);
+    assertSeeded("MATCH (r:Record {external_id: 'r5'})<-[:OF_RECORD]-(s:Section)<-[:PARENT_OF]-(p:Section) RETURN count(*) AS c",
+        Map.of(), 9);
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: 'r5'}) RETURN count(*) AS c", Map.of(), 10);
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record) WHERE r.external_id = 'r5' RETURN count(*) AS c", Map.of(), 10);
+    assertSeeded("MATCH (s:Section)-[:LOF_RECORD]->(r:Record {external_id: 'r5'}) RETURN count(*) AS c", Map.of(), 10);
   }
 
   @Test
@@ -89,16 +95,15 @@ class CypherAnchoredCountPushDownIssue11680Test extends TestHelper {
   }
 
   @Test
-  void otherSelectiveAnchorsAreNotPushedDown() {
+  void otherSelectiveAnchors() {
     // a parameter is as selective as the literal it stands for
-    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: $id}) RETURN count(*) AS c", Map.of("id", "r5"), 10);
-    // a short IN list over a UNIQUE key: two seeks
-    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record) WHERE r.external_id IN ['r5', 'r6'] RETURN count(*) AS c", 20);
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: $id}) RETURN count(*) AS c", Map.of("id", "r5"), 10);
     // a composite UNIQUE index fully covered by equalities
-    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record {tenant: 't2', code: 5}) RETURN count(*) AS c", 10);
-    // a pass-through WITH is folded away before the push-downs read the statement (issue #9597): the plan that runs is the
-    // unfolded one, whose anchor is the seek
-    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: 'r5'}) WITH s RETURN count(*) AS c", 10);
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record {tenant: 't2', code: 5}) RETURN count(*) AS c", Map.of(), 10);
+    // a pass-through WITH is folded away before the push-downs read the statement (issue #9597)
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: 'r5'}) WITH s RETURN count(*) AS c", Map.of(), 10);
+    // a short IN list over a UNIQUE key is two seeks, not one vertex: left to the ordinary plan
+    assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record) WHERE r.external_id IN ['r5', 'r6'] RETURN count(*) AS c", 20);
   }
 
   @Test
@@ -133,6 +138,12 @@ class CypherAnchoredCountPushDownIssue11680Test extends TestHelper {
     assertThat(explainOf(query, params)).as(query).doesNotContain("COUNT CHAIN PATHS").doesNotContain("COUNT STAR JOIN");
     assertThat(scalarOf(query, params)).as(query).isEqualTo(expected);
     // the same statement with sum(1) never reached the push-downs: the oracle for the count
+    assertThat(scalarOf(query.replace("count(*)", "sum(1)"), params)).as(query).isEqualTo(expected);
+  }
+
+  private void assertSeeded(final String query, final Map<String, Object> params, final long expected) {
+    assertThat(explainOf(query, params)).as(query).contains("COUNT CHAIN PATHS").contains("seeded anchor: unique key Record[");
+    assertThat(scalarOf(query, params)).as(query).isEqualTo(expected);
     assertThat(scalarOf(query.replace("count(*)", "sum(1)"), params)).as(query).isEqualTo(expected);
   }
 

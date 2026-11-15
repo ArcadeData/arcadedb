@@ -27,6 +27,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 
@@ -43,6 +44,9 @@ import java.util.function.Consumer;
  * using two {@code long[]} arrays indexed by dense node IDs.
  */
 public final class PropagateChainOp implements CountOp {
+  /** What {@link #resolveKeyAnchor} answers when the chain has no key anchor, or its index could not be read whole. */
+  private static final RID KEY_NOT_READ = new RID(-1, -1L);
+
   private final String[]           nodeLabels;
   private final String[]           edgeTypes;
   private final Vertex.DIRECTION[] directions;
@@ -50,6 +54,8 @@ public final class PropagateChainOp implements CountOp {
   private final int                inequalityIdxB;
   private final RID                anchorRid;
   private final VertexInternal     anchorVertex;
+  /** The vertex position 0 is pinned to by a UNIQUE key, looked up when the operator runs (issue #11594); null for none. */
+  private final UniqueKeyAnchor    keyAnchor;
   /** One per position: the property filter on top of its label, null where it has none. Null when no position has one. */
   private final VertexPredicate[]  predicates;
 
@@ -82,6 +88,25 @@ public final class PropagateChainOp implements CountOp {
       final Vertex.DIRECTION[] directions,
       final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid, final VertexInternal anchorVertex,
       final VertexPredicate[] predicates) {
+    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, anchorRid, anchorVertex, null, predicates);
+  }
+
+  /**
+   * A chain whose position 0 is pinned to one vertex by an equality on every column of a UNIQUE index (issue #11594): the
+   * vertex is looked up when the operator runs and the chain is walked from it alone, as from a seeded anchor, so the count
+   * costs the seek and that vertex's paths rather than a walk of its label. The predicate of position 0 carries the key
+   * equality too, so the vertex found is checked as a seeded one is, and a lookup a concurrent DDL refuses falls back to the
+   * walk of the label, which applies it.
+   */
+  public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+      final UniqueKeyAnchor keyAnchor, final VertexPredicate[] predicates) {
+    this(nodeLabels, edgeTypes, directions, -1, -1, null, null, keyAnchor, predicates);
+  }
+
+  private PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
+      final Vertex.DIRECTION[] directions,
+      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid, final VertexInternal anchorVertex,
+      final UniqueKeyAnchor keyAnchor, final VertexPredicate[] predicates) {
     if (anchorVertex != null && !anchorVertex.getIdentity().equals(anchorRid))
       throw new IllegalArgumentException("Anchor vertex " + anchorVertex.getIdentity() + " is not " + anchorRid);
     if (predicates != null && predicates.length != nodeLabels.length)
@@ -93,7 +118,28 @@ public final class PropagateChainOp implements CountOp {
     this.inequalityIdxB = inequalityIdxB;
     this.anchorRid = anchorRid;
     this.anchorVertex = anchorVertex;
+    this.keyAnchor = keyAnchor;
     this.predicates = VertexPredicate.any(predicates) ? predicates : null;
+  }
+
+  /**
+   * The vertex of the key anchor: null when no record holds the key, {@link #KEY_NOT_READ} when the chain has no key anchor or
+   * a concurrent DDL left its index unable to answer whole, for the caller to walk the label of position 0, whose predicate
+   * applies the same equality.
+   */
+  private RID resolveKeyAnchor(final Database db) {
+    if (keyAnchor == null)
+      return KEY_NOT_READ;
+    try {
+      return keyAnchor.resolve(db);
+    } catch (final IndexException e) {
+      return KEY_NOT_READ;
+    }
+  }
+
+  /** Whether the walk starts from one vertex, bound by the outer row or pinned by a UNIQUE key, rather than from a label. */
+  public boolean isSeeded() {
+    return anchorRid != null || keyAnchor != null;
   }
 
   @Override
@@ -116,7 +162,10 @@ public final class PropagateChainOp implements CountOp {
   public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     final VertexPredicate.Evaluation[] filters = VertexPredicate.evaluations(predicates, db, provider);
     if (anchorRid != null)
-      return executeFromSeededAnchor(provider, db, filters, guard);
+      return executeFromSeededAnchor(provider, db, filters, guard, anchorRid, anchorVertex);
+    final RID keyed = resolveKeyAnchor(db);
+    if (keyed != KEY_NOT_READ)
+      return keyed == null ? 0L : executeFromSeededAnchor(provider, db, filters, guard, keyed, null);
 
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int hops = edgeTypes.length;
@@ -247,8 +296,8 @@ public final class PropagateChainOp implements CountOp {
    * {@code COUNT { (n:Q)-[:LINKS]->(:Q) }} under an {@code n} of another label is 0, not the count over {@code Q}.
    */
   private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db,
-      final VertexPredicate.Evaluation[] filters, final WorkGuard guard) {
-    if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()) || !seededAnchorPasses(filters))
+      final VertexPredicate.Evaluation[] filters, final WorkGuard guard, final RID anchorRid, final VertexInternal anchorVertex) {
+    if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()) || !seededAnchorPasses(filters, anchorRid, anchorVertex))
       return 0;
 
     final int hops = edgeTypes.length;
@@ -322,7 +371,8 @@ public final class PropagateChainOp implements CountOp {
    * operator is built and run once per outer row, where the enumerating one is built once per query.
    */
   /** Whether the bound vertex passes the property predicate of position 0, the row's own vertex read no further. */
-  private boolean seededAnchorPasses(final VertexPredicate.Evaluation[] filters) {
+  private static boolean seededAnchorPasses(final VertexPredicate.Evaluation[] filters, final RID anchorRid,
+      final VertexInternal anchorVertex) {
     if (filters == null || filters[0] == null)
       return true;
     return anchorVertex != null ? filters[0].accepts(anchorVertex) : filters[0].acceptsRid(anchorRid);
@@ -860,13 +910,21 @@ public final class PropagateChainOp implements CountOp {
     // E.g., Q5 with 13.8M paths but only ~3.5M unique edges: ~4x fewer OLTP scans.
     // An unlabelled anchor starts from every vertex in the schema (issue #5757).
     RidLongHashMap current = new RidLongHashMap();
-    if (anchorRid != null) {
+    RID seed = anchorRid;
+    if (seed == null) {
+      final RID keyed = resolveKeyAnchor(db);
+      if (keyed == null)
+        return 0; // no vertex holds the key
+      if (keyed != KEY_NOT_READ)
+        seed = keyed;
+    }
+    if (seed != null) {
       // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
-      if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()) || !seededAnchorPasses(filters))
+      if (!anchorMatchesLabel(db, nodeLabels[0], seed.getBucketId()) || !seededAnchorPasses(filters, seed, anchorVertex))
         return 0;
       if (anchorVertex == null)
         // With the row's own vertex the first hop expands that handle and never reads this level.
-        current.put(anchorRid, 1L);
+        current.put(seed, 1L);
     } else {
       final VertexPredicate.Evaluation anchorFilter = filters != null ? filters[0] : null;
       for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
@@ -1050,6 +1108,9 @@ public final class PropagateChainOp implements CountOp {
     sb.append("  ".repeat(Math.max(0, depth * indent)));
     if (anchorRid != null) {
       sb.append("  seeded anchor: ").append(anchorRid).append('\n');
+      sb.append("  ".repeat(Math.max(0, depth * indent)));
+    } else if (keyAnchor != null) {
+      sb.append("  seeded anchor: unique key ").append(keyAnchor.describe()).append('\n');
       sb.append("  ".repeat(Math.max(0, depth * indent)));
     }
     sb.append("  chain: ");

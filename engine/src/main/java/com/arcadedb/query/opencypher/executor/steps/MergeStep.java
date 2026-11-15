@@ -60,6 +60,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
@@ -101,6 +102,9 @@ public class MergeStep extends AbstractExecutionStep {
   // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
   private       boolean             createItemsResolved;
   private       List<SetClause.SetItem> createItems;
+  // Display-only: the index the last node lookup read, for the profile (issue #11576). Written per row by the one thread running
+  // the step, read by prettyPrint after it
+  private       String              usedIndexName;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -1197,13 +1201,18 @@ public class MergeStep extends AbstractExecutionStep {
   /**
    * Tries to find and use an index for the evaluated property constraints.
    * Returns an iterator of matching identifiables, or null if no suitable index found.
-   * Applies leftmost-prefix matching for composite indexes.
+   * <p>
+   * An index whose every property is bound is looked up by its whole key, the longest such key winning. Otherwise the index of
+   * the longest bound leftmost prefix is read as the range of the keys starting with it (issue #11576): {@code MERGE (n:T {a: $x})}
+   * over an index on {@code T(a, b)} scanned the whole type for every row. Only an index that walks its keys in order answers a
+   * prefix, so a hash index still needs its whole key. Either read is whole and against one committed state, or the caller
+   * scans: an entry a read missed would make MERGE create a node that exists.
    */
   private Iterator<Identifiable> tryFindByIndex(final DocumentType type, final String label,
       final Map<String, Object> evaluatedProperties) {
     TypeIndex bestIndex = null;
     int bestMatchCount = 0;
-    List<String> bestMatchedProperties = null;
+    boolean bestWholeKey = false;
 
     // Polymorphic: an index declared on a supertype is inherited by this type and is just as seekable from it
     // (issue #7021). The cursor it opens is filtered by label below, since it also carries the parent's own
@@ -1215,28 +1224,35 @@ public class MergeStep extends AbstractExecutionStep {
       if (indexProperties == null)
         continue; // a FULL_TEXT index answers by token, and misses a value with none: MERGE would duplicate it (#8439)
       int matchCount = 0;
-      final List<String> matchedProperties = new ArrayList<>();
+      while (matchCount < indexProperties.size() && evaluatedProperties.containsKey(indexProperties.get(matchCount)))
+        matchCount++; // leftmost prefix only
+      if (matchCount == 0)
+        continue;
 
-      for (final String indexProp : indexProperties) {
-        if (evaluatedProperties.containsKey(indexProp)) {
-          matchCount++;
-          matchedProperties.add(indexProp);
-        } else
-          break; // Leftmost prefix only
+      final boolean wholeKey = matchCount == indexProperties.size();
+      // a whole key beats any prefix, a UNIQUE one included: it is an exact lookup rather than a range
+      if (bestWholeKey && !wholeKey)
+        continue;
+      if (!wholeKey) {
+        try {
+          if (!index.supportsOrderedIterations())
+            continue;
+        } catch (final IndexException e) {
+          continue; // dropped or rebuilt since it was checked: not a candidate, the scan answers
+        }
       }
-
-      // Require full index match (all index properties covered) - lookupByKey needs exact match
-      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
-        bestMatchCount = matchCount;
+      if (bestIndex == null || (wholeKey && !bestWholeKey) || matchCount > bestMatchCount) {
         bestIndex = index;
-        bestMatchedProperties = matchedProperties;
+        bestMatchCount = matchCount;
+        bestWholeKey = wholeKey;
       }
     }
 
-    if (bestIndex == null || bestMatchedProperties == null || bestMatchedProperties.isEmpty())
+    if (bestIndex == null)
       return null;
 
-    final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
+    final List<String> indexProperties = bestIndex.getPropertyNames();
+    final String[] propertyNames = indexProperties.subList(0, bestMatchCount).toArray(new String[0]);
     final Object[] propertyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
@@ -1250,7 +1266,9 @@ public class MergeStep extends AbstractExecutionStep {
 
     final Iterator<Identifiable> cursor;
     try {
-      cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      cursor = bestWholeKey ?
+          context.getDatabase().lookupByKey(label, propertyNames, propertyValues) :
+          ConsistentKeyLookup.prefixForQuery(context.getDatabase(), bestIndex, propertyValues);
     } catch (final IndexException e) {
       // A concurrent DDL is creating, rebuilding or dropping the index: the lookup is read whole or not at all (#9811), and a
       // short one would make MERGE create a node that exists. Nothing was returned yet, so the caller scans the type instead
@@ -1261,6 +1279,8 @@ public class MergeStep extends AbstractExecutionStep {
         return null;
       throw e;
     }
+    usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", bestWholeKey ? propertyNames :
+        indexProperties.toArray(new String[0])) + "]" + (bestWholeKey ? "" : ", prefix: " + String.join(", ", propertyNames));
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
@@ -1756,6 +1776,8 @@ public class MergeStep extends AbstractExecutionStep {
     final String ind = getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ MERGE");
+    if (usedIndexName != null)
+      builder.append(" [index: ").append(usedIndexName).append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
