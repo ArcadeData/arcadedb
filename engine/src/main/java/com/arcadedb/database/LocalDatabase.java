@@ -2225,6 +2225,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     try {
       final LocalBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
+      checkRecordToDeleteIsStillTheOneRead(bucket, record);
 
       // Set only when the index-cleanup read confirmed a structurally broken multi-page chain (below): the physical
       // removal must then also use the force path, otherwise deleteRecordInternal would re-hit the broken link and throw
@@ -2355,6 +2356,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   private void doomAfterRefusedDelete(final Record record, final SecurityException e) {
     getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+  }
+
+  /**
+   * #11810: a record this transaction read, found changed by a concurrent commit when it is about to be deleted, is not the
+   * record the statement selected (its WHERE was evaluated on the image that was read), so the delete is refused with the
+   * retryable conflict, as the update of such a record has been since #6950.
+   */
+  private void checkRecordToDeleteIsStillTheOneRead(final LocalBucket bucket, final Record record) {
+    if (!(record instanceof ImmutableDocument document) || !document.wasLoadedInTransaction(getTransaction().getBeginSequence()))
+      return;
+    final RID rid = record.getIdentity();
+    if (rid.getPosition() < 0L)
+      // a lightweight edge owns no slot: nothing to compare
+      return;
+    try {
+      TransactionContext.checkRecordToDeleteIsStillTheOneRead(bucket, rid, bucket.fetchPageInTransaction(rid), document);
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on checking record " + rid + " before its delete", e);
+    }
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */

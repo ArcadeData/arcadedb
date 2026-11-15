@@ -1805,6 +1805,27 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Refuses, with the retryable conflict, the delete of a record this transaction read and a concurrent commit has changed
+   * since (#11810). The delete counterpart of {@link #checkRecordIsStillTheOneRead}: a statement such as
+   * {@code DELETE FROM T WHERE claimed IS NULL} evaluated its WHERE on the image it read, and under READ_COMMITTED the page
+   * pinned for the delete is the newest one, so without this the record is removed although it no longer satisfies the WHERE
+   * (a record a concurrent caller has just claimed). Only a record read in this transaction is compared; a handle held across
+   * transactions names the record the caller means, not one it read here.
+   *
+   * @param recordPage the page just pinned for {@code rid}, or {@code null} when the RID could not name one.
+   */
+  public static void checkRecordToDeleteIsStillTheOneRead(final LocalBucket bucket, final RID rid, final BasePage recordPage,
+      final ImmutableDocument record) {
+    if (recordPage == null)
+      return;
+
+    final Binary readImage = ((BaseRecord) record).getBuffer();
+    if (readImage != null && bucket.hasRecordChangedSinceRead(rid, recordPage, readImage))
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction between "
+          + "its read and its delete. Please retry the operation");
+  }
+
+  /**
    * Queues a record for the deferred write performed by {@link #commit1stPhase()}.
    * <p>
    * A dropped write (see {@code false} below) leaves two traces, both deliberate. {@code onBeforeUpdate} has already

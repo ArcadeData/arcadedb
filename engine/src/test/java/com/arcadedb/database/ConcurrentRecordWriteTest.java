@@ -2420,6 +2420,39 @@ public class ConcurrentRecordWriteTest {
     }
 
     /**
+     * A guarded SQL DELETE must not remove a record that stopped satisfying its WHERE: the concurrent commit lands after the
+     * WHERE matched (n = 0) and sets n = 5. The delete is refused with the retryable conflict, so a retry evaluates the WHERE
+     * on what is committed.
+     */
+    @Test
+    void sqlDeleteWhoseWhereStoppedMatchingInsideTheStatementKeepsTheRecord() {
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("sql", "DELETE FROM V WHERE n = 0").close());
+
+      assertThat(committed).as("refused with the retryable conflict").isFalse();
+      assertThat(rid.asVertex().getInteger("n")).as("the record is still there, with the concurrent write").isEqualTo(5);
+    }
+
+    @Test
+    void cypherDeleteWhoseWhereStoppedMatchingInsideTheStatementKeepsTheRecord() {
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MATCH (v:V) WHERE v.n = 0 DELETE v").close());
+
+      assertThat(committed).as("refused with the retryable conflict").isFalse();
+      assertThat(rid.asVertex().getInteger("n")).isEqualTo(5);
+    }
+
+    /**
+     * Without a concurrent change the same statements delete the record, so the check costs nothing on the ordinary path.
+     */
+    @Test
+    void sqlDeleteOfAnUnchangedRecordStillDeletesIt() {
+      database.transaction(() -> database.command("sql", "DELETE FROM V WHERE n = 0").close());
+
+      assertThat(database.countType("V", false)).isZero();
+    }
+
+    /**
      * An openCypher REMOVE writes no value computed from what the MATCH read, so a commit landing in between leaves
      * nothing to lose: it commits, on top of the concurrent write.
      */
