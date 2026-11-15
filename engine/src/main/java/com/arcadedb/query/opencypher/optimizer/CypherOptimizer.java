@@ -59,6 +59,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
+import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
@@ -276,6 +277,9 @@ public class CypherOptimizer {
         excludedVariables.removeAll(component.variables());
 
         AnchorSelection componentAnchor = anchorSelector.selectAnchor(logicalPlan, excludedVariables);
+        // A component whose every node is unlabelled has nowhere to start from but a scan of every vertex type (issue #11904)
+        if (componentAnchor == null)
+          return null;
         componentAnchor = validateAnchorForUnidirectionalEdges(componentAnchor, logicalPlan,
             component.relationships(), component.variables());
 
@@ -311,6 +315,13 @@ public class CypherOptimizer {
           }
         }
         if (nodeExpansion == null)
+          return null;
+        // An unlabelled node is planned here for the index a labelled node offers the pattern (issue #11904). Started from a
+        // scan of a whole label, the pattern walks every vertex of it on either plan, and the step-based plan walked such an
+        // expansion as fast or faster (a two-hop chain from a 60,000-vertex label: 382 ms, against 413 ms for the same chain
+        // labelled on the optimizer's plan), so that plan is kept for it
+        if ((nodeAnchorOperator instanceof NodeByLabelScan || nodeAnchorOperator instanceof NodeByLabelDisjunctionScan)
+            && hasUnlabelledNode(logicalPlan, component.variables()))
           return null;
 
         final PhysicalOperator componentAnchorOperator = nodeAnchorOperator;
@@ -890,6 +901,16 @@ public class CypherOptimizer {
     return false;
   }
 
+  /** Whether some node of a component has no label (issue #11904). */
+  private static boolean hasUnlabelledNode(final LogicalPlan logicalPlan, final Set<String> componentVariables) {
+    for (final String variable : componentVariables) {
+      final LogicalNode node = logicalPlan.getPatternNode(variable);
+      if (node != null && node.getLabels().isEmpty())
+        return true;
+    }
+    return false;
+  }
+
   /** A relationship the plan can start from by its type's index, the seek doing it and the anchor it stands for (issue #11481). */
   private record EdgeSeedPlan(LogicalRelationship relationship, EdgeIndexSeek operator, AnchorSelection anchor) {
   }
@@ -989,7 +1010,8 @@ public class CypherOptimizer {
     double lowestCost = Double.MAX_VALUE;
     for (final String variable : componentVariables) {
       final LogicalNode node = logicalPlan.getPatternNode(variable);
-      if (node == null || !anchorReachesAllNodes(variable, relationships, componentVariables))
+      // an unlabelled node never anchors, see AnchorSelector#selectAnchor (issue #11904)
+      if (node == null || node.getLabels().isEmpty() || !anchorReachesAllNodes(variable, relationships, componentVariables))
         continue;
       final AnchorSelection candidate = anchorSelector.evaluateNodeDirect(node, logicalPlan);
       if (candidate.getEstimatedCost() < lowestCost) {
