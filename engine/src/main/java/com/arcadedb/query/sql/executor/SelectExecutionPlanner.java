@@ -6498,6 +6498,18 @@ public class SelectExecutionPlanner {
         descriptors = fullKeyDescriptors;
     }
 
+    // A lookup of whole keys of a UNIQUE index - an equality or an IN list on each of its properties - answers at most one
+    // record per key, which no other index covering as many conditions can beat. Preferred before the cost ranking below,
+    // whose statistics are usually not recorded: every candidate then costs the same and the first index the type lists
+    // wins, which used to be a NOTUNIQUE index on a tenant-like property shared by most records (issue #11963)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> uniqueKeyDescriptors = descriptors.stream()
+          .filter(SelectExecutionPlanner::isUniqueKeyLookup)
+          .toList();
+      if (!uniqueKeyDescriptors.isEmpty() && uniqueKeyDescriptors.size() < descriptors.size())
+        descriptors = uniqueKeyDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
@@ -6516,6 +6528,18 @@ public class SelectExecutionPlanner {
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
     return descriptors.getFirst();
+  }
+
+  /** Whether {@code desc} looks up whole keys of a UNIQUE index: an equality or an IN list on every property of the index. */
+  private static boolean isUniqueKeyLookup(final IndexSearchDescriptor desc) {
+    if (!desc.getIndex().isUnique() || desc.additionalRangeCondition != null
+        || desc.getSubBlocks().size() != desc.getIndex().getPropertyNames().size())
+      return false;
+    for (final BooleanExpression block : desc.getSubBlocks())
+      if (!(block instanceof InCondition)
+          && !(block instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator))
+        return false;
+    return true;
   }
 
   /**
