@@ -7826,8 +7826,9 @@ public class CypherExecutionPlan {
         return null;
     }
 
-    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when no two hops can bind the same edge
-    if (!chainHopsAreUnique(db, edgeTypes, directions, inequalityIdxA, inequalityIdxB))
+    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when no two hops can bind the same edge, or when
+    // the operator subtracts the paths that bind one (issue #11918)
+    if (!chainCountIsExact(db, edgeTypes, directions, inequalityIdxA, inequalityIdxB))
       return null;
 
     // Resolved last, once the chain is known to be accepted: an inline value is evaluated here
@@ -7925,8 +7926,8 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Whether no two hops of a chain can bind the same edge, so that counting adjacency paths is counting relationship
-   * paths (issues #6322, #8426). Two hops can share an edge only when their types overlap, and overlap is
+   * Whether counting adjacency paths, less what the operator subtracts, is counting relationship paths: no two hops bind
+   * the same edge (issues #6322, #8426, #11918). Two hops can share an edge only when their types overlap, and overlap is
    * inheritance-aware: a {@code KC} edge matches both {@code [:K]} and {@code [:KC]} when {@code KC EXTENDS K}.
    * <p>
    * An overlapping pair is rescued by an inequality between two nodes that binding the same edge would force equal: hop
@@ -7938,15 +7939,39 @@ public class CypherExecutionPlan {
    * with {@code WHERE a <> d} still lets its first and third hop bind one edge when they overlap, because only the
    * middle nodes would have to coincide with the ends, and no inequality names the nodes that are forced equal, so
    * that chain is declined. Every overlapping pair must be protected by the one inequality the operator carries.
+   * <p>
+   * Without an inequality, two adjacent hops walked the same way, {@code (a)-[:K]->(b)-[:K]->(c)}, can bind one edge
+   * only when it is a self loop ({@code a = b = c}): the operator subtracts those paths ({@link
+   * PropagateChainOp#sharedSelfLoopPairs}), so the pair is accepted. Walked in opposite directions, or undirected, two
+   * adjacent hops share an ordinary edge, {@code (a)-[e]->(b)<-[e]-(a)}, which the operator does not subtract. Three hops
+   * in a row could bind one self loop only if their first and third type overlapped, which declines the chain, unless an
+   * edge type extends two unrelated types: the operator does not correct that case, so such a chain is declined too.
    */
-  private static boolean chainHopsAreUnique(final Database db, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+  private static boolean chainCountIsExact(final Database db, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
       final int inequalityIdxA, final int inequalityIdxB) {
+    final Schema schema = db.getSchema();
+    // the operator subtracts the shared self loops of a chain with no inequality only
+    final boolean[] selfLoopPairs = inequalityIdxA < 0 ? PropagateChainOp.sharedSelfLoopPairs(schema, edgeTypes, directions) :
+        null;
     for (int i = 0; i < edgeTypes.length; i++)
       for (int j = i + 1; j < edgeTypes.length; j++)
-        if (CypherOptimizer.edgeTypesMayOverlap(db.getSchema(), edgeTypes[i], edgeTypes[j])
-            && !inequalityForcedBySharedEdge(directions, i, j, inequalityIdxA, inequalityIdxB))
+        if (CypherOptimizer.edgeTypesMayOverlap(schema, edgeTypes[i], edgeTypes[j])
+            && !inequalityForcedBySharedEdge(directions, i, j, inequalityIdxA, inequalityIdxB)
+            && !(j == i + 1 && selfLoopPairs != null && selfLoopPairs[i]))
+          return false;
+    if (selfLoopPairs != null)
+      for (int i = 0; i + 1 < selfLoopPairs.length; i++)
+        if (selfLoopPairs[i] && selfLoopPairs[i + 1] && someEdgeTypeExtendsEach(schema, edgeTypes[i], edgeTypes[i + 2]))
           return false;
     return true;
+  }
+
+  /** Whether an edge type of the schema is, or extends, both types. */
+  private static boolean someEdgeTypeExtendsEach(final Schema schema, final String first, final String second) {
+    for (final DocumentType type : schema.getTypes())
+      if (type instanceof EdgeType && type.instanceOf(first) && type.instanceOf(second))
+        return true;
+    return false;
   }
 
   /**

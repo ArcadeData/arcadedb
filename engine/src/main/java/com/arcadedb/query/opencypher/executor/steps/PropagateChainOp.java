@@ -29,8 +29,10 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidLongHashMap;
@@ -222,6 +224,10 @@ public final class PropagateChainOp implements CountOp {
     // whatever the number of paths reaching it (issue #9595)
     applyFilter(filters, 0, current, continuationOf(provider, 0));
 
+    // THE LEVEL A HOP LEAVES FROM, KEPT FOR THE NEXT HOP WHEN THE TWO MAY BIND ONE SELF LOOP (ISSUE #11918)
+    final boolean[] selfLoopPairs = selfLoopPairs(db);
+    long[] pairStart = null;
+
     // THE PATHS FROM THE ANCHORS TO THE EARLIER POSITION OF THE INEQUALITY: WHAT A PATH THAT CLOSES ON ITSELF THERE IS
     // REACHED BY. THE PROPAGATION BELOW COMPUTES THEM ON ITS WAY, AND EACH LEVEL IS A NEW ARRAY, SO IT IS KEPT AS IT IS
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
@@ -230,11 +236,15 @@ public final class PropagateChainOp implements CountOp {
       // One hop is a full O(V + E) pass, so a per-hop check is the natural granularity here - the pass itself is
       // sequential array arithmetic that a per-element check would only slow down (issue #6266).
       guard.check();
+      final long[] leaving = current;
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
+      if (pairStart != null)
+        subtractSharedSelfLoops(provider, db, hop - 1, pairStart, current, validBuckets, filters, bucketIds, guard);
       CSRCountUtils.filterByBuckets(bucketIds, current, validBuckets[hop + 1]);
       applyFilter(filters, hop + 1, current, continuationOf(provider, hop + 1));
       if (hop + 1 == idxA)
         prefix = current;
+      pairStart = selfLoopPairs != null && hop < selfLoopPairs.length && selfLoopPairs[hop] ? leaving : null;
     }
 
     long total = 0;
@@ -257,6 +267,113 @@ public final class PropagateChainOp implements CountOp {
       if (buckets != null)
         return true;
     return false;
+  }
+
+  /**
+   * The pairs of adjacent hops of this chain whose shared self loops the count subtracts ({@link #sharedSelfLoopPairs}),
+   * null for none. A chain with an inequality has none: the planner accepts it only when the inequality rescues every
+   * overlapping pair. A one-hop chain has no pair, and its schema is not read.
+   */
+  private boolean[] selfLoopPairs(final Database db) {
+    return edgeTypes.length < 2 || inequalityIdxA >= 0 ? null : sharedSelfLoopPairs(db.getSchema(), edgeTypes, directions);
+  }
+
+  /**
+   * The pairs of adjacent hops that can bind one relationship, which is then a self loop (issue #11918): entry {@code i} is
+   * true when hops {@code i} and {@code i + 1} are walked the same way, both outgoing or both incoming, over types that may
+   * overlap. Such hops share a relationship only as {@code (v)-[e]->(v)-[e]->(v)}: the source of the one is the source of
+   * the other and likewise the targets, so the three positions are one vertex. Null when no pair can.
+   * <p>
+   * Relationship uniqueness forbids those paths and the propagation counts them, so the level after hop {@code i + 1}
+   * loses, for each vertex {@code v}, the paths reaching it at position {@code i} times its self loops that match both
+   * hops, when {@code v} carries position {@code i + 1} as well. The level after it is the propagation of a level that
+   * is right already, so each level holds the paths of the chain so far whose relationships are distinct. Three hops in a
+   * row bound to one self loop are not subtracted twice and added back: the first and the third of them are not
+   * adjacent, so the planner accepts the chain only when no edge type matches both, and then no self loop matches all
+   * three.
+   * <p>
+   * Two adjacent hops walked against each other, or undirected, share an ordinary edge too ({@code (a)-[e]->(b)<-[e]-(a)}):
+   * the planner declines them. A pair the chain's inequality rescues is no pair here: the planner declines a chain with
+   * an inequality and a pair this would correct.
+   */
+  public static boolean[] sharedSelfLoopPairs(final Schema schema, final String[] edgeTypes,
+      final Vertex.DIRECTION[] directions) {
+    boolean[] pairs = null;
+    for (int i = 0; i + 1 < edgeTypes.length; i++)
+      if (directions[i] == directions[i + 1] && directions[i] != Vertex.DIRECTION.BOTH
+          && CypherOptimizer.edgeTypesMayOverlap(schema, edgeTypes[i], edgeTypes[i + 1])) {
+        if (pairs == null)
+          pairs = new boolean[edgeTypes.length - 1];
+        pairs[i] = true;
+      }
+    return pairs;
+  }
+
+  /**
+   * The type whose self loops hops {@code from} and {@code from + 1} can both bind: of two overlapping types, the one that
+   * is, or extends, the other.
+   */
+  private String sharedSelfLoopType(final Database db, final int from) {
+    final DocumentType second = db.getSchema().getTypeOrNull(edgeTypes[from + 1]);
+    return second != null && second.instanceOf(edgeTypes[from]) ? edgeTypes[from + 1] : edgeTypes[from];
+  }
+
+  /** Whether a vertex of {@code bucketId} carries the labels of the positions {@code from} to {@code to}, inclusive. */
+  private static boolean labelledAt(final IntHashSet[] validBuckets, final int from, final int to, final int bucketId) {
+    for (int q = from; q <= to; q++)
+      if (validBuckets[q] != null && !validBuckets[q].contains(bucketId))
+        return false;
+    return true;
+  }
+
+  /** Whether the property predicates of the positions {@code from} to {@code to}, inclusive, accept the vertex of the RID. */
+  private static boolean passesAt(final VertexPredicate.Evaluation[] filters, final int from, final int to, final RID rid) {
+    for (int q = from; q <= to && filters != null; q++)
+      if (filters[q] != null && !filters[q].acceptsRid(rid))
+        return false;
+    return true;
+  }
+
+  /**
+   * Subtracts from {@code counts}, the paths the propagation brought to each vertex at position {@code from + 2} before
+   * that position's label and predicate are applied, the paths whose hops {@code from} and {@code from + 1} bind one self
+   * loop (see {@link #sharedSelfLoopPairs}). Their vertex has to carry position {@code from + 1}; the position they end at
+   * is filtered with the rest of the level afterwards.
+   */
+  private void subtractSharedSelfLoops(final GraphTraversalProvider provider, final Database db, final int from,
+      final long[] start, final long[] counts, final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters,
+      final int[] bucketIds, final WorkGuard guard) {
+    final String loopType = sharedSelfLoopType(db, from);
+    final IntHashSet middle = validBuckets[from + 1];
+    for (int v = 0; v < start.length; v++) {
+      guard.checkPeriodically(v);
+      if (start[v] == 0 || (middle != null && !middle.contains(bucketIds[v])))
+        continue;
+      final long loops = CSRCountUtils.selfLoops(provider, v, loopType);
+      if (loops > 0 && passes(filters, from + 1, v))
+        counts[v] -= start[v] * loops;
+    }
+  }
+
+  /**
+   * The paths of a walk from a seeded anchor whose hops {@code from} and {@code from + 1} bind one self loop, one entry
+   * per vertex of the level hop {@code from} leaves from, in its order: 0 where the vertex has no such self loop or does
+   * not carry the two positions the loop crosses.
+   */
+  private long[] seededSharedSelfLoops(final GraphTraversalProvider provider, final Database db, final int from,
+      final int[] nodes, final long[] paths, final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters) {
+    final String loopType = sharedSelfLoopType(db, from);
+    final long[] shared = new long[nodes.length];
+    for (int i = 0; i < nodes.length; i++) {
+      final int v = nodes[i];
+      if (paths[i] == 0 || !labelledAt(validBuckets, from + 1, from + 2, provider.getBucketId(v)))
+        continue;
+      final long loops = CSRCountUtils.selfLoops(provider, v, loopType);
+      // asked by RID, as the walk asks its levels: a node-id memo would be sized by the graph
+      if (loops > 0 && passesAt(filters, from + 1, from + 2, provider.getRID(v)))
+        shared[i] = paths[i] * loops;
+    }
+    return shared;
   }
 
   /**
@@ -326,9 +443,15 @@ public final class PropagateChainOp implements CountOp {
     // with the paths, which a single start vertex does not bound (parallel edges multiply them at every hop)
     int[] frontier = new int[] { anchorId };
     long[] paths = new long[] { 1L };
+    // THE LEVEL A HOP LEAVES FROM, KEPT FOR THE NEXT HOP WHEN THE TWO MAY BIND ONE SELF LOOP (ISSUE #11918)
+    final boolean[] selfLoopPairs = selfLoopPairs(db);
+    int[] pairStartNodes = null;
+    long[] pairStartPaths = null;
     final HopNeighbors neighbors = new HopNeighbors();
     for (int h = 0; h < hops - 1; h++) {
       guard.check();
+      final int[] leavingNodes = frontier;
+      final long[] leavingPaths = paths;
       final IntHashSet targetBuckets = validBuckets[h + 1];
       if (targetBuckets != null && targetBuckets.isEmpty())
         return 0; // an undeclared label matches nothing
@@ -372,6 +495,20 @@ public final class PropagateChainOp implements CountOp {
         return 0;
       frontier = Arrays.copyOf(nextFrontier, distinct);
       paths = Arrays.copyOf(nextPaths, distinct);
+      if (pairStartNodes != null) {
+        // the frontier is sorted by node id. A vertex no relationship reached has no path here, so none of its paths binds a
+        // self loop twice either
+        final long[] shared = seededSharedSelfLoops(provider, db, h - 1, pairStartNodes, pairStartPaths, validBuckets,
+            filters);
+        for (int i = 0; i < shared.length; i++) {
+          final int at = shared[i] == 0 ? -1 : Arrays.binarySearch(frontier, pairStartNodes[i]);
+          if (at >= 0)
+            paths[at] -= shared[i];
+        }
+      }
+      final boolean paired = selfLoopPairs != null && selfLoopPairs[h];
+      pairStartNodes = paired ? leavingNodes : null;
+      pairStartPaths = paired ? leavingPaths : null;
     }
 
     // The last hop is counted, never collected: the paths reaching a vertex times the relationships leaving it that pass
@@ -401,6 +538,10 @@ public final class PropagateChainOp implements CountOp {
       }
       total += paths[i] * relationships;
     }
+    if (pairStartNodes != null)
+      for (final long shared : seededSharedSelfLoops(provider, db, hops - 2, pairStartNodes, pairStartPaths, validBuckets,
+          filters))
+        total -= shared;
     return total;
   }
 
@@ -1005,11 +1146,27 @@ public final class PropagateChainOp implements CountOp {
     // THE PATHS FROM THE ANCHORS TO THE EARLIER POSITION OF THE INEQUALITY, KEPT FROM THE LEVEL THE WALK BUILDS FOR IT
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     RidLongHashMap prefix = null;
+    // THE LEVEL A HOP LEAVES FROM, KEPT FOR THE NEXT HOP WHEN THE TWO MAY BIND ONE SELF LOOP (ISSUE #11918), AND THE SELF
+    // LOOPS THE HOP SAW ON THE WAY: A VERTEX WITH NONE BINDS NONE FOR BOTH HOPS, SO ONLY THOSE ARE READ AGAIN
+    final boolean[] selfLoopPairs = selfLoopPairs(db);
+    RidLongHashMap pairStart = null;
+    RidLongHashMap pairSelfLoops = null;
+    final IntHashSet[] positionBuckets = new IntHashSet[lastHop + 2];
+    for (int i = 1; i <= lastHop + 1; i++)
+      positionBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
     for (int hop = 0; hop <= lastHop; hop++) {
       guard.check();
       if (hop == idxA)
         prefix = current;
-      final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hop + 1]);
+      final IntHashSet targetBuckets = positionBuckets[hop + 1];
+      final boolean paired = selfLoopPairs != null && hop < lastHop && selfLoopPairs[hop];
+      final RidLongHashMap seen = paired ? new RidLongHashMap() : null;
+      final RidLongHashMap leaving;
+      if (paired && hop == 0 && seedVertex != null) {
+        leaving = new RidLongHashMap();
+        leaving.put(seedVertex.getIdentity(), 1L);
+      } else
+        leaving = current;
 
       final RidLongHashMap next = hop < lastHop ? new RidLongHashMap() : null;
       final int h = hop;
@@ -1017,14 +1174,20 @@ public final class PropagateChainOp implements CountOp {
       if (hop == 0 && seedVertex != null)
         // The seeded level is the anchor alone, with one path, and the outer row (or the key lookup) already holds it.
         expandNeighbors(db, provider, seedVertex, directions[0], edgeTypes[0], targetBuckets, filtered(targetFilter,
-            next == null ? neighborRid -> total[0]++ : neighborRid -> next.add(neighborRid, 1L)));
+            seeing(seedVertex.getIdentity(), seen,
+                next == null ? neighborRid -> total[0]++ : neighborRid -> next.add(neighborRid, 1L))));
       else
         current.forEach((bucketId, offset, pathCount) -> {
           guard.check();
           final RID rid = db.newRID(bucketId, offset);
-          expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets, filtered(targetFilter,
-              next == null ? neighborRid -> total[0] += pathCount : neighborRid -> next.add(neighborRid, pathCount)));
+          expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets, filtered(targetFilter, seeing(rid, seen,
+              next == null ? neighborRid -> total[0] += pathCount : neighborRid -> next.add(neighborRid, pathCount))));
         });
+      if (pairStart != null)
+        subtractSharedSelfLoopsOLTP(db, provider, hop - 1, pairStart, pairSelfLoops, next, total, positionBuckets, filters,
+            guard);
+      pairStart = paired ? leaving : null;
+      pairSelfLoops = seen;
       current = next;
     }
 
@@ -1043,6 +1206,61 @@ public final class PropagateChainOp implements CountOp {
       if (filter.acceptsRid(rid))
         consumer.accept(rid);
     };
+  }
+
+  /**
+   * The consumer that also counts, into {@code seen}, the relationships of {@code source} that lead back to it: its self
+   * loops over the hop, among those the position they reach accepts. The consumer itself when {@code seen} is null.
+   */
+  private static Consumer<RID> seeing(final RID source, final RidLongHashMap seen, final Consumer<RID> consumer) {
+    if (seen == null)
+      return consumer;
+    return rid -> {
+      if (rid.equals(source))
+        seen.add(source, 1L);
+      consumer.accept(rid);
+    };
+  }
+
+  /**
+   * Subtracts the paths whose hops {@code from} and {@code from + 1} bind one self loop (see {@link #sharedSelfLoopPairs})
+   * from the level the walk built for position {@code from + 2}, or from the total when it is the last one. Only the
+   * vertices hop {@code from} saw a self loop of are read: a self loop both hops match is one of them, and the hop's
+   * label and predicate already accepted the vertex at {@code from + 1}. A vertex not in the level was reached by no
+   * relationship, so none of its paths binds a self loop twice either.
+   */
+  private void subtractSharedSelfLoopsOLTP(final Database db, final GraphTraversalProvider provider, final int from,
+      final RidLongHashMap start, final RidLongHashMap firstHopSelfLoops, final RidLongHashMap level, final long[] total,
+      final IntHashSet[] positionBuckets, final VertexPredicate.Evaluation[] filters, final WorkGuard guard) {
+    final String loopType = sharedSelfLoopType(db, from);
+    final int end = from + 2;
+    firstHopSelfLoops.forEach((bucketId, offset, seenLoops) -> {
+      guard.check();
+      final RID rid = db.newRID(bucketId, offset);
+      final long reaching = start.get(rid, 0L);
+      // the level of an intermediate position is filtered already, which its vertices passed
+      if (reaching == 0 || (level != null ? !level.containsKey(bucketId, offset) :
+          !labelledAt(positionBuckets, end, end, bucketId)))
+        return;
+      final long loops = loopType.equals(edgeTypes[from]) ? seenLoops : selfLoopsOf(db, provider, rid, directions[from], loopType);
+      if (loops == 0 || (level == null && !passesAt(filters, end, end, rid)))
+        return;
+      if (level == null)
+        total[0] -= reaching * loops;
+      else
+        level.add(rid, -reaching * loops);
+    });
+  }
+
+  /** The self loops of the vertex over the hop direction and type, each relationship once. */
+  private static long selfLoopsOf(final Database db, final GraphTraversalProvider provider, final RID rid,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final long[] loops = { 0 };
+    expandNeighbors(db, provider, rid, direction, edgeType, null, neighborRid -> {
+      if (neighborRid.equals(rid))
+        loops[0]++;
+    });
+    return loops[0];
   }
 
   /**
