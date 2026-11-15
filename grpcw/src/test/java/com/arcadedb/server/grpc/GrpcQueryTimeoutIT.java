@@ -31,6 +31,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -109,8 +111,11 @@ public class GrpcQueryTimeoutIT extends BaseGrpcServerTest {
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> stub.withDeadlineAfter(60, TimeUnit.SECONDS).executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("imeout");
+        .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+          assertThat(e.getStatus().getCode()).as("the status of a query timeout").isEqualTo(Status.Code.DEADLINE_EXCEEDED);
+          // The bound the engine stopped the query at, as it names it: the request's 200 ms, not a longer budget
+          assertThat(e.getStatus().getDescription()).contains("arcadedb.command.timeout of 200ms");
+        });
     stopwatch.assertGaveUpWithin(10_000, "a query stopped by its 200 ms timeout_ms from one running its seconds of work to the end");
   }
 }
