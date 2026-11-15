@@ -30,6 +30,8 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private final Skip    skip;
   private       int     skipped = 0;
   private       boolean finished;
+  // The rows of the SKIP the step that reads the index passed over without loading their records, see skipUnloaded()
+  private       int     skippedUnloaded = -1;
 
   /**
    * Rows an upstream batch carried PAST the skip point, waiting to be handed to the caller.
@@ -55,6 +57,10 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     checkForPrevious();
 
     final int skipValue = skip.getValue(context);
+    if (skippedUnloaded < 0) {
+      skippedUnloaded = skipUnloaded(context, skipValue);
+      skipped = skippedUnloaded;
+    }
     while (skipped < skipValue) {
       //fetch and discard
       final ResultSet rs = prev.syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
@@ -83,6 +89,38 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     return prev.syncPull(context, nRecords);
   }
 
+  /**
+   * Hands the SKIP to the step that reads the index entries, which passes over the rows without loading their records (issue
+   * #11954), when every step in between makes one row of each row it reads and decides nothing on the record: a projection, which
+   * SQL does not compute for skipped rows anyway when the SKIP comes before it, and the type filter, whose decision the index step
+   * takes from the record's bucket. Any other step in between (a WHERE left to evaluate, DISTINCT, expand(), UNWIND, LET) leaves
+   * the SKIP to discard the rows as they come.
+   *
+   * @return the rows passed over, the rest of the SKIP being discarded from the rows that follow
+   */
+  private int skipUnloaded(final CommandContext context, final int skipValue) {
+    if (skipValue <= 0)
+      return 0;
+
+    String typeName = null;
+    ExecutionStepInternal step = prev;
+    while (step != null) {
+      final Class<?> stepClass = step.getClass();
+      if (stepClass == ProjectionCalculationStep.class)
+        step = ((ProjectionCalculationStep) step).getPrev();
+      else if (stepClass == FilterByTypeStep.class && typeName == null) {
+        typeName = ((FilterByTypeStep) step).getTypeName();
+        step = ((FilterByTypeStep) step).getPrev();
+      } else if (stepClass == GetValueFromIndexEntryStep.class)
+        return ((GetValueFromIndexEntryStep) step).skipUnloaded(context, skipValue, typeName);
+      else if (stepClass == ParallelExecStep.class)
+        return ((ParallelExecStep) step).skipUnloaded(context, skipValue, typeName);
+      else
+        return 0;
+    }
+    return 0;
+  }
+
   @Override
   public void sendTimeout() {
     // IGNORE THE TIMEOUT
@@ -97,6 +135,9 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    return ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
+    if (context.isProfiling() && skippedUnloaded > 0)
+      result += " (" + skippedUnloaded + " rows passed over in the index, records not loaded)";
+    return result;
   }
 }

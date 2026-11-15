@@ -88,6 +88,48 @@ public class ParallelExecStep extends AbstractExecutionStep {
     } while (!currentResultSet.hasNext());
   }
 
+  /**
+   * Passes over up to {@code n} rows of the sub-plans, in the order they are served, before any row was served (issue #11954): a
+   * sub-plan that reads an index passes over its entries without loading their records
+   * ({@link GetValueFromIndexEntryStep#skipUnloaded}), and the rows of one that loads its records anyway (the scan for the records
+   * whose key the index does not hold) are read and discarded here, as the SKIP would discard them.
+   *
+   * @param typeName the type the rows must be an instance of, as the FILTER ITEMS BY TYPE after this step checks, or null
+   *
+   * @return the rows passed over: fewer than {@code n} when the sub-plans ran out, or when an index entry needs its record
+   */
+  int skipUnloaded(final CommandContext context, final int n, final String typeName) {
+    if (prev != null)
+      return 0;
+
+    int skipped = 0;
+    while (skipped < n && currentResultSet == null && current < subExecutionPlans.size()) {
+      final List<ExecutionStep> steps = subExecutionPlans.get(current).getSteps();
+      if (!steps.isEmpty() && steps.getLast().getClass() == GetValueFromIndexEntryStep.class) {
+        final GetValueFromIndexEntryStep values = (GetValueFromIndexEntryStep) steps.getLast();
+        skipped += values.skipUnloaded(context, n - skipped, typeName);
+        if (!values.skipRanOut())
+          break;
+        current++;
+      } else {
+        final ResultSet rows = subExecutionPlans.get(current).fetchNext(Math.min(n - skipped, 100));
+        if (!rows.hasNext()) {
+          current++;
+          continue;
+        }
+        while (skipped < n && rows.hasNext()) {
+          final Result row = rows.next();
+          if (typeName == null || FilterByTypeStep.isInstanceOf(row, typeName))
+            ++skipped;
+        }
+        // a page can carry more rows than it was asked for: they are served first
+        if (rows.hasNext())
+          currentResultSet = rows;
+      }
+    }
+    return skipped;
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result = "";
