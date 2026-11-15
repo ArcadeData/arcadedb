@@ -18,6 +18,11 @@
  */
 package com.arcadedb.server.http.handler.batch;
 
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,7 +56,10 @@ public class CsvBatchRecordStream implements BatchRecordStream {
 
   private final BufferedReader reader;
   private final BatchRecord    record;
+  private final Schema         schema;
   private       String[]       headers;
+  private       String         columnTypesFor;
+  private       Type[]         columnTypes;
   private       int            typeCol   = -1;
   private       int            classCol  = -1;
   private       int            idCol     = -1;
@@ -62,9 +70,20 @@ public class CsvBatchRecordStream implements BatchRecordStream {
   private       boolean        ready;
   private       boolean        headerParsed;
 
+  /** A stream with no schema to read against: every property column is read as undeclared. */
   public CsvBatchRecordStream(final InputStream input) {
+    this(input, null);
+  }
+
+  /**
+   * @param schema the schema of the database the load writes into, which decides how each field is read: a CSV field is
+   *               text, and the declared type of its property is what says whether that text is a number (issue #11802).
+   *               {@code null} reads every column as undeclared
+   */
+  public CsvBatchRecordStream(final InputStream input, final Schema schema) {
     this.reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8), 65536);
     this.record = new BatchRecord();
+    this.schema = schema;
   }
 
   @Override
@@ -133,6 +152,9 @@ public class CsvBatchRecordStream implements BatchRecordStream {
   private void parseHeader(final String line) {
     final List<String> cols = parseCsvFields(line);
     headers = cols.toArray(new String[0]);
+    // The cached column types are positional: a new header invalidates them
+    columnTypesFor = null;
+    columnTypes = null;
 
     typeCol = -1;
     classCol = -1;
@@ -213,13 +235,14 @@ public class CsvBatchRecordStream implements BatchRecordStream {
         throw new IllegalArgumentException("Edge missing @from or @to value at line " + lineNumber);
     }
 
-    // Extract properties (skip meta columns)
+    // Extract properties (skip meta columns), each read for the type its property declares (issue #11802)
+    final Type[] declared = columnTypesOf(record.typeName);
     for (int i = 0; i < headers.length && i < fields.size(); i++) {
       if (i == typeCol || i == classCol || i == idCol || i == fromCol || i == toCol)
         continue;
       final String value = fields.get(i);
       if (!value.isEmpty())
-        record.addProperty(headers[i], parseValue(value));
+        record.addProperty(headers[i], parseValue(value, declared[i]));
     }
   }
 
@@ -239,34 +262,145 @@ public class CsvBatchRecordStream implements BatchRecordStream {
   }
 
   /**
-   * Attempts to parse CSV field values as typed values (number, boolean, null).
-   * Falls back to String.
+   * The declared type of every property column for the row's type, or {@code null} for a column the schema does not
+   * declare. Cached for the last type seen, since a CSV section is typically one type after another: a row of the same
+   * type as the previous one pays no schema lookup at all.
+   */
+  private Type[] columnTypesOf(final String typeName) {
+    if (typeName.equals(columnTypesFor))
+      return columnTypes;
+
+    final DocumentType type = schema != null ? schema.getTypeOrNull(typeName) : null;
+    final Type[] types = new Type[headers.length];
+    if (type != null)
+      for (int i = 0; i < headers.length; i++) {
+        final Property property = type.getPolymorphicPropertyIfExists(headers[i]);
+        if (property != null)
+          types[i] = property.getType();
+      }
+    columnTypesFor = typeName;
+    columnTypes = types;
+    return types;
+  }
+
+  /**
+   * Reads a CSV field, which is text, for a property of the given declared type (issue #11802).
+   * <ul>
+   *   <li>{@code STRING} and {@code DECIMAL} take the text exactly as sent: any number read from it first would drop what
+   *   the text carries and a number cannot ({@code 007}, {@code 1.50}, {@code False}), and the declared conversion of the
+   *   text itself is exact ({@code new BigDecimal("1.50")} keeps its scale)</li>
+   *   <li>any other declared type takes the most lenient reading ({@link #parseLenient}), which the declared conversion then
+   *   turns into the property's type exactly as before: {@code TRUE} for a {@code BOOLEAN}, {@code 007} or {@code +5} for
+   *   an {@code INTEGER}, epoch milliseconds for a {@code DATETIME}</li>
+   *   <li>an undeclared property has nothing but the text to go by, so the field is read as the JSON literal it spells, if it
+   *   spells one ({@link #parseValue(String)}): the reading a JSONL load of the same value as a JSON literal gets</li>
+   * </ul>
+   */
+  static Object parseValue(final String value, final Type declared) {
+    if (value.isEmpty())
+      return null;
+    if (declared == null)
+      return parseValue(value);
+    if (declared == Type.STRING || declared == Type.DECIMAL)
+      return value;
+    return parseLenient(value);
+  }
+
+  /**
+   * The reading of a field in a column the schema does not declare: {@code true} and {@code false} as booleans, a JSON
+   * number as a {@code Long} (an integer that fits one) or a {@code Double}, anything else as the text it is. JSON's own
+   * spelling is the line because it is the one a client already knows means "a number" and not "text that looks like one":
+   * it has no leading zeros ({@code 007}, {@code 000}), no leading {@code +}, no bare trailing dot ({@code 5.}), and its
+   * booleans are lowercase, so none of those is rewritten into a value that prints back differently (issue #11802). An
+   * integer beyond the {@code long} range stays text rather than losing digits to a double.
    */
   static Object parseValue(final String value) {
     if (value.isEmpty())
       return null;
 
-    // Try boolean
+    if ("true".equals(value))
+      return Boolean.TRUE;
+    if ("false".equals(value))
+      return Boolean.FALSE;
+
+    final int shape = jsonNumberShape(value);
+    if (shape == NOT_A_NUMBER)
+      return value;
+    try {
+      return shape == JSON_INTEGER ? (Object) Long.parseLong(value) : (Object) Double.parseDouble(value);
+    } catch (final NumberFormatException e) {
+      // An integer outside the long range: kept whole as text
+      return value;
+    }
+  }
+
+  private static final int NOT_A_NUMBER  = 0;
+  private static final int JSON_INTEGER  = 1;
+  private static final int JSON_FRACTION = 2;
+
+  /**
+   * Classifies {@code s} by the JSON number grammar ({@code -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?}) in one pass and
+   * with no allocation.
+   */
+  private static int jsonNumberShape(final String s) {
+    final int len = s.length();
+    int i = 0;
+    if (s.charAt(i) == '-' && ++i == len)
+      return NOT_A_NUMBER;
+
+    final char first = s.charAt(i);
+    if (first == '0')
+      i++;
+    else if (first >= '1' && first <= '9')
+      while (i < len && isDigit(s.charAt(i)))
+        i++;
+    else
+      return NOT_A_NUMBER;
+
+    if (i == len)
+      return JSON_INTEGER;
+
+    if (s.charAt(i) == '.') {
+      final int fractionStart = ++i;
+      while (i < len && isDigit(s.charAt(i)))
+        i++;
+      if (i == fractionStart)
+        return NOT_A_NUMBER;
+    }
+
+    if (i < len && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {
+      if (++i < len && (s.charAt(i) == '+' || s.charAt(i) == '-'))
+        i++;
+      final int exponentStart = i;
+      while (i < len && isDigit(s.charAt(i)))
+        i++;
+      if (i == exponentStart)
+        return NOT_A_NUMBER;
+    }
+
+    return i == len ? JSON_FRACTION : NOT_A_NUMBER;
+  }
+
+  private static boolean isDigit(final char c) {
+    return c >= '0' && c <= '9';
+  }
+
+  /**
+   * The reading for a declared type other than {@code STRING}/{@code DECIMAL}: booleans in any case, and anything
+   * {@link Long#parseLong} or {@link Double#parseDouble} accepts as a number. The declared conversion that follows is what
+   * gives the value its type, so being generous here only widens what the type accepts.
+   */
+  private static Object parseLenient(final String value) {
     if ("true".equalsIgnoreCase(value))
       return Boolean.TRUE;
     if ("false".equalsIgnoreCase(value))
       return Boolean.FALSE;
 
-    // Try integer (long)
-    if (value.length() <= 18 && isNumericStart(value)) {
+    if (isNumericStart(value)) {
       try {
-        return Long.parseLong(value);
+        return isFloatCandidate(value) ? (Object) Double.parseDouble(value) : (Object) Long.parseLong(value);
       } catch (final NumberFormatException ignored) {
-        // fall through
-      }
-    }
-
-    // Try floating point
-    if (isFloatCandidate(value)) {
-      try {
-        return Double.parseDouble(value);
-      } catch (final NumberFormatException ignored) {
-        // fall through
+        // Not a number after all: the declared conversion is handed the text
       }
     }
 
@@ -275,12 +409,10 @@ public class CsvBatchRecordStream implements BatchRecordStream {
 
   private static boolean isNumericStart(final String s) {
     final char c = s.charAt(0);
-    return (c >= '0' && c <= '9') || c == '-' || c == '+';
+    return isDigit(c) || c == '-' || c == '+';
   }
 
   private static boolean isFloatCandidate(final String s) {
-    if (!isNumericStart(s))
-      return false;
     for (int i = 0; i < s.length(); i++) {
       final char c = s.charAt(i);
       if (c == '.' || c == 'e' || c == 'E')

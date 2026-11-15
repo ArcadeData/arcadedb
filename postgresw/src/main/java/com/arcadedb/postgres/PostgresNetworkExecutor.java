@@ -39,6 +39,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.ValueOutOfRangeException;
@@ -4736,6 +4737,8 @@ public class PostgresNetworkExecutor extends Thread {
       return "22P02";                              // invalid_text_representation
     if (CauseChain.contains(error, TypeMismatchException.class))
       return "42804";                              // datatype_mismatch
+    if (CauseChain.contains(error, ObjectInUseException.class))
+      return "55006";                              // object_in_use: a non-empty type, an indexed property (issue #11803)
     return "22023";                                // invalid_parameter_value
   }
 

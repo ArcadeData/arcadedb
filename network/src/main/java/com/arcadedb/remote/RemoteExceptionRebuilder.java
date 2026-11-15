@@ -57,6 +57,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
@@ -121,6 +122,8 @@ public final class RemoteExceptionRebuilder {
       Map.entry(TriggerExecutionException.class.getName(), TriggerExecutionException::new),
       Map.entry(InvalidPropertyTypeException.class.getName(), InvalidPropertyTypeException::new),
       Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
+      // A STATEMENT REFUSED FOR WHAT THE DATABASE HOLDS NOW: A NON-EMPTY TYPE, AN INDEXED PROPERTY (ISSUE #11803)
+      Map.entry(ObjectInUseException.class.getName(), ObjectInUseException::new),
       // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)

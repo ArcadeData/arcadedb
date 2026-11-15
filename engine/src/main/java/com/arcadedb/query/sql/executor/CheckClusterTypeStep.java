@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
@@ -75,7 +74,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
         }
       }
       if (!found)
-        throw new CommandExecutionException("Bucket " + bucketObj.getFileId() + " does not belong to the type " + targetType);
+        throw new SchemaException("Bucket " + bucketObj.getName() + " (" + bucketObj.getFileId() + ") does not belong to the type " + targetType);
 
       return new InternalResultSet();
     } finally {
