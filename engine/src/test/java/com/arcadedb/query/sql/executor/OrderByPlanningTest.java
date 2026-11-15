@@ -735,4 +735,52 @@ class OrderByPlanningTest extends TestHelper {
     assertThat(keysetWalk(where, true,
         plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY"))).isEqualTo(expected);
   }
+
+  /**
+   * Regression test for issue #11700: the count of the equality's entries stops at the break-even, sqrt(2 * LIMIT * records) + 1.
+   * The walk estimated from that capped count was rounded up, and at LIMIT 40 or 48 on 20,000 records it reached half the cap, so
+   * the walk was refused for an equality matching more entries than the cap, the case it exists for.
+   */
+  @Test
+  void keysetPageOnACommonEqualityWalksTheSortKeyIndexAtTheCountCap() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'g3'", true);
+    for (final int limit : new int[] { 10, 40, 48, 50 })
+      try (final ResultSet rs = database.query("sql",
+          "SELECT external_id FROM Chunk WHERE graph_name = 'g3' AND external_id > :bound ORDER BY external_id LIMIT " + limit,
+          Map.of("bound", expected.get(500)))) {
+        final List<String> got = new ArrayList<>();
+        while (rs.hasNext())
+          got.add(rs.next().getProperty("external_id"));
+        assertThat(got).as("LIMIT %d", limit).isEqualTo(expected.subList(501, 501 + limit));
+        walksTheSortKeyIndex(plan(rs));
+      }
+  }
+
+  /**
+   * Regression test for issue #11700: the plan depends on the value bound to the equality, so one statement text bound to a
+   * common value and then to a selective one (and the other way round) is planned again for each, not served from the cache.
+   */
+  @Test
+  void keysetPageIsPlannedAgainForEveryBoundValue() {
+    loadKeysetFixture();
+    final String sql = "SELECT external_id FROM Chunk WHERE graph_name = :g AND external_id > :bound ORDER BY external_id LIMIT "
+        + KEYSET_PAGE;
+    final Consumer<String> keepsTheEqualityIndex = plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name]")
+        .contains("ORDER BY");
+    for (final String first : List.of("g3", "rare"))
+      for (int round = 0; round < 2; round++)
+        for (final String g : first.equals("g3") ? List.of("g3", "rare") : List.of("rare", "g3"))
+          try (final ResultSet rs = database.query("sql", sql, Map.of("g", g, "bound", ""))) {
+            final List<String> got = new ArrayList<>();
+            while (rs.hasNext())
+              got.add(rs.next().getProperty("external_id"));
+            final List<String> expected = sortedThroughTheEquality("graph_name = '" + g + "'", true);
+            assertThat(got).as(g).isEqualTo(expected.subList(0, Math.min(KEYSET_PAGE, expected.size())));
+            if (g.equals("g3"))
+              walksTheSortKeyIndex(plan(rs));
+            else
+              keepsTheEqualityIndex.accept(plan(rs));
+          }
+  }
 }

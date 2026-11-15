@@ -5802,8 +5802,10 @@ public class SelectExecutionPlanner {
     final long matches = countMatchingEntries(chosen, (long) breakEven + 1, context);
     if (matches <= 0)
       return null;
-    final long walked = Math.min(typeRecords, (long) Math.ceil((double) rows * typeRecords / matches));
-    if (2 * walked >= matches)
+    // the walk reads about rows * typeRecords / matches entries and is taken when that is less than half the matches, so when
+    // matches * matches > 2 * rows * typeRecords: compared unrounded, since a count stopped at the cap is just past the break-even
+    // and a walk estimate rounded up reached half of it
+    if (2.0 * rows * typeRecords >= (double) matches * matches)
       return null;
     return walk != null ? walk : WALK_WHOLE_ORDER_INDEX;
   }
