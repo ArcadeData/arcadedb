@@ -388,6 +388,8 @@ public class MCPToolUtils {
   public static JSONArray collectInTransaction(final Database database, final Consumer<JSONArray> collector) {
     final JSONArray[] committed = new JSONArray[1];
     database.transaction(() -> {
+      // Opened by this server around one tool call: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs (issue #11588)
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
       final JSONArray attemptRecords = new JSONArray();
       collector.accept(attemptRecords);
       committed[0] = attemptRecords;
