@@ -353,11 +353,15 @@ public final class PropagateChainOp implements CountOp {
       final long[] nextPaths = new long[count];
       int distinct = 0;
       final VertexPredicate.Evaluation filter = filters != null ? filters[h + 1] : null;
-      for (int k = 0; k < count; ) {
+      int k = 0;
+      while (k < count) {
         final int neighbor = (int) (reached[k] >>> 32);
         long reaching = 0;
-        for (; k < count && (int) (reached[k] >>> 32) == neighbor; k++)
+        // the entries of one vertex are adjacent after the sort: sum the paths of each source reaching it
+        while (k < count && (int) (reached[k] >>> 32) == neighbor) {
           reaching += paths[(int) reached[k]];
+          k++;
+        }
         // asked by RID, once per distinct vertex: a node-id memo would be sized by the graph
         if (filter == null || filter.acceptsRid(provider.getRID(neighbor))) {
           nextFrontier[distinct] = neighbor;
