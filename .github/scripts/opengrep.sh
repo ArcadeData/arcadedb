@@ -80,7 +80,13 @@ case "$mode" in
     exit 0
     ;;
   test)
-    exec "$bin" test --config .opengrep/rules .opengrep/tests
+    "$bin" test --config .opengrep/rules .opengrep/tests
+    # opengrep 2.0.0 reports a rule file with no test file (MissingTest) and still exits 0: fail on it here
+    missing="$("$bin" test --json --config .opengrep/rules .opengrep/tests 2>/dev/null | jq -r '.config_missing_tests[]')"
+    if [ -n "$missing" ]; then
+      echo "opengrep: rule files without a self-test in .opengrep/tests: $missing" >&2
+      exit 1
+    fi
     ;;
   *)
     echo "usage: $0 [check [files...]|advise|test]" >&2

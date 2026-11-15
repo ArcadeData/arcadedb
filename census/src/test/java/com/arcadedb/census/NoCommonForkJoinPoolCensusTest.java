@@ -19,7 +19,10 @@
 package com.arcadedb.census;
 
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassReader;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -40,7 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class NoCommonForkJoinPoolCensusTest {
   private static final String      FORK_JOIN_POOL     = "java/util/concurrent/ForkJoinPool";
-  private static final String      FORK_JOIN_TASK     = "java/util/concurrent/ForkJoinTask";
+  private static final Set<String> JDK_FORK_JOIN_TASKS = Set.of("java/util/concurrent/ForkJoinTask",
+      "java/util/concurrent/RecursiveAction", "java/util/concurrent/RecursiveTask", "java/util/concurrent/CountedCompleter");
+  private static final String      COMPLETION_STAGE   = "java/util/concurrent/CompletionStage";
   private static final String      COMPLETABLE_FUTURE = "java/util/concurrent/CompletableFuture";
   private static final String      ARRAYS             = "java/util/Arrays";
   private static final String      EXECUTOR           = "Ljava/util/concurrent/Executor;";
@@ -49,7 +54,8 @@ class NoCommonForkJoinPoolCensusTest {
   private static final Set<String> PARALLEL_ARRAYS    = Set.of("parallelSort", "parallelPrefix", "parallelSetAll");
   private static final Set<String> ASYNC_STEPS        = Set.of("supplyAsync", "runAsync", "thenApplyAsync", "thenAcceptAsync",
       "thenRunAsync", "thenComposeAsync", "thenCombineAsync", "thenAcceptBothAsync", "runAfterBothAsync", "applyToEitherAsync",
-      "acceptEitherAsync", "runAfterEitherAsync", "whenCompleteAsync", "handleAsync", "exceptionallyAsync", "delayedExecutor");
+      "acceptEitherAsync", "runAfterEitherAsync", "whenCompleteAsync", "handleAsync", "exceptionallyAsync", "exceptionallyComposeAsync",
+      "completeAsync", "delayedExecutor");
   private static final Set<String> FORKS              = Set.of("fork", "invokeAll");
 
   private static final String BULK_SORT = "graph/GraphBatch#batchUpdateVertexHeadChunks";
@@ -88,16 +94,42 @@ class NoCommonForkJoinPoolCensusTest {
     final Map<String, Set<String>> sites = callSitesOf(CompiledClasses.ofTheProbes());
 
     assertThat(sites).containsKeys("census/ShapeProbes$CommonPool#parallelStream", "census/ShapeProbes$CommonPool#parallelSort",
-        "census/ShapeProbes$CommonPool#supplyAsyncWithoutAnExecutor", "census/ShapeProbes$CommonPool#methodReference");
+        "census/ShapeProbes$CommonPool#supplyAsyncWithoutAnExecutor", "census/ShapeProbes$CommonPool#methodReference",
+        "census/ShapeProbes$CommonPool#completeAsyncWithoutAnExecutor", "census/ShapeProbes$CommonPool#asyncStepThroughTheInterface",
+        "census/ShapeProbes$CommonPool#forkOfAJdkSubclass", "census/ShapeProbes$CommonPool#forkOfAProjectSubclass");
     assertThat(sites).doesNotContainKeys("census/ShapeProbes$CommonPool#supplyAsyncWithAnExecutor",
-        "census/ShapeProbes$CommonPool#namedInALiteral");
+        "census/ShapeProbes$CommonPool#completeAsyncWithAnExecutor",
+        "census/ShapeProbes$CommonPool#asyncStepThroughTheInterfaceWithAnExecutor", "census/ShapeProbes$CommonPool#namedInALiteral");
   }
 
   private static Map<String, Set<String>> callSitesOf(final Map<String, byte[]> classes) {
-    return CompiledClasses.callSitesOf(classes, NoCommonForkJoinPoolCensusTest::submitsToTheCommonPool);
+    final Set<String> forkJoinTasks = forkJoinTaskTypes(classes);
+    return CompiledClasses.callSitesOf(classes, (owner, name, desc) -> submitsToTheCommonPool(owner, name, desc, forkJoinTasks));
   }
 
-  private static boolean submitsToTheCommonPool(final String owner, final String name, final String desc) {
+  /**
+   * {@code ForkJoinTask} and every subtype a {@code fork()} can be called through: invokevirtual names the static receiver
+   * type, a {@code RecursiveAction} or a project subclass as often as {@code ForkJoinTask}.
+   */
+  private static Set<String> forkJoinTaskTypes(final Map<String, byte[]> classes) {
+    final Map<String, String> superOf = new HashMap<>();
+    for (final byte[] bytes : classes.values()) {
+      final ClassReader reader = new ClassReader(bytes);
+      superOf.put(reader.getClassName(), reader.getSuperName());
+    }
+    final Set<String> types = new HashSet<>(JDK_FORK_JOIN_TASKS);
+    for (final String type : superOf.keySet()) {
+      String ancestor = superOf.get(type);
+      while (ancestor != null && !types.contains(ancestor))
+        ancestor = superOf.get(ancestor);
+      if (ancestor != null)
+        types.add(type);
+    }
+    return types;
+  }
+
+  private static boolean submitsToTheCommonPool(final String owner, final String name, final String desc,
+      final Set<String> forkJoinTasks) {
     if (FORK_JOIN_POOL.equals(owner))
       return "commonPool".equals(name);
     // invokeinterface names the static receiver type, java/util/List as often as java/util/Collection: any owner
@@ -107,9 +139,9 @@ class NoCommonForkJoinPoolCensusTest {
       return STREAMS.contains(owner);
     if (ARRAYS.equals(owner))
       return PARALLEL_ARRAYS.contains(name);
-    if (COMPLETABLE_FUTURE.equals(owner))
+    if (COMPLETABLE_FUTURE.equals(owner) || COMPLETION_STAGE.equals(owner))
       return ASYNC_STEPS.contains(name) && !desc.contains(EXECUTOR);
-    if (FORK_JOIN_TASK.equals(owner))
+    if (forkJoinTasks.contains(owner))
       return FORKS.contains(name);
     return false;
   }

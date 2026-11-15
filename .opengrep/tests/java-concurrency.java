@@ -97,6 +97,58 @@ class ConcurrencyShapes {
     }
   }
 
+  void lockThenTryWithAnUnrelatedFinally() {
+    // ruleid: lock-not-released-in-finally
+    lock.lock();
+    try {
+      use(null);
+    } finally {
+      use(this);
+    }
+  }
+
+  void lockThenTryReleasingAnotherLock() {
+    // ruleid: lock-not-released-in-finally
+    lock.lock();
+    try {
+      use(null);
+    } finally {
+      other.unlock();
+    }
+  }
+
+  void lockInsideAnUnrelatedTry() {
+    try {
+      // ruleid: lock-not-released-in-finally
+      lock.lock();
+      use(null);
+      lock.unlock();
+    } finally {
+      use(this);
+    }
+  }
+
+  void lockInsideATryReleasingIt() {
+    try {
+      // ok: lock-not-released-in-finally
+      lock.lock();
+      use(null);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  void conditionalLock(final boolean shared) {
+    // ok: lock-not-released-in-finally
+    if (shared) lock.lock();
+    try {
+      use(null);
+    } finally {
+      if (shared)
+        lock.unlock();
+    }
+  }
+
   void unguardedIncrement() {
     // ruleid: volatile-read-modify-write
     counter++;
@@ -106,6 +158,23 @@ class ConcurrencyShapes {
 
   synchronized void guardedIncrement() {
     // ok: volatile-read-modify-write
+    counter++;
+  }
+
+  void incrementUnderALock() {
+    lock.lock();
+    try {
+      // ok: volatile-read-modify-write
+      counter++;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  void incrementAfterTheUnlock() {
+    lock.lock();
+    lock.unlock();
+    // ruleid: volatile-read-modify-write
     counter++;
   }
 

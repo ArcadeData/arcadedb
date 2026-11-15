@@ -40,40 +40,43 @@ rules:
     message: "A lock() not followed at once by try { ... } finally { unlock(); } stays held when anything between the two throws, and every later taker of the lock hangs. Take the lock as the last statement before the try; anything that can fail goes before the lock() or inside the try."
     paths:
       include: ["*/src/main/**"]
+    # Every exemption names the release: a finally that does not unlock this lock (cleanup only, or another lock) is no
+    # release, and neither is an unrelated try/finally around the lock().
     patterns:
       - pattern: $L.lock();
       - pattern-not-inside: |
           $L.lock();
-          try { ... } finally { ... }
+          try { ... } finally { ... $L.unlock(); ... }
       - pattern-not-inside: |
           $L.lock();
-          try { ... } catch (...) { ... } finally { ... }
+          try { ... } catch (...) { ... } finally { ... $L.unlock(); ... }
+      # Taken first thing inside the try whose finally releases it
       - pattern-not-inside: |
-          try { ... } finally { ... }
+          try { $L.lock(); ... } finally { ... $L.unlock(); ... }
       - pattern-not-inside: |
-          try { ... } catch (...) { ... } finally { ... }
+          try { $L.lock(); ... } catch (...) { ... } finally { ... $L.unlock(); ... }
       # A conditional lock released under the same condition
       - pattern-not-inside: |
           if ($C) $L.lock();
-          try { ... } finally { ... }
+          try { ... } finally { ... $L.unlock(); ... }
       # Two locks in a fixed order: ReentrantLock.lock() does not throw, so nothing runs between them that can fail
       - pattern-not-inside: |
           $L.lock();
           $M.lock();
-          try { ... } finally { ... }
+          try { ... } finally { ... $L.unlock(); ... }
       # The fallback of a failed tryLock(), released by the finally that follows
       - pattern-not-inside: |
           if (!$L.tryLock()) { ... }
-          try { ... } finally { ... }
+          try { ... } finally { ... $L.unlock(); ... }
       # Every lock of an array taken in a loop, all released by the finally that follows
       - pattern-not-inside: |
           for (...) $X.lock();
-          try { ... } finally { ... }
+          try { ... } finally { ... $Y.unlock(); ... }
       # A held flag the finally reads to know whether the body already released the lock
       - pattern-not-inside: |
           $L.lock();
           $V = true;
-          try { ... } finally { ... }
+          try { ... } finally { ... $L.unlock(); ... }
       # A barrier: wait for the current holder, hold nothing
       - pattern-not-inside: |
           $L.lock();
@@ -105,9 +108,14 @@ rules:
       - pattern-not-inside: synchronized (...) { ... }
       - pattern-not-inside: |
           synchronized $R $M(...) { ... }
+      # Inside the critical section only: from the lock() to the unlock() that releases it
       - pattern-not-inside: |
           $L.lock();
           ...
+          $L.unlock();
+      - pattern-not-inside: |
+          $L.lock();
+          try { ... } finally { ... $L.unlock(); ... }
   - id: empty-catch
     languages: [java]
     severity: WARNING

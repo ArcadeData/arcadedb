@@ -13,22 +13,21 @@ rules:
       include: ["*/src/test/**"]
     patterns:
       - pattern-either:
-          - pattern: assertThat($CLOCK - $S). ... .$BOUND($B)
-          - pattern: assertThat($CLOCK). ... .$BOUND($B)
-          - pattern: assertThat($UNIT.toMillis($CLOCK - $S)). ... .$BOUND($B)
+          - pattern: assertThat($CLOCK - $S). ... .$BOUND(...)
+          - pattern: assertThat($CLOCK). ... .$BOUND(...)
+          - pattern: assertThat($UNIT.toMillis($CLOCK - $S)). ... .$BOUND(...)
           - pattern: |
               $T = $CLOCK - $S;
               ...
-              assertThat($T). ... .$BOUND($B);
+              assertThat($T). ... .$BOUND(...);
           - pattern: |
               $T = $UNIT.toMillis($CLOCK - $S);
               ...
-              assertThat($T). ... .$BOUND($B);
-      - metavariable-pattern:
+              assertThat($T). ... .$BOUND(...);
+      # The whole operand, not a clock read nested in it: assertThat(remaining(now() + budget)) bounds a computed value
+      - metavariable-regex:
           metavariable: $CLOCK
-          pattern-either:
-            - pattern: System.currentTimeMillis()
-            - pattern: System.nanoTime()
+          regex: ^System\.(currentTimeMillis|nanoTime)\(\)$
       - metavariable-regex:
           metavariable: $BOUND
           regex: ^(isLessThan|isLessThanOrEqualTo|isBetween|isCloseTo)$

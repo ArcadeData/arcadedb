@@ -1936,8 +1936,6 @@ public class TimeSeriesShard implements AutoCloseable {
 
     appendLock.lock();
     try {
-      compactionLock.readLock().lock();
-      boolean readLockHeld = true;
       // A repair writes a page, so it needs a transaction; a caller that already has one keeps it, since the
       // commit below is only this method's to make when the transaction is.
       final boolean ownTransaction = options.fix() && !db.isTransactionActive();
@@ -1945,6 +1943,8 @@ public class TimeSeriesShard implements AutoCloseable {
       // by identity, so they stay correct whatever a commit that threw left on the thread's stack.
       OwnTransaction ownTx = null;
       boolean transactionOpen = false;
+      boolean readLockHeld = true;
+      compactionLock.readLock().lock();
       try {
         if (ownTransaction) {
           ownTx = OwnTransaction.begin(db);

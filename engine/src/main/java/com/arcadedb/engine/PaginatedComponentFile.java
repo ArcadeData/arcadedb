@@ -204,6 +204,7 @@ public class PaginatedComponentFile extends ComponentFile {
         // DOWNGRADE: reacquire the read lock before releasing the write lock so no rename/close
         // slips in, and so the caller's finally block always has the read lock to release - even
         // when open() fails.
+        // noopengrep: lock-not-released-in-finally - a lock downgrade: the caller entered holding this read lock and its finally releases it
         channelLock.readLock().lock();
       }
     } finally {

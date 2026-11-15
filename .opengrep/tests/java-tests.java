@@ -34,9 +34,33 @@ class WallClockShapes {
     assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isLessThan(HANG_MS / 2);
   }
 
+  void elapsedBetween(final long start) {
+    // ruleid: test-asserts-raw-wall-clock
+    assertThat(System.nanoTime() - start).isBetween(0L, 1_000_000L);
+  }
+
+  void elapsedCloseTo(final long start) {
+    // ruleid: test-asserts-raw-wall-clock
+    assertThat(System.currentTimeMillis() - start).isCloseTo(500L, within(100L));
+  }
+
   void lowerBound(final long elapsed, final long timeoutMs) {
     // ok: test-asserts-raw-wall-clock
     assertThat(elapsed).isGreaterThanOrEqualTo(timeoutMs);
+  }
+
+  void sizeBetween(final int size) {
+    // ok: test-asserts-raw-wall-clock
+    assertThat(size).isBetween(1, 10);
+  }
+
+  void clockInsideTheValueUnderTest() {
+    // ok: test-asserts-raw-wall-clock
+    assertThat(remaining(System.currentTimeMillis() + 60_000L)).isBetween(1L, 60_000L);
+  }
+
+  long remaining(final long deadline) {
+    return deadline;
   }
 
   void clockOnTheBoundSide(final long ts) {

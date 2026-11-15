@@ -123,8 +123,10 @@ class OpenCypherBatchBenchmark {
           assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(BATCH_SIZE);
         }
       });
-      // Stall-discounted on both sides, so a pause in either batch cannot decide the ratio
-      final long freshTime = fresh.effectiveMs();
+      // The baseline keeps its stalls: a stall the sampler records late can be wider than this window, and discounted
+      // here it could take the baseline to 0 and tighten the bound. Raw, a pause in this batch only loosens the bound.
+      // The populated batch below is discounted, so a pause there cannot fail the ratio either.
+      final long freshTime = fresh.elapsedMs();
 
       // Step 2: Force graph build - simulates what happens between API calls when
       // the inactivity timer fires and builds the HNSW graph

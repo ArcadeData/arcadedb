@@ -60,6 +60,6 @@ repos:
         name: opengrep (blocking rules)
         entry: .github/scripts/opengrep.sh check
         language: script
-        types_or: [java, yaml, javascript]
+        types_or: [java, yaml, javascript, python]
         exclude: ^\.opengrep/tests/
         require_serial: true

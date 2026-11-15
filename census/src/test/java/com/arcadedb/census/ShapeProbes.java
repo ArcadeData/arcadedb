@@ -35,7 +35,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RecursiveAction;
+import java.util.concurrent.RecursiveTask;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -256,6 +259,39 @@ final class ShapeProbes {
 
     static String namedInALiteral() {
       return "never call parallelStream()";
+    }
+
+    static CompletableFuture<Integer> completeAsyncWithoutAnExecutor() {
+      return new CompletableFuture<Integer>().completeAsync(() -> 1);
+    }
+
+    static CompletableFuture<Integer> completeAsyncWithAnExecutor(final Executor executor) {
+      return new CompletableFuture<Integer>().completeAsync(() -> 1, executor);
+    }
+
+    static CompletionStage<Integer> asyncStepThroughTheInterface(final CompletionStage<Integer> stage) {
+      return stage.thenApplyAsync(x -> x + 1);
+    }
+
+    static CompletionStage<Integer> asyncStepThroughTheInterfaceWithAnExecutor(final CompletionStage<Integer> stage,
+        final Executor executor) {
+      return stage.thenApplyAsync(x -> x + 1, executor);
+    }
+
+    static void forkOfAJdkSubclass(final RecursiveAction task) {
+      task.fork();
+    }
+
+    static void forkOfAProjectSubclass(final ProjectTask task) {
+      task.fork();
+    }
+
+    /** A project subclass of a JDK task type: the call names this class, which the census resolves to ForkJoinTask. */
+    static final class ProjectTask extends RecursiveTask<Integer> {
+      @Override
+      protected Integer compute() {
+        return 1;
+      }
     }
   }
 
