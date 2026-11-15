@@ -46,8 +46,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("slow")
 class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
-  private static final String   NEW_DATABASE = "createdThroughAFollower";
-  private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
+  private static final String   NEW_DATABASE     = "createdThroughAFollower";
+  private static final String   DROPPED_DATABASE = "droppedThroughAFollower";
+  private static final Duration HTTP_TIMEOUT     = Duration.ofSeconds(30);
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
@@ -66,34 +67,13 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final int followerIndex = (leaderIndex + 1) % getServerCount();
 
-    // Hold the follower's apply thread off the new database until released: the install apply gate is the lock it takes before
-    // applying an entry for a database, the one that installs it included. The leader still commits with the other follower.
-    final ArcadeStateMachine followerMachine = getRaftPlugin(followerIndex).getRaftHAServer().getStateMachine();
-    final CountDownLatch held = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
-    final Thread gateHolder = new Thread(() -> {
-      final ArcadeStateMachine.InstallApplyGate gate = followerMachine.installApplyGate(NEW_DATABASE);
-      gate.lock();
-      try {
-        held.countDown();
-        release.await(60, TimeUnit.SECONDS);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-      } finally {
-        gate.unlock();
-      }
-    }, "issue11739-follower-gate");
-    gateHolder.start();
-    assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
-
+    final Thread gateHolder = holdApply(followerIndex, NEW_DATABASE, release);
     final CompletableFuture<HttpResponse<String>> created;
     try {
       created = send(followerIndex, "/server", new JSONObject().put("command", "create database " + NEW_DATABASE));
 
-      final long deadline = System.currentTimeMillis() + 30_000;
-      while (!getServer(leaderIndex).existsDatabase(NEW_DATABASE) && System.currentTimeMillis() < deadline)
-        Thread.sleep(50);
-      assertThat(getServer(leaderIndex).existsDatabase(NEW_DATABASE)).as("the leader must have created the database").isTrue();
+      awaitOnServer(leaderIndex, NEW_DATABASE, true);
       Thread.sleep(500);
       assertThat(created.isDone()).as("the follower must not answer the creation before it holds the database").isFalse();
     } finally {
@@ -108,6 +88,75 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
         new JSONObject().put("language", "sql").put("command", "CREATE DOCUMENT TYPE AfterCreation")).get(30, TimeUnit.SECONDS);
     assertThat(next.statusCode()).as("the request right after the creation, to the same follower, was refused: %s", next.body())
         .isEqualTo(200);
+  }
+
+  /**
+   * The mirror case: {@code drop database} forwarded by a follower was answered before the follower applied the drop, so
+   * {@code GET /api/v1/exists} on the same follower still answered {@code true} (18 of 20 times on a 3-node cluster).
+   */
+  @Test
+  void theFollowerAnswersTheDropOnceTheDatabaseIsGoneFromIt() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+
+    final HttpResponse<String> created = send(leaderIndex, "/server",
+        new JSONObject().put("command", "create database " + DROPPED_DATABASE)).get(30, TimeUnit.SECONDS);
+    assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
+    awaitOnServer(followerIndex, DROPPED_DATABASE, true);
+
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread gateHolder = holdApply(followerIndex, DROPPED_DATABASE, release);
+    final CompletableFuture<HttpResponse<String>> dropped;
+    try {
+      dropped = send(followerIndex, "/server", new JSONObject().put("command", "drop database " + DROPPED_DATABASE));
+
+      awaitOnServer(leaderIndex, DROPPED_DATABASE, false);
+      Thread.sleep(500);
+      assertThat(dropped.isDone()).as("the follower must not answer the drop while it still holds the database").isFalse();
+    } finally {
+      release.countDown();
+      gateHolder.join(TimeUnit.SECONDS.toMillis(30));
+    }
+
+    final HttpResponse<String> answer = dropped.get(30, TimeUnit.SECONDS);
+    assertThat(answer.statusCode()).as("drop database failed: %s", answer.body()).isEqualTo(200);
+    assertThat(getServer(followerIndex).existsDatabase(DROPPED_DATABASE))
+        .as("the follower that answered the drop must not list the database any more").isFalse();
+  }
+
+  /**
+   * Holds {@code serverIndex}'s apply thread off {@code database} until {@code release} counts down: the install apply gate is
+   * the lock it takes before applying any entry for a database, the install and drop entries included. The leader still
+   * commits with the other follower.
+   */
+  private Thread holdApply(final int serverIndex, final String database, final CountDownLatch release)
+      throws InterruptedException {
+    final ArcadeStateMachine machine = getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine();
+    final CountDownLatch held = new CountDownLatch(1);
+    final Thread holder = new Thread(() -> {
+      final ArcadeStateMachine.InstallApplyGate gate = machine.installApplyGate(database);
+      gate.lock();
+      try {
+        held.countDown();
+        release.await(60, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } finally {
+        gate.unlock();
+      }
+    }, "issue11739-follower-gate");
+    holder.start();
+    assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
+    return holder;
+  }
+
+  private void awaitOnServer(final int serverIndex, final String database, final boolean exists) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    while (getServer(serverIndex).existsDatabase(database) != exists && System.currentTimeMillis() < deadline)
+      Thread.sleep(50);
+    assertThat(getServer(serverIndex).existsDatabase(database)).as("database '%s' exists on server %d", database, serverIndex)
+        .isEqualTo(exists);
   }
 
   private CompletableFuture<HttpResponse<String>> send(final int serverIndex, final String path, final JSONObject body) {

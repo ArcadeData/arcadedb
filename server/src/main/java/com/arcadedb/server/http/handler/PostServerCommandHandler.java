@@ -120,7 +120,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         return null;
       if (forwarded != null) {
         if (forwarded.getCode() == 200 && command_lc.startsWith(CREATE_DATABASE))
-          awaitForwardedCreation(extractTarget(command, CREATE_DATABASE));
+          awaitForwardedChange(extractTarget(command, CREATE_DATABASE), true);
+        else if (forwarded.getCode() == 200 && command_lc.startsWith(DROP_DATABASE))
+          awaitForwardedChange(extractTarget(command, DROP_DATABASE), false);
         return forwarded;
       }
     }
@@ -496,17 +498,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Waits, bounded by the quorum timeout, for a database whose creation this node forwarded to the leader to exist here
-   * (issue #11739). The leader answers once its entry is committed, but this node installs the database only when it applies
-   * that entry, which can be after the answer: relaying it at once let the client's next request to this node be refused with
-   * {@code DatabaseNotFoundException}. The database is created either way, so a wait that runs out still answers success.
+   * Waits, bounded by the quorum timeout, for a database whose creation or drop this node forwarded to the leader to exist here, or
+   * to be gone from here (issue #11739). The leader answers once its entry is committed, but this node installs or drops the
+   * database only when it applies that entry, which can be after the answer: relaying it at once let the client's next request to
+   * this node be refused with {@code DatabaseNotFoundException} after a creation, and {@code GET /api/v1/exists} still answer
+   * {@code true} after a drop. The change is made either way, so a wait that runs out still answers success.
    */
-  private void awaitForwardedCreation(final String databaseName) {
+  private void awaitForwardedChange(final String databaseName, final boolean created) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha != null && !databaseName.isEmpty() && !ha.awaitLocally(() -> httpServer.getServer().existsDatabase(databaseName)))
+    if (ha != null && !databaseName.isEmpty()
+        && !ha.awaitLocally(() -> httpServer.getServer().existsDatabase(databaseName) == created))
       LogManager.instance().log(this, Level.WARNING,
-          "Database '%s' was created by the leader but is not installed on this server yet: a request for it here may be refused "
-              + "until it is", databaseName);
+          "Database '%s' was %s by the leader but is %s on this server yet: a request for it here may see the old state until it is",
+          databaseName, created ? "created" : "dropped", created ? "not installed" : "still present");
   }
 
   /**
