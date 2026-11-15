@@ -383,13 +383,13 @@ public class FileManager {
       if (synced != PaginatedComponentFile.SYNC_CLEAN)
         syncedFiles.incrementAndGet();
       // Whether this call forced the metadata or a pass did and has not reached the directories yet: read before the
-      // directory force, so a rename forced meanwhile stays owed
+      // directory force, so a rename forced meanwhile stays owed. Acknowledged only when the directory force succeeded:
+      // a failed one stays owed for the next caller, and the sync itself still does not fail on it
       final long owed = pcf.directorySyncOwed();
       if (owed != 0L) {
         final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-        if (parent != null)
-          FileUtils.forceDirectory(parent.toPath());
-        pcf.directorySynced(owed);
+        if (parent != null && FileUtils.forceDirectory(parent.toPath()))
+          pcf.directorySynced(owed);
       }
       return true;
     } catch (final IOException e) {
@@ -403,6 +403,7 @@ public class FileManager {
     Set<Path> directoriesToSync = null;
     List<PaginatedComponentFile> owingTheirDirectory = null;
     long[] owedGenerations = null;
+    Path[] owedDirectories = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
@@ -423,10 +424,15 @@ public class FileManager {
                 directoriesToSync = new HashSet<>();
                 owingTheirDirectory = new ArrayList<>();
                 owedGenerations = new long[16];
-              } else if (owingTheirDirectory.size() == owedGenerations.length)
+                owedDirectories = new Path[16];
+              } else if (owingTheirDirectory.size() == owedGenerations.length) {
                 owedGenerations = Arrays.copyOf(owedGenerations, owedGenerations.length * 2);
-              directoriesToSync.add(parent.toPath());
+                owedDirectories = Arrays.copyOf(owedDirectories, owedDirectories.length * 2);
+              }
+              final Path directory = parent.toPath();
+              directoriesToSync.add(directory);
               owedGenerations[owingTheirDirectory.size()] = owed;
+              owedDirectories[owingTheirDirectory.size()] = directory;
               owingTheirDirectory.add(pcf);
             }
           }
@@ -438,11 +444,18 @@ public class FileManager {
     }
 
     if (directoriesToSync != null) {
+      Set<Path> notForced = null;
       for (final Path dir : directoriesToSync)
-        FileUtils.forceDirectory(dir);
-      // #11932: EACH FILE ACKNOWLEDGES THE GENERATION READ BEFORE THE DIRECTORY FORCE, NOT WHATEVER IT OWES BY NOW
+        if (!FileUtils.forceDirectory(dir)) {
+          if (notForced == null)
+            notForced = new HashSet<>();
+          notForced.add(dir);
+        }
+      // #11932: EACH FILE ACKNOWLEDGES THE GENERATION READ BEFORE THE DIRECTORY FORCE, NOT WHATEVER IT OWES BY NOW, AND
+      // ONLY WHEN ITS DIRECTORY WAS FORCED: A FAILED ONE STAYS OWED FOR THE NEXT PASS (STILL BEST EFFORT: NEVER A FAILURE)
       for (int i = 0; i < owingTheirDirectory.size(); i++)
-        owingTheirDirectory.get(i).directorySynced(owedGenerations[i]);
+        if (notForced == null || !notForced.contains(owedDirectories[i]))
+          owingTheirDirectory.get(i).directorySynced(owedGenerations[i]);
     }
 
     return allSynced;
