@@ -136,6 +136,46 @@ class CypherMapProjectionReceiverIssue11693Test extends TestHelper {
         .isInstanceOf(CommandParsingException.class);
   }
 
+  @Test
+  void aRuntimeMapReceiverRefusesTheWholeSetClauseIncludingAnEarlierValidItem() {
+    assertThatThrownBy(() -> command(
+        "MATCH (n:Node {id:1}) SET n.s = 'x', (CASE WHEN true THEN n {.id} END).v = 9"))
+        .isInstanceOf(TypeMismatchException.class)
+        .hasMessageContaining("expected Node or Relationship but was");
+    assertThat(query("MATCH (n:Node {id:1}) RETURN n.s AS s").getFirst().<String>getProperty("s")).isEqualTo("a");
+  }
+
+  @Test
+  void aMapProjectionReceiverInMergeOnMatchSetIsRefused() {
+    assertThatThrownBy(() -> command("MERGE (n:Node {id:1}) ON MATCH SET (n {id:1}).s = 'x'"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expected Node or Relationship but was Map");
+    assertThat(query("MATCH (n:Node {id:1}) RETURN n.s AS s").getFirst().<String>getProperty("s")).isEqualTo("a");
+  }
+
+  @Test
+  void aMapProjectionReceiverInMergeOnCreateSetIsRefused() {
+    assertThatThrownBy(() -> command("MERGE (n:Node {id:99}) ON CREATE SET (n {id:1}).s = 'x'"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expected Node or Relationship but was Map");
+    assertThat(query("MATCH (n:Node {id:99}) RETURN n").size()).isZero();
+  }
+
+  @Test
+  void anUnboundVariableInsideANonMapSetTargetIsRefused() {
+    assertThatThrownBy(() -> command("MATCH (n:Node {id:1}) SET (CASE WHEN true THEN m END).s = 1"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Variable 'm' not defined");
+  }
+
+  @Test
+  void aReceiverThatEvaluatesToAScalarAtRunTimeIsATypeError() {
+    assertThatThrownBy(() -> command("MATCH (n:Node {id:1}) SET (CASE WHEN true THEN 1 END).s = 'upd'"))
+        .isInstanceOf(TypeMismatchException.class)
+        .hasMessageContaining("expected Node or Relationship but was");
+    assertThat(query("MATCH (n:Node {id:1}) RETURN n.s AS s").getFirst().<String>getProperty("s")).isEqualTo("a");
+  }
+
   private List<Result> query(final String cypher) {
     try (final ResultSet rs = database.query("opencypher", cypher)) {
       return rs.stream().toList();
