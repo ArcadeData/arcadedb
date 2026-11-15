@@ -24,6 +24,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
@@ -347,8 +348,21 @@ public class WebSocketInsertProtocol {
       // Any other retryable refusal is no server fault either: a session's begin or commit refused by the HA gate while this
       // server replaces or quarantines its copy of the database (issue #11779, now that both run tagged "ws"). Its message is
       // the engine's own account of the state, with no stored data in it, so it is kept in every mode like the HTTP 503's
-      final NeedRetryException retryable = notTheLeader ? null : CauseChain.find(e, NeedRetryException.class);
-      final JSONObject answer = error(notTheLeader ? "Not the leader" : retryable != null ? "Retry later" : "Internal error",
+      // ...unless the transaction committed cluster-wide before the failure: a retry would replay a load that is already in,
+      // so the answer says not to, with the label HTTP gives the same outcome (a ConcurrentModificationException of the local
+      // publication is nested in it, and must not turn it into "Retry later")
+      final TransactionCommittedRemotelyException committed = CauseChain.find(e, TransactionCommittedRemotelyException.class);
+      final NeedRetryException retryable = notTheLeader || committed != null ? null : CauseChain.find(e, NeedRetryException.class);
+      final String label;
+      if (notTheLeader)
+        label = "Not the leader";
+      else if (committed != null)
+        label = committed.getClass() == TransactionCommittedRemotelyException.class ?
+            "Transaction committed cluster-wide but the local apply failed - do not retry" :
+            "Transaction committed cluster-wide - do not retry";
+      else
+        label = retryable != null ? "Retry later" : "Internal error";
+      final JSONObject answer = error(label,
           retryable != null ?
               retryable.getMessage() :
               ErrorConcealment.clientMessage(ArcadeDBServer.isProductionMode(configuration), this, "/ws insert", e.getMessage(), e),

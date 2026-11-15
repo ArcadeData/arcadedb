@@ -53,6 +53,9 @@ import java.util.List;
  * Handles RFC 4180 quoting (double-quote escaping) for single-line fields.
  */
 public class CsvBatchRecordStream implements BatchRecordStream {
+  private static final int NOT_A_NUMBER  = 0;
+  private static final int JSON_INTEGER  = 1;
+  private static final int JSON_FRACTION = 2;
 
   private final BufferedReader reader;
   private final BatchRecord    record;
@@ -333,10 +336,6 @@ public class CsvBatchRecordStream implements BatchRecordStream {
       return value;
     }
   }
-
-  private static final int NOT_A_NUMBER  = 0;
-  private static final int JSON_INTEGER  = 1;
-  private static final int JSON_FRACTION = 2;
 
   /**
    * Classifies {@code s} by the JSON number grammar ({@code -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?}) in one pass and

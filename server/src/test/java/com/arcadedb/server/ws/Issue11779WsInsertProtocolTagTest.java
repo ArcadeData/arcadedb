@@ -21,7 +21,9 @@ package com.arcadedb.server.ws;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -58,6 +60,7 @@ class Issue11779WsInsertProtocolTagTest extends BaseGraphServerTest {
 
   private final List<String>  seen       = new CopyOnWriteArrayList<>();
   private final AtomicBoolean gateClosed = new AtomicBoolean();
+  private final AtomicBoolean committedButPublicationFailed = new AtomicBoolean();
 
   private LocalDatabase local;
 
@@ -76,6 +79,12 @@ class Issue11779WsInsertProtocolTagTest extends BaseGraphServerTest {
             real.rollback();
             throw new NeedRetryException(GATE_REFUSAL);
           }
+          // What the HA leader raises when the entry committed cluster-wide and the local publication then conflicted
+          if (committedButPublicationFailed.get() && "commit".equals(name) && method.getParameterCount() == 0) {
+            method.invoke(real, args);
+            throw new TransactionCommittedRemotelyException("Transaction committed cluster-wide but the local apply failed",
+                new ConcurrentModificationException("page version mismatch"));
+          }
           try {
             return method.invoke(real, args);
           } catch (final InvocationTargetException e) {
@@ -88,6 +97,7 @@ class Issue11779WsInsertProtocolTagTest extends BaseGraphServerTest {
   @AfterEach
   void removeRecordingWrapper() {
     gateClosed.set(false);
+    committedButPublicationFailed.set(false);
     // A database with no HA wrapper is its own wrapped instance: this restores the state before the test
     if (local != null && local.isOpen())
       local.setWrappedDatabaseInstance(local);
@@ -124,6 +134,22 @@ class Issue11779WsInsertProtocolTagTest extends BaseGraphServerTest {
     }
     assertThat(getServerDatabase(0, getDatabaseName()).countType("Person", false)).as("the refused session wrote nothing")
         .isEqualTo(before);
+  }
+
+  @Test
+  void aSessionCommittedClusterWideIsNeverAnsweredAsRetryable() throws Exception {
+    try (final WebSocketClientHelper client = connect()) {
+      final String sessionId = start(client);
+      chunk(client, sessionId);
+      committedButPublicationFailed.set(true);
+      final JSONObject answer = new JSONObject(
+          client.send(new JSONObject().put("action", "commit").put("sessionId", sessionId).toString()));
+      committedButPublicationFailed.set(false);
+
+      assertThat(answer.getString("result", "")).isEqualTo("error");
+      assertThat(answer.getString("error", "")).as("the nested conflict must not invite a replay of a committed load")
+          .doesNotContain("Retry").contains("do not retry");
+    }
   }
 
   @Test

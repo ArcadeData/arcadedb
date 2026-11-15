@@ -41,6 +41,10 @@ import java.util.Locale;
 import java.util.Map;
 
 public class AlterPropertyStatement extends DDLStatement {
+  /** The settings ALTER PROPERTY can change, in the order its documentation lists them. */
+  private static final List<String> SUPPORTED_SETTINGS = List.of("name", "readonly", "mandatory", "notnull", "hidden", "external",
+      "compression", "max", "min", "default", "regexp");
+
   public Expression settingValue;
   public Identifier typeName;
   public Identifier propertyName;
@@ -165,10 +169,6 @@ public class AlterPropertyStatement extends DDLStatement {
     rs.add(result);
     return rs;
   }
-
-  /** The settings ALTER PROPERTY can change, in the order its documentation lists them. */
-  private static final List<String> SUPPORTED_SETTINGS = List.of("name", "readonly", "mandatory", "notnull", "hidden", "external",
-      "compression", "max", "min", "default", "regexp");
 
   /**
    * Refuses a setting ALTER PROPERTY cannot change, naming the ones it can. The TYPE of a property gets its own answer, since it
