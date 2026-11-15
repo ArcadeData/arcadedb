@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
@@ -127,12 +128,21 @@ class CypherInConstantListIndexSeekIssue11890Test extends TestHelper {
     assertAnswersAsTheScan(predicate, Map.of());
   }
 
-  /** More items than the label has vertices: a seek per item would cost more than the scan, and would materialise the range. */
+  /**
+   * More items than the label has vertices: a seek per item would cost more than the scan, and would materialise the range. The
+   * range cap, which scales with the heap, is lifted so the range is one no heap could hold as keys, on any runner.
+   */
   @Test
-  @Timeout(60)
+  @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
   void aRangeLargerThanTheLabelIsNotMaterialised() {
-    assertThat(ids("P", "p.id IN range(0, 100000000)", Map.of())).hasSize(VERTICES);
-    assertThat(ids("P", "p.id IN range(-50000000, 50000000) AND p.g = 3", Map.of())).hasSize(VERTICES / 20);
+    // The overlay value this replaces, null when the database had none: putting it back removes the override
+    final Object previous = database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_RANGE_SIZE, -1L);
+    try {
+      assertThat(ids("P", "p.id IN range(0, 1000000000)", Map.of())).hasSize(VERTICES);
+      assertThat(ids("P", "p.id IN range(-1000000000, 1000000000) AND p.g = 3", Map.of())).hasSize(VERTICES / 20);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_RANGE_SIZE, previous);
+    }
   }
 
   /**
@@ -141,8 +151,8 @@ class CypherInConstantListIndexSeekIssue11890Test extends TestHelper {
    */
   @ParameterizedTest
   @ValueSource(strings = {
-      "p.id IN range(0, 10000000)",
-      "p.id IN range(-10000000, 10000000) AND p.g = 3",
+      "p.id IN range(0, 100000)",
+      "p.id IN range(-100000, 100000) AND p.g = 3",
       "p.d IN [date('2024-01-02')] + []" })
   void anAggregationOverTheLabelReadInsteadAnswersAsTheScan(final String predicate) {
     for (final String returned : List.of("count(p) AS c", "count(*) AS c", "sum(p.id) AS c", "p.g AS g, count(p) AS c ORDER BY g")) {
