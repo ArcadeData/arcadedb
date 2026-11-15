@@ -177,7 +177,9 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
    * Opens the cursor, or returns null when no key can satisfy the predicate. A bound no key of an integral index equals (29.5)
    * is moved onto the key that bounds the same keys, inclusive (the {@code HasStep} after the step re-checks the exact
    * predicate): the index would otherwise truncate it toward zero and drop a match for {@code lt} above zero and {@code gt}
-   * below zero (#9206).
+   * below zero (#9206). A strict bound at zero is read inclusive too: Gremlin orders -0.0 below 0 and 0.0, as
+   * {@link Double#compare} does, where the index reads every zero as one key, so {@code gt(-0.0)} skipped the 0 of an integral
+   * index and {@code lt(0)} the -0.0 of a floating one (#12027).
    */
   private IndexCursor openCursor(final TypeIndex index) {
     if (predicate == Compare.eq)
@@ -199,8 +201,13 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
       bound = bound.clone();
       bound[0] = mapped;
       inclusive = true;
-    }
+    } else if (!inclusive && bound.length > 0 && isZero(bound[0]))
+      inclusive = true;
     return index.iterator(lowerBound, bound, inclusive);
+  }
+
+  private static boolean isZero(final Object value) {
+    return value instanceof Number number && number.doubleValue() == 0.0;
   }
 
   /**
