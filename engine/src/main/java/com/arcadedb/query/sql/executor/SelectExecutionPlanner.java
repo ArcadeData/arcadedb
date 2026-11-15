@@ -2128,6 +2128,24 @@ public class SelectExecutionPlanner {
         || operator instanceof GeOperator;
   }
 
+  /**
+   * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
+   * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
+   * parse (such as "#1:2-3"), refuses the collection as a target.
+   */
+  static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
+    if (element instanceof String string && RID.is(string)) {
+      try {
+        return context.getDatabase().newRID(string);
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+      }
+    }
+    if (element instanceof Identifiable identifiable)
+      return identifiable;
+    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+  }
+
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
       final QueryPlanningInfo info, final InputParameter inputParam, final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
@@ -2172,11 +2190,7 @@ public class SelectExecutionPlanner {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {
-        // A RID string, as a remote driver binds one, names its record here as a single bound RID string does (issue #11767)
-        final Object element = x instanceof String string && RID.is(string) ? context.getDatabase().newRID(string) : x;
-        if (!(element instanceof Identifiable identifiable))
-          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        final RID orid = identifiable.getIdentity();
+        final RID orid = SelectExecutionPlanner.collectionTargetElement(x, paramValue, context).getIdentity();
         final Rid rid = new Rid();
         final PInteger bucket = new PInteger();
         bucket.setValue(orid.getBucketId());

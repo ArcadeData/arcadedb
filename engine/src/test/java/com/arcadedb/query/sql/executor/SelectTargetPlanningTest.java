@@ -147,6 +147,23 @@ class SelectTargetPlanningTest extends TestHelper {
     });
   }
 
+  /**
+   * Issue #11767: a string that passes the RID shape check but does not parse ("#1:2-3") is refused as a collection target by the
+   * SELECT and the TRAVERSE planner, rather than escaping as a NumberFormatException.
+   */
+  @Test
+  void aBoundCollectionWithAMalformedRidStringIsRefused() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+      final Map<String, Object> params = Map.of("seeds", List.of(seeds.getFirst().toString(), "#1:2-3"));
+
+      assertThatThrownBy(() -> database.query("sql", "SELECT FROM :seeds", params).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
+      assertThatThrownBy(() -> database.query("sql", "TRAVERSE out('" + EDGE + "') FROM :seeds", params).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
+    });
+  }
+
   private static final String VERTEX = "Issue5505V";
   private static final String EDGE    = "Issue5505E";
 
