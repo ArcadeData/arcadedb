@@ -301,6 +301,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile long                      globalAppliedIndex   = -1;
   private volatile boolean                   appliedIndexLoaded   = false;
   private final    Object                    appliedIndexFileLock = new Object();
+  // The per-database positions as this instance found them on disk (issue #11946): how far the previous session of this node
+  // applied each database's entries, i.e. what the copies it left behind already hold. appliedIndexByDb moves on with every
+  // entry this session applies, the replay included, so it cannot tell a replayed entry from a new one. A database dropped or
+  // created in this session leaves the map: its copy is not the one the position describes.
+  private final    Map<String, Long>         appliedIndexByDbOfPreviousSession = new ConcurrentHashMap<>();
   // Which writes of the applied-index file are fsynced (issue #11517), both guarded by appliedIndexFileLock: whether
   // the file on disk carries a quarantine or a read floor (so the write that clears them must be durable too), and
   // whether this instance has made one durable write yet (the file's existence is what the offline-bootstrap gate reads)
@@ -4684,6 +4689,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     final DatabaseInternal db = databaseFor(decoded.databaseName());
 
+    // Issue #11946: an entry the previous session of this node already applied to the copy on disk, coming back with the replay
+    // that follows a restart. Its schema document is older than the copy's, and writing it took out of the schema what later
+    // entries added - an index, which a transaction committed through this node meanwhile then left out of its pages, on every
+    // node - until the replay reached them again; an entry of a database dropped and created again since names files the
+    // current copy uses for others. Its files, its renames and its document are already there, or superseded: only its pages
+    // are applied, which their versions keep idempotent.
+    final boolean appliedBefore = appliedByPreviousSession(decoded.databaseName(), entryIndex);
+    if (appliedBefore)
+      HALog.log(this, HALog.DETAILED,
+          "Schema entry %d of database '%s' was applied by the previous session: keeping the schema and the files of the copy",
+          entryIndex, decoded.databaseName());
+
     HALog.log(this, HALog.DETAILED,
         "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, schemaPayload=%s",
         decoded.databaseName(), entryIndex,
@@ -4764,10 +4781,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         sealedShardsOf(decoded), SEALED_INSTALL_LOCK_TIMEOUT_MS)) {
       // Before anything that reads the schema this entry publishes: it names the renamed files by their new names
       // (issue #9762)
-      renameFiles(db, decoded.filesToRename());
+      if (!appliedBefore) {
+        renameFiles(db, decoded.filesToRename());
 
-      if (decoded.filesToAdd() != null)
-        createNewFiles(db, decoded.filesToAdd());
+        if (decoded.filesToAdd() != null)
+          createNewFiles(db, decoded.filesToAdd());
+      }
 
       // Install any TimeSeries sealed-store blobs BEFORE applying the WAL (issue #4382). The WAL
       // below carries the mutable-bucket clear; installing the sealed file first guarantees a query
@@ -4780,10 +4799,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // data-loss window applySealedBlobs closes for a store that fits inline.
       applySealedChunks(db, decoded.sealedFileChunks());
 
-      if (decoded.schemaDelta() != null)
-        applySchemaDelta(db, decoded);
-      else if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
-        db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
+      // The copy of an entry applied before holds this document or a newer one
+      if (!appliedBefore) {
+        if (decoded.schemaDelta() != null)
+          applySchemaDelta(db, decoded);
+        else if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
+          db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
+      }
 
       // File ids this entry wrote pages into. The incremental refresh below re-runs the load hooks of the
       // already-registered components among them, which is what re-reads an LSM mutable index' page 0 - the full
@@ -4847,7 +4869,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the index - a schema write a replica may not perform - which failed the apply and escalated the
       // whole database to a snapshot resync. Retiring last closes that window: by then page 0 already
       // names the new file.
-      if (decoded.filesToRemove() != null)
+      if (!appliedBefore && decoded.filesToRemove() != null)
         for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
           db.getPageManager().deleteFile(db, fileEntry.getKey());
           db.getFileManager().dropFile(fileEntry.getKey());
@@ -4867,7 +4889,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // only the files this entry created or wrote to, and refuses - returning false, having changed nothing - for
       // every entry whose effect it cannot express (a retired file, a compacted index, a bloom filter, a new
       // dictionary), which is what keeps the ordering guarantees of #4743 and #5443 on the full-rebuild path.
-      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
+      if (!appliedBefore && !sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
         final LocalSchema schema = db.getSchema().getEmbedded();
         final IncrementalLoadRefusal refusal;
         if (!incrementalSchemaApplyEnabled())
@@ -5755,6 +5777,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }
+      // A copy of the leader's now, not the one the previous session left (issue #11946)
+      forgetPositionOfPreviousSession(databaseName);
       LogManager.instance().log(this, Level.INFO, "Database '%s' reinstalled via forceSnapshot from leader", databaseName);
       clearBootstrapUnreconciled(databaseName);
       settleBootstrapReplacement(databaseName);
@@ -5768,6 +5792,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    // A new copy: the position the previous session reached on a database of this name was another copy's (issue #11946)
+    forgetPositionOfPreviousSession(databaseName);
     LogManager.instance().log(this, Level.INFO, "Database '%s' created via Raft install-database entry", databaseName);
   }
 
@@ -8168,6 +8194,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
     recentSchemaChanges.remove(databaseName);
+    // Nor the position the previous session reached on it (issue #11946): a database recreated under the same name is a new copy
+    forgetPositionOfPreviousSession(databaseName);
     // Nor a configuration held for the replay (issue #10086): the file it was to be written to is going away
     releaseHeldConfiguration(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
@@ -8635,6 +8663,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Whether the entry at {@code entryIndex} of {@code dbName} was applied by the previous session of this node to the copy on
+   * disk (issue #11946): a restart replays the log from the snapshot marker, so every entry up to the position that session
+   * reached comes back. The copy already holds what such an entry did, and possibly more: a schema document it carries is OLDER
+   * than the one on disk. {@code -1} positions and databases this session dropped or created never match.
+   */
+  // @VisibleForTesting
+  boolean appliedByPreviousSession(final String dbName, final long entryIndex) {
+    if (dbName == null)
+      return false;
+    ensureAppliedIndexLoaded();
+    final Long applied = appliedIndexByDbOfPreviousSession.get(dbName);
+    return applied != null && entryIndex <= applied;
+  }
+
+  /** The copy of {@code dbName} is dropped or created by this session: the position the previous session reached is not its. */
+  // @VisibleForTesting
+  void forgetPositionOfPreviousSession(final String dbName) {
+    if (dbName == null)
+      return;
+    ensureAppliedIndexLoaded();
+    appliedIndexByDbOfPreviousSession.remove(dbName);
+  }
+
+  /**
    * Records {@code index} as the global applied position and, when {@code dbName} is non-null, as the
    * per-database applied position for that database, then serialises the bookkeeping to disk.
    * Package-private for tests.
@@ -8752,6 +8804,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
               restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
               restorePersistedFloors(json.getJSONObject("floors", new JSONObject()));
+              // Not for a copy the previous session quarantined or left behind an install: its position says what the log
+              // reached, not what the copy holds
+              for (final Map.Entry<String, Long> entry : appliedIndexByDb.entrySet())
+                if (!divergedDatabases.containsKey(entry.getKey()) && !staleDatabaseAppliedFloors.containsKey(entry.getKey()))
+                  appliedIndexByDbOfPreviousSession.put(entry.getKey(), entry.getValue());
               // The write that clears what was restored must be durable, or a power loss brings it back (issue #11517)
               appliedIndexFileCarriesQuarantine = !divergedDatabases.isEmpty() || !staleDatabaseAppliedFloors.isEmpty();
             } else
