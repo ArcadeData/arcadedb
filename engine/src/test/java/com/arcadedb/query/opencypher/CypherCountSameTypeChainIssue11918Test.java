@@ -61,6 +61,33 @@ class CypherCountSameTypeChainIssue11918Test extends TestHelper {
     // a second subtype: [:KC]->[:K]->[:KD] ties two pairs in a row whose first and third hops share no edge
     database.command("sql", "CREATE EDGE TYPE KD EXTENDS K");
     database.command("sql", "CREATE EDGE TYPE L");
+    // a common subtype of two unrelated types: a KL relationship matches [:K] and [:L] alike
+    database.command("sql", "CREATE EDGE TYPE KL EXTENDS K, L");
+  }
+
+  /**
+   * Two hop types that are not subtypes of one another still overlap when an edge type extends both: a {@code KL}
+   * relationship matches {@code [:K]} and {@code [:L]}. Such a pair is neither unique nor corrected, so the chain is declined.
+   */
+  @Test
+  void hopsWhoseTypesShareOnlyACommonSubtypeAreDeclined() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").set("id", 1).save();
+      final MutableVertex b = database.newVertex("P").set("id", 2).save();
+      final MutableVertex c = database.newVertex("P").set("id", 3).save();
+      a.newEdge("KL", b);
+      b.newEdge("K", a);
+      c.newEdge("KL", c);
+    });
+    // [:K]->[:K]->[:L]: (a)-[e:KL]->(b)-[:K]->(a)-[e]->(b) binds e twice, so no path is left (the adjacency count is 1).
+    // [:K]->[:L]: (b)-[:K]->(a)-[e]->(b) is the one path; c's self loop for both hops is not (the adjacency count is 2)
+    final String[] queries = { "MATCH (x)-[:K]->(y)-[:K]->(z)-[:L]->(w) RETURN count(*) AS n",
+        "MATCH (x)-[:K]->(y)-[:L]->(z) RETURN count(*) AS n", "MATCH (x)<-[:L]-(y)<-[:K]-(z) RETURN count(*) AS n" };
+    final long[] expected = { 0, 1, 1 };
+    for (int i = 0; i < queries.length; i++) {
+      assertThat(plan(queries[i])).as(queries[i]).doesNotContain(PUSHED_DOWN);
+      assertThat(count(queries[i])).as(queries[i]).isEqualTo(enumerated(queries[i])).isEqualTo(expected[i]);
+    }
   }
 
   /** The issue's statement on a graph with self loops: one, two parallel, and one of a subtype. */
@@ -150,7 +177,7 @@ class CypherCountSameTypeChainIssue11918Test extends TestHelper {
         final String type = i % 3 == 0 ? "P" : i % 3 == 1 ? "Q" : "R";
         vertices.add(database.newVertex(type).set("id", i).set("w", i % 2).save());
       }
-      final String[] edgeTypes = { "K", "KC", "KD", "L" };
+      final String[] edgeTypes = { "K", "KC", "KD", "L", "KL" };
       for (final MutableVertex v : vertices) {
         for (final String type : edgeTypes) {
           // 0 to 2 self loops of each type, so parallel self loops are common
@@ -204,14 +231,18 @@ class CypherCountSameTypeChainIssue11918Test extends TestHelper {
 
       // the operator itself, from every vertex: the walk seeded on the view and on the edge lists, against the pipeline
       final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v11918");
-      final String[][] chains = { { "K", "K" }, { "K", "KC" }, { "KC", "K", "KD" }, { "L", "L", "K", "KD" } };
+      // chains the planner accepts (checked below): no two hops share an edge but adjacent ones walked the same way
+      final String[][] chains = { { "K", "K" }, { "K", "KC" }, { "KC", "K", "KD" }, { "KC", "KC", "KD", "KD" },
+          { "L", "KL" } };
       for (final String[] types : chains)
         for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
           final Vertex.DIRECTION[] directions = new Vertex.DIRECTION[types.length];
           Arrays.fill(directions, direction);
-          final StringBuilder pattern = new StringBuilder("MATCH (x {id: $id})");
+          final StringBuilder hops = new StringBuilder();
           for (int h = 0; h < types.length; h++)
-            pattern.append(direction == Vertex.DIRECTION.OUT ? "-[:" + types[h] + "]->()" : "<-[:" + types[h] + "]-()");
+            hops.append(direction == Vertex.DIRECTION.OUT ? "-[:" + types[h] + "]->()" : "<-[:" + types[h] + "]-()");
+          assertThat(plan("MATCH (x)" + hops + " RETURN count(*) AS n")).as(hops.toString()).contains(PUSHED_DOWN);
+          final String pattern = "MATCH (x {id: $id})" + hops;
           for (final RID rid : rids) {
             final PropagateChainOp op = new PropagateChainOp(new String[types.length + 1], types, directions, -1, -1, rid, null);
             final long oracle = sumOne(pattern + " RETURN sum(1) AS n", (Integer) rid.asVertex().get("id"));
@@ -252,7 +283,7 @@ class CypherCountSameTypeChainIssue11918Test extends TestHelper {
 
   /** A random chain of 2 to 4 hops, mostly walked one way, over overlapping types, with labels and an inline predicate. */
   private static String randomChain(final Random random) {
-    final String[] types = { "K", "KC", "KD", "L" };
+    final String[] types = { "K", "KC", "KD", "L", "KL" };
     final String[] labels = { "", "", ":P", ":Q", ":R" };
     final int hops = 2 + random.nextInt(3);
     final int mainDirection = random.nextInt(2);
@@ -278,7 +309,8 @@ class CypherCountSameTypeChainIssue11918Test extends TestHelper {
   }
 
   private void withView(final ThrowingRunnable check) throws Exception {
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v11918 VERTEX TYPES (P, Q, R) EDGE TYPES (K, KC, KD, L) UPDATE MODE OFF");
+    database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW v11918 VERTEX TYPES (P, Q, R) EDGE TYPES (K, KC, KD, L, KL) UPDATE MODE OFF");
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v11918");
     final long deadline = System.currentTimeMillis() + 60_000;
     while (!view.isReady() && System.currentTimeMillis() < deadline)

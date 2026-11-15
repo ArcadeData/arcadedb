@@ -7943,9 +7943,12 @@ public class CypherExecutionPlan {
    * Without an inequality, two adjacent hops walked the same way, {@code (a)-[:K]->(b)-[:K]->(c)}, can bind one edge
    * only when it is a self loop ({@code a = b = c}): the operator subtracts those paths ({@link
    * PropagateChainOp#sharedSelfLoopPairs}), so the pair is accepted. Walked in opposite directions, or undirected, two
-   * adjacent hops share an ordinary edge, {@code (a)-[e]->(b)<-[e]-(a)}, which the operator does not subtract. Three hops
-   * in a row could bind one self loop only if their first and third type overlapped, which declines the chain, unless an
-   * edge type extends two unrelated types: the operator does not correct that case, so such a chain is declined too.
+   * adjacent hops share an ordinary edge, {@code (a)-[e]->(b)<-[e]-(a)}, which the operator does not subtract.
+   * <p>
+   * Two types overlap too when an edge type extends both: a {@code KL} relationship of {@code KL EXTENDS K, L} matches
+   * {@code [:K]} and {@code [:L]}, so {@code [:K]->[:K]->[:L]} can bind it on its first and third hop. Three hops in a row
+   * bound to one self loop make their first and third hop such a non-adjacent pair, so that case is declined by the same
+   * rule.
    */
   private static boolean chainCountIsExact(final Database db, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
       final int inequalityIdxA, final int inequalityIdxB) {
@@ -7955,13 +7958,10 @@ public class CypherExecutionPlan {
         null;
     for (int i = 0; i < edgeTypes.length; i++)
       for (int j = i + 1; j < edgeTypes.length; j++)
-        if (CypherOptimizer.edgeTypesMayOverlap(schema, edgeTypes[i], edgeTypes[j])
+        if ((CypherOptimizer.edgeTypesMayOverlap(schema, edgeTypes[i], edgeTypes[j])
+            || someEdgeTypeExtendsEach(schema, edgeTypes[i], edgeTypes[j]))
             && !inequalityForcedBySharedEdge(directions, i, j, inequalityIdxA, inequalityIdxB)
             && !(j == i + 1 && selfLoopPairs != null && selfLoopPairs[i]))
-          return false;
-    if (selfLoopPairs != null)
-      for (int i = 0; i + 1 < selfLoopPairs.length; i++)
-        if (selfLoopPairs[i] && selfLoopPairs[i + 1] && someEdgeTypeExtendsEach(schema, edgeTypes[i], edgeTypes[i + 2]))
           return false;
     return true;
   }
