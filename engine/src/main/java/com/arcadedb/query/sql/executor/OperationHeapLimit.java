@@ -70,6 +70,8 @@ public final class OperationHeapLimit {
   private       long               estimatedElements;
   private       long               estimatedBytes;
   private       int                sampleCountdown;
+  // The large containers this operation's elements share, charged once rather than once per element that holds them
+  private       HeapEstimator.Shared shared = new HeapEstimator.Shared();
 
   private OperationHeapLimit(final long maxElements, final String elementsName, final String operation,
       final QueryHeapTracker tracker, final OperationHeapLimit parent) {
@@ -294,8 +296,10 @@ public final class OperationHeapLimit {
     if (tracker == null)
       return;
     long bytes = 0L;
+    // Counted afresh: what the operation holds now shares each large container once, whichever elements held it before
+    shared = new HeapEstimator.Shared();
     for (final Object element : elements)
-      bytes += HeapEstimator.estimate(element) + HeapEstimator.REFERENCE_BYTES;
+      bytes += HeapEstimator.estimate(element, shared) + HeapEstimator.REFERENCE_BYTES;
     if (bytes < charged)
       release(charged - bytes);
     else
@@ -306,7 +310,7 @@ public final class OperationHeapLimit {
   public void replace(final Object removed, final Object added) {
     if (tracker == null)
       return;
-    final long delta = HeapEstimator.estimate(added) - HeapEstimator.estimate(removed);
+    final long delta = HeapEstimator.estimate(added, shared) - HeapEstimator.estimate(removed, shared);
     if (delta > 0)
       charge(delta);
     else
@@ -370,8 +374,11 @@ public final class OperationHeapLimit {
   private long estimate(final Object element) {
     if (estimatedElements < EXACT_SAMPLES || ++sampleCountdown == SAMPLE_EVERY) {
       sampleCountdown = 0;
-      final long bytes = HeapEstimator.estimate(element) + HeapEstimator.REFERENCE_BYTES;
-      estimatedBytes += bytes;
+      final long sharedBefore = shared.firstSightBytes();
+      final long bytes = HeapEstimator.estimate(element, shared) + HeapEstimator.REFERENCE_BYTES;
+      // The average charged to the elements that are not estimated is what one element holds on its own: a container met
+      // for the first time is charged once, here, and is not part of every other element's share
+      estimatedBytes += bytes - (shared.firstSightBytes() - sharedBefore);
       ++estimatedElements;
       return bytes;
     }

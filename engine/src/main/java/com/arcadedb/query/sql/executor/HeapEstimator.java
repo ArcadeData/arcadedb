@@ -28,12 +28,15 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.temporal.Temporal;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.RandomAccess;
 import java.util.Set;
+import java.util.function.LongSupplier;
 
 /**
  * Estimates the heap a value held by a query buffer takes, for the {@link QueryHeapBudget} (issue #8591).
@@ -79,12 +82,46 @@ public final class HeapEstimator {
   private HeapEstimator() {
   }
 
-  /** The estimated heap {@code value} takes, what it references included. */
-  public static long estimate(final Object value) {
-    return estimate(value, 0);
+  /**
+   * The large collections, maps and arrays one buffer has already been charged for, so that the rows that share one are
+   * charged for it once (issue #11812): a list collected once and carried by every row of an UNWIND was counted again for
+   * each row, and an ORDER BY over a few hundred such rows was refused for asking more than the whole budget although it holds the list
+   * once. Only the containers above {@link #SAMPLED_ELEMENTS} are remembered: the small ones are cheap to count again, and
+   * the large ones are what an overcount is made of.
+   * <p>
+   * Not thread-safe, as the operation that owns it is not.
+   */
+  public static final class Shared {
+    // Created at the first large container: most operations never meet one
+    private Set<Object> counted;
+    private long        firstSightBytes;
+
+    /** The bytes charged so far for the large containers, each counted the first time it was met. */
+    public long firstSightBytes() {
+      return firstSightBytes;
+    }
+
+    private boolean firstSight(final Object container) {
+      if (counted == null)
+        counted = Collections.newSetFromMap(new IdentityHashMap<>());
+      return counted.add(container);
+    }
   }
 
-  private static long estimate(final Object value, final int depth) {
+  /** The estimated heap {@code value} takes, what it references included. */
+  public static long estimate(final Object value) {
+    return estimate(value, 0, null);
+  }
+
+  /**
+   * Like {@link #estimate(Object)}, counting a large container {@code shared} already met as the reference to it only,
+   * and remembering in {@code shared} the large containers met for the first time.
+   */
+  public static long estimate(final Object value, final Shared shared) {
+    return estimate(value, 0, shared);
+  }
+
+  private static long estimate(final Object value, final int depth, final Shared shared) {
     if (value == null || value instanceof Boolean)
       // NULL, OR ONE OF THE TWO SHARED BOOLEANS
       return 0L;
@@ -99,21 +136,21 @@ public final class HeapEstimator {
       return OBJECT_BYTES;
 
     if (value instanceof ResultInternal result)
-      return estimateResult(result, depth);
+      return estimateResult(result, depth, shared);
     if (value instanceof Document document)
-      return estimateDocument(document, depth);
+      return estimateDocument(document, depth, shared);
     if (value instanceof RID)
       return 24L;
     if (value instanceof Result result)
-      return estimateOtherResult(result, depth);
+      return estimateOtherResult(result, depth, shared);
     if (value instanceof Collection<?> collection)
-      return estimateCollection(collection, depth);
+      return countedOnce(collection, collection.size(), shared, () -> estimateCollection(collection, depth, shared));
     if (value instanceof Map<?, ?> map)
-      return MAP_BYTES + estimateEntries(map, depth);
+      return countedOnce(map, map.size(), shared, () -> MAP_BYTES + estimateEntries(map, depth, shared));
     if (value instanceof byte[] bytes)
       return ARRAY_BYTES + bytes.length;
     if (value instanceof Object[] array)
-      return estimateArray(array, depth);
+      return countedOnce(array, array.length, shared, () -> estimateArray(array, depth, shared));
     if (value instanceof float[] floats)
       return ARRAY_BYTES + 4L * floats.length;
     if (value instanceof int[] ints)
@@ -132,26 +169,37 @@ public final class HeapEstimator {
     return 32L;
   }
 
-  private static long estimateResult(final ResultInternal result, final int depth) {
-    long bytes = result.content != null ? RESULT_BYTES : ELEMENT_RESULT_BYTES;
-    if (result.content != null && !result.content.isEmpty())
-      bytes += estimateEntries(result.content, depth);
-    // A CYPHER ROW OF ONE ENTITY KEEPS IT BOTH AS ITS ELEMENT AND AS A PROPERTY: IT IS HELD ONCE
-    if (result.element != null && (result.content == null || !result.content.containsValue(result.element)))
-      bytes += estimateDocument(result.element, depth);
-    if (result.temporaryContent != null && !result.temporaryContent.isEmpty())
-      bytes += MAP_BYTES + estimateEntries(result.temporaryContent, depth);
-    if (result.metadata != null && !result.metadata.isEmpty())
-      bytes += MAP_BYTES + estimateEntries(result.metadata, depth);
-    if (result.value != null)
-      bytes += estimate(result.value, depth + 1);
+  /** The estimate of a container: in full the first time {@code shared} meets a large one, as a reference afterwards. */
+  private static long countedOnce(final Object container, final int size, final Shared shared, final LongSupplier estimate) {
+    if (shared == null || size <= SAMPLED_ELEMENTS)
+      return estimate.getAsLong();
+    if (!shared.firstSight(container))
+      return REFERENCE_BYTES;
+    final long bytes = estimate.getAsLong();
+    shared.firstSightBytes += bytes;
     return bytes;
   }
 
-  private static long estimateOtherResult(final Result result, final int depth) {
+  private static long estimateResult(final ResultInternal result, final int depth, final Shared shared) {
+    long bytes = result.content != null ? RESULT_BYTES : ELEMENT_RESULT_BYTES;
+    if (result.content != null && !result.content.isEmpty())
+      bytes += estimateEntries(result.content, depth, shared);
+    // A CYPHER ROW OF ONE ENTITY KEEPS IT BOTH AS ITS ELEMENT AND AS A PROPERTY: IT IS HELD ONCE
+    if (result.element != null && (result.content == null || !result.content.containsValue(result.element)))
+      bytes += estimateDocument(result.element, depth, shared);
+    if (result.temporaryContent != null && !result.temporaryContent.isEmpty())
+      bytes += MAP_BYTES + estimateEntries(result.temporaryContent, depth, shared);
+    if (result.metadata != null && !result.metadata.isEmpty())
+      bytes += MAP_BYTES + estimateEntries(result.metadata, depth, shared);
+    if (result.value != null)
+      bytes += estimate(result.value, depth + 1, shared);
+    return bytes;
+  }
+
+  private static long estimateOtherResult(final Result result, final int depth, final Shared shared) {
     long bytes = OBJECT_BYTES;
     if (result.isElement())
-      bytes += result.getElement().map(document -> estimateDocument(document, depth)).orElse(0L);
+      bytes += result.getElement().map(document -> estimateDocument(document, depth, shared)).orElse(0L);
     else {
       final Set<String> names = result.getPropertyNames();
       int counted = 0;
@@ -159,7 +207,7 @@ public final class HeapEstimator {
       for (final String name : names) {
         if (counted == SAMPLED_ELEMENTS)
           break;
-        sampled += REFERENCE_BYTES + estimate(result.getProperty(name), depth + 1);
+        sampled += REFERENCE_BYTES + estimate(result.getProperty(name), depth + 1, shared);
         ++counted;
       }
       bytes += counted == 0 ? 0L : sampled * names.size() / counted;
@@ -167,7 +215,7 @@ public final class HeapEstimator {
     return bytes;
   }
 
-  private static long estimateDocument(final Document document, final int depth) {
+  private static long estimateDocument(final Document document, final int depth, final Shared shared) {
     if (document instanceof MutableDocument mutable && mutable.getBuffer() == null) {
       // A DOCUMENT BUILT IN MEMORY, NOT SERIALIZED YET: ITS PROPERTIES ARE WHAT IT HOLDS
       final Set<String> names = mutable.getPropertyNames();
@@ -176,7 +224,7 @@ public final class HeapEstimator {
       for (final String name : names) {
         if (counted == SAMPLED_ELEMENTS)
           break;
-        sampled += HASH_ENTRY_BYTES + estimate(mutable.get(name), depth + 1);
+        sampled += HASH_ENTRY_BYTES + estimate(mutable.get(name), depth + 1, shared);
         ++counted;
       }
       return RECORD_BYTES + MAP_BYTES + (counted == 0 ? 0L : sampled * names.size() / counted);
@@ -188,7 +236,7 @@ public final class HeapEstimator {
     return RECORD_BYTES;
   }
 
-  private static long estimateCollection(final Collection<?> collection, final int depth) {
+  private static long estimateCollection(final Collection<?> collection, final int depth, final Shared shared) {
     final int size = collection.size();
     if (size == 0)
       return LIST_BYTES;
@@ -197,11 +245,11 @@ public final class HeapEstimator {
     if (collection instanceof List<?> list && collection instanceof RandomAccess) {
       counted = Math.min(size, SAMPLED_ELEMENTS);
       for (int i = 0; i < counted; i++)
-        sampled += estimate(list.get(i), depth + 1);
+        sampled += estimate(list.get(i), depth + 1, shared);
     } else {
       final Iterator<?> iterator = collection.iterator();
       while (counted < SAMPLED_ELEMENTS && iterator.hasNext()) {
-        sampled += estimate(iterator.next(), depth + 1);
+        sampled += estimate(iterator.next(), depth + 1, shared);
         ++counted;
       }
     }
@@ -210,16 +258,16 @@ public final class HeapEstimator {
     return LIST_BYTES + perSlot * size + (counted == 0 ? 0L : sampled * size / counted);
   }
 
-  private static long estimateArray(final Object[] array, final int depth) {
+  private static long estimateArray(final Object[] array, final int depth, final Shared shared) {
     final int counted = Math.min(array.length, SAMPLED_ELEMENTS);
     long sampled = 0L;
     for (int i = 0; i < counted; i++)
-      sampled += estimate(array[i], depth + 1);
+      sampled += estimate(array[i], depth + 1, shared);
     return ARRAY_BYTES + (long) REFERENCE_BYTES * array.length + (counted == 0 ? 0L : sampled * array.length / counted);
   }
 
   /** The entries of a map and the values they hold; the keys are counted only when they are not strings. */
-  private static long estimateEntries(final Map<?, ?> map, final int depth) {
+  private static long estimateEntries(final Map<?, ?> map, final int depth, final Shared shared) {
     final int size = map.size();
     if (size == 0)
       return 0L;
@@ -230,8 +278,8 @@ public final class HeapEstimator {
         break;
       final Object key = entry.getKey();
       if (!(key instanceof String))
-        sampled += estimate(key, depth + 1);
-      sampled += estimate(entry.getValue(), depth + 1);
+        sampled += estimate(key, depth + 1, shared);
+      sampled += estimate(entry.getValue(), depth + 1, shared);
       ++counted;
     }
     return (long) HASH_ENTRY_BYTES * size + sampled * size / counted;
