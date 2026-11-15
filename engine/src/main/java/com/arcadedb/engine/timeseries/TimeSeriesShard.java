@@ -1853,8 +1853,8 @@ public class TimeSeriesShard implements AutoCloseable {
 
   private void clearCompactionFlagBestEffort() {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
-    compactionLock.writeLock().lock();
     OwnTransaction tx = null;
+    compactionLock.writeLock().lock();
     try {
       tx = OwnTransaction.begin(db);
       mutableBucket.setCompactionInProgress(false);

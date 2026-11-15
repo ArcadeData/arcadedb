@@ -42,6 +42,7 @@ public class LockStatement extends SimpleExecStatement {
     }
 
     if (explicitLock != null)
+      // noopengrep: lock-not-released-in-finally - the transaction's explicit lock, released when the transaction ends
       explicitLock.lock();
 
     final InternalResultSet result = new InternalResultSet();

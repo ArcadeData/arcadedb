@@ -187,7 +187,7 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         final Socket client = socket.accept();
         try {
           accepted.put(client); // blocks while the listener is busy
-        } catch (final InterruptedException e) {
+        } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - the accept thread, ending
           closeQuietly(client);
           return;
         }
@@ -201,7 +201,7 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         accepted.offer(e); // dropped on purpose when the caller has not consumed the previous one: the backoff bounds the rate
         try {
           Thread.sleep(ERROR_BACKOFF_MS);
-        } catch (final InterruptedException ie) {
+        } catch (final InterruptedException ie) { // noopengrep: interrupted-exception-swallowed - the accept thread, ending
           return;
         }
       }

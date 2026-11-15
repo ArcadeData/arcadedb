@@ -119,7 +119,8 @@ jobs:
       # Every rule must see the shape it forbids before it is allowed to block anything.
       - name: Opengrep rule self-tests
         run: ./.github/scripts/opengrep.sh test
-      # WARNING rules: reported, not blocking, until their offenders are gone (JUnit Assertions, Studio HTML sinks).
+      # WARNING rules: reported, not blocking, until their offenders are gone (JUnit Assertions, Studio HTML sinks,
+      # empty catch blocks, Throwable caught and not rethrown).
       - name: Opengrep advisory rules
         run: ./.github/scripts/opengrep.sh advise
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1

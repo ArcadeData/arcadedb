@@ -742,9 +742,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
-      indexLock.lock();
-      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
+      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977). Begun BEFORE the
+      // lock is taken: a begin() that throws must not leave the read lock held, or every later drop or rebuild of the _id index hangs
       final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+      indexLock.lock();
       try {
         // one regex budget for the whole command, whatever the number of entries
         final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
@@ -843,9 +844,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
       // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
-      indexLock.lock();
-      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
+      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977). Begun BEFORE the
+      // lock is taken: a begin() that throws must not leave the read lock held, or every later drop or rebuild of the _id index hangs
       final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+      indexLock.lock();
       try {
         int index = 0;
         for (final Document upd : updates) {

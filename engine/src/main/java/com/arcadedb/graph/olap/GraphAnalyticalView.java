@@ -784,6 +784,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private void publishBuild(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
       final String[] builtVertexTypes, final String[] builtEdgeTypes, final BuildWatch watch) {
     // Before the watch is cleared: a commit callback that finds no watch then sees this publication counted
+    // noopengrep: volatile-read-modify-write - written only under this instance's monitor (see the field)
     ++baseReplacements;
     // A change still queued for the asynchronous merge is in this scan, which started after it committed, or it was
     // buffered in this watch and is re-applied below (issue #10189). Dropped BEFORE the watch closes: a change the closed

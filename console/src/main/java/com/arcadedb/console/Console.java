@@ -1290,7 +1290,7 @@ public class Console {
                         lastRenderedLength = rendered.length();
                     }
                 }
-            } catch (final InterruptedException e) {
+            } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - the monitor's own thread, ending here
                 // COMMAND FINISHED
             } catch (final Exception e) {
                 // BEST-EFFORT: a progress-polling failure must never disturb the running command

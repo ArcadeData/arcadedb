@@ -40,8 +40,8 @@ public class DefaultConsoleReader {
       System.out.print("\u0008*");
       try {
         Thread.sleep(1);
-      } catch (final InterruptedException ignore) {
-        // om nom nom
+      } catch (final InterruptedException ignore) { // noopengrep: interrupted-exception-swallowed - see below
+        // The eraser's own thread: sendShutdown() stops it through its loop flag, not through the interrupt
       }
     }
   }

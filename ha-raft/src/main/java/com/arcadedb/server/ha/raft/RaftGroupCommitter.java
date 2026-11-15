@@ -446,7 +446,7 @@ class RaftGroupCommitter {
 
         flushBatch(batch);
 
-      } catch (final InterruptedException e) {
+      } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - see below
         if (!running)
           break;
         // Interrupted while still running (e.g. the flag restored by flushBatch's interrupt
