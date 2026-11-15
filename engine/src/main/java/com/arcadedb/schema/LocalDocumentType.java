@@ -2843,52 +2843,31 @@ public class LocalDocumentType implements DocumentType {
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 
     if (!existentIndexes.isEmpty()) {
-      // The COMPONENTS are created in a transaction of their OWN, committed before the schema lock is released, as
-      // createSubIndexesFor() and TypeIndexBuilder create theirs. Joined to the caller's transaction (an HTTP command always
-      // runs in one), the sub-indexes were published to every writer while their first page was still pending in it: a
-      // record another transaction wrote into the new bucket and committed before the caller did met a sub-index with no
-      // page, and its commit failed with "the file is invalid" (issue #11835). Had the caller rolled back, the schema would
-      // have kept naming files with no pages at all.
-      //
-      // The BUILD joins the caller's transaction only when the caller wrote into the bucket (detached from a type and
-      // attached again in one transaction): a scan sees the records the caller has not committed only from inside it (issue
-      // #6359). Otherwise it runs with the components, and joining would only cost it its chunked commit.
+      // ONE TRANSACTION OF ITS OWN, committed before the schema lock is released, as createSubIndexesFor() and TypeIndexBuilder
+      // create their components (issue #6359, item 1 meant this one too, but the call joined the caller's transaction). Joined,
+      // the sub-indexes were published to every writer while their first page was still pending in the caller's transaction,
+      // which an HTTP command always runs in: a record another transaction wrote into the new bucket and committed before the
+      // caller did met a sub-index with no page, and its commit failed with "the file is invalid" (issue #11835). A record the
+      // caller itself wrote into the bucket before the attach (a bucket detached and attached again in one transaction) is not
+      // seen by this build, and is given its entries when the caller commits (issue #10588).
       //
       // A bucket that is not new can hold records, and so a key a UNIQUE index of this type already holds: the attach is
       // then refused and handed back whole, exactly as addSuperType hands back a link (issue #11302). Every component an
       // attempt created is dropped when it fails, before the retry: they outlive the rollback, and a retry that created
       // its own beside them left the bucket with two sub-indexes of the same index.
       final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
-      // Asked before the component transaction opens: inside it there is always one, and it is empty
-      final boolean callerWroteIntoBucket = IndexBuilder.callerTransactionHasChangesIn(database, List.of(bucket));
       final List<Index> created = new ArrayList<>();
-      final List<Index> toBuild = new ArrayList<>();
       try {
         database.transaction(() -> {
           created.clear();
-          toBuild.clear();
-          for (final TypeIndex idx : existentIndexes) {
-            final boolean buildInCallerTransaction = callerWroteIntoBucket && idx.getType().buildCanShareCallerTransaction();
-            final Index subIndex = createBucketIndexFor(idx, bucket, !buildInCallerTransaction);
-            created.add(subIndex);
-            if (buildInCallerTransaction)
-              toBuild.add(subIndex);
-          }
-        }, false, txRetries(database), null, failure -> {
-          dropFailedAttempt(created);
-          toBuild.clear();
-        });
-
-        if (!toBuild.isEmpty())
-          database.transaction(() -> {
-            for (final Index subIndex : toBuild)
-              IndexBuilder.buildCreatedIndex(database, subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
-          }, true);
+          for (final TypeIndex idx : existentIndexes)
+            created.add(createBucketIndexFor(idx, bucket));
+        }, false, txRetries(database), null, failure -> dropFailedAttempt(created));
       } catch (final RuntimeException e) {
         // The refusal is what the caller has to see: a step of the clean-up that fails too travels with it rather than in its
         // place, and does not skip the steps after it (the detach drops the bucket's sub-indexes on its own too)
         final RuntimeException refusal = asDuplicatedKeyIfOne(e);
-        // The build in the caller's transaction has no callback, and drops nothing on its way out
+        // A no-op when the transaction already dropped them through its callback
         runCleanupStep(refusal, () -> dropFailedAttempt(created));
         runCleanupStep(refusal, () -> removeBucketInternal(bucket));
         if (!needsRepartitionBefore)
@@ -2902,8 +2881,8 @@ public class LocalDocumentType implements DocumentType {
       ensureExternalBucketFor((LocalBucket) bucket);
   }
 
-  /** The sub-index of {@code idx} over {@code bucket}, created in the current transaction and built there when {@code build}. */
-  private Index createBucketIndexFor(final TypeIndex idx, final Bucket bucket, final boolean build) {
+  /** The sub-index of {@code idx} over {@code bucket}, created and built in the current transaction (one of its own). */
+  private Index createBucketIndexFor(final TypeIndex idx, final Bucket bucket) {
     // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
     // to be one the creation path accepts. A HASH index predating #5713 can hold an unaddressable one, and
     // adding a bucket to its type must not fail because of it (#5713).
@@ -2917,7 +2896,7 @@ public class LocalDocumentType implements DocumentType {
     // the full-text corpus counters type-wide instead of restarting them at zero for the new bucket.
     return schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSizeForNewFile(),
         idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
-        IndexBuilder.BUILD_BATCH_SIZE, idx.getMetadataForNewFile(), build);
+        IndexBuilder.BUILD_BATCH_SIZE, idx.getMetadataForNewFile());
   }
 
   /** Polymorphic: counts inherited EXTERNAL properties too. O(1) on own count + O(depth) on supertype walk. */
