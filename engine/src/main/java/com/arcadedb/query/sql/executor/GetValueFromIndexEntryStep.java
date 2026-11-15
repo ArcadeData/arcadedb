@@ -460,8 +460,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
               } else {
                 nextItem = toResult(finalVal, context);
                 if (nextItem == null) {
-                  // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369)
-                  recovered.addAll(reconcile(indexStep, val.getProperty("key"), rid, context, guard));
+                  // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369). A row
+                  // found again is held to the range too: its RID may now name a record a commit wrote outside it (issue #11790)
+                  for (final Result row : reconcile(indexStep, key, rid, context, guard))
+                    if (rangeRowStillMatches(indexStep, row, key))
+                      recovered.add(row);
                   nextItem = recovered.pollFirst();
                 } else if (!noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence())
                     && !rangeRowStillMatches(indexStep, nextItem, key)) {
