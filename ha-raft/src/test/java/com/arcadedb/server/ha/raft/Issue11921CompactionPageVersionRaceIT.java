@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.timeseries.TimeSeriesShard;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.server.raftlog.RaftLog;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -100,13 +102,14 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
       }
     }, "issue11921-compaction");
 
+    boolean phase0Reached;
     synchronized (monitor) {
       appender.start();
       assertThat(awaitValidationBlocked()).as("the leader's validation of the follower append must reach the monitor").isTrue();
       compactor.start();
       // Phase 0 published (the hook runs after it, before phase 4c). A compaction that has to take the monitor itself
       // cannot get here while the test holds it: the wait then times out and the two race for the monitor below.
-      phase0Published.await(3, TimeUnit.SECONDS);
+      phase0Reached = phase0Published.await(3, TimeUnit.SECONDS);
     }
     appender.join(60_000);
     compactor.join(60_000);
@@ -140,6 +143,8 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
       }
     }
 
+    LogManager.instance().log(this, Level.INFO, "TEST: phase 0 published while the validation waited=%s, append failure=%s, "
+        + "compaction failure=%s, claims=%s", phase0Reached, appendFailure, compactionFailure, claims);
     assertThat(duplicates).as("append failure: %s, compaction failure: %s", appendFailure, compactionFailure).isEmpty();
     assertClusterConsistency();
   }
