@@ -290,7 +290,7 @@ public enum GlobalConfiguration {
       Integer.class, 262_144),
 
   MATERIALIZED_VIEW_PER_RECORD_MAX_DELTA("arcadedb.materializedViewPerRecordMaxDelta", SCOPE.DATABASE,
-      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Default 10000",
+      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Also the cap on the source records one transaction changes, and on the groups one pass updates, for a grouped view maintained by delta; past it the view is rebuilt from its source. Default 10000",
       Integer.class, 10_000),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,

@@ -18,20 +18,37 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.OrderedAfterCommitCallback;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.schema.MaterializedViewGroupedPlan.Contribution;
 
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 public class MaterializedViewChangeListener
-    implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
+    implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener, BeforeRecordUpdateListener,
+    BeforeRecordDeleteListener {
 
   private static final AtomicLong INSTANCES = new AtomicLong();
 
@@ -51,28 +68,48 @@ public class MaterializedViewChangeListener
     this.callbackKey = "mv-refresh:" + view.getName() + '#' + INSTANCES.incrementAndGet();
   }
 
+  /**
+   * A grouped view maintained by delta (issue #11937) takes the state a record had before the transaction changed it here, before
+   * the first change: the update and the delete overwrite it.
+   */
+  @Override
+  public boolean onBeforeUpdate(final Record record) {
+    if (database.isTransactionActive() && view.isGroupedDelta())
+      groupedCapture(database.getTransaction()).before(record, true);
+    return true;
+  }
+
+  @Override
+  public boolean onBeforeDelete(final Record record) {
+    if (database.isTransactionActive() && view.isGroupedDelta())
+      groupedCapture(database.getTransaction()).before(record, false);
+    return true;
+  }
+
   @Override
   public void onAfterCreate(final Record record) {
-    onChange(record);
+    onChange(record, true);
   }
 
   @Override
   public void onAfterUpdate(final Record record) {
-    onChange(record);
+    onChange(record, false);
   }
 
   @Override
   public void onAfterDelete(final Record record) {
-    onChange(record);
+    onChange(record, false);
   }
 
-  private void onChange(final Record record) {
+  private void onChange(final Record record, final boolean created) {
     if (!database.isTransactionActive())
       return;
 
     final TransactionContext tx = database.getTransaction();
     if (view.isPerRecord())
       captureDelta(tx, record);
+    else if (view.isGroupedDelta())
+      groupedCapture(tx).after(record, created);
     else
       tx.addAfterCommitCallbackIfAbsent(callbackKey, () -> {
         final MaterializedViewImpl target = targetAtCommit();
@@ -80,7 +117,7 @@ public class MaterializedViewChangeListener
           return;
         try {
           // This capture holds no records: a view upgraded to per-record since the change was made owes a full pass instead
-          if (target.isPerRecord())
+          if (target.tracksPendingDelta())
             target.requestFullPass(false);
           MaterializedViewRefresher.refreshAfterCommit(database, target);
         } catch (final Exception e) {
@@ -115,6 +152,213 @@ public class MaterializedViewChangeListener
     }
     delta.add(record.getIdentity());
     tx.addAfterCommitCallbackIfAbsent(callbackKey, delta);
+  }
+
+  /** The capture of this transaction's changes for a grouped view (issue #11937), registered with the transaction on first use. */
+  private GroupedCapture groupedCapture(final TransactionContext tx) {
+    GroupedCapture capture = (GroupedCapture) tx.getDerived(this);
+    if (capture == null) {
+      capture = new GroupedCapture();
+      tx.putDerived(this, capture);
+    }
+    // Every time, as the per-record path does: a statement taken back drops the after-commit callback it registered
+    tx.addAfterCommitCallbackIfAbsent(callbackKey, capture);
+    tx.addBeforeCommitCallbackIfAbsent(callbackKey, capture.beforeCommitTask);
+    return capture;
+  }
+
+  /**
+   * What a transaction did to one source record of a grouped view: its contribution to the view before the transaction first
+   * changed it (null when it was not in the view, or did not exist), and as the transaction commits it (null when it is not in the
+   * view, or was deleted).
+   */
+  static final class RecordChange {
+    Contribution before;
+    Contribution after;
+  }
+
+  /**
+   * The changes one transaction makes to the source records of a grouped view (issue #11937), and the after-commit callback that
+   * hands their delta to the view.
+   * <p>
+   * The state of a record before the transaction is taken at its first change in the transaction: for an update, the image the
+   * record was read from, which the update's own MVCC check refuses to commit over anything else (#6950); for a delete, the record
+   * as its page holds it, with the page taken into the transaction first, so the commit's page-version check refuses a concurrent
+   * change landing after the read. A record the transaction creates had no state before. The state after is read when the commit
+   * starts ({@code TransactionContext.addBeforeCommitCallbackIfAbsent}): whatever statements were taken back, it is what the
+   * commit writes. The delta of the transaction is then {@code after - before} for each record.
+   * <p>
+   * The callback is ordered ({@link OrderedAfterCommitCallback}): at its commit point the transaction registers with the view, so a
+   * rebuild pass of the view running concurrently knows that its scan may or may not have read this transaction's changes, and
+   * corrects for them (see {@link MaterializedViewGroupedState.Watch}).
+   */
+  final class GroupedCapture implements OrderedAfterCommitCallback {
+    private final MaterializedViewGroupedPlan       plan             = view.groupedPlan();
+    private final Map<RID, RecordChange>            changes          = new LinkedHashMap<>();
+    private final int                               maxDelta         = view.maxPerRecordDelta();
+    final         Runnable                          beforeCommitTask = this::beforeCommit;
+    private       WhereClause                       where;
+    private       CommandContext                    context;
+    /** Past the cap, or a record whose state before could not be read: the transaction owes the view a rebuild. */
+    private       boolean                           overflow;
+    private       MaterializedViewGroupedState.Groups delta;
+    /** The view this transaction registered with at its commit point, null before it (or when it had nothing to write). */
+    private volatile MaterializedViewImpl            registeredWith;
+    /** Set under the view's pending-delta lock when a rebuild pass took this transaction's changes over. */
+    boolean                                          absorbed;
+
+    void before(final Record record, final boolean update) {
+      final RID rid = record.getIdentity();
+      if (overflow || rid == null || changes.containsKey(rid))
+        return;
+      if (changes.size() >= maxDelta) {
+        overflow();
+        return;
+      }
+      final RecordChange change = new RecordChange();
+      try {
+        final Document committed = update && record instanceof MutableDocument ? readImage(record) : null;
+        change.before = contributionOf(committed != null ? committed : pinnedRead(rid));
+      } catch (final RecordNotFoundException e) {
+        // nothing to change: the operation itself fails on it
+        change.before = null;
+      } catch (final RuntimeException e) {
+        overflow();
+        return;
+      }
+      changes.put(rid, change);
+    }
+
+    void after(final Record record, final boolean created) {
+      final RID rid = record.getIdentity();
+      if (overflow || rid == null || changes.containsKey(rid))
+        return;
+      if (!created || changes.size() >= maxDelta)
+        // an update or a delete whose state before was not taken
+        overflow();
+      else
+        changes.put(rid, new RecordChange());
+    }
+
+    /** The image the update of a record read in this transaction is computed from: its buffer, which the update leaves alone. */
+    private Document readImage(final Record record) {
+      final Binary buffer = ((RecordInternal) record).getBuffer();
+      if (buffer == null)
+        return null;
+      return (Document) database.getRecordFactory()
+          .newImmutableRecord(database, ((Document) record).getType(), record.getIdentity(), buffer.copyOfContent(), null);
+    }
+
+    /** The record as its page holds it, with the page taken into the transaction first: the commit then checks its version. */
+    private Document pinnedRead(final RID rid) {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getEmbedded().getBucketById(rid.getBucketId());
+      try {
+        bucket.fetchPageInTransaction(rid);
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Cannot read record " + rid, e);
+      }
+      return pageRead(bucket, rid);
+    }
+
+    /** The record as the transaction's view of its page holds it, bypassing the record caches. */
+    private Document pageRead(final LocalBucket bucket, final RID rid) {
+      final Binary content = bucket.getRecord(rid);
+      return (Document) database.getRecordFactory().newImmutableRecord(database,
+          database.getSchema().getEmbedded().getTypeByBucketId(rid.getBucketId()), rid, content.copyOfContent(), null);
+    }
+
+    /**
+     * The record as the commit writes it: the instance queued for the deferred update, whose content the commit serializes, or else
+     * what the transaction's pages hold (a creation or a delete is written to the page at once). Null for a record that is gone.
+     */
+    private Document committedState(final TransactionContext tx, final RID rid) {
+      if (tx.isUpdateQueued(rid) && tx.getWrittenRecord(rid) instanceof Document queued)
+        return queued;
+      try {
+        return pageRead((LocalBucket) database.getSchema().getEmbedded().getBucketById(rid.getBucketId()), rid);
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+    }
+
+    private Contribution contributionOf(final Document record) {
+      if (where == null && context == null) {
+        where = plan.newWhere();
+        context = MaterializedViewGroupedPlan.newContext(database);
+      }
+      return plan.contributionOf(record, where, context);
+    }
+
+    private void overflow() {
+      overflow = true;
+      changes.clear();
+      delta = null;
+    }
+
+    /** Run when the commit starts: reads the state each changed record is committed in, and folds the changes into the delta. */
+    private void beforeCommit() {
+      if (overflow)
+        return;
+      try {
+        final TransactionContext tx = database.getTransaction();
+        final MaterializedViewGroupedState.Groups groups = new MaterializedViewGroupedState.Groups(plan);
+        for (final Map.Entry<RID, RecordChange> entry : changes.entrySet()) {
+          final RecordChange change = entry.getValue();
+          final Document current = committedState(tx, entry.getKey());
+          change.after = current != null ? contributionOf(current) : null;
+          if (change.before == null ? change.after != null : !change.before.sameAs(change.after)) {
+            groups.add(change.before, -1);
+            groups.add(change.after, 1);
+          }
+        }
+        delta = groups;
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE, "Cannot read the changes of a transaction for view '%s': it is rebuilt", e,
+            view.getName());
+        overflow();
+      }
+    }
+
+    /** What a rebuild pass absorbing this transaction corrects for, or null when it cannot (see {@code Watch.absorb}). */
+    Map<RID, RecordChange> changesForWatch() {
+      return overflow || delta == null ? null : changes;
+    }
+
+    @Override
+    public void onCommitPoint() {
+      final MaterializedViewImpl target = view.current();
+      if (registeredWith != null || !target.isGroupedDelta())
+        return;
+      registeredWith = target;
+      target.groupedCommitPoint(this);
+    }
+
+    @Override
+    public void onAbandoned() {
+      final MaterializedViewImpl registered = registeredWith;
+      if (registered != null)
+        registered.groupedAbandoned(this);
+    }
+
+    @Override
+    public void run() {
+      final MaterializedViewImpl registered = registeredWith;
+      final MaterializedViewImpl target = targetAtCommit();
+      try {
+        final boolean absorbed = registered != null && registered.groupedDelivered(this);
+        if (target != null && !absorbed && target.isGroupedDelta()) {
+          if (overflow || delta == null || (registered != null && registered != target) || target.groupedPlan() != plan)
+            target.requestFullPass(false);
+          else if (delta.size() > 0 || delta.inexact)
+            target.adoptGroupedDelta(delta);
+        }
+        if (target != null)
+          MaterializedViewRefresher.refreshAfterCommit(database, target);
+      } catch (final Exception e) {
+        if (target != null)
+          markStale(target, e);
+      }
+    }
   }
 
   private void markStale(final MaterializedViewImpl view, final Exception e) {

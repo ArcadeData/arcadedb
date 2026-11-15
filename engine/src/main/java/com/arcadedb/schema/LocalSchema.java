@@ -1621,7 +1621,7 @@ public class LocalSchema implements Schema {
    * ({@code DatabaseFactory.setReplicatedNode}), and the settings are read too, on the rule the HA plugin starts on (the flag, or
    * a server list alone), for a node configured JVM-wide.
    */
-  private boolean isReplicatedNode() {
+  boolean isReplicatedNode() {
     if (database.getEmbedded() instanceof LocalDatabase local && local.isReplicatedNode())
       return true;
     final ContextConfiguration configuration = database.getConfiguration();
@@ -2945,7 +2945,8 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * The recovery an open owes the per-record materialized views (issue #11550), called once the open has replayed the WAL. Their
+   * The recovery an open owes the per-record materialized views (issue #11550), and the grouped ones maintained by delta (issue
+   * #11937), called once the open has replayed the WAL. Their
    * pending delta and recovery mark live in memory only, so a view persisted VALID by a process that crashed may be missing the
    * commits whose pass had not run yet: after an unclean shutdown every per-record view gets the recovery full pass, otherwise
    * only the ones the load found owing it (persisted non-VALID). The passes run on the scheduler thread, so the open does not wait
@@ -2979,7 +2980,7 @@ public class LocalSchema implements Schema {
     int asked = 0;
     for (final MaterializedView v : getMaterializedViews()) {
       final MaterializedViewImpl view = (MaterializedViewImpl) v;
-      if (!view.isPerRecord() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
+      if (!view.tracksPendingDelta() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
         continue;
       if (!everyView && !view.owesRecoveryPass())
         continue;
@@ -5642,8 +5643,10 @@ public class LocalSchema implements Schema {
             view.setStatus(MaterializedViewStatus.STALE);
 
           // A per-record view loaded non-VALID may be missing the records of a failed or interrupted pass, and the recovery mark
-          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass
-          if (view.isPerRecord() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
+          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass. A grouped
+          // view maintained by delta (issue #11937) rebuilds its in-memory state at its first pass anyway; the mark also recovers it
+          // at the open
+          if (view.tracksPendingDelta() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
             view.requestFullPass(true);
         } catch (final Exception e) {
           ++failures;
@@ -7379,7 +7382,8 @@ public class LocalSchema implements Schema {
 
   /**
    * Whether an INCREMENTAL materialized view listens on the trigger registries of its source types (issue #10205): the records
-   * of their subtypes reach it through the same lineage walk the triggers use, for the AFTER write events only.
+   * of their subtypes reach it through the same lineage walk the triggers use, for the write events only (the AFTER ones, and the
+   * BEFORE UPDATE / DELETE a grouped view maintained by delta takes, issue #11937).
    */
   public boolean hasPolymorphicViewListeners() {
     return polymorphicViewListeners.get() > 0;

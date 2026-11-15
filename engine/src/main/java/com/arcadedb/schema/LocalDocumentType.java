@@ -349,7 +349,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterCreate(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterCreate(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterCreate(record);
   }
@@ -358,7 +358,7 @@ public class LocalDocumentType implements DocumentType {
     checkOwnsBucketOf(record);
     if (!events.onBeforeUpdate(record))
       return false;
-    if (hasTriggers())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         if (!registry.onBeforeUpdate(record))
           return false;
@@ -368,7 +368,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterUpdate(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterUpdate(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterUpdate(record);
   }
@@ -377,7 +377,7 @@ public class LocalDocumentType implements DocumentType {
     checkOwnsBucketOf(record);
     if (!events.onBeforeDelete(record))
       return false;
-    if (hasTriggers())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         if (!registry.onBeforeDelete(record))
           return false;
@@ -387,7 +387,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterDelete(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterDelete(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterDelete(record);
   }
@@ -471,12 +471,13 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * As {@link #hasTriggers()}, for the AFTER CREATE / UPDATE / DELETE events only, which an INCREMENTAL materialized view
-   * listens to on the same registries (issue #10205). Kept apart so that a view adds nothing to the read path. While any such
-   * view exists, an AFTER write on any type walks its lineage (an array cached per type graph, each registry a list that is
-   * empty unless something listens), not only a write on a source type of the view.
+   * As {@link #hasTriggers()}, for the write events an INCREMENTAL materialized view listens to on the same registries: AFTER CREATE
+   * / UPDATE / DELETE (issue #10205), and BEFORE UPDATE / DELETE, for the state a record had before, which a grouped view maintained
+   * by delta takes (issue #11937). Kept apart so that a view adds nothing to the read path. While any such view exists, a write on
+   * any type walks its lineage (an array cached per type graph, each registry a list that is empty unless something listens), not
+   * only a write on a source type of the view.
    */
-  private boolean hasAfterWriteListenersInLineage() {
+  private boolean hasWriteListenersInLineage() {
     return schema != null && (schema.hasTriggerListeners() || schema.hasPolymorphicViewListeners());
   }
 

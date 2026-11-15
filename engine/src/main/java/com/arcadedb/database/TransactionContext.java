@@ -505,6 +505,8 @@ public class TransactionContext implements Transaction {
   // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
   private       Map<String, Runnable>                afterCompletionCallbacks    = null;
   private       Thread                               afterCompletionOwner        = null;
+  // Issue #11937: work that reads what the transaction is about to commit, run when the commit starts, see addBeforeCommitCallbackIfAbsent()
+  private       Map<String, Runnable>                beforeCommitCallbacks       = null;
   // Read by begin() on the thread that runs the callbacks, which is the one that sets it
   private       boolean                              runningAfterCompletion      = false;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
@@ -1579,6 +1581,30 @@ public class TransactionContext implements Transaction {
 
   public boolean hasAfterCompletionCallbackKey(final String key) {
     return afterCompletionCallbacks != null && afterCompletionCallbacks.containsKey(key);
+  }
+
+  /**
+   * Registers, under {@code key}, work that has to read what this transaction is about to commit (issue #11937): it runs when the
+   * commit starts, on the committing thread, with the transaction still active, so a lookup answers each record as the commit will
+   * write it (an after-commit callback can only read the database once other commits may have changed it again). It runs once,
+   * whatever statements were taken back since it was registered, and is dropped with a transaction that rolls back. An exception it
+   * throws fails the commit, which the caller then rolls back.
+   *
+   * @return true if the callback was registered, false if one is registered under {@code key} already
+   */
+  public boolean addBeforeCommitCallbackIfAbsent(final String key, final Runnable callback) {
+    if (beforeCommitCallbacks == null)
+      beforeCommitCallbacks = new LinkedHashMap<>(4);
+    return beforeCommitCallbacks.putIfAbsent(key, callback) == null;
+  }
+
+  private void fireBeforeCommitCallbacks() {
+    final Map<String, Runnable> callbacks = beforeCommitCallbacks;
+    if (callbacks == null)
+      return;
+    beforeCommitCallbacks = null;
+    for (final Runnable callback : callbacks.values())
+      callback.run();
   }
 
   /**
@@ -4183,6 +4209,9 @@ public class TransactionContext implements Transaction {
           + "began (" + begunUnderWriteRefusal + "). Retry it");
     }
 
+    // Issue #11937: still BEGUN, so a callback reads the records as the commit is about to write them
+    fireBeforeCommitCallbacks();
+
     // Issue #10588: while the transaction is still BEGUN, the one state an index queues an entry instead of writing it
     reconcileIndexesRegisteredSinceBegin();
 
@@ -5260,6 +5289,7 @@ public class TransactionContext implements Transaction {
     // Reached with some only when the transaction ends neither by a commit nor by a rollback, which take them out first and run them
     afterCompletionCallbacks = null;
     afterCompletionOwner = null;
+    beforeCommitCallbacks = null;
     attachments = null;
     clientManaged = false;
     commitLockTimeout = null;

@@ -102,6 +102,9 @@ class TransactionContextStatementStateTest {
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction
     CLASSIFICATION.put("afterCompletionCallbacks", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("afterCompletionOwner", NOT_STATEMENT_STATE);
+    // Issue #11937: work that reads what the commit writes, whatever statements were taken back: a callback a statement registered
+    // and then lost is run all the same, and reads the state the commit writes
+    CLASSIFICATION.put("beforeCommitCallbacks", NOT_STATEMENT_STATE);
 
     // What a statement reads or the commit writes, and the services of the context
     CLASSIFICATION.put("database", NOT_STATEMENT_STATE);
