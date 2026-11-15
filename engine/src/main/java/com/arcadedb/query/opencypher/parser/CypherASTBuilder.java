@@ -1603,7 +1603,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
     // Parse the WHERE condition as a boolean expression, then simplify boolean constants
-    final BooleanExpression parsed = parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = parsePredicate(ctx.expression());
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
   }
@@ -1616,9 +1616,113 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
     // Grammar: FILTER WHERE? expression
-    final BooleanExpression parsed = parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = parsePredicate(ctx.expression());
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
+  }
+
+  /**
+   * Parses the expression of a predicate position (a clause {@code WHERE} or {@code FILTER}, the inline {@code WHERE} of a
+   * node, relationship or parenthesized path) after refusing the pattern expressions it holds outside a boolean position.
+   */
+  private BooleanExpression parsePredicate(final Cypher25Parser.ExpressionContext ctx) {
+    rejectNonBooleanPatternExpressions(ctx);
+    return parseBooleanExpression(ctx);
+  }
+
+  /**
+   * Refuses a pattern expression that is not used as a boolean, as Neo4j 5 does and as {@link #visitReturnClause} does for
+   * a projection (issue #11888). {@code (p)-->()} tests whether the pattern exists, so it may stand where a boolean is
+   * expected: a predicate, an operand of NOT, AND, OR or XOR, a CASE WHEN condition, the WHERE of a comprehension or of a
+   * list predicate, and the argument of {@code exists()}. Elsewhere (inside {@code size()}, {@code toString()} or
+   * {@code coalesce()}, as an operand of a comparison, IS NULL, IN or arithmetic) it used to evaluate to null or to a
+   * different predicate without error, so {@code WHERE size((p)-->()) > 5} matched nothing. The subquery expressions
+   * {@code EXISTS}, {@code COUNT} and {@code COLLECT} are skipped: their clauses are checked when they are visited.
+   */
+  private static void rejectNonBooleanPatternExpressions(final ParseTree node) {
+    if (node instanceof Cypher25Parser.ExistsExpressionContext || node instanceof Cypher25Parser.CountExpressionContext
+        || node instanceof Cypher25Parser.CollectExpressionContext)
+      return;
+    if (node instanceof Cypher25Parser.PatternExpressionContext pattern)
+      rejectUnlessBoolean(pattern);
+    for (int i = 0; i < node.getChildCount(); i++)
+      rejectNonBooleanPatternExpressions(node.getChild(i));
+  }
+
+  private static void rejectUnlessBoolean(final Cypher25Parser.PatternExpressionContext pattern) {
+    ParserRuleContext node = pattern;
+    while (true) {
+      final ParserRuleContext parent = node.getParent();
+      if (node instanceof Cypher25Parser.ExpressionContext expression && isBooleanSlot(parent, expression))
+        return;
+      if (!isBooleanPassThrough(parent))
+        break;
+      node = parent;
+    }
+    final String text = getOriginalText(pattern);
+    if (node.getParent() instanceof Cypher25Parser.FunctionArgumentContext argument
+        && "size".equalsIgnoreCase(functionName((Cypher25Parser.FunctionInvocationContext) argument.getParent())))
+      throw new CommandParsingException("UnexpectedSyntax: A pattern expression should only be used in order to test the "
+          + "existence of a pattern. It can no longer be used inside the function size(), an alternative is to replace "
+          + "size() with COUNT {}: size(" + text + ")");
+    throw new CommandParsingException("UnexpectedSyntax: A pattern expression should only be used in order to test the "
+        + "existence of a pattern. It should therefore only be used in contexts that evaluate to a boolean, e.g. inside "
+        + "the function exists() or in a WHERE-clause. No other uses are allowed, instead they should be replaced by a "
+        + "pattern comprehension: " + text);
+  }
+
+  /**
+   * True when a child of {@code parent} passes its value up unchanged or as a boolean operand: a parenthesis, NOT, AND,
+   * OR, XOR, or a level of the expression grammar that holds a single operand and no operator.
+   */
+  private static boolean isBooleanPassThrough(final ParserRuleContext parent) {
+    return switch (parent) {
+      case Cypher25Parser.ExpressionContext ignored -> true;
+      case Cypher25Parser.Expression11Context ignored -> true;
+      case Cypher25Parser.Expression10Context ignored -> true;
+      case Cypher25Parser.Expression9Context ignored -> true;
+      case Cypher25Parser.Expression8Context e8 -> e8.expression7().size() == 1;
+      case Cypher25Parser.Expression7Context e7 -> e7.comparisonExpression6() == null;
+      case Cypher25Parser.Expression6Context e6 -> e6.expression5().size() == 1;
+      case Cypher25Parser.Expression5Context e5 -> e5.expression4().size() == 1;
+      case Cypher25Parser.Expression4Context e4 -> e4.expression3().size() == 1;
+      case Cypher25Parser.Expression3Context e3 -> e3.PLUS() == null && e3.MINUS() == null;
+      case Cypher25Parser.Expression2Context e2 -> e2.postFix().isEmpty();
+      case Cypher25Parser.Expression1Context ignored -> true;
+      case Cypher25Parser.ParenthesizedExpressionContext ignored -> true;
+      case null, default -> false;
+    };
+  }
+
+  /**
+   * True when {@code expression}, a child of {@code parent}, is evaluated as a boolean: a predicate (clause or inline
+   * WHERE, FILTER), a CASE WHEN or GQL WHEN condition, the WHERE of a list or pattern comprehension or of a list predicate,
+   * or the single argument of {@code exists()}.
+   */
+  private static boolean isBooleanSlot(final ParserRuleContext parent, final Cypher25Parser.ExpressionContext expression) {
+    return switch (parent) {
+      case Cypher25Parser.WhereClauseContext ignored -> true;
+      case Cypher25Parser.FilterClauseContext ignored -> true;
+      // the only expression a node, relationship or parenthesized path pattern holds directly is its inline WHERE
+      case Cypher25Parser.NodePatternContext ignored -> true;
+      case Cypher25Parser.RelationshipPatternContext ignored -> true;
+      case Cypher25Parser.ParenthesizedPathContext ignored -> true;
+      case Cypher25Parser.WhenBranchContext ignored -> true;
+      case Cypher25Parser.CaseAlternativeContext alternative -> alternative.expression(0) == expression;
+      case Cypher25Parser.ListComprehensionContext comprehension -> comprehension.whereExp == expression;
+      case Cypher25Parser.PatternComprehensionContext comprehension -> comprehension.whereExp == expression;
+      case Cypher25Parser.ListItemsPredicateContext predicate -> predicate.whereExp == expression;
+      case Cypher25Parser.FunctionArgumentContext argument -> {
+        final Cypher25Parser.FunctionInvocationContext function = (Cypher25Parser.FunctionInvocationContext) argument.getParent();
+        yield function.DISTINCT() == null && function.functionArgument().size() == 1 && "exists".equalsIgnoreCase(
+            functionName(function));
+      }
+      case null, default -> false;
+    };
+  }
+
+  private static String functionName(final Cypher25Parser.FunctionInvocationContext function) {
+    return ParserUtils.qualifiedName(function.functionName().namespace(), function.functionName().symbolicNameString());
   }
 
   /**
@@ -1699,9 +1803,29 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private boolean isArgumentOfExistsFunction(final ParseTree node) {
     for (ParseTree p = node.getParent(); p != null; p = p.getParent()) {
       if (p instanceof Cypher25Parser.FunctionInvocationContext funcCtx)
-        return "exists".equalsIgnoreCase(ParserUtils.qualifiedName(funcCtx.functionName().namespace(), funcCtx.functionName().symbolicNameString()));
+        return "exists".equalsIgnoreCase(functionName(funcCtx));
     }
     return false;
+  }
+
+  /**
+   * True when {@code pattern} is all of {@code operand}, or all of the single argument of an {@code exists()} call that is
+   * all of {@code operand}.
+   */
+  private static boolean isWholePatternPredicate(final Cypher25Parser.PatternExpressionContext pattern,
+      final Cypher25Parser.Expression6Context operand) {
+    if (spansSameTokens(pattern, operand))
+      return true;
+    for (ParserRuleContext p = pattern.getParent(); p != operand; p = p.getParent())
+      if (p instanceof Cypher25Parser.FunctionInvocationContext function)
+        return function.DISTINCT() == null && function.functionArgument().size() == 1 && "exists".equalsIgnoreCase(
+            functionName(function)) && spansSameTokens(pattern, function.functionArgument(0)) && spansSameTokens(function,
+            operand);
+    return false;
+  }
+
+  private static boolean spansSameTokens(final ParserRuleContext a, final ParserRuleContext b) {
+    return a.getStart() == b.getStart() && a.getStop() == b.getStop();
   }
 
   /**
@@ -1907,10 +2031,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return parseBooleanExpression(parenExpr.expression());
     }
 
-    // Check if expression6 contains a pattern expression (pattern predicate)
+    // Check if expression6 is a pattern expression (pattern predicate), bare or as the argument of exists()
     // This handles cases like: WHERE (n)-[:KNOWS]->()
+    // The pattern must be the whole operand: one found deeper (a CASE WHEN condition, the WHERE of a list predicate or
+    // comprehension) is a boolean inside a larger expression, and returning it alone would drop that expression (#11888).
     final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpressionRecursive(expr6);
-    if (patternExpr != null && compCtx == null) {
+    if (patternExpr != null && compCtx == null && isWholePatternPredicate(patternExpr, expr6)) {
       // Parse the pattern and create a pattern predicate expression
       final PathPattern pathPattern = visitPatternExpression(patternExpr);
       return new PatternPredicateExpression(pathPattern, false, getOriginalText(patternExpr));
@@ -2232,7 +2358,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       throw new CommandParsingException(
           "InvalidSyntax: a quantified path pattern must contain at least one relationship");
 
-    final BooleanExpression innerWhere = pCtx.WHERE() != null ? parseBooleanExpression(pCtx.expression()) : null;
+    final BooleanExpression innerWhere = pCtx.WHERE() != null ? parsePredicate(pCtx.expression()) : null;
 
     // Determine quantifier (defaults to 1..1 when absent, which collapses to a plain triplet)
     final Integer min;
@@ -2329,7 +2455,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (pCtx.WHERE() != null) {
       final int last = innerNodes.size() - 1;
       final NodePattern lastNode = innerNodes.get(last);
-      innerNodes.set(last, withWhere(lastNode, and(lastNode.getWhereExpression(), parseBooleanExpression(pCtx.expression()))));
+      innerNodes.set(last, withWhere(lastNode, and(lastNode.getWhereExpression(), parsePredicate(pCtx.expression()))));
     }
 
     if (outerNodes.size() == outerRels.size() + 1)
@@ -2559,7 +2685,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // by the grammar but silently discarded, so the predicate never filtered anything.
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = parseBooleanExpression(ctx.expression());
+      whereExpression = parsePredicate(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction,
@@ -2627,7 +2753,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Inline WHERE predicate (e.g., [r:KNOWS WHERE r.since < 2019])
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = parseBooleanExpression(ctx.expression());
+      whereExpression = parsePredicate(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,

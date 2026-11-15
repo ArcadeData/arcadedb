@@ -304,6 +304,9 @@ class ExpressionTypeDetector {
         return builder.parseTrimFunction(vecExpr1.trimFunction());
       if (vecExpr1.normalizeFunction() != null)
         return builder.parseNormalizeFunction(vecExpr1.normalizeFunction());
+      // A pattern expression is a boolean: whether the pattern has a match (issue #11888)
+      if (vecExpr1.patternExpression() != null)
+        return builder.parsePatternPredicate(vecExpr1.patternExpression());
     }
 
     // Check for top-level list literals BEFORE function invocations.

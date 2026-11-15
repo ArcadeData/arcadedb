@@ -1,0 +1,142 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #11888: a pattern expression in a WHERE that is not used as a boolean (inside {@code size()}, {@code toString()} or
+ * {@code coalesce()}, as an operand of a comparison, IS NULL, IN or arithmetic) evaluated without error to a wrong answer:
+ * {@code size((p)-->())} was null for every node, so {@code WHERE size((p)-->()) > 1} matched nothing. Like Neo4j 5, and
+ * like a RETURN projection already does, the statement is now refused. A pattern expression where a boolean is expected
+ * keeps answering.
+ * <p>
+ * Graph: a -> b, a -> c, b -> c, so a has two outgoing relationships, b one and c none.
+ */
+class CypherPatternExpressionNonBooleanWhereIssue11888Test extends TestHelper {
+
+  @Override
+  protected void beginTest() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:P {n: 'a'}), (b:P {n: 'b'}), (c:P {n: 'c'}), (a)-[:K]->(b), (a)-[:K]->(c), (b)-[:K]->(c)"));
+  }
+
+  @Test
+  void sizeOfPatternIsRefusedNamingCount() {
+    for (final String statement : List.of(//
+        "MATCH (p:P) WHERE size((p)-->()) > 1 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE size((p)-->()) IS NULL RETURN p.n AS n",//
+        "MATCH (p:P) WHERE size((p)-[:K]->()) >= 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE size((p)-->()) RETURN p.n AS n",//
+        "MATCH (p:P) WHERE SIZE( ( p )-[:K]->() ) + 0 > 1 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE p.n <> 'x' AND size((p)-->()) > 1 RETURN p.n AS n"))
+      assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("inside the function size()").hasMessageContaining("COUNT {}");
+  }
+
+  @Test
+  void patternOutsideABooleanPositionIsRefused() {
+    for (final String statement : List.of(//
+        "MATCH (p:P) WHERE (p)-->() = true RETURN p.n AS n",//
+        "MATCH (p:P) WHERE ((p)-->()) = true RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() <> (p)<--() RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() IS NULL RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() IS NOT NULL RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() IN [true] RETURN p.n AS n",//
+        "MATCH (p:P) WHERE toString((p)-->()) = 'x' RETURN p.n AS n",//
+        "MATCH (p:P) WHERE length((p)-->()) > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE coalesce((p)-->(), false) RETURN p.n AS n",//
+        "MATCH (p:P) WHERE [(p)-->()] <> [] RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->().n = 'x' RETURN p.n AS n",//
+        "MATCH (p:P) WHERE -(p)-->() RETURN p.n AS n",//
+        "MATCH (p:P) WHERE any(x IN [p] WHERE toString((x)-->()) = 'x') RETURN p.n AS n"))
+      assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("contexts that evaluate to a boolean");
+  }
+
+  @Test
+  void everyPredicatePositionIsChecked() {
+    for (final String statement : List.of(//
+        "MATCH (p:P) WITH p WHERE size((p)-->()) > 1 RETURN p.n AS n",//
+        "MATCH (p:P) OPTIONAL MATCH (p)-->(q) WHERE size((q)-->()) > 0 RETURN q.n AS n",//
+        "MATCH (p:P WHERE size((p)-->()) > 1) RETURN p.n AS n",//
+        "MATCH (p:P)-[r:K WHERE size((p)-->()) > 1]->(q) RETURN p.n AS n",//
+        "MATCH ((a:P)-[:K]->(b:P) WHERE size((b)-->()) > 0) RETURN a.n AS n",//
+        "MATCH (p:P) FILTER size((p)-->()) > 1 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE EXISTS { MATCH (p)-->(q) WHERE size((q)-->()) > 0 } RETURN p.n AS n"))
+      assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("COUNT {}");
+  }
+
+  @Test
+  void patternAsABooleanKeepsAnswering() {
+    assertThat(rows("MATCH (p:P) WHERE (p)-->() RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE ((p)-->()) RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE NOT (p)-->() RETURN p.n AS n")).containsExactly("c");
+    assertThat(rows("MATCH (p:P) WHERE (p)-->() AND (p)<--() RETURN p.n AS n")).containsExactly("b");
+    assertThat(rows("MATCH (p:P) WHERE (p)-[:K]->(:P {n: 'b'}) OR p.n = 'c' RETURN p.n AS n")).containsExactly("a", "c");
+    assertThat(rows("MATCH (p:P) WHERE (p)<--() XOR p.n = 'c' RETURN p.n AS n")).containsExactly("b");
+    assertThat(rows("MATCH (p:P) WHERE exists((p)-->()) RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE NOT exists((p)-->()) RETURN p.n AS n")).containsExactly("c");
+    assertThat(rows("MATCH (p:P) WHERE exists((p)-->()) = true RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WITH p WHERE (p)-->() RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P WHERE (p)-->()) RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) FILTER (p)-->() RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH ((a:P)-[:K]->(b:P) WHERE (b)-->()) RETURN a.n AS n")).containsExactly("a");
+  }
+
+  @Test
+  void countAndComprehensionsStayTheWayToCount() {
+    assertThat(rows("MATCH (p:P) WHERE COUNT { (p)-->() } > 1 RETURN p.n AS n")).containsExactly("a");
+    assertThat(rows("MATCH (p:P) WHERE size([(p)-->(q) | q]) > 1 RETURN p.n AS n")).containsExactly("a");
+    assertThat(rows("MATCH (p:P) WHERE size([(p)-->(q) WHERE (q)-->() | q]) > 0 RETURN p.n AS n")).containsExactly("a");
+    assertThat(rows("MATCH (p:P) WHERE EXISTS { MATCH (p)-->(q) WHERE (q)-->() } RETURN p.n AS n")).containsExactly("a");
+  }
+
+  /**
+   * A pattern expression nested in a boolean position inside a larger expression (a CASE WHEN condition, the WHERE of a
+   * list predicate or of a list comprehension) was taken for the whole predicate, or failed: the WHERE parser returned the
+   * first pattern it found in the operand.
+   */
+  @Test
+  void nestedBooleanPositionsAnswer() {
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN (p)-->() THEN false ELSE true END RETURN p.n AS n")).containsExactly("c");
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN (p)-->() THEN true ELSE false END RETURN p.n AS n")).containsExactly("a",
+        "b");
+    assertThat(rows("MATCH (p:P) WHERE any(x IN [p] WHERE (x)-->()) RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE any(x IN [p] WHERE NOT (x)-->()) RETURN p.n AS n")).containsExactly("c");
+    assertThat(rows("MATCH (p:P) WHERE none(x IN [p] WHERE (x)-->()) RETURN p.n AS n")).containsExactly("c");
+    assertThat(rows("MATCH (p:P) WHERE size([x IN [p] WHERE (x)<--()]) > 0 RETURN p.n AS n")).containsExactly("b", "c");
+    assertThat(rows("MATCH (p:P) WHERE p.n IN [x IN [p] WHERE (x)-->() | x.n] RETURN p.n AS n")).containsExactly("a", "b");
+  }
+
+  private List<Object> rows(final String statement) {
+    try (final ResultSet rs = database.query("opencypher", statement + " ORDER BY n")) {
+      return rs.stream().map(r -> r.getProperty("n")).toList();
+    }
+  }
+}
