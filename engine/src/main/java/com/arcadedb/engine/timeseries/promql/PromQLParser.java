@@ -543,7 +543,9 @@ public class PromQLParser {
 
     String readString() {
       skipWhitespace();
-      final char quote = input.charAt(pos);
+      // peekChar() answers 0 at the end of the input, which is no quote: a matcher cut off after its operator ("m1{a=") is a
+      // parse error, not a read past the end that the HTTP endpoints answered with 500
+      final char quote = peekChar();
       if (quote != '"' && quote != '\'' && quote != '`')
         throw new IllegalArgumentException("Expected string at position " + pos);
       pos++;
