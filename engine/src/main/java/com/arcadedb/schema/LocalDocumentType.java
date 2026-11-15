@@ -40,6 +40,8 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -3452,6 +3454,15 @@ public class LocalDocumentType implements DocumentType {
    *                   {@link #addSuperType(DocumentType, boolean)})
    */
   void checkCanAddSuperType(final LocalDocumentType superType, final boolean newLinkage) {
+    // FIRST, before anything below walks the hierarchy: a super type that is already this type or one of its sub types would close a
+    // cycle, and every polymorphic walk over a cycle recurses until the stack overflows (issue #12028)
+    checkNoCycle(name, superType);
+
+    // A record of the sub type is a record of the super type, so both must store the same kind of record (issue #12029). Skipped for a
+    // linkage that already holds, so a database written before the check still opens
+    if (newLinkage)
+      checkSameRecordKind(name, getType(), superType);
+
     checkTimeSeriesHierarchy(superType);
 
     // final review C-I2: the super type's COLUMNAR indexes reach every bucket of this type and of its sub types, which must not hold
@@ -3480,6 +3491,39 @@ public class LocalDocumentType implements DocumentType {
           LocalEdgeType.checkCanBeLightweight(lightweight.getName(), superType);
       }
     }
+  }
+
+  /**
+   * Refuses a link that would close a cycle (issue #12028): {@code superType} is the type named {@code typeName} itself or already one of
+   * its sub types. {@link #isSubTypeOf(String)} walks only up the super type lists, which hold no cycle yet, so the walk ends.
+   */
+  static void checkNoCycle(final String typeName, final DocumentType superType) {
+    if (superType.isSubTypeOf(typeName))
+      throw new SchemaException("Cannot make type '" + typeName + "' a sub type of '" + superType.getName() + "': '"
+          + superType.getName() + "' " + (superType.getName().equalsIgnoreCase(typeName) ? "is the type itself" : "is already a sub type of '" + typeName + "'")
+          + ", and a type hierarchy cannot have a cycle");
+  }
+
+  /**
+   * Refuses a super type that stores another kind of graph record, or a graph super type for a document type (issue #12029): a document
+   * type under a vertex type is scanned as one of its vertices, an edge type under a vertex type the same, and openCypher fails on the
+   * first such record it casts. A DOCUMENT super type stays legal for every kind: schemas use it to share properties (a vertex type
+   * extending a document type), and a vertex or an edge is a document too, so a scan of the super type reads nothing it cannot hold.
+   */
+  static void checkSameRecordKind(final String typeName, final byte recordKind, final DocumentType superType) {
+    final byte superKind = superType.getType();
+    if (superKind != recordKind && superKind != Document.RECORD_TYPE)
+      throw new SchemaException("Cannot make the " + recordKindName(recordKind) + " type '" + typeName + "' a sub type of the "
+          + recordKindName(superKind) + " type '" + superType.getName()
+          + "': a type can only extend a document type or a type of its own kind");
+  }
+
+  private static String recordKindName(final byte recordKind) {
+    return switch (recordKind) {
+      case Vertex.RECORD_TYPE -> "vertex";
+      case Edge.RECORD_TYPE -> "edge";
+      default -> "document";
+    };
   }
 
   /**
