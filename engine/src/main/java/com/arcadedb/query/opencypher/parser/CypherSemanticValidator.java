@@ -753,6 +753,9 @@ public class CypherSemanticValidator {
             // Validate the subquery body: outer variables are visible only if imported (issue #5213).
             validateSubqueryScope(subqueryClause, scope, shadowed);
             final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+            // Exports are checked against the outer scope as it was before this subquery, so a duplicate column inside
+            // the RETURN keeps its ColumnNameConflict error instead of reading as a clash with an earlier export
+            final Set<String> outerScope = innerReturn != null ? new HashSet<>(scope) : null;
             if (innerReturn != null)
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
                 if (item.isStar()) {
@@ -764,10 +767,17 @@ public class CypherSemanticValidator {
                       body instanceof UnionStatement union ? union.getQueries().getFirst() : body);
                   if (exported != null)
                     scope.addAll(exported);
-                } else if (item.getAlias() != null)
-                  scope.add(item.getAlias());
-                else if (item.getExpression() instanceof VariableExpression)
-                  scope.add(((VariableExpression) item.getExpression()).getVariableName());
+                } else {
+                  final String exportedName = item.getAlias() != null ? item.getAlias()
+                      : item.getExpression() instanceof VariableExpression variable ? variable.getVariableName() : null;
+                  if (exportedName == null)
+                    continue;
+                  // A subquery cannot export a name the outer scope already binds, imported or not (issue #11689)
+                  if (outerScope.contains(exportedName))
+                    throw new CommandParsingException(
+                        "VariableAlreadyBound: Variable '" + exportedName + "' already declared in outer scope");
+                  scope.add(exportedName);
+                }
               }
             // REPORT STATUS AS s binds s on every row (issue #11595)
             if (subqueryClause.getReportStatusVariable() != null)
