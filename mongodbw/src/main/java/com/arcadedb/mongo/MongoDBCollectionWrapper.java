@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
@@ -210,21 +211,16 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * document a {@code BeforeRecordCreateListener} vetoed is not stored and is not counted (issue #9974).
    */
   int insertDocumentsCountingStored(final List<Document> list) {
-    final List<Object> ids = new ArrayList<>(list.size());
-    for (final Document d : list)
-      if (d.containsKey("_id"))
-        ids.add(d.get("_id"));
-
-    // Inserts share the read lock; only a change of the _id index (the first insert, or a new kind of _id) takes the write
-    // lock, so no transaction ever runs against an index that is being dropped and rebuilt
+    // Inserts share the read lock; only the creation of the _id index (the first insert) takes the write lock, so no transaction
+    // ever runs against an index that is being built
     final ReadWriteLock lock = idIndexLock(database, collectionName);
     lock.readLock().lock();
     try {
-      if (!idIndexSatisfies(database, collectionName, ids)) {
+      if (!idIndexReady(database, collectionName)) {
         lock.readLock().unlock();
         lock.writeLock().lock();
         try {
-          ensureIdIndex(database, collectionName, ids);
+          ensureIdIndex(database, collectionName);
         } finally {
           // downgrade: take the read lock before releasing the write one
           lock.readLock().lock();
@@ -238,12 +234,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   private int insertInTransaction(final List<Document> list) {
-    // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
-    final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
+    final DocumentType type = database.getSchema().getType(collectionName);
+    // a type whose unique index could not be built (it already holds duplicates) is checked by hand
+    final boolean checkByHand = !MongoKeys.hasIdKeyIndex(type);
     if (checkByHand && ID_INDEX_SLOW_PATH_LOGGED.add(idIndexKey(database, collectionName)))
       LogManager.instance().log(this, Level.WARNING,
           "Collection '%s' has no unique index on _id: every insert checks the _id with a query, which is slow on a big collection", null,
           collectionName);
+    final List<String[]> unique = MongoKeys.uniquePaths(type);
 
     // The insert's OWN transaction, nested in whatever the caller holds: an ArcadeDB nested transaction is independent, not a
     // savepoint, and the commit pops it. Asking database.isTransactionActive() afterwards answers for the CALLER's, which a
@@ -252,14 +250,17 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     try {
       int stored = 0;
       for (final Document d : list) {
-        if (checkByHand && d.containsKey("_id"))
-          checkIdIsFree(d.get("_id"));
+        // like mongod, a document without an _id is given one, as its first field: its key is what makes it unique
+        final Document document = d.containsKey("_id") ? d : withGeneratedId(d);
+        if (checkByHand)
+          checkIdIsFree(document.get("_id"));
 
         final MutableDocument record = database.newDocument(collectionName);
-
-        for (final Map.Entry<String, Object> p : d.entrySet()) {
+        for (final Map.Entry<String, Object> p : document.entrySet()) {
+          MongoKeys.checkNotKey(p.getKey());
           record.set(p.getKey(), MongoBsonValues.toStored(p.getKey(), p.getValue()));
         }
+        MongoKeys.setKeys(record, document, unique);
 
         if (record.saveReportingVeto())
           ++stored;
@@ -273,16 +274,23 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
   }
 
+  private static Document withGeneratedId(final Document document) {
+    final Document withId = new Document("_id", new ObjectId());
+    withId.putAll(document);
+    return withId;
+  }
+
   /**
    * Best effort, not a uniqueness guarantee: a check followed by an insert, with no lock against other writers, so two
-   * concurrent inserts of the same {@code _id} can both pass. It is only the fallback for a collection without the unique index.
+   * concurrent inserts of the same {@code _id} can both pass. It is only the fallback for a collection whose unique index could
+   * not be built because it already holds duplicates.
    */
   private void checkIdIsFree(final Object id) {
-    final Object bound = id instanceof ObjectId objectId ? objectId.getHexData() : id;
-    try (final ResultSet rs = database.query("SQL", "select @rid from " + Identifier.quote(collectionName) + " where _id = :id limit 1",
-        Map.of("id", bound))) {
+    try (final ResultSet rs = database.query("SQL",
+        "select @rid from " + Identifier.quote(collectionName) + " where " + Identifier.quote(MongoKeys.ID_KEY) + " = :key limit 1",
+        Map.of("key", MongoKeys.key(id)))) {
       if (rs.hasNext())
-        throw new DuplicatedKeyException(collectionName + "[_id]", String.valueOf(bound), rs.next().getIdentity().orElse(null));
+        throw new DuplicatedKeyException(collectionName + "[_id]", String.valueOf(id), rs.next().getIdentity().orElse(null));
     }
   }
 
@@ -295,6 +303,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private static final Set<String> ID_INDEX_GAVE_UP = ConcurrentHashMap.newKeySet();
 
   private static final Set<String> ID_INDEX_SLOW_PATH_LOGGED = ConcurrentHashMap.newKeySet();
+
+  /** The records a key backfill updates per transaction. */
+  private static final int BACKFILL_BATCH = 10_000;
 
   private static String idIndexKey(final Database database, final String collectionName) {
     return database.getDatabasePath() + "/" + collectionName;
@@ -322,139 +333,129 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
-   * The lock guarding the {@code _id} index of one collection of one database: shared by the writes that rely on the index,
-   * exclusive for whoever creates or rebuilds it.
+   * The lock guarding the unique indexes of one collection of one database: shared by the writes that rely on them, exclusive for
+   * whoever creates one (and fills in the keys it is built on).
    */
   static ReadWriteLock idIndexLock(final Database database, final String collectionName) {
     return ID_INDEX_LOCKS.computeIfAbsent(idIndexKey(database, collectionName), k -> new ReentrantReadWriteLock());
   }
 
   /**
-   * Creates or rebuilds the {@code _id} index under the exclusive lock, for a caller outside {@link #insertDocuments} (an
-   * upsert, which runs its own transaction afterwards).
+   * Creates the {@code _id} index under the exclusive lock, for a caller outside {@link #insertDocuments} (an upsert, which runs
+   * its own transaction afterwards).
    */
-  static void ensureIdIndexLocked(final Database database, final String collectionName, final Collection<?> ids) {
+  static void ensureIdIndexLocked(final Database database, final String collectionName) {
     final ReadWriteLock lock = idIndexLock(database, collectionName);
     lock.writeLock().lock();
     try {
-      ensureIdIndex(database, collectionName, ids);
+      ensureIdIndex(database, collectionName);
     } finally {
       lock.writeLock().unlock();
     }
   }
 
   /**
-   * Whether the {@code _id} index already holds every kind of key in {@code ids}: the cheap check of the insert path.
+   * Whether the {@code _id} index exists, or could not be built: the cheap check of the insert path.
    */
-  static boolean idIndexSatisfies(final Database database, final String collectionName, final Collection<?> ids) {
-    if (ids.isEmpty() || ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)))
-      return true;
-    final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
-    return existing != null && holds(existing.getKeyTypes()[0], requiredKeyType(ids));
+  static boolean idIndexReady(final Database database, final String collectionName) {
+    return ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)) || MongoKeys.hasIdKeyIndex(
+        database.getSchema().getType(collectionName));
   }
 
   /**
    * MongoDB guarantees the {@code _id} of a collection is unique through an index every collection has. ArcadeDB has no implicit
-   * one, so the plugin creates a unique index on {@code _id} when the first document arrives, because only then the type of the
-   * key is known: the index orders its keys by their type, so a numeric {@code _id} needs a numeric key (a string key would
-   * answer {@code {_id: {$gt: 5}}} and a sort lexicographically, "10" before "5"). Integral ids get a long key, a mix of
-   * integral and floating ones a double key (which loses the precision of a long above 2^53), any other mix, or any other kind
-   * of {@code _id}, a string key: it accepts everything, but orders as text and makes {@code 1} and {@code "1"} the same key.
-   * A collection that already holds duplicated {@code _id} values cannot get the index: it is left alone and
-   * {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock. Readers do not take the lock: the
-   * engine resolves the indexes of a type when it plans a query, so a query planned during a rebuild uses the old or the new one.
-   *
-   * @param ids the {@code _id} values about to be stored
+   * one, so the plugin creates it when the first document arrives: a unique index on the derived key of the {@code _id}
+   * ({@link MongoKeys}), which tells the kinds of {@code _id} apart where an index on the {@code _id} itself converted every key to
+   * one type and made {@code 1} and {@code "1"} the same key (issue #12073). A collection that already holds documents (written
+   * before #12073, or through another protocol) gets the keys of its documents first, and loses the unique index on the plain
+   * {@code _id} the plugin built before. A collection that holds duplicated {@code _id} values cannot get the index: it is left
+   * without and {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock.
    */
-  static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
-    if (ids.isEmpty() || ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)))
+  static void ensureIdIndex(final Database database, final String collectionName) {
+    if (idIndexReady(database, collectionName))
       return;
 
-    final Type keyType = requiredKeyType(ids);
-    final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
-    if (existing == null) {
-      if (database.countType(collectionName, false) > 0)
-        LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
-            "Building the unique index on _id of the existing collection '%s': writes to it wait until it is done", null, collectionName);
-      createIdIndex(database, collectionName, keyType, true);
-      return;
+    if (database.countType(collectionName, false) > 0) {
+      LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
+          "Building the unique index on _id of the existing collection '%s': writes to it wait until it is done", null, collectionName);
+      backfillKeys(database, collectionName, MongoKeys.ID_KEY, null);
     }
 
-    final Type current = existing.getKeyTypes()[0];
-    if (holds(current, keyType))
-      return;
-
-    // the existing index cannot hold this key: rebuild it with the narrowest key type that holds both kinds. A failed rebuild
-    // must not leave the collection without the index it had, so that one is put back.
-    final boolean numeric = isNumeric(current) && isNumeric(keyType);
-    LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
-        "Rebuilding the unique index on _id of collection '%s' with %s keys: writes to it wait until it is done", null, collectionName,
-        numeric ? Type.DOUBLE : Type.STRING);
-    database.getSchema().dropIndex(existing.getName());
-    if (!createIdIndex(database, collectionName, numeric ? Type.DOUBLE : Type.STRING, false))
-      createIdIndex(database, collectionName, current, false);
-  }
-
-  private static boolean isNumeric(final Type type) {
-    return type == Type.LONG || type == Type.DOUBLE;
-  }
-
-  /**
-   * Whether an index with keys of type {@code current} holds a key of type {@code needed}.
-   */
-  private static boolean holds(final Type current, final Type needed) {
-    return current == Type.STRING || current == needed || (current == Type.DOUBLE && needed == Type.LONG);
-  }
-
-  /**
-   * The key type that holds all of {@code ids}: the type of the kind they share, DOUBLE for a mix of numeric kinds, STRING
-   * otherwise.
-   */
-  private static Type requiredKeyType(final Collection<?> ids) {
-    Type result = null;
-    for (final Object id : ids) {
-      final Type type = idKeyType(id);
-      if (type == null)
-        return Type.STRING;
-      if (result == null || result == type)
-        result = type;
-      else if (isNumeric(result) && isNumeric(type))
-        result = Type.DOUBLE;
-      else
-        return Type.STRING;
-    }
-    return result;
-  }
-
-  /**
-   * @param permanent whether a duplicate found while building makes the collection stay on the by-hand check for good: only for
-   *                  the first build, a failed rebuild leaves the previous index (restored by the caller) in charge
-   */
-  private static boolean createIdIndex(final Database database, final String collectionName, final Type keyType,
-      final boolean permanent) {
     try {
-      final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { "_id" });
-      builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-      builder.withUnique(true);
-      builder.withIgnoreIfExists(true);
-      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
-      builder.create();
-      return true;
+      createKeyIndex(database, collectionName, MongoKeys.ID_KEY);
     } catch (final RuntimeException e) {
       // only duplicates are permanent: any other failure (a timeout, a lock) may well succeed on the next insert
-      if (permanent && ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      if (ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
         ID_INDEX_GAVE_UP.add(idIndexKey(database, collectionName));
-      // never leave a half built index behind
-      final TypeIndex partial = findUniqueIdIndex(database.getSchema().getType(collectionName));
-      if (partial != null)
-        database.getSchema().dropIndex(partial.getName());
       LogManager.instance().log(MongoDBCollectionWrapper.class, Level.WARNING,
           "Cannot create the unique index on _id of collection '%s': duplicates of _id will be checked on insert (%s)", null,
           collectionName, e.getMessage());
-      return false;
+      return;
+    }
+
+    // the unique index on the plain _id compares its keys as one type: it would refuse "1" next to 1
+    final TypeIndex legacy = findUniqueIdIndex(database.getSchema().getType(collectionName));
+    if (legacy != null)
+      database.getSchema().dropIndex(legacy.getName());
+  }
+
+  /**
+   * Builds the unique index on a derived key property; a failed build (a duplicate) leaves no partial index behind.
+   */
+  static void createKeyIndex(final Database database, final String collectionName, final String property) {
+    try {
+      final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { property });
+      builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+      builder.withUnique(true);
+      builder.withIgnoreIfExists(true);
+      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { Type.STRING });
+      builder.create();
+    } catch (final RuntimeException e) {
+      final List<String> partial = new ArrayList<>();
+      for (final TypeIndex index : database.getSchema().getType(collectionName).getAllIndexes(false))
+        if (index.getPropertyNames().size() == 1 && property.equals(index.getPropertyNames().getFirst()))
+          partial.add(index.getName());
+      for (final String name : partial)
+        database.getSchema().dropIndex(name);
+      throw e;
     }
   }
 
+  /**
+   * Writes a derived key on every record of a collection, in transactions of {@link #BACKFILL_BATCH} records: the key of the
+   * {@code _id} ({@code paths == null}, not for a record without one) or the key of {@code paths}. Each batch is its OWN
+   * transaction, committed before the index is built on the keys whatever transaction the caller holds (issue #9977). The caller
+   * holds the exclusive lock, so no write of the plugin runs meanwhile.
+   */
+  static void backfillKeys(final Database database, final String collectionName, final String property, final String[] paths) {
+    final List<RID> rids = new ArrayList<>();
+    try (final ResultSet rs = database.query("SQL", "select @rid from " + Identifier.quote(collectionName))) {
+      while (rs.hasNext())
+        rs.next().getIdentity().ifPresent(rids::add);
+    }
+    for (int from = 0; from < rids.size(); from += BACKFILL_BATCH) {
+      final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+      try {
+        for (final RID rid : rids.subList(from, Math.min(rids.size(), from + BACKFILL_BATCH))) {
+          final MutableDocument record = rid.asDocument().modify();
+          if (paths == null) {
+            if (!record.has("_id"))
+              continue;
+            record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"))));
+          } else
+            record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertDocumentToMongoDB(record), paths));
+          record.save();
+        }
+        tx.commit();
+      } finally {
+        tx.rollbackIfMine();
+      }
+    }
+  }
+
+  /**
+   * The unique index on the plain {@code _id} this plugin built before #12073.
+   */
   private static TypeIndex findUniqueIdIndex(final DocumentType type) {
     for (final TypeIndex index : type.getAllIndexes(false))
       if (index.isUnique() && index.getPropertyNames().size() == 1 && "_id".equals(index.getPropertyNames().getFirst()))
@@ -463,21 +464,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
-   * The index key type for an {@code _id}: an ObjectId is stored as its hex string. {@code null} for anything else, which
-   * cannot be ordered by a single key type.
+   * Whether the collection has the unique index of its {@code _id}, the one on its derived key or the one built before #12073.
    */
-  private static Type idKeyType(final Object id) {
-    if (id instanceof String || id instanceof ObjectId)
-      return Type.STRING;
-    if (id instanceof Integer || id instanceof Long || id instanceof Short || id instanceof Byte)
-      return Type.LONG;
-    if (id instanceof Double || id instanceof Float)
-      return Type.DOUBLE;
-    return null;
-  }
-
   static boolean hasUniqueIdIndex(final DocumentType type) {
-    return findUniqueIdIndex(type) != null;
+    return MongoKeys.hasIdKeyIndex(type) || findUniqueIdIndex(type) != null;
   }
 
   @Override

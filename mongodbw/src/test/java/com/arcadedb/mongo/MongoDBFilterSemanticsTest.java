@@ -466,10 +466,10 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
   @Test
   void negationsOnAMixedTypeIdAreNotNarrowedAway() {
     final MongoCollection<Document> c = collection("mixedneg", "{_id:'1', k:'x'}", "{_id:2, k:'x'}", "{_id:3, k:'y'}");
-    // MongoDB: the string '1' is not the number 1, so $ne:1 keeps it
-    assertThat(ids(c, "{_id:{$ne:1}, k:'x'}")).containsExactly("1", 2);
-    assertThat(ids(c, "{_id:{$nin:[1]}, k:'x'}")).containsExactly("1", 2);
-    assertThat(ids(c, "{_id:{$not:{$gt:2}}, k:'x'}")).containsExactly("1", 2);
+    // MongoDB: the string '1' is not the number 1, so $ne:1 keeps it; sorted by _id a number comes before a string (issue #12069)
+    assertThat(ids(c, "{_id:{$ne:1}, k:'x'}")).containsExactly(2, "1");
+    assertThat(ids(c, "{_id:{$nin:[1]}, k:'x'}")).containsExactly(2, "1");
+    assertThat(ids(c, "{_id:{$not:{$gt:2}}, k:'x'}")).containsExactly(2, "1");
   }
 
   @Test

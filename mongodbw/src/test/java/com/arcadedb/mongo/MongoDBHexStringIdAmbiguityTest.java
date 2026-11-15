@@ -33,22 +33,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Documents a known limitation flagged by issue #6955, deliberately left as a documented limitation rather than
- * fixed (see the maintainer's decision on the issue): a client-supplied {@code String _id} that happens to be
- * exactly 24 hex characters is, once stored, indistinguishable from a real {@code ObjectId}'s hex encoding - both
- * end up as the same bare hex string on disk. A plain {@code insertOne} followed by a separate {@code find} call
- * therefore round-trips such a {@code String _id} back as an {@code ObjectId} rather than the original {@code
- * String}.
- * <p>
- * This is different from - and not fixed by - issue #6941/#6951's upsert fix: {@code executeUpsert} can track the
- * original BSON type in memory because the filter and the seeded record are handled within the same method call.
- * {@code insertOne} and the later {@code find} are separate wire calls, potentially on separate connections, so
- * there is no equivalent in-memory flag to bridge them. Fixing this for real requires a storage-format decision
- * (persisting the original BSON type alongside {@code _id}), not a narrow code change - see
- * {@link MongoDBToSqlTranslator#convertIdToMongoDB} for the full rationale.
- * <p>
- * This test pins today's actual (documented-limitation) behavior so a future storage-format change updates it
- * deliberately instead of it silently starting to pass or fail.
+ * A client-supplied {@code String _id} of exactly 24 hex characters (issue #6955) used to be stored as the same bare hex string
+ * as an {@code ObjectId _id}, so a plain {@code insertOne} followed by a {@code find} read it back as an {@code ObjectId}, and the
+ * two were one value to the {@code _id} index and to filters. Since issue #12073 such a string is stored escaped: it reads back as
+ * the {@code String} it was, next to the {@code ObjectId} with the same hex.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -85,17 +73,15 @@ public class MongoDBHexStringIdAmbiguityTest extends BaseMongoServerTest {
   }
 
   @Test
-  void hexLookingStringIdInsertedPlainRoundTripsAsAnObjectIdOnFind() {
+  void hexLookingStringIdInsertedPlainRoundTripsAsAString() {
     final String hexLookingId = "abcdef0123456789abcdef01";
     collection.insertOne(new Document("_id", hexLookingId).append("name", "x"));
+    collection.insertOne(new Document("_id", new ObjectId(hexLookingId)).append("name", "y"));
 
-    final Document found = collection.find().first();
-
-    assertThat(found).isNotNull();
-    // Documented limitation (#6955): the client sent a String, but it comes back as an ObjectId because the stored
-    // hex form is indistinguishable from a real ObjectId's. Contrast with MongoDBNonObjectIdTest, which covers an
-    // odd-length or non-hex-looking String _id: those are not ambiguous and correctly round-trip as a String.
-    assertThat(found.get("_id")).isInstanceOf(ObjectId.class);
-    assertThat(found.get("_id").toString()).isEqualTo(hexLookingId);
+    assertThat(collection.find(new Document("_id", hexLookingId)).first().get("name")).isEqualTo("x");
+    assertThat(collection.find(new Document("_id", hexLookingId)).first().get("_id")).isEqualTo(hexLookingId);
+    assertThat(collection.find(new Document("_id", new ObjectId(hexLookingId))).first().get("name")).isEqualTo("y");
+    assertThat(collection.find(new Document("_id", new ObjectId(hexLookingId))).first().get("_id")).isInstanceOf(ObjectId.class);
+    assertThat(collection.countDocuments()).isEqualTo(2);
   }
 }

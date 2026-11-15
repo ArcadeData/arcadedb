@@ -78,6 +78,8 @@ final class MongoBsonValues {
   private static final String MAX_KEY = "maxKey";
   private static final String JAVASCRIPT = "javascript";
   private static final String LEGACY_UUID = "legacyUuid";
+  // a Decimal128 a BigDecimal cannot hold: NaN, an infinity, a negative zero
+  private static final String DECIMAL128 = "decimal128";
 
   private MongoBsonValues() {
   }
@@ -96,6 +98,8 @@ final class MongoBsonValues {
    * is a pattern to match, not a value to compare. A Decimal128 NaN or Infinity is refused, as it is on insert.
    */
   static Object toBound(final Object value) {
+    if (value instanceof Bound bound)
+      return bound.value();
     return needsConversion(value) && !(value instanceof BsonRegularExpression) ? toStored(value) : value;
   }
 
@@ -115,7 +119,7 @@ final class MongoBsonValues {
     if (value instanceof ObjectId id)
       return OBJECT_ID_PREFIX + id.getHexData();
     if (value instanceof Decimal128 decimal)
-      return toBigDecimal(decimal);
+      return isSpecial(decimal) ? tagged(DECIMAL128, "high", decimal.getHigh(), "low", decimal.getLow()) : toBigDecimal(decimal);
     if (value instanceof BinData bin)
       return tagged(BIN_DATA, "data", Base64.getEncoder().encodeToString(bin.getData()));
     if (value instanceof BsonRegularExpression regex)
@@ -141,20 +145,30 @@ final class MongoBsonValues {
 
   /**
    * Converts a value for the named top-level field. An {@code _id} keeps an {@link ObjectId} as its plain hex string, the form
-   * the primary key lookups and indexes match on; every other field stores it as a tagged map that keeps its type.
+   * the primary key lookups and indexes match on; every other field stores it as a tagged map that keeps its type. A string
+   * {@code _id} of 24 hex digits, which would read back as that ObjectId, is escaped (issue #12073).
    */
   static Object toStored(final String field, final Object value) {
     return "_id".equals(field) ? idToStored(value) : toStored(value);
   }
 
   /**
-   * Replaces every {@link ObjectId} in a filter on {@code _id} (a plain value, an operator document or a list) with its hex
-   * string, so that it matches the stored {@code _id}.
+   * A filter operand already in its stored form, which binding ({@link #toBound}) leaves as it is.
+   */
+  record Bound(Object value) {
+  }
+
+  /**
+   * Replaces every value in a filter on {@code _id} (a plain value, an operator document or a list) with the form the {@code _id}
+   * is stored in, so that the SQL that selects the candidates matches it: an {@link ObjectId} is its hex string, a string of 24 hex
+   * digits its escaped form.
    */
   @SuppressWarnings("unchecked")
   static Object idFilter(final Object value) {
     if (value instanceof ObjectId id)
       return id.getHexData();
+    if (value instanceof String string && MongoDBToSqlTranslator.isObjectIdHex(string))
+      return new Bound(ESCAPED_PREFIX + string);
     if (value instanceof Document document) {
       final Document converted = new Document();
       for (final Map.Entry<String, Object> entry : document.entrySet())
@@ -171,8 +185,13 @@ final class MongoBsonValues {
   }
 
   private static Object idToStored(final Object value) {
-    // a string _id is escaped like any other string, so that filters (which escape too) and reads (which unescape) agree
-    return value instanceof ObjectId id ? id.getHexData() : toStored(value);
+    // a string _id is escaped like any other string, so that filters (which escape too) and reads (which unescape) agree; one that
+    // looks like an ObjectId's hex is escaped too, or it would be that ObjectId to every read and to the _id index (issue #12073)
+    if (value instanceof ObjectId id)
+      return id.getHexData();
+    if (value instanceof String string && MongoDBToSqlTranslator.isObjectIdHex(string))
+      return ESCAPED_PREFIX + string;
+    return toStored(value);
   }
 
   /**
@@ -286,13 +305,30 @@ final class MongoBsonValues {
   }
 
   private static BigDecimal toBigDecimal(final Decimal128 decimal) {
+    final long combination = (decimal.getHigh() >>> 58) & 0x1F;
+    if (combination == 0x1F || combination == 0x1E)
+      throw new MongoServerError(ErrorCode.BadValue, "The Decimal128 value " + decimal + " (NaN or Infinity) cannot be combined with a decimal");
     try {
       return decimal.toBigDecimal();
-    } catch (final ArithmeticException e) {
-      // BigDecimal has no negative zero: store it as zero, which compares equal
-      if (decimal.doubleValue() == 0)
-        return BigDecimal.ZERO;
-      throw new MongoServerError(ErrorCode.BadValue, "The Decimal128 value " + decimal + " (NaN or Infinity) cannot be stored");
+    } catch (final ArithmeticException | IllegalArgumentException e) {
+      // BigDecimal has no negative zero: as an operand it is zero, which compares equal
+      return BigDecimal.ZERO;
+    }
+  }
+
+  /**
+   * Whether a Decimal128 has no BigDecimal form that reads back as itself: NaN, an infinity (the combination field of the high
+   * word is 11111 or 11110), or a zero with the sign bit set (a BigDecimal zero has no sign). Such a value is stored as a tagged
+   * map that keeps its 128 bits (issue #12073).
+   */
+  static boolean isSpecial(final Decimal128 decimal) {
+    final long combination = (decimal.getHigh() >>> 58) & 0x1F;
+    if (combination == 0x1F || combination == 0x1E)
+      return true;
+    try {
+      return decimal.toBigDecimal().signum() == 0 && decimal.getHigh() < 0;
+    } catch (final ArithmeticException | IllegalArgumentException e) {
+      return true;
     }
   }
 
@@ -317,6 +353,8 @@ final class MongoBsonValues {
       case MAX_KEY -> MaxKey.getInstance();
       case JAVASCRIPT -> new BsonJavaScript((String) required(map, "code"));
       case LEGACY_UUID -> new LegacyUUID(UUID.fromString((String) required(map, "uuid")));
+      // the library's constructor takes the low word first
+      case DECIMAL128 -> new Decimal128(((Number) required(map, "low")).longValue(), ((Number) required(map, "high")).longValue());
       default -> map;
     };
   }

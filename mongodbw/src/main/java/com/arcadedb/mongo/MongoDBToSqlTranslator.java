@@ -534,8 +534,8 @@ public class MongoDBToSqlTranslator {
   }
 
   /**
-   * A stored record as the filter matcher sees it: the {@code _id} stays in its stored form (an ObjectId is its hex string), the
-   * form {@link MongoBsonValues#idFilter} gives the operand of a filter on it.
+   * A stored record as the filter matcher sees it: every value as the client reads it, the {@code _id} included, so an ObjectId
+   * {@code _id} is an ObjectId to {@code $type}, to a regular expression and to a range (issue #12073).
    */
   static Document toMatchDocument(final Map<String, Object> map, final Set<String> properties) {
     final Document result = new Document();
@@ -543,30 +543,28 @@ public class MongoDBToSqlTranslator {
       final String p = entry.getKey();
       // only the properties the filter reads are converted: the rest of a wide record never reaches the matcher
       if (properties.contains(p) && !isRecordMetadata(p))
-        result.put(p, toBsonValue(entry.getValue()));
+        result.put(p, "_id".equals(p) ? convertIdToMongoDB(entry.getValue()) : toBsonValue(entry.getValue()));
     }
     return result;
   }
 
+  /**
+   * The properties of a record that are not fields of the MongoDB document: the record's own metadata, and the derived keys the
+   * unique indexes are built on ({@link MongoKeys}).
+   */
   static boolean isRecordMetadata(final String property) {
-    return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property);
+    return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property) || MongoKeys.isKeyProperty(property);
   }
 
   /**
-   * MongoDB allows any BSON scalar as {@code _id}, not just an ObjectId. Only a value that actually looks like a
-   * 24-char hex ObjectId string is decoded as one; anything else (an integer, an odd-length or non-hex string, ...)
-   * is passed through unchanged instead of corrupting or throwing.
+   * MongoDB allows any BSON scalar as {@code _id}, not just an ObjectId. An ObjectId {@code _id} is stored as its bare hex string,
+   * and a string {@code _id} of 24 hex digits is stored escaped (issue #12073), so a bare 24-hex-digit string reads back as an
+   * ObjectId and anything else (an integer, an escaped or other string, ...) as itself.
    * <p>
-   * Known limitation (#6955): a client-supplied {@code String _id} that happens to be exactly 24 hex characters is,
-   * once stored, indistinguishable from a real {@code ObjectId}'s hex encoding - both are the same bare hex string
-   * on disk. A plain {@code insertOne} followed by {@code find} therefore round-trips such a {@code String _id} back
-   * as an {@code ObjectId}. Unlike the upsert path (see {@code executeUpsert}'s {@code idIsObjectId} tracking), there
-   * is no in-memory flag to bridge insert and a later, possibly separate, {@code find} call - fixing this for real
-   * would mean persisting the original BSON type alongside {@code _id} (a marker byte/prefix, a side property, or a
-   * schema-level type tag), a storage-format decision affecting every document with a hex-looking String {@code _id}
-   * rather than a narrow code fix. Left as a documented limitation rather than guessed at unilaterally.
+   * Data written before #12073 stored a string {@code _id} of 24 hex digits bare as well: such a document still reads back with
+   * an ObjectId {@code _id} (#6955).
    */
-  private static Object convertIdToMongoDB(final Object value) {
+  static Object convertIdToMongoDB(final Object value) {
     if (value instanceof String s && isObjectIdHex(s))
       return getObjectId(s);
     return toBsonValue(value);

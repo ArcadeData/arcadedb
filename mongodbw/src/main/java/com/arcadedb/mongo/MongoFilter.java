@@ -34,7 +34,6 @@ import de.bwaldvogel.mongo.backend.DefaultQueryMatcher;
 import de.bwaldvogel.mongo.backend.QueryMatcher;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
-import de.bwaldvogel.mongo.bson.ObjectId;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -114,7 +113,7 @@ final class MongoFilter {
       this.matcher = null;
       this.properties = Set.of();
     } else {
-      this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database), true);
+      this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database));
       this.matcher = new DefaultQueryMatcher();
       this.properties = new HashSet<>();
       collectProperties(normalized, properties);
@@ -191,12 +190,45 @@ final class MongoFilter {
       return;
 
     sqlText.append(" WHERE ");
-    if (idPart != null)
-      MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    if (idPart != null) {
+      if (type != null && MongoKeys.hasIdKeyIndex(type)) {
+        // the unique index of the _id is on its derived key, exact for an equality (issue #12073): a superset of the candidates
+        // when the part has several conditions on the _id, the matcher tests them all
+        final List<String> keys = new ArrayList<>();
+        collectIdKeys(idPart, keys);
+        sqlText.append(Identifier.quote(MongoKeys.ID_KEY)).append(" IN (");
+        MongoDBToSqlTranslator.bindStored(sqlText, params, keys);
+        sqlText.append(')');
+      } else
+        MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    }
     if (fields != null) {
       if (idPart != null)
         sqlText.append(" AND ");
       MongoDBToSqlTranslator.buildExpression(sqlText, params, fields);
+    }
+  }
+
+  /**
+   * The keys of the values the {@code _id} part of a filter compares the {@code _id} with: a plain value, {@code $eq} and the
+   * elements of {@code $in}, under {@code $and} and {@code $or} too (see {@link #narrows(Document)} for the shapes).
+   */
+  private static void collectIdKeys(final Document query, final List<String> keys) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final Object value = entry.getValue();
+      if ("_id".equals(entry.getKey())) {
+        if (value instanceof Document operators && isOperatorDocument(operators)) {
+          if (operators.containsKey("$eq"))
+            keys.add(MongoKeys.key(operators.get("$eq")));
+          if (operators.get("$in") instanceof List<?> in)
+            for (final Object item : in)
+              keys.add(MongoKeys.key(item));
+        } else
+          keys.add(MongoKeys.key(value));
+      } else if (value instanceof List<?> items)
+        for (final Object item : items)
+          if (item instanceof Document document)
+            collectIdKeys(document, keys);
     }
   }
 
@@ -465,10 +497,11 @@ final class MongoFilter {
   }
 
   /**
-   * Prepares a query document for the matcher: a regular expression, however it is spelled, becomes a {@link BoundedRegex}, and
-   * the {@code _id} operand takes the form the {@code _id} is stored in.
+   * Prepares a query document for the matcher: a regular expression, however it is spelled, becomes a {@link BoundedRegex}. The
+   * operands keep their BSON type: the matcher sees the record as the client reads it ({@link MongoDBToSqlTranslator#toMatchDocument}),
+   * so an ObjectId matches an ObjectId and a string a string, on the {@code _id} too (issue #12073).
    */
-  private static Document normalizeQuery(final Document query, final RegexBudget deadline, final boolean top) {
+  private static Document normalizeQuery(final Document query, final RegexBudget deadline) {
     final Document result = new Document();
     List<Object> lifted = null;
     for (final Map.Entry<String, Object> entry : query.entrySet()) {
@@ -480,7 +513,7 @@ final class MongoFilter {
           throw new IllegalArgumentException("Operator " + key + " requires an array");
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(logicalOperand(key, item, deadline, top));
+          converted.add(logicalOperand(key, item, deadline));
         result.put(key, converted);
         continue;
       }
@@ -497,14 +530,9 @@ final class MongoFilter {
         continue;
       }
 
-      // the _id operand takes its stored form first, then goes the way of any other field (its regular expressions are bounded too)
-      final Object operand = top && "_id".equals(key) ? MongoBsonValues.idFilter(value) : value;
-
-      if (operand instanceof BsonRegularExpression regex)
+      if (value instanceof BsonRegularExpression regex)
         result.put(key, new BoundedRegex(regex.getPattern(), regex.getOptions(), deadline));
-      else if (operand instanceof ObjectId objectId)
-        result.put(key, new Document("$in", bothForms(objectId)));
-      else if (operand instanceof Document document && isOperatorDocument(document)) {
+      else if (value instanceof Document document && isOperatorDocument(document)) {
         if (document.containsKey("$regex")) {
           final Document rest = withoutRegex(document);
           final BoundedRegex regex = BoundedRegex.of(document, deadline);
@@ -520,7 +548,7 @@ final class MongoFilter {
         } else
           result.put(key, normalizeOperators(document, deadline));
       } else
-        result.put(key, operand);
+        result.put(key, value);
     }
 
     if (lifted == null)
@@ -531,19 +559,10 @@ final class MongoFilter {
     return new Document("$and", all);
   }
 
-  private static Document logicalOperand(final String operator, final Object item, final RegexBudget deadline, final boolean top) {
+  private static Document logicalOperand(final String operator, final Object item, final RegexBudget deadline) {
     if (!(item instanceof Document document))
       throw new IllegalArgumentException("Operator " + operator + " requires an array of documents");
-    return normalizeQuery(document, deadline, top);
-  }
-
-  /**
-   * An ObjectId stored outside the {@code _id} is tagged, but data written before the tagging holds the bare hex string: both forms
-   * are the same value. Only for the operands that compare one value ({@code $eq}, {@code $ne}, {@code $in}, {@code $nin}, a plain
-   * equality): an array operand ({@code {refs: [oid]}}) and {@code $all} match the tagged form only.
-   */
-  private static List<Object> bothForms(final ObjectId objectId) {
-    return List.of(objectId, objectId.getHexData());
+    return normalizeQuery(document, deadline);
   }
 
   /**
@@ -563,12 +582,6 @@ final class MongoFilter {
         else
           result.put(operator, operand);
       }
-      case "$eq", "$ne" -> {
-        if (operand instanceof ObjectId objectId)
-          result.put("$eq".equals(operator) ? "$in" : "$nin", bothForms(objectId));
-        else
-          result.put(operator, operand);
-      }
       case "$in", "$nin", "$all" -> {
         if (operand instanceof List<?> list) {
           final List<Object> converted = new ArrayList<>(list.size());
@@ -578,12 +591,8 @@ final class MongoFilter {
             else if (item instanceof Document document && isOperatorDocument(document))
               // {$all: [{$elemMatch: ...}]}
               converted.add(normalizeOperators(document, deadline));
-            else {
+            else
               converted.add(item);
-              // not for $all, which asks for each element: the hex form of an ObjectId is not an extra one
-              if (item instanceof ObjectId objectId && !"$all".equals(operator))
-                converted.add(objectId.getHexData());
-            }
           result.put(operator, converted);
         } else
           result.put(operator, operand);
@@ -593,7 +602,7 @@ final class MongoFilter {
         if (operand instanceof List<?> list) {
           final List<Object> converted = new ArrayList<>(list.size());
           for (final Object item : list)
-            converted.add(logicalOperand(operator, item, deadline, false));
+            converted.add(logicalOperand(operator, item, deadline));
           result.put(operator, converted);
         } else
           result.put(operator, operand);
@@ -606,7 +615,7 @@ final class MongoFilter {
               throw new IllegalArgumentException("$regex directly inside $elemMatch is not supported, match a field of the element");
             result.put(operator, normalizeOperators(document, deadline));
           } else
-            result.put(operator, normalizeQuery(document, deadline, false));
+            result.put(operator, normalizeQuery(document, deadline));
         } else
           result.put(operator, operand);
       }
@@ -657,8 +666,7 @@ final class MongoFilter {
       final String name = entry.getKey();
       final Object value = entry.getValue();
       switch (name) {
-      // inside a pipeline the _id is the one the previous stage produced, not the stored identity of a record: never the "top" form
-      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget, false) : value);
+      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget) : value);
       case "$facet" -> {
         if (value instanceof Document branches) {
           final Document converted = new Document();
@@ -679,7 +687,7 @@ final class MongoFilter {
       case "$graphLookup" -> {
         if (value instanceof Document options && options.get("restrictSearchWithMatch") instanceof Document query) {
           final Document converted = new Document(options);
-          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget, false));
+          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget));
           result.put(name, converted);
         } else
           result.put(name, value);
