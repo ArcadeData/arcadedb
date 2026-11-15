@@ -645,6 +645,13 @@ public class CypherSemanticValidator {
               break;
             }
           }
+          // The WHERE of a WITH filters the projected rows. It sees the projected names and, unless the WITH collapses
+          // rows (aggregation, DISTINCT), the incoming variables too, the same rule ORDER BY follows. It was never
+          // walked, so a name no clause bound filtered every row out, and a CALL subquery inside an EXISTS / COUNT /
+          // COLLECT body escaped the export check of issue #11689
+          if (withClause.getWhereClause() != null)
+            checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(),
+                withWhereScope(withClause, scope, hasWildcard));
           if (hasWildcard) {
             // WITH * keeps all variables in scope.
             // First validate all extra item expressions against the incoming scope (no scope
@@ -1102,6 +1109,21 @@ public class CypherSemanticValidator {
       if (item.getExpressionAST() != null)
         checkExpressionScope(item.getExpressionAST(), orderByScope);
     }
+  }
+
+  /**
+   * The names the WHERE of {@code withClause} may read: the projected ones, plus the incoming {@code scope} when the WITH
+   * keeps its input rows ({@code WITH *}, or neither aggregating nor DISTINCT).
+   */
+  private static Set<String> withWhereScope(final WithClause withClause, final Set<String> scope, final boolean hasWildcard) {
+    final boolean collapsing = !hasWildcard && (withClause.hasAggregations() || withClause.isDistinct());
+    final Set<String> whereScope = collapsing ? new HashSet<>() : new HashSet<>(scope);
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (item.getAlias() != null)
+        whereScope.add(item.getAlias());
+      else if (item.getExpression() instanceof VariableExpression variable)
+        whereScope.add(variable.getVariableName());
+    return whereScope;
   }
 
   private static boolean hasStar(final List<ReturnClause.ReturnItem> items) {

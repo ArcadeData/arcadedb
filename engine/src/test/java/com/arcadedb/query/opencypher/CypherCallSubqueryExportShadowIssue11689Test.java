@@ -60,6 +60,39 @@ class CypherCallSubqueryExportShadowIssue11689Test extends TestHelper {
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("'k' already declared in outer scope");
   }
 
+  /** The WHERE of a WITH was never scope-walked, so a CALL subquery inside an EXISTS there escaped the export check. */
+  @Test
+  void clashInsideAWithWhereSubqueryIsRejected() {
+    for (final String query : List.of(//
+        "UNWIND [1, 2] AS i WITH i WHERE EXISTS { CALL { RETURN 5 AS i } RETURN 1 } RETURN i",//
+        "UNWIND [1, 2] AS i WITH * WHERE EXISTS { CALL { RETURN 5 AS i } RETURN 1 } RETURN i",//
+        "UNWIND [1, 2] AS i WITH i AS j WHERE COUNT { CALL { RETURN 5 AS j } RETURN 1 } > 0 RETURN j"))
+      assertThatThrownBy(() -> database.query("opencypher", query).close()).as(query)
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("already declared in outer scope");
+  }
+
+  /**
+   * A WITH WHERE sees the projected names, and the incoming ones unless the WITH aggregates or is DISTINCT: a name outside
+   * that scope filtered every row out instead of being refused.
+   */
+  @Test
+  void withWhereReadsTheProjectedAndIncomingNames() {
+    for (final String query : List.of(//
+        "UNWIND [1, 2] AS i WITH i WHERE zz > 1 RETURN i",//
+        "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE i > 1 RETURN j"))
+      assertThatThrownBy(() -> database.query("opencypher", query).close()).as(query)
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("not defined");
+    for (final String query : List.of(//
+        "UNWIND [1, 2] AS i WITH i AS j WHERE i > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH i AS j WHERE j > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE j > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH *, i * 10 AS t WHERE i > 1 AND t > 10 RETURN i AS j"))
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        assertThat(rs.stream().map(r -> ((Number) r.getProperty("j")).longValue()).toList()).as(query).containsExactly(2L);
+      }
+  }
+
   @Test
   void distinctExportNameWorks() {
     final List<Long> js = new ArrayList<>();
