@@ -71,14 +71,18 @@ class ChunkChainPastOwnPageCounterTest extends TestHelper {
     });
     new Thread(reader).start();
 
-    assertThat(allocated.await(30, TimeUnit.SECONDS)).isTrue();
-    database.transaction(() -> {
-      final MutableDocument document = database.newDocument("C").set("who", "big").set("big", "b".repeat(400_000));
-      document.save();
-      big[0] = document.getIdentity();
-    });
-    assertThat(bucket.getCommittedPageCount()).as("the record spans pages past the reader's counter").isGreaterThan(2);
-    otherCommitted.countDown();
+    try {
+      assertThat(allocated.await(30, TimeUnit.SECONDS)).isTrue();
+      database.transaction(() -> {
+        final MutableDocument document = database.newDocument("C").set("who", "big").set("big", "b".repeat(400_000));
+        document.save();
+        big[0] = document.getIdentity();
+      });
+      assertThat(bucket.getCommittedPageCount()).as("the record spans pages past the reader's counter").isGreaterThan(2);
+    } finally {
+      // released on every path, so a failed writer step cannot leave the reader parked on the latch
+      otherCommitted.countDown();
+    }
 
     assertThat(reader.get(30, TimeUnit.SECONDS)).contains("reader", "big");
     try (final ResultSet rows = database.query("sql", "SELECT count(*) AS c FROM C")) {
