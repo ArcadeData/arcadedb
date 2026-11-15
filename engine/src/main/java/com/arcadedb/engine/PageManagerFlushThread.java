@@ -1060,8 +1060,13 @@ public class PageManagerFlushThread extends Thread {
       if (remaining <= 0)
         break;
       // The drain signal fires only when the database's whole pipeline empties, which under sustained writes may never
-      // happen: the poll interval is what re-checks this file's pages in that case
-      pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
+      // happen: the poll interval is what re-checks this file's pages in that case. A copy the disk refused is not
+      // counted as pending, so with only those left awaitDrain returns at once: sleep the interval instead of spinning
+      final long wait = Math.min(remaining, flushWaitPollMillis);
+      if (pageIndex.pendingOf(database) > 0)
+        pageIndex.awaitDrain(database, wait);
+      else
+        Thread.sleep(wait);
       int stillPending = 0;
       for (int i = 0; i < count; ++i)
         if (getCachedPageFromMutablePageInQueue(new PageId(database, fileId, pending[i])) != null)

@@ -207,6 +207,32 @@ class PaginatedComponentFileSyncStateTest {
     }
   }
 
+  /**
+   * A file closed between {@link FileManager#syncFile}'s lookup and its force owes what it owed: nothing was forced, so
+   * the sync must not report it durable. A full sync keeps skipping it without counting it as synced.
+   */
+  @Test
+  void syncOfAFileClosedBeforeItsForceIsNotReportedDurable() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("closed"));
+      file.forceIfModified();
+      writePage(file, 0);
+      // Closed while still registered: what a close racing the lookup leaves for the force
+      file.close();
+
+      assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_CLOSED);
+      assertThat(fileManager.syncFile(FILE_ID)).as("nothing was forced").isFalse();
+      assertThat(file.isModifiedSinceLastSync()).as("the closed file keeps what it owed").isTrue();
+
+      final long syncedBefore = fileManager.getStats().syncedFiles;
+      assertThat(fileManager.syncFiles()).isTrue();
+      assertThat(fileManager.getStats().syncedFiles).as("a closed file is not counted as synced").isEqualTo(syncedBefore);
+    } finally {
+      fileManager.close();
+    }
+  }
+
   @Test
   void concurrentSyncWaitsForTheOneInFlightAndSeesItsFailure() throws Exception {
     final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));

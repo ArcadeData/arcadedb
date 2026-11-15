@@ -370,8 +370,8 @@ public class FileManager {
    * here: a {@code syncFiles()} reaching this file while this force is in flight waits for it, so it never takes the file
    * for clean before it is forced, nor before its directory entry is.
    *
-   * @return {@code true} when the file owed nothing or was fsynced; {@code false} when the fsync failed or the file is not
-   *     an open paginated file of this database
+   * @return {@code true} when the file owed nothing or was fsynced; {@code false} when the fsync failed, the file is not
+   *     an open paginated file of this database, or it was closed after the lookup with a sync still owed
    */
   public boolean syncFile(final int fileId) {
     if (!(fileIdMap.get(fileId) instanceof PaginatedComponentFile pcf))
@@ -380,6 +380,9 @@ public class FileManager {
     forceLock.lock();
     try {
       final int synced = pcf.forceIfModified();
+      if (synced == PaginatedComponentFile.SYNC_CLOSED)
+        // Closed between the lookup and the force: nothing was forced, the file keeps what it owed
+        return false;
       if (synced != PaginatedComponentFile.SYNC_CLEAN)
         syncedFiles.incrementAndGet();
       // This force, or a syncFiles() still on its way to forcing the directories, left the directory entry owed
@@ -410,7 +413,8 @@ public class FileManager {
           // ONES THE WAL ABOUT TO BE DELETED STILL PROTECTS: A FILE SYNCED BY A PREVIOUS PASS AND NOT WRITTEN SINCE HAS
           // NOTHING LEFT TO PERSIST, AND FORCING IT ANYWAY STILL COSTS A DEVICE CACHE FLUSH PER FILE
           final int synced = pcf.forceIfModified();
-          if (synced != PaginatedComponentFile.SYNC_CLEAN)
+          // A closed file (SYNC_CLOSED) is skipped as before: it keeps what it owed and is not counted as synced
+          if (synced > PaginatedComponentFile.SYNC_CLEAN)
             syncedFiles.incrementAndGet();
           // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO, WHICH AN
           // FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES. ALSO THE ONES A

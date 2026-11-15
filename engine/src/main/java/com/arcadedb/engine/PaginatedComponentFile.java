@@ -117,6 +117,11 @@ public class PaginatedComponentFile extends ComponentFile {
    * metadata, and its directory entry with it.
    */
   static final int SYNC_METADATA = 2;
+  /**
+   * Not a sync state, only a result of {@link #forceIfModified()}: the file owed a sync but its channel is closed, so
+   * nothing was forced and the file keeps what it owed.
+   */
+  static final int SYNC_CLOSED   = -1;
 
   /**
    * What this file owes the disk, one of {@link #SYNC_CLEAN}, {@link #SYNC_DATA} or {@link #SYNC_METADATA} (issue
@@ -312,8 +317,8 @@ public class PaginatedComponentFile extends ComponentFile {
    * part of the metadata required to read the data back, which a data-only sync persists too, while the timestamps it
    * skips are not needed by anything. A created or renamed file is forced with its metadata.
    *
-   * @return what was forced: {@link #SYNC_CLEAN} when no fsync ran - the file owed nothing, or its channel is closed and
-   * it keeps what it owed - otherwise {@link #SYNC_DATA} or {@link #SYNC_METADATA}
+   * @return what was forced: {@link #SYNC_CLEAN} when the file owed nothing, {@link #SYNC_CLOSED} when it owed a sync but
+   * its channel is closed (it keeps what it owed), otherwise {@link #SYNC_DATA} or {@link #SYNC_METADATA}
    *
    * @throws IOException when the fsync failed; the file then still owes it, so the next call retries
    */
@@ -328,7 +333,7 @@ public class PaginatedComponentFile extends ComponentFile {
         // Forced, but its directory entry is durable only once the caller forces the directory too. Written under
         // forceLock, so the increment is not lost
         metadataForces = metadataForces + 1;
-      return forced ? claimed : SYNC_CLEAN;
+      return forced ? claimed : SYNC_CLOSED;
     } finally {
       forceLock.unlock();
     }
