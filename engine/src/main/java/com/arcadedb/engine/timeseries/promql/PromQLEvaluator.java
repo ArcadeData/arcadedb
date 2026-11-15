@@ -322,7 +322,12 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
     }
 
-    return new InstantVector(new ArrayList<>(latestByLabels.values()));
+    // The stored timestamp only chose the newest sample above; an instant vector is AT the evaluation time, which is what
+    // Prometheus stamps every element of it with and what every aggregation and operator over it inherits (issue #11990)
+    final List<VectorSample> samples = new ArrayList<>(latestByLabels.size());
+    for (final VectorSample sample : latestByLabels.values())
+      samples.add(new VectorSample(sample.labels(), sample.value(), evalTimeMs));
+    return new InstantVector(samples);
   }
 
   /**
