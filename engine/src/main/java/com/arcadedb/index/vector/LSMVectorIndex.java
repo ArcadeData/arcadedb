@@ -9788,9 +9788,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
           expectedResults = Math.min(k, availableVectors);
         }
         if (results.size() < expectedResults) {
-          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
-          metrics.incrementBruteForceScans();
-          bruteForceScan(scorer, k, allowedRIDs, results, ordinalMap, overlay, guard);
+          // An allow-list narrower than the request is the cheap, already-classified case (issues #5748, #6502): it keeps its
+          // own line and scan. The one handled here is a list WIDER than the request whose share of THIS index is small
+          if (!shortfallIsAllowListDriven(allowedRIDs, expectedResults) && allowListIsFullyAnswered(allowedRIDs, results)) {
+            // Short only because the allow-list holds fewer members of THIS index than were asked for: nothing to complete
+            LogManager.instance().log(this, Level.FINE,
+                "Graph search returned %d results (expected %d, available %d) for index %s - every member of the allow-list this "
+                    + "index holds is in the answer, so there is nothing for a brute-force scan to add", results.size(),
+                expectedResults, availableVectors, indexName);
+          } else {
+            logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
+            metrics.incrementBruteForceScans();
+            bruteForceScan(scorer, k, allowedRIDs, results, ordinalMap, overlay, guard);
+          }
         }
 
         LogManager.instance()
@@ -9857,6 +9867,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // selective one leaves every walk short whatever the graph's quality (issues #10169, #10782)
     return allowedRIDs != null && !allowedRIDs.isEmpty() && (allowedRIDs instanceof PredicateRidSet
         || allowedRIDs.size() < expectedResults);
+  }
+
+  /**
+   * Whether every member of {@code allowedRIDs} that this index holds is already in {@code results}, so the issue #3722
+   * fallback scan could add nothing: it walks this index's own graph ordinals, filtered by the allow-list, and skips what the
+   * results already hold.
+   * <p>
+   * That is the case a query meets on every bucket of a type with several buckets (the default): the allow-list is built over
+   * the whole type, each bucket's index holds only its own share of it, and the share is smaller than
+   * {@code min(k, vectors of the bucket)} whenever the filter is selective. The answer is then complete, but
+   * {@link #shortfallIsAllowListDriven} compares the size of the WHOLE allow-list with the expectation and takes it for a
+   * degraded graph: a WARNING and a full pass over the bucket's ordinals, per bucket per query, that cannot find anything.
+   * <p>
+   * Exact, not heuristic: every row the scan can add is an allowed RID with a live location in this index, and those are
+   * what is checked. A member the transaction superseded, or one the walk missed, is not in {@code results}, so the scan
+   * still runs for it. A {@link PredicateRidSet} cannot be listed, so it never answers true.
+   */
+  private boolean allowListIsFullyAnswered(final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results) {
+    if (allowedRIDs == null || allowedRIDs.isEmpty() || allowedRIDs instanceof PredicateRidSet)
+      return false;
+    final RidHashSet answered = new RidHashSet(results.size());
+    for (final Pair<RID, Float> result : results)
+      answered.add(result.getFirst());
+    final VectorLocationIndex locations = vectorIndex();
+    for (final RID rid : allowedRIDs)
+      if (!answered.contains(rid) && locations.getVectorIdsForRid(rid).length > 0)
+        return false;
+    return true;
   }
 
   /**

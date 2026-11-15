@@ -1705,4 +1705,120 @@ class VectorPrefilterTest {
       }
     }
   }
+
+  /**
+   * A type has several buckets by default and every bucket has its own vector index, but the allow-list of a query is built
+   * over the whole type. Each bucket's index holds only its share of it, so a selective filter leaves every bucket "short" of
+   * {@code min(k, vectors)} although its answer is complete. That used to be reported as a degraded graph (a WARNING) and
+   * completed by a scan of the bucket's ordinals that could not find anything: per bucket, per query.
+   */
+  @Nested
+  class AllowListSharedByTheBuckets extends TestHelper {
+    private static final int DIMENSIONS = 8;
+    private static final int BUCKETS    = 4;
+    private static final int VERTICES   = 80;
+
+    @Test
+    void aBucketHoldingOnlyAShareOfTheAllowListIsNotCompletedByAScan() {
+      createSchemaAndData();
+      final Set<RID> allowed = new HashSet<>();
+      for (int i = 0; i < VERTICES / 2; i++)
+        allowed.add(ridOf("doc" + i));
+
+      int bucketsWithAShortfall = 0;
+      for (final var bucketIndex : typeIndex().getIndexesOnBuckets()) {
+        final LSMVectorIndex index = (LSMVectorIndex) bucketIndex;
+        final int bucketId = index.getAssociatedBucketId();
+        final long scansBefore = index.getStats().getOrDefault("bruteForceScans", 0L);
+
+        final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(7), 1000, -1, allowed);
+
+        final Set<RID> shareOfTheBucket = new HashSet<>();
+        for (final RID rid : allowed)
+          if (rid.getBucketId() == bucketId)
+            shareOfTheBucket.add(rid);
+        assertThat(ridsIn(results)).as("the whole share of the bucket is answered").containsExactlyInAnyOrderElementsOf(
+            shareOfTheBucket);
+        if (shareOfTheBucket.size() < VERTICES / BUCKETS)
+          bucketsWithAShortfall++;
+        assertThat(index.getStats().getOrDefault("bruteForceScans", 0L))
+            .as("nothing for the fallback scan to add: bucket " + bucketId + " answered every allowed vector it holds")
+            .isEqualTo(scansBefore);
+      }
+      assertThat(bucketsWithAShortfall).as("the fixture must make the buckets short of k, or it proves nothing").isPositive();
+    }
+
+    /**
+     * The guard of the skip: an allowed vector the walk did not return is still found by the scan. Here the allow-list names
+     * every vector, so no bucket is short and nothing changes; with the graph dropped (every vector served by the scan alone)
+     * the answer must still be complete.
+     */
+    @Test
+    void anAllowedVectorTheAnswerMissesIsStillCompletedByTheScan() {
+      createSchemaAndData();
+      final Set<RID> allowed = new HashSet<>();
+      for (int i = 0; i < VERTICES; i++)
+        allowed.add(ridOf("doc" + i));
+
+      for (final var bucketIndex : typeIndex().getIndexesOnBuckets()) {
+        final LSMVectorIndex index = (LSMVectorIndex) bucketIndex;
+        final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(7), 1000, -1, allowed);
+        int inThisBucket = 0;
+        for (final RID rid : allowed)
+          if (rid.getBucketId() == index.getAssociatedBucketId())
+            inThisBucket++;
+        assertThat(results).hasSize(inThisBucket);
+      }
+    }
+
+    private com.arcadedb.index.TypeIndex typeIndex() {
+      return (com.arcadedb.index.TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+    }
+
+    private void createSchemaAndData() {
+      // No rebuild may run mid-test: the graph is built once, by hand, below.
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1_000_000);
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, -1);
+
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Doc BUCKETS " + BUCKETS);
+        database.command("sql", "CREATE PROPERTY Doc.id STRING");
+        database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
+        database.command("sql", "CREATE INDEX ON Doc (id) UNIQUE");
+
+        final TypeLSMVectorIndexBuilder builder = (TypeLSMVectorIndexBuilder) database.getSchema()
+            .buildTypeIndex("Doc", new String[] { "embedding" }).withLSMVectorType();
+        builder.withDimensions(DIMENSIONS).withQuantization(VectorQuantizationType.NONE).withSimilarity("EUCLIDEAN").create();
+      });
+
+      database.transaction(() -> {
+        for (int i = 0; i < VERTICES; i++)
+          database.command("sql", "INSERT INTO Doc SET id = ?, embedding = ?", "doc" + i, embedding(i));
+      });
+
+      for (final var bucketIndex : typeIndex().getIndexesOnBuckets())
+        ((LSMVectorIndex) bucketIndex).buildVectorGraphNow();
+    }
+
+    private RID ridOf(final String id) {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Doc WHERE id = ?", id)) {
+        return rs.next().getIdentity().orElseThrow();
+      }
+    }
+
+    private static List<RID> ridsIn(final List<Pair<RID, Float>> results) {
+      final List<RID> rids = new ArrayList<>(results.size());
+      for (final Pair<RID, Float> r : results)
+        rids.add(r.getFirst());
+      return rids;
+    }
+
+    /** Deterministic, distinct, non-zero vectors, well spread so no two of them tie on distance. */
+    private static float[] embedding(final int i) {
+      final float[] vector = new float[DIMENSIONS];
+      for (int j = 0; j < DIMENSIONS; j++)
+        vector[j] = (float) Math.sin(i * 0.37 + j * 0.91) + 2.0f + i * 0.013f;
+      return vector;
+    }
+  }
 }
