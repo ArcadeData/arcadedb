@@ -43,6 +43,7 @@ import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -143,6 +144,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       private int bufferIndex = 0;
       private boolean initialized = false;
       private boolean finished = false;
+      /** The scan that answers instead of the seek a computed IN-list declined, see {@link #seeksComputedList}. */
+      private ResultSet labelScan = null;
 
       @Override
       public boolean hasNext() {
@@ -213,12 +216,19 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
             final Object resolved = resolveValue(element);
             if (inList.isScalar(element) || resolved == null)
               addSeekKey(resolved, trailing);
-            else if (inList.isWholeList(element))
+            else if (inList.isWholeList(element)) {
               // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
               // to be taken for one key, which answered no rows where the scan refuses
-              for (final Object v : InExpression.listOperand(resolved))
+              final Iterable<?> items = InExpression.listOperand(resolved);
+              if (!RowIndependentValues.isParameterDerived(element) && !seeksComputedList(items)) {
+                releaseSeen();
+                labelScan = new NodeByLabelScan(variable, label, estimatedCost, estimatedCardinality, whereFilter).execute(context,
+                    nRecords);
+                return;
+              }
+              for (final Object v : items)
                 addSeekKey(v, trailing);
-            else
+            } else
               // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no
               // property holds, and the index answers it with no row, as the comparison of the scan does
               addSeekKey(resolved, trailing);
@@ -233,6 +243,23 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           finished = true;
         else if (seen == null && statementWritesKey && !wholeKey)
           seen = newSeen();
+      }
+
+      /**
+       * Whether a list computed from constants ({@code x IN range(1, 3)}, issue #11890) is sought key by key; when not, the label is
+       * scanned, and the predicate, which the seek never drops, decides each vertex. Not when the list has more items than the label
+       * has vertices: a seek per item then costs more than reading each vertex once, and a {@code range()} of a billion items would
+       * be materialised as keys. Not when an item is of a kind no list literal holds (a temporal value, a point, a list, a map):
+       * the index key conversion of those does not decide what Cypher's equality decides (issues #8572, #9647, #9794), and a row
+       * the seek missed would be lost.
+       */
+      private boolean seeksComputedList(final Iterable<?> items) {
+        if (items instanceof Collection<?> collection && collection.size() > context.getDatabase().countType(label, true))
+          return false;
+        for (final Object item : items)
+          if (item != null && !(item instanceof Number || item instanceof String || item instanceof Boolean))
+            return false;
+        return true;
       }
 
       private RidHashSet newSeen() {
@@ -272,6 +299,14 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           initialize();
           if (finished)
             return;
+        }
+
+        if (labelScan != null) {
+          while (buffer.size() < n && labelScan.hasNext())
+            buffer.add(labelScan.next());
+          if (!labelScan.hasNext())
+            finished = true;
+          return;
         }
 
         while (buffer.size() < n) {
@@ -344,6 +379,10 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           cursor = null;
         }
         releaseSeen();
+        if (labelScan != null) {
+          labelScan.close();
+          labelScan = null;
+        }
       }
     };
   }

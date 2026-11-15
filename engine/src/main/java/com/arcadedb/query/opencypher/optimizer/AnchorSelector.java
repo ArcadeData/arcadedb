@@ -724,12 +724,12 @@ public class AnchorSelector {
 
       // A parenthesized list literal (x IN [a, b, c]) is unwrapped to its elements, and only constant ones (literals /
       // parameters) can seed a static anchor seek. A single parameter is allowed too (it resolves to a whole list at
-      // runtime, e.g. x IN $ids).
-      final List<Expression> list = seekableInListValues(inExpr);
-      if (list == null)
+      // runtime, e.g. x IN $ids), and so is a list computed from constants only (x IN range(1, 3), issue #11890).
+      final InListOperand operand = seekableInList(inExpr);
+      if (operand == null)
         return;
 
-      predicates.putIfAbsent(propAccess.getPropertyName(), new InListOperand(list, isWholeRightSide(inExpr)));
+      predicates.putIfAbsent(propAccess.getPropertyName(), operand);
     }
   }
 
@@ -895,13 +895,13 @@ public class AnchorSelector {
     if (expression instanceof InExpression inExpr) {
       if (!(inExpr.getExpression() instanceof PropertyAccessExpression access) || !access.getVariableName().equals(variable))
         return false;
-      final List<Expression> values = seekableInListValues(inExpr);
-      if (values == null)
+      final InListOperand operand = seekableInList(inExpr);
+      if (operand == null)
         return false;
       final SeekValues target = branches.computeIfAbsent(access.getPropertyName(), k -> new SeekValues());
-      target.values.addAll(values);
-      if (isWholeRightSide(inExpr))
-        target.whole.addAll(values);
+      target.values.addAll(operand.elements());
+      if (operand.wholeRightSide())
+        target.whole.addAll(operand.elements());
       return true;
     }
 
@@ -941,21 +941,30 @@ public class AnchorSelector {
   }
 
   /**
-   * The elements of an IN-list a seek can look up: literals and parameters only, a parenthesized list literal unwrapped to
-   * its elements. {@code null} when the list is empty or has an element only a row can evaluate.
+   * What a seek can look up for an IN-list: the elements of a list literal of literals and parameters, or the whole right side
+   * when it is one parameter ({@code x IN $ids}) or a list computed from constants only ({@code x IN range(1, 3)},
+   * {@code x IN [1, 2] + [3]}, {@code x IN [i IN range(1, 3) | i * 10]}, {@code x IN [1 + 1, 3]}), which the seek evaluates
+   * once per execution and splits into one key per item (issue #11890). {@code null} when the list is empty or only a row can
+   * evaluate it.
    */
-  private static List<Expression> seekableInListValues(final InExpression inExpr) {
-    List<Expression> list = inExpr.getList();
+  private static InListOperand seekableInList(final InExpression inExpr) {
+    final List<Expression> list = inExpr.getList();
     if (list == null || list.isEmpty())
       return null;
-    if (list.size() == 1 && list.get(0) instanceof ListExpression listExpr)
-      list = listExpr.getElements();
-    if (list.isEmpty())
+    final boolean listLiteral = list.size() == 1 && list.getFirst() instanceof ListExpression;
+    final List<Expression> elements = listLiteral ? ((ListExpression) list.getFirst()).getElements() : list;
+    if (elements.isEmpty())
       return null;
-    for (final Expression element : list)
-      if (!isConstant(element))
-        return null;
-    return list;
+
+    boolean constant = true;
+    for (final Expression element : elements)
+      constant &= isConstant(element);
+    if (constant)
+      return new InListOperand(elements, isWholeRightSide(inExpr));
+
+    if (list.size() == 1 && RowIndependentValues.isRowIndependent(list.getFirst()))
+      return new InListOperand(list, true);
+    return null;
   }
 
   /**
