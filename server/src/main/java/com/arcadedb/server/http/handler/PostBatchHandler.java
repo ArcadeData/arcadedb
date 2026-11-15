@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -80,6 +81,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+
+import javax.net.ssl.SSLHandshakeException;
 
 /**
  * High-performance HTTP handler for bulk-loading vertices and edges using the GraphBatch API.
@@ -2159,17 +2162,45 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           " of the last byte of the upload relayed to it: either the leader stopped taking the upload or the client "
               + "stopped sending it" :
           "";
-      return new ExecutionResponse(504, new JSONObject()
-          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms" + since)
+      return outcomeUnknown("The leader at " + url + " did not answer within " + deadlineMs + "ms" + since);
+    } catch (final SSLHandshakeException e) {
+      // No byte of the load leaves this node before the handshake completes: nothing reached the leader
+      LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "Error forwarding batch to leader: " + e.getMessage())
           .toString());
-    } catch (final Exception e) {
+    } catch (final IOException e) {
       // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.
+      rethrowIfRefusedOverCap(body, databaseName);
+      // The connection to the leader was lost after it was established - the leader died, or reset it, while the load
+      // was in flight. The leader may have committed all of the load, or the chunks it reached, before it went away. It
+      // was an untyped 503, which tells a client the load was refused before running (RemoteHttpComponent rebuilds an
+      // untyped 503 as a NeedRetryException): measured with a killed leader, 6 of 2,792 batches answered so were stored
+      // whole (issue #11899). Answered as the outcome-unknown 504 a forwarded SQL write gets (issue #11887)
+      LogManager.instance().log(this, Level.WARNING, "Lost the connection to the leader at %s while forwarding /batch: %s", url,
+          e.toString());
+      return outcomeUnknown("The connection to the leader at " + url + " was lost before it answered (" + e + ")");
+    } catch (final Exception e) {
       rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
       return new ExecutionResponse(503, new JSONObject()
           .put("error", "Error forwarding batch to leader: " + e.getMessage())
           .toString());
     }
+  }
+
+  /**
+   * The answer to a forwarded load whose outcome this node could not learn (issue #11899): the leader may have applied all
+   * of it, part of it (it commits every {@code commitEvery} records) or none. 504 with
+   * {@code TransactionOutcomeUnknownException}, as a forwarded SQL write is answered (issue #11887): neither the 503 a
+   * client retries, which loads the records again whenever they did land, nor a 500 server fault.
+   */
+  private static ExecutionResponse outcomeUnknown(final String what) {
+    return new ExecutionResponse(504, new JSONObject()
+        .put("error", what + ". Transaction outcome unknown: the batch may have been applied, in whole or in part, check "
+            + "before retrying it")
+        .put("exception", TransactionOutcomeUnknownException.class.getName())
+        .toString());
   }
 
   /**
