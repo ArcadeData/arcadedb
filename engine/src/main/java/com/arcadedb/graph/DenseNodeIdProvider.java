@@ -364,8 +364,15 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
     return cachedView(viewKey(direction, edgeTypes), () -> translate(delegate.getNeighborView(direction, edgeTypes)));
   }
 
-  private static String viewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
-    return direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
+  /**
+   * The key a renumbered view of {@code edgeTypes} is held under: the slices they resolve to NOW, not the names asked. An instance
+   * lives as long as a view's snapshot (issue #10411) and a schema change does not replace the snapshot, so a key of the names
+   * asked went on answering what a type expanded to before the change: the slices of a sub-type dropped or detached since
+   * (issue #12032).
+   */
+  private String viewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
+    final String[] slices = edgeTypes == null ? null : delegate.resolveEdgeTypes(edgeTypes);
+    return direction + (slices == null ? "|*" : "|" + String.join("\u0000", slices));
   }
 
   /** The key of a slice view: the one place it is spelled, so the lookup of a held view cannot drift from the one that stores it. */
