@@ -109,6 +109,50 @@ class CypherComprehensionUnboundVariableIssue11686Test extends TestHelper {
     assertThat(v).containsExactly(1L, 2L, 3L);
   }
 
+  @Test
+  void patternComprehensionUsingWithCarriedAliasStillWorks() {
+    final List<Object> v = single(
+        "MATCH (a:Node {id:1}) WITH a AS s RETURN [(s)-[:R]->(b) | b.id] AS v");
+    assertThat(v).hasSize(1);
+  }
+
+  @Test
+  void patternComprehensionInWithUsesOuterVariable() {
+    final List<Object> v = single(
+        "MATCH (a:Node {id:1}) WITH a, [(a)-[:R]->(b) | b.id] AS ids RETURN ids AS v");
+    assertThat(v).hasSize(1);
+  }
+
+  @Test
+  void patternComprehensionInWithUnboundProjectionIsRejected() {
+    assertUnbound("MATCH (a:Node {id:1}) WITH [(a)-[:R]->(b) | p] AS ids RETURN ids AS v", "p");
+  }
+
+  @Test
+  void patternComprehensionInMatchWhereUsesOuterVariable() {
+    final List<Object> v = single(
+        "MATCH (a:Node) WHERE size([(a)-[:R]->(b) | b]) > 0 RETURN collect(a.id) AS v");
+    assertThat(v).hasSize(2);
+  }
+
+  @Test
+  void patternComprehensionInMatchWhereUnboundProjectionIsRejected() {
+    assertUnbound("MATCH (a:Node) WHERE size([(a)-[:R]->(b) | p]) > 0 RETURN a AS v", "p");
+  }
+
+  @Test
+  void patternComprehensionInOrderByUsesOuterVariable() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Node) RETURN a.id AS v ORDER BY size([(a)-[:R]->(b) | b]) DESC, a.id")) {
+      assertThat(rs.next().<Number>getProperty("v").longValue()).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void patternComprehensionInOrderByUnboundProjectionIsRejected() {
+    assertUnbound("MATCH (a:Node) RETURN a.id AS v ORDER BY size([(a)-[:R]->(b) | p])", "p");
+  }
+
   private List<Object> single(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       final Result row = rs.next();

@@ -1187,6 +1187,7 @@ public class CypherSemanticValidator {
         for (final RelationshipPattern rel : path.getRelationships())
           if (rel.getProperties() != null)
             checkPropertyValuesScope(rel.getProperties(), innerScope);
+        checkGroupWhereScope(path, innerScope);
       }
       checkExpressionScope(pce.getWhereExpression(), innerScope);
       checkExpressionScope(pce.getMapExpression(), innerScope);
