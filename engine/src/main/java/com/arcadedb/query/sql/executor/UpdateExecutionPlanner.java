@@ -106,7 +106,7 @@ public class UpdateExecutionPlanner {
    * @param context the execution context
    */
   private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context) {
-    plan.chain(new ConvertToUpdatableResultStep(context));
+    plan.chain(new ConvertToUpdatableResultStep(context, whereClause));
   }
 
   private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context,

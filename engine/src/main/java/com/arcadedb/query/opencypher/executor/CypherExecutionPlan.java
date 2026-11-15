@@ -410,6 +410,7 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    RowGuards.register(context, statement);
 
     AbstractExecutionStep rootStep;
 
@@ -619,6 +620,7 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    RowGuards.register(context, statement);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {

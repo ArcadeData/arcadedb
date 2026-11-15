@@ -2420,6 +2420,59 @@ public class ConcurrentRecordWriteTest {
     }
 
     /**
+     * A guarded SQL UPDATE must not write a record that stopped satisfying its WHERE. The concurrent commit lands after the
+     * WHERE matched the record (n = 0) and sets n = 5, so the UPDATE builds on content its WHERE rejects: it is a
+     * compare-and-set that two callers could both win.
+     */
+    @Test
+    void sqlUpdateWhoseWhereStoppedMatchingInsideTheStatementWritesNothing() {
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("sql", "UPDATE V SET claimed = true WHERE n = 0").close());
+
+      assertThat(rid.asVertex().has("claimed")).as("the record no longer matched the WHERE").isFalse();
+      assertThat(readN()).as("the concurrent write survives").isEqualTo(5);
+      assertThat(committed).as("the record is skipped, as a database that re-checks the WHERE on the newest row does").isTrue();
+    }
+
+    /**
+     * The counterpart: a WHERE the reloaded record still satisfies keeps the UPDATE going, on top of the concurrent write.
+     */
+    @Test
+    void sqlUpdateWhoseWhereStillMatchesInsideTheStatementBuildsOnTheConcurrentWrite() {
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("sql", "UPDATE V SET n = n + 1 WHERE n >= 0").close());
+
+      assertThat(committed).isTrue();
+      assertThat(readN()).as("built on the concurrent 5").isEqualTo(6);
+    }
+
+    /**
+     * The same compare-and-set in openCypher: a MATCH ... WHERE that matched the older read must not set on the newer
+     * content. The statement is refused with a retryable conflict, so a caller (or the server's own retry) runs it again
+     * and the WHERE is evaluated on what is committed now.
+     */
+    @Test
+    void cypherSetWhoseWhereStoppedMatchingInsideTheStatementWritesNothing() {
+      runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MATCH (v:V) WHERE v.n = 0 SET v.claimed = true").close());
+
+      assertThat(rid.asVertex().has("claimed")).as("the record no longer matched the WHERE").isFalse();
+      assertThat(readN()).isEqualTo(5);
+    }
+
+    /**
+     * Same for a property map in the pattern, which is a predicate too.
+     */
+    @Test
+    void cypherSetWhosePatternPropertyStoppedMatchingInsideTheStatementWritesNothing() {
+      runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MATCH (v:V {n: 0}) SET v.claimed = true").close());
+
+      assertThat(rid.asVertex().has("claimed")).isFalse();
+      assertThat(readN()).isEqualTo(5);
+    }
+
+    /**
      * An openCypher REMOVE writes no value computed from what the MATCH read, so a commit landing in between leaves
      * nothing to lose: it commits, on top of the concurrent write.
      */

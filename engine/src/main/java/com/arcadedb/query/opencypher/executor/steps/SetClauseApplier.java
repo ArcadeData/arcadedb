@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
+import com.arcadedb.query.opencypher.executor.RowGuards;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -334,6 +335,13 @@ public final class SetClauseApplier {
     final MutableDocument mutable = doc.modify();
     if (mutable == doc)
       return false;
+    // #11808: when a predicate (WHERE, or a property map in the pattern) selected this row, it was evaluated on the read that
+    // went stale: the record need no longer satisfy it, so the statement is refused with the retryable conflict and runs
+    // again from the start, where the predicate sees what is committed now. A statement without a predicate has nothing
+    // to re-check, and is left to build on the reloaded content.
+    if (mutable.isBasedOnStaleRead() && RowGuards.guardsRows(context))
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction after the "
+          + "statement matched it. Please retry the operation");
     // #8610: the values this clause writes are evaluated again against the reloaded content (below), never against the
     // read that went stale, so the write is not the stale read-modify-write the save refuses
     mutable.clearBasedOnStaleRead();
