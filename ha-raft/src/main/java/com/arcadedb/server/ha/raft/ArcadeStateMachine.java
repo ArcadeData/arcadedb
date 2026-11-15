@@ -115,6 +115,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -4121,6 +4122,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void releaseReservedVersions(final String databaseName, final byte[] walData) {
     pageVersions.release(databaseName, null, walData);
+  }
+
+  /** Runs a commit that publishes its pages here ahead of the log under the validation of the database, see {@link PageVersionLedger#publishOutsideTheLog}. */
+  <T> T publishOutsideTheLog(final String databaseName, final Callable<T> commit) throws Exception {
+    return pageVersions.publishOutsideTheLog(databaseName, commit);
   }
 
   /**

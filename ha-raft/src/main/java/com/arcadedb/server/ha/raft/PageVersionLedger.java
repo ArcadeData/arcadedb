@@ -23,6 +23,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -176,6 +177,30 @@ final class PageVersionLedger {
 
       for (int i = 0; i < pages.count(); i++)
         ledger.pages.put(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]), new Reservation(pages.versions()[i], entry, now));
+    }
+  }
+
+  /**
+   * Runs a commit that publishes its pages on this node before any log entry carries them (issue #11921): the commits
+   * of a schema or compaction session ({@code RaftReplicatedDatabase.commit}, schema-commit arm), whose WAL rides the
+   * session's {@code SCHEMA_ENTRY} later. Such a commit checks its versions against the local copy and the reservations,
+   * then moves the local copy forward without an apply, so on its own it is not ordered against {@link #validateAndReserve}:
+   * an entry of another node validated between its check and its publication reserved the version it then published,
+   * and one that read the local copy before the publication trusted that read, since only an apply moves
+   * {@code releases}. Both put two different changes at one version in the log, which the followers splice.
+   * <p>
+   * Run under the database's validation monitor, the check and the publication are one step for every validation: an
+   * entry reserved before it is seen by the check (a retryable conflict for the commit), and one validated after it reads
+   * the published version, because {@code releases} is bumped on the way out.
+   */
+  <T> T publishOutsideTheLog(final String databaseName, final Callable<T> commit) throws Exception {
+    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
+    synchronized (ledger) {
+      try {
+        return commit.call();
+      } finally {
+        ledger.releases.incrementAndGet();
+      }
     }
   }
 
