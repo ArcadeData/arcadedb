@@ -94,7 +94,8 @@ public class DateFields extends AbstractDateFunction {
       parsed = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, zoneId);
     } catch (final DateTimeException e) {
       // issue #11589: a text the format cannot read is the caller's mistake, not a raw DateTimeParseException
-      throw new InvalidArgumentException(getName() + "(): '" + dateStr + "' cannot be parsed with the format '" + format + "'", e);
+      throw new InvalidArgumentException(getName() + "(): '" + InvalidArgumentException.quote(dateStr) + "' cannot be parsed with the format '"
+          + InvalidArgumentException.quote(format) + "'", e);
     }
     final ZonedDateTime dateTime = timezoneStr != null ? parsed.withZoneSameInstant(zoneId) : parsed;
 

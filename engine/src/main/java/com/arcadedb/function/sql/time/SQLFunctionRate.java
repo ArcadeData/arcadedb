@@ -135,7 +135,7 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
       millis = DateUtils.dateTimeToTimestamp(ts, ChronoUnit.MILLIS);
     } catch (final DateTimeException e) {
       // issue #11589: a text that is no timestamp is the caller's mistake, not a raw DateTimeParseException
-      throw new InvalidArgumentException("Invalid timestamp: '" + ts + "'", e);
+      throw new InvalidArgumentException("Invalid timestamp: '" + InvalidArgumentException.quote(ts) + "'", e);
     }
     if (millis == null)
       throw new IllegalArgumentException("Unsupported timestamp type: " + ts.getClass().getName());

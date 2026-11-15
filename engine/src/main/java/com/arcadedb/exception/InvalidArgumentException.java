@@ -36,11 +36,24 @@ package com.arcadedb.exception;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class InvalidArgumentException extends CommandExecutionException {
+  private static final int MAX_QUOTED_LENGTH = 100;
+
   public InvalidArgumentException(final String message) {
     super(message);
   }
 
   public InvalidArgumentException(final String message, final Throwable cause) {
     super(message, cause);
+  }
+
+  /**
+   * The argument as an error message quotes it: the caller's own value, capped, so a large text (a whole document, a payload)
+   * is never echoed back in full.
+   */
+  public static String quote(final Object value) {
+    if (value == null)
+      return "null";
+    final String text = value.toString();
+    return text.length() <= MAX_QUOTED_LENGTH ? text : text.substring(0, MAX_QUOTED_LENGTH) + "...";
   }
 }

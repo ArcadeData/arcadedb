@@ -20,6 +20,7 @@ package com.arcadedb.function;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -73,6 +75,34 @@ class Issue11589FunctionArgumentErrorsTest extends TestHelper {
   }
 
   @Test
+  void aNullEdgeTypeNamesNoTypeAndIsSkipped() {
+    // a lone null already meant every type: a null among names is skipped, so out('E', null) is out('E')
+    for (final String function : List.of("out", "outE", "both", "bothE"))
+      assertThat(count("SELECT " + function + "('E', null) AS v FROM V WHERE id = 1")).as(function)
+          .isEqualTo(count("SELECT " + function + "('E') AS v FROM V WHERE id = 1")).isEqualTo(1);
+    assertThat(count("SELECT in('E', null) AS v FROM V WHERE id = 2")).isEqualTo(1);
+    assertThat(count("SELECT out(null, null) AS v FROM V WHERE id = 1")).isEqualTo(1);
+    assertThat(count("SELECT out('Missing', null) AS v FROM V WHERE id = 1")).isZero();
+  }
+
+  @Test
+  void aLargeArgumentIsNotEchoedBackInFull() {
+    // the caller's value is quoted in the message, capped: a whole document handed to a parser must not come back in full
+    final String large = "x".repeat(100_000);
+    for (final String[] statement : new String[][] { { "opencypher", "RETURN convert.fromJsonList($v) AS v" },
+        { "opencypher", "RETURN convert.fromJsonMap($v) AS v" }, { "opencypher", "RETURN date.fields($v) AS v" },
+        { "sql", "SELECT ts.rate(1, :v) AS v" }, { "sql", "SELECT duration(1, :v) AS v" } }) {
+      try (final ResultSet rs = database.command(statement[0], statement[1], Map.of("v", large))) {
+        rs.next().toJSON();
+        throw new AssertionError(statement[1] + " accepted the argument");
+      } catch (final InvalidArgumentException e) {
+        assertThat(e.getMessage().length()).as(statement[1]).isLessThan(1_000);
+        assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION);
+      }
+    }
+  }
+
+  @Test
   void noSqlFunctionFailsAsAServerFaultForAWrongArgument() {
     // the built-ins, not a function another test of the JVM registered on the shared factory and left behind
     final DefaultSQLFunctionFactory factory = ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory();
@@ -111,6 +141,17 @@ class Issue11589FunctionArgumentErrorsTest extends TestHelper {
           offenders.add(cypher + " -> " + failure);
       }
     assertThat(offenders).as("openCypher function calls failing as a server fault for an argument the caller got wrong").isEmpty();
+  }
+
+  /** The number of items of the single row's {@code v}. */
+  private long count(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      final Object value = rs.next().getProperty("v");
+      long n = 0;
+      for (final Object ignored : (Iterable<?>) value)
+        ++n;
+      return n;
+    }
   }
 
   /** No argument, every kind alone, every pair of kinds. */

@@ -59,7 +59,7 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
       unit = DateUtils.parsePrecision(unitName);
     } catch (final SerializationException e) {
       // issue #11589: a unit nothing names is the caller's mistake
-      throw new InvalidArgumentException("duration() does not know the time unit '" + unitName + "'", e);
+      throw new InvalidArgumentException("duration() does not know the time unit '" + InvalidArgumentException.quote(unitName) + "'", e);
     }
 
     // A java.time.Duration is an exact amount of time, so it accepts only units with an exact length. Weeks have one
