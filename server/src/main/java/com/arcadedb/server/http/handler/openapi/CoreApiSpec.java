@@ -672,7 +672,10 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("404", SpecBuilders.errorResponse(
         "Database not found, or the 'arcadedb-session-id' names a session this server cannot resolve"));
     responses.addApiResponse("409", SpecBuilders.errorResponse(
-        "Concurrent modification: a page the load touched changed underneath it"));
+        "Concurrent modification: a page the load touched changed underneath it. Also another GraphBatch load already in "
+            + "progress on this database ('A GraphBatch load is already in progress on this database', exception "
+            + "com.arcadedb.exception.GraphBatchInProgressException): nothing of this load ran, send it again once the other "
+            + "one has finished"));
     responses.addApiResponse("413", SpecBuilders.errorResponse("Request body too large"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     responses.addApiResponse("503", SpecBuilders.errorResponse(

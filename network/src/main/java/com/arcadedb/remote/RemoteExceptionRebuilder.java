@@ -38,6 +38,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.EncryptionException;
 import com.arcadedb.exception.EquivalentIndexException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
@@ -148,6 +149,7 @@ public final class RemoteExceptionRebuilder {
       Map.entry(DatabaseIsReopeningException.class.getName(), DatabaseIsReopeningException::new),
       Map.entry(DatabaseOperationException.class.getName(), DatabaseOperationException::new),
       Map.entry(DatabaseOperationInProgressException.class.getName(), DatabaseOperationInProgressException::new),
+      Map.entry(GraphBatchInProgressException.class.getName(), GraphBatchInProgressException::new),
       Map.entry(DatabaseMetadataException.class.getName(), DatabaseMetadataException::new),
       Map.entry(InvalidDatabaseInstanceException.class.getName(), InvalidDatabaseInstanceException::new),
       Map.entry(ConfigurationException.class.getName(), ConfigurationException::new),

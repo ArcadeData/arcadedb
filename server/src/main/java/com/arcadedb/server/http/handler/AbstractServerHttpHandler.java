@@ -1292,6 +1292,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, "Cannot execute command", inProgress, null, ErrorLogKind.USER);
     }
 
+    // 409 Conflict: a GraphBatch load refused because another one is open on the same database (issue #11907). The same
+    // "retryable once the other one finishes" as the arm above, and nothing of the refused load ran. It was the generic
+    // 500 "Internal error", logged with a stack trace per refused request. Its own arm, ahead of nothing that would catch
+    // it otherwise: its parent DatabaseOperationException has no arm and also stands for real faults. The label names the
+    // condition, since 'detail' is concealed in production mode.
+    final GraphBatchInProgressException batchInProgress = firstOf(e, cause, GraphBatchInProgressException.class);
+    if (batchInProgress != null)
+      return new ErrorClassification(409, "A GraphBatch load is already in progress on this database", batchInProgress, null,
+          ErrorLogKind.USER);
+
     // 409 Conflict: the user name is taken (issue #10073). Not a security failure - it was answered 403 "Security error"
     // before, the status a non-root caller gets, so a client could not tell the two apart without matching on the
     // detail text. The label carries the fact for production mode, where 'detail' is concealed.

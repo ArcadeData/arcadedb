@@ -30,6 +30,7 @@ import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -183,7 +184,11 @@ class Issue6201ErrorStatusParityTest {
       // snapshot install). Rebuilt by the follower, it reached this chain as a plain TransactionException and left as
       // a 500 with no back-off, so the wrapped shapes are again the ones that matter.
       new MappedFailure("RetryLaterException", 503,
-          () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)));
+          () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)),
+      // Issue #11907: a load refused because another GraphBatch is open on the database. Nothing of it ran and it succeeds once
+      // the other one is closed, but it answered the generic 500 "Internal error" with a logged stack trace.
+      new MappedFailure("GraphBatchInProgressException", 409,
+          () -> new GraphBatchInProgressException("A GraphBatch is already in progress on this database")));
 
   /**
    * The property itself: bare, wrapped in {@code TransactionException} (what the auto-commit wrapper produced),
@@ -541,6 +546,22 @@ class Issue6201ErrorStatusParityTest {
         assertThat(handle(failure.factory().get()).responseHeaders.getFirst("Retry-After"))
             .as("%s must not carry a Retry-After", failure.name())
             .isNull();
+  }
+
+  /**
+   * Issue #11907: the refusal of a second GraphBatch load is a conflict with work in progress, logged as a caller's error
+   * (message only, below WARNING) and not as an internal one with a stack trace, and its label names the condition.
+   */
+  @Test
+  void aGraphBatchAlreadyInProgressIsAConflictLoggedAsTheCallersError() {
+    final GraphBatchInProgressException refusal = new GraphBatchInProgressException(
+        "A GraphBatch is already in progress on this database");
+    final AbstractServerHttpHandler.ErrorClassification classification = handler(refusal).classifyError(refusal);
+
+    assertThat(classification.status()).isEqualTo(409);
+    assertThat(classification.message()).isEqualTo("A GraphBatch load is already in progress on this database");
+    assertThat(classification.logKind()).isEqualTo(AbstractServerHttpHandler.ErrorLogKind.USER);
+    assertThat(classification.retryAfter()).isNull();
   }
 
   /**
