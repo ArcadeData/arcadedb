@@ -388,7 +388,8 @@ public class FileManager {
       final long owed = pcf.directorySyncOwed();
       if (owed != 0L) {
         final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-        if (parent != null && FileUtils.forceDirectory(parent.toPath()))
+        // A platform without directory fsync, or fsync off, owes nothing to retry
+        if (parent != null && (FileUtils.forceDirectory(parent.toPath()) || FileUtils.directoryForceSkipped()))
           pcf.directorySynced(owed);
       }
       return true;
@@ -446,7 +447,7 @@ public class FileManager {
     if (directoriesToSync != null) {
       Set<Path> notForced = null;
       for (final Path dir : directoriesToSync)
-        if (!FileUtils.forceDirectory(dir)) {
+        if (!FileUtils.forceDirectory(dir) && !FileUtils.directoryForceSkipped()) {
           if (notForced == null)
             notForced = new HashSet<>();
           notForced.add(dir);

@@ -360,6 +360,23 @@ class PaginatedComponentFileSyncStateTest {
   }
 
   @Test
+  void aSkippedDirectoryForceOwesNothing() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("unsynced"));
+      assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+      assertThat(file.directorySyncOwed()).isPositive();
+
+      // With fsync off FileUtils.forceDirectory() returns false without trying: not a failure, nothing to retry
+      GlobalConfiguration.FILE_SYNC.setValue(false);
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(file.directorySyncOwed()).as("a skipped directory force must not stay owed on every later pass").isZero();
+    } finally {
+      fileManager.close();
+    }
+  }
+
+  @Test
   void syncOfOneFileWaitsForThePassForcingItAndSeesItsFailure() throws Exception {
     final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
     final ExecutorService executor = Executors.newFixedThreadPool(2);
