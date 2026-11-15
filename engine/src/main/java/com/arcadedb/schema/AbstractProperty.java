@@ -225,6 +225,7 @@ public abstract class AbstractProperty implements Property {
 
     Expression compiled = null;
     String reason = null;
+    boolean unconvertible = false;
     try {
       compiled = new SQLAntlrParser(database).parseExpression(text);
       if (compiled.isBaseIdentifier())
@@ -234,6 +235,17 @@ public abstract class AbstractProperty implements Property {
       // A cause with no message contributes nothing, so it is left off rather than rendered as a trailing ": null".
       reason = "it cannot be parsed as an SQL expression" + (e.getMessage() == null ? "" : ": " + e.getMessage());
     }
+
+    // A default written as literals alone ('dflt', 42, null, arithmetic over them) has the one value every record would get, so it is
+    // converted to the property's type now: one that cannot be converted used to fail every record create of the type with a 500
+    // (issue #12040). A default calling a function (sysdate()) is evaluated per record and stays a per-record question.
+    if (reason == null && compiled.isLiteral())
+      try {
+        Type.convert(database, compiled.execute((Record) null, new BasicCommandContext().setDatabase(database)), type.javaDefaultType);
+      } catch (Exception e) {
+        unconvertible = true;
+        reason = "it cannot be converted to the property type " + type + (e.getMessage() == null ? "" : ": " + e.getMessage());
+      }
 
     if (reason == null)
       return compiled;
@@ -250,7 +262,9 @@ public abstract class AbstractProperty implements Property {
     // Schema load: never block the database from opening over a default an earlier release accepted.
     LogManager.instance().log(this, Level.WARNING, message + (compiled == null ?
         ". Every new record will keep receiving the expression's own source text as its value" :
-        ". Every new record will keep leaving the property unset"));
+        unconvertible ?
+            ". Every new record of the type will keep being refused until the default is changed with ALTER PROPERTY" :
+            ". Every new record will keep leaving the property unset"));
 
     // Lenient path only - the strict one threw above - and `compiled` carries the outcome of the two rejection kinds:
     // a bare identifier compiled, and keeping it preserves the null it has always evaluated to; an unparseable one is
