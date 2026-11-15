@@ -28,6 +28,7 @@ import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
@@ -73,6 +74,62 @@ public interface DatabaseInternal extends Database {
      * transaction open has its save postponed to the commit, so at that moment the file still predates the change.
      */
     SCHEMA_AFTER_FILE_CHANGES
+  }
+
+  /**
+   * The record a graph reference names - an adjacency entry, the endpoint of an edge - looked up without reading it, like
+   * {@code lookupByRID(rid, false)}, and marked as reached through the graph (issue #11713), with the mark of a walk that begins
+   * now: see {@link #lookupThroughGraph(RID, char)}.
+   */
+  default Record lookupThroughGraph(final RID rid) {
+    return lookupThroughGraph(rid, graphWalkMark());
+  }
+
+  /**
+   * The record a graph reference names, looked up without reading it and marked with {@code walkMark}, the mark of the walk that
+   * read the reference (issue #11713). A walk reads the reference, and the record only when somebody reads a property of it: a
+   * transaction that commits in between can delete both, and the record is then gone by the time it is read. Marked, its read
+   * answers that case with a retryable {@link com.arcadedb.exception.ConcurrentModificationException}, and so does this lookup when
+   * it reads the record at once (REPEATABLE_READ). A reference that was dangling already, and a record looked up by a caller that
+   * named the RID itself, keep answering {@link com.arcadedb.exception.RecordNotFoundException}: see
+   * {@link ImmutableDocument#missingGraphRecord}.
+   */
+  default Record lookupThroughGraph(final RID rid, final char walkMark) {
+    final Record record;
+    try {
+      record = lookupByRID(rid, false);
+    } catch (final RecordNotFoundException e) {
+      throw ImmutableDocument.missingGraphRecord(this, rid, walkMark, e);
+    }
+    if (record instanceof ImmutableDocument document)
+      document.markReachedThroughGraph(walkMark);
+    return record;
+  }
+
+  /**
+   * The mark of a graph walk that begins now ({@link ImmutableDocument#commitMark}): the commits published when the outermost open
+   * transaction began, which no reference it reads can predate, or the commits published now for a walk with no transaction.
+   * Taken once per walk and handed to {@link #lookupThroughGraph(RID, char)} for every reference it reads.
+   */
+  default char graphWalkMark() {
+    final TransactionContext tx = outermostActiveTransaction();
+    return ImmutableDocument.commitMark(tx != null ? tx.getPublishedCommitsAtBegin() : getTransactionManager().getPublishedCommits());
+  }
+
+  /**
+   * The outermost transaction open on this thread, or null. A walk and the read of what it handed out are judged against it, and
+   * against it alone, whatever transaction is nested in it at either moment: it began before any of them, and it counts every
+   * commit nested in it since (see {@link TransactionContext#getNestedPublications()}), so the mark and the commits discounted
+   * from it share one baseline (issue #11713).
+   */
+  default TransactionContext outermostActiveTransaction() {
+    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(getDatabasePath());
+    if (current == null)
+      return null;
+    for (final TransactionContext tx : current.transactions)
+      if (tx.isActive())
+        return tx;
+    return null;
   }
 
   default TransactionContext getTransaction() {

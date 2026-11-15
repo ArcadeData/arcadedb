@@ -250,6 +250,14 @@ public abstract class BooleanExpression extends SimpleNode {
     return null;
   }
 
+  /**
+   * Whether evaluating this condition on a record sets {@code $score} to the score the record matched with, as a full-text
+   * function condition does (see {@link BinaryCondition#indexedFunctionAnswersByScore}).
+   */
+  public boolean setsScore(final CommandContext context) {
+    return false;
+  }
+
   public List<AndBlock> flatten() {
     return List.of(encapsulateInAndBlock(this));
   }

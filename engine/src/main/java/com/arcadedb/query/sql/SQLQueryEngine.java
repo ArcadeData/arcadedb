@@ -349,6 +349,11 @@ public class SQLQueryEngine implements QueryEngine {
       }
 
       @Override
+      public boolean managesItsOwnTransactions() {
+        return statement.managesItsOwnTransactions();
+      }
+
+      @Override
       public Set<OperationType> getOperationTypes() {
         return statement.getOperationTypes();
       }
@@ -373,9 +378,14 @@ public class SQLQueryEngine implements QueryEngine {
         statement.checkParametersBound(bound);
         final Statement executed = statement.withProfiledResultSetLimit(database, bound);
         final long start = QueryMetricsRecorder.Holder.startNanos();
-        try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
+        final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query);
+        try {
           return executeGuarded(executed, executionDatabase(), bound);
+        } catch (final RuntimeException | Error e) {
+          span.error(e);
+          throw e;
         } finally {
+          span.close();
           QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
         }
       }

@@ -172,6 +172,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
      * ascending scan, where the first rows of the index are the answer.
      */
     LAST_FROM_LABEL,
+    /**
+     * The index does not hold them and they sort first: before the index entries, found by a scan of the label that keeps
+     * only them (issue #11701). Only for a descending scan, where the first rows of the index come right after them. The
+     * scan stops as soon as the LIMIT is reached, but when fewer vertices than that lack a key it reads the whole label,
+     * as SQL's ascending order does for the same reason: it is still a filter that builds no row for a vertex with a key,
+     * against the sort of every row of the label it replaces. A MANDATORY NOTNULL property or an index with NULL_STRATEGY
+     * INDEX leaves nothing to scan for.
+     */
+    FIRST_FROM_LABEL,
     /** The index holds them (NULL_STRATEGY INDEX) and the statement excludes them: the entries with a null key are skipped. */
     SKIPPED_IN_INDEX,
     /**
@@ -223,10 +232,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       // Adaptive mode: records served in physical order, or every vertex of the label
       private PhysicalOrderRidFetcher fetcher;
       private Iterator<Record> labelScan;
-      // Index order with the null keys last: the label scan that follows the index, for the vertices it does not hold
+      // Index order with the null keys last (first, descending): the label scan that follows (precedes) the index, for the
+      // vertices it does not hold
       private Iterator<Record> nullKeyScan;
       // Index order of an index that holds the null keys: the pass that reads them, from the start of the index
       private IndexCursor nullKeyCursor;
+      // The null keys a pass that precedes the values reads (from the index, or from the label) are all read
       private boolean nullKeysDone = false;
       // The entries of the index with a value are all read
       private boolean valuesDone = false;
@@ -379,6 +390,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         // A null key sorts lowest in the index: descending, the vertices that have one come before the values
         if (nullKeys == NullKeys.PLACED_FROM_INDEX && !ascending && !readNullKeyEntries(n))
           return;
+        // Descending, the vertices the index does not hold because they have no key come first too, from the label
+        if (nullKeys == NullKeys.FIRST_FROM_LABEL && !nullKeysDone) {
+          if (!fetchNullKeys(n))
+            return;
+          nullKeysDone = true;
+        }
 
         // Fetch up to n matching vertices, in key order
         while (!valuesDone && buffer.size() < n && cursor.hasNext()) {
@@ -399,9 +416,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           if (nullKeys == NullKeys.PLACED_FROM_INDEX && ascending) {
             if (readNullKeyEntries(n))
               finished = true;
-          } else if (nullKeys == NullKeys.LAST_FROM_LABEL)
-            fetchNullKeys(n);
-          else
+          } else if (nullKeys == NullKeys.LAST_FROM_LABEL) {
+            if (fetchNullKeys(n))
+              finished = true;
+          } else
             finished = true;
         }
       }
@@ -439,10 +457,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       }
 
       /**
-       * The vertices of the label with no value for the key, after the index entries: the index does not hold them,
-       * and a null sorts last. Only an ascending scan with no bound asks for them.
+       * The vertices of the label with no value for the key, which the index does not hold: after the index entries
+       * ascending, where a null sorts last, and before them descending. Only a scan with no bound asks for them.
+       *
+       * @return true when they are all read, false when the buffer filled before
        */
-      private void fetchNullKeys(final int n) {
+      private boolean fetchNullKeys(final int n) {
         if (nullKeyScan == null)
           nullKeyScan = context.getDatabase().iterateType(label, true);
         while (buffer.size() < n && nullKeyScan.hasNext()) {
@@ -451,8 +471,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           if (vertex.get(propertyName) == null)
             addVertex(vertex);
         }
-        if (!nullKeyScan.hasNext())
-          finished = true;
+        if (nullKeyScan.hasNext())
+          return false;
+        nullKeyScan = null;
+        return true;
       }
 
       /**
@@ -746,6 +768,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     if (indexOrdered)
       sb.append(ascending ? " [index order" : " [index order, descending").append(switch (nullKeys) {
         case LAST_FROM_LABEL -> ", then null keys]";
+        case FIRST_FROM_LABEL -> ", after null keys]";
         case PLACED_FROM_INDEX -> ", null keys from the index]";
         default -> "]";
       });

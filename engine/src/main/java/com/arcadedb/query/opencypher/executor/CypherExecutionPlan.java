@@ -38,6 +38,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.AllReduceExpression;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
@@ -158,15 +159,24 @@ import com.arcadedb.query.opencypher.executor.steps.SubqueryStep;
 import com.arcadedb.query.opencypher.executor.steps.TriangleCountOp;
 import com.arcadedb.query.opencypher.executor.steps.TypeCountStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
+import com.arcadedb.query.opencypher.executor.steps.UniqueKeyAnchor;
 import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.query.opencypher.optimizer.AnchorSelector;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
+import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
+import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
+import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.index.IndexException;
@@ -231,6 +241,15 @@ public class CypherExecutionPlan {
   /** The rows a seeded body ({@code CALL { }}, a subquery expression) reads at a time when its caller names no demand. */
   public static final int SEEDED_BATCH_SIZE = 100;
 
+  /**
+   * How much smaller than its label an index seek's estimated rows must be for a count to be left to the ordinary plan rather than
+   * pushed down (issue #11680). The pipeline pays more per row than a push-down pays per vertex it walks: on the issue's graph an
+   * anchored chain walked a Record in about 0.25 us and a Section in about 2 us, while the seek plus expansion produced a row in
+   * at most 13 us. A factor of 100 keeps the seek ahead even at that worst ratio, so only a seek that clearly reads a small part of
+   * the label declines the push-down. With the optimizer's estimates that is a UNIQUE key, or a key of three columns or more.
+   */
+  private static final int SELECTIVE_ANCHOR_LABEL_SHARE = 100;
+
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
   private final Map<String, Object>  parameters;
@@ -247,6 +266,12 @@ public class CypherExecutionPlan {
 
   /** See {@link #foldedCountPlan()}: null until computed, empty when there is nothing to fold. */
   private volatile Optional<CypherExecutionPlan> foldedCountPlan;
+  /**
+   * The plan whose ordinary pipeline runs when the count push-downs decline this statement: this one, or, for the folded plan of
+   * {@link #foldedCountPlan()}, the plan it was folded from, which keeps the physical plan the folded one is built without
+   * (issue #11680). Set before the folded plan is published.
+   */
+  private CypherExecutionPlan pipelinePlan = this;
 
   // UNION support
   private final List<CypherExecutionPlan> unionSubqueryPlans;
@@ -2629,7 +2654,7 @@ public class CypherExecutionPlan {
         // path. Only attempted as the leading (seed) step of a non-optional MATCH whose WHERE clause is
         // re-applied above, so the index seek is always a safe prefilter.
         if (!isOptional && currentStep == null) {
-          final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPattern,
+          final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPatterns, patternIndex,
               boundVariables, matchVariables, context);
           if (edgeIndexSeed != null) {
             currentStep = edgeIndexSeed;
@@ -2790,6 +2815,17 @@ public class CypherExecutionPlan {
             directionOverride = null;
           }
 
+          // Issue #11699: a target pinned by an equality on every column of a UNIQUE index is one vertex at most. Seeking
+          // it before the hop binds both ends, so the hop reads the edges joining the pair off the shorter edge list
+          // instead of every edge of the source and a filter on the target. Only from a source that is itself one vertex
+          // per row (bound already, or uniquely keyed too), where the seek costs one index lookup per row at most, and with
+          // key values readable before the hop: a literal, a parameter, or a variable an earlier clause bound (an UNWIND or WITH
+          // row, which the seek reads off the row it runs on). One naming a variable of this pattern has nothing to read yet
+          final boolean seekTarget = !isOptional && !reversed && i == 0 && !relPattern.isVariableLength()
+              && !(relPattern instanceof QuantifiedPathPattern) && !boundVariables.contains(effectiveTargetVar)
+              && !matchVariables.contains(effectiveTargetVar) && (sourceAlreadyBound || isUniquelyKeyed(sourceNode))
+              && isUniquelyKeyed(effectiveTargetNode) && readsOnlyEarlierClauses(effectiveTargetNode.getProperties(), boundVariables);
+
           // Track relationship and target variables for cross-MATCH uniqueness scoping.
           // Only add variables that are NEW to this MATCH clause — already-bound variables
           // (from previous MATCHes or WITH) should not be treated as new match variables,
@@ -2798,6 +2834,11 @@ public class CypherExecutionPlan {
             matchVariables.add(relVar);
           if (!boundVariables.contains(effectiveTargetVar))
             matchVariables.add(effectiveTargetVar);
+          if (seekTarget) {
+            final MatchNodeStep targetSeek = new MatchNodeStep(effectiveTargetVar, effectiveTargetNode, context);
+            targetSeek.setPrevious(currentStep);
+            currentStep = targetSeek;
+          }
 
           AbstractExecutionStep nextStep;
           if (relPattern instanceof QuantifiedPathPattern quantified) {
@@ -2908,6 +2949,8 @@ public class CypherExecutionPlan {
    */
   private static void collectSubqueryOutputVariables(final SubqueryClause subqueryClause,
       final Set<String> boundVariables) {
+    if (subqueryClause.getReportStatusVariable() != null)
+      boundVariables.add(subqueryClause.getReportStatusVariable());
     final ReturnClause returnClause = subqueryClause.getInnerStatement() != null ?
         subqueryClause.getInnerStatement().getReturnClause() : null;
     if (returnClause == null)
@@ -2956,8 +2999,9 @@ public class CypherExecutionPlan {
    * checked by the step itself, so the seek can never let through a row the unoptimised plan would have rejected.
    */
   private MatchEdgeByIndexStep tryBuildEdgeIndexScanSeed(final MatchClause matchClause,
-      final PathPattern pathPattern, final Set<String> boundVariables, final Set<String> matchVariables,
-      final CommandContext context) {
+      final List<PathPattern> pathPatterns, final int patternIndex, final Set<String> boundVariables,
+      final Set<String> matchVariables, final CommandContext context) {
+    final PathPattern pathPattern = pathPatterns.get(patternIndex);
     if (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
       return null;
 
@@ -3015,12 +3059,18 @@ public class CypherExecutionPlan {
     final String effectiveTargetVar = tgtNode.getVariable() != null ? tgtNode.getVariable()
         : ("  tgt" + anonymousVarCounter++);
 
+    // An anonymous relationship gets an internal variable when another hop of this MATCH could bind the same edge, as the
+    // ordinary hop builder gives it: the later hops' relationship uniqueness compares against what the clause binds, and a
+    // relationship bound under no name was free to be bound again (issue #11585)
+    final String seededEdgeVar = namedEdge ? edgeVar
+        : computeHopEdgeTrackingNeeds(pathPatterns, patternIndex)[0] ? "  rel" + anonymousVarCounter++ : null;
+
     matchVariables.add(effectiveSourceVar);
     matchVariables.add(effectiveTargetVar);
-    if (namedEdge)
-      matchVariables.add(edgeVar);
+    if (seededEdgeVar != null)
+      matchVariables.add(seededEdgeVar);
 
-    return new MatchEdgeByIndexStep(seeks, dir, effectiveSourceVar, namedEdge ? edgeVar : null, effectiveTargetVar,
+    return new MatchEdgeByIndexStep(seeks, dir, effectiveSourceVar, seededEdgeVar, effectiveTargetVar,
         EdgeIndexSeedPlanner.EndpointFilter.of(srcNode), EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode), relProperties, context);
   }
 
@@ -3045,6 +3095,80 @@ public class CypherExecutionPlan {
       final Map<String, Object> pinned = new LinkedHashMap<>();
       EdgeIndexSeedPlanner.collectWherePredicates(var, where, pinned);
       return pinned.isEmpty();
+    }
+    return true;
+  }
+
+  /**
+   * Whether a node pattern pins its node by an equality on every column of a UNIQUE index of its one label, so a seek of it
+   * finds one vertex at most (issue #11699).
+   */
+  private boolean isUniquelyKeyed(final NodePattern node) {
+    return uniqueKeyIndexOf(node) != null;
+  }
+
+  /**
+   * A UNIQUE index of the one label of a node pattern whose every column the pattern's property map pins by an equality, or null
+   * when there is none (issues #11699, #11594).
+   */
+  private TypeIndex uniqueKeyIndexOf(final NodePattern node) {
+    if (!node.hasProperties() || node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels()
+        || node.getLabels().size() != 1)
+      return null;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(node.getLabels().getFirst()))
+      return null;
+    for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys != null && node.getProperties().keySet().containsAll(keys))
+        return index;
+    }
+    return null;
+  }
+
+  /**
+   * The vertex a node pattern pins by an equality on every column of a UNIQUE index, as a key to look up when the count runs
+   * (issue #11594), or null when there is no such index or a value of the key is not a literal or a parameter given a scalar
+   * value. A null key is not a key: the index holds an entry per record whose key is null, while the equality matches none.
+   */
+  private UniqueKeyAnchor uniqueKeyAnchorOf(final NodePattern node, final CommandContext context) {
+    final TypeIndex index = uniqueKeyIndexOf(node);
+    // a document or an edge type holding the key is no vertex: the label walk matches nothing there, as a node pattern must
+    if (index != null && !(database.getSchema().getType(node.getLabels().getFirst()) instanceof VertexType))
+      return null;
+    final List<String> keys = index != null ? index.getPropertyNamesIfExactKeyLookup() : null;
+    if (keys == null)
+      return null;
+    final Object[] key = new Object[keys.size()];
+    for (int i = 0; i < key.length; i++) {
+      final Object declared = node.getProperties().get(keys.get(i));
+      if (!RowIndependentValues.isSeekable(declared))
+        return null;
+      final Object value = InlineProperties.resolve(declared, null, context);
+      if (value == null || value instanceof Collection || value instanceof Map || value.getClass().isArray())
+        return null;
+      key[i] = TemporalUtil.toIndexKey(value);
+    }
+    return new UniqueKeyAnchor(index, key);
+  }
+
+  /**
+   * Whether every value of a property map can be read before the pattern it belongs to is matched: a value an index seek takes
+   * without a row, or one reading only variables {@code boundBefore} holds, which an earlier clause bound for the row the seek
+   * runs on (issue #11699). Not a value two evaluations can disagree on, such as one calling {@code rand()}: the seek reads it
+   * once and the hop's filter on the vertex found once more.
+   */
+  private static boolean readsOnlyEarlierClauses(final Map<String, Object> properties, final Set<String> boundBefore) {
+    if (properties == null)
+      return true;
+    for (final Object value : properties.values()) {
+      if (RowIndependentValues.isSeekable(value))
+        continue;
+      if (!(value instanceof Expression expression) || !RowIndependentValues.isDeterministic(expression))
+        return false;
+      final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
+      if (!referenced.isComplete() || !boundBefore.containsAll(referenced.getNames()))
+        return false;
     }
     return true;
   }
@@ -4384,8 +4508,10 @@ public class CypherExecutionPlan {
     if (firstRel.isVariableLength())
       return null;
 
-    // No property constraints
+    // No property constraints, and no inline predicate the edge count cannot apply (issue #11583)
     if (firstRel.getProperties() != null && !firstRel.getProperties().isEmpty())
+      return null;
+    if (firstRel.hasWhereExpression())
       return null;
 
     // No WHERE clause
@@ -4416,8 +4542,10 @@ public class CypherExecutionPlan {
     if (secondRel.isVariableLength())
       return null;
 
-    // No property constraints
+    // No property constraints, and no inline predicate the edge count cannot apply (issue #11583)
     if (secondRel.getProperties() != null && !secondRel.getProperties().isEmpty())
+      return null;
+    if (secondRel.hasWhereExpression())
       return null;
 
     // No WHERE clause
@@ -4503,6 +4631,20 @@ public class CypherExecutionPlan {
     } else {
       return null; // Patterns don't share a variable
     }
+
+    // The step applies one label on the intermediate where the first hop reaches it and one on the counted target. A label
+    // written on the bound node or again on the intermediate, a label set no single name stands for, a dynamic label or an
+    // inline WHERE on a node filters what the step cannot see (issue #11583)
+    final NodePattern boundNode = firstVar1.equals(boundVar) ? firstNode1 : firstNode2;
+    final NodePattern intermediateNode = boundNode == firstNode1 ? firstNode2 : firstNode1;
+    final NodePattern secondIntermediateNode = secondVar1.equals(intermediateVar) ? secondNode1 : secondNode2;
+    final NodePattern targetNode = secondIntermediateNode == secondNode1 ? secondNode2 : secondNode1;
+    if (boundNode.hasLabels() || secondIntermediateNode.hasLabels() || !isCountableEndpoint(boundNode)
+        || !isCountableEndpoint(intermediateNode) || !isCountableEndpoint(secondIntermediateNode)
+        || !isCountableEndpoint(targetNode))
+      return null;
+    final String intermediateLabel = intermediateNode.hasLabels() ? intermediateNode.getLabels().get(0) : null;
+    final String targetLabel = targetNode.hasLabels() ? targetNode.getLabels().get(0) : null;
 
     // 6. Analyze the WITH clause
     final List<ReturnClause.ReturnItem> groupingKeys = new ArrayList<>();
@@ -4630,7 +4772,7 @@ public class CypherExecutionPlan {
     // Build the optimized step
     final CountChainedEdgesStep chainedStep = new CountChainedEdgesStep(
         boundVar, firstHopDirection, firstHopTypes, secondHopDirection, secondHopTypes,
-        countAlias, passThroughAliases, context);
+        intermediateLabel, targetLabel, countAlias, passThroughAliases, context);
     if (currentStep != null)
       chainedStep.setPrevious(currentStep);
 
@@ -4666,8 +4808,10 @@ public class CypherExecutionPlan {
     if (relPattern.isVariableLength())
       return null;
 
-    // 3. No property constraints on the relationship
+    // 3. No property constraints on the relationship, and no inline predicate the edge count cannot apply (issue #11583)
     if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+      return null;
+    if (relPattern.hasWhereExpression())
       return null;
 
     // 4. No WHERE clause on the OPTIONAL MATCH
@@ -4770,6 +4914,14 @@ public class CypherExecutionPlan {
     if (!countArgVariable.equals(unboundVar))
       return null;
 
+    // The step applies one label on the counted node. A label written on the bound node, a label set no single name stands
+    // for, a dynamic label or an inline WHERE on a node filters what the step cannot see (issue #11583)
+    final NodePattern boundNode = firstVar.equals(boundVar) ? firstNode : lastNode;
+    final NodePattern countedNode = boundNode == firstNode ? lastNode : firstNode;
+    if (boundNode.hasLabels() || !isCountableEndpoint(boundNode) || !isCountableEndpoint(countedNode))
+      return null;
+    final String targetLabel = countedNode.hasLabels() ? countedNode.getLabels().get(0) : null;
+
     // 8. Relationship variable (if named) must NOT be referenced in grouping keys
     final String relVar = relPattern.getVariable();
     if (relVar != null) {
@@ -4834,7 +4986,7 @@ public class CypherExecutionPlan {
 
     // Build the optimized step
     final CountEdgesStep countEdgesStep = new CountEdgesStep(
-        boundVar, direction, edgeTypes, countAlias, passThroughAliases, context);
+        boundVar, direction, edgeTypes, targetLabel, countAlias, passThroughAliases, context);
     if (currentStep != null)
       countEdgesStep.setPrevious(currentStep);
 
@@ -5236,7 +5388,11 @@ public class CypherExecutionPlan {
     final RelationshipPattern relPattern = pathPattern.getRelationship(0);
     if (relPattern.isVariableLength())
       return null;
-    if (relPattern.getProperties() != null && !relPattern.getProperties().isEmpty())
+    if (relPattern.hasProperties())
+      return null;
+    // An inline predicate on the relationship, -[r:R WHERE r.w = 1]->, filters the edges the step would count, and the step
+    // counts every edge of the anchor (issue #11584)
+    if (relPattern.hasWhereExpression())
       return null;
 
     // No WHERE clause
@@ -5258,10 +5414,10 @@ public class CypherExecutionPlan {
       return null;
 
     // Target node must not have property filters (would need filtering)
-    if (targetNode.getProperties() != null && !targetNode.getProperties().isEmpty())
+    if (targetNode.hasProperties())
       return null;
     // Source node must not have property filters
-    if (sourceNode.getProperties() != null && !sourceNode.getProperties().isEmpty())
+    if (sourceNode.hasProperties())
       return null;
 
     // Classify RETURN items into grouping and aggregation
@@ -6933,8 +7089,14 @@ public class CypherExecutionPlan {
     Optional<CypherExecutionPlan> folded = foldedCountPlan;
     if (folded == null) {
       final CypherStatement foldedStatement = countPushDownForm();
-      folded = foldedStatement == statement ? Optional.empty() :
-          Optional.of(new CypherExecutionPlan(database, foldedStatement, parameters, configuration, null, expressionEvaluator));
+      if (foldedStatement == statement)
+        folded = Optional.empty();
+      else {
+        final CypherExecutionPlan foldedPlan = new CypherExecutionPlan(database, foldedStatement, parameters, configuration, null,
+            expressionEvaluator);
+        foldedPlan.pipelinePlan = this;
+        folded = Optional.of(foldedPlan);
+      }
       foldedCountPlan = folded;
     }
     return folded.orElse(null);
@@ -7204,7 +7366,76 @@ public class CypherExecutionPlan {
     if (mandatoryPatternElementIsEmpty(context.getDatabase()))
       return new ConstantCountStep(0L, alias, context);
 
+    // Every operator above walks a label: the chain visits every vertex of its first node's label, the star every vertex of its
+    // central node's label, and an anchor's inline map or WHERE equality only filters what they visit. A statement whose
+    // ordinary plan starts from a selective index seek costs that seek and the expansion from it, the same at any graph size,
+    // which is what the same statement with sum(1) gets; pushed down it cost the whole label (issue #11680). A correlated body
+    // is seeded from the anchor its outer row bound, and a chain from the vertex a UNIQUE key pins (issue #11594), so neither
+    // has a label to walk: that walk costs the seek and the paths of one vertex, without a row per path.
+    if (!correlation.isCorrelated() && !(op instanceof PropagateChainOp chain && chain.isSeeded())
+        && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor())
+      return null;
+
     return new CSRCountStep(op, alias, context);
+  }
+
+  /**
+   * Whether the ordinary plan of this statement starts from an index seek, or a lookup by id, estimated to find a few vertices of
+   * a label (issue #11680). That plan costs the seek and the expansion from what it finds, the same at any graph size, while a
+   * count push-down walks a whole label to reach the same answer.
+   * <p>
+   * The anchor is the one the ordinary plan actually starts from, so the answer is never "seekable" for a plan that would scan:
+   * the optimizer's own anchor when its physical plan runs, which an index-backed node always wins (issue #5306), and otherwise
+   * the first node of the first MATCH clause, which is where the pipeline of {@link #buildExecutionSteps} and
+   * {@link #buildExecutionStepsWithOrder} starts. Both are judged by {@link AnchorSelector}, the estimate the optimizer plans
+   * with, rather than by a second index matcher.
+   */
+  private boolean ordinaryPlanSeeksASelectiveAnchor() {
+    final StatisticsProvider statistics = new StatisticsProvider(database);
+    if (canUseOptimizedPhysicalPlan())
+      return isSelectiveSeek(physicalPlan.getAnchor(), statistics);
+
+    final List<MatchClause> matchClauses = statement.getMatchClauses();
+    if (matchClauses == null || matchClauses.isEmpty())
+      return false;
+    final MatchClause first = matchClauses.getFirst();
+    if (first.isOptional() || !first.hasPathPatterns())
+      return false;
+    final PathPattern path = first.getPathPatterns().getFirst();
+    if (path instanceof ShortestPathPattern)
+      return false;
+    final NodePattern node = path.getFirstNode();
+    // the pipeline reads the clause's own WHERE, or the statement's when the clause has none, exactly as here
+    final WhereClause where = first.hasWhereClause() ? first.getWhereClause() : statement.getWhereClause();
+    // a lookup by id finds one record at most
+    if (node.getVariable() != null && extractIdFilter(where, node.getVariable()) != null)
+      return true;
+    // only a single static label lets the node step seek an index (MatchNodeStep.computeVertexIterator)
+    if (node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
+      return false;
+
+    // The node judged over its own pattern and WHERE alone: an OPTIONAL clause's predicates do not narrow where the pipeline starts
+    final LogicalPlan plan = LogicalPlan.fromAST(new SimpleCypherStatement("", List.of(new MatchClause(List.of(path), false, where)),
+        null, null, false, false, false));
+    statistics.collectStatistics(node.getLabels());
+    final LogicalNode firstNode = plan.getPatternNodes().values().iterator().next();
+    return isSelectiveSeek(new AnchorSelector(statistics, new CostModel(statistics)).evaluateNodeDirect(firstNode, plan), statistics);
+  }
+
+  /**
+   * Whether an anchor is an index seek estimated to find few vertices: one row of a UNIQUE index whose whole key is bound, or
+   * fewer than one row in {@link #SELECTIVE_ANCHOR_LABEL_SHARE} of the label it seeks. A range scan never is, whatever its
+   * estimate.
+   */
+  private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics) {
+    if (anchor == null || !anchor.useIndex() || anchor.isRangeScan() || anchor.getNode() == null)
+      return false;
+    final long rows = Math.max(1L, anchor.getEstimatedCardinality());
+    final IndexStatistics index = anchor.getIndex();
+    if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
+      return true;
+    final LogicalNode node = anchor.getNode();
+    return rows * SELECTIVE_ANCHOR_LABEL_SHARE < statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
   }
 
   /**
@@ -7568,6 +7799,15 @@ public class CypherExecutionPlan {
     if (repeatsNodeVariable(pathPattern))
       return null;
 
+    // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
+    // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699). A key
+    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in
+    if (hopCount == 1) {
+      final PathPattern keyed = withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
+      if (isUniquelyKeyed(keyed.getNode(0)) && isUniquelyKeyed(keyed.getNode(1)))
+        return null;
+    }
+
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
     int inequalityIdxB = -1;
@@ -7594,12 +7834,83 @@ public class CypherExecutionPlan {
     for (int i = 0; i <= hopCount; i++)
       nodePredicates[i] = predicates.predicateFor(pathPattern.getNode(i));
 
-    if (!correlation.isCorrelated())
+    if (!correlation.isCorrelated()) {
+      // An end pinned by a UNIQUE key is one vertex at most: looked up when the count runs, the chain is walked from it alone,
+      // which costs the seek and that vertex's paths, not a walk of either label (issue #11594). The seeded walk has no
+      // inequality to apply, so a chain carrying one is left to what follows
+      if (inequalityVar1 == null) {
+        final CountOp keyed = uniqueKeySeededChainOp(db, pathPattern, whereClause, nodeLabels, edgeTypes, directions, nodePredicates,
+            context);
+        if (keyed != null)
+          return keyed;
+      }
+      // The propagation enumerates the label of its first position. Written in the direction of the edge, a chain often
+      // puts the anchored node last, (c:Chunk)-[:OF_RECORD]->(r:Record {external_id: $id}), which enumerated every chunk
+      // to keep the paths of one record (issue #11594). The far end is reached by reading the same arrays the other way,
+      // as seededChainOp does, and the count of paths is the same
+      if (startsAtTheFarEnd(db, nodeLabels, edgeTypes, nodePredicates))
+        return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions),
+            inequalityIdxA < 0 ? -1 : hopCount - inequalityIdxA, inequalityIdxB < 0 ? -1 : hopCount - inequalityIdxB, null,
+            null, reversed(nodePredicates));
       return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, null, null,
           nodePredicates);
+    }
 
     return seededChainOp(db, correlation, pathPattern, nodeLabels, edgeTypes, directions, nodePredicates,
         inequalityVar1 != null);
+  }
+
+  /**
+   * The chain seeded from the end that an equality on every column of a UNIQUE index pins to one vertex, the first end
+   * preferred, or null when neither end is pinned (issue #11594). A key written in WHERE pins the node as an inline one does.
+   * The last end is reached by reading the chain the other way, as {@link #seededChainOp} does, which a chain over an edge
+   * type declared unidirectional cannot be: the incoming side is stored on no vertex.
+   */
+  private CountOp uniqueKeySeededChainOp(final Database db, final PathPattern pathPattern, final WhereClause where,
+      final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+      final VertexPredicate[] nodePredicates, final CommandContext context) {
+    final PathPattern keyed = withWhereEqualities(List.of(pathPattern), where).getFirst();
+    final UniqueKeyAnchor first = uniqueKeyAnchorOf(keyed.getNode(0), context);
+    if (first != null)
+      return new PropagateChainOp(nodeLabels, edgeTypes, directions, first, nodePredicates);
+    if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
+      return null;
+    final UniqueKeyAnchor last = uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length), context);
+    if (last == null)
+      return null;
+    return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), last,
+        reversed(nodePredicates));
+  }
+
+  /**
+   * Whether an uncorrelated chain is cheaper to enumerate from its last position than from its first (issue #11594). The end
+   * that carries the only node predicate starts, since the predicate is applied to the vertices the start enumerates and
+   * the rest of the chain is walked only from those that pass. With a predicate on neither end or on both, the end whose
+   * label holds fewer vertices starts. An unlabeled end is never chosen over a labeled one: it enumerates every vertex. A chain
+   * over an edge type declared unidirectional keeps its written orientation.
+   */
+  private static boolean startsAtTheFarEnd(final Database db, final String[] nodeLabels, final String[] edgeTypes,
+      final VertexPredicate[] predicates) {
+    // Read from its far end every hop is walked against its written direction, and the incoming side of an edge type declared
+    // unidirectional is stored on no vertex: such a chain is only walked as written, the outgoing hops tryOptimizeCountStar lets
+    // through for it
+    if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
+      return false;
+    final int last = nodeLabels.length - 1;
+    if (nodeLabels[last] == null)
+      return false;
+    if (nodeLabels[0] == null)
+      return true;
+    final boolean firstFiltered = predicates[0] != null;
+    final boolean lastFiltered = predicates[last] != null;
+    if (firstFiltered != lastFiltered)
+      return lastFiltered;
+    return labelCardinality(db, nodeLabels[last]) < labelCardinality(db, nodeLabels[0]);
+  }
+
+  /** The vertices a label holds, its subtypes included, or 0 when no vertex type carries the name. */
+  private static long labelCardinality(final Database db, final String label) {
+    return db.getSchema().getTypeOrNull(label) instanceof VertexType ? db.countType(label, true) : 0L;
   }
 
   /** The node variables a path pattern binds, anonymous positions left out. */
@@ -8746,6 +9057,14 @@ public class CypherExecutionPlan {
    */
   private static boolean hasPushDownRepresentableLabel(final NodePattern node) {
     return !node.hasLabels() || (node.getLabels().size() == 1 && !node.isLabelDisjunction());
+  }
+
+  /**
+   * Whether an endpoint of an OPTIONAL MATCH hop filters nothing an edge count with at most one label cannot apply: no
+   * dynamic label, no inline WHERE and at most one static label (issue #11583).
+   */
+  private static boolean isCountableEndpoint(final NodePattern node) {
+    return !node.hasDynamicLabels() && !node.hasWhereExpression() && hasPushDownRepresentableLabel(node);
   }
 
   /** Records the label a variable carries; false when it already carries a different one, which no single label can stand for. */

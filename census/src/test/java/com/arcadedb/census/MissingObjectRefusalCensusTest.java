@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The message is the one thing this census has to read as text, because the defect IS what the message says: the exception type is
  * the same whether the refusal names a missing object or a broken server. Wording a new refusal another way escapes it, which is why
- * {@code Issue11384MissingObjectCategoryTest} (engine) also pins the statements of the report through {@code ErrorCategory.of}.
+ * {@code ExceptionCategoryTest.MissingObjectCategory} (engine) also pins the statements of the report through {@code ErrorCategory.of}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

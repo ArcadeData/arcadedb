@@ -68,6 +68,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
@@ -448,6 +449,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // #11314: the caller's mistake, which a TransactionException would turn into a server fault; ValidationException is rebuilt
       // with its kind by its own arm, ahead of this table
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
+      // #11803: a statement refused for what the database holds now, the caller's to resolve and not a server fault
+      Map.entry(ObjectInUseException.class.getName(), ObjectInUseException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /**

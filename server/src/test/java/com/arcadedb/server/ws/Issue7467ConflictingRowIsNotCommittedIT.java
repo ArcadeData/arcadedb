@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * bucket, counted by {@code count(*)}, absent from the unique index that was supposed to forbid it, and
  * acknowledged to the client as not written.
  * <p>
- * The retraction is the engine's ({@code Issue7467FailedCreateLeavesNothingInTheTransactionTest} pins it
+ * The retraction is the engine's ({@code RefusedWriteTest.FailedCreateLeavesNothingInTheTransaction} pins it
  * there). This pins what the client sees: the tally, the commit, and the database afterwards agreeing.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

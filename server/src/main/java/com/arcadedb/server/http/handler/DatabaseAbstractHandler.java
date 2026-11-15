@@ -202,6 +202,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
       final Boolean explicitAutoCommit = extractAutoCommitParameter(payload);
       atomicTransaction = determineAtomicTransaction(explicitAutoCommit, activeSession);
+      // THE WRAPPER IS OPENED ON THE CALLER'S BEHALF, SO A COMMAND THAT COMMITS ITS OWN BATCHES GOES WITHOUT IT UNLESS THE CALLER
+      // ASKED FOR IT: INSIDE IT A WHOLE IMPORT WAS ONE TRANSACTION HELD IN MEMORY TO THE END (ISSUE #11728)
+      if (atomicTransaction && explicitAutoCommit == null && managesItsOwnTransactions(database, payload))
+        atomicTransaction = false;
 
     } else
       database = null;
@@ -588,6 +592,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   protected boolean requiresTransaction() {
     return true;
+  }
+
+  /**
+   * Whether the request runs a command that commits its own work in batches (see
+   * {@link com.arcadedb.query.QueryEngine.AnalyzedQuery#managesItsOwnTransactions()}), so the auto-commit wrapper
+   * {@link #requiresTransaction()} asks for must not be opened around it on the caller's behalf (issue #11728). Asked only when
+   * the wrapper would otherwise be opened: never under a session transaction, never when the request set {@code autoCommit}.
+   */
+  protected boolean managesItsOwnTransactions(final DatabaseInternal database, final JSONObject payload) {
+    return false;
   }
 
   /**

@@ -443,20 +443,12 @@ public class DeleteStep extends AbstractExecutionStep {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
         if (entry.detach() || hasNoEdges(v)) {
-          if (entry.detach()) {
-            // DETACH removes connected relationships; count each one not already deleted so
-            // relationships-deleted matches Neo4j (the ones already deleted are not in the lists any more).
-            // A self-loop is in both lists: read once, by its identity, every edge collected (and numbered) before the
-            // first of them is deleted (#10008)
-            final EdgeIdentitySet seen = new EdgeIdentitySet();
-            final List<Edge> connected = new ArrayList<>();
-            for (final Edge edge : collectConnectedEdges(v))
-              if (seen.add(edge.getIdentity()))
-                connected.add(edge);
-            for (final Edge edge : connected)
-              if (deleted.claimJustRead(edge))
-                deleteEdgeStatic(edge, stats);
-          }
+          if (entry.detach())
+            try {
+              detachEdges(v, deleted, stats);
+            } catch (final RecordNotFoundException ignored) {
+              // vertex was already removed by the batch flush: the delete below finds it gone too
+            }
           try {
             v.delete();
             stats.incNodesDeleted();
@@ -493,20 +485,6 @@ public class DeleteStep extends AbstractExecutionStep {
 
   private static List<Edge> incomingUnidirectionalEdges(final Vertex v) {
     return IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) v.getDatabase(), v.getIdentity());
-  }
-
-  private static List<Edge> collectConnectedEdges(final Vertex v) {
-    final List<Edge> edges = new ArrayList<>();
-    try {
-      for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT))
-        edges.add(e);
-      for (final Edge e : v.getEdges(Vertex.DIRECTION.IN))
-        edges.add(e);
-      edges.addAll(incomingUnidirectionalEdges(v));
-    } catch (final RecordNotFoundException ignored) {
-      // vertex was already removed by the batch flush - return what was collected so far
-    }
-    return edges;
   }
 
   private static void deleteObjectStatic(final Object obj, final DeletedSoFar deleted, final QueryStatistics stats) {
@@ -744,7 +722,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
   /**
    * Deletes a vertex from the graph.
-   * If detach is true, deletes all connected relationships first.
+   * With DETACH its relationships are counted first and deleted with it (see {@link #detachEdges}).
    *
    * A relationship removed both by DETACH and by an explicit edge delete in the same statement is counted only once,
    * through {@link #deleted}.
@@ -754,8 +732,7 @@ public class DeleteStep extends AbstractExecutionStep {
    */
   private void deleteVertex(final Vertex vertex, final boolean edgesChecked) {
     if (deleteClause.isDetach()) {
-      // DETACH DELETE: Remove all connected relationships first
-      deleteAllEdges(vertex);
+      detachEdges(vertex, deleted, context.getStatistics());
     } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
       if (hasEdges(vertex))
@@ -768,41 +745,34 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   /**
-   * Deletes all edges connected to a vertex.
-   *
-   * Edges already removed and counted earlier in the same statement (by an explicit DELETE or another vertex's DETACH
-   * pass, see {@link #deleted}) are not in its lists any more; the ones read here exist, and are deleted.
-   *
-   * @param vertex vertex whose edges should be deleted
+   * The relationship half of DETACH DELETE, run right before {@code vertex.delete()}: counts every relationship of the vertex
+   * the statement has not deleted yet, and leaves deleting them to the vertex delete.
+   * <p>
+   * Issue #11681: each relationship used to be deleted here with {@code edge.delete()}, which also removed it from the
+   * vertex's own list. On a hub that list is striped and every removal scanned a stripe for the entry, so the statement grew
+   * faster than the number of relationships, all to maintain a list {@code GraphEngine.deleteVertex} drops whole a moment
+   * later. That delete disconnects each relationship from its far endpoint only (#5760) and reports each one to the delete
+   * listeners and triggers, once.
+   * <p>
+   * A relationship of a unidirectional type that ends in the vertex is stored on its source only: it is deleted here, from
+   * the source's list, which leaves the vertex delete nothing to find for it (#8676).
+   * <p>
+   * Each relationship is counted once: a self-loop is in both lists and is read once by its identity, and parallel
+   * lightweight edges of one type over one pair are as many relationships as there are twins (#10008). The lists are only
+   * read here, so every edge meets the precondition of {@link DeletedSoFar#claimJustRead}; one an earlier DELETE of the
+   * statement removed is not in them any more.
    */
-  private void deleteAllEdges(final Vertex vertex) {
-    // Collect connected edges in both directions, de-duplicating self-loops (which appear in both
-    // OUT and IN) so a self-loop relationship is deleted and counted exactly once.
-    // An EdgeIdentitySet, not a set of RIDs: parallel lightweight edges of one type over the same pair share their RID,
-    // and a self-loop's twins are as many relationships as there are twins (#10008)
-    final List<Edge> edgesToDelete = new ArrayList<>();
+  private static void detachEdges(final Vertex vertex, final DeletedSoFar deleted, final QueryStatistics stats) {
     final EdgeIdentitySet seen = new EdgeIdentitySet();
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
-      if (seen.add(edge.getIdentity()))
-        edgesToDelete.add(edge);
-    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
-      if (seen.add(edge.getIdentity()))
-        edgesToDelete.add(edge);
-    for (final Edge edge : incomingUnidirectionalEdges(vertex))
-      if (seen.add(edge.getIdentity()))
-        edgesToDelete.add(edge);
-    final QueryStatistics stats = context.getStatistics();
-    for (final Edge edge : edgesToDelete) {
-      // Skip any relationship already removed and counted by an explicit DELETE in the same statement.
-      if (!deleted.claimJustRead(edge))
-        continue;
-      try {
-        edge.delete();
+      if (seen.add(edge.getIdentity()) && deleted.claimJustRead(edge))
         stats.incRelationshipsDeleted();
-      } catch (final RecordNotFoundException ignored) {
-        // already removed (e.g. a shared edge deleted when the other endpoint was detached) - do not count again
-      }
-    }
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      if (seen.add(edge.getIdentity()) && deleted.claimJustRead(edge))
+        stats.incRelationshipsDeleted();
+    for (final Edge edge : incomingUnidirectionalEdges(vertex))
+      if (seen.add(edge.getIdentity()) && deleted.claimJustRead(edge))
+        deleteEdgeStatic(edge, stats);
   }
 
   /**

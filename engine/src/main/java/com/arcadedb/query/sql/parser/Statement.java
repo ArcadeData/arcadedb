@@ -367,6 +367,16 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Whether this statement commits its work itself, in batches, when it runs outside a transaction of its caller, and so must
+   * not be wrapped in one on the caller's behalf: an entry point that opens a transaction around every command (the auto-commit
+   * wrapper of {@code POST /api/v1/command}) would make all of its work one transaction held in memory to the end (issue #11728).
+   * A transaction the caller opened itself still contains it.
+   */
+  public boolean managesItsOwnTransactions() {
+    return false;
+  }
+
+  /**
    * Returns the set of operation types executing this statement performs: its own ({@link #getOperationTypesItself()})
    * plus the writes of every statement nested in it (issue #9628). Never empty.
    */

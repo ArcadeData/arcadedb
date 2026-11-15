@@ -48,6 +48,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
 import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
+import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.EdgeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
@@ -56,6 +57,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVEdgeRef;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
@@ -387,10 +389,10 @@ public class CypherOptimizer {
    *   <li>a range scan whose index keys, from the first, are the ORDER BY items: its rows come in that order in either
    *   direction, and a null key never matches the range predicate the scan stands for;</li>
    *   <li>a scan of a whole label with an index on the single ORDER BY item, and no predicate but, at most,
-   *   {@code IS NOT NULL} on that item (#8724). The vertices with no key sort last ascending and first descending: they
-   *   follow the index entries ascending when the index holds none (a scan of the label finds them; descending that
-   *   scan would come first, so that shape keeps its sort), they are absent when the property is MANDATORY and NOTNULL or
-   *   the WHERE excludes them, and they are read from the index itself under NULL_STRATEGY INDEX. Taken only here,
+   *   {@code IS NOT NULL} on that item (#8724). The vertices with no key sort last ascending and first descending: when
+   *   the index holds none, a scan of the label that keeps only them follows the index entries ascending and precedes
+   *   them descending (#11701, as SQL's ascending order does), they are absent when the property is MANDATORY and NOTNULL
+   *   or the WHERE excludes them, and they are read from the index itself under NULL_STRATEGY INDEX. Taken only here,
    *   where the first rows of the index are the answer: with a filter, the index order could read the whole label one
    *   random access at a time to find the few rows a sort of the label would have found.</li>
    * </ul>
@@ -472,12 +474,10 @@ public class CypherOptimizer {
       nullKeys = nullKeysInIndex ? NodeIndexRangeScan.NullKeys.SKIPPED_IN_INDEX : NodeIndexRangeScan.NullKeys.NONE;
     else if (nullKeysInIndex)
       nullKeys = NodeIndexRangeScan.NullKeys.PLACED_FROM_INDEX;
-    else if (ascending)
-      // The index holds no null key and the null keys sort last: the vertices with none follow the index entries. Descending
-      // they would come first, and only a scan of the label finds them
-      nullKeys = NodeIndexRangeScan.NullKeys.LAST_FROM_LABEL;
     else
-      return null;
+      // The index holds no null key: only a scan of the label finds the vertices with none. They sort last, so they follow
+      // the index entries ascending and come before them descending (issue #11701: that shape used to sort the whole label)
+      nullKeys = ascending ? NodeIndexRangeScan.NullKeys.LAST_FROM_LABEL : NodeIndexRangeScan.NullKeys.FIRST_FROM_LABEL;
 
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
         index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
@@ -1202,6 +1202,19 @@ public class CypherOptimizer {
           && (needsEdgeTracking.contains(rel)
               || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
 
+      // Issue #11699: an endpoint pinned by an equality on every column of a UNIQUE index is one row at most. Seeking
+      // it binds both ends, so the hop reads the edges joining the pair off the shorter edge list (ExpandInto) instead
+      // of every edge of the bound end followed by a filter on the far one
+      if (!rel.isVariableLength()) {
+        final AnchorSelection farSeek = uniqueSeekOfFarEnd(logicalPlan, rel, boundVariables);
+        if (farSeek != null) {
+          final PhysicalOperator seek = createAnchorOperator(farSeek);
+          currentOp = new CartesianProduct(currentOp, seek, currentOp.getEstimatedCost() + seek.getEstimatedCost(),
+              currentOp.getEstimatedCardinality());
+          boundVariables.add(farSeek.getVariable());
+        }
+      }
+
       if (rel.isVariableLength()) {
         currentOp = createVarLengthExpandOperator(rel, currentOp, boundVariables, sameClausePreceding);
 
@@ -1271,6 +1284,28 @@ public class CypherOptimizer {
     }
 
     return new ExpansionPlan(currentOp, relVarsPerClause);
+  }
+
+  /**
+   * The seek of the endpoint {@code relationship} is about to reach from its bound end, when that endpoint is pinned by an
+   * equality on every column of a UNIQUE index, so the seek finds one row at most; null for any other endpoint, and when
+   * neither or both ends are bound already (issue #11699).
+   */
+  private AnchorSelection uniqueSeekOfFarEnd(final LogicalPlan logicalPlan, final LogicalRelationship relationship,
+      final Set<String> boundVariables) {
+    final boolean sourceBound = boundVariables.contains(relationship.getSourceVariable());
+    if (sourceBound == boundVariables.contains(relationship.getTargetVariable()))
+      return null;
+    // getPatternNode, not getNodes: an anonymous endpoint (:N {k: $leaf}) is keyed as well as a named one
+    final LogicalNode farNode = logicalPlan.getPatternNode(sourceBound ? relationship.getTargetVariable() : relationship.getSourceVariable());
+    if (farNode == null || farNode.getLabels().size() != 1)
+      return null;
+    final AnchorSelection seek = anchorSelector.evaluateNodeDirect(farNode, logicalPlan);
+    if (!seek.useIndex() || seek.isRangeScan() || seek.isDisjunctionIndexSeek() || seek.isUnionIndexSeek()
+        || seek.getPropertyValue() instanceof InListValues || seek.getIndex() == null || !seek.getIndex().isUnique()
+        || seek.getKeyValues().size() != seek.getIndex().getPropertyNames().size())
+      return null;
+    return seek;
   }
 
   /** Builds a depth-first physical expansion for one ordinary variable-length relationship. */

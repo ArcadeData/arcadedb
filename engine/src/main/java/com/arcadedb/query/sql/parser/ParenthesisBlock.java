@@ -50,6 +50,11 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
+  public boolean setsScore(final CommandContext context) {
+    return subElement.setsScore(context);
+  }
+
+  @Override
   public List<AndBlock> flatten() {
     return subElement.flatten();
   }

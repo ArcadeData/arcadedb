@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * concurrent commit on the page made the merge rebase it - committed image plus this transaction's tracked appends - and the
  * removal vanished, while the edge record it named was deleted for good. A segment write that is not an in-chunk append must go
  * through {@code EdgeLinkedList.updateRewrittenSegment}, which excludes the page from the merge; the behaviour is pinned by
- * {@code Issue10375IteratorRemoveEdgeAppendMergeTest}.
+ * {@code EdgeIteratorWalkRegressionTest.IteratorRemoveEdgeAppendMerge}.
  * <p>
  * The census ranges over the authority (#11288): every call of {@code updateRecord} whose argument is an {@code EdgeSegment} - by
  * the static type of the value handed to it: a local's declared type, a cast, a call's return type, a field's - in the compiled

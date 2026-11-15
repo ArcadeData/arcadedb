@@ -91,6 +91,12 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("staleEdgeListWrites", POISONED);
     // Issue #11498: filled by the commit, under its lock, never by a statement
     CLASSIFICATION.put("mergedEdgeListBases", NOT_STATEMENT_STATE);
+    // Issue #11590: the reads an edge append defers, recorded when its window closes (in a finally) inside that append, so nothing of
+    // them outlives the statement that ran it. A read a statement taken back recorded stays recorded, which costs at most a retry
+    CLASSIFICATION.put("deferredReadPages", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("deferredReadSlots", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("deferredChunkReadRIDs", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("chunksAppendedInWindow", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("attachments", DELEGATED);
     // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction

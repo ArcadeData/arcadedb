@@ -55,6 +55,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.function.Predicate;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -299,6 +300,36 @@ public class LocalDocumentType implements DocumentType {
    */
   public RecordEventsRegistry getTriggerEvents() {
     return triggerEvents;
+  }
+
+  /** Whether a BEFORE CREATE listener of this type or of a trigger in its lineage could fire: see {@link #fireBeforeCreate(Record)}. */
+  public boolean hasBeforeCreateListeners() {
+    return hasListenersInLineage(RecordEventsRegistry::hasBeforeCreateListeners);
+  }
+
+  /** See {@link #hasBeforeCreateListeners()}. */
+  public boolean hasAfterCreateListeners() {
+    return hasListenersInLineage(RecordEventsRegistry::hasAfterCreateListeners);
+  }
+
+  /** See {@link #hasBeforeCreateListeners()}. */
+  public boolean hasBeforeUpdateListeners() {
+    return hasListenersInLineage(RecordEventsRegistry::hasBeforeUpdateListeners);
+  }
+
+  /** See {@link #hasBeforeCreateListeners()}. */
+  public boolean hasAfterUpdateListeners() {
+    return hasListenersInLineage(RecordEventsRegistry::hasAfterUpdateListeners);
+  }
+
+  private boolean hasListenersInLineage(final Predicate<RecordEventsRegistry> listening) {
+    if (listening.test(events))
+      return true;
+    if (hasTriggers())
+      for (final RecordEventsRegistry registry : getTriggerLineage())
+        if (listening.test(registry))
+          return true;
+    return false;
   }
 
   /**

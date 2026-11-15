@@ -141,6 +141,7 @@ class Issue6965LocalCommitHandshakeTest {
     database.replicateAndCommitLocally(payload, true, stateMachine);
 
     verify(tx, never()).publishCommittedPages(any());
+    verify(tx, never()).publishReplicatedCommittedPages(any());
     verify(tx, never()).commit2ndPhase(any());
   }
 
@@ -253,6 +254,7 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(waitedFor()).containsExactly(List.of(DB_NAME, 7L));
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).publishCommittedPages(any());
+    verify(tx, never()).publishReplicatedCommittedPages(any());
     verify(tx, never()).completeCommit();
     verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
@@ -276,6 +278,7 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(waitedFor()).containsExactly(List.of(DB_NAME, 7L));
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).publishCommittedPages(any());
+    verify(tx, never()).publishReplicatedCommittedPages(any());
     verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
     assertThat(stateMachine.pendingLocalCommits()).isZero();
@@ -292,6 +295,7 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(waitedFor()).containsExactly(List.of(DB_NAME, 7L));
     verify(tx, never()).commit2ndPhase(any());
     verify(tx, never()).publishCommittedPages(any());
+    verify(tx, never()).publishReplicatedCommittedPages(any());
     verify(tx).concludeCommitWithoutPublishing();
     verify(proxied, never()).rollback();
   }

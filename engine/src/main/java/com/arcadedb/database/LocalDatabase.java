@@ -1499,11 +1499,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       doc.validate();
 
     // INVOKE EVENT CALLBACKS
-    if (!events.onBeforeCreate(record))
-      return false;
-    if (record instanceof Document doc)
-      if (!((LocalDocumentType) doc.getType()).fireBeforeCreate(record))
+    final int edgeAppend = suspendEdgeAppendForListeners(events.hasBeforeCreateListeners()
+        || record instanceof Document listened && ((LocalDocumentType) listened.getType()).hasBeforeCreateListeners());
+    try {
+      if (!events.onBeforeCreate(record))
         return false;
+      if (record instanceof Document doc)
+        if (!((LocalDocumentType) doc.getType()).fireBeforeCreate(record))
+          return false;
+    } finally {
+      resumeEdgeAppendAfterListeners(edgeAppend);
+    }
 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
@@ -1577,9 +1583,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         DeferredExistenceChecks.createCounted(this, record.getIdentity());
 
       // INVOKE EVENT CALLBACKS
-      events.onAfterCreate(record);
-      if (record instanceof Document doc)
-        ((LocalDocumentType) doc.getType()).fireAfterCreate(record);
+      final int edgeAppendAfter = suspendEdgeAppendForListeners(events.hasAfterCreateListeners()
+          || record instanceof Document listened && ((LocalDocumentType) listened.getType()).hasAfterCreateListeners());
+      try {
+        events.onAfterCreate(record);
+        if (record instanceof Document doc)
+          ((LocalDocumentType) doc.getType()).fireAfterCreate(record);
+      } finally {
+        resumeEdgeAppendAfterListeners(edgeAppendAfter);
+      }
 
     } finally {
       if (implicitTransaction) {
@@ -1867,11 +1879,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // INVOKE EVENT CALLBACKS
       if (fireEvents) {
-        if (!events.onBeforeUpdate(record))
-          return refusedUpdateOfQueuedRecordDoomsCommit(record);
-        if (record instanceof Document document)
-          if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
+        final int edgeAppend = suspendEdgeAppendForListeners(events.hasBeforeUpdateListeners()
+            || record instanceof Document listened && ((LocalDocumentType) listened.getType()).hasBeforeUpdateListeners());
+        try {
+          if (!events.onBeforeUpdate(record))
             return refusedUpdateOfQueuedRecordDoomsCommit(record);
+          if (record instanceof Document document)
+            if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
+              return refusedUpdateOfQueuedRecordDoomsCommit(record);
+        } finally {
+          resumeEdgeAppendAfterListeners(edgeAppend);
+        }
       }
     } catch (final RuntimeException | Error e) {
       // Whatever refused the update, a validation, a listener, even an Error: the values are on the queued instance, and over-refusing
@@ -1977,9 +1995,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     // INVOKE EVENT CALLBACKS
     if (fireEvents) {
-      events.onAfterUpdate(record);
-      if (record instanceof Document document)
-        ((LocalDocumentType) document.getType()).fireAfterUpdate(record);
+      final int edgeAppend = suspendEdgeAppendForListeners(events.hasAfterUpdateListeners()
+          || record instanceof Document listened && ((LocalDocumentType) listened.getType()).hasAfterUpdateListeners());
+      try {
+        events.onAfterUpdate(record);
+        if (record instanceof Document document)
+          ((LocalDocumentType) document.getType()).fireAfterUpdate(record);
+      } finally {
+        resumeEdgeAppendAfterListeners(edgeAppend);
+      }
     }
 
     return true;
@@ -2962,12 +2986,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -2983,12 +3010,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3005,12 +3035,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3032,12 +3065,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3071,12 +3107,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3091,12 +3130,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3111,12 +3153,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -4009,10 +4054,37 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   private Record dispatchAfterRead(Record record, final LocalDocumentType typeEvents) {
     // INVOKE EVENT CALLBACKS
-    record = events.onAfterRead(record);
-    if (record == null)
-      return null;
-    return typeEvents != null ? typeEvents.fireAfterRead(record) : record;
+    // only reached when a listener is registered: invokeAfterReadEvents returns first otherwise
+    final int edgeAppend = suspendEdgeAppendForListeners(true);
+    try {
+      record = events.onAfterRead(record);
+      if (record == null)
+        return null;
+      return typeEvents != null ? typeEvents.fireAfterRead(record) : record;
+    } finally {
+      resumeEdgeAppendAfterListeners(edgeAppend);
+    }
+  }
+
+  /**
+   * #11590: a record listener is the application, also when an edge append's own loads and saves fire it, so its reads are recorded
+   * as the application's rather than taken for the append's (see {@link TransactionContext#suspendEdgeAppend()}). The transaction is
+   * looked up only when a listener could fire for the event: with none registered, the common case, this costs one branch.
+   *
+   * @param listening whether a listener of the database or of the record's type is registered for the event
+   *
+   * @return the depth of the suspended window, 0 when none was open
+   */
+  private int suspendEdgeAppendForListeners(final boolean listening) {
+    if (!listening)
+      return 0;
+    final TransactionContext tx = getTransactionIfExists();
+    return tx != null ? tx.suspendEdgeAppend() : 0;
+  }
+
+  private void resumeEdgeAppendAfterListeners(final int edgeAppend) {
+    if (edgeAppend > 0)
+      getTransactionIfExists().resumeEdgeAppend(edgeAppend);
   }
 
   private void lockDatabase() {

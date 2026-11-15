@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Bolt's generic DatabaseError - or, for the {@code SchemaException} ones, the opposite of what happened: the {@code SCHEMA}
  * category ("the schema does not define this"). The refusals raised two bare types with no conflict arm anywhere. They raise
  * {@code AlreadyExistsException} now, which every wire maps to its own conflict code; the per-statement behaviour is pinned by
- * {@code Issue10153AlreadyExistsTest}, and three earlier fixes (#10073, #10074, #10075) each landed one name and left the others.
+ * {@code ExceptionCategoryTest.AlreadyExistsCategory}, and three earlier fixes (#10073, #10074, #10075) each landed one name and left the others.
  * <p>
  * The census ranges over the authority (#11288): every construction of a {@code Throwable} whose message words a taken name - a
  * constant, or the constant parts of a string concatenation, saying "already exists", "already registered" or "already defined" -

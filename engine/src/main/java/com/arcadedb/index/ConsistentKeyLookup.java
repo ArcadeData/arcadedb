@@ -77,12 +77,12 @@ public final class ConsistentKeyLookup {
    * the state that was read is dropped as dangling. {@code null} when there are more than {@link #MAX_ENTRIES} entries
    */
   public static List<IndexCursorEntry> lookup(final DatabaseInternal database, final Index index, final List<Object[]> keys) {
-    return lookup(database, index, keys, false);
+    return lookup(database, index, keys, false, false);
   }
 
   private static List<IndexCursorEntry> lookup(final DatabaseInternal database, final Index index, final List<Object[]> keys,
-      final boolean forQuery) {
-    final List<IndexCursorEntry> entries = lookupConsistently(database, index, keys, forQuery);
+      final boolean forQuery, final boolean prefix) {
+    final List<IndexCursorEntry> entries = lookupConsistently(database, index, keys, forQuery, prefix);
     final Runnable observer = afterLookupObserver;
     if (observer != null && entries != null)
       observer.run();
@@ -90,7 +90,7 @@ public final class ConsistentKeyLookup {
   }
 
   private static List<IndexCursorEntry> lookupConsistently(final DatabaseInternal database, final Index index,
-      final List<Object[]> keys, final boolean forQuery) {
+      final List<Object[]> keys, final boolean forQuery, final boolean prefix) {
     final PageManager pageManager = database.getPageManager();
     boolean unpinnedForDangling = false;
     Set<Integer> lastBucketIds = Set.of();
@@ -105,7 +105,7 @@ public final class ConsistentKeyLookup {
         // attempt ends in the lock below
         continue;
 
-      final Read read = readAndLoad(database, index, keys, forQuery);
+      final Read read = readAndLoad(database, index, keys, forQuery, prefix);
       if (read == null)
         return null;
       lastBucketIds = read.bucketIds;
@@ -124,7 +124,7 @@ public final class ConsistentKeyLookup {
         "Lookup on index '%s' overlapped a commit %d times, reading it under the publication lock", null, index.getName(), MAX_ATTEMPTS);
     // the pages pinned by the attempts that overlapped a commit must not serve the locked read either
     unpinRepeatableRead(database, index, lastBucketIds);
-    final Read read = (Read) pageManager.executeInLock(() -> readAndLoad(database, index, keys, forQuery));
+    final Read read = (Read) pageManager.executeInLock(() -> readAndLoad(database, index, keys, forQuery, prefix));
     return read == null ? null : read.entries;
   }
 
@@ -158,22 +158,41 @@ public final class ConsistentKeyLookup {
    */
   public static IndexCursor getForQuery(final Database database, final TypeIndex index, final Object[] key) {
     if (database instanceof DatabaseInternal internal) {
-      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(key), true);
+      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(key), true, false);
       if (entries != null)
         return new TempIndexCursor(entries);
     }
     return index.getForQuery(key);
   }
 
+  /**
+   * {@link #getForQuery} for the entries whose leading key columns equal {@code prefix}, a key shorter than the index's (issue
+   * #11576), read through {@link TypeIndex#prefixForQuery}: against one committed state when there are at most
+   * {@link #MAX_ENTRIES} of them, otherwise whole but without that guarantee, as {@link #getForQuery} answers a key too wide to be
+   * held. A reader that must not miss an entry, a MERGE deciding whether to create, reads a prefix this way.
+   */
+  public static IndexCursor prefixForQuery(final Database database, final TypeIndex index, final Object[] prefix) {
+    if (database instanceof DatabaseInternal internal) {
+      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(prefix), true, true);
+      if (entries != null)
+        return new TempIndexCursor(entries);
+    }
+    return index.prefixForQuery(prefix);
+  }
+
   private record Read(List<IndexCursorEntry> entries, Set<Integer> bucketIds, boolean dangling) {
   }
 
   private static Read readAndLoad(final DatabaseInternal database, final Index index, final List<Object[]> keys,
-      final boolean forQuery) {
+      final boolean forQuery, final boolean prefix) {
     final List<Object[]> entryKeys = new ArrayList<>(keys.size());
     final List<RID> rids = new ArrayList<>(keys.size());
     for (final Object[] key : keys) {
-      final IndexCursor cursor = forQuery && index instanceof TypeIndex typeIndex ? typeIndex.getForQuery(key) : index.get(key);
+      final IndexCursor cursor;
+      if (prefix)
+        cursor = ((TypeIndex) index).prefixForQuery(key);
+      else
+        cursor = forQuery && index instanceof TypeIndex typeIndex ? typeIndex.getForQuery(key) : index.get(key);
       try {
         while (cursor.hasNext()) {
           if (rids.size() >= MAX_ENTRIES)

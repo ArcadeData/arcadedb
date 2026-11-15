@@ -4534,7 +4534,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (phase2Fault != null)
         phase2Fault.accept(decoded.databaseName());
 
-      local.transaction().publishCommittedPages(local.phase1());
+      // the entry is durable in the Raft log: its WAL record is not flushed on this thread, see publishReplicatedCommittedPages
+      local.transaction().publishReplicatedCommittedPages(local.phase1());
       published = true;
     } catch (final Throwable t) {
       failure = t;

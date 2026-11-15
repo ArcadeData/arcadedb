@@ -20,21 +20,27 @@ package com.arcadedb.query.polyglot;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityUser;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 class PolyglotQueryTest extends TestHelper {
@@ -203,5 +209,75 @@ class PolyglotQueryTest extends TestHelper {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("js").analyze("3 + 5");
     assertThat(analyzed.isDDL()).isFalse();
     assertThat(analyzed.isIdempotent()).isFalse();
+  }
+
+
+  /**
+   * Regression for #8420: host code must not reach or replace the live security state through the bound database object.
+   * A {@code LANGUAGE js} function runs on the caller's thread, inside the request it was called from - the path on
+   * which {@code database.getContext()} is the request's own context and a replaced user outlives the script.
+   */
+  @Test
+  void functionCannotReplaceOrReadTheCurrentUser() {
+    database.command("sql", "DEFINE FUNCTION sec.dropUser 'database.getContext().setCurrentUser(null); return 1;' LANGUAGE js");
+    database.command("sql", "DEFINE FUNCTION sec.readUser 'return database.getContext().getCurrentUser().getName();' LANGUAGE js");
+
+    final DatabaseContext.DatabaseContextTL context = ((DatabaseInternal) database).getContext();
+    final SecurityDatabaseUser user = proxy(SecurityDatabaseUser.class, new AtomicInteger());
+    context.setCurrentUser(user);
+    try {
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = database.query("sql", "SELECT `sec.dropUser`() AS r")) {
+          rs.next();
+        }
+      }).as("a function must not be able to replace the user of the request it runs in").isNotNull();
+      assertThat(context.getCurrentUser()).isSameAs(user);
+
+      // WITHOUT THE SANDBOX THIS ANSWERS THE USER'S NAME: THE SCRIPT HOLDS THE LIVE USER OBJECT AND ITS MUTATORS
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = database.query("sql", "SELECT `sec.readUser`() AS r")) {
+          rs.next();
+        }
+      }).as("a function must not be able to reach the user of the request it runs in").isNotNull();
+    } finally {
+      context.setCurrentUser(null);
+    }
+  }
+
+  @Test
+  void scriptCannotCallAUserMutatorWhateverPathHandsTheUserOut() {
+    final AtomicInteger calls = new AtomicInteger();
+    final SecurityDatabaseUser databaseUser = proxy(SecurityDatabaseUser.class, calls);
+    final SecurityUser serverUser = proxy(SecurityUser.class, calls);
+
+    assertDenied("user.getName();", Map.of("user", databaseUser));
+    assertDenied("user.getName();", Map.of("user", serverUser));
+
+    assertThat(calls.get()).as("no user method may have been invoked by the script").isZero();
+  }
+
+  @Test
+  void theRestOfTheDatabaseApiIsStillReachable() {
+    // POSITIVE CONTROL: ONLY THE SECURITY STATE IS WALLED OFF, NOT THE BOUND DATABASE OBJECT
+    try (final ResultSet rs = database.command("js", "database.getName();")) {
+      assertThat(rs.next().<String>getProperty("value")).isEqualTo(database.getName());
+    }
+  }
+
+  private void assertDenied(final String script, final Map<String, Object> parameters) {
+    assertThatThrownBy(() -> database.command("js", script, parameters))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasCauseInstanceOf(PolyglotException.class);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T> T proxy(final Class<T> type, final AtomicInteger calls) {
+    return (T) Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type }, (proxy, method, args) -> {
+      // COUNTED ONLY FOR THE CALLS A SCRIPT MAKES: THE ENGINE'S OWN PERMISSION CHECKS ARE ANSWERED "ALLOWED"
+      if (method.getReturnType() == boolean.class)
+        return true;
+      calls.incrementAndGet();
+      return method.getReturnType() == String.class ? "someone" : null;
+    });
   }
 }
