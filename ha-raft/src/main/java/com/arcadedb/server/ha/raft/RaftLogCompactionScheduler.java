@@ -38,11 +38,13 @@ import java.util.logging.Level;
  * Ratis marks the log permanently failed at that index and the node rejects every subsequent
  * {@code APPEND_ENTRIES} until it is restarted.
  * <p>
- * ArcadeDB's snapshot is a zero-byte marker file - the database files on disk are already the
- * durable state, see {@link ArcadeStateMachine#takeSnapshot()} - so triggering one is cheap enough
- * to do on a wall-clock schedule. Each tick asks the <b>local</b> Ratis server to create a snapshot;
- * this runs on leader and followers alike because every Ratis server purges its own log against its
- * own snapshot index.
+ * ArcadeDB's snapshot is a zero-byte marker file - the database files on disk are the durable
+ * state, see {@link ArcadeStateMachine#takeSnapshot()} - so triggering one is cheap enough to do on a
+ * wall-clock schedule. What it costs is forcing the data files written since the previous one
+ * (issue #11258): the target does that on this thread before it asks for the snapshot, because the
+ * snapshot itself runs on the apply thread, where every commit of the node waits for it (issue
+ * #11989). Each tick asks the <b>local</b> Ratis server to create a snapshot; this runs on leader and
+ * followers alike because every Ratis server purges its own log against its own snapshot index.
  * <p>
  * A tick carries a creation gap: Ratis completes the request without doing any work when fewer than
  * that many entries have been applied since the last snapshot, so an idle cluster costs nothing.
