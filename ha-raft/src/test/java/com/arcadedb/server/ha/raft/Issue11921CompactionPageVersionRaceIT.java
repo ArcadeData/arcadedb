@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,7 +80,7 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
     waitForAllServers();
 
     final RaftHAServer leaderRaft = getRaftPlugin(leader).getRaftHAServer();
-    final Object monitor = validationMonitor(leaderRaft.getStateMachine());
+    final ReentrantLock validationLock = validationLock(leaderRaft.getStateMachine());
     final long logBefore = lastRaftLogIndex(leaderRaft);
 
     final CountDownLatch phase0Published = new CountDownLatch(1);
@@ -103,13 +104,16 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
     }, "issue11921-compaction");
 
     boolean phase0Reached;
-    synchronized (monitor) {
+    validationLock.lock();
+    try {
       appender.start();
       assertThat(awaitValidationBlocked()).as("the leader's validation of the follower append must reach the monitor").isTrue();
       compactor.start();
       // Phase 0 published (the hook runs after it, before phase 4c). A compaction that has to take the monitor itself
       // cannot get here while the test holds it: the wait then times out and the two race for the monitor below.
       phase0Reached = phase0Published.await(3, TimeUnit.SECONDS);
+    } finally {
+      validationLock.unlock();
     }
     appender.join(60_000);
     compactor.join(60_000);
@@ -153,22 +157,24 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
     ((LocalTimeSeriesType) db.getSchema().getType(TYPE)).getEngine().appendSamples(new long[] { ts }, new Object[][] { { ts } });
   }
 
-  /** The leader ledger's per-database monitor that {@code validateAndReserve} runs under. */
-  private Object validationMonitor(final ArcadeStateMachine stateMachine) throws Exception {
+  /** The leader ledger's per-database lock that {@code validateAndReserve} runs under. */
+  private ReentrantLock validationLock(final ArcadeStateMachine stateMachine) throws Exception {
     final Field ledgerField = ArcadeStateMachine.class.getDeclaredField("pageVersions");
     ledgerField.setAccessible(true);
     final Field databases = PageVersionLedger.class.getDeclaredField("byDatabase");
     databases.setAccessible(true);
-    final Object monitor = ((Map<?, ?>) databases.get(ledgerField.get(stateMachine))).get(getDatabaseName());
-    assertThat(monitor).as("the follower append above created the leader's ledger of the database").isNotNull();
-    return monitor;
+    final Object ledger = ((Map<?, ?>) databases.get(ledgerField.get(stateMachine))).get(getDatabaseName());
+    assertThat(ledger).as("the follower append above created the leader's ledger of the database").isNotNull();
+    final Field lock = ledger.getClass().getDeclaredField("lock");
+    lock.setAccessible(true);
+    return (ReentrantLock) lock.get(ledger);
   }
 
   private static boolean awaitValidationBlocked() throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 10_000;
     while (System.currentTimeMillis() < deadline) {
       for (final Map.Entry<Thread, StackTraceElement[]> thread : Thread.getAllStackTraces().entrySet())
-        if (thread.getKey().getState() == Thread.State.BLOCKED)
+        if (thread.getKey().getState() == Thread.State.WAITING || thread.getKey().getState() == Thread.State.BLOCKED)
           for (final StackTraceElement frame : thread.getValue())
             if (frame.getClassName().equals(PageVersionLedger.class.getName()) && frame.getMethodName().equals("validateAndReserve"))
               return true;

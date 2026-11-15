@@ -27,6 +27,9 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -327,6 +330,76 @@ class PageVersionLedgerTest {
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+  }
+
+  /**
+   * Issue #11921 review: a session commit run by publishOutsideTheLog waits for its file locks, which an ordinary commit of
+   * the leader holds from its phase 1 until its own entry is validated and appended. Waiting for them with the validation
+   * lock held made the two wait for each other until the file-lock timeout. The commit modelled here takes its file lock,
+   * then checks a version (the engine's order in commit1stPhase); the ordinary commit holds the file lock and validates.
+   */
+  @Test
+  void aPublicationWaitingForAFileLockDoesNotHoldTheValidationLock() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    final ReentrantLock fileLock = new ReentrantLock();
+    final CountDownLatch publicationStarted = new CountDownLatch(1);
+    final CountDownLatch fileLockHeld = new CountDownLatch(1);
+    final AtomicReference<Throwable> validationFailure = new AtomicReference<>();
+    final Thread ordinaryCommit = new Thread(() -> {
+      fileLock.lock();
+      try {
+        fileLockHeld.countDown();
+        awaitLatch(publicationStarted);
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(5, 0, 1))), entry(2), localVersions);
+      } catch (final Throwable t) {
+        validationFailure.set(t);
+      } finally {
+        fileLock.unlock();
+      }
+    }, "issue11921-ordinary-commit");
+    ordinaryCommit.start();
+    awaitLatch(fileLockHeld);
+
+    final boolean published = ledger.publishOutsideTheLog(DB, () -> {
+      publicationStarted.countDown();
+      if (!fileLock.tryLock(3, TimeUnit.SECONDS))
+        return false;
+      try {
+        ledger.reservedVersion(DB, 3, 0);
+        return true;
+      } finally {
+        fileLock.unlock();
+      }
+    });
+    ordinaryCommit.join(10_000);
+
+    assertThat(published).as("the session commit must get the file lock the ordinary commit releases once validated").isTrue();
+    assertThat(validationFailure.get()).isNull();
+    assertThat(ledger.reservedVersion(DB, 5, 0)).isEqualTo(1);
+  }
+
+  /** Issue #11921: from its first version check to its return, a publication still excludes every validation of the database. */
+  @Test
+  void aValidationWaitsForAPublicationThatChecked() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation");
+
+    final boolean validatedDuringPublication = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.reservedVersion(DB, 3, 0);
+      validation.start();
+      return validated.await(300, TimeUnit.MILLISECONDS);
+    });
+
+    assertThat(validatedDuringPublication).as("a validation must not run between a publication's check and its return").isFalse();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
   }
 
   /** Ages a reservation, since the staleness bound is measured on the wall clock. */
