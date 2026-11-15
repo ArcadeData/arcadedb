@@ -85,12 +85,6 @@ public class PaginatedComponentFile extends ComponentFile {
    */
   private static final int REOPEN_ATTEMPTS = 5;
 
-  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
-  @FunctionalInterface
-  private interface ChannelOperation {
-    void run() throws IOException;
-  }
-
   /**
    * Updates {@link #totalPages} atomically WITHOUT an {@code AtomicInteger}: {@link #open} runs from the superclass
    * constructor, before this class's field initializers, so an object field would still be null when it has to be
@@ -162,6 +156,12 @@ public class PaginatedComponentFile extends ComponentFile {
 
   private static final AtomicLongFieldUpdater<PaginatedComponentFile> DIRECTORY_FORCES_UPDATER =
       AtomicLongFieldUpdater.newUpdater(PaginatedComponentFile.class, "directoryForces");
+
+  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
+  @FunctionalInterface
+  private interface ChannelOperation {
+    void run() throws IOException;
+  }
 
   /**
    * Stands in for the channel's interruptor: an interrupt landing on a thread doing I/O is absorbed and the channel stays
