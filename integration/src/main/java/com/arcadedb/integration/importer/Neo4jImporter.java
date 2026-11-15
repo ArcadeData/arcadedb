@@ -663,19 +663,25 @@ public class Neo4jImporter {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Stores a Neo4j ID -> packed RID mapping. Tries numeric mode first; on the first non-numeric ID,
-   * migrates all existing entries to the string HashMap and switches permanently.
+   * Stores a Neo4j ID -> packed RID mapping. Tries numeric mode first; on the first ID that is not the canonical decimal
+   * form of a long, migrates all existing entries to the string HashMap and switches permanently.
+   * <p>
+   * Canonical only: {@code "01"}, {@code "+1"} and {@code "-0"} parse to the same long as another id, so taking them on the
+   * numeric path made two nodes share one entry - the second replaced the first, and the relationships of the first were
+   * attached to the second - and the migration, which re-keys every entry with {@code Long.toString}, then lost the
+   * spelling the relationships use (issue #12046).
    */
   private void putId(final String id, final long packedRID) {
     if (useNumericIds) {
-      try {
-        final long numericId = Long.parseLong(id);
-        numericIdMap.put(numericId, packedRID);
-        return;
-      } catch (final NumberFormatException e) {
-        // Non-numeric ID detected, migrate to string mode
-        migrateToStringMode();
+      if (isCanonicalLong(id)) {
+        try {
+          numericIdMap.put(Long.parseLong(id), packedRID);
+          return;
+        } catch (final NumberFormatException e) {
+          // OUT OF THE RANGE OF A LONG: MIGRATE TO STRING MODE BELOW
+        }
       }
+      migrateToStringMode();
     }
     stringIdMap.put(id, packedRID);
   }
@@ -685,6 +691,9 @@ public class Neo4jImporter {
    */
   private long getId(final String id) {
     if (useNumericIds) {
+      // WHILE IN NUMERIC MODE EVERY STORED ID IS CANONICAL: ANY OTHER SPELLING NAMES A NODE THAT IS NOT THERE
+      if (!isCanonicalLong(id))
+        return LongLongMap.EMPTY;
       try {
         return numericIdMap.get(Long.parseLong(id));
       } catch (final NumberFormatException e) {
@@ -693,6 +702,25 @@ public class Neo4jImporter {
     }
     final Long packed = stringIdMap.get(id);
     return packed != null ? packed : LongLongMap.EMPTY;
+  }
+
+  /**
+   * Whether {@code id} is spelled the way {@link Long#toString(long)} spells a number: an optional minus sign and digits with
+   * no leading zero, {@code "0"} itself excepted. Range is left to {@link Long#parseLong}.
+   */
+  private static boolean isCanonicalLong(final String id) {
+    final int length = id.length();
+    int i = length > 0 && id.charAt(0) == '-' ? 1 : 0;
+    if (i == length)
+      return false;
+    if (id.charAt(i) == '0')
+      return length == 1;
+    for (; i < length; ++i) {
+      final char c = id.charAt(i);
+      if (c < '0' || c > '9')
+        return false;
+    }
+    return true;
   }
 
   /**
