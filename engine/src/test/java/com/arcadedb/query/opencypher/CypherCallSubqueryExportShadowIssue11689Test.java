@@ -74,6 +74,12 @@ class CypherCallSubqueryExportShadowIssue11689Test extends TestHelper {
   }
 
   @Test
+  void duplicateColumnInsideReturnKeepsColumnNameConflict() {
+    assertThatThrownBy(() -> database.query("opencypher", "CALL { RETURN 1 AS a, 2 AS a } RETURN a").close())
+        .isInstanceOf(CommandParsingException.class).hasMessageNotContaining("already declared in outer scope");
+  }
+
+  @Test
   void unitSubqueryIsUnaffected() {
     database.transaction(() -> database.command("opencypher", "UNWIND [1, 2] AS i CALL { WITH i CREATE (:N {v: i}) } RETURN i").close());
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:N) RETURN count(n) AS c")) {

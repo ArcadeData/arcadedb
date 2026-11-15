@@ -753,6 +753,9 @@ public class CypherSemanticValidator {
             // Validate the subquery body: outer variables are visible only if imported (issue #5213).
             validateSubqueryScope(subqueryClause, scope, shadowed);
             final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+            // Exports are checked against the outer scope as it was before this subquery, so a duplicate column inside
+            // the RETURN keeps its ColumnNameConflict error instead of reading as a clash with an earlier export
+            final Set<String> outerScope = innerReturn != null ? new HashSet<>(scope) : null;
             if (innerReturn != null)
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
                 if (item.isStar()) {
@@ -770,7 +773,7 @@ public class CypherSemanticValidator {
                   if (exportedName == null)
                     continue;
                   // A subquery cannot export a name the outer scope already binds, imported or not (issue #11689)
-                  if (scope.contains(exportedName))
+                  if (outerScope.contains(exportedName))
                     throw new CommandParsingException(
                         "VariableAlreadyBound: Variable '" + exportedName + "' already declared in outer scope");
                   scope.add(exportedName);
