@@ -495,7 +495,9 @@ public class InExpression implements BooleanExpression {
    * is null, not false. Neither is one holding a NaN, a fraction, a list, a map, a temporal or any other value, whose equality
    * is not that of a hash key. A text against a list holding a non-text, and a non-text against a list holding a text, are
    * walked as well: the walk compares a stored value with what the element would be stored as in a declared property
-   * (issues #9695, #9794), and a RID spelled as text with the id it denotes.
+   * (issues #9695, #9794), and a RID spelled as text with the id it denotes. So is a text holding an isolated surrogate, as a
+   * probe or as an element: = compares it by its UTF-8 bytes, where the surrogate is the replacement byte '?'
+   * ({@code BinaryComparator.compareStrings}), so it equals texts that String.equals tells apart.
    */
   private static final class ListLookup {
     /** The lookup of a list that cannot be hashed: it answers nothing, and the list is walked. */
@@ -516,7 +518,9 @@ public class InExpression implements BooleanExpression {
       boolean hasText = false;
       boolean hasNonText = false;
       for (final Object element : elements) {
-        if (element instanceof String) {
+        if (element instanceof String text) {
+          if (hasIsolatedSurrogate(text))
+            return UNHASHABLE;
           hasText = true;
           members.add(element);
           continue;
@@ -541,12 +545,25 @@ public class InExpression implements BooleanExpression {
     Boolean contains(final Object value) {
       if (members == null)
         return null;
-      if (value instanceof String)
-        return hasNonText ? null : members.contains(value);
+      if (value instanceof String text)
+        return hasNonText || hasIsolatedSurrogate(text) ? null : members.contains(value);
       if (hasText)
         return null;
       final Object key = hashKey(value);
       return key == null ? null : members.contains(key);
+    }
+
+    /** Whether the text holds a surrogate that is not half of a pair. */
+    private static boolean hasIsolatedSurrogate(final String text) {
+      final int length = text.length();
+      for (int i = 0; i < length; i++) {
+        final char c = text.charAt(i);
+        if (Character.isHighSurrogate(c) && i + 1 < length && Character.isLowSurrogate(text.charAt(i + 1)))
+          ++i;
+        else if (Character.isSurrogate(c))
+          return true;
+      }
+      return false;
     }
   }
 
