@@ -58,6 +58,13 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
   private static final Pattern LINE_BREAK = Pattern.compile("\\R");
+  /** The INTEGER_LITERAL and FLOATING_POINT_LITERAL tokens of the SQL lexer (SQLLexer.g4), the values a TIMEOUT clause takes. */
+  private static final Pattern NUMBER_LITERAL = Pattern.compile(//
+      "(?:[1-9][0-9]*|0[xX][0-9a-fA-F]+|0[0-7]*)[lL]?" //
+          + "|[0-9]+\\.[0-9]*(?:[eE][+-]?[0-9]+)?[fFdD]?" //
+          + "|\\.[0-9]+(?:[eE][+-]?[0-9]+)?[fFdD]?" //
+          + "|[0-9]+(?:[eE][+-]?[0-9]+[fFdD]?|(?:[eE][+-]?[0-9]+)?[fFdD])" //
+          + "|0[xX](?:[0-9a-fA-F]+\\.?|[0-9a-fA-F]*\\.[0-9a-fA-F]+)[pP][+-]?[0-9]+[fFdD]?");
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -197,7 +204,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
   /**
    * The TIMEOUT clause a SELECT ends with ({@code TIMEOUT <ms> [RETURN | EXCEPTION]}), read on the SQL tokens so that whitespace and
    * comments between its words are skipped as the lexer skips them: {start of the TIMEOUT keyword, end of the token before it}, or
-   * null when the text ends with no such clause. A word inside a string literal, a quoted identifier or a comment is not a token.
+   * null when the text ends with no such clause. A word inside a string literal, a quoted identifier or a comment is not a token,
+   * and a number is one token in every spelling the lexer reads as one ({@code 5000L}, {@code 0x1388}, {@code 5e3}, {@code 5000.0}).
    * One pass over the text.
    */
   static int[] trailingTimeout(final String command) {
@@ -230,6 +238,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
         while (pos < length && command.charAt(pos) != c)
           pos += command.charAt(pos) == '\\' ? 2 : 1;
         pos = Math.min(pos + 1, length);
+      } else if (isAsciiDigit(c) || (c == '.' && pos + 1 < length && isAsciiDigit(command.charAt(pos + 1)))) {
+        pos = numberEnd(command, pos);
       } else if (isWordChar(c)) {
         while (pos < length && isWordChar(command.charAt(pos)))
           ++pos;
@@ -252,10 +262,38 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final int millis = (tokens - clauseTokens + 1) & 3;
     if (!isToken(command, starts[keyword], ends[keyword], "timeout"))
       return null;
-    for (int i = starts[millis]; i < ends[millis]; ++i)
-      if (!Character.isDigit(command.charAt(i)))
-        return null;
+    if (!NUMBER_LITERAL.matcher(command).region(starts[millis], ends[millis]).matches())
+      return null;
     return new int[] { starts[keyword], ends[(tokens - clauseTokens - 1) & 3] };
+  }
+
+  /**
+   * The end of the number literal starting at {@code start}: its digits, a fraction, an exponent with its sign, a type suffix and
+   * the digits of a hexadecimal number, as the SQL lexer reads them into one literal.
+   */
+  private static int numberEnd(final String command, final int start) {
+    final int length = command.length();
+    final boolean hex = start + 1 < length && command.charAt(start) == '0' && (command.charAt(start + 1) == 'x'
+        || command.charAt(start + 1) == 'X');
+    int pos = start;
+    while (pos < length) {
+      final char c = command.charAt(pos);
+      if (isWordChar(c) || c == '.')
+        ++pos;
+      else if ((c == '+' || c == '-') && pos > start && isExponentMark(command.charAt(pos - 1), hex))
+        ++pos;
+      else
+        break;
+    }
+    return pos;
+  }
+
+  private static boolean isExponentMark(final char c, final boolean hex) {
+    return hex ? c == 'p' || c == 'P' : c == 'e' || c == 'E';
+  }
+
+  private static boolean isAsciiDigit(final char c) {
+    return c >= '0' && c <= '9';
   }
 
   private static boolean isWordChar(final char c) {

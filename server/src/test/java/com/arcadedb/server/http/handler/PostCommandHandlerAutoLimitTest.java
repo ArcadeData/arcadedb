@@ -21,6 +21,8 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -204,6 +206,18 @@ class PostCommandHandlerAutoLimitTest {
         .isEqualTo("SELECT FROM V /* TIMEOUT 5000 */ limit 21");
     assertThat(PostCommandHandler.withAutomaticLimit("SELECT `timeout 5000` FROM V", 21))
         .isEqualTo("SELECT `timeout 5000` FROM V limit 21");
+  }
+
+  /** The value of a trailing TIMEOUT is any number literal the SQL lexer reads: a type suffix, hexadecimal, a fraction, an exponent. */
+  @Test
+  void aTrailingTimeoutTakesEveryNumberLiteral() {
+    for (final String millis : List.of("5000L", "5000l", "0x1388", "0X1388L", "0", "5e3", "5E+3", "5000.0", "5000.5d", ".5e4"))
+      assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT " + millis + " RETURN", 21)).as(millis)
+          .isEqualTo("SELECT FROM V limit 21 TIMEOUT " + millis + " RETURN");
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V LIMIT 2 TIMEOUT 5000L", "sql", LIMIT, null)).isFalse();
+    // A word that is no number literal is no TIMEOUT value
+    for (final String notANumber : List.of("5000abc", "abc", "0x", "08", "5e"))
+      assertThat(PostCommandHandler.trailingTimeout("SELECT FROM V TIMEOUT " + notANumber)).as(notANumber).isNull();
   }
 
   /** The clause is found in one pass: a long run of spaces (here inside a literal) costs no rescan from each of its characters. */
