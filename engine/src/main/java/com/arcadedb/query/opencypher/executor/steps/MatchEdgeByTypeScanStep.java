@@ -52,8 +52,9 @@ import java.util.NoSuchElementException;
  * <p>
  * It serves {@code MATCH (a)-[e:K]->(b) WHERE e.w = 3} when no index of K answers the predicate ({@link MatchEdgeByIndexStep}
  * serves it when one does). The walk also finds the light edges of K, which have no record in its buckets, so the planner takes
- * this step only under a predicate a relationship with no property never satisfies (see
- * {@link com.arcadedb.query.opencypher.executor.EdgeTypeScanPlanner}).
+ * this step only under a predicate a relationship with no property never satisfies, or for a statement that only aggregates
+ * properties of the relationship with aggregates that skip a null, {@code RETURN count(e.w)}, to which no light edge adds anything
+ * (see {@link com.arcadedb.query.opencypher.executor.EdgeTypeScanPlanner}).
  * <p>
  * Each edge is checked against the relationship's inline property map and against the conjuncts of the {@code WHERE} clause that
  * read only the relationship, which the clause's filter leaves to this step, before its endpoints are loaded. The endpoints are

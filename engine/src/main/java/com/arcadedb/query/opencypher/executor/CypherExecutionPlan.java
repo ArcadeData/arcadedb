@@ -3113,8 +3113,10 @@ public class CypherExecutionPlan {
    * Builds a {@link MatchEdgeByTypeScanStep} seed for a single-hop pattern no index of its relationship types answers, when the
    * MATCH's {@code WHERE} clause or the relationship's inline property map requires a property of the relationship (issue
    * #11874): such a predicate keeps out every light edge, the one kind of edge the walk finds and a scan of the types' buckets
-   * does not (see {@link EdgeTypeScanPlanner}). The scan reads the edges of the types instead of every vertex and every edge
-   * list, and checks the endpoints' labels and inline properties on the two vertices of each edge it keeps.
+   * does not (see {@link EdgeTypeScanPlanner}). So does a statement that only aggregates properties of the relationship with
+   * aggregates that skip a null, {@code RETURN count(e.w)}: a light edge adds nothing to them. The scan reads the edges of the
+   * types instead of every vertex and every edge list, and checks the endpoints' labels and inline properties on the two
+   * vertices of each edge it keeps.
    * <p>
    * Returns {@code null} - deferring to the ordinary vertex-scan + expansion plan - whenever a precondition is not met, when the
    * statement writes, or when the source endpoint carries labels whose vertices and their share of the edges cost the walk less
@@ -3147,8 +3149,8 @@ public class CypherExecutionPlan {
 
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : null;
     final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;
-    if ((relProperties == null || relProperties.isEmpty())
-        && !(namedEdge && EdgeTypeScanPlanner.requiresAPropertyOf(edgeVar, where)))
+    if ((relProperties == null || relProperties.isEmpty()) && !(namedEdge
+        && (EdgeTypeScanPlanner.requiresAPropertyOf(edgeVar, where) || EdgeTypeScanPlanner.onlyAggregatesAPropertyOf(edgeVar, statement))))
       return null;
 
     final List<String> edgeTypes = EdgeTypeScanPlanner.scanTypes(database.getSchema(), rel.getTypes());

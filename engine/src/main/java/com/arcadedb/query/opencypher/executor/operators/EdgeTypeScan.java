@@ -31,7 +31,8 @@ import java.util.Locale;
 
 /**
  * The anchor of a cost-based plan that starts from a scan of the buckets of a relationship's types (issue #11874), under a
- * predicate that requires a property of the relationship, so no light edge can be an answer (see
+ * predicate that requires a property of the relationship, so no light edge can be an answer, or for a statement that only
+ * aggregates properties of the relationship, so no light edge adds to the answer (see
  * {@link com.arcadedb.query.opencypher.executor.EdgeTypeScanPlanner}). It binds each edge that passes the predicate's conjuncts
  * on the relationship and both endpoints, checking the endpoints' labels. The plan's filter above still applies the whole
  * {@code WHERE} clause.

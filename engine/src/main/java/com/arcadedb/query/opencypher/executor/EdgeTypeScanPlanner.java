@@ -21,13 +21,17 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
@@ -46,7 +50,8 @@ import java.util.List;
  * edge lists of its two vertices. A scan of the buckets therefore answers the pattern exactly only when no light edge can be an
  * answer, which holds when the pattern requires a property of the relationship to have a value. A light edge has no property, so
  * such a predicate is false or null for every one of them, and the regular edges of the types (their sub-types included, which the
- * pattern matches and the polymorphic scan reads) are exactly the edges the walk keeps.
+ * pattern matches and the polymorphic scan reads) are exactly the edges the walk keeps. It holds as well when the statement only
+ * aggregates properties of the relationship, with aggregates that skip the null a light edge gives them.
  * <p>
  * The predicates that require a property: a comparison, an {@code IN}, a {@code STARTS WITH}/{@code ENDS WITH}/{@code CONTAINS},
  * a regular expression match or a boolean test with {@code r.k} as an operand, {@code r.k IS NOT NULL}, an {@code OR} whose two
@@ -87,6 +92,39 @@ public final class EdgeTypeScanPlanner {
       if (requiresAProperty(conjunct, relationshipVariable))
         return true;
     return false;
+  }
+
+  /**
+   * Whether every row a light edge binds is lost on the statement's answer anyway: the statement is MATCH clauses and a RETURN
+   * whose every item is an aggregate that skips a null, over a property of the relationship ({@code count(e.w)}, {@code sum(e.w)},
+   * {@code avg}, {@code min}, {@code max}, {@code collect}, {@code stDev}, {@code stDevP}, {@code DISTINCT} or not). A light edge has
+   * no property, so none of these aggregates reads anything from its rows, and a RETURN without grouping keys answers its one row
+   * whatever rows reach it. A grouping key would not do: a group of light edges alone is a row of the answer.
+   */
+  public static boolean onlyAggregatesAPropertyOf(final String relationshipVariable, final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (relationshipVariable == null || clauses == null || clauses.isEmpty()
+        || clauses.getLast().getType() != ClauseEntry.ClauseType.RETURN)
+      return false;
+    for (int i = 0; i < clauses.size() - 1; i++)
+      if (clauses.get(i).getType() != ClauseEntry.ClauseType.MATCH)
+        return false;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.getReturnItems() == null || returnClause.getReturnItems().isEmpty())
+      return false;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (item.isStar() || !(item.getExpression() instanceof FunctionCallExpression call) || !skipsANull(call.getFunctionName())
+          || call.getArguments().size() != 1 || !readsAProperty(call.getArguments().getFirst(), relationshipVariable))
+        return false;
+    return true;
+  }
+
+  private static boolean skipsANull(final String functionName) {
+    return switch (functionName) {
+      case "count", "sum", "avg", "min", "max", "collect", "collect_list", "stdev", "stdev_samp", "stdevp", "stdev_pop" -> true;
+      default -> false;
+    };
   }
 
   /**

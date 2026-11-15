@@ -23,9 +23,11 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -188,6 +190,13 @@ class CypherEdgeTypeScanIssue11874Test {
         assertThat(rows(query, Map.of())).as(query).isNotEmpty()
             .isEqualTo(rows(query.replace("WHERE e.w = 3", "WITH a, e, b WHERE e.w = 3"), Map.of()));
       }
+      // a narrowed source keeps the walk for the aggregates too: it reads fewer edges than the scan
+      for (final String query : new String[] { "MATCH (a {grp: 1})-[e:K]->() RETURN sum(e.w) AS s",
+          "MATCH (a:P {grp: 1})-[e:K]->() RETURN sum(e.w) AS s", "MATCH (a:Rare)-[e:K]->() RETURN sum(e.w) AS s" }) {
+        assertThat(explain(query, Map.of())).as(query).doesNotContain(TYPE_SCAN);
+        assertThat(rows(query, Map.of())).as(query)
+            .isEqualTo(rows(query.replace("RETURN", "WITH e RETURN"), Map.of()));
+      }
     }
 
     @Test
@@ -248,6 +257,76 @@ class CypherEdgeTypeScanIssue11874Test {
     }
 
     @Test
+    void aggregatesOfARelationshipPropertyScanWithoutAPredicate() {
+      // a light edge gives these aggregates a null, which each of them skips: the edges the scan leaves out add nothing
+      assertSameAsWalk("MATCH ()-[e:K]->() RETURN count(e.w) AS c",
+          "MATCH ()-[e:K]->() WITH e RETURN count(e.w) AS c", Map.of());
+      assertThat(explain("MATCH ()-[e:K]->() RETURN count(e.w) AS c", Map.of()))
+          .contains(TYPE_SCAN + " (  src0)-[e:K]->(  tgt1)").doesNotContain("MATCH RELATIONSHIP");
+      final String aggregates = "count(e.w) AS c, sum(e.w) AS s, avg(e.w) AS a, min(e.w) AS mi, max(e.w) AS ma, "
+          + "count(DISTINCT e.name) AS d, min(e.name) AS mn";
+      assertSameAsWalk("MATCH (a)-[e:K]->(b) RETURN " + aggregates, "MATCH (a)-[e:K]->(b) WITH a, e, b RETURN " + aggregates,
+          Map.of());
+      assertSameAsWalk("MATCH (a)-[e:K|L]-(b) RETURN " + aggregates, "MATCH (a)-[e:K|L]-(b) WITH a, e, b RETURN " + aggregates,
+          Map.of());
+      assertSameAsWalk("MATCH (a)-[e:K]->(b:Q) RETURN " + aggregates,
+          "MATCH (a)-[e:K]->(b:Q) WITH a, e, b RETURN " + aggregates, Map.of());
+      // a predicate on the relationship a light edge satisfies, decided by the scan on the edges it reads
+      assertSameAsWalk("MATCH (a)-[e:K]->(b) WHERE e.w IS NULL OR e.w > 5 RETURN " + aggregates,
+          "MATCH (a)-[e:K]->(b) WITH a, e, b WHERE e.w IS NULL OR e.w > 5 RETURN " + aggregates, Map.of());
+      // the cost-based plan
+      assertThat(explain("MATCH (a:P)-[e:K]->(b:P) RETURN " + aggregates, Map.of())).contains("EdgeTypeScan " + TYPE_SCAN);
+      assertSameAsWalk("MATCH (a:P)-[e:K]->(b:P) RETURN " + aggregates,
+          "MATCH (a:P)-[e:K]->(b:P) WITH a, e, b RETURN " + aggregates, Map.of());
+
+      // collect() and the standard deviations, whose order or rounding follows the order of the rows
+      final String spread = "MATCH ()-[e:K]->() RETURN collect(e.w) AS l, stDev(e.w) AS sd, stDevP(e.w) AS sp";
+      assertThat(explain(spread, Map.of())).contains(TYPE_SCAN);
+      final Result scanned = single(spread);
+      final Result walked = single(spread.replace("RETURN", "WITH e RETURN"));
+      assertThat(new TreeSet<>(scanned.<List<Object>>getProperty("l")).toString()).isEqualTo(
+          new TreeSet<>(walked.<List<Object>>getProperty("l")).toString());
+      assertThat(scanned.<List<Object>>getProperty("l")).hasSameSizeAs(walked.<List<Object>>getProperty("l"));
+      assertThat(scanned.<Number>getProperty("sd").doubleValue()).isCloseTo(walked.<Number>getProperty("sd").doubleValue(),
+          Offset.offset(1e-9));
+      assertThat(scanned.<Number>getProperty("sp").doubleValue()).isCloseTo(walked.<Number>getProperty("sp").doubleValue(),
+          Offset.offset(1e-9));
+    }
+
+    @Test
+    void aggregatesOfATypeWithOnlyLightEdges() {
+      // the walk aggregates only nulls, the scan nothing at all: the same one row
+      database.command("sql", "CREATE EDGE TYPE OnlyLight");
+      database.transaction(() -> {
+        final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 1").next().getVertex().get();
+        final Vertex b = database.query("sql", "SELECT FROM P WHERE id = 2").next().getVertex().get();
+        a.newLightEdge("OnlyLight", b);
+        b.newLightEdge("OnlyLight", a);
+      });
+      final String aggregates = "count(e.w) AS c, sum(e.w) AS s, avg(e.w) AS a, min(e.w) AS mi, max(e.w) AS ma, "
+          + "collect(e.w) AS l, stDev(e.w) AS sd, stDevP(e.w) AS sp";
+      assertSameAsWalk("MATCH ()-[e:OnlyLight]->() RETURN " + aggregates,
+          "MATCH ()-[e:OnlyLight]->() WITH e RETURN " + aggregates, Map.of());
+      assertThat(count("MATCH ()-[e:OnlyLight]->() RETURN count(*) AS c")).isEqualTo(2L);
+    }
+
+    @Test
+    void rowsOfARelationshipWithoutAPredicateKeepTheWalkAndItsLightEdges() {
+      // every row of a light edge is an answer here, and the scan of the buckets does not find it
+      final long relationships = database.countType("K", true) + lightEdges;
+      for (final String query : new String[] { "MATCH ()-[e:K]->() RETURN e", "MATCH ()-[e:K]->() RETURN e.w AS w",
+          "MATCH ()-[e:K]->() WITH e RETURN count(e.w) AS c", "MATCH ()-[e:K]->() RETURN count(e) AS c",
+          "MATCH ()-[e:K]->() RETURN count(*) AS c", "MATCH ()-[e:K]->() RETURN count(e.w) + 1 AS c",
+          "MATCH ()-[e:K]->() RETURN count(e.w) AS c, count(e) AS r", "MATCH ()-[e:K]->() RETURN e.name AS n, count(e.w) AS c",
+          "MATCH ()-[e:K]->() UNWIND [1, 2] AS x RETURN count(e.w) AS c" })
+        assertThat(explain(query, Map.of())).as(query).doesNotContain(TYPE_SCAN);
+      assertThat(rows("MATCH ()-[e:K]->() RETURN e", Map.of())).hasSize((int) relationships);
+      assertThat(count("MATCH ()-[e:K]->() RETURN count(e) AS c")).isEqualTo(relationships);
+      // a group of light edges alone is a row of the answer
+      assertThat(rows("MATCH ()-[e:K]->() RETURN e.name AS n, count(e.w) AS c", Map.of())).contains("c=0, n=null");
+    }
+
+    @Test
     void aWriteInTheSameTransactionIsSeen() {
       database.begin();
       try {
@@ -262,6 +341,14 @@ class CypherEdgeTypeScanIssue11874Test {
     private long count(final String query) {
       try (final ResultSet rs = database.query("opencypher", query)) {
         return ((Number) rs.next().getProperty("c")).longValue();
+      }
+    }
+
+    private Result single(final String query) {
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        final Result row = rs.next();
+        assertThat(rs.hasNext()).isFalse();
+        return row;
       }
     }
 
@@ -324,6 +411,13 @@ class CypherEdgeTypeScanIssue11874Test {
       final String inline = "MATCH (a)-[e:K {w: 3}]->(b) RETURN e.id AS id, b.id AS b";
       assertThat(profile(inline)).contains(TYPE_SCAN).contains("[parallel]");
       assertThat(rows(inline)).hasSize(EDGES / 10).isEqualTo(sequential(inline));
+
+      // no predicate: the aggregates skip the null of the 100 light edges
+      final String noPredicate = "MATCH ()-[e:K]->() RETURN count(e.w) AS c, sum(e.id) AS s";
+      assertThat(profile(noPredicate)).contains(TYPE_SCAN).contains("parallel: ");
+      assertThat(rows(noPredicate)).isEqualTo(sequential(noPredicate))
+          .isEqualTo(rows("MATCH ()-[e:K]->() WITH e RETURN count(e.w) AS c, sum(e.id) AS s"))
+          .containsExactly("c=" + EDGES + ", s=" + (long) EDGES * (EDGES - 1) / 2);
     }
 
     private long sumOfIdsWithW3() {

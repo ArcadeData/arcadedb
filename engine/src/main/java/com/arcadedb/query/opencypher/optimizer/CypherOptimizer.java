@@ -913,8 +913,6 @@ public class CypherOptimizer {
    * inside the range it walks.
    */
   private EdgeSeedPlan edgeIndexSeedFor(final LogicalPlan logicalPlan, final RelationshipComponent component) {
-    if (logicalPlan.getWhereFilters().isEmpty())
-      return null;
     if (component.relationships().size() > 1 && hasUnidirectionalEdge(component.relationships()))
       return null;
 
@@ -935,7 +933,8 @@ public class CypherOptimizer {
       final List<EdgeIndexSeedPlanner.TypeSeek> seeks = EdgeIndexSeedPlanner.planSeeks(database.getSchema(), rel.getTypes(),
           predicates);
       if (seeks == null) {
-        // No index answers the predicates: a scan of the types does when the WHERE clause requires a property of the relationship
+        // No index answers the predicates: a scan of the types does when the WHERE clause requires a property of the relationship,
+        // or when the statement only aggregates properties of it
         final EdgeSeedPlan scan = edgeTypeScanSeedFor(logicalPlan, rel);
         if (scan != null && (best == null || scan.operator().getEstimatedCost() < best.operator().getEstimatedCost()))
           best = scan;
@@ -976,22 +975,23 @@ public class CypherOptimizer {
 
   /**
    * The scan of the types of a relationship as the start of its component (issue #11874), when no index answers its predicates but
-   * the {@code WHERE} clause requires a property of it, which no light edge has (see {@link EdgeTypeScanPlanner}): the scan reads
-   * every edge of the types, where a node anchor reads its vertices and expands their edges. The conjuncts that read only the
-   * relationship are checked on each edge before its endpoints are loaded; the whole {@code WHERE} clause still filters above.
-   * Left out in a statement that writes, which could meet in the buckets the edges its own writes add behind the scan.
+   * the {@code WHERE} clause requires a property of it, which no light edge has, or the statement only aggregates properties of it
+   * with aggregates that skip the null of a light edge (see {@link EdgeTypeScanPlanner}): the scan reads every edge of the types,
+   * where a node anchor reads its vertices and expands their edges. The conjuncts that read only the relationship are checked on
+   * each edge before its endpoints are loaded; the whole {@code WHERE} clause still filters above. Left out in a statement that
+   * writes, which could meet in the buckets the edges its own writes add behind the scan.
    */
   private EdgeSeedPlan edgeTypeScanSeedFor(final LogicalPlan logicalPlan, final LogicalRelationship rel) {
     if (!statement.isReadOnly())
       return null;
     final String relVar = rel.getVariable();
-    boolean required = false;
+    boolean filtered = false;
     final List<BooleanExpression> relationshipConjuncts = new ArrayList<>();
     for (final WhereClause where : logicalPlan.getWhereFilters()) {
-      required |= EdgeTypeScanPlanner.requiresAPropertyOf(relVar, where.getConditionExpression());
+      filtered |= EdgeTypeScanPlanner.requiresAPropertyOf(relVar, where.getConditionExpression());
       relationshipConjuncts.addAll(EdgeTypeScanPlanner.relationshipOnlyConjuncts(relVar, where.getConditionExpression()));
     }
-    if (!required)
+    if (!filtered && !EdgeTypeScanPlanner.onlyAggregatesAPropertyOf(relVar, statement))
       return null;
     final List<String> edgeTypes = EdgeTypeScanPlanner.scanTypes(database.getSchema(), rel.getTypes());
     if (edgeTypes == null || edgeTypes.isEmpty())
@@ -1000,7 +1000,10 @@ public class CypherOptimizer {
     long edgeCount = 0;
     for (final String edgeType : edgeTypes)
       edgeCount += statisticsProvider.getCardinality(edgeType);
-    final long rows = Math.max(1L, (long) (edgeCount * CostModel.SELECTIVITY_EQUALITY));
+    // With no predicate on the relationship every edge of the types is a row
+    final long rows = filtered || !relationshipConjuncts.isEmpty() ?
+        Math.max(1L, (long) (edgeCount * CostModel.SELECTIVITY_EQUALITY)) :
+        Math.max(1L, edgeCount);
     // Every edge of the types is read; each one kept is read with its two endpoints, the work of an expansion step
     final double cost = edgeCount * CostModel.SCAN_COST_PER_ROW + rows * CostModel.EXPAND_COST_PER_ROW;
 
