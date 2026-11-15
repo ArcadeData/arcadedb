@@ -301,11 +301,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile long                      globalAppliedIndex   = -1;
   private volatile boolean                   appliedIndexLoaded   = false;
   private final    Object                    appliedIndexFileLock = new Object();
-  // The index of the INSTALL_DATABASE_ENTRY that created the copy of each database this node holds (issue #11919), kept
-  // beside the per-database applied index, in the same file and under the same lock, and evicted with it by a drop. An
-  // entry naming the database at a LOWER index belongs to an incarnation a drop removed and that create replaced: a replay
-  // from a snapshot marker older than the drop must not apply it to the copy the later create made.
+  // The index of the INSTALL_DATABASE_ENTRY that created the copy of each database this node holds (issue #11919), or for
+  // a copy acquired from the leader the index after the one the leader served it at. An entry naming the database at a
+  // LOWER index belongs to an incarnation a drop removed or is already in the copy: a replay from a snapshot marker older
+  // than the drop must not apply it to the copy the later create made. Kept in a file of its own, .raft/created-index,
+  // fsynced on every change: the applied-index file is rewritten without an fsync on every entry, and a power loss can
+  // leave that rewrite empty. Guarded by appliedIndexFileLock and evicted by a drop with the per-database applied index.
   private final    Map<String, Long>         createdIndexByDb     = new ConcurrentHashMap<>();
+  // Whether the last change of createdIndexByDb could not be written (issue #11919): the next applied entry writes it again
+  private volatile boolean                   createdIndexFilePending = false;
   // Which writes of the applied-index file are fsynced (issue #11517), both guarded by appliedIndexFileLock: whether
   // the file on disk carries a quarantine or a read floor (so the write that clears them must be durable too), and
   // whether this instance has made one durable write yet (the file's existence is what the offline-bootstrap gate reads)
@@ -2257,6 +2261,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         securityDurabilityFloor.retryIfDue(srv.getSecurity());
       // The same for a database configuration whose configuration.json could not be written (issue #10124)
       retryHeldConfigurationsIfDue();
+      // And the creation boundaries, whose last write failed (issue #11919)
+      if (createdIndexFilePending)
+        retryCreatedIndexFile();
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -6402,6 +6409,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // entry this node has already applied (issue #8454). The install refuses such a copy and asks again: every
         // entry up to this floor went to the copy being replaced.
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
+        final ArcadeDBServer localServer = this.server;
+        final boolean acquiring = localServer != null && !localServer.existsDatabase(dbName);
         final long servedAt = SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
         // The install replaced the database's files, so no reservation taken against the previous copy can still hold
         // (issue #8022) - the rule applyDropDatabaseEntry already applies, here for every install path: the forced
@@ -6422,6 +6431,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // resync, the bootstrap-mismatch retry and the Ratis-initiated one alike. Success only and before the unlock,
         // for the same reasons as the boundary above; -1 when the install downloaded nothing or the leader did not say.
         gate.recordServedCopy(servedAt);
+        // A copy this node did not hold before (issue #11919): it is the incarnation the leader held at servedAt, so every
+        // entry naming the database up to there is either in it or of an incarnation a drop removed before it. The
+        // creation boundary says so durably, so that neither the drop of such an incarnation (which the #8579 skip does
+        // not cover) nor, after a restart, any of its entries reaches the acquired copy.
+        if (acquiring && servedAt >= 0 && localServer.existsDatabase(dbName))
+          recordDatabaseCreated(servedAt + 1, dbName);
       } finally {
         gate.unlock();
       }
@@ -8686,7 +8701,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       ensureAppliedIndexLoaded();
       if (drop) {
         appliedIndexByDb.remove(dbName);
-        createdIndexByDb.remove(dbName);
+        evictCreatedIndex(dbName);
       } else
         appliedIndexByDb.put(dbName, index);
       persistAppliedIndexFile();
@@ -8708,7 +8723,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (dbName != null) {
         appliedIndexByDb.remove(dbName);
         // The copy the create made is gone: a create of the same name starts the next incarnation (issue #11919)
-        createdIndexByDb.remove(dbName);
+        evictCreatedIndex(dbName);
       }
       persistAppliedIndexFile();
     }
@@ -8717,8 +8732,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Records that the {@code INSTALL_DATABASE_ENTRY} at {@code index} made the copy of {@code dbName} this node holds (issue
    * #11919), the boundary {@link #isOfEarlierIncarnation} tells a replayed entry of a dropped incarnation by. A replay of
-   * the same create records nothing new. Written durably: a create is rare, and the boundary has to survive whatever
-   * restart replays the drop before it. Package-private for tests.
+   * the same create records nothing new. Written durably to {@code .raft/created-index}, which no per-entry write touches:
+   * the boundary has to survive whatever restart replays the drop before it. A failed write keeps the boundary in memory,
+   * where it already protects this run, and is written again by the next applied entry (see
+   * {@link #retryCreatedIndexFile()}). Package-private for tests.
    */
   void recordDatabaseCreated(final long index, final String dbName) {
     synchronized (appliedIndexFileLock) {
@@ -8727,14 +8744,65 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (previous != null && previous >= index)
         return;
       createdIndexByDb.put(dbName, index);
-      persistAppliedIndexFile(true);
+      persistCreatedIndexFile();
+    }
+  }
+
+  /** Forgets the creation boundary of a dropped database (issue #11919), on disk too. Called under appliedIndexFileLock. */
+  private void evictCreatedIndex(final String dbName) {
+    if (createdIndexByDb.remove(dbName) != null)
+      persistCreatedIndexFile();
+  }
+
+  /** Writes the creation boundaries again after a failed write (issue #11919). Package-private for tests. */
+  void retryCreatedIndexFile() {
+    synchronized (appliedIndexFileLock) {
+      if (createdIndexFilePending)
+        persistCreatedIndexFile();
+    }
+  }
+
+  /** Whether a change of the creation boundaries is still to be written (issue #11919). Package-private for tests. */
+  boolean isCreatedIndexFilePending() {
+    return createdIndexFilePending;
+  }
+
+  /**
+   * Writes {@link #createdIndexByDb} to {@code .raft/created-index} with an fsync (issue #11919). Called under
+   * appliedIndexFileLock. A failure is logged at WARNING and leaves {@link #createdIndexFilePending} set: until a write
+   * succeeds, a crash loses the boundaries recorded since the last good one, and a restart replaying a drop older than
+   * them falls back to applying the dropped incarnation's entries, which the later create then rebuilds the copy over.
+   */
+  private boolean persistCreatedIndexFile() {
+    if (closed)
+      return false; // see close(): a task that outlived the shutdown must not recreate the file
+    final Path file = getCreatedIndexFile();
+    if (file == null)
+      return false;
+    final JSONObject json = new JSONObject();
+    for (final Map.Entry<String, Long> entry : createdIndexByDb.entrySet())
+      json.put(entry.getKey(), entry.getValue().longValue());
+    try {
+      Files.createDirectories(file.getParent());
+      FileUtils.atomicWriteFile(file.toFile(), json.toString());
+      createdIndexFilePending = false;
+      return true;
+    } catch (final Exception e) {
+      if (!createdIndexFilePending)
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not write %s: %s. Retried with every applied entry; until it succeeds, a restart that replays the log "
+                + "from before a drop may apply the dropped incarnation's entries to the database created after it",
+            file, e.getMessage());
+      createdIndexFilePending = true;
+      return false;
     }
   }
 
   /**
-   * Whether the entry at {@code index} naming {@code dbName} belongs to an incarnation of the database that a drop removed
-   * before the create that made the copy this node holds (issue #11919). Only a replay of the log from a snapshot marker
-   * older than that drop gets here with such an entry: the live log only moves past a create.
+   * Whether the entry at {@code index} naming {@code dbName} is below the creation boundary of the copy this node holds
+   * (issue #11919): of an incarnation a drop removed before the create that made the copy, or, for a copy acquired from
+   * the leader, already in it. A replay of the log from a snapshot marker older than that drop gets here with such an
+   * entry, and so do the entries between an acquired copy's install boundary and the index the leader served it at.
    */
   boolean isOfEarlierIncarnation(final String dbName, final long index) {
     ensureAppliedIndexLoaded();
@@ -8755,8 +8823,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void logEntryOfEarlierIncarnation(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     LogManager.instance().log(this, decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY ? Level.INFO : Level.FINE,
-        "Not applying the %s entry at index %d to database '%s': it belongs to an incarnation that was dropped before the "
-            + "copy this node holds was created at index %d (issue #11919)", decoded.type(), index, decoded.databaseName(),
+        "Not applying the %s entry at index %d to database '%s': it is below the index %d the copy this node holds starts "
+            + "at, created there or acquired from the leader (issue #11919)", decoded.type(), index, decoded.databaseName(),
         createdIndexByDb.get(decoded.databaseName()));
   }
 
@@ -8821,9 +8889,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
               final JSONObject perDb = json.getJSONObject("db", new JSONObject());
               for (final String name : perDb.keySet())
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
-              final JSONObject created = json.getJSONObject("created", new JSONObject());
-              for (final String name : created.keySet())
-                createdIndexByDb.put(name, created.getLong(name, -1));
               restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
               restorePersistedFloors(json.getJSONObject("floors", new JSONObject()));
               // The write that clears what was restored must be durable, or a power loss brings it back (issue #11517)
@@ -8836,6 +8901,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
       } finally {
+        loadCreatedIndexFile();
         // The path was resolvable and we attempted a read: latch even on a parse failure so a corrupt
         // file is not re-read on every apply (it degrades to -1, re-running the idempotent verification).
         // Deliberate coupling: a corrupt file leaving globalAppliedIndex at -1 also makes
@@ -8981,13 +9047,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       for (final Map.Entry<String, Long> entry : appliedIndexByDb.entrySet())
         perDb.put(entry.getKey(), entry.getValue());
       json.put("db", perDb);
-      // The index each database was created at (issue #11919), omitted when none was recorded
-      if (!createdIndexByDb.isEmpty()) {
-        final JSONObject created = new JSONObject();
-        for (final Map.Entry<String, Long> entry : createdIndexByDb.entrySet())
-          created.put(entry.getKey(), entry.getValue().longValue());
-        json.put("created", created);
-      }
       // The quarantine travels in the SAME atomic write as the applied position it qualifies (issue #7735), so a
       // crash can never leave a file that says "applied up to N" without saying "and database X was skipped on the
       // way". Omitted when nothing is quarantined, which is the overwhelmingly common case, so the file shape an
@@ -9042,6 +9101,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private Path getAppliedIndexFile() {
     final Path raftDir = getRaftDir();
     return raftDir != null ? raftDir.resolve("applied-index") : null;
+  }
+
+  private Path getCreatedIndexFile() {
+    final Path raftDir = getRaftDir();
+    return raftDir != null ? raftDir.resolve("created-index") : null;
+  }
+
+  /**
+   * Reads {@code .raft/created-index} into {@link #createdIndexByDb} (issue #11919), from {@link #ensureAppliedIndexLoaded()}
+   * under appliedIndexFileLock. A missing, empty or unreadable file records no boundary: nothing is skipped for a database
+   * until its next create, as before the file existed.
+   */
+  private void loadCreatedIndexFile() {
+    final Path file = getCreatedIndexFile();
+    if (file == null)
+      return;
+    removeStrayAppliedIndexTempFiles(file);
+    try {
+      if (!Files.exists(file))
+        return;
+      final String content = Files.readString(file).trim();
+      if (content.isEmpty())
+        return;
+      final JSONObject json = new JSONObject(content);
+      for (final String name : json.keySet())
+        createdIndexByDb.put(name, json.getLong(name, -1));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Could not read %s: %s", file, e.getMessage());
+    }
   }
 
   /**

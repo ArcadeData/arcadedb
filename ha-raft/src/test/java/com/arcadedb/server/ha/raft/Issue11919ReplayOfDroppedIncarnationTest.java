@@ -21,8 +21,10 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
+import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.statemachine.TransactionContext;
@@ -32,11 +34,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -79,8 +88,9 @@ class Issue11919ReplayOfDroppedIncarnationTest {
   void tearDown() {
     deleter.close();
     executor.shutdownNow();
-    if (server.existsDatabase(DB))
-      server.getDatabase(DB).getEmbedded().close();
+    for (final String name : new String[] { DB, OTHER })
+      if (server.existsDatabase(name))
+        server.getDatabase(name).getEmbedded().close();
     FileUtils.deleteRecursively(new File(serverDir.toString()));
   }
 
@@ -89,7 +99,7 @@ class Issue11919ReplayOfDroppedIncarnationTest {
    * create again. The current copy then holds a type of its own, standing for everything the entries after the second
    * create put in it.
    */
-  private void applyHistory() {
+  private ArcadeStateMachine applyHistory() {
     final ArcadeStateMachine sm = newStateMachine();
     apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), FIRST);
     // The transaction of the first incarnation is not applied by this node: an empty WAL fails the apply, which is how
@@ -100,6 +110,7 @@ class Issue11919ReplayOfDroppedIncarnationTest {
 
     final Database current = server.getDatabase(DB);
     current.transaction(() -> current.getSchema().createDocumentType(CURRENT));
+    return sm;
   }
 
   /** The restart: a fresh state machine fed the log again from a snapshot marker below the first create. */
@@ -153,6 +164,90 @@ class Issue11919ReplayOfDroppedIncarnationTest {
     apply(restarted, RaftLogEntryCodec.encodeDropDatabaseEntry(DB), DROP);
 
     assertThat(server.existsDatabase(DB)).as("the replayed drop of the same incarnation still drops it").isFalse();
+  }
+
+  // A database created after the history, by an entry whose applied-index write is not fsynced
+  private static final String OTHER = "db-other";
+
+  @Test
+  void theCreationBoundarySurvivesAPowerLossOfTheAppliedIndexFile() throws Exception {
+    final ArcadeStateMachine sm = applyHistory();
+    // A later entry rewrites the applied-index file without an fsync (issue #11517): a power loss can leave it empty
+    apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(OTHER), SECOND + 1);
+    Files.writeString(raftDir().resolve("applied-index"), "");
+
+    replayFromBeforeTheDrop();
+
+    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+        .as("the boundary recorded at index %d must not depend on the unsynced per-entry write", SECOND).isTrue();
+  }
+
+  @Test
+  void aCreationBoundaryThatCouldNotBeWrittenIsWrittenByTheNextEntry() throws Exception {
+    // Nothing can be written over a non-empty directory: the write of the boundary at the second create fails
+    final Path blocker = raftDir().resolve("created-index");
+    Files.createDirectories(blocker);
+    Files.writeString(blocker.resolve("x"), "x");
+    final ArcadeStateMachine sm = applyHistory();
+
+    FileUtils.deleteRecursively(blocker.toFile());
+    // An entry that records no boundary of its own: only the retry writes the one that failed
+    apply(sm, RaftLogEntryCodec.encodeDropDatabaseEntry("db-never-created"), SECOND + 1);
+    Files.writeString(raftDir().resolve("applied-index"), "");
+
+    replayFromBeforeTheDrop();
+
+    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+        .as("the boundary whose write failed at index %d is written again once the volume takes writes", SECOND).isTrue();
+  }
+
+  @Test
+  void theDropOfAnEarlierIncarnationLeavesACopyAcquiredFromTheLeader() throws Exception {
+    // The leader served the copy at index 20, after the drop at index 12 and the create at index 13 of the incarnation
+    // the copy holds; this node, a follower installing a Raft snapshot, still applies the entries above its install boundary
+    final HttpServer leader = HttpServer.create(new InetSocketAddress(0), 0);
+    leader.createContext("/api/v1/ha/snapshot/" + DB, exchange -> {
+      final byte[] zip = zipWith("data.dat", "copy");
+      exchange.getResponseHeaders().add(SnapshotManager.APPLIED_INDEX_HEADER, "20");
+      exchange.sendResponseHeaders(200, zip.length);
+      exchange.getResponseBody().write(zip);
+      exchange.close();
+    });
+    leader.start();
+    final ArcadeStateMachine sm = newStateMachine();
+    try {
+      sm.runUnderInstallGate(DB, FIRST - 1, () -> {
+        final Path staging = serverDir.resolve(".staging");
+        Files.createDirectories(staging);
+        SnapshotInstaller.downloadWithRetry(DB, staging, "localhost:" + leader.getAddress().getPort(), null, 1, 10);
+        final Database acquired = server.createDatabase(DB, ComponentFile.MODE.READ_WRITE);
+        acquired.transaction(() -> acquired.getSchema().createDocumentType(CURRENT));
+      });
+    } finally {
+      leader.stop(0);
+    }
+
+    apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), FIRST);
+    apply(sm, RaftLogEntryCodec.encodeDropDatabaseEntry(DB), DROP);
+    apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), SECOND);
+
+    assertThat(server.existsDatabase(DB)).isTrue();
+    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+        .as("the drop at index %d is of an incarnation the copy served at index 20 already replaced", DROP).isTrue();
+  }
+
+  private Path raftDir() throws IOException {
+    return Files.createDirectories(serverDir.resolve(".raft"));
+  }
+
+  private static byte[] zipWith(final String name, final String content) throws IOException {
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    try (final ZipOutputStream zip = new ZipOutputStream(baos)) {
+      zip.putNextEntry(new ZipEntry(name));
+      zip.write(content.getBytes(StandardCharsets.UTF_8));
+      zip.closeEntry();
+    }
+    return baos.toByteArray();
   }
 
   private ArcadeStateMachine newStateMachine() {
