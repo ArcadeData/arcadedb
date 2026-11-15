@@ -1317,6 +1317,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, schemaObjectExists.getLabel(), schemaObjectExists,
           schemaObjectExists.getKind() != null ? schemaObjectExists.getKind().name() : null, ErrorLogKind.USER);
 
+    // 409 Conflict: the statement names objects that exist and is refused for what the database holds now - a TRUNCATE or DROP
+    // of a type that still has records, a DROP of a property an index uses (issue #11803). The message says how to resolve it,
+    // and the same request is refused again until the state changes, so it is neither a server fault nor retryable. Before the
+    // generic CommandExecutionException arm, which it extends and which answers 500
+    final ObjectInUseException inUse = firstOf(e, cause, ObjectInUseException.class);
+    if (inUse != null)
+      return new ErrorClassification(409, "Object in use", inUse, null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
     // bad write. See issue #4350.

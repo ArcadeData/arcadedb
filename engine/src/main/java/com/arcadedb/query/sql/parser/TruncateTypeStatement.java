@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -160,10 +161,10 @@ public class TruncateTypeStatement extends DDLStatement {
     // hierarchy it builds hangs off a type it creates called `E`.
     if (recs > 0 && !unsafe) {
       if (typez instanceof VertexType) {
-        throw new CommandExecutionException(
+        throw new ObjectInUseException(
             "'TRUNCATE TYPE' command cannot be used on not empty vertex classes. Apply the 'UNSAFE' keyword to force it (at your own risk)");
       } else if (typez instanceof EdgeType) {
-        throw new CommandExecutionException(
+        throw new ObjectInUseException(
             "'TRUNCATE TYPE' command cannot be used on not empty edge classes. Apply the 'UNSAFE' keyword to force it (at your own risk)");
       }
     }
@@ -209,10 +210,10 @@ public class TruncateTypeStatement extends DDLStatement {
             : context.getDatabase().countType(descendant.getName(), false);
         if (descendantRecs > 0) {
           if (descendant instanceof VertexType) {
-            throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + descendant.getName()
+            throw new ObjectInUseException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + descendant.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
           } else if (descendant instanceof EdgeType) {
-            throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty edge classes (" + descendant.getName()
+            throw new ObjectInUseException("'TRUNCATE TYPE' command cannot be used on not empty edge classes (" + descendant.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
           }
         }
