@@ -3827,7 +3827,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (res.removed)
         return true;
       final boolean uncontended = res.soleOwner == owner;
-      if (!uncontended)
+      // Alone on the page with an image as new as the committed one, the image is the whole truth and the mark is not
+      // read: it only grows, so a transaction rewriting its own records would find the page full. With an OLDER image the
+      // inserts of this transaction were claimed past the committed content the image does not hold, and the mark is
+      // where they end.
+      if (!uncontended || committedLayout != null)
         contentEnd = Math.max(contentEnd, res.nextFreeOffset);
       if (contentEnd + additionalSpace > page.getMaxContentSize())
         return false;
@@ -5264,7 +5268,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // the row, then set its large property" in one transaction. It has no committed pre-image, so it stays an
           // insert, one whose final image is a chunk head: the replay writes that head into the same free slot of the
           // newer committed page, at the end of its content, as it does for a plain record.
-          final boolean insertSpill = growRebasable && slotInsertedHere;
+          // A slot smaller than a chunk header takes the bytes it misses, from the tail or through the shift: more of the page
+          // than the insert claimed, so they are promised like a growth in place, or the spill is not replayable and the
+          // page is poisoned as it was before.
+          final boolean insertSpill = growRebasable && slotInsertedHere && (slotFootprint >= MINIMUM_SPACE_FOR_FIRST_CHUNK
+                  || reserveGrowthOfInsert(slotTx, page, pageOccupiedInBytes, MINIMUM_SPACE_FOR_FIRST_CHUNK - slotFootprint));
           int availableSpaceInCurrentPage = slotFootprint;
           // what the head chunk is given that the free-space statistics already count as the slot's
           int headChunkBytesOwned = slotFootprint;
@@ -8138,7 +8146,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
                 true, headChunkPageToAvoid);
-        if (!pageAnalysis.createNewPage) {
+        // #11788: as in writeContinuationChunks, an existing page other transactions are inserting into is not this chain's
+        if (!pageAnalysis.createNewPage && claimPageForChunks(pageAnalysis.page.pageId.getPageNumber(), database.getTransaction())) {
           nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
 
           if (nextPage.getVersion() != pageAnalysis.page.getVersion()) {
