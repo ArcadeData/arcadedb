@@ -24,10 +24,12 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
+import java.time.temporal.Temporal;
 import java.util.List;
 import java.util.Map;
 
@@ -57,9 +59,11 @@ public class ToStringFunction implements StatelessFunction {
       return null;
     if (args[0] instanceof String || args[0] instanceof Number || args[0] instanceof Boolean)
       return args[0].toString();
-    // Temporal types
-    if (args[0] instanceof CypherTemporalValue)
-      return args[0].toString();
+    // Temporal types, in Neo4j's text: seconds always printed, no trailing zeros in the fraction (issue #11912). A
+    // java.time value (a Bolt or Java API parameter) prints as the Cypher temporal it stands for.
+    final Object value = args[0] instanceof Temporal ? TemporalUtil.fromCoreJavaType(args[0]) : args[0];
+    if (value instanceof CypherTemporalValue temporal)
+      return TemporalUtil.toCypherString(temporal);
     // Unsupported types: List, Map, Node, Relationship, Path. This is a client-side type error (the
     // query passes the wrong value type to a scalar function), classified by the openCypher TCK as a
     // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer

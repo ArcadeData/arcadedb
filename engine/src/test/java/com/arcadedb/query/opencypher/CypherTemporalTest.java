@@ -157,7 +157,7 @@ class CypherTemporalTest {
           "UNWIND [" + X + ", localdatetime('2026-01-01T11:00:00'), " + Y + ", localdatetime('2026-01-01T10:59:00')] AS d "
               + "RETURN toString(d) AS s ORDER BY d")) {
         assertThat(rs.stream().map(r -> (String) r.getProperty("s")).toList())
-            .containsExactly("2026-01-01T11:00Z", "2026-01-01T12:00+01:00", "2026-01-01T10:59", "2026-01-01T11:00");
+            .containsExactly("2026-01-01T11:00:00Z", "2026-01-01T12:00:00+01:00", "2026-01-01T10:59:00", "2026-01-01T11:00:00");
       }
     }
 
@@ -1276,9 +1276,9 @@ class CypherTemporalTest {
     /** The date fields are resolved together: applied one at a time, February 29 clamped to the 28th before the month moved. */
     @Test
     void dateFieldOverridesAreResolvedTogether() {
-      assertThat(text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00Z");
-      assertThat(text("localdatetime({datetime: localdatetime('2024-02-29T12:00'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00");
-      assertThat(text("datetime({epochSeconds: 1709208000, year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00Z");
+      assertThat(text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00:00Z");
+      assertThat(text("localdatetime({datetime: localdatetime('2024-02-29T12:00'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00:00");
+      assertThat(text("datetime({epochSeconds: 1709208000, year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00:00Z");
       assertThatThrownBy(() -> text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023})")).isNotNull();
     }
 
@@ -1294,7 +1294,7 @@ class CypherTemporalTest {
     @Test
     void anEpochDatetimeIsReadInItsTimezone() {
       assertThat(text("datetime({epochSeconds: 1700000000, timezone: 'Europe/Paris'})")).isEqualTo("2023-11-14T23:13:20+01:00[Europe/Paris]");
-      assertThat(text("datetime({epochSeconds: 0, timezone: '+05:30'})")).isEqualTo("1970-01-01T05:30+05:30");
+      assertThat(text("datetime({epochSeconds: 0, timezone: '+05:30'})")).isEqualTo("1970-01-01T05:30:00+05:30");
       assertThat(text("datetime({epochMillis: 1700000000123, timezone: 'Asia/Kolkata'})"))
           .isEqualTo("2023-11-15T03:43:20.123+05:30[Asia/Kolkata]");
       assertThat(text("datetime({epochSeconds: 1700000000, nanosecond: 5, timezone: 'Europe/Paris'})"))
@@ -1317,8 +1317,8 @@ class CypherTemporalTest {
       // 2024-12-30 is in the first ISO week of 2025
       assertThat(text("date({date: date('2024-12-30'), dayOfWeek: 3})")).isEqualTo("2025-01-01");
       assertThat(text("date({date: date('2024-02-29'), dayOfQuarter: 3})")).isEqualTo("2024-01-03");
-      assertThat(text("localdatetime({date: date('2024-02-29'), dayOfWeek: 1, hour: 3})")).isEqualTo("2024-02-26T03:00");
-      assertThat(text("datetime({date: date('2024-02-29'), dayOfWeek: 1, timezone: 'Z'})")).isEqualTo("2024-02-26T00:00Z");
+      assertThat(text("localdatetime({date: date('2024-02-29'), dayOfWeek: 1, hour: 3})")).isEqualTo("2024-02-26T03:00:00");
+      assertThat(text("datetime({date: date('2024-02-29'), dayOfWeek: 1, timezone: 'Z'})")).isEqualTo("2024-02-26T00:00:00Z");
       // The controls that already agreed
       assertThat(text("date({date: date('2024-02-29'), week: 1})")).isEqualTo("2024-01-04");
       assertThat(text("date({date: date('2024-02-29'), week: 1, dayOfWeek: 1})")).isEqualTo("2024-01-01");
@@ -1330,15 +1330,15 @@ class CypherTemporalTest {
     @Test
     void datetimeReadsAnyYearTheOtherTypesRead() {
       assertThat(text("datetime('-0001-12-31T23:59:59Z')")).isEqualTo("-0001-12-31T23:59:59Z");
-      assertThat(text("datetime('+10000-01-01T00:00Z')")).isEqualTo("+10000-01-01T00:00Z");
+      assertThat(text("datetime('+10000-01-01T00:00Z')")).isEqualTo("+10000-01-01T00:00:00Z");
       assertThat(text("datetime('-0001-12-31T23:59:59+01:00')")).isEqualTo("-0001-12-31T23:59:59+01:00");
-      assertThat(text("datetime('+10000-01-01T00:00[Europe/Paris]')")).isEqualTo("+10000-01-01T00:00+01:00[Europe/Paris]");
-      assertThat(text("datetime('-999999999-01-01T00:00Z')")).isEqualTo("-999999999-01-01T00:00Z");
+      assertThat(text("datetime('+10000-01-01T00:00[Europe/Paris]')")).isEqualTo("+10000-01-01T00:00:00+01:00[Europe/Paris]");
+      assertThat(text("datetime('-999999999-01-01T00:00Z')")).isEqualTo("-999999999-01-01T00:00:00Z");
       assertThat(text("datetime('+999999999-12-31T23:59:59.999999999Z')")).isEqualTo("+999999999-12-31T23:59:59.999999999Z");
-      assertThat(text("datetime('-0001-12-31')")).isEqualTo("-0001-12-31T00:00Z");
-      assertThat(text("localdatetime('+10000-01-01T00:00')")).isEqualTo("+10000-01-01T00:00");
+      assertThat(text("datetime('-0001-12-31')")).isEqualTo("-0001-12-31T00:00:00Z");
+      assertThat(text("localdatetime('+10000-01-01T00:00')")).isEqualTo("+10000-01-01T00:00:00");
       assertThat(text("date('+10000-01-01')")).isEqualTo("+10000-01-01");
-      assertThat(text("datetime({year: -1, month: 12, day: 31, timezone: 'Z'})")).isEqualTo("-0001-12-31T00:00Z");
+      assertThat(text("datetime({year: -1, month: 12, day: 31, timezone: 'Z'})")).isEqualTo("-0001-12-31T00:00:00Z");
       // A compact offset still reads as one
       assertThat(text("datetime('2015-07-21T21:40:32.142+0100')")).isEqualTo("2015-07-21T21:40:32.142+01:00");
       assertThat(text("time('21:40:32-0130')")).isEqualTo("21:40:32-01:30");
@@ -1346,14 +1346,14 @@ class CypherTemporalTest {
 
     @Test
     void aTimeTakesTheOffsetANamedZoneHasNow() {
-      assertThat(text("time({hour: 12, timezone: 'UTC'})")).isEqualTo("12:00Z");
-      assertThat(text("time({hour: 12, timezone: 'Asia/Tokyo'})")).isEqualTo("12:00+09:00");
-      assertThat(text("time({hour: 12, minute: 30, timezone: 'Europe/Paris'})")).isEqualTo("12:30" + offsetNow("Europe/Paris"));
-      assertThat(text("time({hour: 12, minute: 30, timezone: 'America/New_York'})")).isEqualTo("12:30" + offsetNow("America/New_York"));
-      assertThat(text("time.truncate('minute', time('12:30+05:45'), {timezone: 'Asia/Tokyo'})")).isEqualTo("12:30+09:00");
-      assertThat(text("time({time: time('12:30+05:45'), timezone: 'Asia/Tokyo'})")).isEqualTo("15:45+09:00");
-      assertThat(text("time({time: localtime('12:30'), timezone: 'Asia/Tokyo'})")).isEqualTo("12:30+09:00");
-      assertThat(text("time({time: datetime('2024-07-01T12:00[Europe/Paris]'), timezone: 'Asia/Tokyo'})")).isEqualTo("19:00+09:00");
+      assertThat(text("time({hour: 12, timezone: 'UTC'})")).isEqualTo("12:00:00Z");
+      assertThat(text("time({hour: 12, timezone: 'Asia/Tokyo'})")).isEqualTo("12:00:00+09:00");
+      assertThat(text("time({hour: 12, minute: 30, timezone: 'Europe/Paris'})")).isEqualTo("12:30:00" + offsetNow("Europe/Paris"));
+      assertThat(text("time({hour: 12, minute: 30, timezone: 'America/New_York'})")).isEqualTo("12:30:00" + offsetNow("America/New_York"));
+      assertThat(text("time.truncate('minute', time('12:30+05:45'), {timezone: 'Asia/Tokyo'})")).isEqualTo("12:30:00+09:00");
+      assertThat(text("time({time: time('12:30+05:45'), timezone: 'Asia/Tokyo'})")).isEqualTo("15:45:00+09:00");
+      assertThat(text("time({time: localtime('12:30'), timezone: 'Asia/Tokyo'})")).isEqualTo("12:30:00+09:00");
+      assertThat(text("time({time: datetime('2024-07-01T12:00[Europe/Paris]'), timezone: 'Asia/Tokyo'})")).isEqualTo("19:00:00+09:00");
       assertThat(text("time.truncate('second', datetime('2024-07-01T12:30:45.123[Europe/Paris]'), {timezone: 'Asia/Tokyo'})"))
           .isEqualTo("12:30:45+09:00");
       assertThatThrownBy(() -> text("time({hour: 12, timezone: 'Not/AZone'})")).isNotNull();
@@ -1498,13 +1498,13 @@ class CypherTemporalTest {
 
     @Test
     void valuesOfDifferentTemporalTypesOrderByType() {
-      assertThat(sorted("date('2024-01-01'), datetime('2024-01-01T00:00Z')")).containsExactly("2024-01-01T00:00Z", "2024-01-01");
-      assertThat(sorted("time('12:00Z'), localtime('12:00')")).containsExactly("12:00Z", "12:00");
+      assertThat(sorted("date('2024-01-01'), datetime('2024-01-01T00:00Z')")).containsExactly("2024-01-01T00:00:00Z", "2024-01-01");
+      assertThat(sorted("time('12:00Z'), localtime('12:00')")).containsExactly("12:00:00Z", "12:00:00");
       assertThat(sorted("localdatetime('2024-01-01T12:00'), datetime('2024-01-01T12:00Z')"))
-          .containsExactly("2024-01-01T12:00Z", "2024-01-01T12:00");
+          .containsExactly("2024-01-01T12:00:00Z", "2024-01-01T12:00:00");
       assertThat(sorted("duration('P1M'), localtime('12:00'), time('12:00Z'), date('2024-01-01'), localdatetime('2024-01-01T00:00'), "
           + "datetime('2024-01-01T00:00Z')"))
-          .containsExactly("2024-01-01T00:00Z", "2024-01-01T00:00", "2024-01-01", "12:00Z", "12:00", "P1M");
+          .containsExactly("2024-01-01T00:00:00Z", "2024-01-01T00:00:00", "2024-01-01", "12:00:00Z", "12:00:00", "P1M");
       // Between PATH and STRING, as Neo4j orders them
       final List<String> mixed = new ArrayList<>();
       try (final ResultSet rs = database.query("opencypher",
@@ -1515,7 +1515,7 @@ class CypherTemporalTest {
       assertThat(mixed).containsExactly("[1]", "2024-01-01", "P1M", "a", "true", "1");
       // One temporal type still orders by value
       assertThat(sorted("datetime('2024-01-01T12:00+01:00'), datetime('2024-01-01T11:00Z')"))
-          .containsExactly("2024-01-01T11:00Z", "2024-01-01T12:00+01:00");
+          .containsExactly("2024-01-01T11:00:00Z", "2024-01-01T12:00:00+01:00");
     }
 
     /** A native java.time / java.util.Date parameter orders by value among Cypher temporals of its type. */
@@ -1542,7 +1542,7 @@ class CypherTemporalTest {
     @Test
     void minAndMaxOverMixedTemporalTypesDoNotThrow() {
       assertThat(text("max(x)", "date('2024-01-01'), datetime('2024-01-01T00:00Z'), duration('P1D')")).isEqualTo("P1D");
-      assertThat(text("min(x)", "date('2024-01-01'), datetime('2024-01-01T00:00Z'), duration('P1D')")).isEqualTo("2024-01-01T00:00Z");
+      assertThat(text("min(x)", "date('2024-01-01'), datetime('2024-01-01T00:00Z'), duration('P1D')")).isEqualTo("2024-01-01T00:00:00Z");
     }
 
     /** The whole Cypher order of types, so a type added to the rank table cannot silently reorder the others. */

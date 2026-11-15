@@ -463,7 +463,7 @@ class CypherRangeIndexTemporalTest {
         final var r = rs.next();
         assertThat(r.<String>getProperty("dt")).isEqualTo("1969-12-31T23:59:59.123456789-03:30");
         assertThat(r.<String>getProperty("lt")).isEqualTo("23:59:59.999999999");
-        assertThat(r.<String>getProperty("t")).isEqualTo("00:00+18:00");
+        assertThat(r.<String>getProperty("t")).isEqualTo("00:00:00+18:00");
         assertThat(r.<String>getProperty("d")).isEqualTo(
             TemporalUtil.toStorageText(new CypherDuration(-14, 3, -90, 5)));
       }
