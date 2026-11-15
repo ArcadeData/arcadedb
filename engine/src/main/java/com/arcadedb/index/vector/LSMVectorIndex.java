@@ -9210,7 +9210,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * value the key holds on a page before it applies a limit: a probe of a broad key costs as much as the walk it would decide.
    */
   private PreFilterPlan preFilterPlan(final Set<RID> allowedRIDs, final int[] ordinalMap,
-      final GlobalConfiguration selectivitySetting, final int listingCap) {
+      final GlobalConfiguration selectivitySetting, final int listingCap, final WorkGuard guard) {
     if (allowedRIDs == null || allowedRIDs.isEmpty())
       return null;
     // Clamped to 1.0: the setting is documented as a fraction of the index, and an operator-supplied value above
@@ -9236,7 +9236,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // The list's share of this index's bucket, not the whole list (issue #11978): counted only when the whole list is too large,
     // and only as far as the bound. A predicate has no members to count: its listing above is its plan
     return allowedRIDs.size() <= maxCandidates || !(allowedRIDs instanceof PredicateRidSet)
-        && allowListMembersHere(allowedRIDs, (int) maxCandidates + 1) <= maxCandidates ?
+        && allowListMembersHere(allowedRIDs, (int) maxCandidates + 1, guard) <= maxCandidates ?
         new PreFilterPlan(allowedRIDs, allowedRIDs) :
         null;
   }
@@ -9246,16 +9246,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code filter} list of a search on a type with several buckets is handed whole to the index of every bucket, and only
    * its members in this index's bucket can be answered here: the list's own size overstates them up to the number of
    * buckets. An index with no bucket of its own answers for the whole list. Not for a {@link PredicateRidSet}, whose size
-   * says nothing about its members.
+   * says nothing about its members. The cap bounds the members counted, not the entries read: a list with few members here
+   * is read whole, so the statement's guard is checked as it goes, as the scans of the list are.
    */
-  private int allowListMembersHere(final Set<RID> allowedRIDs, final int cap) {
+  private int allowListMembersHere(final Set<RID> allowedRIDs, final int cap, final WorkGuard guard) {
     final int bucketId = metadata.associatedBucketId;
     if (bucketId == -1)
       return Math.min(allowedRIDs.size(), cap);
     int members = 0;
-    for (final RID rid : allowedRIDs)
+    int read = 0;
+    for (final RID rid : allowedRIDs) {
+      guard.checkPeriodically(read++);
       if (rid.getBucketId() == bucketId && ++members >= cap)
         break;
+    }
     return members;
   }
 
@@ -9747,7 +9751,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // graph walk gets more expensive, not less, as the allow-list narrows), score the allow-list directly via
         // collectAllowedOrdinals/scoreOrdinal/bruteForceScan - the same walk the issue #3722 shortfall fallback
         // already uses - instead of duplicating it.
-        final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0);
+        final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0,
+            guard);
         if (preFilter != null)
           return answerByPreFilter(preFilter, scorer, k, ordinalMap, overlay, guard);
 
@@ -9761,7 +9766,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               walkFilter(allowedRIDs, ordinalMap, overlay, guard, beam, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
         } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
           final PreFilterPlan listed = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
-              e.listingCap);
+              e.listingCap, guard);
           if (listed != null)
             return answerByPreFilter(listed, scorer, k, ordinalMap, overlay, guard);
           // The predicate keeps more records than the walk met where it went: the walk answers after all, unbounded
@@ -9839,7 +9844,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int budget = expectedResults;
         if (results.size() < expectedResults && allowedRIDs != null && !allowedRIDs.isEmpty()
             && !(allowedRIDs instanceof PredicateRidSet))
-          expectedResults = Math.min(expectedResults, allowListMembersHere(allowedRIDs, expectedResults));
+          expectedResults = Math.min(expectedResults, allowListMembersHere(allowedRIDs, expectedResults, guard));
         if (results.size() < expectedResults) {
           logShortfallCompletion(results.size(), budget, expectedResults, availableVectors, allowedRIDs);
           metrics.incrementBruteForceScans();
@@ -10277,7 +10282,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
               Math.max(maxRows, DEFAULT_SEARCH_BEAM_FLOOR) :
               (int) Math.min(Integer.MAX_VALUE, Math.max((long) maxRows * 2, DEFAULT_SEARCH_BEAM_FLOOR));
 
-        final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0);
+        final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0,
+            guard);
         if (preFilter != null)
           return answerGroupedByPreFilter(preFilter, scorer, limit, groupSize, onlyGroups, maxDistance, maxRows,
               groupKeyResolver, ordinalMap, deltaSnapshot, overlay, candidates, guard);
@@ -10317,7 +10323,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
             pool.discard(searcher);
             final PreFilterPlan listed = preFilterPlan(allowedRIDs, ordinalMap,
-                GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, e.listingCap);
+                GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, e.listingCap, guard);
             if (listed != null)
               return answerGroupedByPreFilter(listed, scorer, limit, groupSize, onlyGroups, maxDistance, maxRows,
                   groupKeyResolver, ordinalMap, deltaSnapshot, overlay, candidates, guard);
@@ -11114,7 +11120,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY :
               GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY;
 
-          final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, pinnedOrdinalMap, selectivitySetting, 0);
+          final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, pinnedOrdinalMap, selectivitySetting, 0, guard);
           if (preFilter != null)
             return answerApproximateByPreFilter(preFilter, rerank, queryVectorFloat, k, scoreFunction, exactVectors, pinnedOrdinalMap,
                 pinnedCodes, overlay, guard);
@@ -11131,7 +11137,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 rerank || efSearch > k,
                 walkFilter(allowedRIDs, pinnedOrdinalMap, overlay, guard, rerank || efSearch > k ? rerankK : k, selectivitySetting));
           } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
-            final PreFilterPlan listed = preFilterPlan(allowedRIDs, pinnedOrdinalMap, selectivitySetting, e.listingCap);
+            final PreFilterPlan listed = preFilterPlan(allowedRIDs, pinnedOrdinalMap, selectivitySetting, e.listingCap, guard);
             if (listed != null)
               return answerApproximateByPreFilter(listed, rerank, queryVectorFloat, k, scoreFunction, exactVectors, pinnedOrdinalMap,
                   pinnedCodes, overlay, guard);
