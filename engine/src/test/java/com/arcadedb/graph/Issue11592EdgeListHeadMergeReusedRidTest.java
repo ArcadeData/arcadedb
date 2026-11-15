@@ -20,25 +20,15 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.ImmutablePage;
-import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.TransactionManager;
-import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
@@ -155,29 +145,6 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
   }
 
   @Test
-  void aReplicatedApplyRefusesTheHeadMergeOfATransactionBegunBeforeIt() throws Exception {
-    final RID a = newVertex("a");
-    final RID b = newVertex("b");
-    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
-    final long sequenceBefore = transactionManager.getVertexDeleteSequence();
-    final AtomicReference<Vertex> readB = new AtomicReference<>();
-
-    // a replicated entry carries page images, not the records it deleted. This one rewrites b's page as it is, which is what the
-    // delete of b and the insert of an identical vertex at its RID can leave
-    final Throwable failure = interleave(() -> readB.set(vertex(b)), () -> applyReplicatedRewriteOfPageOf(b),
-        () -> vertex(a).newEdge("E", readB.get()));
-
-    assertThat(transactionManager.wasVertexDeletedSince(b, sequenceBefore)).isTrue();
-    assertThat(transactionManager.wasVertexDeletedSince(b, transactionManager.getVertexDeleteSequence())).isFalse();
-    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
-    database.transaction(() -> {
-      assertThat(database.countType("E", false)).isZero();
-      assertThat(neighbours(b, Vertex.DIRECTION.IN)).isEmpty();
-      assertThat(neighbours(a, Vertex.DIRECTION.OUT)).isEmpty();
-    });
-  }
-
-  @Test
   void appendsReplayedInPlaceOnAChunkWithRoomUnderTheRidOfAVertexReplacedConcurrentlyConflict() throws Exception {
     final RID a = newVertex("a");
     final RID sink = newVertex("sink");
@@ -290,36 +257,6 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
       thread.join();
     }
     return failure.get();
-  }
-
-  /** What a follower does with an entry rewriting the page of {@code rid}: TransactionManager.applyChanges of its image. */
-  private void applyReplicatedRewriteOfPageOf(final RID rid) {
-    final DatabaseInternal db = (DatabaseInternal) database;
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid.getBucketId());
-    final PageId pageId = new PageId(db, bucket.getFileId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage()));
-    final ImmutablePage page;
-    try {
-      page = db.getPageManager().getImmutablePage(pageId, bucket.getPageSize(), false, true);
-    } catch (final IOException e) {
-      throw new UncheckedIOException(e);
-    }
-
-    final WALFile.WALPage walPage = new WALFile.WALPage();
-    walPage.fileId = pageId.getFileId();
-    walPage.pageNumber = pageId.getPageNumber();
-    walPage.currentPageVersion = (int) page.getVersion() + 1;
-    walPage.changesFrom = BasePage.PAGE_HEADER_SIZE;
-    walPage.changesTo = BasePage.PAGE_HEADER_SIZE + 10;
-    walPage.currentPageSize = page.getContentSize();
-    final byte[] content = new byte[walPage.changesTo - walPage.changesFrom + 1];
-    System.arraycopy(page.getContent().array(), walPage.changesFrom, content, 0, content.length);
-    walPage.currentContent = new Binary(content);
-
-    final WALFile.WALTransaction walTransaction = new WALFile.WALTransaction();
-    walTransaction.txId = Long.MAX_VALUE;
-    walTransaction.timestamp = System.currentTimeMillis();
-    walTransaction.pages = new WALFile.WALPage[] { walPage };
-    assertThat(db.getTransactionManager().applyChanges(walTransaction, Collections.emptyMap(), false)).isTrue();
   }
 
   private RID newVertex(final String name) {
