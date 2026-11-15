@@ -57,20 +57,36 @@ class Issue11962VectorBuildDuringCommitIT extends BaseRaftHATest {
 
   @Test
   void aVectorCommittedWhileABuildRanIsFoundOnceItsCommitCompletes() {
+    assertFoundOnceTheCommitCompletes("Dense", 0);
+  }
+
+  /**
+   * Most records carry no vector, so the pages yield fewer vectors than the bucket has records and the build cross-checks
+   * them with a document scan. That scan cannot see the record in flight either, and it used to skip the recovery from
+   * the in-memory locations, so the build also published a location index without the in-flight vector.
+   */
+  @Test
+  void aVectorCommittedWhileABuildOfASparseIndexRanIsFoundOnceItsCommitCompletes() {
+    assertFoundOnceTheCommitCompletes("Sparse", 2 * BASE);
+  }
+
+  private void assertFoundOnceTheCommitCompletes(final String typeName, final int recordsWithoutVector) {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final Database db = getServerDatabase(leaderIndex, getDatabaseName());
 
-    db.transaction(() -> db.getSchema().createDocumentType("Doc", 1).createProperty("vector", Type.ARRAY_OF_FLOATS));
-    db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA {dimensions: " + DIMENSIONS
+    db.transaction(() -> db.getSchema().createDocumentType(typeName, 1).createProperty("vector", Type.ARRAY_OF_FLOATS));
+    db.command("sql", "CREATE INDEX ON " + typeName + " (vector) LSM_VECTOR METADATA {dimensions: " + DIMENSIONS
         + ", similarity: 'EUCLIDEAN', quantization: 'INT8'}");
     db.transaction(() -> {
       for (int i = 0; i < BASE; i++)
-        db.newDocument("Doc").set("vector", vector()).save();
+        db.newDocument(typeName).set("vector", vector()).save();
+      for (int i = 0; i < recordsWithoutVector; i++)
+        db.newDocument(typeName).set("name", "no vector " + i).save();
     });
     waitForAllServers();
 
-    final LSMVectorIndex index = (LSMVectorIndex) db.getSchema().getType("Doc").getPolymorphicIndexByProperties("vector")
+    final LSMVectorIndex index = (LSMVectorIndex) db.getSchema().getType(typeName).getPolymorphicIndexByProperties("vector")
         .getIndexesOnBuckets()[0];
     index.buildVectorGraphNow();
 
@@ -98,7 +114,7 @@ class Issue11962VectorBuildDuringCommitIT extends BaseRaftHATest {
 
     final float[] committed = vector();
     final RID[] rid = new RID[1];
-    db.transaction(() -> rid[0] = db.newDocument("Doc").set("vector", committed).save().getIdentity());
+    db.transaction(() -> rid[0] = db.newDocument(typeName).set("vector", committed).save().getIdentity());
     RaftReplicatedDatabase.TEST_PRE_DISPATCH_HOOK = null;
 
     assertThat(built.get()).as("precondition: a build ran inside the commit window").isTrue();
