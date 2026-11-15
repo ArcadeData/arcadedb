@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * An update takes its values off the wire and used to spell them into the statement as a JSON literal, so their safety rested
@@ -181,29 +182,27 @@ class MongoDBUpdateValueBindingTest {
   }
 
   @Test
-  void incStillBindsItsOperandAndQuotesItsFieldName() {
+  void incHasNoSqlTranslation() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
 
-    MongoDBDatabaseWrapper.appendUpdateOperations(sql, params, new Document("$inc", new Document("count", 3)));
-
-    assertThat(sql.toString()).isEqualTo(" SET `count` += :p0");
-    assertThat(params.get("p0")).isEqualTo(3);
+    // SQL "+=" concatenates a string and appends to a list where $inc refuses them, so $inc is applied record by record (issue #12070)
+    assertThatThrownBy(() -> MongoDBDatabaseWrapper.appendUpdateOperations(sql, params, new Document("$inc", new Document("count", 3))))
+        .isInstanceOf(UnsupportedOperationException.class);
   }
 
   @Test
-  void aCombinedSetAndIncUpdateChainsTwoOperationsOverOneParameterMap() {
+  void aCombinedSetAndUnsetUpdateChainsTwoOperationsOverOneParameterMap() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
 
-    final Document u = new Document("$set", new Document("note", "v1")).append("$inc", new Document("count", 3));
+    final Document u = new Document("$set", new Document("note", "v1")).append("$unset", new Document("count", ""));
     MongoDBDatabaseWrapper.appendUpdateOperations(sql, params, u);
 
     // the grammar takes updateOperation+, so the two clauses chain; the payload of the first must not swallow the
-    // SET keyword that opens the second
-    assertThat(sql.toString()).isEqualTo(" MERGE :p0 SET `count` += :p1");
+    // REMOVE keyword that opens the second
+    assertThat(sql.toString()).isEqualTo(" MERGE :p0 REMOVE `count`");
     assertThat(params.get("p0")).isEqualTo(Map.of("note", "v1"));
-    assertThat(params.get("p1")).isEqualTo(3);
   }
 
   @Test

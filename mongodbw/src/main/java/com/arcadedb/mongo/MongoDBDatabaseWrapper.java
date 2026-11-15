@@ -84,6 +84,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /** What {@code getPath} answers for a path that reaches no value: a stored {@code null} is a value. */
+  private static final Object MISSING = new Object();
   /**
    * The fields of a {@code createIndexes} specification this plugin honours ({@code key}, {@code name}, {@code unique}) or that
    * carry no semantics a built index could miss ({@code background} is a build-scheduling hint, {@code v} the index format
@@ -830,6 +832,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (updates != null) {
       // one regex budget for the whole command, whatever the number of entries
       final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
+      // the update documents are checked before anything is matched or written: mongod refuses an invalid one even when its filter
+      // matches no document (issue #12070)
+      for (final Document upd : updates)
+        if (upd.get("u") instanceof Document u && !isReplacement(u))
+          checkUpdateOperators(u);
       // a sample of a TIMESERIES type is never updated, and has no identity for the record path to select: an update, a replacement
       // or an upsert is refused naming the type, before the upsert would prepare an _id index on it (issue #10464). The filters are
       // still validated first: an invalid one is an error whatever the collection
@@ -957,7 +964,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
     // for any shape of data). Only an update without a filter stays one SQL UPDATE.
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
-    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
+    // $inc always goes through the records: SQL "+=" concatenates a string, appends to a list and drops a date, where $inc refuses any
+    // stored value that is not a number (issue #12070)
+    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || u.containsKey("$inc") || !filter.isEmpty())
       return executeUpdateOnRecords(collectionName, filter, u, multi);
 
     final Map<String, Object> params = new HashMap<>();
@@ -1178,9 +1187,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           unsetPath(record, f);
       }
       case "$inc" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet())
+        for (final Map.Entry<String, Object> f : operand.entrySet()) {
+          // the amount is a number (checkUpdateOperators). A missing field takes it as it is, a stored null or any other value that
+          // is not a number is refused, like mongod does (issue #12070)
+          final Object current = getPath(record, f.getKey());
+          final Number amount = (Number) f.getValue();
+          final Number sum = current == MISSING ? amount : add(storedNumber(f.getKey(), current), amount);
           // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
-          setPath(record, f.getKey(), MongoBsonValues.toStored(add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue()))));
+          setPath(record, f.getKey(), MongoBsonValues.toStored(sum));
+        }
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
@@ -1190,8 +1205,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * Appends the update clauses for a BSON update document, binding every value it carries into {@code params} rather than
-   * spelling it into {@code sql}. Field names are the exception: SQL cannot bind a property name, so {@code $unset} and
-   * {@code $inc} quote theirs as identifiers.
+   * spelling it into {@code sql}. Field names are the exception: SQL cannot bind a property name, so {@code $unset} quotes
+   * them as identifiers. {@code $inc} has no translation: SQL {@code +=} does not refuse a stored value that is not a number,
+   * so it is applied record by record (issue #12070).
    * <p>
    * {@code params} must be empty on entry and hold only generated placeholders afterwards: names are derived from the map's
    * current size, so a pre-seeded map would silently reuse one. A caller that also appends a WHERE clause must share this
@@ -1221,12 +1237,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           if (i++ > 0)
             sql.append(", ");
           sql.append(MongoDBToSqlTranslator.quoteFieldPath(field));
-        }
-      }
-      case "$inc" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet()) {
-          sql.append(" SET ").append(MongoDBToSqlTranslator.quoteFieldPath(f.getKey())).append(" += ");
-          MongoDBToSqlTranslator.buildValue(sql, params, (Number) f.getValue());
         }
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
@@ -1312,21 +1322,34 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return copy;
   }
 
+  /**
+   * The value at a possibly dotted path, or {@link #MISSING} when the path reaches no value: a stored {@code null} is a value,
+   * which {@code $inc} refuses where it takes a missing field as zero.
+   */
   private static Object getPath(final MutableDocument record, final String path) {
     final int dot = path.indexOf('.');
-    if (dot < 0)
-      return record.get(path);
+    final String head = dot < 0 ? path : path.substring(0, dot);
+    if (!record.has(head))
+      return MISSING;
 
-    Object current = record.get(path.substring(0, dot));
+    Object current = record.get(head);
+    if (dot < 0)
+      return current;
+
     for (final String segment : path.substring(dot + 1).split("\\.")) {
-      if (current instanceof Map<?, ?> map)
-        current = map.get(keyNamed(map, segment));
-      else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
+      if (current instanceof Map<?, ?> map) {
+        final Object key = keyNamed(map, segment);
+        if (!map.containsKey(key))
+          return MISSING;
+        current = map.get(key);
+      } else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
         current = list.get(Integer.parseInt(segment));
-      else if (current instanceof com.arcadedb.database.Document embedded)
+      else if (current instanceof com.arcadedb.database.Document embedded) {
+        if (!embedded.has(segment))
+          return MISSING;
         current = embedded.get(segment);
-      else
-        return null;
+      } else
+        return MISSING;
     }
     return current;
   }
@@ -1376,10 +1399,50 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return Objects.equals(stored, replacement);
   }
 
-  private static Number numberOf(final Object value) {
-    if (value == null || value instanceof Number)
-      return (Number) value;
-    throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
+  private static Number storedNumber(final String path, final Object value) {
+    if (value instanceof Number number)
+      return number;
+    throw new MongoServerError(ErrorCode.TypeMismatch.getValue(), ErrorCode.TypeMismatch.getName(),
+        "Cannot apply $inc to a value of non-numeric type. The field '" + path + "' holds " + (value == null ? "null" : "a non-numeric value"));
+  }
+
+  /**
+   * Refuses an update document mongod refuses, before anything is matched or written (issue #12070): an {@code $inc} amount that is
+   * not a number (error 14), and two fields, of one operator or of two, naming the same path or a path and one below it (error 40).
+   */
+  static void checkUpdateOperators(final Document u) {
+    final List<String> paths = new ArrayList<>();
+    for (final Map.Entry<String, Object> entry : u.entrySet()) {
+      if (!(entry.getValue() instanceof Document operand))
+        continue;
+      for (final Map.Entry<String, Object> field : operand.entrySet()) {
+        final String path = field.getKey();
+        if ("$inc".equals(entry.getKey()) && !(field.getValue() instanceof Number))
+          throw new MongoServerError(ErrorCode.TypeMismatch.getValue(), ErrorCode.TypeMismatch.getName(),
+              "Cannot increment with non-numeric argument: {" + path + ": " + (field.getValue() instanceof String text ?
+                  "\"" + text + "\"" :
+                  field.getValue()) + "}");
+        for (final String other : paths) {
+          final String conflict = conflictAt(path, other);
+          if (conflict != null)
+            throw new MongoServerError(ErrorCode.ConflictingUpdateOperators.getValue(), ErrorCode.ConflictingUpdateOperators.getName(),
+                "Updating the path '" + path + "' would create a conflict at '" + conflict + "'");
+        }
+        paths.add(path);
+      }
+    }
+  }
+
+  /**
+   * The path two update fields both write, the shorter one, or {@code null} when neither is the other or below it: {@code a} and
+   * {@code a.b} conflict, {@code a} and {@code ab} do not.
+   */
+  private static String conflictAt(final String path, final String other) {
+    if (path.equals(other))
+      return path;
+    final String shorter = path.length() < other.length() ? path : other;
+    final String longer = shorter == path ? other : path;
+    return longer.startsWith(shorter) && longer.charAt(shorter.length()) == '.' ? shorter : null;
   }
 
   private static boolean isEmbedded(final Object value) {
@@ -1397,18 +1460,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long), anything else is a double.
+   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long), anything else is a double. A long that
+   * overflows is refused, as mongod refuses it (error 2): it does not become a double (issue #12070).
    */
   private static Number add(final Number current, final Number delta) {
-    if (current == null)
-      return delta;
     if (isIntegral(current) && isIntegral(delta)) {
       final long sum;
       try {
         sum = Math.addExact(current.longValue(), delta.longValue());
       } catch (final ArithmeticException e) {
-        // like MongoDB, an overflowing long becomes a double
-        return current.doubleValue() + delta.doubleValue();
+        throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(),
+            "Failed to apply $inc operations to current value ((NumberLong)" + current + ")");
       }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
