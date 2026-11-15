@@ -723,17 +723,50 @@ public enum Type {
     return item;
   }
 
-  /** The text of an array's elements, as {@code List.toString()} writes the list of the same elements. */
-  private static String arrayText(final Object array) {
-    final int length = Array.getLength(array);
-    final StringBuilder text = new StringBuilder(2 + 4 * length).append('[');
-    for (int i = 0; i < length; i++) {
-      if (i > 0)
-        text.append(", ");
-      final Object element = Array.get(array, i);
-      text.append(element != null && element.getClass().isArray() ? arrayText(element) : String.valueOf(element));
+  /**
+   * The index key of a list or an array on a property that is not declared (key type STRING): the text of its elements, with
+   * each floating point or decimal number spelled as {@link #canonicalNumberKey} spells a single one, nested lists and arrays
+   * too. [1.0], [1] and a double[] or long[] of 1 are equal for Cypher, so they are one key: an equality seek finds them all.
+   */
+  public static String canonicalListKey(final Object arrayOrCollection) {
+    return elementsText(arrayOrCollection, true);
+  }
+
+  /**
+   * The text of an array's or a collection's elements, as {@code List.toString()} writes the list of the same elements, with
+   * nested arrays and collections written the same way: an array is stored as a list, so an array inside one comes back from
+   * a reload as an array inside a list, and both have to give the text the value was keyed under.
+   */
+  private static String elementsText(final Object arrayOrCollection, final boolean canonicalNumbers) {
+    final StringBuilder text = new StringBuilder().append('[');
+    if (arrayOrCollection instanceof Collection<?> collection) {
+      boolean first = true;
+      for (final Object element : collection) {
+        if (!first)
+          text.append(", ");
+        first = false;
+        appendElement(text, element, canonicalNumbers);
+      }
+    } else {
+      final int length = Array.getLength(arrayOrCollection);
+      for (int i = 0; i < length; i++) {
+        if (i > 0)
+          text.append(", ");
+        appendElement(text, Array.get(arrayOrCollection, i), canonicalNumbers);
+      }
     }
     return text.append(']').toString();
+  }
+
+  private static void appendElement(final StringBuilder text, final Object element, final boolean canonicalNumbers) {
+    if (element == null)
+      text.append("null");
+    else if (element instanceof Collection || element.getClass().isArray())
+      text.append(elementsText(element, canonicalNumbers));
+    else if (canonicalNumbers && (element instanceof Double || element instanceof Float || element instanceof BigDecimal))
+      text.append(canonicalNumberKey(element));
+    else
+      text.append(element);
   }
 
   /**
@@ -787,9 +820,9 @@ public enum Type {
           throw inconvertible(value, "STRING", property);
         // Without a property - an index key of an undeclared property, whose key type is STRING - the content is the text, the
         // one a list of the same elements has: the identity text was a key no seek found and no update or delete removed
-        // (issue #11578)
-        if (valueClass.isArray())
-          return arrayText(value);
+        // (issue #11578). A collection is written the same way, so an array nested in it is its content too.
+        if (valueClass.isArray() || property == null && value instanceof Collection)
+          return elementsText(value, false);
         // A zoned datetime keeps the text form Cypher gave it before it had a native type (issue #8572)
         if (value instanceof ZonedDateTime zoned)
           return new CypherDateTime(zoned).toString();

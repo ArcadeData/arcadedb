@@ -20,6 +20,9 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -27,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #11578: an index openCypher creates on a property nothing declares has the key type STRING, and a
@@ -75,6 +79,67 @@ class UndeclaredIndexArrayKeyIssue11578Test extends TestHelper {
 
     database.transaction(() -> database.command("opencypher", "MATCH (n:D) DELETE n"));
     assertThat(database.getSchema().getIndexByName("D[v]").countEntries()).isZero();
+  }
+
+  /**
+   * An Object[] holding a long[] is stored as a list, so the reloaded record holds a List with a long[] inside. Its key has to
+   * be the one the in-memory value was indexed under, or a delete leaves the entry behind.
+   */
+  @Test
+  void nestedArrayKeyIsRemovedFromTheReloadedRecord() {
+    database.command("opencypher", "CREATE INDEX FOR (n:Nest) ON (n.v)");
+    database.transaction(() -> database.command("opencypher", "CREATE (:Nest {id: 1, v: $v})",
+        Map.of("v", new Object[] { new long[] { 1, 2 }, "a" })));
+    final Index index = database.getSchema().getIndexByName("Nest[v]");
+    assertThat(index.countEntries()).isEqualTo(1L);
+    assertThat(ids("MATCH (n:Nest) WHERE n.v = $p RETURN n.id AS id", Map.of("p", List.of(List.of(1, 2), "a"))))
+        .containsExactly(1);
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n:Nest) SET n.v = 5"));
+    assertThat(ids("MATCH (n:Nest) WHERE n.v = 5 RETURN n.id AS id", Map.of())).containsExactly(1);
+    database.transaction(() -> database.command("opencypher", "MATCH (n:Nest) DELETE n"));
+    assertThat(index.countEntries()).isZero();
+  }
+
+  /** [1.0] and [1] are equal for Cypher, whether the value is a double[], a long[] or a list: one key, so a seek finds all. */
+  @Test
+  void equalNumericListsShareOneKey() {
+    database.command("opencypher", "CREATE INDEX FOR (n:Num) ON (n.v)");
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Num {id: 1, v: $v})", Map.of("v", new double[] { 1.0 }));
+      database.command("opencypher", "CREATE (:Num {id: 2, v: $v})", Map.of("v", new long[] { 1 }));
+      database.command("opencypher", "CREATE (:Num {id: 3, v: $v})", Map.of("v", List.of(1)));
+      database.command("opencypher", "CREATE (:Num {id: 4, v: $v})", Map.of("v", List.of(1.0f)));
+      database.command("opencypher", "CREATE (:Num {id: 5, v: $v})", Map.of("v", List.of(List.of(2.50), new double[] { 3 })));
+    });
+    // the scan: a list comprehension is not an indexed property, so this compares every record's value
+    assertThat(ids("MATCH (n:Num) WITH n, [x IN n.v | x] AS v WHERE v = [1] RETURN n.id AS id ORDER BY id", Map.of()))
+        .containsExactly(1, 2, 3, 4);
+    final String seek = "MATCH (n:Num) WHERE n.v = $p RETURN n.id AS id ORDER BY id";
+    for (final Object p : List.of(List.of(1), List.of(1.0), new double[] { 1.0 }, new long[] { 1 }))
+      assertThat(ids(seek, Map.of("p", p))).as("seek %s", p).containsExactly(1, 2, 3, 4);
+    assertThat(ids(seek, Map.of("p", List.of(List.of(2.5), List.of(3))))).containsExactly(5);
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n:Num) DELETE n"));
+    assertThat(database.getSchema().getIndexByName("Num[v]").countEntries()).isZero();
+  }
+
+  /** Type.convert to STRING without a property: the text of the content; with a declared property an array is refused. */
+  @Test
+  void convertToStringWritesTheContent() {
+    assertThat(Type.convert(database, new int[0], String.class)).isEqualTo("[]");
+    assertThat(Type.convert(database, new int[] { 1, 2 }, String.class)).isEqualTo("[1, 2]");
+    assertThat(Type.convert(database, new String[] { "a", null }, String.class)).isEqualTo("[a, null]");
+    assertThat(Type.convert(database, new Object[] { new long[] { 1 }, new Object[0], null }, String.class))
+        .isEqualTo("[[1], [], null]");
+    assertThat(Type.convert(database, List.of(new long[] { 1, 2 }, List.of(new byte[] { 3 })), String.class))
+        .isEqualTo("[[1, 2], [[3]]]");
+    assertThat(Type.convert(database, List.of(1.5, "a"), String.class)).isEqualTo("[1.5, a]");
+
+    final DocumentType type = database.getSchema().createDocumentType("Conv");
+    final Property property = type.createProperty("s", Type.STRING);
+    assertThatThrownBy(() -> Type.convert(database, new long[] { 1 }, String.class, property))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   private List<Integer> ids(final String query, final Map<String, Object> params) {
