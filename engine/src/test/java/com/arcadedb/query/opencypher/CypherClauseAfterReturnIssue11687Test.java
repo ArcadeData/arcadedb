@@ -70,6 +70,22 @@ class CypherClauseAfterReturnIssue11687Test extends TestHelper {
   }
 
   @Test
+  void updatingClauseAfterReturnIsRejectedAndWritesNothing() {
+    final String[] statements = {
+        "RETURN 1 AS id CREATE (:Node {id: 99})",
+        "MATCH (a:Node {id:1}) RETURN a.id AS id CREATE (:Node {id: 98})",
+        "MATCH (a:Node {id:1}) RETURN a.id AS id SET a.id = 100",
+        "MATCH (a:Node {id:1}) RETURN a.id AS id DELETE a"
+    };
+    for (final String statement : statements) {
+      assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", statement).close()))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("RETURN can only be used at the end of the query");
+    }
+    assertThat(ids("MATCH (a:Node) RETURN a.id AS id ORDER BY id")).containsExactly(1L, 2L, 3L);
+  }
+
+  @Test
   void singleReturnWithOrderBySkipLimitIsUnchanged() {
     assertThat(ids("MATCH (a:Node) RETURN a.id AS id ORDER BY id DESC SKIP 1 LIMIT 1")).containsExactly(2L);
     // A standalone OFFSET after RETURN is folded into the RETURN's paging (issue #9940), not a clause after it
