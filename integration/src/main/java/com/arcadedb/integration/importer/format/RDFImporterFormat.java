@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedProperty;
 import com.arcadedb.integration.importer.AnalyzedSchema;
@@ -44,6 +45,15 @@ public class RDFImporterFormat extends CSVImporterFormat {
    * {@link #analyze} declares it and the loop below writes it, and the two must agree.
    */
   private static final String LABEL_PROPERTY = "label";
+
+  /**
+   * The properties of the vertex of a literal object that a user reads (issue #12049): its lexical form with the escapes
+   * decoded and no quotes, its language tag and its datatype IRI (left out for a plain literal). The key property holds the
+   * literal's canonical N-Triples form instead, which keeps a literal from ever being the vertex of the IRI it spells.
+   */
+  public static final String LITERAL_VALUE_PROPERTY    = "value";
+  public static final String LITERAL_LANGUAGE_PROPERTY = "lang";
+  public static final String LITERAL_DATATYPE_PROPERTY = "datatype";
 
   /**
    * The key property an RDF source resolves its subject and object IRIs against when the caller named none. A
@@ -242,6 +252,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
           final String edgeLabel = terms[1];
           final String v2Id = terms[2];
 
+          if (statement.objectIsLiteral())
+            createLiteralVertexIfAbsent(database, settings.vertexTypeName, typeIdProperty, v2Id, statement);
+
           // CREATE AN EDGE
           database.newEdgeByKeys(settings.vertexTypeName,
               new String[] { typeIdProperty },
@@ -349,6 +362,24 @@ public class RDFImporterFormat extends CSVImporterFormat {
    * does not have it yet. {@code newEdgeByKeys} looks every term up by that index, so an import into a database without the
    * type failed with "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
    */
+  private static void createLiteralVertexIfAbsent(final DatabaseInternal database, final String typeName,
+      final String typeIdProperty, final String key, final NTriplesStatement statement) {
+    if (database.lookupByKey(typeName, typeIdProperty, key).hasNext())
+      return;
+    final MutableVertex vertex = database.newVertex(typeName);
+    vertex.set(typeIdProperty, key);
+    setUnlessKey(vertex, typeIdProperty, LITERAL_VALUE_PROPERTY, statement.objectLexical());
+    setUnlessKey(vertex, typeIdProperty, LITERAL_LANGUAGE_PROPERTY, statement.objectLanguage());
+    setUnlessKey(vertex, typeIdProperty, LITERAL_DATATYPE_PROPERTY, statement.objectDatatype());
+    vertex.save();
+  }
+
+  /** A literal's property, never written over the key property a caller may have named like it. */
+  private static void setUnlessKey(final MutableVertex vertex, final String typeIdProperty, final String name, final String value) {
+    if (value != null && !name.equals(typeIdProperty))
+      vertex.set(name, value);
+  }
+
   private static void ensureVertexType(final DatabaseInternal database, final String typeName, final String typeIdProperty) {
     if (database.getSchema().existsType(typeName))
       return;

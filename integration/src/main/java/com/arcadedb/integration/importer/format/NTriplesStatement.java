@@ -29,7 +29,9 @@ import com.arcadedb.integration.importer.ImportException;
  * <li>a literal is its canonical N-Triples form: the lexical form decoded and then re-escaped the canonical way (only
  * {@code "}, {@code \}, line feed and carriage return), between quotes, followed by its language tag or its datatype IRI
  * ({@code xsd:string}, the datatype of every untagged literal, is left out). Kept with its quotes, a literal can never be
- * the key of an IRI vertex, and a literal is one key whichever of the equivalent escapings the file uses.</li>
+ * the key of an IRI vertex, and a literal is one key whichever of the equivalent escapings the file uses. The value a user
+ * reads is separate: the decoded lexical form, the language tag and the datatype of an object literal are answered by
+ * {@link #objectLexical()}, {@link #objectLanguage()} and {@link #objectDatatype()}.</li>
  * </ul>
  * Terms are separated by runs of whitespace when the source's delimiter is a space or a tab (canonical N-Triples). With any
  * other delimiter (a comma-separated triple file, or a delimiter the user set) the terms are separated by that delimiter,
@@ -44,9 +46,17 @@ final class NTriplesStatement {
   private final char          delimiter;
   private final boolean       whitespaceSeparates;
   private final int           maxLength;
-  private final StringBuilder buffer = new StringBuilder();
+  private final StringBuilder buffer  = new StringBuilder();
+  // THE DECODED LEXICAL FORM OF THE LITERAL BEING READ: WHAT A USER READS, WHERE buffer HOLDS THE KEY
+  private final StringBuilder lexical = new StringBuilder();
   private       String        line;
   private       int           pos;
+  private       boolean       literalRead;
+  private       String        literalLanguage;
+  private       String        literalDatatype;
+  private       String        objectLexical;
+  private       String        objectLanguage;
+  private       String        objectDatatype;
 
   NTriplesStatement(final char delimiter, final int maxLength) {
     this.delimiter = delimiter;
@@ -61,6 +71,9 @@ final class NTriplesStatement {
   int parse(final String statement, final String[] terms) {
     this.line = statement;
     this.pos = 0;
+    objectLexical = null;
+    objectLanguage = null;
+    objectDatatype = null;
     int found = 0;
     while (found < 3) {
       skipWhitespace();
@@ -76,7 +89,13 @@ final class NTriplesStatement {
           break;
       }
       final int begin = pos;
+      literalRead = false;
       terms[found] = readTerm();
+      if (found == 2 && literalRead) {
+        objectLexical = lexical.toString();
+        objectLanguage = literalLanguage;
+        objectDatatype = literalDatatype;
+      }
       if (maxLength > 0 && pos - begin > maxLength)
         throw new ImportException(
             "Term " + (found + 1) + " is " + (pos - begin) + " characters long, more than maxPropertySize=" + maxLength + ": "
@@ -84,6 +103,26 @@ final class NTriplesStatement {
       ++found;
     }
     return found;
+  }
+
+  /** Whether the object of the last statement parsed is a literal. */
+  boolean objectIsLiteral() {
+    return objectLexical != null;
+  }
+
+  /** The lexical form of the object literal, its escapes decoded and without quotes, or null when the object is not a literal. */
+  String objectLexical() {
+    return objectLexical;
+  }
+
+  /** The language tag of the object literal as written, or null. */
+  String objectLanguage() {
+    return objectLanguage;
+  }
+
+  /** The datatype IRI of the object literal, or null for a plain (xsd:string) or language-tagged literal. */
+  String objectDatatype() {
+    return objectDatatype;
   }
 
   private void skipWhitespace() {
@@ -132,6 +171,9 @@ final class NTriplesStatement {
   private String readLiteral() {
     final int begin = pos;
     buffer.setLength(0);
+    lexical.setLength(0);
+    literalLanguage = null;
+    literalDatatype = null;
     buffer.append('"');
     ++pos;
     boolean closed = false;
@@ -149,6 +191,7 @@ final class NTriplesStatement {
     if (!closed)
       throw new ImportException("Unterminated literal starting at column " + (begin + 1) + ": " + line);
     buffer.append('"');
+    literalRead = true;
 
     if (pos < line.length() && line.charAt(pos) == '@') {
       final int tagBegin = pos;
@@ -156,11 +199,15 @@ final class NTriplesStatement {
       while (pos < line.length() && (Character.isLetterOrDigit(line.charAt(pos)) || line.charAt(pos) == '-'))
         ++pos;
       buffer.append(line, tagBegin, pos);
+      literalLanguage = line.substring(tagBegin + 1, pos);
     } else if (line.startsWith("^^<", pos)) {
       pos += 2;
       final String literal = buffer.toString();
       final String datatype = readIri();
-      return XSD_STRING.equals(datatype) ? literal : literal + "^^<" + datatype + ">";
+      if (XSD_STRING.equals(datatype))
+        return literal;
+      literalDatatype = datatype;
+      return literal + "^^<" + datatype + ">";
     }
     return buffer.toString();
   }
@@ -207,14 +254,18 @@ final class NTriplesStatement {
     if (!Character.isValidCodePoint(codePoint))
       throw new ImportException("Invalid code point in a \\U escape in: " + line);
     pos += digits;
-    if (iri || codePoint > 0xFFFF)
+    if (iri)
       buffer.appendCodePoint(codePoint);
-    else
+    else if (codePoint > 0xFFFF) {
+      buffer.appendCodePoint(codePoint);
+      lexical.appendCodePoint(codePoint);
+    } else
       appendCanonical((char) codePoint);
   }
 
-  /** A character of a literal's lexical form, escaped the way canonical N-Triples writes it. */
+  /** A character of a literal's lexical form, kept decoded and escaped the way canonical N-Triples writes it. */
   private void appendCanonical(final char c) {
+    lexical.append(c);
     switch (c) {
     case '"' -> buffer.append("\\\"");
     case '\\' -> buffer.append("\\\\");

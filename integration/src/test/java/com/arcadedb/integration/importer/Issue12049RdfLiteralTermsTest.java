@@ -41,7 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * terminator {@code .} became the object; a plain literal lost its quotes, so {@code "http://ex.org/o1"} became the same vertex
  * as {@code <http://ex.org/o1>}, while a tagged or typed literal kept them; no escape was decoded; and a database without the
  * {@code Node} type failed the import. Subjects and objects are now keyed by their term: an IRI by its text, a literal by its
- * canonical N-Triples form.
+ * canonical N-Triples form; a literal's vertex also carries what a user reads, its decoded lexical form in {@code value} and its
+ * language tag and datatype in {@code lang} and {@code datatype}.
  */
 class Issue12049RdfLiteralTermsTest {
   private static final String DB_PATH = "target/databases/issue12049";
@@ -82,12 +83,15 @@ class Issue12049RdfLiteralTermsTest {
 
       final Map<String, String> objectByPredicate = new HashMap<>();
       final Map<String, RID> objectRidByPredicate = new HashMap<>();
-      try (final ResultSet rs = db.query("sql", "SELECT label, @in.id AS o, @in AS oRid FROM Relationship")) {
+      final Map<String, Result> objectRowByPredicate = new HashMap<>();
+      try (final ResultSet rs = db.query("sql",
+          "SELECT label, @in.id AS o, @in AS oRid, @in.value AS value, @in.lang AS lang, @in.datatype AS datatype FROM Relationship")) {
         while (rs.hasNext()) {
           final Result row = rs.next();
           final String predicate = row.getProperty("label");
           objectByPredicate.put(predicate, row.getProperty("o"));
           objectRidByPredicate.put(predicate, row.getProperty("oRid"));
+          objectRowByPredicate.put(predicate, row);
         }
       }
 
@@ -105,11 +109,27 @@ class Issue12049RdfLiteralTermsTest {
       assertThat(objectByPredicate.get("http://ex.org/empty")).as("the empty literal, not the terminator").isEqualTo("\"\"");
       assertThat(objectByPredicate.get("http://ex.org/see")).isEqualTo("http://ex.org/café");
 
+      // WHAT A USER READS: THE DECODED LEXICAL FORM, NO QUOTES, AND THE TAG AND DATATYPE IN PROPERTIES OF THEIR OWN
+      assertLiteral(objectRowByPredicate.get("http://ex.org/name"), "hello world", null, null);
+      assertLiteral(objectRowByPredicate.get("http://ex.org/homepage"), "http://ex.org/o1", null, null);
+      assertLiteral(objectRowByPredicate.get("http://ex.org/label"), "bonjour", "fr", null);
+      assertLiteral(objectRowByPredicate.get("http://ex.org/age"), "42", null, "http://www.w3.org/2001/XMLSchema#integer");
+      assertLiteral(objectRowByPredicate.get("http://ex.org/note"), "café\nline2", null, null);
+      assertLiteral(objectRowByPredicate.get("http://ex.org/quote"), "say \"hi\"", null, null);
+      assertLiteral(objectRowByPredicate.get("http://ex.org/empty"), "", null, null);
+      assertThat(objectRowByPredicate.get("http://ex.org/p").<String>getProperty("value")).as("an IRI has no literal value").isNull();
+
       try (final ResultSet rs = db.query("sql", "SELECT @out.id AS s FROM Relationship WHERE label = 'http://ex.org/see'")) {
         assertThat(rs.next().<String>getProperty("s")).isEqualTo("_:b1");
       }
     } finally {
       source.delete();
     }
+  }
+
+  private static void assertLiteral(final Result row, final String value, final String lang, final String datatype) {
+    assertThat(row.<String>getProperty("value")).isEqualTo(value);
+    assertThat(row.<String>getProperty("lang")).isEqualTo(lang);
+    assertThat(row.<String>getProperty("datatype")).isEqualTo(datatype);
   }
 }
