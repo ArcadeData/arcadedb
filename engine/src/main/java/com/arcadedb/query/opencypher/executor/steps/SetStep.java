@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -49,9 +50,18 @@ public class SetStep extends AbstractExecutionStep {
 
   public SetStep(final SetClause setClause, final CommandContext context,
                  final CypherFunctionFactory functionFactory) {
+    this(setClause, context, functionFactory, SelectionPredicates.NONE);
+  }
+
+  /**
+   * @param selection the predicates that selected the records the rows bind, evaluated again on a target a concurrent commit
+   *                  changed since the row read it (issue #11818)
+   */
+  public SetStep(final SetClause setClause, final CommandContext context, final CypherFunctionFactory functionFactory,
+      final SelectionPredicates selection) {
     super(context);
     this.setClause = setClause;
-    this.applier = SetClauseApplier.forSetClause(context, new ExpressionEvaluator(functionFactory));
+    this.applier = SetClauseApplier.forSetClause(context, new ExpressionEvaluator(functionFactory), selection);
   }
 
   @Override

@@ -1521,7 +1521,8 @@ public class CypherExecutionPlan {
           if (!setClause.isEmpty() && (barrierFirst || !absorbsSet(currentStep, setClause))) {
             if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
-            final SetStep setStep = new SetStep(setClause, context, functionFactory);
+            final SetStep setStep = new SetStep(setClause, context, functionFactory,
+                SelectionPredicates.before(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
             eagerness.observeWriteClause();
@@ -1549,7 +1550,8 @@ public class CypherExecutionPlan {
             if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
                 || eagerness.needsBarrierForPropertyWrites(removeClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
-            final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
+            final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory,
+                SelectionPredicates.before(clausesInOrder, removeClause));
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
             eagerness.observeWriteClause();
@@ -2042,7 +2044,7 @@ public class CypherExecutionPlan {
             if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
-                new SetStep(setClause, context, functionFactory);
+                new SetStep(setClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
           }
@@ -2059,7 +2061,7 @@ public class CypherExecutionPlan {
               || eagerness.needsBarrierForPropertyWrites(removeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
-              new RemoveStep(removeClause, context, functionFactory);
+              new RemoveStep(removeClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, removeClause));
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
           eagerness.observeWrite(removeClause);
