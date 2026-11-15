@@ -99,6 +99,33 @@ class Issue11892ScriptLoopReturnTest extends TestHelper {
   }
 
   @Test
+  void nestedIfNotTakenInsideForEachGoesOn() {
+    assertThat(values("FOREACH ($it IN [1,2]) { IF (1 = 1) { IF (1 = 2) { RETURN \"a\"; } } } RETURN \"b\";")).containsExactly("b");
+  }
+
+  @Test
+  void nestedIfNotTakenInsideWhileGoesOn() {
+    assertThat(values("LET $i = 0; WHILE ($i < 2) { LET $i = $i + 1; IF (1 = 1) { IF (1 = 2) { RETURN \"a\"; } } } RETURN \"b\";"))
+        .containsExactly("b");
+  }
+
+  @Test
+  void nestedIfNotTakenGoesOn() {
+    assertThat(values("IF (1 = 1) { IF (1 = 2) { RETURN \"a\"; } } RETURN \"b\";")).containsExactly("b");
+  }
+
+  @Test
+  void ifEndingWithAStatementThatIsNotAReturnGoesOn() {
+    assertThat(values("IF (1 = 1) { IF (1 = 2) { RETURN \"a\"; } SELECT 9 AS v; } RETURN \"b\";")).containsExactly("b");
+  }
+
+  @Test
+  void breakEndingAnIfInsideALoopIsNotAReturn() {
+    assertThat(values("FOREACH ($it IN [1,2,3]) { IF ($it = 2) { IF (1 = 2) { RETURN \"a\"; } BREAK; } } RETURN \"b\";"))
+        .containsExactly("b");
+  }
+
+  @Test
   void breakBeforeReturnLetsTheScriptGoOn() {
     assertThat(values("FOREACH ($it IN [1,2]) { BREAK; RETURN \"a\"; } RETURN \"b\";")).containsExactly("b");
   }
