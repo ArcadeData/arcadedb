@@ -3085,12 +3085,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
       //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
       //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
-      // 3. Fallback density heuristic for raw blocks: if the average sample spacing already meets the target
-      //    granularity, downsampling would not reduce the block, so skip it. Expressed as a multiplication to
-      //    avoid integer-division truncation at the boundary.
-      if (entry.sampleCount <= 1
-          || entry.downsampledGranularityMs >= granularityMs
-          || (entry.maxTimestamp - entry.minTimestamp) >= granularityMs * (long) (entry.sampleCount - 1)) {
+      // A raw block is downsampled whatever its average sample spacing: an average at or above the granularity says nothing about
+      // how the samples are spread, and the density test that read it as "already at the target resolution" left a block whose
+      // samples share a bucket raw forever as soon as one of them was far from the others (issue #11984). The marker the rewrite
+      // leaves makes the next pass skip it.
+      if (entry.sampleCount <= 1 || entry.downsampledGranularityMs >= granularityMs) {
         toKeep.add(entry);
         continue;
       }
