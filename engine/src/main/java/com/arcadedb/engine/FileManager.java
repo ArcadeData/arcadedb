@@ -342,7 +342,8 @@ public class FileManager {
    * state: nothing can be forced through it any more.
    * <p>
    * The directory fsync is best effort, as in {@link FileUtils#forceDirectory} (a no-op on Windows), and never fails the
-   * sync: the file content is already on disk.
+   * sync: the file content is already on disk. A directory force that fails leaves its files owing it, so the next sync
+   * retries it.
    *
    * @return {@code true} when every file that needed it was fsynced; {@code false} when any fsync failed (#4934). After a
    *     failed fsync the OS may have DROPPED the dirty pages (fsyncgate semantics), so the callers that were
@@ -389,9 +390,8 @@ public class FileManager {
       final long directoryOwed = pcf.directoryForceOwed();
       if (directoryOwed > 0) {
         final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-        if (parent != null)
-          FileUtils.forceDirectory(parent.toPath());
-        pcf.directorySynced(directoryOwed);
+        if (parent == null || forceDirectory(parent.toPath()))
+          pcf.directorySynced(directoryOwed);
       }
       return true;
     } catch (final IOException e) {
@@ -404,8 +404,7 @@ public class FileManager {
 
   private boolean syncFilesSerialized() {
     boolean allSynced = true;
-    Set<Path> directoriesToSync = null;
-    Map<PaginatedComponentFile, Long> filesOwingTheirDirectory = null;
+    Map<Path, Map<PaginatedComponentFile, Long>> filesOwingTheirDirectory = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
@@ -423,12 +422,9 @@ public class FileManager {
           if (directoryOwed > 0) {
             final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
             if (parent != null) {
-              if (directoriesToSync == null) {
-                directoriesToSync = new HashSet<>();
+              if (filesOwingTheirDirectory == null)
                 filesOwingTheirDirectory = new LinkedHashMap<>();
-              }
-              directoriesToSync.add(parent.toPath());
-              filesOwingTheirDirectory.put(pcf, directoryOwed);
+              filesOwingTheirDirectory.computeIfAbsent(parent.toPath(), dir -> new LinkedHashMap<>()).put(pcf, directoryOwed);
             }
           }
         } catch (final IOException e) {
@@ -438,14 +434,21 @@ public class FileManager {
       }
     }
 
-    if (directoriesToSync != null) {
-      for (final Path dir : directoriesToSync)
-        FileUtils.forceDirectory(dir);
-      for (final Map.Entry<PaginatedComponentFile, Long> owed : filesOwingTheirDirectory.entrySet())
-        owed.getKey().directorySynced(owed.getValue());
-    }
+    if (filesOwingTheirDirectory != null)
+      for (final Map.Entry<Path, Map<PaginatedComponentFile, Long>> directory : filesOwingTheirDirectory.entrySet())
+        if (forceDirectory(directory.getKey()))
+          for (final Map.Entry<PaginatedComponentFile, Long> owed : directory.getValue().entrySet())
+            owed.getKey().directorySynced(owed.getValue());
 
     return allSynced;
+  }
+
+  /**
+   * Forces a directory, and tells whether the files in it owe it nothing more: it was forced, or nothing ever forces it here
+   * ({@link FileUtils#skipsDirectoryForce}). A force that failed is still owed, and the next sync retries it.
+   */
+  private static boolean forceDirectory(final Path dir) {
+    return FileUtils.forceDirectory(dir) || FileUtils.skipsDirectoryForce();
   }
 
   /**
