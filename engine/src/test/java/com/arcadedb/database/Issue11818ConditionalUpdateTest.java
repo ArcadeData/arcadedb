@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.Result;
@@ -269,6 +270,17 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     assertThat(valueOf("R", "claimed")).isNull();
   }
 
+  /** The same names bound inside an expression the collector does not model arm by arm (a CASE), which a WITH must not drop either. */
+  @Test
+  void cypherSetAfterAWithChecksAnInlineMapValueThatBindsLocalNamesInsideACase() {
+    final boolean committed = runWithConcurrentCommit("UPDATE R SET n = 7 WHERE k = 'r0'", () -> database.command("opencypher",
+        "MATCH (r:R {n: CASE WHEN true THEN reduce(s = 0, x IN [0] | s + x) ELSE 0 END}) WHERE race.interleave(r) WITH r "
+            + "SET r.claimed = 'B'", Map.of()).close());
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(valueOf("R", "claimed")).isNull();
+  }
+
   /**
    * A REMOVE builds on a concurrent commit as a SET does, so its predicates are checked the same way: releasing a lease the MATCH
    * found held by B must not release the lease A took over in between.
@@ -414,6 +426,76 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     assertThat(committed).as("refused with a retryable conflict").isFalse();
     assertThat(recordsOf("DI")).isEqualTo(1);
     assertIndexHolds("DI[k]", "i9");
+  }
+
+  /** A reload() of the mutable copy reads the content committed in between, which is what its delete then removes: it goes on. */
+  @Test
+  void deleteOfAModifiedDocumentReloadedAfterAConcurrentCommitGoesOn() {
+    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> {
+      final MutableDocument modified = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow().modify();
+      Race.interleave(modified);
+      modified.reload();
+      assertThat(modified.getString("k")).isEqualTo("i9");
+      modified.delete();
+    });
+
+    assertThat(committed).isTrue();
+    assertThat(recordsOf("DI")).isZero();
+    assertIndexHolds("DI[k]");
+  }
+
+  /**
+   * A mutable copy saved by an earlier transaction and deleted by a later one is checked against the content it wrote: a commit in
+   * between changed the key, so deleting with the index entries of the saved content would leave the new key's entry behind.
+   */
+  @Test
+  void deleteOfAModifiedDocumentSavedByAnEarlierTransactionAndChangedSinceIsARetryableConflict() {
+    final AtomicReference<MutableDocument> saved = new AtomicReference<>();
+    database.transaction(() -> saved.set(
+        database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow().modify().set("n", 1).save()));
+    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> {
+      Race.interleave(saved.get());
+      saved.get().delete();
+    });
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("DI")).isEqualTo(1);
+    assertIndexHolds("DI[k]", "i9");
+  }
+
+  /** And deleted unchanged by a later transaction, it is deleted with every index entry of it. */
+  @Test
+  void deleteOfAModifiedDocumentSavedByAnEarlierTransactionGoesOn() {
+    final AtomicReference<MutableDocument> saved = new AtomicReference<>();
+    database.transaction(() -> saved.set(
+        database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow().modify().set("k", "i1").save()));
+    database.transaction(() -> saved.get().delete());
+
+    assertThat(recordsOf("DI")).isZero();
+    assertIndexHolds("DI[k]");
+  }
+
+  /**
+   * An after-read listener can hand back other content than the stored one (a decryption), and that is the content modify() built
+   * the copy from: the delete compares it with the current content read through the listener too, so nothing changed and it goes on.
+   */
+  @Test
+  void deleteOfAModifiedDocumentAnAfterReadListenerRewroteGoesOn() {
+    final RID rid = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getIdentity().orElseThrow();
+    final AfterRecordReadListener rewrite = record -> record.asDocument().modify().set("n", 42);
+    database.getSchema().getType("DI").getEvents().registerListener(rewrite);
+    try {
+      database.transaction(() -> {
+        final MutableDocument modified = database.lookupByRID(rid, false).asDocument().modify();
+        assertThat(modified.getInteger("n")).isEqualTo(42);
+        modified.delete();
+      });
+    } finally {
+      database.getSchema().getType("DI").getEvents().unregisterListener(rewrite);
+    }
+
+    assertThat(recordsOf("DI")).isZero();
+    assertIndexHolds("DI[k]");
   }
 
   /** A record deleted whose content changed only where a delete does not depend on it (a vertex's edge lists) is deleted. */

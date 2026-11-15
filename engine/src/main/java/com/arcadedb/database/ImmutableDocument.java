@@ -414,12 +414,12 @@ public class ImmutableDocument extends BaseDocument {
 
   /**
    * Marks {@code mutable}, the record {@code modify()} is handing back, as built on a read that went stale (issue #8610),
-   * when the reload found the content changed since, and hands it the content it was built from, which its delete compares the
-   * stored content with (issue #11818).
+   * when the reload found the content changed since, and has its delete compare the content it holds with the stored one
+   * (issue #11818).
    */
   protected <T extends MutableDocument> T markIfReadWentStale(final T mutable) {
     if (buffer != null)
-      mutable.setReadImage(buffer, contentChangeOffset());
+      mutable.checkContentAtDelete(contentChangeOffset());
     if (readInTransaction <= STALE_READ) {
       if (readTransactionId(((DatabaseInternal) database).getTransaction().getBeginSequence()) == STALE_READ - readInTransaction)
         mutable.markBasedOnStaleRead();

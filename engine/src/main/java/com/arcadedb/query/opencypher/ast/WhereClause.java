@@ -215,12 +215,12 @@ public class WhereClause {
   }
 
   /**
-   * The names the complete {@link CypherExpressionWalker} reaches in a predicate or expression no arm above models. It names the
-   * iteration variable of a nested comprehension too, which only ever costs the caller its optimization, never a binding; a shape
-   * the walk gives up on falls back to the text.
+   * The names the complete {@link CypherExpressionWalker} reaches in a predicate or expression no arm above models, less the names a
+   * comprehension, quantifier or {@code reduce()} inside it binds where it binds them (issue #11818: a CASE holding a reduce() named
+   * its accumulator, so a WITH dropped the inline map that read it); a shape the walk gives up on falls back to the text.
    */
   private static void collectWithWalker(final BooleanExpression expr, final Set<String> vars) {
-    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expr);
+    final CypherReferencedVariables referenced = CypherReferencedVariables.freeOf(expr);
     if (referenced.isComplete())
       vars.addAll(referenced.getNames());
     else
@@ -228,7 +228,7 @@ public class WhereClause {
   }
 
   private static void collectWithWalker(final Expression expr, final Set<String> vars) {
-    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expr);
+    final CypherReferencedVariables referenced = CypherReferencedVariables.freeOf(expr);
     if (referenced.isComplete())
       vars.addAll(referenced.getNames());
     else
