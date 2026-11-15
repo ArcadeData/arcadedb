@@ -272,14 +272,15 @@ class VectorPrefilterTest {
         final LSMVectorIndex index = vectorIndex();
         final float[] query = embedding(7);
 
-        // Every real RID (100% of the index) plus enough RIDs from a bucket this index knows nothing about to push
-        // the allow-list past availableVectors (100) but comfortably under an unclamped 5.0x threshold (500). Only a
-        // literal (unclamped) selectivity would route this to the pre-filter plan.
+        // Every real RID (100% of the index) plus enough RIDs of the index's own bucket that hold no vector to push the
+        // allow-list's share of the bucket past availableVectors (100) but comfortably under an unclamped 5.0x threshold
+        // (500). Only a literal (unclamped) selectivity would route this to the pre-filter plan. They have to be of this
+        // bucket: the share of another bucket's RIDs is not this index's to answer (issue #11978).
         final Set<RID> allWithExtra = new HashSet<>();
         for (int i = 0; i < VERTICES; i++)
           allWithExtra.add(ridOf("doc" + i));
         for (int i = 0; i < 50; i++)
-          allWithExtra.add(new RID(9999, i));
+          allWithExtra.add(new RID(index.getAssociatedBucketId(), 1_000_000 + i));
         assertThat(allWithExtra.size()).as("must exceed availableVectors to distinguish clamped from unclamped")
             .isGreaterThan(VERTICES);
 
@@ -325,11 +326,12 @@ class VectorPrefilterTest {
 
     /**
      * End-to-end path into the predicate above: disabling the pre-filter plan is the only way to make a narrow
-     * allow-list reach the shortfall log at all (the plan would otherwise answer it directly first), so this pins
-     * that the log level it lands on is FINE, and that the graph-degradation WARNING text does not also fire.
+     * allow-list reach the graph walk at all (the plan would otherwise answer it directly first). The walk returns the
+     * list's members, which is all this index can answer, so it is no shortfall (issue #11978); should it miss one, the
+     * shortfall is the allow-list's and logs at FINE. Either way the graph-degradation WARNING must not fire.
      */
     @Test
-    void aNarrowAllowListWithThePlanDisabledLogsAtFineNotWarning() {
+    void aNarrowAllowListWithThePlanDisabledNeverLogsTheGraphWarning() {
       createSchemaAndData();
       database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
 
@@ -345,10 +347,7 @@ class VectorPrefilterTest {
 
         assertThat(results).hasSize(3);
         assertThat(captured)
-            .as("a shortfall forced purely by allow-list width must log at FINE, saying so")
-            .anyMatch(m -> m != null && m.contains("allow-list has only 3 entries"));
-        assertThat(captured)
-            .as("and must NOT also log the graph-degradation WARNING - only one of the two may fire")
+            .as("a narrow allow-list must NOT log the graph-degradation WARNING")
             .noneMatch(m -> m != null && m.contains("graph may need rebuilding"));
       } finally {
         LogManager.instance().setLogger(originalLogger);

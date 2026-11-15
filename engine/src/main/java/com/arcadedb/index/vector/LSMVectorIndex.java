@@ -9233,7 +9233,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return new PreFilterPlan(candidates.rids(), candidates.exact() ? candidates.rids() : allowedRIDs);
       }
     }
-    return allowedRIDs.size() <= maxCandidates ? new PreFilterPlan(allowedRIDs, allowedRIDs) : null;
+    // The list's share of this index's bucket, not the whole list (issue #11978): counted only when the whole list is too large,
+    // and only as far as the bound. A predicate has no members to count: its listing above is its plan
+    return allowedRIDs.size() <= maxCandidates || !(allowedRIDs instanceof PredicateRidSet)
+        && allowListMembersHere(allowedRIDs, (int) maxCandidates + 1) <= maxCandidates ?
+        new PreFilterPlan(allowedRIDs, allowedRIDs) :
+        null;
+  }
+
+  /**
+   * How many members of {@code allowedRIDs} this index can answer, counted up to {@code cap} (issue #11978). The
+   * {@code filter} list of a search on a type with several buckets is handed whole to the index of every bucket, and only
+   * its members in this index's bucket can be answered here: the list's own size overstates them up to the number of
+   * buckets. An index with no bucket of its own answers for the whole list. Not for a {@link PredicateRidSet}, whose size
+   * says nothing about its members.
+   */
+  private int allowListMembersHere(final Set<RID> allowedRIDs, final int cap) {
+    final int bucketId = metadata.associatedBucketId;
+    if (bucketId == -1)
+      return Math.min(allowedRIDs.size(), cap);
+    int members = 0;
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId && ++members >= cap)
+        break;
+    return members;
   }
 
   /**
@@ -9809,8 +9832,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
           expectedResults = Math.min(k, availableVectors);
         }
+        // Only the list's members in this bucket can be answered here (issue #11978). A list larger than k overall can hold
+        // fewer than k of them, and a walk that returned all of them is not short: before, every bucket of every such query
+        // took the scan below and logged a WARNING blaming its graph. Counted only once the answer is short, and only as far
+        // as the budget.
+        final int budget = expectedResults;
+        if (results.size() < expectedResults && allowedRIDs != null && !allowedRIDs.isEmpty()
+            && !(allowedRIDs instanceof PredicateRidSet))
+          expectedResults = Math.min(expectedResults, allowListMembersHere(allowedRIDs, expectedResults));
         if (results.size() < expectedResults) {
-          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
+          logShortfallCompletion(results.size(), budget, expectedResults, availableVectors, allowedRIDs);
           metrics.incrementBruteForceScans();
           bruteForceScan(scorer, k, allowedRIDs, results, ordinalMap, overlay, guard);
         }
@@ -9842,25 +9873,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The log line of the issue #3722 shortfall fallback, before the scan that completes the answer. Issue #6502: see
    * {@link #shortfallIsAllowListDriven}'s javadoc for why it is split.
+   *
+   * @param budget      the rows the search could expect without its allow-list
+   * @param listMembers the rows the allow-list leaves this index to answer, {@code budget} when it leaves at least that many
+   *                    (issue #11978)
    */
-  private void logShortfallCompletion(final int found, final int expectedResults, final int availableVectors,
+  private void logShortfallCompletion(final int found, final int budget, final int listMembers, final int availableVectors,
       final Set<RID> allowedRIDs) {
     if (allowedRIDs instanceof PredicateRidSet)
       LogManager.instance().log(this, Level.FINE, """
               Graph search returned only %d results (expected %d, available %d) for index %s - the allow-list is a \
               predicate the walk met too few matches of, so completing the answer with a brute-force scan is the \
-              expected cost of a selective predicate, not a sign the graph needs rebuilding""", found, expectedResults,
+              expected cost of a selective predicate, not a sign the graph needs rebuilding""", found, budget,
           availableVectors, indexName);
-    else if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
+    else if (listMembers < budget || shortfallIsAllowListDriven(allowedRIDs, budget))
       LogManager.instance().log(this, Level.FINE, """
               Graph search returned only %d results (expected %d, available %d) for index %s - the RID \
               allow-list has only %d entries, which is fewer than requested, so completing the answer with a \
               brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""", found,
-          expectedResults, availableVectors, indexName, allowedRIDs.size());
+          budget, availableVectors, indexName, Math.min(listMembers, allowedRIDs.size()));
     else
       LogManager.instance().log(this, Level.WARNING, """
               Graph search returned only %d results (expected %d, available %d) for index %s - \
-              falling back to brute-force scan (graph may need rebuilding)""", found, expectedResults, availableVectors,
+              falling back to brute-force scan (graph may need rebuilding)""", found, budget, availableVectors,
           indexName);
   }
 
