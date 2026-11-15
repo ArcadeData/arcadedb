@@ -121,6 +121,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -133,6 +134,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
@@ -554,6 +557,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    PeerHttpAddressCandidates peerHttpAddressCandidates = new PeerHttpAddressCandidates();
   private          RaftClusterManager        clusterManager;
   private final    Object                    recoveryLock          = new Object();
+  // Issue #11921: read-held by every commit published outside the log for its whole length (see runPublication), write-held
+  // by an in-place restart while it replaces the state machine. The publication takes the validation lock of the ledger of
+  // the state machine current at its first version check, so it must not span the replacement of that ledger.
+  private final    ReentrantReadWriteLock    publicationGate       = new ReentrantReadWriteLock();
   private volatile boolean                   shutdownRequested     = false;
   private volatile boolean                   legacyRaftStorageWarningLogged = false;
   private volatile Thread                    autoJoinThread        = null;
@@ -3386,7 +3393,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           return;
         }
 
-        this.stateMachine = createStateMachine();
+        replaceStateMachineBetweenPublications();
 
         final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
         final File storageDir = getRaftStorageDir();
@@ -4021,6 +4028,41 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /**
+   * Runs a commit published outside the log (issue #11921) so that no in-place restart replaces the state machine while it
+   * runs: the publication and every validation it is ordered against then use one ledger. {@code publication} resolves the
+   * state machine itself, under the gate.
+   */
+  <T> T runPublication(final Callable<T> publication) throws Exception {
+    final Lock gate = publicationGate.readLock();
+    gate.lock();
+    try {
+      return publication.call();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Builds the state machine of an in-place restart once the publications in flight on the old one have returned (issue
+   * #11921), waiting up to {@code arcadedb.ha.ratisCloseTimeoutMs}: one that is still running after that fails the restart,
+   * which counts toward {@code arcadedb.ha.ratisRestartMaxRetries} like a close that does not finish.
+   */
+  private void replaceStateMachineBetweenPublications() throws IOException, InterruptedException {
+    final Lock gate = publicationGate.writeLock();
+    final long waitMs = ratisCloseTimeoutMs();
+    if (waitMs <= 0)
+      gate.lockInterruptibly();
+    else if (!gate.tryLock(waitMs, TimeUnit.MILLISECONDS))
+      throw new IOException("A commit published outside the Raft log was still running after " + waitMs
+          + "ms; not replacing the state machine under it (issue #11921)");
+    try {
+      this.stateMachine = createStateMachine();
+    } finally {
+      gate.unlock();
+    }
   }
 
   /**

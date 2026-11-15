@@ -4129,8 +4129,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link PageVersionLedger#publishOutsideTheLog}. The ledger's reservation hook is installed on the database first: the
    * commit takes the validation lock at its first version check, through that hook, and a database no entry was validated
    * on yet has none, so the commit would check and publish without the lock (issue #11921).
+   * <p>
+   * Under the Raft server's publication gate, on the state machine current there: an in-place restart replaces the state
+   * machine, and with it the ledger the validations use, only between publications (issue #11921). A caller that resolved
+   * this instance before such a restart publishes on the new one.
    */
   <T> T publishOutsideTheLog(final DatabaseInternal db, final Callable<T> commit) throws Exception {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return publishOnThisLedger(db, commit);
+    return raft.runPublication(() -> {
+      final ArcadeStateMachine current = raft.getStateMachine();
+      return (current != null ? current : this).publishOnThisLedger(db, commit);
+    });
+  }
+
+  private <T> T publishOnThisLedger(final DatabaseInternal db, final Callable<T> commit) throws Exception {
     installReservations(db);
     return pageVersions.publishOutsideTheLog(db.getName(), commit);
   }
