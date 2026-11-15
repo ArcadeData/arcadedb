@@ -30,15 +30,15 @@ import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
-import com.univocity.parsers.common.AbstractParser;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.Reader;
 import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
-  private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
-
   /**
    * The one property {@link #load} puts on the edges it creates: the statement's predicate. Named here because
    * {@link #analyze} declares it and the loop below writes it, and the two must agree.
@@ -116,7 +116,11 @@ public class RDFImporterFormat extends CSVImporterFormat {
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    final AbstractParser csvParser = createCSVParser(settings);
+    // EACH LINE IS READ AS ONE N-TRIPLES STATEMENT, NOT AS DELIMITED TEXT: A CSV PARSER DROPPED THE EMPTY LITERAL "" (THE
+    // TERMINATOR '.' BECAME THE OBJECT), STRIPPED THE QUOTES OF A PLAIN LITERAL ONLY (SO "http://a/o" WAS THE SAME VERTEX AS
+    // <http://a/o>) AND DECODED NO ESCAPE (ISSUE #12049)
+    final NTriplesStatement statement = new NTriplesStatement(termSeparator(settings), settings.getIntValue("maxPropertySize", 0));
+    final String[] terms = new String[3];
 
     // THE VERTEX PROPERTY THE IRIs ARE KEYED BY, READ ONCE AND KEPT LOCAL. IT USED TO BE settings.typeIdProperty,
     // WHICH CONTENT SNIFFING HAD OVERWRITTEN WITH "id" THE MOMENT IT RECOGNISED N-TRIPLES - SO AN EXPLICIT
@@ -189,8 +193,8 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
     int txCount = 0;
 
-    try (final Reader inputFileReader = sourceReader(parser)) {
-      csvParser.beginParsing(inputFileReader);
+    try (final BufferedReader reader = new BufferedReader(sourceReader(parser))) {
+      ensureVertexType(database, settings.vertexTypeName, typeIdProperty);
 
       // A transaction not active here despite ownsTransaction being false is exactly the invariant violation
       // resolvesTransaction's declaration above describes - this call must push one of its own and is then the
@@ -202,8 +206,13 @@ public class RDFImporterFormat extends CSVImporterFormat {
       txOpen[0] = resolvesTransaction;
       ownTx[0] = ImporterTransactions.currentTransaction(database);
 
-      String[] row;
-      for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
+      String text;
+      long line = -1;
+      while ((text = reader.readLine()) != null) {
+        // N-TRIPLES ALLOWS BLANK LINES AND COMMENT LINES: NEITHER IS A STATEMENT, AS THE CSV PARSER THIS REPLACES SKIPPED THEM
+        if (isBlankOrComment(text))
+          continue;
+        ++line;
         context.parsed.incrementAndGet();
 
         // CHECKED BEFORE THE SKIP-ROW 'continue' BELOW, THE SAME WAY CSVImporterFormat's ROW LOOPS ARE: A SKIPPED
@@ -221,34 +230,17 @@ public class RDFImporterFormat extends CSVImporterFormat {
         try {
           // AN RDF STATEMENT IS EXACTLY SUBJECT, PREDICATE, OBJECT: FEWER TERMS THAN THAT IS NOT A ROW THIS
           // FORMAT CAN MAKE AN EDGE OUT OF. CHECKED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO,
-          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). THE TERMS ARE
-          // THE FIRST THREE NON-EMPTY CELLS, NOT POSITIONS 0, 1 AND 2: N-TRIPLES ALLOWS ANY RUN OF WHITESPACE
-          // BETWEEN TERMS AND THE SNIFFER TREATS A RUN OF THE SEPARATOR AS ONE GAP, BUT univocity RETURNS AN
-          // EMPTY CELL (null) FOR EACH EXTRA SEPARATOR (ISSUE #8159).
-          int terms = 0;
-          String term0 = null;
-          String term1 = null;
-          String term2 = null;
-          for (int i = 0; i < row.length && terms < 3; i++) {
-            final String cell = row[i];
-            if (cell == null || cell.isEmpty())
-              continue;
-            if (terms == 0)
-              term0 = cell;
-            else if (terms == 1)
-              term1 = cell;
-            else
-              term2 = cell;
-            ++terms;
-          }
-          if (terms < 3)
+          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). ANY RUN OF
+          // WHITESPACE OR OF THE SEPARATOR BETWEEN TERMS IS ONE GAP (ISSUE #8159).
+          final int found = statement.parse(text, terms);
+          if (found < 3)
             throw new ImportException(
-                "Row at line " + line + " has " + terms + " term(s), fewer than the 3 an RDF statement "
+                "Row at line " + line + " has " + found + " term(s), fewer than the 3 an RDF statement "
                     + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
 
-          final String v1Id = getStringContent(term0, STRING_CONTENT_SKIP);
-          final String edgeLabel = getStringContent(term1, STRING_CONTENT_SKIP);
-          final String v2Id = getStringContent(term2, STRING_CONTENT_SKIP);
+          final String v1Id = terms[0];
+          final String edgeLabel = terms[1];
+          final String v2Id = terms[2];
 
           // CREATE AN EDGE
           database.newEdgeByKeys(settings.vertexTypeName,
@@ -316,7 +308,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
     } finally {
       reportSkippedEntries(route, context, skipped);
 
-      // In a finally rather than in a catch: a malformed row (csvParser.parseNext() itself throwing) or a
+      // In a finally rather than in a catch: a malformed row (a read of the source throwing) or a
       // newEdgeByKeys() failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
       // and an Error - an OutOfMemoryError is the one a large import can realistically raise - would too.
       if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
@@ -350,6 +342,38 @@ public class RDFImporterFormat extends CSVImporterFormat {
               readEdges - committedEdges);
       }
     }
+  }
+
+  /**
+   * The vertex type the subjects and objects are keyed into, created with its key property and unique index when the database
+   * does not have it yet. {@code newEdgeByKeys} looks every term up by that index, so an import into a database without the
+   * type failed with "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
+   */
+  private static void ensureVertexType(final DatabaseInternal database, final String typeName, final String typeIdProperty) {
+    if (database.getSchema().existsType(typeName))
+      return;
+    final VertexType type = database.getSchema().buildVertexType().withName(typeName).withIgnoreIfExists(true).create();
+    type.getOrCreateProperty(typeIdProperty, Type.STRING);
+    type.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, typeIdProperty);
+  }
+
+  /** The separator between the terms besides whitespace: the delimiter the source was detected (or configured) with. */
+  private char termSeparator(final ImporterSettings settings) {
+    final String delimiter = delimiterFor(settings);
+    if ("\\t".equals(delimiter))
+      return '\t';
+    return delimiter.length() == 1 ? delimiter.charAt(0) : ' ';
+  }
+
+  private static boolean isBlankOrComment(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c == '#')
+        return true;
+      if (!Character.isWhitespace(c))
+        return false;
+    }
+    return true;
   }
 
   /**
