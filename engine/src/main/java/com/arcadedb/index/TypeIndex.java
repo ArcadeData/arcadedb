@@ -217,6 +217,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * #11576): the range of the keys that start with it, so only an index that walks its keys in order answers it. A range cursor
    * reads lazily, so the entries are collected before the check after the read, which is what makes that check sound; at the
    * tail of a range whose remaining keys are all deleted the cursor answers null, which is not an entry.
+   * <p>
+   * Costs memory proportional to the entries of the prefix, one RID each: meant for a reader that needs every match anyway (a
+   * MERGE holds them all to decide whether to create). A reader that can stop early streams {@link #range} instead.
    */
   public IndexCursor prefixForQuery(final Object[] prefix) {
     if (!isReadyForQueries())

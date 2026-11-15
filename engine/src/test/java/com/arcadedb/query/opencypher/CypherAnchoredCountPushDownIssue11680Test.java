@@ -106,6 +106,37 @@ class CypherAnchoredCountPushDownIssue11680Test extends TestHelper {
     assertAnchored("MATCH (s:Section)-[:OF_RECORD]->(r:Record) WHERE r.external_id IN ['r5', 'r6'] RETURN count(*) AS c", 20);
   }
 
+  /**
+   * The key the seeded walk looks up is converted to the declared key type, as any index lookup is, and the vertex it finds is
+   * checked against the label and every predicate of its position (issue #11594).
+   */
+  @Test
+  void aSeededKeyIsConvertedAndItsVertexChecked() {
+    // a Long parameter for the INTEGER column of a composite UNIQUE key
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record {tenant: $t, code: $code}) RETURN count(*) AS c",
+        Map.of("t", "t2", "code", 5L), 10);
+    // an extra predicate on the keyed node that the record fails
+    assertSeeded("MATCH (s:Section)-[:OF_RECORD]->(r:Record {external_id: 'r5', tenant: 't0'}) RETURN count(*) AS c", Map.of(), 0);
+
+    // a UNIQUE index declared on a supertype holds the keys of every subtype: a key a sibling holds is no vertex of the label
+    database.command("sql", "CREATE VERTEX TYPE Doc");
+    database.command("sql", "CREATE PROPERTY Doc.key STRING");
+    database.command("sql", "CREATE INDEX ON Doc (key) UNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE DocA EXTENDS Doc");
+    database.command("sql", "CREATE VERTEX TYPE DocB EXTENDS Doc");
+    database.command("sql", "CREATE VERTEX TYPE Part");
+    database.command("sql", "CREATE EDGE TYPE PART_OF");
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:DocA {key: 'a1'}), (b:DocB {key: 'b1'}) WITH a, b UNWIND range(1, 3) AS i "
+            + "CREATE (:Part)-[:PART_OF]->(a) WITH b, i WHERE i <= 2 CREATE (:Part)-[:PART_OF]->(b)"));
+    final String sibling = "MATCH (p:Part)-[:PART_OF]->(d:DocA {key: 'b1'}) RETURN count(*) AS c";
+    assertThat(explainOf(sibling, Map.of())).contains("seeded anchor: unique key Doc[key] = [b1]");
+    assertThat(scalarOf(sibling, Map.of())).isZero();
+    assertThat(scalarOf(sibling.replace("count(*)", "sum(1)"), Map.of())).isZero();
+    assertThat(scalarOf("MATCH (p:Part)-[:PART_OF]->(d:DocA {key: 'a1'}) RETURN count(*) AS c", Map.of())).isEqualTo(3);
+    assertThat(scalarOf("MATCH (p:Part)-[:PART_OF]->(d:Doc {key: 'b1'}) RETURN count(*) AS c", Map.of())).isEqualTo(2);
+  }
+
   @Test
   void anIdAnchorIsNotPushedDownWhereTheOrdinaryPlanLooksTheRecordUp() {
     final Map<String, Object> params = Map.of("rid", recordRid("r5").toString());
