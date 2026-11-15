@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableVertex;
@@ -58,11 +59,13 @@ import java.time.temporal.Temporal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -80,6 +83,15 @@ public class JsonSerializer {
   // the per-column @props hint is omitted for them; lossy types (LONG, FLOAT, SHORT, BYTE, DECIMAL, temporals, ...) keep it.
   private static final Set<Type> JSON_ROUND_TRIP_FAITHFUL_TYPES = EnumSet.of(Type.BOOLEAN, Type.INTEGER, Type.DOUBLE,
       Type.STRING);
+
+  /**
+   * The documents this thread is serializing right now, outermost first (issue #11850). A record whose property holds the record
+   * itself (SQL {@code SET x = @this}, openCypher {@code SET n.z = n}) still holds the Java object in the statement that wrote
+   * it, so expanding every document value expanded the record inside itself until the stack overflowed. A document reached
+   * again inside its own serialization is written as its RID instead, which is what a later read of the stored link returns.
+   * Per thread rather than per instance, because a serializer instance is shared across threads (gRPC keeps two static ones).
+   */
+  private static final ThreadLocal<Ancestors> ANCESTORS = ThreadLocal.withInitial(Ancestors::new);
 
   private boolean  useCollectionSize         = false;
   private boolean  includeVertexEdges        = true;
@@ -104,6 +116,17 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeDocument(final Document document) {
+    final Ancestors ancestors = ANCESTORS.get();
+    final boolean entered = ancestors.enter(document);
+    try {
+      return serializeDocumentContent(document);
+    } finally {
+      if (entered)
+        ancestors.exit(document);
+    }
+  }
+
+  private JSONObject serializeDocumentContent(final Document document) {
     final Database database = document.getDatabase();
     final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
     final String schemaDateFormat = database.getSchema().getDateFormat();
@@ -153,6 +176,21 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeResult(final Database database, final Result result) {
+    if (!result.isElement())
+      return serializeResultContent(database, result);
+    // an element row is the record itself: a value inside it that is that record is a self-reference (issue #11850)
+    final Document element = result.toElement();
+    final Ancestors ancestors = ANCESTORS.get();
+    final boolean entered = ancestors.enter(element);
+    try {
+      return serializeResultContent(database, result);
+    } finally {
+      if (entered)
+        ancestors.exit(element);
+    }
+  }
+
+  private JSONObject serializeResultContent(final Database database, final Result result) {
     final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
     final String schemaDateFormat = database.getSchema().getDateFormat();
     final JSONObject object = new JSONObject().setDateFormat(schemaDateFormat)
@@ -459,10 +497,10 @@ public class JsonSerializer {
   private JSONObject serializePath(final TraversalPath path) {
     final JSONArray nodes = new JSONArray();
     for (final Vertex vertex : path.getVertices())
-      nodes.put(serializeDocument(vertex));
+      nodes.put(serializeDocumentOrReference(vertex));
     final JSONArray relationships = new JSONArray();
     for (final Edge edge : path.getEdges())
-      relationships.put(serializeDocument(edge));
+      relationships.put(serializeDocumentOrReference(edge));
 
     final JSONObject json = new JSONObject();
     json.put(TraversalPath.TYPE_KEY, TraversalPath.PATH_TYPE);
@@ -883,7 +921,7 @@ public class JsonSerializer {
     if (value == null)
       value = JSONObject.NULL;
     else if (value instanceof Document document)
-      value = serializeDocument(document);
+      value = serializeDocumentOrReference(document);
     else if (value instanceof Result res)
       value = serializeResult(database, res);
     else if (value instanceof ResultSet res)
@@ -1097,4 +1135,43 @@ public class JsonSerializer {
     return b.toString();
   }
 
+  /**
+   * A document reached as a value: written whole, unless it is being serialized already further up on this thread, as the
+   * record that holds itself (issue #11850). Then it is written as its RID, as a stored link reads back, or as null before it
+   * has one.
+   */
+  private Object serializeDocumentOrReference(final Document document) {
+    if (!ANCESTORS.get().contains(document))
+      return serializeDocument(document);
+    final RID rid = document.getIdentity();
+    return rid != null ? rid.toString() : JSONObject.NULL;
+  }
+
+  /**
+   * The chain of documents being serialized on one thread (issue #11850). A persistent record is known by its RID, since the
+   * same record can be held by two Java objects; a document without one (embedded or not saved yet) by its identity.
+   */
+  private static final class Ancestors {
+    private final Set<RID>      persistent = new HashSet<>();
+    private final Set<Document> transients = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /** @return false if the document is already in the chain, so the caller must not remove it */
+    boolean enter(final Document document) {
+      final RID rid = document.getIdentity();
+      return rid != null ? persistent.add(rid) : transients.add(document);
+    }
+
+    void exit(final Document document) {
+      final RID rid = document.getIdentity();
+      if (rid != null)
+        persistent.remove(rid);
+      else
+        transients.remove(document);
+    }
+
+    boolean contains(final Document document) {
+      final RID rid = document.getIdentity();
+      return rid != null ? persistent.contains(rid) : transients.contains(document);
+    }
+  }
 }
