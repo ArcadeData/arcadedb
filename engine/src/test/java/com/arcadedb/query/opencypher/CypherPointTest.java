@@ -484,6 +484,18 @@ class CypherPointTest {
     }
 
     @Test
+    void longitudeIsWrappedOnThePositionalAndSrid4979Forms() {
+      final Map<?, ?> positional = point("point(181.0, 0.0)");
+      assertThat(positional.get("longitude")).isEqualTo(-179.0);
+      assertThat(positional.get("x")).isEqualTo(-179.0);
+      assertThat(point("point({x: 181.0, y: 0.0, z: 1.0, srid: 4979})").get("x")).isEqualTo(-179.0);
+      // whole-turn boundaries: 540 wraps to 180 and -540 to -180
+      assertThat(point("point(540.0, 0.0)").get("longitude")).isEqualTo(180.0);
+      assertThat(point("point(-540.0, 0.0)").get("longitude")).isEqualTo(-180.0);
+      assertThat(point("point({latitude: 0.0, longitude: 540.0})").get("longitude")).isEqualTo(180.0);
+    }
+
+    @Test
     void cartesianAcceptsAnyCoordinate() {
       final Map<?, ?> p = point("point({x: 500.0, y: -91.0})");
       assertThat(p.get("x")).isEqualTo(500.0);
