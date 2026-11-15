@@ -612,10 +612,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     } else
       queryPayload = filter;
 
-    final Document projection = document.get("projection") instanceof Document p && !p.isEmpty() ? p : null;
-    if (projection != null)
-      // reject an invalid projection up front, even when no document would be projected
-      MongoDBToSqlTranslator.isInclusionProjection(projection, "_id");
+    // an invalid projection is refused up front, even when no document would be projected
+    final MongoDBToSqlTranslator.FindProjection projection = document.get("projection") instanceof Document p && !p.isEmpty() ?
+        MongoDBToSqlTranslator.findProjection(p, "_id") :
+        null;
 
     final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
 
@@ -624,7 +624,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Document> documents = new ArrayList<>();
     for (Iterator<Document> it = result.iterator(); it.hasNext(); ) {
       final Document next = it.next();
-      documents.add(projection != null ? MongoDBToSqlTranslator.projectDocument(next, projection, "_id") : next);
+      documents.add(projection != null ? projection.apply(next) : next);
     }
 
     return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);

@@ -24,6 +24,7 @@ import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
+import de.bwaldvogel.mongo.exception.MongoServerError;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -32,9 +33,11 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -657,60 +660,113 @@ public class MongoDBToSqlTranslator {
     return inclusion || (!exclusion && fields.containsKey(idField) && Utils.isTrue(fields.get(idField)));
   }
 
-  protected static Document projectDocument(final Document document, final Document fields, final String idField) {
-    if (document == null)
-      return null;
+  /**
+   * Checks a find projection, including its paths: a path and one below it collide, as mongod refuses them (errors 31249 and
+   * 31250), whether or not a document would be projected.
+   */
+  static FindProjection findProjection(final Document fields, final String idField) {
+    final boolean inclusion = isInclusionProjection(fields, idField);
+    final Map<String, Object> tree = new LinkedHashMap<>();
+    for (final Map.Entry<String, Object> entry : fields.entrySet())
+      // the _id flag is read on its own; any other flag is of the projection's kind, isInclusionProjection refused a mix
+      if (!idField.equals(entry.getKey()))
+        addProjectionPath(tree, entry.getKey());
+    return new FindProjection(inclusion, !fields.containsKey(idField) || Utils.isTrue(fields.get(idField)), idField, tree);
+  }
 
-    final Document newDocument = new Document();
-    if (isInclusionProjection(fields, idField)) {
-      // the _id is part of the answer unless the projection excludes it
-      if (!fields.containsKey(idField) || Utils.isTrue(fields.get(idField)))
-        if (document.containsKey(idField))
-          newDocument.put(idField, document.get(idField));
-
-      for (final Map.Entry<String, Object> entry : fields.entrySet())
-        if (Utils.isTrue(entry.getValue()))
-          projectField(document, newDocument, entry.getKey());
-    } else {
-      newDocument.putAll(document);
-      for (final Map.Entry<String, Object> entry : fields.entrySet())
-        if (!Utils.isTrue(entry.getValue()))
-          removeField(newDocument, entry.getKey());
+  @SuppressWarnings("unchecked")
+  private static void addProjectionPath(final Map<String, Object> tree, final String path) {
+    final String[] segments = path.split("\\.");
+    Map<String, Object> node = tree;
+    for (int i = 0; i < segments.length; i++) {
+      final Object child = node.get(segments[i]);
+      if (i == segments.length - 1) {
+        if (child != null)
+          throw new MongoServerError(31250, "Location31250", "Path collision at " + path);
+        node.put(segments[i], FindProjection.LEAF);
+      } else if (child == FindProjection.LEAF)
+        throw new MongoServerError(31249, "Location31249",
+            "Path collision at " + path + " remaining portion " + String.join(".", Arrays.copyOfRange(segments, i + 1, segments.length)));
+      else if (child == null) {
+        final Map<String, Object> next = new LinkedHashMap<>();
+        node.put(segments[i], next);
+        node = next;
+      } else
+        node = (Map<String, Object>) child;
     }
-    return newDocument;
   }
 
   /**
-   * Removes a possibly dotted field from a copy-on-write view of the document: an embedded document on the path is copied
-   * first, so the source document is never modified.
+   * A find projection applied as mongod applies it (issue #12072): the fields come back in the order of the document, and the rest
+   * of a dotted path is applied to each element of an array it reaches. An inclusion keeps the documents of the array, projected
+   * (an element without the field is an empty document), and drops its scalars; an exclusion removes the field from the documents of
+   * the array and keeps its scalars. An array inside the array is walked the same way.
    */
-  private static void removeField(final Document document, final String key) {
-    final int dotPos = key.indexOf('.');
-    if (dotPos <= 0) {
-      document.remove(key);
-      return;
-    }
-    final String mainKey = key.substring(0, dotPos);
-    if (document.get(mainKey) instanceof Document embedded) {
-      final Document copy = new Document();
-      copy.putAll(embedded);
-      removeField(copy, key.substring(dotPos + 1));
-      document.put(mainKey, copy);
-    }
-  }
+  static final class FindProjection {
+    private static final Object LEAF = new Object();
+    private static final Object OMIT = new Object();
 
-  protected static void projectField(final Document document, final Document newDocument, final String key) {
-    final int dotPos = key.indexOf('.');
-    if (dotPos > 0) {
-      final String mainKey = key.substring(0, dotPos);
-      final String subKey = key.substring(dotPos + 1);
-      final Object object = document.get(mainKey);
-      if (object instanceof Document embedded) {
-        if (!(newDocument.get(mainKey) instanceof Document))
-          newDocument.put(mainKey, new Document());
-        projectField(embedded, (Document) newDocument.get(mainKey), subKey);
+    private final boolean             inclusion;
+    private final boolean             idIncluded;
+    private final String              idField;
+    private final Map<String, Object> tree;
+
+    private FindProjection(final boolean inclusion, final boolean idIncluded, final String idField, final Map<String, Object> tree) {
+      this.inclusion = inclusion;
+      this.idIncluded = idIncluded;
+      this.idField = idField;
+      this.tree = tree;
+    }
+
+    Document apply(final Document document) {
+      return document == null ? null : project(document, tree, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Document project(final Document document, final Map<String, Object> node, final boolean top) {
+      final Document result = new Document();
+      for (final Map.Entry<String, Object> entry : document.entrySet()) {
+        final String key = entry.getKey();
+        final Object value = entry.getValue();
+        if (top && idField.equals(key)) {
+          if (idIncluded)
+            result.put(key, value);
+          continue;
+        }
+        final Object child = node.get(key);
+        if (inclusion) {
+          if (child == LEAF)
+            result.put(key, value);
+          else if (child != null) {
+            final Object projected = below(value, (Map<String, Object>) child);
+            if (projected != OMIT)
+              result.put(key, projected);
+          }
+        } else if (child == null)
+          result.put(key, value);
+        else if (child != LEAF)
+          result.put(key, below(value, (Map<String, Object>) child));
       }
-    } else if (document.containsKey(key))
-      newDocument.put(key, document.get(key));
+      return result;
+    }
+
+    /**
+     * The rest of a path applied to a value: a document is projected, an array element by element, any other value is dropped by
+     * an inclusion and kept by an exclusion.
+     */
+    private Object below(final Object value, final Map<String, Object> node) {
+      if (value instanceof Document embedded)
+        return project(embedded, node, false);
+      if (value instanceof List<?> list) {
+        final List<Object> result = new ArrayList<>(list.size());
+        for (final Object element : list) {
+          final Object projected = element instanceof Document || element instanceof List ? below(element, node) : inclusion ? OMIT : element;
+          if (projected != OMIT)
+            result.add(projected);
+        }
+        return result;
+      }
+      return inclusion ? OMIT : value;
+    }
   }
 }
