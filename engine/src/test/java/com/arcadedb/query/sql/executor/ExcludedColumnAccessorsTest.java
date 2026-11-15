@@ -139,6 +139,7 @@ class ExcludedColumnAccessorsTest extends TestHelper {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
     }
   }
+
   /**
    * A projection over a {@code SELECT *, !secret} row keeps the same full record as its element, so the exclusion has to
    * travel with it, or every element-backed accessor answers the excluded column (and attribute) again.
