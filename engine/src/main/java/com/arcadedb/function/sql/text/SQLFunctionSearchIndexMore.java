@@ -26,7 +26,6 @@ import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeMismatchException;
-import com.arcadedb.function.FunctionArity;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -66,13 +65,25 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
     return ALIAS;
   }
 
+  /**
+   * The declared arity is the contract the parse-time gate enforces (issue #11927): it used to be checked only inside
+   * execute(), and a fourth argument was ignored without a word.
+   */
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
   @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
 
-    // Validate parameters
-    if (iParams.length < 2)
-      throw FunctionArity.mismatch(NAME, FunctionArity.describe(2, 3), iParams.length);
+    checkArity(iParams);
 
     if (iParams[0] == null || iParams[1] == null)
       throw new InvalidArgumentException("SEARCH_INDEX_MORE() parameters cannot be null");
