@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
@@ -29,7 +31,9 @@ import com.arcadedb.query.sql.executor.Result;
 
 /**
  * The checks CREATE and MERGE share on the values a write pattern is given at run time (issue #10191), with the outcomes
- * Neo4j has for them.
+ * Neo4j has for them. A value that is not the node or relationship the pattern needs is a {@link TypeMismatchException} and a
+ * null MERGE property an {@link InvalidArgumentException}: errors in the statement or its data, which the server answers with
+ * 400, where a plain {@link CommandExecutionException} answered 500 (issue #11850).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -41,9 +45,9 @@ final class WritePatternChecks {
    * The node an earlier clause bound {@code variable} to, for a pattern that connects it: {@code null} when the row does
    * not bind the variable at all, so the pattern introduces the node.
    *
-   * @throws CommandExecutionException when the variable is bound to null - an OPTIONAL MATCH that found nothing - or to a
-   *                                   value that is not a node: a relationship cannot have a missing endpoint, and a node
-   *                                   created in its place is one the statement never asked for
+   * @throws TypeMismatchException when the variable is bound to null - an OPTIONAL MATCH that found nothing - or to a value
+   *                               that is not a node: a relationship cannot have a missing endpoint, and a node created in
+   *                               its place is one the statement never asked for
    */
   static Vertex boundEndpoint(final Result row, final String variable) {
     if (variable == null || !row.hasProperty(variable))
@@ -58,20 +62,20 @@ final class WritePatternChecks {
         return vertex;
     }
     if (bound == null)
-      throw new CommandExecutionException(
+      throw new TypeMismatchException(
           "Failed to create the relationship: node `" + variable + "` is missing. Expected the value NULL to be of type NODE, but was of type NULL");
     // An earlier DELETE replaced the node with its marker: say so, as Neo4j does, rather than naming the marker (issue #10196)
     if (bound instanceof DeletedEntityMarker)
       throw new CommandExecutionException(
           "DeletedEntityAccess: Failed to create the relationship: node `" + variable + "` was deleted in this transaction");
-    throw new CommandExecutionException(
+    throw new TypeMismatchException(
         "Invalid input '" + CypherFunctionHelper.cypherTypeName(bound) + "' for " + variable + ". Expected to be NODE");
   }
 
   /** Refuses a relationship variable an earlier clause bound to null, which a pattern cannot connect either. */
   static void checkRelationshipNotNull(final Result row, final String variable) {
     if (variable != null && row.hasProperty(variable) && row.getProperty(variable) == null)
-      throw new CommandExecutionException(
+      throw new TypeMismatchException(
           "Failed to merge the relationship: `" + variable + "` is missing. Expected the value NULL to be of type RELATIONSHIP, but was of type NULL");
   }
 
@@ -82,6 +86,6 @@ final class WritePatternChecks {
    */
   static void checkMergePropertyNotNull(final String key, final Object value) {
     if (value == null)
-      throw new CommandExecutionException(CypherSemanticValidator.NULL_MERGE_PROPERTY + " (property `" + key + "`)");
+      throw new InvalidArgumentException(CypherSemanticValidator.NULL_MERGE_PROPERTY + " (property `" + key + "`)");
   }
 }
