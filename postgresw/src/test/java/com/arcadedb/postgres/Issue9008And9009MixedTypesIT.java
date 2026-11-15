@@ -102,7 +102,8 @@ class Issue9008And9009MixedTypesIT extends PostgresWireProtocolTestBase {
 
   @Test
   void aPreparedStatementKeepsOneLayoutForRowsOfDifferentTypes() throws Exception {
-    // default pgjdbc settings: executions 1-4 are unnamed, the 5th is described and prepared on the server, 6+ reuse it
+    // default pgjdbc settings: executions 1-4 are unnamed, the 5th is described and prepared on the server, 6+ reuse it while
+    // their rows fit it and are prepared again, described from their own rows, when they do not (issue #11838)
     verifyRows("", new int[] { 1, 1, 1, 1, 1, 2, 3, 1 });
   }
 
@@ -162,7 +163,12 @@ class Issue9008And9009MixedTypesIT extends PostgresWireProtocolTestBase {
               default -> "1.5";
             };
             assertThat(resultSet.getString("u")).as("u of id " + id).isEqualTo(expectedU);
-            assertThat(resultSet.getString("a")).as("a of id " + id).isEqualTo(id == 1 ? "x" : null);
+            if (options.isEmpty())
+              // described from the rows, as the statement unprepared is (issue #11838), not as text
+              assertThat(resultSet.getMetaData().getColumnTypeName(resultSet.findColumn("u"))).as("u of id " + id)
+                  .isEqualTo(switch (id) { case 1 -> "int4"; case 2 -> "int8"; default -> "float8"; });
+            // a record without the property has no such column when described from its own rows, a null one under a sampled layout
+            assertThat(stringOrNull(resultSet, "a")).as("a of id " + id).isEqualTo(id == 1 ? "x" : null);
             assertThat(resultSet.getString("@rid")).as("@rid of id " + id).startsWith("#");
             assertThat(resultSet.getString("@type")).isEqualTo("Schemaless9009");
             assertThat(resultSet.getString("@cat")).isEqualTo("d");
@@ -170,6 +176,13 @@ class Issue9008And9009MixedTypesIT extends PostgresWireProtocolTestBase {
         }
       }
     }
+  }
+
+  private static String stringOrNull(final ResultSet resultSet, final String column) throws Exception {
+    for (int i = 1; i <= resultSet.getMetaData().getColumnCount(); i++)
+      if (resultSet.getMetaData().getColumnLabel(i).equals(column))
+        return resultSet.getString(i);
+    return null;
   }
 
   private static String[] listOf(final Statement statement, final int id) throws Exception {
