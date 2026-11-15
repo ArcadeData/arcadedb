@@ -331,7 +331,7 @@ final class CountStarShapeDetector {
     // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in
     if (hopCount == 1) {
       final PathPattern keyed = HopEdgeTrackingAnalyzer.withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
-      if (plan.stepBuilder.isUniquelyKeyed(keyed.getNode(0)) && plan.stepBuilder.isUniquelyKeyed(keyed.getNode(1)))
+      if (plan.stepBuilder.matchSteps.isUniquelyKeyed(keyed.getNode(0)) && plan.stepBuilder.matchSteps.isUniquelyKeyed(keyed.getNode(1)))
         return null;
     }
 
@@ -397,12 +397,12 @@ final class CountStarShapeDetector {
       final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
       final VertexPredicate[] nodePredicates, final CommandContext context) {
     final PathPattern keyed = HopEdgeTrackingAnalyzer.withWhereEqualities(List.of(pathPattern), where).getFirst();
-    final UniqueKeyAnchor first = plan.stepBuilder.uniqueKeyAnchorOf(keyed.getNode(0), context);
+    final UniqueKeyAnchor first = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(0), context);
     if (first != null)
       return new PropagateChainOp(nodeLabels, edgeTypes, directions, first, nodePredicates);
     if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
       return null;
-    final UniqueKeyAnchor last = plan.stepBuilder.uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length), context);
+    final UniqueKeyAnchor last = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length), context);
     if (last == null)
       return null;
     return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), last,

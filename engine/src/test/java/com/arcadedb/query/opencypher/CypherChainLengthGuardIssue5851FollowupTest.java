@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * anywhere <em>other</em> than a top-level {@code WHERE} condition - a {@code RETURN} projection, an
  * {@code ORDER BY} item, a function argument, inside a list literal, ... - was never rewritten and so never
  * hit that guard either. Confirmed to still crash after PR #5859: a 30000-term OR chain in a {@code RETURN}
- * projection overflowed {@code CypherSemanticValidator#checkExpressionScope} (a completely different
+ * projection overflowed {@code VariableScopeValidator#checkExpressionScope} (a completely different
  * recursive walker from {@code ExpressionRewriter}, invoked during semantic validation on every clause).
  * <p>
  * Rather than chase down and patch every such walker individually - which is exactly the kind of fragile,
