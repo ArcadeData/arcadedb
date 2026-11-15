@@ -224,7 +224,9 @@ class IndexVersusScanDifferentialTest extends TestHelper {
     try (resultSet) {
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
-        rows.add(String.valueOf(row.getPropertyNames().contains("n") ? row.getProperty("n") : row.getProperty("id")));
+        // An Object local: passed straight to String.valueOf, the generic getProperty would be inferred as char[]
+        final Object value = row.getPropertyNames().contains("n") ? row.getProperty("n") : row.getProperty("id");
+        rows.add(String.valueOf(value));
       }
     }
     return rows;

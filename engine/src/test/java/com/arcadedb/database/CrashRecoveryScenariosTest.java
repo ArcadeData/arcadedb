@@ -59,7 +59,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
         database.command("sql", "DELETE FROM T WHERE v % 2 = 0");
       });
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(50_000);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(50_000);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k = 'k2'")).isZero();
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k = 'k3'")).isEqualTo(1);
     }),
@@ -72,7 +72,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
         database.transaction(() -> database.newDocument("T").set("k", k).save());
       }
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(5_000);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(5_000);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k >= 4990")).isEqualTo(10);
     }),
 
@@ -85,7 +85,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
         database.transaction(() -> database.command("sql", "UPDATE T SET v = ? WHERE id = 1", v));
       }
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(1);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(1);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE v = 5000")).isEqualTo(1);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE v < 5000")).isZero();
     }),
@@ -102,7 +102,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
       database.transaction(() -> database.command("sql", "UPDATE T SET g = 'moved' WHERE k % 3 = 0"));
       database.transaction(() -> database.command("sql", "DELETE FROM T WHERE k % 5 = 0"));
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(2_400);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(2_400);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE g = 'moved'")).isEqualTo(800);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k = 15")).isZero();
     }),
@@ -120,7 +120,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
         database.newDocument("T").set("k", i).save();
       database.command("sql", "DELETE FROM T WHERE k < 500");
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(1_000);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(1_000);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k < 500")).isEqualTo(500);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k >= 1000")).isZero();
     }),
@@ -140,7 +140,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
           database.newDocument("T").set("k", "new" + i).save();
       });
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(10);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(10);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k = 'new3'")).isEqualTo(1);
     }),
 
@@ -155,7 +155,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
       database.transaction(() -> database.newDocument("Dst").set("k", 1_000).save());
     }, database -> {
       assertThat(database.getSchema().existsType("Src")).isFalse();
-      assertThat(count(database, "SELECT count(*) AS c FROM Dst")).isEqualTo(1_001);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM Dst")).isEqualTo(1_001);
       assertThat(count(database, "SELECT count(*) AS c FROM Dst WHERE k = 1000")).isEqualTo(1);
     }),
 
@@ -169,8 +169,8 @@ class CrashRecoveryScenariosTest extends TestHelper {
       database.getSchema().createDocumentType("T").createProperty("k", Integer.class);
       database.transaction(() -> database.newDocument("T").set("k", -1).save());
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM Old")).isEqualTo(100);
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(1);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM Old")).isEqualTo(100);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(1);
     }),
 
     CREATE_INDEXES_ON_POPULATED_TYPE(database -> {
@@ -222,7 +222,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
           database.newDocument("T").set("k", i).save();
       });
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(100);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(100);
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k = 4000")).isZero();
       assertThat(count(database, "SELECT count(*) AS c FROM T WHERE k = 99")).isEqualTo(1);
     }),
@@ -240,8 +240,8 @@ class CrashRecoveryScenariosTest extends TestHelper {
     }, database -> {
       final Vertex hub = database.query("sql", "SELECT FROM V WHERE k = -1").next().getVertex().orElseThrow();
       assertThat(hub.countEdges(Vertex.DIRECTION.OUT, "E")).isEqualTo(4_500);
-      assertThat(count(database, "SELECT count(*) AS c FROM E")).isEqualTo(4_500);
-      assertThat(count(database, "SELECT count(*) AS c FROM V")).isEqualTo(4_501);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM E")).isEqualTo(4_500);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM V")).isEqualTo(4_501);
     }),
 
     LARGE_RECORDS(database -> {
@@ -273,7 +273,7 @@ class CrashRecoveryScenariosTest extends TestHelper {
           .isInstanceOf(DuplicatedKeyException.class);
       // the old key of the renamed record is free again
       database.transaction(() -> database.newDocument("T").set("k", "k10").save());
-      assertThat(count(database, "SELECT count(*) AS c FROM T")).isEqualTo(1_001);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM T")).isEqualTo(1_001);
     }),
 
     SEVERAL_TYPES_IN_ONE_TRANSACTION(database -> {
@@ -289,9 +289,9 @@ class CrashRecoveryScenariosTest extends TestHelper {
         }
       });
     }, database -> {
-      assertThat(count(database, "SELECT count(*) AS c FROM A")).isEqualTo(2_000);
-      assertThat(count(database, "SELECT count(*) AS c FROM B")).isEqualTo(1_000);
-      assertThat(count(database, "SELECT count(*) AS c FROM C")).isEqualTo(667);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM A")).isEqualTo(2_000);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM B")).isEqualTo(1_000);
+      assertThat(count(database, "SELECT count(@rid) AS c FROM C")).isEqualTo(667);
     });
 
     private final Consumer<Database> setUp;
