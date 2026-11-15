@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
@@ -123,11 +124,11 @@ public final class PropagateChainOp implements CountOp {
   }
 
   /**
-   * The vertex of the key anchor: null when no record holds the key, {@link #KEY_NOT_READ} when the chain has no key anchor or
-   * a concurrent DDL left its index unable to answer whole, for the caller to walk the label of position 0, whose predicate
-   * applies the same equality.
+   * The record of the key anchor, as the lookup loaded it: null when no record holds the key, {@link #KEY_NOT_READ} when the
+   * chain has no key anchor or a concurrent DDL left its index unable to answer whole, for the caller to walk the label of
+   * position 0, whose predicate applies the same equality.
    */
-  private RID resolveKeyAnchor(final Database db) {
+  private Identifiable resolveKeyAnchor(final Database db) {
     if (keyAnchor == null)
       return KEY_NOT_READ;
     try {
@@ -135,6 +136,14 @@ public final class PropagateChainOp implements CountOp {
     } catch (final IndexException e) {
       return KEY_NOT_READ;
     }
+  }
+
+  /**
+   * Whether the record a key anchor found starts a walk: a vertex, or a RID not loaded yet. No record (no key) and a document or
+   * an edge of a type holding the key are no vertex, which a node pattern matches only.
+   */
+  private static boolean startsAWalk(final Identifiable keyed) {
+    return keyed != null && (keyed instanceof VertexInternal || !(keyed instanceof Document));
   }
 
   /** Whether the walk starts from one vertex, bound by the outer row or pinned by a UNIQUE key, rather than from a label. */
@@ -163,9 +172,11 @@ public final class PropagateChainOp implements CountOp {
     final VertexPredicate.Evaluation[] filters = VertexPredicate.evaluations(predicates, db, provider);
     if (anchorRid != null)
       return executeFromSeededAnchor(provider, db, filters, guard, anchorRid, anchorVertex);
-    final RID keyed = resolveKeyAnchor(db);
+    final Identifiable keyed = resolveKeyAnchor(db);
+    // the vertex as the lookup loaded it, from the committed state that held the key: re-read, it could hold another one
     if (keyed != KEY_NOT_READ)
-      return keyed == null ? 0L : executeFromSeededAnchor(provider, db, filters, guard, keyed, null);
+      return startsAWalk(keyed) ? executeFromSeededAnchor(provider, db, filters, guard, keyed.getIdentity(),
+          keyed instanceof VertexInternal vertex ? vertex : null) : 0L;
 
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int hops = edgeTypes.length;
@@ -289,7 +300,8 @@ public final class PropagateChainOp implements CountOp {
    * <p>
    * Nothing here is sized by the graph: the dense {@code long[nodeCount]} arrays of the enumerating path would be
    * allocated once per outer row, which is the cost this push-down exists to avoid. The walk is a sparse frontier
-   * instead - one entry per partial path - and the <b>last</b> hop is never expanded at all, only counted, so a
+   * instead - one entry per distinct vertex reached, with the number of paths reaching it, so parallel edges multiply a
+   * count rather than the frontier (issue #11594) - and the <b>last</b> hop is never expanded at all, only counted, so a
    * one-hop body costs a degree read of the anchor's adjacency and allocates nothing per neighbour.
    * <p>
    * A label written on the seeded position filters the bound vertex rather than naming a set to enumerate:
@@ -310,56 +322,108 @@ public final class PropagateChainOp implements CountOp {
     if (anchorId < 0)
       return 0;
 
+    // One entry per distinct vertex reached, with the number of paths reaching it: one entry per partial path would grow
+    // with the paths, which a single start vertex does not bound (parallel edges multiply them at every hop)
     int[] frontier = new int[] { anchorId };
+    long[] paths = new long[] { 1L };
+    final HopNeighbors neighbors = new HopNeighbors();
     for (int h = 0; h < hops - 1; h++) {
       guard.check();
-      frontier = expandFrontier(provider, frontier, provider.getNeighborView(directions[h], edgeTypes[h]), h,
-          validBuckets[h + 1]);
-      // asked by RID: a node-id memo would be sized by the graph, and this runs once per outer row
-      frontier = retainPassingByRid(provider, filters, h + 1, frontier);
-      if (frontier.length == 0)
+      final IntHashSet targetBuckets = validBuckets[h + 1];
+      if (targetBuckets != null && targetBuckets.isEmpty())
+        return 0; // an undeclared label matches nothing
+      final NeighborView view = provider.getNeighborView(directions[h], edgeTypes[h]);
+      long[] reached = new long[Math.max(16, frontier.length * 4)];
+      int count = 0;
+      for (int i = 0; i < frontier.length; i++) {
+        guard.checkPeriodically(i);
+        hopNeighbors(provider, view, frontier[i], h, neighbors);
+        for (int j = 0; j < neighbors.count; j++) {
+          final int neighbor = neighbors.ids[j];
+          if (targetBuckets != null && !targetBuckets.contains(provider.getBucketId(neighbor)))
+            continue;
+          if (count == reached.length)
+            reached = Arrays.copyOf(reached, Math.max(16, reached.length * 2));
+          // the neighbor in the high half, so sorting groups each vertex's paths; node ids and indexes are not negative
+          reached[count++] = ((long) neighbor << 32) | i;
+        }
+      }
+      Arrays.sort(reached, 0, count);
+      final int[] nextFrontier = new int[count];
+      final long[] nextPaths = new long[count];
+      int distinct = 0;
+      final VertexPredicate.Evaluation filter = filters != null ? filters[h + 1] : null;
+      for (int k = 0; k < count; ) {
+        final int neighbor = (int) (reached[k] >>> 32);
+        long reaching = 0;
+        for (; k < count && (int) (reached[k] >>> 32) == neighbor; k++)
+          reaching += paths[(int) reached[k]];
+        // asked by RID, once per distinct vertex: a node-id memo would be sized by the graph
+        if (filter == null || filter.acceptsRid(provider.getRID(neighbor))) {
+          nextFrontier[distinct] = neighbor;
+          nextPaths[distinct++] = reaching;
+        }
+      }
+      if (distinct == 0)
         return 0;
+      frontier = Arrays.copyOf(nextFrontier, distinct);
+      paths = Arrays.copyOf(nextPaths, distinct);
     }
 
+    // The last hop is counted, never collected: the paths reaching a vertex times the relationships leaving it that pass
     final int lastHop = hops - 1;
     final IntHashSet targetBuckets = validBuckets[hops];
-    if (filters != null && filters[hops] != null) {
-      // A property predicate on the far end has to see every neighbor, so the last hop is expanded rather than counted
-      if (targetBuckets != null && targetBuckets.isEmpty())
-        return 0;
-      final int[] reached = expandFrontier(provider, frontier, provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]),
-          lastHop, targetBuckets);
-      return retainPassingByRid(provider, filters, hops, reached).length;
-    }
+    if (targetBuckets != null && targetBuckets.isEmpty())
+      return 0; // an undeclared label matches nothing
+    final VertexPredicate.Evaluation farFilter = filters != null ? filters[hops] : null;
+    final NeighborView lastView = targetBuckets == null && farFilter == null ? null :
+        provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]);
     long total = 0;
-    if (targetBuckets == null || targetBuckets.isEmpty()) {
-      for (final int node : frontier)
-        total += CSRCountUtils.hopDegree(provider, node, directions[lastHop], edgeTypes[lastHop]);
-      return total;
-    }
-
-    final NeighborView lastView = provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]);
-    if (lastView != null) {
-      final int[] nbrs = lastView.neighbors();
-      final boolean undirected = directions[lastHop] == Vertex.DIRECTION.BOTH;
-      for (final int node : frontier) {
-        int selfEntries = 0;
-        for (int j = lastView.offset(node), end = lastView.offsetEnd(node); j < end; j++)
-          if (undirected && nbrs[j] == node)
-            ++selfEntries;
-          else if (targetBuckets.contains(provider.getBucketId(nbrs[j])))
-            total++;
-        // AN UNDIRECTED SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP (ISSUES #8750, #9540)
-        if (selfEntries > 0 && targetBuckets.contains(provider.getBucketId(node)))
-          total += selfEntries / 2;
+    for (int i = 0; i < frontier.length; i++) {
+      guard.checkPeriodically(i);
+      final long relationships;
+      if (targetBuckets == null && farFilter == null)
+        relationships = CSRCountUtils.hopDegree(provider, frontier[i], directions[lastHop], edgeTypes[lastHop]);
+      else {
+        hopNeighbors(provider, lastView, frontier[i], lastHop, neighbors);
+        long passing = 0;
+        for (int j = 0; j < neighbors.count; j++) {
+          final int neighbor = neighbors.ids[j];
+          if ((targetBuckets == null || targetBuckets.contains(provider.getBucketId(neighbor)))
+              && (farFilter == null || farFilter.acceptsRid(provider.getRID(neighbor))))
+            passing++;
+        }
+        relationships = passing;
       }
-    } else {
-      for (final int node : frontier)
-        for (final int neighbor : CSRCountUtils.hopNeighborIds(provider, node, directions[lastHop], edgeTypes[lastHop]))
-          if (targetBuckets.contains(provider.getBucketId(neighbor)))
-            total++;
+      total += paths[i] * relationships;
     }
     return total;
+  }
+
+  /** The far ends of one vertex's relationships over one hop: the first {@code count} entries of {@code ids}. */
+  private static final class HopNeighbors {
+    private int[] buffer = new int[16];
+    private int[] ids;
+    private int   count;
+  }
+
+  /**
+   * Reads into {@code into} the far ends of the relationships one hop matches from {@code node}, an undirected self loop once
+   * (issues #8750, #9540). A view is copied into the buffer the walk owns, grown when needed; without one the provider's answer
+   * is read as it is, and never written to.
+   */
+  private void hopNeighbors(final GraphTraversalProvider provider, final NeighborView view, final int node, final int hop,
+      final HopNeighbors into) {
+    if (view == null) {
+      into.ids = CSRCountUtils.hopNeighborIds(provider, node, directions[hop], edgeTypes[hop]);
+      into.count = into.ids.length;
+      return;
+    }
+    final int degree = view.degree(node);
+    if (into.buffer.length < degree)
+      into.buffer = new int[Math.max(degree, into.buffer.length * 2)];
+    into.ids = into.buffer;
+    into.count = CSRCountUtils.appendHopNeighbors(view, node, directions[hop] == Vertex.DIRECTION.BOTH, into.buffer, 0);
   }
 
   /**
@@ -376,18 +440,6 @@ public final class PropagateChainOp implements CountOp {
     if (filters == null || filters[0] == null)
       return true;
     return anchorVertex != null ? filters[0].accepts(anchorVertex) : filters[0].acceptsRid(anchorRid);
-  }
-
-  /** {@link #retainPassing} asked by RID, for the walks that must not allocate per graph node. */
-  private static int[] retainPassingByRid(final GraphTraversalProvider provider, final VertexPredicate.Evaluation[] filters,
-      final int position, final int[] nodes) {
-    if (filters == null || filters[position] == null)
-      return nodes;
-    int kept = 0;
-    for (final int node : nodes)
-      if (filters[position].acceptsRid(provider.getRID(node)))
-        nodes[kept++] = node;
-    return kept == nodes.length ? nodes : Arrays.copyOf(nodes, kept);
   }
 
   private static boolean anchorMatchesLabel(final Database db, final String label, final int bucketId) {
@@ -911,18 +963,23 @@ public final class PropagateChainOp implements CountOp {
     // An unlabelled anchor starts from every vertex in the schema (issue #5757).
     RidLongHashMap current = new RidLongHashMap();
     RID seed = anchorRid;
+    VertexInternal held = anchorVertex;
     if (seed == null) {
-      final RID keyed = resolveKeyAnchor(db);
-      if (keyed == null)
-        return 0; // no vertex holds the key
-      if (keyed != KEY_NOT_READ)
-        seed = keyed;
+      final Identifiable keyed = resolveKeyAnchor(db);
+      if (keyed != KEY_NOT_READ) {
+        if (!startsAWalk(keyed))
+          return 0; // no vertex holds the key
+        // the vertex as the lookup loaded it, from the committed state that held the key: re-read, it could hold another one
+        seed = keyed.getIdentity();
+        held = keyed instanceof VertexInternal vertex ? vertex : null;
+      }
     }
+    final VertexInternal seedVertex = held;
     if (seed != null) {
       // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
-      if (!anchorMatchesLabel(db, nodeLabels[0], seed.getBucketId()) || !seededAnchorPasses(filters, seed, anchorVertex))
+      if (!anchorMatchesLabel(db, nodeLabels[0], seed.getBucketId()) || !seededAnchorPasses(filters, seed, seedVertex))
         return 0;
-      if (anchorVertex == null)
+      if (seedVertex == null)
         // With the row's own vertex the first hop expands that handle and never reads this level.
         current.put(seed, 1L);
     } else {
@@ -953,9 +1010,9 @@ public final class PropagateChainOp implements CountOp {
       final RidLongHashMap next = hop < lastHop ? new RidLongHashMap() : null;
       final int h = hop;
       final VertexPredicate.Evaluation targetFilter = filters != null ? filters[hop + 1] : null;
-      if (hop == 0 && anchorVertex != null)
-        // The seeded level is the anchor alone, with one path, and the outer row already holds it.
-        expandNeighbors(db, provider, anchorVertex, directions[0], edgeTypes[0], targetBuckets, filtered(targetFilter,
+      if (hop == 0 && seedVertex != null)
+        // The seeded level is the anchor alone, with one path, and the outer row (or the key lookup) already holds it.
+        expandNeighbors(db, provider, seedVertex, directions[0], edgeTypes[0], targetBuckets, filtered(targetFilter,
             next == null ? neighborRid -> total[0]++ : neighborRid -> next.add(neighborRid, 1L)));
       else
         current.forEach((bucketId, offset, pathCount) -> {

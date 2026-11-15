@@ -3133,6 +3133,9 @@ public class CypherExecutionPlan {
    */
   private UniqueKeyAnchor uniqueKeyAnchorOf(final NodePattern node, final CommandContext context) {
     final TypeIndex index = uniqueKeyIndexOf(node);
+    // a document or an edge type holding the key is no vertex: the label walk matches nothing there, as a node pattern must
+    if (index != null && !(database.getSchema().getType(node.getLabels().getFirst()) instanceof VertexType))
+      return null;
     final List<String> keys = index != null ? index.getPropertyNamesIfExactKeyLookup() : null;
     if (keys == null)
       return null;

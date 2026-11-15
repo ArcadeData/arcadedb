@@ -1213,6 +1213,7 @@ public class MergeStep extends AbstractExecutionStep {
     TypeIndex bestIndex = null;
     int bestMatchCount = 0;
     boolean bestWholeKey = false;
+    List<String> bestProperties = null;
 
     // Polymorphic: an index declared on a supertype is inherited by this type and is just as seekable from it
     // (issue #7021). The cursor it opens is filtered by label below, since it also carries the parent's own
@@ -1235,7 +1236,9 @@ public class MergeStep extends AbstractExecutionStep {
         continue;
       if (!wholeKey) {
         try {
-          if (!index.supportsOrderedIterations())
+          // a prefix that misses a record (an unbound column indexed BY ITEM, or a null one skipped) would make MERGE create it
+          // again, and one that reaches a record twice would match it twice
+          if (!index.supportsOrderedIterations() || !index.prefixReachesEveryRecord(matchCount))
             continue;
         } catch (final IndexException e) {
           continue; // dropped or rebuilt since it was checked: not a candidate, the scan answers
@@ -1245,13 +1248,15 @@ public class MergeStep extends AbstractExecutionStep {
         bestIndex = index;
         bestMatchCount = matchCount;
         bestWholeKey = wholeKey;
+        bestProperties = indexProperties;
       }
     }
 
     if (bestIndex == null)
       return null;
 
-    final List<String> indexProperties = bestIndex.getPropertyNames();
+    // the names read while the index was chosen: read again, a DROP completed since would raise outside the guard below
+    final List<String> indexProperties = bestProperties;
     final String[] propertyNames = indexProperties.subList(0, bestMatchCount).toArray(new String[0]);
     final Object[] propertyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; i++) {
@@ -1262,6 +1267,9 @@ public class MergeStep extends AbstractExecutionStep {
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
       final Object stored = property != null ? InlineProperties.declaredValue(property, context.getDatabase(), value) : null;
       propertyValues[i] = stored != null ? stored : TemporalUtil.toIndexKey(value);
+      // a prefix holding a null reaches no record of an index that skips the keys whose every column is null
+      if (!bestWholeKey && propertyValues[i] == null)
+        return null;
     }
 
     final Iterator<Identifiable> cursor;

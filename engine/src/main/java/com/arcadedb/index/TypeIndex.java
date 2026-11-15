@@ -213,6 +213,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
+   * Whether a read of the entries whose first {@code boundColumns} key columns equal non-null values reaches every record that
+   * holds them, and each of them once (issue #11576). Not when a column left unbound is indexed {@code BY ITEM}, {@code BY KEY}
+   * or {@code BY VALUE}: a record has an entry per element there, and none for an empty or null collection. A null in an unbound
+   * column is no hole: even an index that skips null keys drops a key only when every column of it is null (issue #8978), which
+   * a non-null bound value rules out. A whole key is always answered by its lookup.
+   */
+  public boolean prefixReachesEveryRecord(final int boundColumns) {
+    final List<String> names = getPropertyNames();
+    for (int i = boundColumns; i < names.size(); i++)
+      if (!Index.basePropertyName(names.get(i)).equals(names.get(i)))
+        return false;
+    return true;
+  }
+
+  /**
    * {@link #getForQuery} for the entries whose leading key columns equal {@code prefix}, a key shorter than the index's (issue
    * #11576): the range of the keys that start with it, so only an index that walks its keys in order answers it. A range cursor
    * reads lazily, so the entries are collected before the check after the read, which is what makes that check sound; at the

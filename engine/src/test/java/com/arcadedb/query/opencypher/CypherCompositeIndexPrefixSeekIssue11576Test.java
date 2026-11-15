@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -219,6 +220,45 @@ class CypherCompositeIndexPrefixSeekIssue11576Test extends TestHelper {
     assertThat(values("MATCH (n:T {a: $x}) RETURN n.b AS b ORDER BY b", Map.of("x", "k7"))).containsExactly(7, 57);
     assertThat(values("MERGE (n:T {a: $x}) RETURN n.b AS b ORDER BY b", Map.of("x", "k7"))).containsExactly(7, 57);
     assertThat(countT()).isEqualTo(194L);
+  }
+
+  /**
+   * A prefix range reaches a record only through its entries: an unbound column indexed BY ITEM gives a record one entry per
+   * element and none for an empty list. Read as a prefix, such an index misses records and repeats others, so MATCH would lose
+   * rows and MERGE create duplicates: the scan answers instead, on the ordered path, the optimizer's and MERGE. A null in an
+   * unbound column is no hole, even where null keys are skipped: only a key whose every column is null is (issue #8978).
+   */
+  @Test
+  void aPrefixThatMissesRecordsIsNotRead() {
+    database.command("sql", "CREATE VERTEX TYPE X");
+    database.command("sql", "CREATE PROPERTY X.a STRING");
+    database.command("sql", "CREATE PROPERTY X.tags LIST OF STRING");
+    database.command("sql", "CREATE INDEX ON X (a, tags BY ITEM) NOTUNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE S");
+    database.command("sql", "CREATE PROPERTY S.a STRING");
+    database.command("sql", "CREATE PROPERTY S.b INTEGER");
+    database.command("sql", "CREATE INDEX ON S (a, b) NOTUNIQUE NULL_STRATEGY SKIP");
+    database.transaction(() -> {
+      database.newVertex("X").set("a", "x").set("tags", List.of()).save();
+      database.newVertex("X").set("a", "x").set("tags", List.of("t1", "t2", "t3")).save();
+      database.newVertex("S").set("a", "s").save();
+      database.newVertex("S").set("a", "s").set("b", 1).save();
+    });
+    for (final String label : List.of("X", "S")) {
+      final boolean prefixRead = label.equals("S");
+      final Map<String, Object> params = Map.of("v", label.toLowerCase(Locale.ROOT));
+      final String ordered = "WITH 1 AS one MATCH (n:" + label + " {a: $v}) RETURN 1 AS b";
+      assertThat(values(ordered, params)).as(ordered).hasSize(2);
+      assertThat(profile(ordered, params).contains("prefix: a")).as(ordered).isEqualTo(prefixRead);
+      final String optimized = "MATCH (n:" + label + " {a: $v}) RETURN 1 AS b";
+      assertThat(values(optimized, params)).as(optimized).hasSize(2);
+      final String where = "MATCH (n:" + label + ") WHERE n.a = $v RETURN 1 AS b";
+      assertThat(values(where, params)).as(where).hasSize(2);
+      final String merge = "MERGE (n:" + label + " {a: $v}) RETURN 1 AS b";
+      database.transaction(() -> assertThat(values(merge, params)).as(merge).hasSize(2));
+      assertThat(profile(merge, params).contains("prefix: a")).as(merge).isEqualTo(prefixRead);
+      assertThat(values("MATCH (n:" + label + ") RETURN count(n) AS b", Map.of())).containsExactly(2);
+    }
   }
 
   private long countT() {

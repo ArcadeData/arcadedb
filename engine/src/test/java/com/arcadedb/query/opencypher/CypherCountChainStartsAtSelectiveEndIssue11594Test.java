@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +29,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -172,6 +175,82 @@ class CypherCountChainStartsAtSelectiveEndIssue11594Test extends TestHelper {
       database.rollback();
     }
     assertThat(count(query, Map.of("id", "fresh"))).isZero();
+  }
+
+  /**
+   * The seeded walk carries the number of paths reaching each vertex rather than one entry per path: parallel edges multiply
+   * the count, not the frontier. Every shape is checked against the row pipeline, without a graph view (the OLTP walk) and with
+   * one (the CSR walk): parallel edges at every hop, an undirected hop over a self loop, a predicate in the middle and at the far
+   * end, and the chain read from its last node.
+   */
+  @Test
+  void theSeededWalkCountsPathsPerVertexReached() {
+    database.command("sql", "CREATE VERTEX TYPE Hub");
+    database.command("sql", "CREATE VERTEX TYPE Leaf");
+    database.command("sql", "CREATE EDGE TYPE P1");
+    database.command("sql", "CREATE EDGE TYPE P2");
+    database.command("sql", "CREATE EDGE TYPE P3");
+    database.transaction(() -> {
+      final MutableVertex record = database.newVertex("Record").set("external_id", "mult").save();
+      final MutableVertex h1 = database.newVertex("Hub").set("n", 1).save();
+      final MutableVertex h2 = database.newVertex("Hub").set("n", 2).save();
+      final List<MutableVertex> leaves = new ArrayList<>();
+      for (int i = 0; i < 4; i++)
+        leaves.add(database.newVertex("Leaf").set("n", i).save());
+      for (int i = 0; i < 3; i++)
+        record.newEdge("P1", h1);
+      for (int i = 0; i < 2; i++)
+        record.newEdge("P1", h2);
+      for (final MutableVertex leaf : leaves)
+        h1.newEdge("P2", leaf);
+      h1.newEdge("P2", leaves.getFirst());
+      h2.newEdge("P2", leaves.get(1));
+      h2.newEdge("P2", leaves.get(2));
+      leaves.getFirst().newEdge("P3", leaves.getFirst());
+      leaves.get(1).newEdge("P3", leaves.get(2));
+      leaves.get(1).newEdge("P3", leaves.get(2));
+    });
+    final String[] patterns = {
+        "(r:Record {external_id: 'mult'})-[:P1]->(h:Hub)-[:P2]->(l:Leaf)",
+        "(r:Record {external_id: 'mult'})-[:P1]->(h:Hub)-[:P2]->(l:Leaf)-[:P3]-(m:Leaf)",
+        "(r:Record {external_id: 'mult'})-[:P1]->(h:Hub)-[:P2]->(l:Leaf {n: 1})",
+        "(r:Record {external_id: 'mult'})-[:P1]-(h:Hub {n: 2})-[:P2]->(l:Leaf)-[:P3]->(m)",
+        "(m:Leaf)-[:P3]-(l:Leaf)<-[:P2]-(h:Hub)<-[:P1]-(r:Record {external_id: 'mult'})" };
+    final long[] oracle = new long[patterns.length];
+    for (int i = 0; i < patterns.length; i++) {
+      final String counted = "MATCH " + patterns[i] + " RETURN count(*) AS n";
+      assertThat(plan(counted)).as(counted).contains("seeded anchor: unique key Record[external_id] = [mult]");
+      oracle[i] = count("MATCH " + patterns[i] + " RETURN sum(1) AS n");
+      assertThat(oracle[i]).as(counted).isPositive();
+      assertThat(count(counted)).as(counted + " (OLTP)").isEqualTo(oracle[i]);
+    }
+    // 3 parallel P1 edges reach h1 and its 5 P2 edges, 2 reach h2 and its 2: one entry per path would hold 19
+    assertThat(oracle[0]).isEqualTo(3 * 5 + 2 * 2);
+
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("seeded")
+        .withVertexTypes("Record", "Chunk", "Entity", "Hub", "Leaf").withEdgeTypes("P1", "P2", "P3").build();
+    try {
+      assertThat(GraphTraversalProviderRegistry.awaitAll(database, 30, TimeUnit.SECONDS)).isTrue();
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "P1", "P2", "P3")).isNotNull();
+      for (int i = 0; i < patterns.length; i++) {
+        final String counted = "MATCH " + patterns[i] + " RETURN count(*) AS n";
+        assertThat(count(counted)).as(counted + " (CSR)").isEqualTo(oracle[i]);
+      }
+    } finally {
+      view.drop();
+    }
+  }
+
+  /** A UNIQUE key on a document type pins no vertex: a node pattern naming that type matches nothing. */
+  @Test
+  void aKeyOnADocumentTypeIsNotSeeded() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+    database.command("sql", "CREATE PROPERTY Doc.id INTEGER");
+    database.command("sql", "CREATE INDEX ON Doc (id) UNIQUE");
+    database.transaction(() -> database.newDocument("Doc").set("id", 1).save());
+    final String query = "MATCH (d:Doc {id: 1})-[:OF_RECORD]->(r:Record) RETURN count(*) AS n";
+    assertThat(plan(query)).doesNotContain("seeded anchor");
+    assertThat(count(query)).isZero();
   }
 
   /** A key that cannot pin one vertex is not looked up: the chain is walked as before and counts the same. */

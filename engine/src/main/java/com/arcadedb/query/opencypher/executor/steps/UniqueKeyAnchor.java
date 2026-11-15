@@ -19,7 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -47,13 +47,15 @@ public final class UniqueKeyAnchor {
   }
 
   /**
-   * The vertex holding the key, or null when no record holds it. Read against one committed state, and refused with the
-   * {@link com.arcadedb.index.IndexException} of {@link TypeIndex#getForQuery} when a concurrent DDL left the index unable to
-   * answer whole: the caller then walks the label, which applies the same equality as a predicate.
+   * The record holding the key, as the lookup loaded it, or null when no record holds it. Read against one committed state: the
+   * caller checks and walks that record rather than reading it again, since a commit after the lookup could have moved the key
+   * to another record. Refused with the {@link com.arcadedb.index.IndexException} of {@link TypeIndex#getForQuery} when a
+   * concurrent DDL left the index unable to answer whole: the caller then walks the label, which applies the same equality as a
+   * predicate.
    */
-  public RID resolve(final Database database) {
+  public Identifiable resolve(final Database database) {
     try (final IndexCursor cursor = ConsistentKeyLookup.getForQuery(database, index, key)) {
-      return cursor.hasNext() ? cursor.next().getIdentity() : null;
+      return cursor.hasNext() ? cursor.next() : null;
     }
   }
 
