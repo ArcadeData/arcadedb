@@ -169,6 +169,24 @@ class PostCommandHandlerAutoLimitTest {
         null)).isTrue();
   }
 
+  /** Issue #11804: a trailing TIMEOUT clause is not part of the LIMIT decision, and the appended LIMIT goes before it. */
+  @Test
+  void aTrailingTimeoutClauseKeepsTheLimitBeforeIt() {
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V TIMEOUT 5000", "sql", LIMIT, null)).isTrue();
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V TIMEOUT 5000 EXCEPTION", "sql", LIMIT, null)).isTrue();
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V LIMIT 2 TIMEOUT 5000 EXCEPTION", "sql", LIMIT, null)).isFalse();
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V SKIP 1 LIMIT 2 timeout 5000 return", "sql", LIMIT, null))
+        .isFalse();
+
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V", 21)).isEqualTo("SELECT FROM V limit 21");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5000", 21)).isEqualTo("SELECT FROM V limit 21 TIMEOUT 5000");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V ORDER BY a\ntimeout 5000 EXCEPTION", 21))
+        .isEqualTo("SELECT FROM V ORDER BY a limit 21\ntimeout 5000 EXCEPTION");
+    // A literal is not a clause: only a TIMEOUT the text ends with moves the LIMIT
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V WHERE note = 'timeout 5000'", 21))
+        .isEqualTo("SELECT FROM V WHERE note = 'timeout 5000' limit 21");
+  }
+
   @Test
   void probeLimitIsOneRowAboveTheCapAndSaturates() {
     // What the handler actually pushes down: the extra row is never serialized, it only tells a result ending

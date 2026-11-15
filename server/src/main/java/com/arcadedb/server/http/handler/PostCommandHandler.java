@@ -52,12 +52,18 @@ import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
   // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
-  private static final Pattern LINE_BREAK = Pattern.compile("\\R");
+  private static final Pattern LINE_BREAK       = Pattern.compile("\\R");
+  /**
+   * The TIMEOUT clause a SELECT ends with ({@code TIMEOUT <ms> [RETURN | EXCEPTION]}): the automatic LIMIT goes before it, since a
+   * LIMIT after it does not parse (issue #11804).
+   */
+  private static final Pattern TRAILING_TIMEOUT = Pattern.compile("(?i)\\s+timeout\\s+\\d+(?:\\s+(?:return|exception))?$");
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -154,7 +160,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ((!isSelect && !isMatch) || command.endsWith(";"))
       return false;
 
-    if (StringUtils.containsIgnoreCase(command, " limit ") || StringUtils.containsIgnoreCase(command, "\nlimit ")) {
+    // The clauses before a trailing TIMEOUT decide whether the statement has a LIMIT of its own (issue #11804)
+    final String clauses = withoutTrailingTimeout(command);
+    if (StringUtils.containsIgnoreCase(clauses, " limit ") || StringUtils.containsIgnoreCase(clauses, "\nlimit ")) {
       // Both words in the text decide nothing on their own (a property, a literal or a subquery can carry them): only the parsed
       // statement tells a SELECT with a FACETS clause, the one shape the last-line heuristic below can get wrong.
       if (StringUtils.containsIgnoreCase(command, " facets ") || StringUtils.containsIgnoreCase(command, "\nfacets ")) {
@@ -163,7 +171,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           return facetsQuery;
       }
       // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
-      final String[] lines = LINE_BREAK.split(command);
+      final String[] lines = LINE_BREAK.split(clauses);
       final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
       if (words.length <= 1 //
           || "limit".equals(words[words.length - 2]) //
@@ -172,6 +180,21 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
 
     return !"sqlScript".equalsIgnoreCase(language) || scriptEndsWithAQuery(command, database);
+  }
+
+  /** {@code command} without the TIMEOUT clause it ends with, or {@code command} itself when it ends with none. */
+  private static String withoutTrailingTimeout(final String command) {
+    final Matcher timeout = TRAILING_TIMEOUT.matcher(command);
+    return timeout.find() ? command.substring(0, timeout.start()) : command;
+  }
+
+  /**
+   * {@code command} with the automatic {@code LIMIT probeLimit}: appended, or placed before the TIMEOUT clause the statement ends
+   * with, where a LIMIT has to stand (issue #11804: appended after it, the statement no longer parsed).
+   */
+  static String withAutomaticLimit(final String command, final int probeLimit) {
+    final String clauses = withoutTrailingTimeout(command);
+    return clauses + " limit " + probeLimit + command.substring(clauses.length());
   }
 
   /**
@@ -389,7 +412,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final String originalCommand = command;
     if (autoLimited)
       // One row above the cap: the extra row is never serialized, it only makes truncation detectable.
-      command = command + " limit " + truncationProbeLimit(autoLimit);
+      command = withAutomaticLimit(command, truncationProbeLimit(autoLimit));
 
     if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";
