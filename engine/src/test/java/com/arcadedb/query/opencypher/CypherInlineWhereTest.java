@@ -698,13 +698,13 @@ class CypherInlineWhereTest {
 
     /**
      * An anonymous relationship binds no variable, so a predicate that names one is referencing an
-     * undefined variable. It resolves to null and the predicate rejects every candidate, which is the
-     * engine's pre-existing behavior for any undefined variable rather than anything this hop changes.
+     * undefined variable. It is refused like any other undefined variable (it resolved to null and the
+     * predicate rejected every candidate until the inline WHERE of a pattern comprehension was scope-checked).
      */
     @Test
     void anonymousRelationshipLeavesAPredicateVariableUndefined() {
-      assertThat(comprehension("MATCH (a:A {v:1}) RETURN [(a)-[:E]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
-          .isEmpty();
+      assertThatThrownBy(() -> comprehension("MATCH (a:A {v:1}) RETURN [(a)-[:E]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
+          .hasMessageContaining("UndefinedVariable: Variable 'r' not defined");
       // Naming the relationship is what makes the very same predicate resolve.
       assertThat(comprehension("MATCH (a:A {v:1}) RETURN [(a)-[r:E]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
           .containsExactly(10);

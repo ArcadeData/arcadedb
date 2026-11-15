@@ -1201,16 +1201,28 @@ public class CypherSemanticValidator {
         innerScope.add(pce.getPathVariable());
       if (path != null) {
         addBoundVarsFromPattern(path, innerScope);
-        for (final NodePattern node : path.getNodes())
+        // The inline WHERE of a node or relationship stays on the pattern here (a MATCH hoists it into the clause WHERE)
+        for (final NodePattern node : path.getNodes()) {
           if (node.getProperties() != null)
             checkPropertyValuesScope(node.getProperties(), innerScope);
-        for (final RelationshipPattern rel : path.getRelationships())
+          checkBooleanExpressionScope(node.getWhereExpression(), innerScope);
+        }
+        for (final RelationshipPattern rel : path.getRelationships()) {
           if (rel.getProperties() != null)
             checkPropertyValuesScope(rel.getProperties(), innerScope);
+          checkBooleanExpressionScope(rel.getWhereExpression(), innerScope);
+        }
         checkGroupWhereScope(path, innerScope);
       }
       checkExpressionScope(pce.getWhereExpression(), innerScope);
       checkExpressionScope(pce.getMapExpression(), innerScope);
+    } else if (expr instanceof MapProjectionExpression projection) {
+      // q{.id} and y{value: p} with q or p never bound evaluated to null instead of being refused
+      final String varName = projection.getVariableName();
+      if (isValidVariableName(varName) && !scope.contains(varName))
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
+      for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+        checkExpressionScope(element.getExpression(), scope);
     } else if (expr instanceof ListPredicateExpression) {
       final ListPredicateExpression lpe = (ListPredicateExpression) expr;
       checkExpressionScope(lpe.getListExpression(), scope);
