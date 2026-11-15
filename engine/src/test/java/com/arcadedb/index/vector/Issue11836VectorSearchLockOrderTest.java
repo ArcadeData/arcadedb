@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The first two tests stop a real search inside its walk, line up the other side of the old cycle, and ask whether the read the
  * walk makes next would get the database lock. When it would not, the search is failed instead of left to wait, so the threads
- * of a failing run unwind rather than hang. The third checks the order on every search entry point and on a direct build.
+ * of a failing run unwind rather than hang. The third checks the order on every search entry point.
  */
 class Issue11836VectorSearchLockOrderTest extends TestHelper {
   private static final int  DIMENSIONS   = 8;
@@ -140,7 +140,7 @@ class Issue11836VectorSearchLockOrderTest extends TestHelper {
   }
 
   @Test
-  void everySearchAndADirectBuildTakeTheIndexLockUnderTheDatabaseReadLock() {
+  void everySearchTakesTheIndexLockUnderTheDatabaseReadLock() {
     final LSMVectorIndex exact = indexedVectors("V", "");
     final LSMVectorIndex productQuantized = indexedVectors("P", ", quantization: 'PRODUCT', pqClusters: 16");
     assertThat(productQuantized.isPQSearchAvailable()).isTrue();
@@ -158,11 +158,6 @@ class Issue11836VectorSearchLockOrderTest extends TestHelper {
 
     assertThat(productQuantized.findNeighborsFromVectorApproximate(vector(), 10)).hasSize(10);
     assertTakenUnderTheDatabaseReadLock(productQuantizedLock, "the approximate search");
-
-    // CREATE INDEX builds under the schema write lock; the build method is public, and called outside a schema change it holds
-    // the index lock while it scans the bucket and commits its chunks
-    assertThat(exact.build(null, null)).isEqualTo(VECTORS);
-    assertTakenUnderTheDatabaseReadLock(exactLock, "a build outside a schema change");
   }
 
   /** {@code VECTORS} vectors of a single-bucket type and their index, its graph built by a first search. */

@@ -13495,15 +13495,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public long build(final BuildIndexCallback callback, final GraphBuildCallback graphCallback,
       final boolean chunkedCommitAllowed) {
-    // The database read lock before this index's lock, the order a search takes them in (issue #11836): the build scans the
-    // bucket and commits its chunks through the database while it holds the index lock. Re-entrant under the schema write lock
-    // CREATE INDEX builds under; a direct call outside a schema change makes a schema change wait for the build, instead of
-    // deadlocking with it and with the searches waiting for this index.
-    return getDatabase().executeInReadLock(() -> buildUnderIndexLock(callback, graphCallback, chunkedCommitAllowed));
-  }
-
-  private long buildUnderIndexLock(final BuildIndexCallback callback, final GraphBuildCallback graphCallback,
-      final boolean chunkedCommitAllowed) {
     final long totalRecords;
 
     lock.writeLock().lock();
