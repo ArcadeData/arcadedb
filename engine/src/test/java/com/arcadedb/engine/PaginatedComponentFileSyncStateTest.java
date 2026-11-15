@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -49,6 +50,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * What a data file owes the disk (issue #8626). A file is forced only when something happened to it since its last
@@ -328,6 +331,32 @@ class PaginatedComponentFileSyncStateTest {
     assertThat(file.directorySyncOwed())
         .as("the earlier directory force must not acknowledge the metadata forced after it read the generation (issue #11932)")
         .isGreaterThan(covered);
+  }
+
+  @Test
+  void aDirectoryForceThatFailedLeavesItsGenerationOwed() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    final File directory = tempDir.toFile();
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("created"));
+
+      // A directory that cannot be opened for reading cannot be forced: FileUtils.forceDirectory() answers false
+      assumeTrue(directory.setReadable(false), "the file system has no read permission to take away");
+      assumeFalse(Files.isReadable(tempDir), "the process reads the directory whatever its permissions (root)");
+
+      assertThat(fileManager.syncFile(FILE_ID)).as("a directory that cannot be forced does not fail the sync").isTrue();
+      assertThat(file.directorySyncOwed())
+          .as("the created file still owes its directory entry: the force did not happen (issue #11932)").isPositive();
+      assertThat(fileManager.syncFiles()).isTrue();
+      assertThat(file.directorySyncOwed()).as("nor did the pass force it").isPositive();
+
+      assertThat(directory.setReadable(true)).isTrue();
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(file.directorySyncOwed()).as("the next sync that can force the directory pays what is owed").isZero();
+    } finally {
+      directory.setReadable(true);
+      fileManager.close();
+    }
   }
 
   @Test
