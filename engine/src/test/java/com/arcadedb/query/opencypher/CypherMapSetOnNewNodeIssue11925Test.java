@@ -145,6 +145,18 @@ class CypherMapSetOnNewNodeIssue11925Test extends TestHelper {
   }
 
   @Test
+  void aFoldedMapHoldingAnInvalidEntryValueFailsAndCreatesNothing() {
+    // a map nested in a property value is not a valid property value; the folded path must refuse it like the applier
+    for (final String clause : new String[] { "SET n = {a: 1, b: {c: 2}}", "SET n += {a: 1, b: {c: 2}}" }) {
+      assertThatThrownBy(() -> database.command("opencypher", "CREATE (n:V11925i) " + clause).close())
+          .as(clause).isInstanceOf(RuntimeException.class);
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n:V11925i) RETURN count(n) AS c")) {
+        assertThat(rs.next().<Long>getProperty("c")).as(clause).isZero();
+      }
+    }
+  }
+
+  @Test
   void onCreateMapSetStillMatchesADuplicateKeyInsideOneBatch() {
     final List<Map<String, Object>> rows = new ArrayList<>(rows(5));
     rows.addAll(rows(5));
