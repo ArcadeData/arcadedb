@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.convert;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -58,7 +58,7 @@ public class ToFloatListFunction implements StatelessFunction {
     // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, and is the same LIST to every list function (issue #11582)
     final List<Object> input = CypherFunctionHelper.asListOrNull(args[0]);
     if (input == null)
-      throw new CommandExecutionException("toFloatList() requires a list argument");
+      throw new TypeMismatchException("toFloatList() requires a list argument");
 
     final List<Object> result = new ArrayList<>(input.size());
     for (final Object item : input) {

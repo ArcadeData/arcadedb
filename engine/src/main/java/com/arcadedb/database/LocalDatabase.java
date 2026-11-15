@@ -2986,12 +2986,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3007,12 +3010,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3029,12 +3035,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3056,12 +3065,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3095,12 +3107,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3115,12 +3130,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3135,12 +3153,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");

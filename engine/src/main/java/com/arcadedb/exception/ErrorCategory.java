@@ -185,6 +185,8 @@ public enum ErrorCategory {
       new Rule(QueryNotIdempotentException.class, VALIDATION),
       // every runtime type error, InvalidPropertyTypeException among them (issue #11211)
       new Rule(TypeMismatchException.class, VALIDATION),
+      // a function or procedure argument whose value the callee is not defined for, a CommandExecutionException too (issue #11589)
+      new Rule(InvalidArgumentException.class, VALIDATION),
       new Rule(IllegalArgumentException.class, VALIDATION),
       new Rule(TimeoutException.class, TIMEOUT) };
 
