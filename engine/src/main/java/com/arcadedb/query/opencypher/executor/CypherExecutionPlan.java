@@ -109,6 +109,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
@@ -1391,6 +1392,8 @@ public class CypherExecutionPlan {
 
     private ResultSet operatorResults = null;
     private boolean closed = false;
+    // The rows of the statement's SKIP the index scan at the root passes over itself, see skipPassesToScan()
+    private int skipInScan = 0;
 
     @Override
     public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
@@ -1398,7 +1401,9 @@ public class CypherExecutionPlan {
       // set of cursors that the already-spent close() chain would never reach.
       if (operatorResults == null && !closed) {
         // Execute physical operators on first pull
-        operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
+        operatorResults = skipInScan > 0 ?
+            ((NodeIndexRangeScan) physicalPlan.getRootOperator()).execute(ctx, nRecords, skipInScan) :
+            physicalPlan.getRootOperator().execute(ctx, nRecords);
       }
       return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }
@@ -1467,7 +1472,8 @@ public class CypherExecutionPlan {
         expressionEvaluator.getFunctionFactory() : null;
 
     // Create a wrapper step that executes the physical operators
-    AbstractExecutionStep currentStep = new OptimizedMatchStep(context);
+    final OptimizedMatchStep matchStep = new OptimizedMatchStep(context);
+    AbstractExecutionStep currentStep = matchStep;
 
     // Apply post-MATCH operations using clausesInOrder to respect the order they appear
     // in the query (e.g. WITH before UNWIND, not the other way around).
@@ -1703,9 +1709,12 @@ public class CypherExecutionPlan {
 
     // Step 9: SKIP (if any)
     if (statement.getSkip() != null) {
-      final SkipStep skipStep =
-          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-              new ResultInternal(), context), context);
+      final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
+          context);
+      final boolean skippedByScan = skipVal > 0 && skipPassesToScan(currentStep, matchStep);
+      if (skippedByScan)
+        matchStep.skipInScan = skipVal;
+      final SkipStep skipStep = new SkipStep(skipVal, skippedByScan, context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -1729,6 +1738,49 @@ public class CypherExecutionPlan {
     }
 
     return currentStep;
+  }
+
+  /**
+   * Whether the statement's SKIP can be passed to the index scan that answers its MATCH, which then counts the rows it skips from
+   * the index entries without loading their vertices (issue #11954). Only where every row the scan produces is a row the SKIP
+   * counts and nothing reads the vertex of a skipped row: one MATCH and a RETURN, no WHERE left to evaluate, the rows in the index
+   * order the ORDER BY relies on, read by the scan alone, and a RETURN right on top of it that makes one row of each row (no
+   * DISTINCT, no aggregation) out of items that cannot fail on a row: the scan's variable, its properties and literals.
+   */
+  private boolean skipPassesToScan(final AbstractExecutionStep currentStep, final OptimizedMatchStep matchStep) {
+    if (statement.getOrderByClause() == null || !physicalPlan.isIndexOrdered() || !statement.isReadOnly()
+        || statement.getWhereClause() != null || !(physicalPlan.getRootOperator() instanceof NodeIndexRangeScan scan)
+        || !scan.isIndexOrdered() || !(currentStep instanceof ProjectReturnStep) || currentStep.getPrev() != matchStep)
+      return false;
+
+    int matches = 0;
+    for (final ClauseEntry entry : statement.getClausesInOrder()) {
+      if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
+        if (((MatchClause) entry.getTypedClause()).isOptional())
+          return false;
+        ++matches;
+      } else if (entry.getType() != ClauseEntry.ClauseType.RETURN)
+        return false;
+    }
+    if (matches != 1)
+      return false;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause.isDistinct() || returnClause.hasAggregations())
+      return false;
+    if (returnClause.isReturnAll())
+      return true;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (item.isStar())
+        continue;
+      final Expression expression = item.getExpression();
+      final boolean cannotFail = expression instanceof LiteralExpression
+          || expression instanceof VariableExpression variable && variable.getVariableName().equals(scan.getVariable())
+          || expression instanceof PropertyAccessExpression property && property.getVariableName().equals(scan.getVariable());
+      if (!cannotFail)
+        return false;
+    }
+    return true;
   }
 
   /**

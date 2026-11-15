@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexEntrySkip;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.QueryHelper;
@@ -214,6 +215,16 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    return execute(context, nRecords, 0);
+  }
+
+  /**
+   * Executes the scan with its first {@code skip} rows passed over, for the SKIP of a plan whose steps between this scan and the
+   * SKIP make one row of each row and read nothing of the vertex (issue #11954). The row of an index entry is counted without
+   * loading its vertex when {@link IndexEntrySkip} can tell that it is one; the others, and the vertices with a null key a scan of the
+   * label reads, are loaded and dropped.
+   */
+  public ResultSet execute(final CommandContext context, final int nRecords, final int skip) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
@@ -253,6 +264,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       // The arrays are charged to the heap budget all queries share (issue #9792), as SQL's MaterializeRecordsStep charges
       // its addresses: not capped in number, since reading them first is what makes the write correct
       private OperationHeapLimit heapLimit;
+      // The rows still to pass over, and what tells whether an entry is a row without loading its vertex
+      private int toSkip = skip;
+      private IndexEntrySkip skipJudge;
 
       @Override
       public boolean hasNext() {
@@ -558,15 +572,28 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private void addIndexed(final Identifiable identifiable) {
         if (inheritedIndex && !Labels.carriesLabel(context.getDatabase().getSchema(), identifiable, label))
           return;
-        if (collecting)
+        if (collecting) {
           collect(identifiable);
-        else
-          addVertex(identifiable.asVertex());
+          return;
+        }
+        if (toSkip > 0 && identifiable instanceof RID rid) {
+          if (skipJudge == null)
+            skipJudge = new IndexEntrySkip(context.getDatabase(), null);
+          if (skipJudge.verdict(rid) == IndexEntrySkip.Verdict.ROW) {
+            --toSkip;
+            return;
+          }
+        }
+        addVertex(identifiable.asVertex());
       }
 
       private void addVertex(final Vertex vertex) {
         if (collecting) {
           collect(vertex);
+          return;
+        }
+        if (toSkip > 0) {
+          --toSkip;
           return;
         }
         final ResultInternal result = new ResultInternal();
