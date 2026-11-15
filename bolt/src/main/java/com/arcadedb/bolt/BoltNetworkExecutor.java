@@ -61,6 +61,8 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
@@ -194,6 +196,8 @@ public class BoltNetworkExecutor extends Thread {
    * rather than quietly act on whichever stream happens to be current.
    */
   private static final long OMITTED_QID = -1;
+  /** What an empty query is analyzed as: a read. */
+  private static final CypherStatement EMPTY_STATEMENT = () -> true;
   /** What a COMMIT or a RUN past the explicit transaction's tx_timeout is refused with (issue #11392). */
   private static final String TRANSACTION_TIMED_OUT_MESSAGE =
       "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
@@ -912,8 +916,10 @@ public class BoltNetworkExecutor extends Thread {
     final boolean readAccessMode = explicitTransaction ? transactionReadOnly : isReadAccessMode(message.getExtra());
     try {
       // Determine if this is a write query using the query analyzer: one it cannot analyze counts as a write, to be safe
-      final Boolean writeQuery = classifyWriteQuery(query);
+      final CypherStatement statement = analyzeStatement(query);
+      final Boolean writeQuery = statement == null ? null : !statement.isReadOnly();
       stream.writeOperation = writeQuery == null || writeQuery;
+      stream.schemaOperation = statement instanceof CypherDDLStatement;
 
       // Detect EXPLAIN / PROFILE prefix so we can later surface the execution plan
       // in PULL SUCCESS metadata (consumed by Neo4j drivers as ResultSummary#plan / #profile).
@@ -1194,8 +1200,7 @@ public class BoltNetworkExecutor extends Thread {
    */
   private Map<String, Object> completeStream(final BoltQueryStream stream, final String phase) {
     final Map<String, Object> metadata = new LinkedHashMap<>();
-    // r=read, w=write (for simplicity, we use binary classification)
-    metadata.put("type", stream.writeOperation ? "w" : "r");
+    metadata.put("type", queryType(stream));
     metadata.put("t_last", (System.nanoTime() - stream.queryStartTime) / 1_000_000);
     if (stream.planMetadata != null && stream.planMetadataKey != null)
       metadata.put(stream.planMetadataKey, stream.planMetadata);
@@ -1831,19 +1836,17 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Determine if a Cypher query contains write operations, using ArcadeDB's query analyzer: {@code TRUE} for a write,
-   * {@code FALSE} for a read, and {@code null} when the analysis itself failed (a statement that does not parse, for one),
-   * which the caller runs as a write to be safe - except in READ access mode, where it is run as a read so the engine reports
-   * what is wrong with it rather than a write refusal it may not deserve (issue #11392).
+   * The parsed statement, read from the statement cache the execution that follows uses too, or {@code null} when the analysis
+   * itself failed (a statement that does not parse, for one), which the caller runs as a write to be safe - except in READ access
+   * mode, where it is run as a read so the engine reports what is wrong with it rather than a write refusal it may not deserve
+   * (issue #11392). An empty query is a read.
    */
-  private Boolean classifyWriteQuery(final String query) {
+  private CypherStatement analyzeStatement(final String query) {
     if (query == null || query.isEmpty())
-      return Boolean.FALSE;
+      return EMPTY_STATEMENT;
 
     try {
-      // Use the statement cache directly to avoid creating an AnalyzedQuery wrapper object.
-      // The statement cache returns the parsed CypherStatement with isReadOnly() already computed.
-      return !((DatabaseInternal) database).getCypherStatementCache().isIdempotent(query);
+      return ((DatabaseInternal) database).getCypherStatementCache().getParameterized(query).statement().statement();
     } catch (final Exception e) {
       // Log at FINE level to avoid spam for complex but valid queries
       LogManager.instance().log(this, Level.FINE,
@@ -1851,6 +1854,20 @@ public class BoltNetworkExecutor extends Thread {
               " - assuming write operation", e);
       return null;
     }
+  }
+
+  /**
+   * The summary's query type, as Neo4j's planner answers it (issue #11972): {@code s} for a schema statement (index and constraint
+   * DDL), {@code r} for a statement that writes nothing, and for a write {@code rw} when it returns columns and {@code w} when it
+   * returns none. The columns are the ones announced to the client, which a zero-row result takes from the statement's RETURN
+   * or YIELD, so a write whose MATCH found nothing is still {@code rw}.
+   */
+  private static String queryType(final BoltQueryStream stream) {
+    if (stream.schemaOperation)
+      return "s";
+    if (!stream.writeOperation)
+      return "r";
+    return stream.fields != null && !stream.fields.isEmpty() ? "rw" : "w";
   }
 
   /**

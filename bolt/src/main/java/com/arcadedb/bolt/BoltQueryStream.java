@@ -62,6 +62,8 @@ final class BoltQueryStream {
   List<List<Object>> syntheticResults;
 
   boolean writeOperation;
+  /** An index or constraint statement, reported with the query type {@code s} (issue #11972). */
+  boolean schemaOperation;
 
   long queryStartTime;  // System.nanoTime() when execution started, for the t_first/t_last metadata
   long firstRecordTime; // System.nanoTime() when the first row became available, 0 if there was none
