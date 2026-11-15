@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Regression test for issue #10587: the always-empty filter rewrite of #10307 replaced {@code filter(...limit(0))} with a
@@ -177,21 +178,68 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
     assertSameAnswer(g -> g.V(graph.traversal().V().has("n", 1L).next()).out().filter(__.limit(0)).count());
   }
 
+  /**
+   * Once a throwing site is hot enough to be compiled, HotSpot raises a preallocated exception there, without a message
+   * (-XX:+OmitStackTraceInFastThrow, on by default), and the run with the strategy and the run without it can fall on either
+   * side of that compilation (issue #11997). The same exception is the same answer whether or not it carries its message.
+   * The site is one no other test here feeds a non-element, so the first run of this test finds it cold.
+   */
+  @Test
+  void anExceptionIsTheSameAnswerWithOrWithoutItsMessage() {
+    final Function<GraphTraversalSource, GraphTraversal<?, ?>> query = g -> g.inject(1).elementMap();
+    final Object cold = outcome(query, graph.traversal());
+    Object hot = cold;
+    for (int run = 0; run < 1_000_000 && !(hot instanceof Raised raised && raised.message() == null); run++)
+      hot = outcome(query, graph.traversal());
+    assumeThat(cold instanceof Raised raised && raised.message() != null).as("the site was already hot before this test").isTrue();
+    assumeThat(hot instanceof Raised raised && raised.message() == null).as("this JVM never dropped the message of a hot exception")
+        .isTrue();
+
+    assertSameOutcome(cold, hot, query.apply(graph.traversal()));
+
+    // still told apart: another exception, or the same one with another message
+    assertThat(((Raised) cold).sameAs(new Raised(IllegalStateException.class, null))).isFalse();
+    assertThat(((Raised) cold).sameAs(new Raised(ClassCastException.class, "another message"))).isFalse();
+  }
+
   private void assertSameAnswer(final Function<GraphTraversalSource, GraphTraversal<?, ?>> query) {
     final Object withStrategy = outcome(query, graph.traversal());
     final Object withoutStrategy = outcome(query, graph.traversal().withoutStrategies(ArcadeTraversalStrategy.class));
-    assertThat(withStrategy).as("%s", query.apply(graph.traversal())).isEqualTo(withoutStrategy);
+    assertSameOutcome(withStrategy, withoutStrategy, query.apply(graph.traversal()));
+  }
+
+  private static void assertSameOutcome(final Object withStrategy, final Object withoutStrategy, final Object query) {
+    if (withStrategy instanceof Raised raised && withoutStrategy instanceof Raised other)
+      assertThat(raised.sameAs(other)).as("%s%n with the strategy: %s%n without it: %s", query, raised, other).isTrue();
+    else
+      assertThat(withStrategy).as("%s", query).isEqualTo(withoutStrategy);
   }
 
   private void assertRaises(final Function<GraphTraversalSource, GraphTraversal<?, ?>> query) {
-    assertThat(outcome(query, graph.traversal())).asString().startsWith("raised ");
+    assertThat(outcome(query, graph.traversal())).isInstanceOf(Raised.class);
   }
 
+  /** The rows of a traversal, or the {@link Raised} exception it ended with. */
   private static Object outcome(final Function<GraphTraversalSource, GraphTraversal<?, ?>> query, final GraphTraversalSource g) {
     try {
       return query.apply(g).toList();
     } catch (final RuntimeException e) {
-      return "raised " + e.getClass().getName() + ": " + e.getMessage();
+      return new Raised(e.getClass(), e.getMessage());
+    }
+  }
+
+  /**
+   * An exception a traversal raised. Two are the same answer when they are of the same class and, if both carry a message, the
+   * same message: a hot site throws without one (see {@link #anExceptionIsTheSameAnswerWithOrWithoutItsMessage()}).
+   */
+  private record Raised(Class<?> type, String message) {
+    boolean sameAs(final Raised other) {
+      return type == other.type && (message == null || other.message == null || message.equals(other.message));
+    }
+
+    @Override
+    public String toString() {
+      return "raised " + type.getName() + ": " + message;
     }
   }
 }
