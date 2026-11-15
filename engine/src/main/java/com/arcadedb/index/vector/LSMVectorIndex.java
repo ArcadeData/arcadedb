@@ -12446,9 +12446,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return typeIndex;
   }
 
+  /**
+   * The type that owns this index's bucket was renamed: the index now belongs to the new name. Only the name it reports moves; the
+   * data and graph files keep the names they have, as they do after a compaction, since the schema finds them by component name.
+   * Left on the old name, every reader resolving the index's type failed ({@code SELECT FROM schema:indexes}: "Type with name
+   * ... was not found"), or found an unrelated type created later under that name, until a reload (issue #12035).
+   */
   @Override
   public void updateTypeName(final String newTypeName) {
-    // Type name is immutable for vector indexes
+    metadata.typeName = newTypeName;
   }
 
   @Override
