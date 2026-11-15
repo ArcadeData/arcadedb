@@ -132,10 +132,11 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   public synchronized MutableEdge modify() {
+    final boolean readHere = readInCurrentTransaction();
     if (prepareForModify("edge") instanceof MutableEdge fromCache)
       return fromCache;
 
-    checkForLazyLoading();
+    loadForModify(readHere);
     final Binary content = buffer;
     if (content != null) {
       content.rewind();

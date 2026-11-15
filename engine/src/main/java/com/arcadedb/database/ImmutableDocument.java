@@ -326,6 +326,44 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Whether this record's content was read by the current transaction, stale or not (issue #8610's marker), checked before
+   * {@link #prepareForModify} reloads it.
+   */
+  protected boolean readInCurrentTransaction() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    if (tx == null || readInTransaction == -1)
+      return false;
+    final int id = readTransactionId(tx.getBeginSequence());
+    return id >= 0 && (readInTransaction == id || readInTransaction == STALE_READ - id);
+  }
+
+  /**
+   * The lazy load {@code modify()} ends with, after {@link #prepareForModify} pinned the record's page and reloaded its
+   * content. When the record is gone from its bucket although this transaction read it, a concurrent transaction deleted it
+   * after that read and committed: the conflict a write after a concurrent delete is, answered as the retryable
+   * {@link ConcurrentModificationException} the commit-time check gives a document in the same race, as a delete of such a
+   * record already does (issue #8984). It answered {@link RecordNotFoundException}, which reaches an HTTP client as a 404 it
+   * cannot tell from a wrong RID, and which a retry loop does not retry: a Cypher SET or a SQL UPDATE of a vertex whose MATCH
+   * or WHERE read it moments before failed so. A record not read in this transaction keeps the not-found.
+   *
+   * @param readHere {@link #readInCurrentTransaction()}, taken before the reload
+   */
+  protected void loadForModify(final boolean readHere) {
+    try {
+      checkForLazyLoading();
+    } catch (final RecordNotFoundException e) {
+      if (!readHere || !rid.equals(e.getRID()))
+        throw e;
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
+        throw e;
+      throw new ConcurrentModificationException(
+          "Record " + rid + " was deleted by a concurrent transaction after it was read in this transaction. Please retry the operation",
+          e);
+    }
+  }
+
+  /**
    * #8610: called after {@code modify()} replaced the content with the latest committed one, with the content read
    * before ({@code null} for a record loaded lazily). When that read was made in the current transaction and the content
    * changed, the record {@code modify()} builds is marked, so a property write computed from the older read is refused at
@@ -371,10 +409,11 @@ public class ImmutableDocument extends BaseDocument {
 
   @Override
   public MutableDocument modify() {
+    final boolean readHere = readInCurrentTransaction();
     if (prepareForModify("document") instanceof MutableDocument fromCache)
       return fromCache;
 
-    checkForLazyLoading();
+    loadForModify(readHere);
     final Binary content = requireBuffer("modify");
     content.rewind();
     return markIfReadWentStale(new MutableDocument(database, type, rid, content.copyOfContent()));
