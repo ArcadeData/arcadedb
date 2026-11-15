@@ -241,16 +241,12 @@ public class AlterTypeStatement extends DDLStatement {
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
 
-    // Every item, in the order written. This used to apply the LAST one only and answer "OK" regardless, because
-    // the statement held one property rather than a list (issue #7920).
-    for (final Item item : items)
-      applyItem(context, type, item, result);
-
     // Trailing settings clause. `WITH repartition = true` (issue #4087) means the partition mapping is now
     // stale (bucket add/drop or strategy change), so chain a rebuild before returning; the DDL surfaces the
     // moved-record count alongside the ALTER result so operators see the rebuild happened. `lightweight` and
     // `unique` are the edge-type declarations. Unknown settings throw - the supported list grows with
-    // explicit additions in this method.
+    // explicit additions in this method. Read BEFORE the items are applied, so every refusal they can give comes
+    // before the first change (issue #12033)
     boolean repartitionRequested = false;
     Boolean lightweightRequested = null;
     Boolean uniqueRequested = null;
@@ -267,6 +263,19 @@ public class AlterTypeStatement extends DDLStatement {
         throw new CommandSQLParsingException("Unrecognized setting '" + key
             + "' in ALTER TYPE statement (supported: repartition, lightweight, unique)");
     }
+
+    // A repartition the chained rebuild is going to refuse, refused before the items change the type: the strategy or the bucket
+    // they set used to stay applied behind the 400 (issue #12033)
+    if (repartitionRequested)
+      RebuildTypeStatement.checkCanRepartition(type);
+    if ((lightweightRequested != null || uniqueRequested != null) && !(type instanceof LocalEdgeType))
+      throw new CommandExecutionException(
+          "Settings 'lightweight' and 'unique' apply to edge types only, and '" + type.getName() + "' is not one");
+
+    // Every item, in the order written. This used to apply the LAST one only and answer "OK" regardless, because
+    // the statement held one property rather than a list (issue #7920).
+    for (final Item item : items)
+      applyItem(context, type, item, result);
 
     if (lightweightRequested != null || uniqueRequested != null) {
       if (!(type instanceof LocalEdgeType edgeType))

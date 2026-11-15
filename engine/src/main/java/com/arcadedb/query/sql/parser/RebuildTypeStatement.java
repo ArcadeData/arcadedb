@@ -115,6 +115,31 @@ public class RebuildTypeStatement extends DDLStatement {
   }
 
   /**
+   * Refuses a repartition of a type whose records are not documents. Repartitioning gives every record a new RID. The move-phase
+   * re-creation path uses {@code db.newDocument}, which only writes {@code Document.RECORD_TYPE}. Any type whose records carry a
+   * different kind byte (vertices, edges, time-series, future kinds) would be silently corrupted on the way back. Use the kind byte
+   * itself as the allowlist gate so future record-type subclasses get blocked by default rather than slipping through an exclusion
+   * list. Graph types additionally suffer integrity loss (inbound edges dangle on the old RID, outbound edge segments stored on the
+   * vertex are wiped by delete+re-insert); the supported workflow for any non-Document type is drop and re-import under the new
+   * partitioning.
+   * <p>
+   * Also asked by {@code ALTER TYPE ... WITH repartition = true} before it applies its items, so the refusal leaves the type as it was
+   * (issue #12033).
+   */
+  static void checkCanRepartition(final DocumentType type) {
+    checkCanRepartition(type.getName(), type);
+  }
+
+  private static void checkCanRepartition(final String typeName, final DocumentType type) {
+    if (type.getType() != Document.RECORD_TYPE)
+      throw new CommandSQLParsingException(
+          "REBUILD TYPE on type '" + typeName + "' with repartition = true is not supported: "
+              + "every record would receive a new RID, and the move-phase re-creation path writes a Document "
+              + "record-type byte that is incompatible with the type's actual record kind. Drop and re-import "
+              + "the type under the new partitioning instead.");
+  }
+
+  /**
    * Runs the rebuild loop with already-resolved parameters. Direct entry point for callers that
    * have the parameters in hand and want to bypass the settings-map parsing - notably the
    * chained REBUILD path in {@link AlterTypeStatement#executeDDL} where building a SQL string
@@ -142,22 +167,8 @@ public class RebuildTypeStatement extends DDLStatement {
     if (type == null)
       throw new SchemaException("Type not found: " + typeName.getStringValue());
 
-    // Repartitioning gives every record a new RID. The move-phase re-creation path uses
-    // {@code db.newDocument}, which only writes {@code Document.RECORD_TYPE}. Any type whose
-    // records carry a different kind byte (vertices, edges, time-series, future kinds) would
-    // be silently corrupted on the way back. Use the kind byte itself as the allowlist gate so
-    // future record-type subclasses get blocked by default rather than slipping through an
-    // exclusion list. Graph types additionally suffer integrity loss (inbound edges dangle on
-    // the old RID, outbound edge segments stored on the vertex are wiped by delete+re-insert);
-    // the supported workflow for any non-Document type is drop and re-import under the new
-    // partitioning.
-    if (finalRepartition && type.getType() != Document.RECORD_TYPE) {
-      throw new CommandSQLParsingException(
-          "REBUILD TYPE on type '" + typeName.getStringValue() + "' with repartition = true is not supported: "
-              + "every record would receive a new RID, and the move-phase re-creation path writes a Document "
-              + "record-type byte that is incompatible with the type's actual record kind. Drop and re-import "
-              + "the type under the new partitioning instead.");
-    }
+    if (finalRepartition)
+      checkCanRepartition(typeName.getStringValue(), type);
 
     // A repartition relocates a record within its own type (#11066). The scan below is asked about the named type
     // and the move phase re-creates every relocated record as that type, so a subtype record would be re-created as
