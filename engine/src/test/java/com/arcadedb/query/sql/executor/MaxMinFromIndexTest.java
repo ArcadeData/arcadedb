@@ -755,6 +755,38 @@ class MaxMinFromIndexTest {
       assertAnswer("SELECT min(a) AS c FROM V WHERE a > 1001", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 1001", 1002L);
     }
 
+    /**
+     * Regression test for issue #11871: a LIMIT or a TIMEOUT turned the rewrite off, and the HTTP endpoints append a LIMIT to every
+     * SELECT, so over HTTP the aggregate always read the whole range.
+     */
+    @Test
+    void aLimitOrATimeoutKeepsTheIndexSeek() {
+      rangeMinMaxSetup();
+      for (final String tail : new String[] { " LIMIT 20001", " TIMEOUT 5000", " LIMIT 1 TIMEOUT 5000" }) {
+        assertUsesOrderedIndexFetch("SELECT min(a) AS c FROM V WHERE a > 1001" + tail);
+        assertUsesOrderedIndexFetch("SELECT max(a) AS c FROM V WHERE a < 1001" + tail);
+        assertAnswer("SELECT min(a) AS c FROM V WHERE a > 1001" + tail, "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 1001", 1002L);
+        assertAnswer("SELECT max(a) AS c FROM V WHERE a < 1001" + tail, "SELECT max(a + 0) AS c FROM V WHERE a + 0 < 1001", 1000L);
+      }
+    }
+
+    /** Regression test for issue #11871: the statement's LIMIT still applies to the one row the seek produces. */
+    @Test
+    void aLimitOfZeroStillAnswersNoRow() {
+      rangeMinMaxSetup();
+      try (final ResultSet rs = database.query("sql", "SELECT min(a) AS c FROM V WHERE a > 1001 LIMIT 0")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      final String sql = "SELECT min(a) AS c FROM V WHERE a > 1001 LIMIT :n";
+      try (final ResultSet rs = database.query("sql", sql, Map.of("n", 0))) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = database.query("sql", sql, Map.of("n", 3))) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1002L);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
     private void assertAnswer(final String sql, final String checkSql, final Object expected) {
       final Object actual;
       final Object check;
