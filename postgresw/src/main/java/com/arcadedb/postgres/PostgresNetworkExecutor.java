@@ -1968,7 +1968,7 @@ public class PostgresNetworkExecutor extends Thread {
         // round-trip through clients as strings and parameter comparisons fail silently.
         // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
         // the nested object instead of re-escaping it as an opaque VARCHAR string.
-        final Object value = row.getProperty(p);
+        final Object value = propertyOf(row, p);
         final boolean known = columns.containsKey(p);
         if (value == null) {
           if (!known) {
@@ -3109,7 +3109,7 @@ public class PostgresNetworkExecutor extends Thread {
         yield row.getProperty(propertyName);
       }
       default -> {
-        Object v = row.getProperty(propertyName);
+        Object v = propertyOf(row, propertyName);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
         if (v == null && row.isElement())
@@ -3117,6 +3117,19 @@ public class PostgresNetworkExecutor extends Thread {
         yield v;
       }
     };
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   */
+  private static Object propertyOf(final Result row, final String name) {
+    final Object value = row.getProperty(name);
+    final Object list = PostgresType.materializeLazyMultiValue(value);
+    if (list != value && !row.isElement() && row instanceof ResultInternal internal)
+      internal.setProperty(name, list);
+    return list;
   }
 
   // ---- COPY ... TO STDOUT (issue #7188) ----
