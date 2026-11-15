@@ -37,6 +37,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.DatabaseAlreadyExistsException;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -91,9 +92,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
-import java.util.IdentityHashMap;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1327,8 +1326,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
-    // bad write. See issue #4350.
-    final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    // bad write. See issue #4350. Searched down the whole chain when the classifier finds one there (issue #11973): a unique
+    // index built over values that are not unique fails with the duplicated key under two IndexException wrappers, and the
+    // statement wrapper on top, so a look at the first two links answered 500 for a CREATE CONSTRAINT ... IS UNIQUE
+    DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    if (dup == null && ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      dup = CauseChain.find(e, DuplicatedKeyException.class);
     if (dup != null) {
       return new ErrorClassification(409, "Found duplicate key in index", dup,
               dup.getIndexName() + "|" + (isProductionMode() ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : dup.getKeys()) + "|"
@@ -2869,7 +2872,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // The cause chain is the only free-form field: conceal it outside development/test to avoid leaking
     // internal file paths and engine errors to a client probing endpoints.
     if (verbose && e != null)
-      json.put("detail", encodeError(buildDetailChain(e)));
+      json.put("detail", encodeError(ErrorConcealment.detailChain(e)));
 
     return json.toString();
   }
@@ -2895,26 +2898,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // Not in seconds: the client gets the line without a back-off hint
       }
     return error;
-  }
-
-  /**
-   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping when a cause
-   * has already been seen to avoid an infinite loop on cyclic chains. Uses identity comparison so distinct exceptions
-   * with equal {@code equals}/{@code hashCode} are still walked. Package-private for direct unit testing.
-   */
-  static String buildDetailChain(final Throwable e) {
-    final StringBuilder buffer = new StringBuilder();
-    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
-
-    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    visited.add(e);
-    Throwable current = e.getCause();
-    while (current != null && visited.add(current)) {
-      buffer.append(" -> ");
-      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
-      current = current.getCause();
-    }
-    return buffer.toString();
   }
 
   /**
