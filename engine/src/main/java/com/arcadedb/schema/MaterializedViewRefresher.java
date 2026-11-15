@@ -42,6 +42,52 @@ public class MaterializedViewRefresher {
   }
 
   /**
+   * Brings every REFRESH INCREMENTAL view that reads {@code superType}, or a type above it, in line with its query after a type was
+   * linked below {@code superType} or unlinked from it (issue #12031). The view's listeners follow the change by themselves, because
+   * a write reaches them through the lineage of the written record's type at the time of the write (issue #10205), but the records
+   * already stored in the attached or detached subtree were never written through them: the view lacked the attached ones and kept
+   * the detached ones, while reporting VALID. One full pass per affected view adds the first and removes the second.
+   * <p>
+   * Nothing to do while the schema is read from file or a {@code dropType} cascade re-parents sub types: both re-establish a
+   * linkage that already held. A failed pass does not fail the schema change, which has already happened: the view is left STALE,
+   * as a failed incremental refresh leaves it, and the next refresh repairs it.
+   */
+  static void refreshViewsOverHierarchyChange(final LocalSchema schema, final DocumentType superType) {
+    if (schema.isReadingFromFile() || schema.isTypeBeingDropped())
+      return;
+
+    final List<MaterializedViewImpl> views;
+    synchronized (schema) {
+      if (schema.materializedViews.isEmpty())
+        return;
+      views = new ArrayList<>(schema.materializedViews.values());
+    }
+
+    final Database database = schema.getDatabase();
+    for (final MaterializedViewImpl view : views) {
+      if (view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL || !readsTypeOrAbove(view, superType))
+        continue;
+      try {
+        fullRefresh(database, view);
+      } catch (final RuntimeException e) {
+        view.setStatus(MaterializedViewStatus.STALE);
+        persistStatus(database, view.getName(), view.getStatus());
+        LogManager.instance().log(MaterializedViewRefresher.class, Level.WARNING,
+            "Error refreshing materialized view '%s' after the subtypes of '%s' changed, marking as STALE: %s", e, view.getName(),
+            superType.getName(), e.getMessage());
+      }
+    }
+  }
+
+  /** Whether {@code SELECT FROM} one of the view's source types reaches the records of {@code type}'s subtypes. */
+  private static boolean readsTypeOrAbove(final MaterializedViewImpl view, final DocumentType type) {
+    for (final String sourceType : view.getSourceTypeNames())
+      if (type.instanceOf(sourceType))
+        return true;
+    return false;
+  }
+
+  /**
    * Asks a per-record view for the recovery full pass and hands that pass to the schema's scheduler thread, so the caller (a
    * database open, a leadership acquisition) never waits on it (issue #11550). The pending delta and the recovery mark live in
    * memory only, so after a crash or a failover nothing says which commits the view is missing: the full pass rewrites only the
