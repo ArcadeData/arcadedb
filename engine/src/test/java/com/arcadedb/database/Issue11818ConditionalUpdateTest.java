@@ -327,6 +327,67 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     }
   }
 
+  /**
+   * A delete with no condition of a record whose indexed key a concurrent commit changed after it was read: an openCypher DETACH
+   * DELETE with no predicate removed the index entry of the key it read and left the entry of the key committed in between pointing
+   * to the deleted vertex (127 of 300 rounds over HTTP). It is refused with a retryable conflict, which leaves the index whole; the
+   * retry deletes the record and every entry of it.
+   */
+  @Test
+  void cypherDeleteWithNoPredicateOfAVertexChangedAfterItsReadIsARetryableConflict() {
+    final boolean committed = runWithConcurrentCommit("UPDATE R SET k = 'r9' WHERE k = 'r0'", () -> database.command("opencypher",
+        "MATCH (r:R) WITH r, race.interleave(r) AS raced DETACH DELETE r", Map.of()).close());
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("R")).isEqualTo(1);
+    assertIndexHolds("R[k]", "r9");
+
+    database.transaction(() -> database.command("opencypher", "MATCH (r:R) DETACH DELETE r").close());
+    assertThat(recordsOf("R")).isZero();
+    assertIndexHolds("R[k]");
+  }
+
+  /** And for Record.delete() of a record the transaction read before the concurrent commit. */
+  @Test
+  void recordDeleteOfADocumentChangedAfterItsReadIsARetryableConflict() {
+    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> {
+      final Document read = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow();
+      Race.interleave(read);
+      read.delete();
+    });
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("DI")).isEqualTo(1);
+    assertIndexHolds("DI[k]", "i9");
+  }
+
+  /** A record deleted whose content changed only where a delete does not depend on it (a vertex's edge lists) is deleted. */
+  @Test
+  void deleteOfAVertexWhoseEdgesChangedAfterItsReadGoesOn() {
+    database.transaction(() -> database.command("sql", "INSERT INTO R SET k = 'other'").close());
+    final boolean committed = runWithConcurrentCommit(
+        "CREATE EDGE E FROM (SELECT FROM R WHERE k = 'other') TO (SELECT FROM R WHERE k = 'r0')", () -> {
+          final Document read = database.query("sql", "SELECT FROM R WHERE k = 'r0'").next().getElement().orElseThrow();
+          Race.interleave(read);
+          read.delete();
+        });
+
+    assertThat(committed).isTrue();
+    assertThat(recordsOf("R")).isEqualTo(1);
+    assertThat(recordsOf("E")).as("the edge committed in between went with the vertex").isZero();
+    assertIndexHolds("R[k]", "other");
+  }
+
+  private void assertIndexHolds(final String index, final String... keys) {
+    final List<String> found = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT key FROM index:`" + index + "`")) {
+      while (rs.hasNext())
+        found.add(String.valueOf(((Object[]) rs.next().getProperty("key"))[0]));
+    }
+    assertThat(found).as("entries of %s", index).containsExactlyInAnyOrder(keys);
+  }
+
+
   @Test
   void cypherDeleteDoesNotDeleteAVertexClaimedAfterItsWhere() {
     runWithConcurrentCommit(CONCURRENT_CLAIM, () -> database.command("opencypher",

@@ -2233,6 +2233,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final boolean tolerateBrokenChain = configuration.getValueAsBoolean(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN);
 
       if (record instanceof Document document) {
+        // The index entries removed are the ones of the content deleted, so a record a concurrent commit changed since this
+        // transaction read it is refused with a retryable conflict before they are computed. Done here for every delete, not only
+        // for a conditional one: DELETE FROM a type or a RID, an openCypher DELETE with no predicate and Record.delete() removed
+        // the old key's entry and left the new key's pointing at the deleted record (issue #11818)
+        if (document instanceof ImmutableDocument immutable && !getTransaction().isDeletedInTransaction(record.getIdentity()))
+          immutable.prepareForDelete();
         try {
           indexer.deleteDocument(document);
           // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary

@@ -322,6 +322,31 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Called by every delete before it removes the record's index entries (issue #11818): pins the page like {@link #pinForDelete()},
+   * so a commit landing from now on is refused at commit, and refuses with a retryable conflict a delete of a record whose content a
+   * concurrent commit changed since it was read. The index entries a delete removes are computed from the content it holds: from the
+   * content read, they were the old key's, and the entry of the key committed in between was left pointing to the deleted record.
+   * Deleting on the reloaded content instead is not safe either: the content may be that of another record that took the RID of one
+   * deleted concurrently. A retry reads the record again and deletes what is there. A change of a vertex's edge-list heads alone
+   * does not count (see {@link #contentChangeOffset()}): the delete goes on with the reloaded heads, which name the edges it has to
+   * remove. A record whose content was never loaded is read now, so it holds the current content already.
+   */
+  public void prepareForDelete() {
+    final Binary readImage = buffer;
+    if (!pinForDelete() || readImage == null)
+      return;
+    final Binary current = buffer;
+    final int offset = contentChangeOffset();
+    final int length = readImage.size() - offset;
+    if (length == current.size() - offset && readImage.isSameRegionAs(offset, current, offset, length))
+      return;
+    // KEEP WHAT WAS READ: THE CALLER MAY CATCH THE CONFLICT AND KEEP USING THE RECORD
+    buffer = readImage;
+    throw new ConcurrentModificationException(
+        "Record " + rid + " was modified by a concurrent transaction after it was read in this transaction. Please retry the operation");
+  }
+
+  /**
    * Whether this record's content was read from its bucket by the transaction that began with {@code transactionBeginSequence}
    * (issue #8984). A record that was only referenced (not yet loaded) proves nothing about the bucket, so it does not count.
    * <p>
