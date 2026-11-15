@@ -27,6 +27,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.SoftAssertions.assertSoftly;
 
 /**
  * Issue #11888: a pattern expression in a WHERE that is not used as a boolean (inside {@code size()}, {@code toString()} or
@@ -90,6 +91,34 @@ class CypherPatternExpressionNonBooleanWhereIssue11888Test extends TestHelper {
         "MATCH (p:P) WHERE EXISTS { MATCH (p)-->(q) WHERE size((q)-->()) > 0 } RETURN p.n AS n"))
       assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
           .hasMessageContaining("COUNT {}");
+  }
+
+  /**
+   * A subquery body whose AST build failed fell back to its text, which deferred the refusal to the first row; a subquery
+   * the boolean simplifier then dropped never reported it. The inline WHERE of a pattern that the expression builder
+   * parses (the argument of exists() in a RETURN) was not checked at all.
+   */
+  @Test
+  void subqueryBodiesAndExpressionPatternsAreChecked() {
+    assertSoftly(softly -> {
+      for (final String statement : List.of(//
+          "MATCH (p:P) WHERE true OR EXISTS { MATCH (q:P) WHERE size((q)-->()) > 0 } RETURN p.n AS n",//
+          "MATCH (p:P) WHERE true OR COUNT { MATCH (q:P) WHERE size((q)-->()) > 0 RETURN q } > 0 RETURN p.n AS n",//
+          "MATCH (p:P) RETURN exists((p)-[:K WHERE size((p)-->()) > 0]->()) AS n",//
+          "MATCH (p:P) RETURN exists((p)-->(q WHERE size((q)-->()) > 0)) AS n"))
+        softly.assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
+            .hasMessageContaining("COUNT {}");
+    });
+  }
+
+  /** The operand of NOT, AND, OR or XOR is a boolean position, wherever the result of the operator goes. */
+  @Test
+  void operandOfABooleanOperatorAnswersInsideAComparison() {
+    assertThat(rows("MATCH (p:P) WHERE (NOT (p)-->()) = true RETURN p.n AS n")).containsExactly("c");
+    assertThat(rows("MATCH (p:P) WHERE ((p)-->() AND (p)<--()) = true RETURN p.n AS n")).containsExactly("b");
+    assertThat(rows("MATCH (p:P) WHERE ((p)<--() XOR p.n = 'c') = true RETURN p.n AS n")).containsExactly("b");
+    assertThat(rows("MATCH (p:P) WHERE ((p)-->() OR p.n = 'c') IS NOT NULL RETURN p.n AS n")).containsExactly("a", "b",
+        "c");
   }
 
   @Test

@@ -1637,9 +1637,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * list predicate, and the argument of {@code exists()}. Elsewhere (inside {@code size()}, {@code toString()} or
    * {@code coalesce()}, as an operand of a comparison, IS NULL, IN or arithmetic) it used to evaluate to null or to a
    * different predicate without error, so {@code WHERE size((p)-->()) > 5} matched nothing. The subquery expressions
-   * {@code EXISTS}, {@code COUNT} and {@code COLLECT} are skipped: their clauses are checked when they are visited.
+   * {@code EXISTS}, {@code COUNT} and {@code COLLECT} are skipped: their clauses are checked when their body is built, which
+   * lets the refusal through (see {@link NonBooleanPatternExpressionException}). Also run on the inline WHERE of a node or
+   * relationship pattern that the expression builder parses (a pattern expression, a pattern comprehension).
    */
-  private static void rejectNonBooleanPatternExpressions(final ParseTree node) {
+  static void rejectNonBooleanPatternExpressions(final ParseTree node) {
     if (node instanceof Cypher25Parser.ExistsExpressionContext || node instanceof Cypher25Parser.CountExpressionContext
         || node instanceof Cypher25Parser.CollectExpressionContext)
       return;
@@ -1655,6 +1657,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final ParserRuleContext parent = node.getParent();
       if (node instanceof Cypher25Parser.ExpressionContext expression && isBooleanSlot(parent, expression))
         return;
+      if (isBooleanOperator(parent))
+        return;
       if (!isBooleanPassThrough(parent))
         break;
       node = parent;
@@ -1662,18 +1666,32 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final String text = getOriginalText(pattern);
     if (node.getParent() instanceof Cypher25Parser.FunctionArgumentContext argument
         && "size".equalsIgnoreCase(functionName((Cypher25Parser.FunctionInvocationContext) argument.getParent())))
-      throw new CommandParsingException("UnexpectedSyntax: A pattern expression should only be used in order to test the "
+      throw new NonBooleanPatternExpressionException("A pattern expression should only be used in order to test the "
           + "existence of a pattern. It can no longer be used inside the function size(), an alternative is to replace "
           + "size() with COUNT {}: size(" + text + ")");
-    throw new CommandParsingException("UnexpectedSyntax: A pattern expression should only be used in order to test the "
+    throw new NonBooleanPatternExpressionException("A pattern expression should only be used in order to test the "
         + "existence of a pattern. It should therefore only be used in contexts that evaluate to a boolean, e.g. inside "
         + "the function exists() or in a WHERE-clause. No other uses are allowed, instead they should be replaced by a "
         + "pattern comprehension: " + text);
   }
 
   /**
-   * True when a child of {@code parent} passes its value up unchanged or as a boolean operand: a parenthesis, NOT, AND,
-   * OR, XOR, or a level of the expression grammar that holds a single operand and no operator.
+   * True when {@code parent} applies NOT, AND, OR or XOR to the child it was reached from: the operand of a boolean
+   * operator is a boolean position, wherever the result of the operator goes.
+   */
+  private static boolean isBooleanOperator(final ParserRuleContext parent) {
+    return switch (parent) {
+      case Cypher25Parser.ExpressionContext or -> or.expression11().size() > 1;
+      case Cypher25Parser.Expression11Context xor -> xor.expression10().size() > 1;
+      case Cypher25Parser.Expression10Context and -> and.expression9().size() > 1;
+      case Cypher25Parser.Expression9Context not -> !not.NOT().isEmpty();
+      case null, default -> false;
+    };
+  }
+
+  /**
+   * True when a child of {@code parent} passes its value up unchanged: a parenthesis, or a level of the expression grammar
+   * that holds a single operand and no operator.
    */
   private static boolean isBooleanPassThrough(final ParserRuleContext parent) {
     return switch (parent) {
