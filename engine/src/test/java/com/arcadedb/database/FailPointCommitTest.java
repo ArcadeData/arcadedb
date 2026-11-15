@@ -134,7 +134,7 @@ class FailPointCommitTest extends TestHelper {
             committed.incrementAndGet();
           } catch (final ConcurrentModificationException e) {
             // a conflict with another writer that outlasted the retries: rolled back, which keeps the invariant
-          } catch (final RuntimeException e) {
+          } catch (final Throwable e) {
             if (!(rootCause(e) instanceof FailPoints.FailPointException)) {
               // recorded for the test thread, which a join() alone would not tell
               unexpected.add(e);
