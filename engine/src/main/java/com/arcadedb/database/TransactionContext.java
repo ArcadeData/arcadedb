@@ -5550,6 +5550,9 @@ public class TransactionContext implements Transaction {
     });
   }
 
+  /** Placeholder far end of the keys {@link #addMergedEdgeBetweenExistingNodes} marks and a far-end-creating MERGE checks (issue #11660). */
+  public static final RID MERGED_EDGE_EXISTING_END = new RID(-2, -3);
+
   /**
    * Remembers a relationship this transaction created because a match-or-create did not find it (issue #11482): a Cypher
    * {@code MERGE}, {@code merge.relationship}, SQL {@code CREATE EDGE ... IF NOT EXISTS}. Nothing a page version sees protects the
@@ -5572,6 +5575,43 @@ public class TransactionContext implements Transaction {
     if (matchedBy != null && !matchedBy.isEmpty())
       // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
       mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
+  /**
+   * A key of the {@link MergedEdgeRegistry} the commit of this transaction checks without marking it (issue #11660): a relationship
+   * this transaction created that a concurrent one may have committed under a coarser key, see {@link #markMergedEdge}. Only together
+   * with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   */
+  public void checkMergedEdge(final RID from, final RID to, final String type) {
+    if (from == null || to == null || !isActive())
+      return;
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
+  /**
+   * A key of the {@link MergedEdgeRegistry} the commit of this transaction marks without checking it (issue #11660): another
+   * statement's relationship would also find what this transaction created, and checks this key, while two transactions marking it
+   * do not refuse each other. Only together with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   */
+  public void markMergedEdge(final RID from, final RID to, final String type) {
+    if (from == null || to == null || !isActive())
+      return;
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+  }
+
+  /**
+   * Remembers a relationship a match-or-create created between two vertices that both existed (issue #11660): {@link #addMergedEdge}
+   * plus the keys of each end that a concurrent MERGE creating its far node checks ({@link #checkMergedEdge} against
+   * {@link #MERGED_EDGE_EXISTING_END}), so every statement that does this marks the same four keys.
+   */
+  public void addMergedEdgeBetweenExistingNodes(final RID from, final RID to, final String type, final Map<String, ?> matchedBy) {
+    if (from == null || to == null || !isActive())
+      return;
+    addMergedEdge(from, to, type, matchedBy);
+    markMergedEdge(from, MERGED_EDGE_EXISTING_END, type + ">");
+    markMergedEdge(from, MERGED_EDGE_EXISTING_END, type + "-");
+    markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "<");
+    markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
   }
 
   private static int[] append(int[] array, final int index, final int value) {
