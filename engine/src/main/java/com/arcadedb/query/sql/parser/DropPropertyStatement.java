@@ -81,9 +81,22 @@ public class DropPropertyStatement extends DDLStatement {
       }
       throw new SchemaException("Property '" + propertyName + "' not found on class " + typeName);
     }
-    final List<TypeIndex> indexes = sourceClass.getIndexesByProperties(propertyName.getStringValue());
+    final String property = propertyName.getStringValue();
+    final List<TypeIndex> indexes = new ArrayList<>(sourceClass.getIndexesByProperties(property));
+    // an index a SUBTYPE declared on the property is an index on it too: the property drop refuses for it, so FORCE drops it with the
+    // type's own, and without FORCE it is named with them (issue #12034)
+    if (sourceClass instanceof LocalDocumentType local)
+      for (final TypeIndex index : local.getSubTypeIndexesOnProperty(property))
+        if (!indexes.contains(index))
+          indexes.add(index);
+
     if (!indexes.isEmpty()) {
       if (force) {
+        // Everything the property drop below can refuse for is asked BEFORE the first index goes (issue #12034): a refusal after the
+        // indexes were dropped left the property in place and its UNIQUE index gone
+        if (sourceClass instanceof LocalDocumentType local)
+          local.checkPropertyCanBeDropped(property, indexes);
+
         // One statement: the indexes go together or not at all (issue #10589), not one after the other with a refusal from the second
         // coming after the first was gone
         final List<String> indexNames = new ArrayList<>(indexes.size());

@@ -1595,13 +1595,32 @@ public class LocalDocumentType implements DocumentType {
    * otherwise survive a rename or a drop, left pointing at a name the type no longer has under that meaning.
    */
   private TypeIndex findIndexOnProperty(final String propertyName) {
-    for (final TypeIndex index : getAllIndexes(true))
-      if (index.getPropertyNames().contains(propertyName))
-        return index;
-    return findDescendantIndexOnProperty(propertyName);
+    return findIndexOnProperty(propertyName, List.of());
   }
 
-  private TypeIndex findDescendantIndexOnProperty(final String propertyName) {
+  /** As {@link #findIndexOnProperty(String)}, passing over the indexes in {@code ignored}. */
+  private TypeIndex findIndexOnProperty(final String propertyName, final Collection<TypeIndex> ignored) {
+    for (final TypeIndex index : getAllIndexes(true))
+      if (index.getPropertyNames().contains(propertyName) && !ignored.contains(index))
+        return index;
+    for (final TypeIndex index : getSubTypeIndexesOnProperty(propertyName))
+      if (!ignored.contains(index))
+        return index;
+    return null;
+  }
+
+  /**
+   * Every index a SUBTYPE declared on the property {@code propertyName} this type owns, at any depth: the indexes {@link
+   * #getIndexesByProperties} does not list (they belong to the sub types) but {@link #dropProperty} and {@link #renameProperty} refuse
+   * for. {@code DROP PROPERTY ... FORCE} drops them with the type's own (issue #12034).
+   */
+  public List<TypeIndex> getSubTypeIndexesOnProperty(final String propertyName) {
+    final List<TypeIndex> result = new ArrayList<>();
+    collectSubTypeIndexesOnProperty(propertyName, result);
+    return result;
+  }
+
+  private void collectSubTypeIndexesOnProperty(final String propertyName, final List<TypeIndex> result) {
     for (final LocalDocumentType subType : subTypes) {
       if (subType.getPropertyIfExists(propertyName) != null)
         // addSuperType lets a subtype declare its own property under a name a super type already uses - a
@@ -1611,14 +1630,34 @@ public class LocalDocumentType implements DocumentType {
         continue;
 
       for (final TypeIndex index : subType.getAllIndexes(false))
-        if (index.getPropertyNames().contains(propertyName))
-          return index;
+        if (index.getPropertyNames().contains(propertyName) && !result.contains(index))
+          result.add(index);
 
-      final TypeIndex foundDeeper = subType.findDescendantIndexOnProperty(propertyName);
-      if (foundDeeper != null)
-        return foundDeeper;
+      subType.collectSubTypeIndexesOnProperty(propertyName, result);
     }
-    return null;
+  }
+
+  /**
+   * The refusals of {@link #dropProperty}, asked by a caller that drops other things first (issue #12034): {@code DROP PROPERTY ...
+   * FORCE} drops the indexes on the property, then the property, and a refusal of the property after the indexes were gone left the
+   * property in place and its UNIQUE index dropped. The indexes in {@code droppedWithIt} are the ones the caller drops first, so they
+   * are not reasons to refuse.
+   */
+  public void checkPropertyCanBeDropped(final String propertyName, final Collection<TypeIndex> droppedWithIt) {
+    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+      // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
+      // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
+      // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
+      // property that is NOT a declared column is still droppable, which is how a database written before that
+      // issue gets rid of the stray one it may already carry.
+      throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
+          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
+          + "whole type to remove the column");
+
+    final TypeIndex indexOnProperty = findIndexOnProperty(propertyName, droppedWithIt);
+    if (indexOnProperty != null)
+      throw new SchemaException(
+          "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
   }
 
   /**
@@ -1644,20 +1683,7 @@ public class LocalDocumentType implements DocumentType {
     checkForSchemaMutation();
 
     return recordFileChanges(() -> {
-      if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
-        // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
-        // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
-        // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
-        // property that is NOT a declared column is still droppable, which is how a database written before that
-        // issue gets rid of the stray one it may already carry.
-        throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
-            + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
-            + "whole type to remove the column");
-
-      final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
-      if (indexOnProperty != null)
-        throw new SchemaException(
-            "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
+      checkPropertyCanBeDropped(propertyName, List.of());
 
       final Property removed = properties.remove(propertyName);
       if (removed != null) {
