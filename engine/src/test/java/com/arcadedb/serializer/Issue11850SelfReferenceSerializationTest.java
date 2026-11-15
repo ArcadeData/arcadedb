@@ -19,13 +19,17 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.List;
 import java.util.Map;
 
@@ -151,5 +155,32 @@ class Issue11850SelfReferenceSerializationTest extends TestHelper {
         assertThat(nodes.getJSONObject(1).getInt("i")).isEqualTo(2);
       }
     });
+  }
+
+  @Test
+  void aRecordOfAnotherDatabaseWithTheSameRidIsNotAnAncestor() {
+    final String otherPath = getDatabasePath() + "-other";
+    FileUtils.deleteRecursively(new File(otherPath));
+    try (final DatabaseFactory otherFactory = new DatabaseFactory(otherPath)) {
+      final Database other = otherFactory.create();
+      try {
+        database.getSchema().createDocumentType("D");
+        other.getSchema().createDocumentType("D");
+        final MutableDocument[] remote = new MutableDocument[1];
+        other.transaction(() -> remote[0] = other.newDocument("D").set("name", "remote").save());
+
+        database.transaction(() -> {
+          final MutableDocument local = database.newDocument("D").set("name", "local").save();
+          // the two records share their RID, each in its own database
+          assertThat(local.getIdentity()).isEqualTo(remote[0].getIdentity());
+          local.set("child", remote[0]);
+
+          final JSONObject child = JsonSerializer.createJsonSerializer().serializeDocument(local).getJSONObject("child");
+          assertThat(child.getString("name")).isEqualTo("remote");
+        });
+      } finally {
+        other.drop();
+      }
+    }
   }
 }

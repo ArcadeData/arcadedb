@@ -1148,30 +1148,42 @@ public class JsonSerializer {
   }
 
   /**
-   * The chain of documents being serialized on one thread (issue #11850). A persistent record is known by its RID, since the
-   * same record can be held by two Java objects; a document without one (embedded or not saved yet) by its identity.
+   * The chain of documents being serialized on one thread (issue #11850). A persistent record is known by its database and RID,
+   * since the same record can be held by two Java objects and two databases can each have a record with the same RID; a
+   * document without a RID (embedded or not saved yet) by its identity.
    */
   private static final class Ancestors {
-    private final Set<RID>      persistent = new HashSet<>();
-    private final Set<Document> transients = Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<PersistentKey> persistent = new HashSet<>();
+    private final Set<Document>      transients = Collections.newSetFromMap(new IdentityHashMap<>());
 
     /** @return false if the document is already in the chain, so the caller must not remove it */
     boolean enter(final Document document) {
-      final RID rid = document.getIdentity();
-      return rid != null ? persistent.add(rid) : transients.add(document);
+      final PersistentKey key = PersistentKey.of(document);
+      return key != null ? persistent.add(key) : transients.add(document);
     }
 
     void exit(final Document document) {
-      final RID rid = document.getIdentity();
-      if (rid != null)
-        persistent.remove(rid);
+      final PersistentKey key = PersistentKey.of(document);
+      if (key != null)
+        persistent.remove(key);
       else
         transients.remove(document);
     }
 
     boolean contains(final Document document) {
+      final PersistentKey key = PersistentKey.of(document);
+      return key != null ? persistent.contains(key) : transients.contains(document);
+    }
+  }
+
+  /** A persistent record: the path of its database (what {@code LocalDatabase.equals} compares) and its RID. */
+  private record PersistentKey(String databasePath, RID rid) {
+    static PersistentKey of(final Document document) {
       final RID rid = document.getIdentity();
-      return rid != null ? persistent.contains(rid) : transients.contains(document);
+      if (rid == null)
+        return null;
+      final Database database = document.getDatabase();
+      return new PersistentKey(database != null ? database.getDatabasePath() : null, rid);
     }
   }
 }
