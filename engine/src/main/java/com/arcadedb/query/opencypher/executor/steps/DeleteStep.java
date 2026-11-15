@@ -21,7 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -462,7 +462,7 @@ public class DeleteStep extends AbstractExecutionStep {
           }
           deleted.vertexDeleted(v);
         } else {
-          throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
+          throw new ObjectInUseException("DeleteConnectedNode: Cannot delete node "
               + v.getIdentity() + " because it still has relationships. To delete this node, you must first delete"
               + " its relationships, or use DETACH DELETE");
         }
@@ -736,7 +736,7 @@ public class DeleteStep extends AbstractExecutionStep {
     } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
       if (hasEdges(vertex))
-        throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
+        throw new ObjectInUseException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
             " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
 

@@ -172,6 +172,8 @@ public enum ErrorCategory {
       // before IllegalArgumentException, which it extends: the definition asked for exists already (issue #11392)
       new Rule(EquivalentIndexException.class, ALREADY_EXISTS),
       new Rule(RecordNotFoundException.class, NOT_FOUND),
+      // an entity the statement deleted itself, read or linked later in it: Neo4j's EntityNotFound (issue #11974)
+      new Rule(DeletedEntityException.class, NOT_FOUND),
       new Rule(SchemaException.class, SCHEMA),
       new Rule(SecurityException.class, SECURITY),
       new Rule(CommandParsingException.class, PARSING),
