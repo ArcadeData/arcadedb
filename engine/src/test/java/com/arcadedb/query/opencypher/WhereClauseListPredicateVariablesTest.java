@@ -89,6 +89,13 @@ class WhereClauseListPredicateVariablesTest {
         .containsExactly("p");
   }
 
+  @Test
+  void reduceExcludesAccumulatorAndIterator() {
+    // Issue #11818: 's' and 'x' are names the reduce binds; the outer 'p' and 'q' it reads are collected
+    assertThat(collect("MATCH (p:Person), (q:Person) WHERE reduce(s = p.age, x IN [q.age] | s + x) > 0 RETURN p"))
+        .containsExactlyInAnyOrder("p", "q");
+  }
+
   private static Set<String> collect(final String query) {
     final CypherStatement stmt = PARSER.parse(query);
     final WhereClause where = stmt.getMatchClauses().get(0).getWhereClause();

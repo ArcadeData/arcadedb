@@ -18,6 +18,10 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
@@ -28,6 +32,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.IOException;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -63,6 +68,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   // #10955: set when the properties were loaded from stored content that did not fully decode, so the map lacks what could not be
   // read. Saving such a record would rewrite it without that data: the update is refused instead. Null when nothing was lost
   private   String              undecodableContent;
+  // #11818: the content modify() built this record from, and where in it the content a delete depends on starts (past a vertex's
+  // edge-list heads). Null for a record not built by modify(), and once a save wrote this record's own content
+  private   Binary              readImage;
+  private   int                 readImageOffset;
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
@@ -127,6 +136,45 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    */
   public void clearBasedOnStaleRead() {
     basedOnStaleRead = false;
+  }
+
+  /** Called by {@code modify()} with the content it built this record from (issue #11818), see {@link #prepareForDelete()}. */
+  void setReadImage(final Binary readImage, final int contentChangeOffset) {
+    this.readImage = readImage;
+    this.readImageOffset = contentChangeOffset;
+  }
+
+  /**
+   * Called by every delete before it removes the record's index entries (issue #11818), as {@link ImmutableDocument#prepareForDelete()}
+   * is for a record read and deleted as it is: pins the record's page, so a commit landing from now on is refused at commit, and
+   * refuses with a retryable conflict the delete of a record whose stored content a concurrent commit changed since {@code modify()}
+   * read it. The index entries a delete removes are computed from this record, so they were the ones of the content read and the
+   * entry of a key committed in between was left pointing to the deleted record. A record this transaction saved deletes its own
+   * content, and one not built by {@code modify()} has no read to compare.
+   */
+  public void prepareForDelete() {
+    final Binary read = readImage;
+    if (read == null || rid == null || rid.getPosition() < 0)
+      return;
+    final TransactionContext transaction = ((DatabaseInternal) database).getTransaction();
+    if (transaction.getRecordFromCache(rid) == this)
+      return;
+    final Binary current;
+    try {
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+      transaction.getPageToModify(rid.getPageId(database), bucket.getPageSize(), false);
+      current = bucket.getRecord(rid);
+    } catch (final RecordNotFoundException e) {
+      // deleted concurrently: the delete that follows finds it gone and reports it as it always did (issue #8984)
+      return;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading record " + rid + " to delete it", e);
+    }
+    final int length = read.size() - readImageOffset;
+    if (length == current.size() - readImageOffset && read.isSameRegionAs(readImageOffset, current, readImageOffset, length))
+      return;
+    throw new ConcurrentModificationException(
+        "Record " + rid + " was modified by a concurrent transaction after it was read in this transaction. Please retry the operation");
   }
 
   /**
@@ -553,7 +601,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public boolean saveReportingVeto() {
     dirty = true;
     if (rid != null)
-      return database.updateRecordReportingVeto(this);
+      return updateReportingVeto();
     return database.createRecordReportingVeto(this, null);
   }
 
@@ -567,10 +615,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       if (rid.bucketId != database.getSchema().getBucketByName(bucketName).getFileId())
         throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-      return database.updateRecordReportingVeto(this);
+      return updateReportingVeto();
     }
     // CREATE
     return database.createRecordReportingVeto(this, bucketName);
+  }
+
+  private boolean updateReportingVeto() {
+    final boolean updated = database.updateRecordReportingVeto(this);
+    // #11818: from now on a delete removes the content this record wrote, which no concurrent commit can change unseen
+    if (updated)
+      readImage = null;
+    return updated;
   }
 
   @Override

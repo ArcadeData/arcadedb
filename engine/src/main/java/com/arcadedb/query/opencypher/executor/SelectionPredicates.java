@@ -38,6 +38,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -62,7 +63,8 @@ public final class SelectionPredicates {
   /** No predicate: the write of a statement whose predicates are not known. */
   public static final SelectionPredicates NONE = new SelectionPredicates(List.of(), null);
 
-  // reads: the variables the values of the map read, which select the record of the variable as much as it does
+  // One entry of an inline property map, kept or dropped on its own: a WITH that drops a variable one value reads leaves the other
+  // entries in force. reads: the variables the value reads, which select the record of the variable as much as it does
   private record InlineMap(String variable, Map<String, Object> properties, Set<String> reads) {
   }
 
@@ -174,13 +176,11 @@ public final class SelectionPredicates {
   }
 
   private static void addInlineMap(final String variable, final Map<String, Object> properties, final List<InlineMap> inlineMaps) {
-    if (variable == null || properties == null || properties.isEmpty())
+    if (variable == null || properties == null)
       return;
-    final Set<String> reads = new HashSet<>();
-    for (final Object value : properties.values())
-      if (value instanceof Expression expression)
-        reads.addAll(WhereClause.collectExpressionVariables(expression));
-    inlineMaps.add(new InlineMap(variable, properties, reads));
+    for (final Map.Entry<String, Object> entry : properties.entrySet())
+      inlineMaps.add(new InlineMap(variable, Collections.singletonMap(entry.getKey(), entry.getValue()),
+          entry.getValue() instanceof Expression expression ? WhereClause.collectExpressionVariables(expression) : Set.of()));
   }
 
   private static void addConditions(final WhereClause where, final List<Condition> conditions) {

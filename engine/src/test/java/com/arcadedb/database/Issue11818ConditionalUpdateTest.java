@@ -216,8 +216,8 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
         "opencypher", "MATCH (r:R {k: 'r0'}) MATCH (b:R {m: r.n}) WITH r, b WHERE race.interleave(b) SET r.claimed = 'B' RETURN r.k",
         Map.of()))));
 
-    if (committed)
-      assertThat(rows.get()).isZero();
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(rows.get()).isEqualTo(-1);
     try (final ResultSet rs = database.query("sql", "SELECT claimed, n FROM R WHERE k = 'r0'")) {
       final Result record = rs.next();
       assertThat(record.<String>getProperty("claimed")).isNull();
@@ -240,6 +240,33 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     assertThat(rows.get()).isEqualTo(1);
     assertThat(valueOf("R", "claimed")).isEqualTo("B");
     assertThat(valueOf("R", "state")).isEqualTo("closed");
+  }
+
+  /**
+   * A WITH drops only the entries of an inline map that read a variable it drops: {@code state: 'open'} still selects {@code r}.
+   */
+  @Test
+  void cypherSetAfterAWithThatDropsOneInlineMapValueStillChecksTheOtherEntries() {
+    final boolean committed = runWithConcurrentCommit("UPDATE R SET state = 'closed' WHERE k = 'r0'", () -> database.command(
+        "opencypher", "WITH 0 AS v MATCH (r:R {state: 'open', n: v}) WHERE race.interleave(r) WITH r SET r.claimed = 'B'", Map.of())
+        .close());
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(valueOf("R", "claimed")).isNull();
+  }
+
+  /**
+   * The names a reduce() or a list comprehension binds are no variables of the row, so a WITH does not drop an inline map that reads
+   * them.
+   */
+  @Test
+  void cypherSetAfterAWithChecksAnInlineMapValueThatBindsLocalNames() {
+    final boolean committed = runWithConcurrentCommit("UPDATE R SET n = 7 WHERE k = 'r0'", () -> database.command("opencypher",
+        "MATCH (r:R {n: reduce(s = 0, x IN [y IN [0] | y] | s + x)}) WHERE race.interleave(r) WITH r SET r.claimed = 'B'", Map.of())
+        .close());
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(valueOf("R", "claimed")).isNull();
   }
 
   /**
@@ -354,6 +381,34 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
       final Document read = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow();
       Race.interleave(read);
       read.delete();
+    });
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("DI")).isEqualTo(1);
+    assertIndexHolds("DI[k]", "i9");
+  }
+
+  /** And for the delete of the mutable copy modify() made before the concurrent commit, whether its properties were read or not. */
+  @Test
+  void deleteOfAModifiedDocumentChangedAfterItsReadIsARetryableConflict() {
+    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> {
+      final MutableDocument modified = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow().modify();
+      Race.interleave(modified);
+      modified.delete();
+    });
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("DI")).isEqualTo(1);
+    assertIndexHolds("DI[k]", "i9");
+  }
+
+  @Test
+  void deleteOfAModifiedDocumentWhosePropertiesWereReadAndChangedAfterItsReadIsARetryableConflict() {
+    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> {
+      final MutableDocument modified = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getElement().orElseThrow().modify();
+      assertThat(modified.getInteger("n")).isZero();
+      Race.interleave(modified);
+      modified.delete();
     });
 
     assertThat(committed).as("refused with a retryable conflict").isFalse();

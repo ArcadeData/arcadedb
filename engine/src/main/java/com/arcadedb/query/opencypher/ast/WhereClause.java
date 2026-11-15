@@ -285,8 +285,17 @@ public class WhereClause {
         innerVars.remove(listPred.getVariable());
         vars.addAll(innerVars);
       }
+    } else if (expr instanceof ReduceExpression reduce) {
+      collectExpressionVariables(reduce.getInitialValue(), vars);
+      collectExpressionVariables(reduce.getListExpression(), vars);
+      final Set<String> innerVars = new HashSet<>();
+      collectExpressionVariables(reduce.getReduceExpression(), innerVars);
+      // the accumulator and the iterator are names the reduce binds, not variables of the row (issue #11818)
+      innerVars.remove(reduce.getAccumulatorVariable());
+      innerVars.remove(reduce.getIteratorVariable());
+      vars.addAll(innerVars);
     } else if (expr != null && !(expr instanceof LiteralExpression) && !(expr instanceof ParameterExpression))
-      // Every expression type the arms above do not model (CASE, an index or slice, a map, reduce(), a subquery...) is read by the
+      // Every expression type the arms above do not model (CASE, an index or slice, a map, a subquery...) is read by the
       // walk, or its variable would be missed and the vertex it names never bound (issue #10434)
       collectWithWalker(expr, vars);
   }
