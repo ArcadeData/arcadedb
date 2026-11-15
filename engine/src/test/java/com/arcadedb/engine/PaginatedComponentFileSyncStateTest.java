@@ -295,6 +295,42 @@ class PaginatedComponentFileSyncStateTest {
   }
 
   @Test
+  void aPassForcesTheDirectoryASyncOfOneFileStillOwes() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("created"));
+
+      // A syncFile() of the created file has forced it, metadata included, and not yet reached its directory force
+      assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+      assertThat(file.directorySyncOwed()).as("the created file owes its directory entry").isPositive();
+
+      // A pass finds the file itself clean, and cannot report it durable without its directory entry (issue #11932)
+      assertThat(fileManager.syncFiles()).isTrue();
+      assertThat(file.directorySyncOwed()).as("the pass forced the directory the file still owed").isZero();
+    } finally {
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void aDirectoryForceAcknowledgesOnlyTheMetadataItCovered() throws Exception {
+    final PaginatedComponentFile file = open(filePath("renamedMeanwhile"));
+    assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+    // A directory force reads what it covers before it runs...
+    final long covered = file.directorySyncOwed();
+    assertThat(covered).isPositive();
+
+    // ...and meanwhile the file is renamed and forced again by another caller, whose directory force is still to come
+    file.markUnsynced();
+    assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+
+    file.directorySynced(covered);
+    assertThat(file.directorySyncOwed())
+        .as("the earlier directory force must not acknowledge the metadata forced after it read the generation (issue #11932)")
+        .isGreaterThan(covered);
+  }
+
+  @Test
   void syncOfOneFileWaitsForThePassForcingItAndSeesItsFailure() throws Exception {
     final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
     final ExecutorService executor = Executors.newFixedThreadPool(2);

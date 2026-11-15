@@ -36,6 +36,7 @@ import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
@@ -149,12 +150,18 @@ public class PaginatedComponentFile extends ComponentFile {
   private final ReentrantLock forceLock = new ReentrantLock();
 
   /**
-   * The file was forced with its metadata and its directory entry is not forced yet (issue #11932).
-   * {@link FileManager#syncFiles()} forces the directories once, after every file, so between the two a caller that
-   * finds the file clean cannot take it for durable on that alone: {@link FileManager#syncFile(int)} forces the directory
-   * itself when this is set. Set under {@link #forceLock}, so a caller that acquired it after the force sees it.
+   * Metadata forces of this file against the directory forces that covered them, as generations (issue #11932).
+   * {@link FileManager#syncFiles()} forces the directories once, after every file, so a file a pass has forced with its
+   * metadata may still owe its directory entry when another caller finds the file clean: whoever forces the directory
+   * reads the generation first ({@link #directorySyncOwed()}) and acknowledges exactly that one
+   * ({@link #directorySynced(long)}), so a later metadata force - a rename meanwhile - stays owed. Bumped under
+   * {@link #forceLock}, so a caller that acquired it after the force sees the bump.
    */
-  private volatile boolean directorySyncPending;
+  private volatile long metadataForces;
+  private volatile long directoryForces;
+
+  private static final AtomicLongFieldUpdater<PaginatedComponentFile> DIRECTORY_FORCES_UPDATER =
+      AtomicLongFieldUpdater.newUpdater(PaginatedComponentFile.class, "directoryForces");
 
   /**
    * Stands in for the channel's interruptor: an interrupt landing on a thread doing I/O is absorbed and the channel stays
@@ -321,7 +328,7 @@ public class PaginatedComponentFile extends ComponentFile {
    * #8626). Page writes alone need only the data forced ({@code fdatasync}): the file length they may have extended is
    * part of the metadata required to read the data back, which a data-only sync persists too, while the timestamps it
    * skips are not needed by anything. A created or renamed file is forced with its metadata, and then owes the force of
-   * its directory entry ({@link #isDirectorySyncPending()}) until its caller has done it.
+   * its directory entry ({@link #directorySyncOwed()}) until its caller has done it.
    * <p>
    * Callers of the same file are serialized across the claim and the fsync ({@link #forceLock}): a call that arrives
    * while another one's fsync is in flight returns only after it, and forces the file again when it failed.
@@ -338,7 +345,8 @@ public class PaginatedComponentFile extends ComponentFile {
       if (claimed == SYNC_CLEAN || !force(claimed, false))
         return SYNC_CLEAN;
       if (claimed == SYNC_METADATA)
-        directorySyncPending = true;
+        // Only ever written under forceLock, so a plain increment of the volatile is enough
+        metadataForces = metadataForces + 1;
       return claimed;
     } finally {
       forceLock.unlock();
@@ -346,16 +354,18 @@ public class PaginatedComponentFile extends ComponentFile {
   }
 
   /**
-   * Whether the file was forced with its metadata and its directory entry has not been forced since (issue #11932).
-   * Read after {@link #forceIfModified()} returned, it covers the forces that call waited for.
+   * The metadata-force generation a directory force has to cover, or {@code 0} when the directory entry of the file is
+   * already durable (issue #11932). Read after {@link #forceIfModified()} returned, it covers the forces that call waited
+   * for. Read it BEFORE forcing the directory, and pass it to {@link #directorySynced(long)} afterwards.
    */
-  boolean isDirectorySyncPending() {
-    return directorySyncPending;
+  long directorySyncOwed() {
+    final long forced = metadataForces;
+    return forced > directoryForces ? forced : 0L;
   }
 
-  /** Called once the directory of the file was forced after {@link #isDirectorySyncPending()} became true. */
-  void directorySynced() {
-    directorySyncPending = false;
+  /** Records a directory force that covered the metadata forces up to {@code generation}, from {@link #directorySyncOwed()}. */
+  void directorySynced(final long generation) {
+    DIRECTORY_FORCES_UPDATER.accumulateAndGet(this, generation, Math::max);
   }
 
   /** Whether the file was written, created or renamed since its last successful fsync (issue #8626). */

@@ -27,6 +27,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -381,11 +382,14 @@ public class FileManager {
       final int synced = pcf.forceIfModified();
       if (synced != PaginatedComponentFile.SYNC_CLEAN)
         syncedFiles.incrementAndGet();
-      if (synced == PaginatedComponentFile.SYNC_METADATA || pcf.isDirectorySyncPending()) {
+      // Whether this call forced the metadata or a pass did and has not reached the directories yet: read before the
+      // directory force, so a rename forced meanwhile stays owed
+      final long owed = pcf.directorySyncOwed();
+      if (owed != 0L) {
         final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
         if (parent != null)
           FileUtils.forceDirectory(parent.toPath());
-        pcf.directorySynced();
+        pcf.directorySynced(owed);
       }
       return true;
     } catch (final IOException e) {
@@ -398,6 +402,7 @@ public class FileManager {
     boolean allSynced = true;
     Set<Path> directoriesToSync = null;
     List<PaginatedComponentFile> owingTheirDirectory = null;
+    long[] owedGenerations = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
@@ -405,20 +410,24 @@ public class FileManager {
           // ONES THE WAL ABOUT TO BE DELETED STILL PROTECTS: A FILE SYNCED BY A PREVIOUS PASS AND NOT WRITTEN SINCE HAS
           // NOTHING LEFT TO PERSIST, AND FORCING IT ANYWAY STILL COSTS A DEVICE CACHE FLUSH PER FILE
           final int synced = pcf.forceIfModified();
-          if (synced != PaginatedComponentFile.SYNC_CLEAN) {
+          if (synced != PaginatedComponentFile.SYNC_CLEAN)
             syncedFiles.incrementAndGet();
-            if (synced == PaginatedComponentFile.SYNC_METADATA) {
-              // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO,
-              // WHICH AN FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES
-              final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-              if (parent != null) {
-                if (directoriesToSync == null) {
-                  directoriesToSync = new HashSet<>();
-                  owingTheirDirectory = new ArrayList<>();
-                }
-                directoriesToSync.add(parent.toPath());
-                owingTheirDirectory.add(pcf);
-              }
+          // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO, WHICH AN
+          // FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES. #11932: ALSO A FILE A
+          // syncFile() FORCED AND WHOSE DIRECTORY IT HAS NOT FORCED YET: THIS PASS CANNOT REPORT IT DURABLE WITHOUT IT
+          final long owed = pcf.directorySyncOwed();
+          if (owed != 0L) {
+            final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
+            if (parent != null) {
+              if (directoriesToSync == null) {
+                directoriesToSync = new HashSet<>();
+                owingTheirDirectory = new ArrayList<>();
+                owedGenerations = new long[16];
+              } else if (owingTheirDirectory.size() == owedGenerations.length)
+                owedGenerations = Arrays.copyOf(owedGenerations, owedGenerations.length * 2);
+              directoriesToSync.add(parent.toPath());
+              owedGenerations[owingTheirDirectory.size()] = owed;
+              owingTheirDirectory.add(pcf);
             }
           }
         } catch (final IOException e) {
@@ -431,9 +440,9 @@ public class FileManager {
     if (directoriesToSync != null) {
       for (final Path dir : directoriesToSync)
         FileUtils.forceDirectory(dir);
-      // #11932: A syncFile() OF ONE OF THESE FILES NO LONGER HAS TO FORCE ITS DIRECTORY ITSELF
-      for (final PaginatedComponentFile pcf : owingTheirDirectory)
-        pcf.directorySynced();
+      // #11932: EACH FILE ACKNOWLEDGES THE GENERATION READ BEFORE THE DIRECTORY FORCE, NOT WHATEVER IT OWES BY NOW
+      for (int i = 0; i < owingTheirDirectory.size(); i++)
+        owingTheirDirectory.get(i).directorySynced(owedGenerations[i]);
     }
 
     return allSynced;
