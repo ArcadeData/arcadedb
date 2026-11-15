@@ -3147,7 +3147,8 @@ public class CypherExecutionPlan {
       final Object value = InlineProperties.resolve(declared, null, context);
       if (value == null || value instanceof Collection || value instanceof Map || value.getClass().isArray())
         return null;
-      key[i] = TemporalUtil.toIndexKey(value);
+      // A RID spelled as text stands for the id it encodes in a numeric column (issue #11933)
+      key[i] = RidTextKeys.keyFor(TemporalUtil.toIndexKey(value), index.getKeyTypes(), i);
     }
     return new UniqueKeyAnchor(index, key);
   }

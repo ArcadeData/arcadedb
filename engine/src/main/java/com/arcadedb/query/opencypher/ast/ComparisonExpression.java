@@ -207,17 +207,12 @@ public class ComparisonExpression implements BooleanExpression {
     // working without forcing callers to migrate. Both equality and ordering use the encoded long so
     // ordering stays consistent with id() / RID natural order. Only the RID-string form is coerced -
     // numeric strings are ambiguous and treating them as ids would break the Cypher TCK invariant
-    // that 5 = "5" returns false.
-    if (left instanceof Number leftNum && right instanceof String rightStr && RID.is(rightStr)) {
-      final long leftEncoded = leftNum.longValue();
-      final long rightEncoded = IdFunction.encodeRidAsLong(new RID(rightStr));
-      return numericCompare(leftEncoded, rightEncoded);
-    }
-    if (left instanceof String leftStr && right instanceof Number rightNum && RID.is(leftStr)) {
-      final long leftEncoded = IdFunction.encodeRidAsLong(new RID(leftStr));
-      final long rightEncoded = rightNum.longValue();
-      return numericCompare(leftEncoded, rightEncoded);
-    }
+    // that 5 = "5" returns false. The text stands for that long, compared as any number is: a FLOAT is not
+    // truncated first, which made 1.5 equal to the id 1 (issue #11933).
+    if (left instanceof Number && right instanceof String rightStr && RID.is(rightStr))
+      return compareValuesTernary(left, IdFunction.encodeRidAsLong(new RID(rightStr)));
+    if (left instanceof String leftStr && right instanceof Number && RID.is(leftStr))
+      return compareValuesTernary(IdFunction.encodeRidAsLong(new RID(leftStr)), right);
 
     // Graph entities compare by record identity even when different implementations represent them.
     // This is common when a Graph Analytical View vertex is compared with a regular OLTP vertex (#6010).

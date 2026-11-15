@@ -32,12 +32,14 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.executor.RidTextKeys;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.utility.RidHashSet;
@@ -132,6 +134,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       private TypeIndex index = null;
       /** The index is declared on a supertype, so its cursor carries records that are not of {@link #label}. */
       private boolean inheritedIndex = false;
+      /** The type of each column of {@link #index}, for the key a RID spelled as text is sought with (issue #11933). */
+      private Type[] keyTypes = null;
       private List<Object[]> seekKeys = null; // one key per value to seek (IN-list expands to N keys)
       private int seekIndex = 0;
       private boolean wholeKey = false;        // the key covers every index property: single-entry lookup
@@ -193,13 +197,15 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         // dropped below - the same thing the SQL plan for this query spells as FILTER ITEMS BY TYPE (#7021).
         inheritedIndex = Labels.isInheritedIndex(index, label);
 
-        // The prefix values are shared by every seek; only the leading value varies over an IN-list.
+        // The prefix values are shared by every seek; only the leading value varies over an IN-list. A RID spelled as text is sought
+        // as the id it stands for in a numeric column (issue #11933)
+        keyTypes = index.getKeyTypes();
         final List<Object> trailing = new ArrayList<>(keyValues.size() - 1);
         for (int i = 1; i < keyValues.size(); i++) {
           final Object resolved = resolveValue(keyValues.get(i));
           if (resolved == null)
             break; // an unresolved parameter truncates the key, degrading the seek to a shorter prefix
-          trailing.add(resolved);
+          trailing.add(RidTextKeys.keyFor(resolved, keyTypes, i));
         }
         wholeKey = 1 + trailing.size() == index.getPropertyNames().size();
 
@@ -253,7 +259,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           return;
 
         final Object[] key = new Object[1 + trailing.size()];
-        key[0] = leadingValue;
+        key[0] = RidTextKeys.keyFor(leadingValue, keyTypes, 0);
         for (int i = 0; i < trailing.size(); i++)
           key[1 + i] = trailing.get(i);
         seekKeys.add(key);
