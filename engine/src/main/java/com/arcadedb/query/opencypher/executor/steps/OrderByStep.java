@@ -210,6 +210,8 @@ public class OrderByStep extends AbstractExecutionStep {
         final Comparator<Result> comparator = createComparator();
         // Reverse comparator for max-heap behavior (worst elements at top)
         final Comparator<Result> reversedComparator = comparator.reversed();
+        // The heap lets rows go one at a time: each row it keeps is estimated, so a row that leaves gives back what it held
+        heapLimit.estimateEachElement();
 
         // Priority queue with reversed comparator: worst elements bubble to top
         final PriorityQueue<Result> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
@@ -241,10 +243,6 @@ public class OrderByStep extends AbstractExecutionStep {
             // Otherwise discard the row (it's worse than our current top K)
           }
         }
-
-        // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
-        // what the heap holds now
-        heapLimit.rechargeAll(topK);
 
         // Extract results from heap and reverse to get correct sort order
         final List<Result> results = new ArrayList<>(topK.size());

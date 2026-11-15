@@ -28,7 +28,6 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.temporal.Temporal;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Date;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -36,7 +35,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.RandomAccess;
 import java.util.Set;
-import java.util.function.LongSupplier;
 
 /**
  * Estimates the heap a value held by a query buffer takes, for the {@link QueryHeapBudget} (issue #8591).
@@ -83,42 +81,138 @@ public final class HeapEstimator {
   }
 
   /**
-   * The large collections, maps and arrays one buffer has already been charged for, so that the rows that share one are
+   * The large collections, maps and arrays the elements of one buffer hold, so that the elements that share one are
    * charged for it once (issue #11812): a list collected once and carried by every row of an UNWIND was counted again for
    * each row, and an ORDER BY over a few hundred such rows was refused for asking more than the whole budget although it holds the list
    * once. Only the containers above {@link #SAMPLED_ELEMENTS} are remembered: the small ones are cheap to count again, and
    * the large ones are what an overcount is made of.
    * <p>
+   * Each container is remembered with the elements that hold it, so a buffer that lets an element go ({@link #remove}) gives
+   * back a container with the last element that held it, and forgets it then.
+   * <p>
    * Not thread-safe, as the operation that owns it is not.
    */
   public static final class Shared {
     // Created at the first large container: most operations never meet one
-    private Set<Object> counted;
-    private long        firstSightBytes;
+    private IdentityHashMap<Object, Held> held;
+    // The bytes charged so far to the containers met for the first time, each counted once, nested ones included
+    private long    heldBytes;
+    // The bytes of the containers a sampled element met first that a later sampled element turned out to share
+    private long    sharedSampleBytes;
+    private int     walk;
+    private boolean sample;
+    // The containers met for the first time that the current walk is inside of
+    private int     firstSightDepth;
+    private boolean releasing;
+    private long    releasedBytes;
 
-    /** The bytes charged so far for the large containers, each counted the first time it was met. */
-    public long firstSightBytes() {
-      return firstSightBytes;
+    /**
+     * The estimated heap {@code value} takes, counting a large container an element held already as the reference to it,
+     * and remembering the large containers met for the first time.
+     */
+    public long add(final Object value) {
+      return walk(value, false);
     }
 
-    private boolean firstSight(final Object container) {
-      if (counted == null)
-        counted = Collections.newSetFromMap(new IdentityHashMap<>());
-      return counted.add(container);
+    /**
+     * {@link #add(Object)} for an element whose estimate stands for the elements that are not estimated. A container it
+     * meets first is part of what it holds on its own until another sampled element shares it: then its bytes move to
+     * {@link #sharedSampleBytes()}.
+     */
+    public long addSample(final Object value) {
+      return walk(value, true);
+    }
+
+    /**
+     * The estimated heap {@code value} stops taking when the buffer lets it go: what {@link #add(Object)} charged for it,
+     * the containers it was the last element to hold included, which are forgotten.
+     */
+    public long remove(final Object value) {
+      releasing = true;
+      releasedBytes = 0L;
+      try {
+        return estimate(value, 0, this) + releasedBytes;
+      } finally {
+        releasing = false;
+      }
+    }
+
+    /**
+     * The bytes of the containers a sampled element met for the first time and a later sampled element held as well: no
+     * part of what one element holds on its own, as the elements that share one are charged for it once.
+     */
+    public long sharedSampleBytes() {
+      return sharedSampleBytes;
+    }
+
+    private long walk(final Object value, final boolean sample) {
+      ++walk;
+      this.sample = sample;
+      firstSightDepth = 0;
+      return estimate(value, 0, this);
+    }
+
+    private long hold(final Object container, final int depth) {
+      if (held == null)
+        held = new IdentityHashMap<>();
+      final Held known = held.get(container);
+      if (known != null) {
+        ++known.holders;
+        if (sample && known.walk != walk) {
+          sharedSampleBytes += known.sampleBytes;
+          known.sampleBytes = 0L;
+        }
+        return REFERENCE_BYTES;
+      }
+      final Held entry = new Held(depth, walk);
+      held.put(container, entry);
+      final long before = heldBytes;
+      ++firstSightDepth;
+      final long bytes = contents(container, depth, this);
+      --firstSightDepth;
+      // The containers nested in this one met for the first time are charged on their own: this one is charged the rest
+      final long charged = bytes - REFERENCE_BYTES;
+      entry.bytes = charged - (heldBytes - before);
+      heldBytes = before + charged;
+      if (sample && firstSightDepth == 0)
+        entry.sampleBytes = charged;
+      return bytes;
+    }
+
+    private long release(final Object container, final int depth) {
+      final Held known = held == null ? null : held.get(container);
+      if (known == null) {
+        // Not met when it was added, or forgotten since: it was charged in full
+        releasedBytes += contents(container, depth, null) - REFERENCE_BYTES;
+        return REFERENCE_BYTES;
+      }
+      if (--known.holders > 0)
+        return REFERENCE_BYTES;
+      held.remove(container);
+      releasedBytes += known.bytes;
+      // The containers it holds lose it as a holder, walked as they were when it was met
+      contents(container, known.depth, this);
+      return REFERENCE_BYTES;
+    }
+  }
+
+  /** A large container a buffer holds, with the bytes charged to it alone and the number of holders. */
+  private static final class Held {
+    private final int  depth;
+    private final int  walk;
+    private int        holders = 1;
+    private long       bytes;
+    private long       sampleBytes;
+
+    private Held(final int depth, final int walk) {
+      this.depth = depth;
+      this.walk = walk;
     }
   }
 
   /** The estimated heap {@code value} takes, what it references included. */
   public static long estimate(final Object value) {
     return estimate(value, 0, null);
-  }
-
-  /**
-   * Like {@link #estimate(Object)}, counting a large container {@code shared} already met as the reference to it only,
-   * and remembering in {@code shared} the large containers met for the first time.
-   */
-  public static long estimate(final Object value, final Shared shared) {
-    return estimate(value, 0, shared);
   }
 
   private static long estimate(final Object value, final int depth, final Shared shared) {
@@ -144,13 +238,13 @@ public final class HeapEstimator {
     if (value instanceof Result result)
       return estimateOtherResult(result, depth, shared);
     if (value instanceof Collection<?> collection)
-      return countedOnce(collection, collection.size(), shared, () -> estimateCollection(collection, depth, shared));
+      return countedOnce(collection, collection.size(), depth, shared);
     if (value instanceof Map<?, ?> map)
-      return countedOnce(map, map.size(), shared, () -> MAP_BYTES + estimateEntries(map, depth, shared));
+      return countedOnce(map, map.size(), depth, shared);
     if (value instanceof byte[] bytes)
       return ARRAY_BYTES + bytes.length;
     if (value instanceof Object[] array)
-      return countedOnce(array, array.length, shared, () -> estimateArray(array, depth, shared));
+      return countedOnce(array, array.length, depth, shared);
     if (value instanceof float[] floats)
       return ARRAY_BYTES + 4L * floats.length;
     if (value instanceof int[] ints)
@@ -170,14 +264,18 @@ public final class HeapEstimator {
   }
 
   /** The estimate of a container: in full the first time {@code shared} meets a large one, as a reference afterwards. */
-  private static long countedOnce(final Object container, final int size, final Shared shared, final LongSupplier estimate) {
+  private static long countedOnce(final Object container, final int size, final int depth, final Shared shared) {
     if (shared == null || size <= SAMPLED_ELEMENTS)
-      return estimate.getAsLong();
-    if (!shared.firstSight(container))
-      return REFERENCE_BYTES;
-    final long bytes = estimate.getAsLong();
-    shared.firstSightBytes += bytes;
-    return bytes;
+      return contents(container, depth, shared);
+    return shared.releasing ? shared.release(container, depth) : shared.hold(container, depth);
+  }
+
+  private static long contents(final Object container, final int depth, final Shared shared) {
+    if (container instanceof Collection<?> collection)
+      return estimateCollection(collection, depth, shared);
+    if (container instanceof Map<?, ?> map)
+      return MAP_BYTES + estimateEntries(map, depth, shared);
+    return estimateArray((Object[]) container, depth, shared);
   }
 
   private static long estimateResult(final ResultInternal result, final int depth, final Shared shared) {

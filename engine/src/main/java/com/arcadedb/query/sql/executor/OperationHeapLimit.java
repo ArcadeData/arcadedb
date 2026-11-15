@@ -70,6 +70,7 @@ public final class OperationHeapLimit {
   private       long               estimatedElements;
   private       long               estimatedBytes;
   private       int                sampleCountdown;
+  private       boolean            eachElement;
   // The large containers this operation's elements share, charged once rather than once per element that holds them
   private       HeapEstimator.Shared shared = new HeapEstimator.Shared();
 
@@ -120,6 +121,18 @@ public final class OperationHeapLimit {
    */
   public OperationHeapLimit child(final String operation) {
     return new OperationHeapLimit(maxElements, "elements", operation, tracker, this);
+  }
+
+  /**
+   * Estimates every element added rather than a sample of them, for an operation that lets elements go one at a time with
+   * {@link #replace}: it gives back the large containers the last element holding them takes away, which only an element
+   * that was estimated is known to hold. A top-K heap holds few rows, and estimates each row it replaces anyway.
+   *
+   * @return this operation
+   */
+  public OperationHeapLimit estimateEachElement() {
+    eachElement = true;
+    return this;
   }
 
   /**
@@ -299,32 +312,45 @@ public final class OperationHeapLimit {
     // Counted afresh: what the operation holds now shares each large container once, whichever elements held it before
     shared = new HeapEstimator.Shared();
     for (final Object element : elements)
-      bytes += HeapEstimator.estimate(element, shared) + HeapEstimator.REFERENCE_BYTES;
+      bytes += shared.add(element) + HeapEstimator.REFERENCE_BYTES;
     if (bytes < charged)
-      release(charged - bytes);
+      giveBack(charged - bytes);
     else
       charge(bytes - charged);
   }
 
-  /** Adjusts the charge for {@code added} taking the place of {@code removed}: a full top-K heap keeping a better row. */
+  /**
+   * Adjusts the charge for {@code added} taking the place of {@code removed}: a full top-K heap keeping a better row. A large
+   * container {@code removed} was the last element to hold is given back with it, and one that another element still holds
+   * stays charged once. The operation estimates each element it holds ({@link #estimateEachElement()}).
+   */
   public void replace(final Object removed, final Object added) {
     if (tracker == null)
       return;
-    final long delta = HeapEstimator.estimate(added, shared) - HeapEstimator.estimate(removed, shared);
+    // Added first: a container both hold keeps a holder, so it is neither given back nor charged again
+    final long delta = shared.add(added) - shared.remove(removed);
     if (delta > 0)
       charge(delta);
     else
-      release(-delta);
+      giveBack(-delta);
   }
 
-  /** Gives back {@code bytes} of what the operation charged: its buffer shrank. */
+  /**
+   * Gives back {@code bytes} of what the operation charged: its buffer shrank. The large containers its elements share are
+   * forgotten, as which elements went is not known: the elements met afterwards are charged for them again.
+   */
   public void release(final long bytes) {
+    shared = new HeapEstimator.Shared();
+    giveBack(bytes);
+  }
+
+  private void giveBack(final long bytes) {
     final long released = Math.min(bytes, charged);
     if (released <= 0)
       return;
     charged -= released;
     if (parent != null) {
-      parent.release(released);
+      parent.giveBack(released);
       return;
     }
     final long fromPending = Math.min(released, pending);
@@ -348,6 +374,7 @@ public final class OperationHeapLimit {
     pending += other.pending;
     other.charged = 0L;
     other.pending = 0L;
+    other.shared = new HeapEstimator.Shared();
     return true;
   }
 
@@ -372,13 +399,14 @@ public final class OperationHeapLimit {
   }
 
   private long estimate(final Object element) {
-    if (estimatedElements < EXACT_SAMPLES || ++sampleCountdown == SAMPLE_EVERY) {
+    if (eachElement || estimatedElements < EXACT_SAMPLES || ++sampleCountdown == SAMPLE_EVERY) {
       sampleCountdown = 0;
-      final long sharedBefore = shared.firstSightBytes();
-      final long bytes = HeapEstimator.estimate(element, shared) + HeapEstimator.REFERENCE_BYTES;
-      // The average charged to the elements that are not estimated is what one element holds on its own: a container met
-      // for the first time is charged once, here, and is not part of every other element's share
-      estimatedBytes += bytes - (shared.firstSightBytes() - sharedBefore);
+      final long sharedBefore = shared.sharedSampleBytes();
+      final long bytes = shared.addSample(element) + HeapEstimator.REFERENCE_BYTES;
+      // The average charged to the elements that are not estimated is what one element holds on its own: a container a
+      // later element shares is charged once, to the element that met it first, and is no part of every other element's share.
+      // A container no other element holds stays in it, as the elements not estimated hold containers of their own as well
+      estimatedBytes += bytes - (shared.sharedSampleBytes() - sharedBefore);
       ++estimatedElements;
       return bytes;
     }
