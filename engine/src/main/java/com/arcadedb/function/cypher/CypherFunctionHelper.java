@@ -21,6 +21,7 @@ package com.arcadedb.function.cypher;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.CypherValues;
@@ -909,7 +910,7 @@ public final class CypherFunctionHelper {
       return new CypherLocalDateTime((LocalDateTime) val);
     if (val instanceof ZonedDateTime)
       return new CypherDateTime((ZonedDateTime) val);
-    throw new CommandExecutionException("Expected temporal value but got: " + (val == null ? "null" : val.getClass().getSimpleName()));
+    throw new TypeMismatchException("Expected temporal value but got: " + (val == null ? "null" : val.getClass().getSimpleName()));
   }
 
   /**

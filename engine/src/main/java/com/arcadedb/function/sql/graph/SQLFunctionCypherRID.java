@@ -20,7 +20,9 @@ package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -44,7 +46,7 @@ public class SQLFunctionCypherRID extends SQLFunctionConfigurableAbstract {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params == null || params.length != 1)
-      throw new CommandExecutionException(NAME + "() requires exactly one argument: the numeric Cypher id");
+      throw FunctionArity.mismatch(NAME, FunctionArity.describe(1, 1), params == null ? 0 : params.length);
 
     final Object value = params[0];
     if (value == null)
@@ -58,12 +60,12 @@ public class SQLFunctionCypherRID extends SQLFunctionConfigurableAbstract {
       try {
         encoded = Long.parseLong(value.toString());
       } catch (final NumberFormatException e) {
-        throw new CommandExecutionException(NAME + "() requires a numeric Cypher id, but got: " + value);
+        throw new TypeMismatchException(NAME + "() requires a numeric Cypher id, but got: " + value);
       }
     }
 
     if (encoded < 0)
-      throw new CommandExecutionException(NAME + "() received a negative id (" + encoded + "): a valid Cypher id is never negative");
+      throw new InvalidArgumentException(NAME + "() received a negative id (" + encoded + "): a valid Cypher id is never negative");
 
     return IdFunction.decodeLongToRid(context.getDatabase(), encoded);
   }
