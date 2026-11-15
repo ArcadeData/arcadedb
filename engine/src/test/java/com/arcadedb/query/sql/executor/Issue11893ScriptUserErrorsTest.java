@@ -132,6 +132,55 @@ class Issue11893ScriptUserErrorsTest extends TestHelper {
         .isInstanceOf(TypeMismatchException.class);
   }
 
+  @Test
+  void commitInsideAnIfWithoutABeginIsRefusedAsAtTheTopLevel() {
+    assertClientError("IF (1 = 1) { COMMIT; }", CommandSQLParsingException.class, "Found COMMIT statement without a BEGIN");
+  }
+
+  @Test
+  void commitInALoopWithoutABeginIsRefusedOnceNoTransactionIsLeft() {
+    // the first COMMIT ends the caller's transaction, as it did before; the second has none left to end
+    database.begin();
+    try {
+      assertClientError("LET $i = 0; WHILE ($i < 2) { LET $i = $i + 1; COMMIT; }", CommandSQLParsingException.class,
+          "Found COMMIT statement without a BEGIN");
+    } finally {
+      rollbackAll();
+    }
+  }
+
+  @Test
+  void commitRetryInALoopWithoutABeginIsRefused() {
+    assertClientError(
+        "LET $i = 0; WHILE ($i < 2) { LET $i = $i + 1; COMMIT RETRY 3 ELSE { INSERT INTO S SET k = -9; } AND CONTINUE; }",
+        CommandSQLParsingException.class, "Found COMMIT statement without a BEGIN");
+  }
+
+  @Test
+  void beginAndCommitInsideALoopStillWork() {
+    try (final ResultSet rs = database.command("sqlscript",
+        "LET $i = 0; WHILE ($i < 2) { LET $i = $i + 1; BEGIN; INSERT INTO S SET k = 5; COMMIT; } RETURN 1;")) {
+      rs.stream().count();
+    }
+    assertThat(database.countType("S", false)).isEqualTo(3);
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  @Test
+  void beginPastTheNestedTransactionLimitIsASemanticError() {
+    try {
+      assertClientError("LET $i = 0; WHILE ($i < 5) { LET $i = $i + 1; BEGIN; }", CommandSemanticException.class,
+          "Exceeded number of 3 nested transactions");
+    } finally {
+      rollbackAll();
+    }
+  }
+
+  private void rollbackAll() {
+    while (database.isTransactionActive())
+      database.rollback();
+  }
+
   private void assertClientError(final String script, final Class<? extends Throwable> type, final String message) {
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.command("sqlscript", script)) {
