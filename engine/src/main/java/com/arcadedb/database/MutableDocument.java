@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -51,6 +52,12 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli
  */
 public class MutableDocument extends BaseDocument implements RecordInternal {
+  // #11850: the records whose toString() runs on this thread. A record that holds itself, directly or through a list, a map or
+  // another record not saved yet, printed itself until the stack overflowed, and an error message that names the value (a failed
+  // type conversion of the property) turned into a StackOverflowError. A record met again prints as its RID
+  private static final ThreadLocal<Set<MutableDocument>> TO_STRING_IN_PROGRESS = ThreadLocal.withInitial(
+      () -> Collections.newSetFromMap(new IdentityHashMap<>()));
+
   protected Map<String, Object> map;
   protected boolean             dirty = false;
   // #8610: set by every call that assigns or removes a property (or moves an edge endpoint), never by a write to a vertex
@@ -587,30 +594,38 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       result.append('@');
       result.append(type.getName());
     }
-    result.append('[');
-    if (map == null) {
-      result.append('?');
-    } else {
-      int i = 0;
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        if (i > 0)
-          result.append(',');
+    final Set<MutableDocument> inProgress = TO_STRING_IN_PROGRESS.get();
+    // printed already further up: the identity and type alone, or the content would repeat without end (#11850)
+    if (!inProgress.add(this))
+      return result.append("[...]").toString();
+    try {
+      result.append('[');
+      if (map == null) {
+        result.append('?');
+      } else {
+        int i = 0;
+        for (final Map.Entry<String, Object> entry : map.entrySet()) {
+          if (i > 0)
+            result.append(',');
 
-        result.append(entry.getKey());
-        result.append('=');
+          result.append(entry.getKey());
+          result.append('=');
 
-        final Object v = entry.getValue();
-        if (v != null && v.getClass().isArray()) {
-          result.append('[');
-          result.append(Array.getLength(v));
-          result.append(']');
-        } else
-          result.append(v);
-        i++;
+          final Object v = entry.getValue();
+          if (v != null && v.getClass().isArray()) {
+            result.append('[');
+            result.append(Array.getLength(v));
+            result.append(']');
+          } else
+            result.append(v);
+          i++;
+        }
       }
+      result.append(']');
+      return result.toString();
+    } finally {
+      inProgress.remove(this);
     }
-    result.append(']');
-    return result.toString();
   }
 
   /**
