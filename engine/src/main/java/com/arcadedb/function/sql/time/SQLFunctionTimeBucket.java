@@ -257,17 +257,31 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     if (unitStart == 0)
       throw new IllegalArgumentException("Invalid time_bucket interval: '" + interval + "'");
 
-    final long value = Long.parseLong(interval.substring(0, unitStart));
+    final long value;
+    try {
+      value = Long.parseLong(interval.substring(0, unitStart));
+    } catch (final NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid time_bucket interval: '" + interval + "', its amount does not fit a long", e);
+    }
     final String unit = interval.substring(unitStart).trim().toLowerCase(Locale.ROOT);
 
-    return switch (unit) {
-      case "s" -> value * 1000L;
-      case "m" -> value * 60_000L;
-      case "h" -> value * 3_600_000L;
-      case "d" -> value * 86_400_000L;
-      case "w" -> value * 7 * 86_400_000L;
+    final long unitMs = switch (unit) {
+      case "s" -> 1000L;
+      case "m" -> 60_000L;
+      case "h" -> 3_600_000L;
+      case "d" -> 86_400_000L;
+      case "w" -> 7 * 86_400_000L;
       default -> throw new IllegalArgumentException("Unknown time_bucket unit: '" + unit + "'. Supported: s, m, h, d, w");
     };
+    // Exact: an amount whose milliseconds overflow a long used to wrap, and a positive wrap was taken as the interval, so
+    // '30500568905w' grouped by 9.6 hour buckets without a word (issue #11986)
+    try {
+      return Math.multiplyExact(value, unitMs);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException(
+          "time_bucket interval '" + interval + "' is too large: it does not fit a long number of milliseconds (at most "
+              + Long.MAX_VALUE / unitMs + unit + ")", e);
+    }
   }
 
   /**
