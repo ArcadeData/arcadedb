@@ -375,6 +375,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // how many slots of a page's record table the inserts read to find where the next record goes: what an insert costs is the slots it
   // reads, which lets a test pin that a page with holes is not walked slot by slot for every record (#10612)
   private final          AtomicLong                insertSlotsRead                  = new AtomicLong();
+  // how many record-table slots a growth that did not fit walked looking for holes to pack (#10700): lets a test pin that a
+  // page every write of which kept it packed is not walked again for each record that spills out of it (#11925)
+  private final          AtomicLong                growthHoleWalkSlots              = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -5401,10 +5404,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               // poisons the page instead. Those writes would inherit an outer span left open here and be declared
               // slot-merge replayable, which they are not. Do not merge the two spans.
               final int shiftCoverage = page.beginCoveredWrite(spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+              // #11925: the records that follow move right by exactly the bytes the head chunk below fills, as in
+              // growRecordInPage, and the statistics are told the exact free tail right after: no hole is left.
+              final boolean previousPackedWrite = page.beginPackedWrite();
               try {
                 shiftFollowingRecordsRight(page, recordCountInPage, recordPositionInPage + slotFootprint,
                         pageOccupiedInBytes, slotEnlargement);
               } finally {
+                page.endPackedWrite(previousPackedWrite);
                 page.endCoveredWrite(shiftCoverage);
               }
               updatePageStatistics(page, freeTailInPage, -slotEnlargement);
@@ -7697,6 +7704,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     int bufferSize = buffer.size();
 
     final int previousCoverage = currentPage.beginCoveredWrite(firstChunkCoverage);
+    // #11925: the head chunk fills exactly the availableSpaceForFirstChunk bytes it is given, and every caller gives it
+    // either the slot's own footprint (plus what an in-page shift just claimed for it) or the run to the end of the
+    // content area, so it leaves no hole. The chunks placed after it, on this page or another, are not declared.
+    final boolean previousPackedWrite = currentPage.beginPackedWrite();
     final int byteWritten;
     int chunkSize;
     try {
@@ -7713,6 +7724,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       currentPage.writeByteArray(newPosition + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, buffer.getContent(),
               buffer.getContentBeginOffset(), chunkSize);
     } finally {
+      currentPage.endPackedWrite(previousPackedWrite);
       currentPage.endCoveredWrite(previousCoverage);
     }
 
@@ -7793,10 +7805,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // Slot was consumed by another operation — fall through to create a new page
             nextPage = null;
           } else {
-            nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE, newPosition);
+            // #11925: the chunk is appended at the page's content end (see below), so its slot is declared with it
+            final boolean previousPackedWrite = nextPage.beginPackedWrite();
+            try {
+              nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE, newPosition);
 
-            if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
-              nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
+              if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
+                nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
+            } finally {
+              nextPage.endPackedWrite(previousPackedWrite);
+            }
           }
         }
       }
@@ -7806,8 +7824,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         nextPage = addNewPage();
         txPageCounter = nextPage.getPageId().getPageNumber() + 1;
         newPosition = contentHeaderSize;
-        nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
-        nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
+        final boolean previousPackedWrite = nextPage.beginPackedWrite();
+        try {
+          nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
+          nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
+        } finally {
+          nextPage.endPackedWrite(previousPackedWrite);
+        }
       }
 
       if (poisonSlots)
@@ -7821,30 +7844,39 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // base every other accounting in this class uses (#6358).
       final int freeSpaceBeforeChunk = nextPage.getMaxContentSize() - newPosition;
 
-      final int chunkMarkerSize = nextPage.writeNumber(newPosition, NEXT_CHUNK);
-      final int spaceAvailableInCurrentPage = freeSpaceBeforeChunk - chunkMarkerSize;
+      // #11925: the chunk starts at the page's content end (the allocator's newRecordPositionInPage, or the first byte
+      // of a new page) and takes at most the free tail, which the statistics are told right after: an append, as the
+      // plain insert in createRecordInternal is, so it is declared hole-free like that one.
+      final boolean previousPackedWrite = nextPage.beginPackedWrite();
+      final int chunkMarkerSize;
+      try {
+        chunkMarkerSize = nextPage.writeNumber(newPosition, NEXT_CHUNK);
+        final int spaceAvailableInCurrentPage = freeSpaceBeforeChunk - chunkMarkerSize;
 
-      // WRITE CHUNK SIZE
-      chunkSize = spaceAvailableInCurrentPage - INT_SERIALIZED_SIZE - LONG_SERIALIZED_SIZE;
-      final boolean lastChunk = bufferSize <= chunkSize;
-      if (bufferSize < chunkSize)
-        // LAST CHUNK, OVERWRITE THE SIZE WITH THE REMAINING CONTENT SIZE
-        chunkSize = bufferSize;
+        // WRITE CHUNK SIZE
+        chunkSize = spaceAvailableInCurrentPage - INT_SERIALIZED_SIZE - LONG_SERIALIZED_SIZE;
+        final boolean lastChunk = bufferSize <= chunkSize;
+        if (bufferSize < chunkSize)
+          // LAST CHUNK, OVERWRITE THE SIZE WITH THE REMAINING CONTENT SIZE
+          chunkSize = bufferSize;
 
-      if (chunkSize < 1)
-        throw new IllegalArgumentException("Chunk size invalid (" + chunkSize + ")");
+        if (chunkSize < 1)
+          throw new IllegalArgumentException("Chunk size invalid (" + chunkSize + ")");
 
-      newPosition += chunkMarkerSize;
-      nextPage.writeInt(newPosition, chunkSize);
+        newPosition += chunkMarkerSize;
+        nextPage.writeInt(newPosition, chunkSize);
 
-      // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
-      nextChunkPointerOffset = newPosition + INT_SERIALIZED_SIZE;
-      if (lastChunk)
-        nextPage.writeLong(nextChunkPointerOffset, chainTail);
+        // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
+        nextChunkPointerOffset = newPosition + INT_SERIALIZED_SIZE;
+        if (lastChunk)
+          nextPage.writeLong(nextChunkPointerOffset, chainTail);
 
-      newPosition += INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+        newPosition += INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
 
-      nextPage.writeByteArray(newPosition, content, contentOffset, chunkSize);
+        nextPage.writeByteArray(newPosition, content, contentOffset, chunkSize);
+      } finally {
+        nextPage.endPackedWrite(previousPackedWrite);
+      }
 
       updatePageStatistics(nextPage, freeSpaceBeforeChunk, -chunkFootprint(chunkMarkerSize, chunkSize));
 
@@ -7993,14 +8025,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * field lives inside the chunk's own slot image, so on the page holding the HEAD chunk of the record it is part of
    * what the disjoint-slot merge replays (#6129); on any other page the caller passes 0 and the write is as
    * undeclared as it was before, which is what keeps those pages out of every merge.
+   * <p>
+   * #11925: an overwrite of 8 bytes inside a chunk that is already there moves nothing and frees nothing, so it is
+   * declared hole-free on every page.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private static void writeNextChunkPointer(final MutablePage page, final int offset, final long pointer, final int coverage) {
     final int previousCoverage = page.beginCoveredWrite(coverage);
+    final boolean previousPackedWrite = page.beginPackedWrite();
     try {
       page.writeLong(offset, pointer);
     } finally {
+      page.endPackedWrite(previousPackedWrite);
       page.endCoveredWrite(previousCoverage);
     }
   }
@@ -8579,6 +8616,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private boolean packPageHoles(final MutablePage page, final short recordCountInPage) throws IOException {
+    growthHoleWalkSlots.addAndGet(recordCountInPage);
     if (packedContentEnd(page, recordCountInPage) > 0)
       // NO HOLE: THE CHEAP WALK PROVES IT WITHOUT BUILDING THE LIST
       return false;
@@ -9460,6 +9498,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** How many record-table slots the inserts of this bucket read to find where to put a record since it was opened. Package-private: for tests only. */
   long getInsertSlotsReadForTesting() {
     return insertSlotsRead.get();
+  }
+
+  /**
+   * How many record-table slots the growths of this bucket that did not fit walked looking for holes to pack since it was
+   * opened (#10700, #11925). Package-private: for tests only.
+   */
+  long getGrowthHoleWalkSlotsForTesting() {
+    return growthHoleWalkSlots.get();
   }
 
   /**
