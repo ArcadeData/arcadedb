@@ -20,11 +20,14 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -827,16 +830,8 @@ public enum PostgresType {
       serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
-    } else if (value instanceof Map<?, ?> map) {
-      serializedValue = new JSONObject(map).toString();
-    } else if (value instanceof TraversalPath path) {
-      serializedValue = new JSONObject(path.toMap()).toString();
-    } else if (value instanceof Record record) {
-      serializedValue = record.toJSON(true).toString();
-    } else if (value instanceof Result result) {
-      serializedValue = result.toJSON().toString();
-    } else if (value instanceof EmbeddedDocument embeddedDocument) {
-      serializedValue = embeddedDocument.toJSON(true).toString();
+    } else if (isJsonDocument(value)) {
+      serializedValue = toJsonDocument(value).toString();
     } else if (value != null) {
       serializedValue = value.toString();
     }
@@ -982,13 +977,12 @@ public enum PostgresType {
       case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
       case Binary binary -> binary.getString();
       case Collection<?> nested -> new JSONArray(nested).toString();
-      case Result result -> result.toJSON().toString();
+      case Result result -> toJsonDocument(result).toString();
       case JSONObject json -> json.toString();
-      case Map<?, ?> map -> new JSONObject(map).toString();
+      case Map<?, ?> map -> toJsonDocument(map).toString();
       // a Cypher path as the same JSON object the text array carries, not its toString() (issue #9913)
-      case TraversalPath path -> new JSONObject(path.toMap()).toString();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
-      case Record record -> record.toJSON(true).toString();
+      case TraversalPath path -> toJsonDocument(path).toString();
+      case Record record -> toJsonDocument(record).toString();
       default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
     };
   }
@@ -1061,18 +1055,12 @@ public enum PostgresType {
         appendQuoted(sb, new JSONArray(subCollection).toString());
       } else if (element.getClass().isArray()) {
         appendQuoted(sb, new JSONArray(convertPrimitiveArrayToCollection(element)).toString());
-      } else if (element instanceof Result result) {
-        appendQuoted(sb, result.toJSON().toString());
+      } else if (element instanceof Result) {
+        appendQuoted(sb, toJsonDocument(element).toString());
       } else if (element instanceof JSONObject json) {
         appendQuoted(sb, json.toString());
-      } else if (element instanceof Map<?, ?> map) {
-        appendQuoted(sb, new JSONObject(map).toString());
-      } else if (element instanceof TraversalPath path) {
-        appendQuoted(sb, new JSONObject(path.toMap()).toString());
-      } else if (element instanceof Record record) {
-        appendQuoted(sb, record.toJSON(true).toString());
-      } else if (element instanceof EmbeddedDocument embeddedDocument) {
-        appendQuoted(sb, embeddedDocument.toJSON(true).toString());
+      } else if (isJsonDocument(element)) {
+        appendQuoted(sb, toJsonDocument(element).toString());
       } else if (element instanceof String str) {
         appendQuoted(sb, str);
       } else {
@@ -1111,16 +1099,41 @@ public enum PostgresType {
       case null -> null;
       case JSONObject json -> json;
       case JSONArray json -> json;
-      case Result result -> result.toJSON();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true);
-      case Record record -> record.toJSON(true);
-      case Map<?, ?> map -> new JSONObject(map);
+      case Result result -> toJsonDocument(result);
+      case Record record -> toJsonDocument(record);
+      case Map<?, ?> map -> toJsonDocument(map);
       case Collection<?> nested -> serializeNestedAsJsonArray(nested);
       case Binary binary -> binary.getString();
       case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
       case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
       default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
     };
+  }
+
+  /** A record, a row, a map or a path: the values a json column carries as one JSON document. */
+  private static boolean isJsonDocument(final Object value) {
+    return value instanceof Map || value instanceof TraversalPath || value instanceof Record || value instanceof Result;
+  }
+
+  /**
+   * A record, a row, a map or a path as the JSON the HTTP API sends for it (issue #11958). {@code toJSON()} and {@code new
+   * JSONObject(map)} wrote a temporal as an epoch number whose unit depended on where it sat (a DATE was days in a record and
+   * milliseconds in a map) and dropped the zone of a ZONED_DATETIME and the sub-millisecond digits of a DATETIME_NANOS inside a map.
+   * Vertex edge counts are left out, as {@code toJSON(true)} left them out.
+   */
+  private static Object toJsonDocument(final Object value) {
+    if (value instanceof Record record && !(record instanceof Document))
+      return record.toJSON(true);
+    final Database database = switch (value) {
+      case Document document -> document.getDatabase();
+      case Result result when result.isElement() -> result.toElement().getDatabase();
+      default -> null;
+    };
+    return JsonSerializer.createJsonSerializer()
+        .setIncludeVertexEdges(false)
+        .setUseCollectionSize(false)
+        .setUseCollectionSizeForEdges(false)
+        .serializeValue(database, value);
   }
 
   private JSONArray serializeNestedAsJsonArray(final Collection<?> collection) {

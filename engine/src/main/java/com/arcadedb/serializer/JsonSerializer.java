@@ -153,8 +153,8 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeResult(final Database database, final Result result) {
-    final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
-    final String schemaDateFormat = database.getSchema().getDateFormat();
+    final String schemaDateTimeFormat = dateTimeFormatOf(database);
+    final String schemaDateFormat = dateFormatOf(database);
     final JSONObject object = new JSONObject().setDateFormat(schemaDateFormat)
         .setDateTimeFormat(schemaDateTimeFormat);
 
@@ -399,15 +399,25 @@ public class JsonSerializer {
 
     private String dateTimeFormat() {
       if (dateTimeFormat == null)
-        dateTimeFormat = database.getSchema().getDateTimeFormat();
+        dateTimeFormat = dateTimeFormatOf(database);
       return dateTimeFormat;
     }
 
     private String dateFormat() {
       if (dateFormat == null)
-        dateFormat = database.getSchema().getDateFormat();
+        dateFormat = dateFormatOf(database);
       return dateFormat;
     }
+  }
+
+  /** The schema's date-time pattern, or the configured default for a value no database owns (a map literal of a query). */
+  private static String dateTimeFormatOf(final Database database) {
+    return database != null ? database.getSchema().getDateTimeFormat() : GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+  }
+
+  /** The schema's date pattern, or the configured default for a value no database owns. */
+  private static String dateFormatOf(final Database database) {
+    return database != null ? database.getSchema().getDateFormat() : GlobalConfiguration.DATE_FORMAT.getValueAsString();
   }
 
   /**
@@ -477,8 +487,7 @@ public class JsonSerializer {
     if (useCollectionSize) {
       result = value.size();
     } else {
-      final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
-          .setDateTimeFormat(database.getSchema().getDateTimeFormat());
+      final JSONObject map = new JSONObject().setDateFormat(dateFormatOf(database)).setDateTimeFormat(dateTimeFormatOf(database));
       final TemporalFormats formats = new TemporalFormats(database);
       for (final Map.Entry<Object, Object> entry : value.entrySet())
         map.put(String.valueOf(entry.getKey()), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
@@ -579,17 +588,27 @@ public class JsonSerializer {
   }
 
   /**
+   * One value as {@link #serializeResult} writes a column whose type is unknown: the JSON-ready form, with every temporal, nested
+   * ones included, formatted as the HTTP API sends it. A protocol that carries a record or a map as JSON text (the Postgres wire's
+   * json columns, issue #11958) renders it through here, so its dates do not become epoch numbers. {@code database} may be null for
+   * a value no database owns; the configured default patterns are used then.
+   */
+  public Object serializeValue(final Database database, final Object value) {
+    return serializeValue(database, value, null);
+  }
+
+  /**
    * One value as {@link #serializeResult} writes a column of {@code propertyType} (null when unknown): the JSON-ready form, a temporal
    * already formatted.
    */
   private Object serializeValue(final Database database, final Object value, final Type propertyType) {
     final Object serialized = formatTemporalForPrecision(serializeObject(database, value), propertyType,
-        database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
+        dateTimeFormatOf(database), dateFormatOf(database));
     if (!(serialized instanceof Date || serialized instanceof Calendar || serialized instanceof Temporal))
       return serialized;
     // left for the date formats of the row's JSONObject: formatted by the same one here
-    final JSONObject row = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
-        .setDateTimeFormat(database.getSchema().getDateTimeFormat()).put("v", serialized);
+    final JSONObject row = new JSONObject().setDateFormat(dateFormatOf(database)).setDateTimeFormat(dateTimeFormatOf(database))
+        .put("v", serialized);
     return row.get("v");
   }
 
