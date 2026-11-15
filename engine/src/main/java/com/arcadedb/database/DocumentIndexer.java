@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -777,7 +778,8 @@ public class DocumentIndexer {
         if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy strategy) {
           if (!List.of(strategy.getProperties())
               .equals(index.getPropertyNames()))
-            throw new IndexException("Cannot modify primary key when the bucket selection is partitioned");
+            // a refusal of the write, not a fault of the index: answered as the client's request, like a declared constraint (issue #12037)
+            throw new ValidationException("Cannot modify primary key when the bucket selection is partitioned");
         }
 
         // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
