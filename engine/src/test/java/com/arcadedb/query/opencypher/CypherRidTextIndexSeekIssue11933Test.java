@@ -96,6 +96,8 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
       "OPTIONAL MATCH (p:{V}) WHERE p.id IN ['#0:1', '#0:2'] RETURN p.id AS v",
       "UNWIND ['#0:1', '#0:2'] AS r MATCH (p:{V}) WHERE p.id = r RETURN p.id AS v",
       "MATCH (p:{V} {id: '#0:1'})-[:{E}]->() RETURN count(*) AS v",
+      "MATCH (p:{V})-[:{E}]->() WHERE p.id = '#0:1' RETURN count(*) AS v",
+      "MATCH ()-[:{E}]->(p:{V}) WHERE p.id = '#0:2' RETURN count(*) AS v",
       "MATCH ()-[r:{E}]->() WHERE r.w = '#0:1' RETURN r.w AS v",
       "MATCH ()-[r:{E}]->() WHERE r.w IN ['#0:1', '#0:2'] RETURN r.w AS v" })
   void theSeekAnswersAsTheScan(final String template) {
@@ -122,6 +124,9 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
   void theSeekLooksUpTheIdTheTextStandsFor() {
     assertThat(column("MATCH (p:P) WHERE p.id = '#0:1' RETURN p.id AS v")).containsExactly(1L);
     assertThat(column("MATCH (p:P) WHERE p.s = '#0:1' RETURN p.id AS v")).containsExactly(7L);
+    // The unique key pins the vertex the count starts from (issue #11594): vertex 1 has one outgoing relationship
+    assertThat(column("MATCH (p:P)-[:R]->() WHERE p.id = '#0:1' RETURN count(*) AS v")).containsExactly(1L);
+    assertThat(column("MATCH (p:Q)-[:S]->() WHERE p.id = '#0:1' RETURN count(*) AS v")).containsExactly(1L);
     try (final ResultSet rs = database.query("opencypher", "PROFILE MATCH (p:P) WHERE p.id = '#0:1' RETURN p.id AS v")) {
       while (rs.hasNext())
         rs.next();
