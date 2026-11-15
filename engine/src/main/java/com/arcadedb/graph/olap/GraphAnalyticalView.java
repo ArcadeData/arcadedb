@@ -1725,21 +1725,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
-  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    getDegrees(checkBuilt(), degrees, direction, edgeType);
+  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    getDegrees(checkBuilt(), degrees, direction, edgeTypes);
   }
 
-  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    final String[] resolved = expandEdgeType(edgeType);
-    if (resolved.length == 1) {
-      degreesOfSlice(snap, degrees, direction, resolved[0]);
+  /**
+   * The degrees over the slices {@code edgeTypes} resolve to (every slice the snapshot holds when none is given), each slice read
+   * once. The types asked are resolved together, not one at a time: asked for a type and its sub-type, or for every type the view
+   * holds, a per-type sum read the sub-type's slice once for itself and again inside its super type (issue #12075).
+   */
+  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final Collection<String> slices = edgeTypes == null || edgeTypes.length == 0 ?
+        allEdgeTypes(snap) :
+        new LinkedHashSet<>(Arrays.asList(resolveEdgeTypes(edgeTypes)));
+    if (slices.size() == 1) {
+      degreesOfSlice(snap, degrees, direction, slices.iterator().next());
       return;
     }
 
-    // A type with sub-types: the degree is the sum over their slices, each read exactly once
     Arrays.fill(degrees, 0);
     final int[] slice = new int[degrees.length];
-    for (final String concrete : resolved) {
+    for (final String concrete : slices) {
       degreesOfSlice(snap, slice, direction, concrete);
       for (int v = 0; v < degrees.length; v++)
         degrees[v] += slice[v];
@@ -2963,8 +2970,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     @Override
-    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-      view.getDegrees(snap, degrees, direction, edgeType);
+    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      view.getDegrees(snap, degrees, direction, edgeTypes);
     }
 
     @Override

@@ -468,9 +468,9 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   }
 
   @Override
-  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
     final int[] scratch = new int[toDense.length];
-    delegate.getDegrees(scratch, direction, edgeType);
+    delegate.getDegrees(scratch, direction, edgeTypes);
     Arrays.fill(degrees, 0);
     final int n = Math.min(degrees.length, toDelegate.length);
     for (int dense = 0; dense < n; dense++)

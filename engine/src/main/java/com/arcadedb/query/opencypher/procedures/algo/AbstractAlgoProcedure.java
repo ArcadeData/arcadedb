@@ -1293,10 +1293,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * <p>
      * CSR-backed, this reads the count straight off {@link GraphTraversalProvider#getDegrees}, which for a
      * {@code GraphAnalyticalView} is an O(1)-per-node offset subtraction rather than an O(degree) walk - no
-     * neighbour-id array is ever allocated. {@code getDegrees} takes one edge type at a time (issue #6316: its
-     * other caller, {@code DegreeProductOp}, also calls it once per type), so an "all/several types" request is
-     * resolved to the provider's materialised types and summed per type, the same resolution
-     * {@link #weightedAdjacency} uses for its columnar path.
+     * neighbour-id array is ever allocated. The types are handed over in ONE call, none for all of them, so that the
+     * provider resolves them together and counts each edge once: summed here one type at a time, a type and its sub-type
+     * (which every "all types" request lists both of) counted the sub-type's edges twice, since a type's degree includes
+     * its sub-types' edges (issue #12075).
      */
     public int[] degrees(final Vertex.DIRECTION dir, final String... relTypes) {
       // Reserved before allocating, not after - the same "reserve while counting, not after" ordering
@@ -1304,24 +1304,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the degree buffer", nodeCount + " nodes");
       final int[] degrees = new int[nodeCount];
       if (provider != null) {
-        final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : provider.getMaterializedEdgeTypes();
-        // types empty/null here means the graph genuinely has no materialised edges of any type - loadGraph's
-        // findProvider already required this provider to be isReady() and to cover every requested type before
-        // selecting it, so an empty result is "no edges exist", not "the provider couldn't answer": degrees
-        // staying all-zero is the correct answer for that graph, not a silent wrong one.
-        if (types != null && types.length > 0) {
-          // perType is a second nodeCount-sized scratch buffer, previously allocated with no reservation of its
-          // own at all - reserved here, separately, right before it is actually needed.
-          memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the per-type degree scratch buffer", nodeCount + " nodes");
-          final int[] perType = new int[nodeCount];
-          for (final String type : types) {
-            // getDegrees() overwrites perType (it Arrays.fill(..., 0)s it before writing), never accumulates
-            // into it, so summing its result per type here is correct rather than double-counting.
-            provider.getDegrees(perType, dir, type);
-            for (int i = 0; i < nodeCount; i++)
-              degrees[i] += perType[i];
-          }
-        }
+        // A provider sums several slices through a second nodeCount-sized scratch buffer: reserved here, as the per-type sum
+        // that used to run here reserved its own
+        memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the per-type degree scratch buffer", nodeCount + " nodes");
+        provider.getDegrees(degrees, dir, relTypes);
         return degrees;
       }
       // countEdges() returns long, narrowed here without an overflow check: this array is int[] because every

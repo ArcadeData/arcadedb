@@ -58,17 +58,11 @@ public class NodeDegreeIn extends AbstractNodeFunction {
 
     final String[] relTypes = extractRelTypes(args);
 
-    // The incoming side of a unidirectional edge type is counted from the edges that end in the node (issue #8629)
-    long count = 0;
-    if (relTypes != null && relTypes.length > 0) {
-      for (final String relType : relTypes) {
-        count += IncomingEdgeLookup.countEdges(context, vertex, Vertex.DIRECTION.IN, relType);
-      }
-    } else {
-      count = IncomingEdgeLookup.countEdges(context, vertex, Vertex.DIRECTION.IN);
-    }
-
-    return count;
+    // The incoming side of a unidirectional edge type is counted from the edges that end in the node (issue #8629). The types
+    // go in ONE call, which counts an edge once whichever of them it matches (issue #12075)
+    return relTypes != null ?
+        IncomingEdgeLookup.countEdges(context, vertex, Vertex.DIRECTION.IN, relTypes) :
+        IncomingEdgeLookup.countEdges(context, vertex, Vertex.DIRECTION.IN);
   }
 
   @SuppressWarnings("unchecked")
