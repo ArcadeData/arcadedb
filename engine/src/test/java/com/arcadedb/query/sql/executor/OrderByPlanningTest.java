@@ -783,4 +783,71 @@ class OrderByPlanningTest extends TestHelper {
               keepsTheEqualityIndex.accept(plan(rs));
           }
   }
+
+  /**
+   * Regression test for issue #11700: a page with a SKIP goes through the ordered walk, which reads SKIP + LIMIT rows, and returns the
+   * rows the sorted read of the equality returns at the same offset.
+   */
+  @Test
+  void keysetPageWithSkipWalksTheSortKeyIndex() {
+    loadKeysetFixture();
+    for (final boolean ascending : new boolean[] { true, false }) {
+      final List<String> expected = sortedThroughTheEquality("graph_name = 'g3'", ascending);
+      final int anchor = 500;
+      final String bound = expected.get(anchor);
+      for (final int skip : new int[] { 0, 7, 30 })
+        try (final ResultSet rs = database.query("sql",
+            "SELECT external_id FROM Chunk WHERE graph_name = 'g3' AND external_id " + (ascending ? ">" : "<") + " :bound ORDER BY external_id "
+                + (ascending ? "ASC" : "DESC") + " SKIP " + skip + " LIMIT 10", Map.of("bound", bound))) {
+          final List<String> got = new ArrayList<>();
+          while (rs.hasNext())
+            got.add(rs.next().getProperty("external_id"));
+          assertThat(got).as("skip %d, ascending %s", skip, ascending).isEqualTo(expected.subList(anchor + 1 + skip, anchor + 11 + skip));
+          walksTheSortKeyIndex(plan(rs));
+        }
+    }
+  }
+
+  /**
+   * Regression test for issue #11700: the first page of a sort key whose index stores the nulls walks the whole index, nulls included,
+   * and returns the rows, nulls in the same place, as the sorted read of the equality does, at the start and across the nulls.
+   */
+  @Test
+  void firstPageOnASortKeyIndexThatStoresNullsWalksTheWholeIndex() {
+    database.command("sql", "CREATE VERTEX TYPE Nullable");
+    database.command("sql", "CREATE PROPERTY Nullable.k STRING");
+    database.command("sql", "CREATE INDEX ON Nullable (k) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.command("sql", "CREATE PROPERTY Nullable.g STRING");
+    database.command("sql", "CREATE INDEX ON Nullable (g) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < KEYSET_ROWS; i++) {
+        final int id = (int) ((i * 7919L) % KEYSET_ROWS);
+        // g0 and g1 hold half of the records each; one record of 20 has no key, so 1,000 of the 10,000 records of g0 are nulls
+        final var vertex = database.newVertex("Nullable").set("g", "g" + id % 2);
+        if (id % 20 != 0)
+          vertex.set("k", String.format("c%06d", id));
+        vertex.save();
+      }
+    });
+
+    for (final boolean ascending : new boolean[] { true, false }) {
+      final List<String> expected = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT k FROM Nullable WHERE g = 'g0' ORDER BY k " + (ascending ? "ASC" : "DESC"))) {
+        while (rs.hasNext())
+          expected.add(rs.next().getProperty("k"));
+      }
+      assertThat(expected).hasSize(10_000).containsNull();
+
+      for (final int skip : new int[] { 0, 20, 980, 990 })
+        try (final ResultSet rs = database.query("sql", "SELECT k FROM Nullable WHERE g = 'g0' ORDER BY k " + (ascending ? "ASC" : "DESC")
+            + " SKIP " + skip + " LIMIT " + KEYSET_PAGE)) {
+          final List<String> got = new ArrayList<>();
+          while (rs.hasNext())
+            got.add(rs.next().getProperty("k"));
+          assertThat(got).as("skip %d, ascending %s", skip, ascending).isEqualTo(expected.subList(skip, skip + KEYSET_PAGE));
+          assertThat(plan(rs)).as("skip %d, ascending %s", skip, ascending).contains("Nullable[k]").doesNotContain("ORDER BY")
+              .doesNotContain("Nullable[g]");
+        }
+    }
+  }
 }
