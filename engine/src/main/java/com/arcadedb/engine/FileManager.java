@@ -363,8 +363,12 @@ public class FileManager {
    * {@link #syncFiles()} for one file: forces {@code fileId} if it was written, created or renamed since its last
    * successful fsync, and its directory when it was created or renamed. For a caller that needs only that file durable
    * (pages committed without the WAL): forcing every file of the database instead costs one fsync per file other writers
-   * touched, which under concurrent writes is most of the time the caller waits. Serialized with {@link #syncFiles()} for
-   * the same reason that one is.
+   * touched, which under concurrent writes is most of the time the caller waits.
+   * <p>
+   * Not serialized with {@link #syncFiles()}: holding that lock made the caller wait out a WAL rotation fsyncing every file
+   * (about 1.1 s per call during an application ingest). The file's own force lock is enough for what that lock guarantees
+   * here: a {@code syncFiles()} reaching this file while this force is in flight waits for it, so it never takes the file
+   * for clean before it is forced, nor before its directory entry is.
    *
    * @return {@code true} when the file owed nothing or was fsynced; {@code false} when the fsync failed or the file is not
    *     an open paginated file of this database
@@ -372,29 +376,33 @@ public class FileManager {
   public boolean syncFile(final int fileId) {
     if (!(fileIdMap.get(fileId) instanceof PaginatedComponentFile pcf))
       return false;
-    syncLock.lock();
+    final ReentrantLock forceLock = pcf.getForceLock();
+    forceLock.lock();
     try {
       final int synced = pcf.forceIfModified();
-      if (synced != PaginatedComponentFile.SYNC_CLEAN) {
+      if (synced != PaginatedComponentFile.SYNC_CLEAN)
         syncedFiles.incrementAndGet();
-        if (synced == PaginatedComponentFile.SYNC_METADATA) {
-          final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-          if (parent != null)
-            FileUtils.forceDirectory(parent.toPath());
-        }
+      // This force, or a syncFiles() still on its way to forcing the directories, left the directory entry owed
+      final long directoryOwed = pcf.directoryForceOwed();
+      if (directoryOwed > 0) {
+        final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
+        if (parent != null)
+          FileUtils.forceDirectory(parent.toPath());
+        pcf.directorySynced(directoryOwed);
       }
       return true;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, pcf.getFileName());
       return false;
     } finally {
-      syncLock.unlock();
+      forceLock.unlock();
     }
   }
 
   private boolean syncFilesSerialized() {
     boolean allSynced = true;
     Set<Path> directoriesToSync = null;
+    Map<PaginatedComponentFile, Long> filesOwingTheirDirectory = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
@@ -402,17 +410,21 @@ public class FileManager {
           // ONES THE WAL ABOUT TO BE DELETED STILL PROTECTS: A FILE SYNCED BY A PREVIOUS PASS AND NOT WRITTEN SINCE HAS
           // NOTHING LEFT TO PERSIST, AND FORCING IT ANYWAY STILL COSTS A DEVICE CACHE FLUSH PER FILE
           final int synced = pcf.forceIfModified();
-          if (synced != PaginatedComponentFile.SYNC_CLEAN) {
+          if (synced != PaginatedComponentFile.SYNC_CLEAN)
             syncedFiles.incrementAndGet();
-            if (synced == PaginatedComponentFile.SYNC_METADATA) {
-              // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO,
-              // WHICH AN FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES
-              final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-              if (parent != null) {
-                if (directoriesToSync == null)
-                  directoriesToSync = new HashSet<>();
-                directoriesToSync.add(parent.toPath());
+          // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO, WHICH AN
+          // FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES. ALSO THE ONES A
+          // CONCURRENT syncFile() FORCED AND HAS NOT FORCED THE DIRECTORY OF YET (#11805)
+          final long directoryOwed = pcf.directoryForceOwed();
+          if (directoryOwed > 0) {
+            final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
+            if (parent != null) {
+              if (directoriesToSync == null) {
+                directoriesToSync = new HashSet<>();
+                filesOwingTheirDirectory = new LinkedHashMap<>();
               }
+              directoriesToSync.add(parent.toPath());
+              filesOwingTheirDirectory.put(pcf, directoryOwed);
             }
           }
         } catch (final IOException e) {
@@ -422,9 +434,12 @@ public class FileManager {
       }
     }
 
-    if (directoriesToSync != null)
+    if (directoriesToSync != null) {
       for (final Path dir : directoriesToSync)
         FileUtils.forceDirectory(dir);
+      for (final Map.Entry<PaginatedComponentFile, Long> owed : filesOwingTheirDirectory.entrySet())
+        owed.getKey().directorySynced(owed.getValue());
+    }
 
     return allSynced;
   }
