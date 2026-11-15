@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -848,6 +849,65 @@ class OrderByPlanningTest extends TestHelper {
           assertThat(plan(rs)).as("skip %d, ascending %s", skip, ascending).contains("Nullable[k]").doesNotContain("ORDER BY")
               .doesNotContain("Nullable[g]");
         }
+    }
+  }
+
+  /**
+   * Regression test for issue #11700: an index on (sort key, list BY ITEM) holds one entry per item and none for an empty list.
+   * Walked in order it repeated records and missed the ones with an empty list, so it is not a walk candidate, for a keyset page
+   * or for a first page.
+   */
+  @Test
+  void keysetWalkSkipsAnIndexWithAnItemExpandedProperty() {
+    database.command("sql", "CREATE VERTEX TYPE Tagged");
+    database.command("sql", "CREATE PROPERTY Tagged.external_id STRING");
+    database.command("sql", "CREATE PROPERTY Tagged.graph_name STRING");
+    database.command("sql", "CREATE PROPERTY Tagged.tags LIST OF STRING");
+    database.command("sql", "CREATE INDEX ON Tagged (graph_name) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Tagged (external_id, tags BY ITEM) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < KEYSET_ROWS; i++) {
+        final int id = (int) ((i * 7919L) % KEYSET_ROWS);
+        final List<String> tags = id % 3 == 0 ? List.of() : id % 3 == 1 ? List.of("a") : List.of("a", "b");
+        database.newVertex("Tagged").set("external_id", String.format("c%06d", id), "graph_name", "g" + id % 10, "tags", tags).save();
+      }
+    });
+    final List<String> expected = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT external_id FROM Tagged WHERE graph_name = 'g3' ORDER BY external_id")) {
+      while (rs.hasNext())
+        expected.add(rs.next().getProperty("external_id"));
+    }
+    assertThat(expected).hasSize(2_000);
+
+    for (final String sql : List.of(
+        "SELECT external_id FROM Tagged WHERE graph_name = 'g3' AND external_id > :bound ORDER BY external_id LIMIT " + KEYSET_PAGE,
+        "SELECT external_id FROM Tagged WHERE graph_name = 'g3' AND external_id IS NOT NULL ORDER BY external_id LIMIT "
+            + KEYSET_PAGE))
+      try (final ResultSet rs = database.query("sql", sql, Map.of("bound", ""))) {
+        final List<String> got = new ArrayList<>();
+        while (rs.hasNext())
+          got.add(rs.next().getProperty("external_id"));
+        assertThat(got).as(sql).isEqualTo(expected.subList(0, KEYSET_PAGE));
+        assertThat(plan(rs)).as(sql).contains("FETCH FROM INDEX Tagged[graph_name]").contains("ORDER BY");
+      }
+  }
+
+  /**
+   * Regression test for issue #11700: an IN list that repeats a value is one seek per distinct key at execution. Counted once per
+   * repeat, 20 matches of 'rare' listed 100 times passed the count cap and chose a walk that reads the whole sort-key range.
+   */
+  @Test
+  void keysetPageCountsARepeatedInValueOnce() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'rare'", true);
+    try (final ResultSet rs = database.query("sql",
+        "SELECT external_id FROM Chunk WHERE graph_name IN :g AND external_id > :bound ORDER BY external_id LIMIT " + KEYSET_PAGE,
+        Map.of("g", Collections.nCopies(100, "rare"), "bound", ""))) {
+      final List<String> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("external_id"));
+      assertThat(got).isEqualTo(expected);
+      assertThat(plan(rs)).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY");
     }
   }
 }

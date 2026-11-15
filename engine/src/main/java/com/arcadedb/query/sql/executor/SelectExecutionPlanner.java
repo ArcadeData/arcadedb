@@ -123,6 +123,7 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -5762,6 +5763,7 @@ public class SelectExecutionPlanner {
     int walkProperties = 0;
     boolean leadingIndexFound = false;
     boolean nullsIndexed = true;
+    boolean expandedLeadingIndex = false;
     for (final TypeIndex index : indexes) {
       try {
         if (!index.supportsOrderedIterations() || holdsFoldedKeys(index))
@@ -5769,6 +5771,12 @@ public class SelectExecutionPlanner {
         final List<String> properties = index.getPropertyNames();
         if (!sortKey.equals(properties.getFirst()))
           continue;
+        // A BY ITEM/KEY/VALUE property holds one entry per element and none for an empty collection: walked, the index repeats
+        // records and misses others. The whole-index walk could pick it, so its presence keeps the current plan there too
+        if (hasExpandedProperty(properties)) {
+          expandedLeadingIndex = true;
+          continue;
+        }
         leadingIndexFound = true;
         if (index.getNullStrategy() != LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
           nullsIndexed = false;
@@ -5786,7 +5794,7 @@ public class SelectExecutionPlanner {
       }
     }
     // A walk of the whole index also scans the type for the records the index does not hold, unless none can be returned
-    if (walk == null && (!leadingIndexFound || !(nullsIndexed || cannotHoldNull(type, sortKey, info))))
+    if (walk == null && (!leadingIndexFound || expandedLeadingIndex || !(nullsIndexed || cannotHoldNull(type, sortKey, info))))
       return null;
 
     // The choice reads the size of the data and the values bound to the statement: like rewriteDistinctAsGroupBy(), the plan is
@@ -5847,20 +5855,35 @@ public class SelectExecutionPlanner {
     final List<Object[]> keys = new ArrayList<>();
     try {
       final List<String> properties = index.getPropertyNames();
-      for (final String property : properties)
-        if (!Index.basePropertyName(property).equals(property))
-          return -1;
+      if (hasExpandedProperty(properties))
+        return -1;
 
       if (blocks.size() == 1 && properties.size() == 1 && blocks.getFirst() instanceof InCondition in) {
         if (in.getRightParam() == null && (in.getRightMathExpression() == null || !in.getRightMathExpression().isLiteral(true)))
           return -1;
         if (!(in.evaluateRight((Result) null, context) instanceof Collection<?> values))
           return -1;
+        // A repeated value, or two values the index reads as one key (IN (9, '9')), is one seek at execution
+        // (FetchFromIndexStep.sortSeeksInIndexOrder drops the repeats): counted once
+        final byte[] keyTypes = index.getBinaryKeyTypes();
+        final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+        final BinaryComparator comparator = database.getSerializer().getComparator();
         for (final Object value : values) {
           if (value == null)
             return -1;
-          keys.add(new Object[] { value });
+          keys.add(FetchFromIndexStep.normaliseToIndexKey(database, new Object[] { value }, keyTypes, index.getMetadata()));
         }
+        try {
+          keys.sort((a, b) -> comparator.compare(a[0], keyTypes[0], b[0], keyTypes[0]));
+        } catch (final IllegalArgumentException e) {
+          // values of types the index cannot compare: no estimate
+          return -1;
+        }
+        int distinct = 0;
+        for (final Object[] key : keys)
+          if (distinct == 0 || comparator.compare(keys.get(distinct - 1)[0], keyTypes[0], key[0], keyTypes[0]) != 0)
+            keys.set(distinct++, key);
+        keys.subList(distinct, keys.size()).clear();
       } else {
         final Object[] key = new Object[blocks.size()];
         for (int i = 0; i < key.length; i++) {
@@ -5903,6 +5926,14 @@ public class SelectExecutionPlanner {
         return -1;
       throw e;
     }
+  }
+
+  /** Whether an index property is a BY ITEM, BY KEY or BY VALUE expansion of a collection, which holds one entry per element. */
+  private static boolean hasExpandedProperty(final List<String> indexProperties) {
+    for (final String property : indexProperties)
+      if (!Index.basePropertyName(property).equals(property))
+        return true;
+    return false;
   }
 
   private static long countUpTo(final IndexCursor cursor, final long max) {
