@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.geo;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -54,7 +54,7 @@ public class CypherPointDistanceFunction implements StatelessFunction {
     if (args[0] == null || args[1] == null)
       return null;
     if (!(args[0] instanceof Map) || !(args[1] instanceof Map))
-      throw new CommandExecutionException("point.distance() arguments must be point values (maps)");
+      throw new TypeMismatchException("point.distance() arguments must be point values (maps)");
     final Map<?, ?> p1 = (Map<?, ?>) args[0];
     final Map<?, ?> p2 = (Map<?, ?>) args[1];
 

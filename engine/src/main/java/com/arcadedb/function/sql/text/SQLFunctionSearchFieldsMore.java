@@ -21,8 +21,10 @@ package com.arcadedb.function.sql.text;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -36,6 +38,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -68,22 +71,22 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
 
     // Validate parameters
     if (iParams.length < 2)
-      throw new CommandExecutionException("SEARCH_FIELDS_MORE() requires at least 2 parameters: field names and sourceRIDs");
+      throw FunctionArity.mismatch(NAME, FunctionArity.describe(2, 3), iParams.length);
 
     if (iParams[0] == null || iParams[1] == null)
-      throw new CommandExecutionException("SEARCH_FIELDS_MORE() parameters cannot be null");
+      throw new InvalidArgumentException("SEARCH_FIELDS_MORE() parameters cannot be null");
 
     // Parse field names from first parameter
     final List<String> fieldNames = parseFieldNames(iParams[0]);
 
     if (fieldNames.isEmpty())
-      throw new CommandExecutionException("SEARCH_FIELDS_MORE() requires at least one field name");
+      throw new InvalidArgumentException("SEARCH_FIELDS_MORE() requires at least one field name");
 
     // Convert sourceRIDs to Set<RID>
     final Set<RID> sourceRids = parseSourceRIDs(iParams[1]);
 
     if (sourceRids.isEmpty())
-      throw new CommandExecutionException("SEARCH_FIELDS_MORE() requires at least one source RID");
+      throw new InvalidArgumentException("SEARCH_FIELDS_MORE() requires at least one source RID");
 
     // Parse optional options. Preferred form is a typed map, validated against MoreLikeThisConfig.OPTION_KEYS.
     // A JSON string is still accepted for backward compatibility.
@@ -92,7 +95,12 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
       if (iParams[2] instanceof Map<?, ?> rawMap) {
         config = MoreLikeThisConfig.fromOptions(new FunctionOptions(NAME, rawMap, MoreLikeThisConfig.OPTION_KEYS));
       } else {
-        config = MoreLikeThisConfig.fromJSON(new JSONObject(iParams[2].toString()));
+        try {
+          config = MoreLikeThisConfig.fromJSON(new JSONObject(iParams[2].toString()));
+        } catch (final JSONException e) {
+          // issue #11589: options that are neither a map nor a JSON object are the caller's mistake
+          throw new InvalidArgumentException(NAME + "() options must be a map or a JSON object: " + e.getMessage(), e);
+        }
       }
     } else {
       config = new MoreLikeThisConfig();
@@ -100,7 +108,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
 
     // Validate source RID count
     if (sourceRids.size() > config.getMaxSourceDocs())
-      throw new CommandExecutionException("Source RIDs (" + sourceRids.size() + ") exceeds maxSourceDocs limit (" + config.getMaxSourceDocs() + ")");
+      throw new InvalidArgumentException("Source RIDs (" + sourceRids.size() + ") exceeds maxSourceDocs limit (" + config.getMaxSourceDocs() + ")");
 
     final Database database = iContext.getDatabase();
 
@@ -111,7 +119,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
     }
 
     if (typeName == null)
-      throw new CommandExecutionException("SEARCH_FIELDS_MORE() requires a type context (use in WHERE clause with FROM)");
+      throw new InvalidArgumentException("SEARCH_FIELDS_MORE() requires a type context (use in WHERE clause with FROM)");
 
     // Cache key, kept in the opaque cache rather than the variable namespace, which reads a '.' in a field name as a nested
     // path (issue #4734)
@@ -139,7 +147,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
       }
 
       if (matchingIndex == null)
-        throw new CommandExecutionException("No full-text index found for fields: " + fieldNames);
+        throw new InvalidArgumentException("No full-text index found for fields: " + fieldNames);
 
       // Validate source RIDs exist
       for (final RID rid : sourceRids) {
@@ -242,7 +250,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
     } else if (sourceRIDsParam instanceof RID) {
       result.add((RID) sourceRIDsParam);
     } else {
-      throw new CommandExecutionException("sourceRIDs must be a Collection of RIDs");
+      throw new TypeMismatchException("sourceRIDs must be a Collection of RIDs");
     }
 
     return result;

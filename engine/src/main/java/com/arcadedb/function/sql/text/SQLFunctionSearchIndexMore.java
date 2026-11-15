@@ -22,8 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -37,6 +40,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -68,10 +72,10 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
 
     // Validate parameters
     if (iParams.length < 2)
-      throw new CommandExecutionException("SEARCH_INDEX_MORE() requires at least 2 parameters: indexName and sourceRIDs");
+      throw FunctionArity.mismatch(NAME, FunctionArity.describe(2, 3), iParams.length);
 
     if (iParams[0] == null || iParams[1] == null)
-      throw new CommandExecutionException("SEARCH_INDEX_MORE() parameters cannot be null");
+      throw new InvalidArgumentException("SEARCH_INDEX_MORE() parameters cannot be null");
 
     final String indexName = iParams[0].toString();
 
@@ -85,7 +89,12 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
       if (iParams[2] instanceof Map<?, ?> rawMap) {
         config = MoreLikeThisConfig.fromOptions(new FunctionOptions(NAME, rawMap, MoreLikeThisConfig.OPTION_KEYS));
       } else {
-        config = MoreLikeThisConfig.fromJSON(new JSONObject(iParams[2].toString()));
+        try {
+          config = MoreLikeThisConfig.fromJSON(new JSONObject(iParams[2].toString()));
+        } catch (final JSONException e) {
+          // issue #11589: options that are neither a map nor a JSON object are the caller's mistake
+          throw new InvalidArgumentException(NAME + "() options must be a map or a JSON object: " + e.getMessage(), e);
+        }
       }
     } else {
       config = new MoreLikeThisConfig();
@@ -93,10 +102,10 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
 
     // Validate source RID count
     if (sourceRids.isEmpty())
-      throw new CommandExecutionException("SEARCH_INDEX_MORE requires at least one source RID");
+      throw new InvalidArgumentException("SEARCH_INDEX_MORE requires at least one source RID");
 
     if (sourceRids.size() > config.getMaxSourceDocs())
-      throw new CommandExecutionException("Source RIDs (" + sourceRids.size() + ") exceeds maxSourceDocs limit (" + config.getMaxSourceDocs() + ")");
+      throw new InvalidArgumentException("Source RIDs (" + sourceRids.size() + ") exceeds maxSourceDocs limit (" + config.getMaxSourceDocs() + ")");
 
     // Cache key, kept in the opaque cache rather than the variable namespace, which reads a '.' as a nested path (issue #4734)
     final String cacheKey = "search_index_more:" + indexName + ":" + sourceRids + ":" + config.hashCode();
@@ -124,7 +133,7 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
         for (final TypeIndex member : logical) {
           final Index[] memberBuckets = member.getIndexesOnBuckets();
           if (memberBuckets.length == 0 || !(memberBuckets[0] instanceof LSMTreeFullTextIndex))
-            throw new CommandExecutionException("Index '" + member.getName() + "' is not a full-text index");
+            throw new InvalidArgumentException("Index '" + member.getName() + "' is not a full-text index");
           bucketIndexes.addAll(Arrays.asList(memberBuckets));
         }
       } else {
@@ -134,12 +143,12 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
           throw new SchemaException("Index '" + indexName + "' not found");
 
         if (!(index instanceof final TypeIndex typeIndex))
-          throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
+          throw new InvalidArgumentException("Index '" + indexName + "' is not a type index");
 
         final Index[] buckets = typeIndex.getIndexesOnBuckets();
 
         if (buckets.length == 0 || !(buckets[0] instanceof LSMTreeFullTextIndex))
-          throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
+          throw new InvalidArgumentException("Index '" + indexName + "' is not a full-text index");
         bucketIndexes.addAll(Arrays.asList(buckets));
       }
 
@@ -226,7 +235,7 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
     } else if (sourceRIDsParam instanceof RID) {
       result.add((RID) sourceRIDsParam);
     } else {
-      throw new CommandExecutionException("sourceRIDs must be a Collection of RIDs");
+      throw new TypeMismatchException("sourceRIDs must be a Collection of RIDs");
     }
 
     return result;

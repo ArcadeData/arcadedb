@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -41,7 +41,7 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
 
   public Object execute(Object self, final Identifiable record, final Object currentResult, final Object[] params, CommandContext context) {
     if (params.length < 1)
-      throw new CommandExecutionException("invalid expression");
+      throw FunctionArity.mismatch(NAME, FunctionArity.describe(1, 1), params.length);
 
     if (predicate == null) {
       try {

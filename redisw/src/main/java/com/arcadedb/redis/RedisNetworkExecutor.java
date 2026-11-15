@@ -409,8 +409,8 @@ public class RedisNetworkExecutor extends Thread {
 
       QueryAdmissionGate.Ticket admission = null;
       RunningQuery runningQuery = null;
-      try (final QueryTracer.Span span = QueryTracer.Holder.begin(
-          selectedDatabaseName, null, "command", cmdString)) {
+      final QueryTracer.Span span = QueryTracer.Holder.begin(selectedDatabaseName, null, "command", cmdString);
+      try {
 
         // AUTH and HELLO are the only commands accepted before authentication (HELLO must still carry a
         // valid AUTH option, otherwise it is rejected with NOAUTH). Every other command is rejected with
@@ -531,11 +531,14 @@ public class RedisNetworkExecutor extends Thread {
         }
 
       } catch (final Exception e) {
+        // the span is failed (issue #11638) before it is closed below: the client gets its error reply, the trace the error status
+        span.error(e);
         value.append('-');
         value.append(respErrorPrefix(e));
         value.append(' ');
         value.append(respClientMessage(e));
       } finally {
+        span.close();
         try {
           if (admission != null)
             admission.close();

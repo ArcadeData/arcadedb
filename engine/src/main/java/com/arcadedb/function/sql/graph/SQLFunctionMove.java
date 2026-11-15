@@ -37,6 +37,7 @@ import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 
 /**
  * Created by luigidellaquila on 03/01/17.
@@ -58,13 +59,26 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] iParameters, final CommandContext context) {
 
-    final String[] labels;
-    if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
-    else
-      labels = null;
+    final String[] labels = edgeTypeLabels(iParameters);
 
     return SQLQueryEngine.foreachRecord(iArgument -> move(context.getDatabase(), iArgument, labels, context), self, context);
+  }
+
+  /**
+   * The edge types the arguments name, or null for every type. A null names no type and is skipped (issue #11589): it reached the
+   * edge-type lookup as a key, a NullPointerException, while a lone null already meant every type, as it still does.
+   */
+  static String[] edgeTypeLabels(final Object[] parameters) {
+    if (parameters == null || parameters.length == 0)
+      return null;
+    final String[] labels = MultiValue.array(parameters, String.class, FileUtils::getStringContent);
+    int named = 0;
+    for (final String label : labels)
+      if (label != null)
+        labels[named++] = label;
+    if (named == 0)
+      return null;
+    return named == labels.length ? labels : Arrays.copyOf(labels, named);
   }
 
   protected Object v2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,

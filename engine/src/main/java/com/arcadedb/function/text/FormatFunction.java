@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -71,7 +72,7 @@ public class FormatFunction implements StatelessFunction {
 
     // CypherDuration is not a TemporalAccessor, handle separately
     if (args[0] instanceof CypherDuration)
-      throw new CommandExecutionException("format() with a pattern is not supported for Duration values");
+      throw new InvalidArgumentException("format() with a pattern is not supported for Duration values");
 
     // Extract the TemporalAccessor from Cypher temporal types
     final TemporalAccessor temporal;
@@ -88,7 +89,7 @@ public class FormatFunction implements StatelessFunction {
     else if (args[0] instanceof TemporalAccessor)
       temporal = (TemporalAccessor) args[0];
     else
-      throw new CommandExecutionException("format() requires a temporal value as first argument");
+      throw new TypeMismatchException("format() requires a temporal value as first argument");
 
     return formatter.format(temporal);
   }

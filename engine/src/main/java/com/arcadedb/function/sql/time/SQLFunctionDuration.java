@@ -19,6 +19,8 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.utility.DateUtils;
@@ -52,7 +54,13 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
 
     final long amount = getAmount(params[0]);
     final String unitName = params[1].toString();
-    final ChronoUnit unit = DateUtils.parsePrecision(unitName);
+    final ChronoUnit unit;
+    try {
+      unit = DateUtils.parsePrecision(unitName);
+    } catch (final SerializationException e) {
+      // issue #11589: a unit nothing names is the caller's mistake
+      throw new InvalidArgumentException("duration() does not know the time unit '" + unitName + "'", e);
+    }
 
     // A java.time.Duration is an exact amount of time, so it accepts only units with an exact length. Weeks have one
     // (7 days) and are converted; years and months do not - their length depends on which year or month - and used to

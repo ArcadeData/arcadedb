@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -56,6 +56,6 @@ public class DurationConstructorFunction implements StatelessFunction {
       return CypherDuration.fromMap((Map<String, Object>) args[0]);
     if (args[0] instanceof CypherDuration)
       return args[0];
-    throw new CommandExecutionException("duration() expects a string or map argument");
+    throw new TypeMismatchException("duration() expects a string or map argument, got " + args[0].getClass().getSimpleName());
   }
 }

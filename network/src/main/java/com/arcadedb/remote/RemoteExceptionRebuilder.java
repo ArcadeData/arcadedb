@@ -39,6 +39,7 @@ import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.EncryptionException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.LockTimeoutException;
@@ -121,6 +122,7 @@ public final class RemoteExceptionRebuilder {
       Map.entry(TriggerExecutionException.class.getName(), TriggerExecutionException::new),
       Map.entry(InvalidPropertyTypeException.class.getName(), InvalidPropertyTypeException::new),
       Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
+      Map.entry(InvalidArgumentException.class.getName(), InvalidArgumentException::new),
       // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)

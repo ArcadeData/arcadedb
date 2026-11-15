@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.vector;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.index.vector.VectorUtils;
@@ -72,7 +73,7 @@ public class VectorCreateFunction implements StatelessFunction {
       case "INTEGER" -> toLongs(args[0]);
       case "FLOAT" -> toDoubles(args[0]);
       case "FLOAT32" -> VectorUtils.toFloatArray(args[0]);
-      default -> throw new CommandExecutionException("Unsupported vector coordinate type: " + coordinateType);
+      default -> throw new InvalidArgumentException("Unsupported vector coordinate type: " + coordinateType);
     };
 
     // Validate dimension if provided
@@ -82,7 +83,7 @@ public class VectorCreateFunction implements StatelessFunction {
       final long expectedDimension = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "dimension");
       final int length = Array.getLength(result);
       if (length != expectedDimension)
-        throw new CommandExecutionException("Vector dimension mismatch: expected " + expectedDimension + " but got " + length);
+        throw new InvalidArgumentException("Vector dimension mismatch: expected " + expectedDimension + " but got " + length);
     }
 
     return result;
@@ -125,7 +126,7 @@ public class VectorCreateFunction implements StatelessFunction {
     final double[] result = new double[source.size()];
     for (int i = 0; i < result.length; i++) {
       if (!(source.get(i) instanceof Number number))
-        throw new CommandExecutionException("Vector coordinate of type FLOAT must be a number, found: " + source.get(i));
+        throw new TypeMismatchException("Vector coordinate of type FLOAT must be a number, found: " + source.get(i));
       result[i] = number.doubleValue();
     }
     return result;
@@ -158,16 +159,16 @@ public class VectorCreateFunction implements StatelessFunction {
         coordinate instanceof Short sh ? (Long) (long) sh : coordinate instanceof Byte b ? (Long) (long) b : null;
     if (whole != null) {
       if (whole < min || whole > max)
-        throw new CommandExecutionException("Vector coordinate " + whole + " is out of the range of " + type);
+        throw new InvalidArgumentException("Vector coordinate " + whole + " is out of the range of " + type);
       return whole;
     }
     if (coordinate instanceof Number number) {
       final double value = number.doubleValue();
       // 2^63 is the double that (double) Long.MAX_VALUE rounds up to, which the long cast would saturate
       if (value != Math.rint(value) || Double.isInfinite(value) || value < min || value > max || value >= 0x1p63)
-        throw new CommandExecutionException("Vector coordinate " + value + " is not a whole number of " + type);
+        throw new InvalidArgumentException("Vector coordinate " + value + " is not a whole number of " + type);
       return (long) value;
     }
-    throw new CommandExecutionException("Vector coordinate of type " + type + " must be a number, found: " + coordinate);
+    throw new TypeMismatchException("Vector coordinate of type " + type + " must be a number, found: " + coordinate);
   }
 }
