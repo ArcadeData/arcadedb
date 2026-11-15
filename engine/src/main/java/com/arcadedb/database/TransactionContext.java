@@ -2989,7 +2989,7 @@ public class TransactionContext implements Transaction {
       insertReservationBuckets[i] = null;
       try {
         if (insertReservationSlots[i] == NEW_PAGE_RESERVATION)
-          bucket.releaseNewPage(insertReservationPages[i]);
+          bucket.releaseNewPage(insertReservationPages[i], this);
         else
           bucket.releaseInsertSlot(insertReservationPages[i], insertReservationSlots[i]);
       } catch (final Exception e) {
@@ -3041,6 +3041,33 @@ public class TransactionContext implements Transaction {
     final byte[] prev = buffer.trackInsert(slot);
     if (prev != null)
       accountTrackedBytes(-prev.length);
+  }
+
+  /**
+   * Records that a slot this transaction INSERTED (and tracked as such) now holds the HEAD chunk of a record that outgrew
+   * the page, its chain written on other pages (issue #11788: insert a row, then set its large property, in one
+   * transaction). The slot stays an insert, with no committed pre-image to check: the replay writes the head chunk,
+   * read back from the page this transaction wrote, into the same free slot of the newer committed page.
+   * <p>
+   * Anything but a slot tracked as a plain insert poisons the page, and so does every later write that gives the slot
+   * another shape (a collapse back to a plain record, a delete): {@link #trackRebasableUpdate} and
+   * {@link #trackRebasableDelete} refuse a kind that differs from the one recorded here.
+   */
+  public void trackRebasableInsertSpilledToChunk(final int fileId, final int pageNumber, final int slot) {
+    if (!slotMerge)
+      return;
+    final long key = packPageKey(fileId, pageNumber);
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return;
+    final SlotRebaseBuffer buffer = slotRebaseByPage != null ? slotRebaseByPage.get(key) : null;
+    if (buffer == null || !buffer.isInserted(slot) || buffer.isDeleted(slot) || buffer.kindOf(slot) != SLOT_KIND_RECORD) {
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
+    final byte[] prev = buffer.trackInsert(slot);
+    if (prev != null)
+      accountTrackedBytes(-prev.length);
+    buffer.trackKind(slot, SLOT_KIND_FIRST_CHUNK);
   }
 
   /**
@@ -3669,7 +3696,10 @@ public class TransactionContext implements Transaction {
       final boolean insertedHere = buffer.isInserted(slot);
       final byte[] finalBody;
       if (buffer.isFinalImageOnPage(slot)) {
-        finalBody = bucket.readPlainRecordBody(ownPage, slot);
+        // #11788: an insert that outgrew the page left a chunk head in its slot
+        finalBody = buffer.kindOf(slot) == SLOT_KIND_FIRST_CHUNK ?
+            bucket.readHeadChunkImage(ownPage, slot) :
+            bucket.readPlainRecordBody(ownPage, slot);
         if (finalBody == null)
           // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
           // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
