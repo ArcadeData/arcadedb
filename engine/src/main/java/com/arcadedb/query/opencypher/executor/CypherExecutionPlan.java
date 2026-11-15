@@ -205,6 +205,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -7966,11 +7967,21 @@ public class CypherExecutionPlan {
     return true;
   }
 
-  /** Whether an edge type of the schema is, or extends, both types. */
+  /**
+   * Whether an edge type is, or extends, both types: one of the family of {@code first}, read down its subtypes rather than over
+   * every type of the schema.
+   */
   private static boolean someEdgeTypeExtendsEach(final Schema schema, final String first, final String second) {
-    for (final DocumentType type : schema.getTypes())
-      if (type instanceof EdgeType && type.instanceOf(first) && type.instanceOf(second))
+    final DocumentType root = schema.getTypeOrNull(first);
+    if (!(root instanceof EdgeType))
+      return false;
+    final ArrayDeque<DocumentType> family = new ArrayDeque<>(List.of(root));
+    while (!family.isEmpty()) {
+      final DocumentType type = family.poll();
+      if (type.instanceOf(second))
         return true;
+      family.addAll(type.getSubTypes());
+    }
     return false;
   }
 
