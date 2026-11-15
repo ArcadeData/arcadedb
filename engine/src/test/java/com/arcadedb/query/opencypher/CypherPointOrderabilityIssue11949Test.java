@@ -19,10 +19,13 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,6 +78,23 @@ class CypherPointOrderabilityIssue11949Test extends TestHelper {
         .containsExactly(List.of(1.0, 2.0));
     assertThat(coordinates("UNWIND " + points + " AS p WITH max(p) AS p RETURN p.x AS x, p.y AS y"))
         .containsExactly(List.of(2.0, 1.0));
+  }
+
+  /**
+   * A Java map whose keys cannot be compared with a String (a TreeMap with Integer keys) threw ClassCastException from the
+   * point-shape lookup of "crs"; it is a map, ordered among the maps by size as before.
+   */
+  @Test
+  void aMapWithNonStringKeysStaysAComparableMap() {
+    final TreeMap<Integer, String> integerKeys = new TreeMap<>(Map.of(1, "x"));
+    assertThat(CypherFunctionHelper.cypherTypeRank(integerKeys)).isZero();
+    assertThat(CypherFunctionHelper.cypherCompare(integerKeys, Map.of("a", 1, "b", 2))).isNegative();
+    assertThat(CypherFunctionHelper.cypherCompare(Map.of("a", 1, "b", 2), integerKeys)).isPositive();
+
+    try (final ResultSet rs = database.query("opencypher", "UNWIND $maps AS m RETURN size(keys(m)) AS n ORDER BY m",
+        Map.of("maps", List.of(Map.of("a", 1, "b", 2), integerKeys)))) {
+      assertThat(rs.stream().map(r -> r.<Number>getProperty("n").intValue()).toList()).containsExactly(1, 2);
+    }
   }
 
   private List<String> kinds(final String query) {
