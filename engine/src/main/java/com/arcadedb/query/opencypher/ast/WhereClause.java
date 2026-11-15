@@ -63,6 +63,13 @@ public class WhereClause {
     return vars;
   }
 
+  /** {@link #collectVariables(BooleanExpression)} for an expression, such as a value of an inline property map. */
+  public static Set<String> collectExpressionVariables(final Expression expr) {
+    final Set<String> vars = new HashSet<>();
+    collectExpressionVariables(expr, vars);
+    return vars;
+  }
+
   /**
    * Extracts the sub-expression from a BooleanExpression that only references
    * the given set of available variables. For AND expressions, individual conjuncts

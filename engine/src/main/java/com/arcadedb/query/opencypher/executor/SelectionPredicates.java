@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
@@ -61,7 +62,8 @@ public final class SelectionPredicates {
   /** No predicate: the write of a statement whose predicates are not known. */
   public static final SelectionPredicates NONE = new SelectionPredicates(List.of(), null);
 
-  private record InlineMap(String variable, Map<String, Object> properties) {
+  // reads: the variables the values of the map read, which select the record of the variable as much as it does
+  private record InlineMap(String variable, Map<String, Object> properties, Set<String> reads) {
   }
 
   private record Condition(BooleanExpression expression, Set<String> variables) {
@@ -120,7 +122,10 @@ public final class SelectionPredicates {
     if (inlineMaps == null)
       collect();
     for (final InlineMap inlineMap : inlineMaps) {
-      final Document record = boundTo(rid, row, inlineMap.variable());
+      // A map of another variable whose values read the record no longer selects that variable's record either
+      if (boundTo(rid, row, inlineMap.variable()) == null && !readsRecord(rid, row, inlineMap.reads()))
+        continue;
+      final Document record = InlineProperties.boundRecord(row.getProperty(inlineMap.variable()));
       if (record != null && !InlineProperties.matches(record, inlineMap.properties(), row, context))
         return false;
     }
@@ -169,8 +174,13 @@ public final class SelectionPredicates {
   }
 
   private static void addInlineMap(final String variable, final Map<String, Object> properties, final List<InlineMap> inlineMaps) {
-    if (variable != null && properties != null && !properties.isEmpty())
-      inlineMaps.add(new InlineMap(variable, properties));
+    if (variable == null || properties == null || properties.isEmpty())
+      return;
+    final Set<String> reads = new HashSet<>();
+    for (final Object value : properties.values())
+      if (value instanceof Expression expression)
+        reads.addAll(WhereClause.collectExpressionVariables(expression));
+    inlineMaps.add(new InlineMap(variable, properties, reads));
   }
 
   private static void addConditions(final WhereClause where, final List<Condition> conditions) {
@@ -193,7 +203,7 @@ public final class SelectionPredicates {
           .equals(variable.getVariableName())))
         passedOn.add(variable.getVariableName());
     }
-    inlineMaps.removeIf(inlineMap -> !passedOn.contains(inlineMap.variable()));
+    inlineMaps.removeIf(inlineMap -> !passedOn.contains(inlineMap.variable()) || !passedOn.containsAll(inlineMap.reads()));
     conditions.removeIf(condition -> !passedOn.containsAll(condition.variables()));
   }
 

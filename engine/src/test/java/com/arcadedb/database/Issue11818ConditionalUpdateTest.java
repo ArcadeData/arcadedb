@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -200,6 +201,45 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
 
     assertThat(committed).isTrue();
     assertThat(((Number) valueOf("R", "n")).intValue()).isEqualTo(6);
+  }
+
+  /**
+   * An inline property map selects the target through its values too: {@code b} was matched on the {@code n} of {@code r} as read,
+   * and a concurrent commit changed it, so {@code b} no longer selects {@code r} although the map belongs to {@code b}. The WITH
+   * runs the concurrent commit once both are bound.
+   */
+  @Test
+  void cypherSetDoesNotWriteAVertexThatAnInlineMapOfAnotherVariableNoLongerMatches() {
+    database.transaction(() -> database.command("sql", "INSERT INTO R SET k = 'b0', m = 0").close());
+    final AtomicLong rows = new AtomicLong(-1);
+    final boolean committed = runWithConcurrentCommit("UPDATE R SET n = 7 WHERE k = 'r0'", () -> rows.set(countRows(database.command(
+        "opencypher", "MATCH (r:R {k: 'r0'}) MATCH (b:R {m: r.n}) WITH r, b WHERE race.interleave(b) SET r.claimed = 'B' RETURN r.k",
+        Map.of()))));
+
+    if (committed)
+      assertThat(rows.get()).isZero();
+    try (final ResultSet rs = database.query("sql", "SELECT claimed, n FROM R WHERE k = 'r0'")) {
+      final Result record = rs.next();
+      assertThat(record.<String>getProperty("claimed")).isNull();
+      assertThat(((Number) record.getProperty("n")).intValue()).isEqualTo(7);
+    }
+  }
+
+  /**
+   * A WITH that drops a variable an inline map value reads drops the map: it can no longer be evaluated against the row, and
+   * evaluating it with the variable missing refused a write whose predicates all still held.
+   */
+  @Test
+  void cypherSetAfterAWithThatDropsAnInlineMapValueBuildsOnTheConcurrentCommit() {
+    final AtomicLong rows = new AtomicLong(-1);
+    final boolean committed = runWithConcurrentCommit("UPDATE R SET state = 'closed' WHERE k = 'r0'", () -> rows.set(countRows(
+        database.command("opencypher", "WITH 0 AS v MATCH (r:R {n: v}) WHERE race.interleave(r) WITH r SET r.claimed = 'B' RETURN r.k",
+            Map.of()))));
+
+    assertThat(committed).isTrue();
+    assertThat(rows.get()).isEqualTo(1);
+    assertThat(valueOf("R", "claimed")).isEqualTo("B");
+    assertThat(valueOf("R", "state")).isEqualTo("closed");
   }
 
   /**
