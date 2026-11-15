@@ -641,8 +641,10 @@ public final class CypherFunctionHelper {
 
   /** {@link #cypherTypeRank(Object)} of a path, and of any value Cypher has no type for. */
   public static final int TYPE_RANK_PATH_OR_OTHER = 4;
+  /** {@link #cypherTypeRank(Object)} of a point, the map point() returns (issue #11949). */
+  public static final int TYPE_RANK_POINT          = TYPE_RANK_PATH_OR_OTHER + 1;
   /** {@link #cypherTypeRank(Object)} of the first temporal type, DATETIME: the six follow in {@link #temporalTypeRank(Object)} order. */
-  public static final int TYPE_RANK_FIRST_TEMPORAL = 5;
+  public static final int TYPE_RANK_FIRST_TEMPORAL = TYPE_RANK_POINT + 1;
   /** {@link #cypherTypeRank(Object)} of the last temporal type, DURATION. */
   public static final int TYPE_RANK_LAST_TEMPORAL  = TYPE_RANK_FIRST_TEMPORAL + 5;
   public static final int TYPE_RANK_STRING         = TYPE_RANK_LAST_TEMPORAL + 1;
@@ -653,8 +655,8 @@ public final class CypherFunctionHelper {
 
   /**
    * Returns the Cypher type order rank for mixed-type comparison.
-   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < the six temporal types (5-10, see
-   * {@link #temporalTypeRank(Object)}) < STRING(11) < BOOLEAN(12) < NUMBER(13) < NaN(14) < NULL(15)
+   * Order: MAP(0) < NODE(1) < RELATIONSHIP(2) < LIST(3) < PATH(4) < POINT(5) < the six temporal types (6-11, see
+   * {@link #temporalTypeRank(Object)}) < STRING(12) < BOOLEAN(13) < NUMBER(14) < NaN(15) < NULL(16)
    */
   public static int cypherTypeRank(final Object value) {
     if (value == null)
@@ -673,8 +675,10 @@ public final class CypherFunctionHelper {
       return 1;
     if (value instanceof Edge)
       return 2;
-    if (value instanceof Map)
-      return 0;
+    // A point is the map point() returns, ordered after LIST and PATH and before the temporal types, not among the maps
+    // (issue #11949)
+    if (value instanceof Map<?, ?> map)
+      return CypherValues.isPointShaped(map) ? TYPE_RANK_POINT : 0;
     // An array that is not a BINARY value is a sequence, ordered with the lists (issue #10380)
     if (MultiValue.isSequenceArray(value))
       return 3;
