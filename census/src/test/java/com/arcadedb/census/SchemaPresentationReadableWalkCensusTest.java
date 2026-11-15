@@ -125,6 +125,9 @@ class SchemaPresentationReadableWalkCensusTest {
       // QUERY PLANNING AND EXECUTION
       Map.entry("query/opencypher/Labels#matchingVertexTypes", PLANNER),
       Map.entry("query/opencypher/executor/CypherExecutionPlan#labelsAreTypeDisjoint", PLANNER),
+      Map.entry("query/opencypher/executor/CypherExecutionPlan#isTypeScanCheaperThanWalk",
+          "query planning: sums the vertices of every vertex type into a cost estimate that picks a plan, answers no caller "
+              + "(issue #11874)"),
       Map.entry("query/opencypher/executor/CypherExecutionPlan$PairJoinStatistics#vertices", PLANNER),
       Map.entry("query/opencypher/executor/operators/GAVEdgeRef#trackedEdgeTypes", PLANNER),
       Map.entry("query/opencypher/executor/steps/PairHashJoinOp#executeOLTP", PLANNER),
