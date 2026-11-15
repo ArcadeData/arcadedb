@@ -42,4 +42,19 @@ public class ForEachExecutionPlan extends UpdateExecutionPlan {
     }
     return false;
   }
+
+  /**
+   * Whether the loop, once executed, stopped on a {@code RETURN} of its body: the rows it then holds are the value of that
+   * {@code RETURN}.
+   */
+  public boolean executedReturn() {
+    for (final ExecutionStep step : getSteps()) {
+      if (step instanceof ForEachStep eachStep)
+        return eachStep.executedReturn();
+
+      if (step instanceof WhileStep whileStep)
+        return whileStep.executedReturn();
+    }
+    return false;
+  }
 }

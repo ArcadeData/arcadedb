@@ -147,7 +147,15 @@ public class ScriptLineStep extends AbstractExecutionStep {
         return new ReturnStep(executionPlan.statement, context);
     } else if (plan instanceof IfExecutionPlan executionPlan)
       return executionPlan.executeUntilReturn();
-    else if (plan instanceof BreakStatement)
+    else if (plan instanceof ForEachExecutionPlan executionPlan) {
+      // A FOREACH or WHILE with a RETURN in its body: run the loop now. If it stopped on that RETURN this line is the script's
+      // answer, read back the way the loop's rows are read when it is the last line; otherwise the script goes on (#11892)
+      if (!executed) {
+        executionPlan.executeInternal();
+        executed = true;
+      }
+      return executionPlan.executedReturn() ? this : null;
+    } else if (plan instanceof BreakStatement)
       return new BreakStep(context);
 
     throw new NoSuchElementException();
