@@ -129,6 +129,21 @@ class IndexDateOutsideMillisRangeIssue11625Test extends TestHelper {
     assertThat(DateUtils.dateTimeToTimestamp(LocalDate.of(1970, 1, 2), ChronoUnit.SECONDS)).isEqualTo(86_400L);
   }
 
+  /** The untyped compareTo takes the same exact-instant arm as the typed compare(), so it does not saturate past year 2262 either. */
+  @Test
+  void theUntypedCompareOfAnExtremeDateAndDateTimeIsByTheirInstant() {
+    final LocalDate date = LocalDate.parse("+300000000-01-01");
+    final LocalDateTime later = LocalDateTime.parse("+400000000-01-01T00:00");
+
+    assertThat(BinaryComparator.compareTo(date, later)).isNegative();
+    assertThat(BinaryComparator.compareTo(later, date)).isPositive();
+    assertThat(BinaryComparator.compareTo(date, date.atStartOfDay())).isZero();
+    assertThat(BinaryComparator.compareTo(date, date.atStartOfDay().plusNanos(1))).isNegative();
+    assertThat(BinaryComparator.compareTo(LocalDate.parse("-300000000-01-01"), LocalDateTime.parse("-400000000-01-01T00:00")))
+        .isPositive();
+    assertThat(BinaryComparator.compareTo(LocalDate.MAX, LocalDateTime.MAX)).isNegative();
+  }
+
   private List<LocalDate> dates(final String query, final Object... args) {
     try (final ResultSet rs = database.query("sql", query, args)) {
       return rs.stream().map(r -> r.<LocalDate>getProperty("d")).toList();

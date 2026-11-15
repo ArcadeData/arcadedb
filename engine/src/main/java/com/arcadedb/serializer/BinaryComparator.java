@@ -873,6 +873,14 @@ public class BinaryComparator {
       if (a instanceof Boolean || b instanceof Boolean)
         throw new IllegalArgumentException(
             "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
+      if (a instanceof LocalDate || b instanceof LocalDate) {
+        // the untyped twin of the exact-instant arm of the typed compare(): the NANOS conversion below saturates past year 2262,
+        // so a DATE and a date-time of different instants there would compare equal (issue #11625)
+        final Instant instantA = exactInstant(a);
+        final Instant instantB = exactInstant(b);
+        if (instantA != null && instantB != null)
+          return instantA.compareTo(instantB);
+      }
       final Long timestampA = DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS);
       final Long timestampB = DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS);
       // The same refusal for every other operand the helper has no timestamp for (a list, a map): it answers null for them too, which
