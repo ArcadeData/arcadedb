@@ -34,6 +34,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -418,7 +419,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    */
   private RuntimeException staleIndexOr(final IllegalArgumentException e) {
     if (TypeIndex.isStaleRead(index, e))
-      return new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
+      return new StaleIndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
     return e;
   }
 
@@ -453,7 +454,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             // only started counts too (issue #9615): it may already have taken the sub-indexes away, and an empty answer is the
             // one a statement planned again can still replace at no cost to the caller
             if (index instanceof TypeIndex typeIndex && (typeIndex.isDropped() || (count == 0 && typeIndex.isDropping())))
-              throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
+              throw new StaleIndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
           } else
             count++;
@@ -564,7 +565,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       try {
         index = (RangeIndex) db.getSchema().getIndexByName(indexName);
       } catch (final SchemaException e) {
-        throw new IndexException("Index '" + indexName + "' was dropped while it was being read", e);
+        throw new StaleIndexException("Index '" + indexName + "' was dropped while it was being read", e);
       }
     }
     // This cursor answers straight from the index, without loading each record through its bucket, so apply the

@@ -67,6 +67,7 @@ import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
 import com.arcadedb.schema.trigger.TriggerExecutionException;
@@ -156,6 +157,8 @@ public final class RemoteExceptionRebuilder {
       Map.entry(BrokenChunkChainException.class.getName(), BrokenChunkChainException::new),
       Map.entry(PageSnapshotException.class.getName(), PageSnapshotException::new),
       Map.entry(IndexException.class.getName(), IndexException::new),
+      // A READ THE SERVER COULD NOT FINISH ON AN INDEX A CONCURRENT DDL TOOK AWAY (ISSUE #11835): STILL AN IndexException
+      Map.entry(StaleIndexException.class.getName(), StaleIndexException::new),
       Map.entry(LockException.class.getName(), LockException::new),
       Map.entry(TransactionOutcomeUnknownException.class.getName(), TransactionOutcomeUnknownException::new),
       // THE ONES THE HTTP DRIVER ALSO MAPS BY HAND, AHEAD OF THIS TABLE AND WHATEVER THE STATUS, WITH THE ISSUE THAT ADDED EACH:
