@@ -625,6 +625,9 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
       }
       collectAggregations(ce.getElseExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ChainedPropertyAccessExpression chained) {
+      // max(m).a, head(collect(n)).name (issue #12275)
+      collectAggregations(chained.getBaseExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof ListSliceExpression lse) {
       collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof ListIndexExpression lie) {

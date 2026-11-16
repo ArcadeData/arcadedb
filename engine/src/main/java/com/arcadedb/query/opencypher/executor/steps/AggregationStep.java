@@ -352,6 +352,9 @@ public class AggregationStep extends AbstractExecutionStep {
     } else if (expr instanceof MapExpression me) {
       for (final Expression value : me.getEntries().values())
         collectAggregations(value, innerAggs, innerFunctions);
+    } else if (expr instanceof ChainedPropertyAccessExpression chained) {
+      // max(m).a, head(collect(n)).name (issue #12275)
+      collectAggregations(chained.getBaseExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof ListSliceExpression lse) {
       collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof ListIndexExpression lie) {
