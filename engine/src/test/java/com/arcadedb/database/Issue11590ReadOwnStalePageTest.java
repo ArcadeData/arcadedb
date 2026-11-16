@@ -711,6 +711,142 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
     assertThat(valuesOf("SELECT id FROM D ORDER BY id")).containsExactly(0, 1, 100);
   }
 
+  /**
+   * Issue #11769: T gives vertex 2 its first outgoing relationship (a new chunk at the head of the list), the other transaction
+   * commits a second one, and T deletes every outgoing relationship of vertex 2 through the index. T walked only the chunk it put
+   * at the head, so it deleted one; the edge-list head merge (#11498) re-linked that chunk behind the committed head and the commit
+   * went through, keeping the relationship T never saw.
+   */
+  @Test
+  void deleteOfAListWhoseFirstChunkTheTransactionCreatedIsNotReadStale() throws Exception {
+    createGraphWithNoListOnVertex2();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    final long deleted;
+    try (final ResultSet rs = database.command("opencypher", "MATCH (a:V {id: 2})-[e:E]->() DELETE e RETURN count(*) AS c")) {
+      deleted = ((Number) rs.next().getProperty("c")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(deleted).as("a DELETE that missed a relationship committed before it ran must not commit").isEqualTo(2L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(edgesOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS c")).isEqualTo(failure == null ? 0L : 1L);
+  }
+
+  /** As {@link #deleteOfAListWhoseFirstChunkTheTransactionCreatedIsNotReadStale()} on the incoming list of vertex 3. */
+  @Test
+  void deleteOfAnIncomingListWhoseFirstChunkTheTransactionCreatedIsNotReadStale() throws Exception {
+    createGraphWithNoListOnVertex2();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 4}), (b:V {id: 3}) CREATE (a)-[:E]->(b)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 1}), (b:V {id: 3}) CREATE (a)-[:E]->(b)");
+    final long deleted;
+    try (final ResultSet rs = database.command("opencypher", "MATCH (b:V {id: 3})<-[e:E]-() DELETE e RETURN count(*) AS c")) {
+      deleted = ((Number) rs.next().getProperty("c")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(deleted).as("a DELETE that missed a relationship committed before it ran must not commit").isEqualTo(2L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(edgesOf("MATCH (b:V {id: 3})<-[e:E]-() RETURN count(e) AS c")).isEqualTo(failure == null ? 0L : 1L);
+  }
+
+  /** The count of a list whose first chunk T created, read through the index, is a stale read of that list too. */
+  @Test
+  void countOfAListWhoseFirstChunkTheTransactionCreatedIsNotReadStale() throws Exception {
+    createGraphWithNoListOnVertex2();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    final long counted;
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS c")) {
+      counted = ((Number) rs.next().getProperty("c")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(counted).as("a transaction that commits must have counted the relationship committed before its statement")
+          .isEqualTo(2L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(edgesOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS c")).isEqualTo(failure == null ? 2L : 1L);
+  }
+
+  /**
+   * A read of the list through the adjacency scanner the {@code algo.*} neighbourhood procedures use (EdgeListScanner), which reads
+   * a chunk this transaction holds from the object it queued rather than through the record cache: it is a read of that chunk too.
+   */
+  @Test
+  void neighbourhoodOfAListWhoseFirstChunkTheTransactionCreatedIsNotReadStale() throws Exception {
+    createGraphWithNoListOnVertex2();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    final long union;
+    try (final ResultSet rs = database.command("opencypher",
+        "MATCH (a:V {id: 2}), (b:V {id: 0}) CALL algo.totalNeighbors(a, b, 'E', 'OUT') YIELD coefficient RETURN coefficient")) {
+      union = ((Number) rs.next().getProperty("coefficient")).longValue();
+    }
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(union).as("a transaction that commits must have read the relationship committed before its statement")
+          .isEqualTo(3L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+  }
+
+  /**
+   * The success side of the cases above: T gives vertex 2 its first relationship, the other transaction a second one, and T then
+   * adds another relationship of vertex 2 without walking the list (the vertex is matched through the index again). Nothing T
+   * decided rests on the list, and the edge-list head merge still takes both moves.
+   */
+  @Test
+  void blindFirstChunkOfAListStillMergesWithAConcurrentHeadMove() throws Exception {
+    createGraphWithNoListOnVertex2();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 4}) CREATE (a)-[:E]->(x)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
+    database.command("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 5}) CREATE (a)-[:E]->(x)").close();
+    final long headMergesBefore = ((DatabaseInternal) database).getPageManager().getStats().edgeListHeadMerges;
+    database.commit();
+
+    assertThat(((DatabaseInternal) database).getPageManager().getStats().edgeListHeadMerges)
+        .as("the commit went through the edge-list head merge").isGreaterThan(headMergesBefore);
+    assertThat(edgesOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS c")).isEqualTo(3L);
+  }
+
+  /**
+   * Vertices 0..5 in one bucket and one relationship 0->5, so vertex 2 has no outgoing list and vertex 3 no incoming one: a new
+   * relationship from 2, or to 3, puts the first chunk at the head of that list.
+   */
+  private void createGraphWithNoListOnVertex2() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+      database.getSchema().createEdgeType("E", 1);
+      for (int i = 0; i < 6; i++)
+        database.newVertex("V").set("id", i).save();
+      database.command("opencypher", "MATCH (a:V {id: 0}), (x:V {id: 5}) CREATE (a)-[:E]->(x)").close();
+    });
+  }
+
+  private long edgesOf(final String query) {
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      return ((Number) rs.next().getProperty("c")).longValue();
+    }
+  }
+
   private void createDocumentTypeWithRecord() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("D", 1).createProperty("id", Type.INTEGER);
