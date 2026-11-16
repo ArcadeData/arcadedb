@@ -6226,6 +6226,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * A client per operation rather than a long-lived second one: add- and remove-peer are operator actions, so
    * the connection setup is paid once per administrative request and there is no second client to keep in step
    * with {@code refreshRaftClient}'s leader re-seeding, TLS parameters and teardown.
+   * <p>
+   * <b>A targeted leadership transfer takes one too</b> (issue #12127), and there the point is not the retry policy but
+   * that no leader change closes it: {@code refreshRaftClient} closes the shared client from {@code notifyLeaderChanged},
+   * which Ratis calls before it completes the transfer's reply, so a transfer in flight on the shared client held that
+   * close for the 3 s gRPC grants in-flight calls on a graceful channel shutdown.
    *
    * <p>
    * <b>The per-RPC timeout is set here rather than inherited, on a COPY of the properties</b> (review of PR
