@@ -839,6 +839,12 @@ public class BinarySerializer {
       }
       break;
     }
+    case BinaryTypes.TYPE_LOCAL_DATETIME: {
+      final LocalDateTime dateTime = (LocalDateTime) value;
+      content.putNumber(dateTime.toEpochSecond(ZoneOffset.UTC));
+      content.putUnsignedNumber(dateTime.getNano());
+      break;
+    }
     case BinaryTypes.TYPE_DURATION: {
       final CypherDuration duration = (CypherDuration) value;
       content.putNumber(duration.getMonths());
@@ -1198,6 +1204,11 @@ public class BinarySerializer {
           ZoneOffset.ofTotalSeconds((int) content.getNumber()) :
           ZoneId.of(content.getString());
       value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSecond, nano), zone);
+      break;
+    }
+    case BinaryTypes.TYPE_LOCAL_DATETIME: {
+      final long epochSecond = content.getNumber();
+      value = LocalDateTime.ofEpochSecond(epochSecond, (int) content.getUnsignedNumber(), ZoneOffset.UTC);
       break;
     }
     case BinaryTypes.TYPE_DURATION: {

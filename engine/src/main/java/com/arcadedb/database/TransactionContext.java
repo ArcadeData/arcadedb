@@ -763,6 +763,20 @@ public class TransactionContext implements Transaction {
     return !modifiedRecordsCache.isEmpty() || (updatedRecords != null && !updatedRecords.isEmpty());
   }
 
+  /**
+   * Adds to {@code target} the identity of every record this transaction wrote or deleted and has not committed yet: once it
+   * commits, a copy of one of those records read before is a version behind, and updating that copy in a later transaction is
+   * refused as a concurrent modification (issue #12324). Costs one pass over the written and deleted records.
+   */
+  public void collectWrittenRecordIds(final RidHashSet target) {
+    for (final RID rid : modifiedRecordsCache.keySet())
+      target.add(rid);
+    if (updatedRecords != null)
+      for (final RID rid : updatedRecords.keySet())
+        target.add(rid);
+    deletedRecordsInTx.forEach(target::add);
+  }
+
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
     if (rec != null) {

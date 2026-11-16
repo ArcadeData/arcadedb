@@ -47,6 +47,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -57,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 /**
  * Execution step for CALL subquery clause.
@@ -350,6 +352,8 @@ public class SubqueryStep extends AbstractExecutionStep {
       private int batchNumber = 0;
       // ON ERROR BREAK met a failed batch: no later batch runs (issue #11595)
       private boolean broken = false;
+      // The records the batches committed so far wrote, re-read in the outer rows produced before (issue #12324)
+      private RidHashSet committedWrites = null;
 
       @Override
       public boolean hasNext() {
@@ -437,10 +441,20 @@ public class SubqueryStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
+              reloadCommittedRecords(outerRow, committedWrites);
               innerResultsPerRow.add(executeInnerQuery(outerRow, context));
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - begin;
+            }
+          }
+          if (innerMayWrite) {
+            // What this batch wrote is a version ahead, once it commits, of the copies the outer rows not run yet hold
+            final TransactionContext tx = database.getTransactionIfExists();
+            if (tx != null && tx.hasWrittenRecords()) {
+              if (committedWrites == null)
+                committedWrites = new RidHashSet();
+              tx.collectWrittenRecordIds(committedWrites);
             }
           }
           database.commit();
@@ -480,6 +494,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         for (int i = 0; i < batch.size(); i++) {
           final Result outerRow = batch.get(i);
           refreshOuterBindings(outerRow, context);
+          reloadCommittedRecords(outerRow, committedWrites);
           final List<Result> innerResults = innerResultsPerRow.get(i);
           if (innerResults.isEmpty()) {
             if (subqueryClause.isOptional())
@@ -651,35 +666,66 @@ public class SubqueryStep extends AbstractExecutionStep {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx == null || !tx.hasWrittenRecords())
       return;
+    replaceRecords(mutable, WrittenCopy::of);
+  }
+
+  /**
+   * Before the body of an IN TRANSACTIONS batch runs, and once its batch committed, re-reads in the row the records an earlier
+   * batch of this subquery committed: the row was produced before that commit, so the copies it holds carry the version from
+   * before, and a write through one of them in the next batch's transaction was refused with a
+   * {@link com.arcadedb.exception.ConcurrentModificationException} (issue #12324). The nodes and relationships bound directly,
+   * the members of the paths and the records nested in lists and maps are all re-read, as {@link #refreshWrittenBindings} lines
+   * them up within one transaction. A record deleted by the batch keeps the copy the row holds.
+   */
+  private void reloadCommittedRecords(final Result row, final RidHashSet committedWrites) {
+    if (committedWrites == null || committedWrites.isEmpty() || !(row instanceof ResultInternal mutable))
+      return;
+    replaceRecords(mutable, document -> {
+      final RID rid = document.getIdentity();
+      if (rid == null || !rid.isValid() || !committedWrites.contains(rid))
+        return document;
+      try {
+        return database.lookupByRID(rid, true) instanceof Document reloaded ? reloaded : document;
+      } catch (final RecordNotFoundException e) {
+        return document;
+      }
+    });
+  }
+
+  /** Replaces, in every binding of the row, each record {@code replacement} answers another object for. */
+  private static void replaceRecords(final ResultInternal row, final UnaryOperator<Document> replacement) {
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
-      final Object written = writtenCopy(value);
-      if (written != value)
-        mutable.setProperty(name, written);
+      final Object replaced = replaceRecords(value, replacement);
+      if (replaced != value)
+        row.setProperty(name, replaced);
     }
   }
 
-  /** @return {@code value} with every record in it replaced by the transaction's written copy, or {@code value} itself when none changed */
-  private static Object writtenCopy(final Object value) {
+  /**
+   * @return {@code value} with every record in it, the members of a path and the elements of lists and maps included, replaced
+   * by what {@code replacement} answers for it, or {@code value} itself when none changed
+   */
+  private static Object replaceRecords(final Object value, final UnaryOperator<Document> replacement) {
     if (value instanceof Document doc)
-      return WrittenCopy.of(doc);
+      return replacement.apply(doc);
     if (value instanceof TraversalPath path) {
       TraversalPath live = path;
       for (final Vertex vertex : path.getVertices())
-        live = withWrittenCopy(live, vertex);
+        live = withReplacement(live, vertex, replacement);
       for (final Edge edge : path.getEdges())
-        live = withWrittenCopy(live, edge);
+        live = withReplacement(live, edge, replacement);
       return live;
     }
     if (value instanceof List<?> list) {
       List<Object> copy = null;
       int i = 0;
       for (final Object element : list) {
-        final Object written = writtenCopy(element);
-        if (written != element && copy == null)
+        final Object replaced = replaceRecords(element, replacement);
+        if (replaced != element && copy == null)
           copy = new ArrayList<>(list);
         if (copy != null)
-          copy.set(i, written);
+          copy.set(i, replaced);
         ++i;
       }
       return copy != null ? copy : list;
@@ -688,11 +734,11 @@ public class SubqueryStep extends AbstractExecutionStep {
       Map<Object, Object> copy = null;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object element = entry.getValue();
-        final Object written = writtenCopy(element);
-        if (written != element) {
+        final Object replaced = replaceRecords(element, replacement);
+        if (replaced != element) {
           if (copy == null)
             copy = new LinkedHashMap<>(map);
-          copy.put(entry.getKey(), written);
+          copy.put(entry.getKey(), replaced);
         }
       }
       return copy != null ? copy : map;
@@ -700,9 +746,10 @@ public class SubqueryStep extends AbstractExecutionStep {
     return value;
   }
 
-  private static TraversalPath withWrittenCopy(final TraversalPath path, final Document member) {
-    final Document written = WrittenCopy.of(member);
-    return written != member ? path.withRecord(member.getIdentity(), written) : path;
+  private static TraversalPath withReplacement(final TraversalPath path, final Document member,
+      final UnaryOperator<Document> replacement) {
+    final Document replaced = replacement.apply(member);
+    return replaced != member ? path.withRecord(member.getIdentity(), replaced) : path;
   }
 
   /**
