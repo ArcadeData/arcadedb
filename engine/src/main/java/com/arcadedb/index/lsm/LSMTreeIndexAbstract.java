@@ -759,6 +759,27 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return false;
   }
 
+  /**
+   * Whether a STRING given as a key on a property nothing declares can be spelled as an older build spelled the key of a list or a
+   * number ({@link #legacyKeys}), so that an entry such a build wrote for that list or number is under it too (PR #12166 review).
+   * The old spellings that differ from the canonical ones all hold a decimal point or an exponent ({@code 1.0}, {@code -0.0},
+   * {@code 1.0E300}, {@code [1.5, 2.0]}), and start with a digit, a sign or a bracket. Answers without loading anything.
+   */
+  boolean maySpellALegacyKey(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return false;
+    for (int i = 0; i < keys.length && i < convertedKeys.length && i < binaryKeyTypes.length; ++i) {
+      if (!(keys[i] instanceof CharSequence) || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING
+          || !(convertedKeys[i] instanceof String string) || string.isEmpty())
+        continue;
+      final char first = string.charAt(0);
+      if ((first == '[' || first == '-' || Character.isDigit(first)) && (string.indexOf('.') >= 0 || string.indexOf('e') >= 0
+          || string.indexOf('E') >= 0) && isUndeclaredProperty(i))
+        return true;
+    }
+    return false;
+  }
+
   /** True when the schema declares no property for the i-th key: the Cypher fallback of an index created before any value existed. */
   private boolean isUndeclaredProperty(final int keyIndex) {
     final LSMTreeIndex main = mainIndex;

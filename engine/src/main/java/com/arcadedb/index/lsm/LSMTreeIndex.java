@@ -31,12 +31,14 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
@@ -714,15 +716,43 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     final Object[] legacyKeys = mutable.legacyKeys(keys, convertedKeys);
     if (legacyKeys != null)
       return withLegacyEntries(convertedKeys, legacyKeys, limit);
+    if (mutable.maySpellALegacyKey(keys, convertedKeys))
+      return withoutLegacyHolders(convertedKeys, limit);
     return getConverted(convertedKeys, limit);
   }
+
+  /**
+   * Test seam (PR #12166 review): runs between the read of the canonical key and the read of the old spelling of a seek, so a test
+   * can commit in between. Null outside tests.
+   */
+  public static volatile Runnable betweenLegacyProbesForTesting;
 
   /**
    * The entries of {@code convertedKeys}, with the entries an older build wrote for the same value under {@code legacyKeys}
    * (issues #12160 and #12233, see {@link LSMTreeIndexAbstract#legacyKeys}). An old entry counts only when its record holds the
    * value: the old text of a list or a number is also the key of a STRING spelled the same way, which is another value.
+   * <p>
+   * The two keys are read one after the other, and a commit between the reads can move a record's entry from the old key to the
+   * canonical one: it would be in neither read. So both are read between two samples of the page manager's publication sequence
+   * that are equal and even, as {@link ConsistentKeyLookup} reads its keys, and otherwise read again; after
+   * {@link ConsistentKeyLookup#MAX_ATTEMPTS} attempts, once more with the publications held off.
    */
   private IndexCursor withLegacyEntries(final Object[] convertedKeys, final Object[] legacyKeys, final int limit) {
+    final PageManager pageManager = getDatabase().getPageManager();
+    for (int attempt = 0; attempt < ConsistentKeyLookup.MAX_ATTEMPTS; attempt++) {
+      final long before = pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
+      if ((before & 1) != 0)
+        continue;
+      final Set<IndexCursorEntry> entries = readWithLegacyEntries(convertedKeys, legacyKeys, limit);
+      if (pageManager.getPublicationSequence() == before)
+        return entries.isEmpty() ? EMPTY_CURSOR : new TempIndexCursor(entries);
+    }
+    final Set<IndexCursorEntry> entries = ConsistentKeyLookup.readAgainstOneCommit(pageManager,
+        () -> readWithLegacyEntries(convertedKeys, legacyKeys, limit), "Lookup on index '" + getName() + "'");
+    return entries.isEmpty() ? EMPTY_CURSOR : new TempIndexCursor(entries);
+  }
+
+  private Set<IndexCursorEntry> readWithLegacyEntries(final Object[] convertedKeys, final Object[] legacyKeys, final int limit) {
     final Set<IndexCursorEntry> entries = new LinkedHashSet<>();
     final Set<RID> seen = new HashSet<>();
     try (final IndexCursor cursor = getConverted(convertedKeys, limit)) {
@@ -732,6 +762,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           entries.add(new IndexCursorEntry(convertedKeys, next, 1));
       }
     }
+    final Runnable betweenProbes = betweenLegacyProbesForTesting;
+    if (betweenProbes != null)
+      betweenProbes.run();
     if (limit < 0 || entries.size() < limit)
       try (final IndexCursor cursor = getConverted(legacyKeys, -1)) {
         while (cursor.hasNext() && (limit < 0 || entries.size() < limit)) {
@@ -742,7 +775,34 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           }
         }
       }
+    return entries;
+  }
+
+  /**
+   * The entries of a STRING key that spells the old key of a list or a number ({@link LSMTreeIndexAbstract#maySpellALegacyKey}),
+   * without the records that are under it only through an entry an older build wrote for their list or number: since #11615 and
+   * #9132 the STRING and the value are two keys. The limit is applied to what is left.
+   */
+  private IndexCursor withoutLegacyHolders(final Object[] convertedKeys, final int limit) {
+    final Set<IndexCursorEntry> entries = new LinkedHashSet<>();
+    try (final IndexCursor cursor = getConverted(convertedKeys, -1)) {
+      while (cursor.hasNext() && (limit < 0 || entries.size() < limit)) {
+        final Identifiable next = cursor.next();
+        if (holdsKey(next.getIdentity(), convertedKeys))
+          entries.add(new IndexCursorEntry(convertedKeys, next, 1));
+      }
+    }
     return entries.isEmpty() ? EMPTY_CURSOR : new TempIndexCursor(entries);
+  }
+
+  /**
+   * The entries of keys already converted ({@link #convertLookupKeys}), as they are: no old spelling is read and no holder is dropped
+   * (issues #12160 and #12233). For the checks that judge the entries themselves, such as CHECK DATABASE and the uniqueness check
+   * under an old spelling.
+   */
+  public IndexCursor getStored(final Object[] storedKeys) {
+    checkIsValid();
+    return getConverted(storedKeys, -1);
   }
 
   /**

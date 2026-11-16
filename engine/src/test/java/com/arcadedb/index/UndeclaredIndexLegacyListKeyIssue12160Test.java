@@ -23,12 +23,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -105,6 +107,61 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
   }
 
   /**
+   * The STRING '[1.5, 2.0]' spells the old key of the list [1.5, 2.0], and since #11615 the two are different keys: an old entry
+   * of the list is no holder of the STRING, for a seek or for the uniqueness check (PR #12166 review).
+   */
+  @Test
+  void aStringSpelledLikeAnOldListKeyIsNotTheList() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE n.v IS UNIQUE");
+    database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 0, v: $v})", Map.of("v", List.of(1.5, 2.0))));
+    writeLegacyEntries("K[v]", "K");
+
+    database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 1, v: '[1.5, 2.0]'})"));
+    // SQL answers the rows of the seek as they are, so a holder that does not hold the STRING would be one of them
+    assertThat(ids("SELECT id FROM K WHERE v = :p", Map.of("p", "[1.5, 2.0]"), "sql")).containsExactly(1);
+    assertThat(ids("SELECT id FROM K WHERE v = :p", Map.of("p", List.of(1.5, 2.0)), "sql")).containsExactly(0);
+    assertThat(checkDatabaseErrors()).isZero();
+  }
+
+  /**
+   * A seek reads the canonical key and then the old one. A commit between the two reads that moves the record's entry from the old
+   * key to the canonical one ([1.0] rewritten as [1], one key) must not hide the record from the seek (PR #12166 review).
+   */
+  @Test
+  void aCommitBetweenTheTwoReadsOfASeekHidesNoRecord() throws Exception {
+    database.command("opencypher", "CREATE INDEX FOR (n:U) ON (n.v)");
+    database.transaction(() -> database.command("opencypher", "CREATE (:U {id: 0, v: $v})", Map.of("v", List.of(1.0))));
+    writeLegacyEntries("U[v]", "U");
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("U[v]");
+
+    final AtomicBoolean moved = new AtomicBoolean();
+    LSMTreeIndex.betweenLegacyProbesForTesting = () -> {
+      if (!moved.compareAndSet(false, true))
+        return;
+      final Thread writer = new Thread(() -> database.transaction(
+          () -> database.command("opencypher", "MATCH (n:U {id: 0}) SET n.v = $v", Map.of("v", List.of(1L)))));
+      writer.start();
+      try {
+        writer.join();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+    try {
+      final List<RID> found = new ArrayList<>();
+      try (final IndexCursor cursor = index.get(new Object[] { List.of(1.0) })) {
+        while (cursor.hasNext())
+          found.add(cursor.next().getIdentity());
+      }
+      assertThat(moved.get()).isTrue();
+      assertThat(found).hasSize(1);
+    } finally {
+      LSMTreeIndex.betweenLegacyProbesForTesting = null;
+    }
+    assertThat(checkDatabaseErrors()).isZero();
+  }
+
+  /**
    * An old entry is found by the spelling it was written with, as the build that wrote it found it. Another spelling of the same
    * list ([1.5, 2] for an entry written for [1.5, 2.0]) is one key only once the index is rebuilt, which writes every entry under
    * the canonical key (#11777 was that gap in the old builds).
@@ -163,6 +220,7 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
    */
   private void writeLegacyEntries(final String indexName, final String typeName) {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(indexName);
+    final List<String> written = new ArrayList<>();
     database.transaction(() -> {
       try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid, v FROM " + typeName)) {
         while (rs.hasNext()) {
@@ -175,18 +233,20 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
             if (bucketIndex.getAssociatedBucketId() == rid.getBucketId()) {
               bucketIndex.remove(new Object[] { list }, rid);
               bucketIndex.put(new Object[] { list.toString() }, new RID[] { rid });
+              written.add(list.toString());
             }
         }
       }
     });
-    // the entries are the old ones now: the canonical key of a list with a whole-number float finds nothing by itself
+    // the entries are the old ones now
     try (final IndexCursor cursor = typeIndex.iterator(true)) {
       final List<String> keys = new ArrayList<>();
       while (cursor.hasNext()) {
         cursor.next();
         keys.add(String.valueOf(cursor.getKeys()[0]));
       }
-      assertThat(keys).contains("[1.5, 2.0]").doesNotContain("[1.5, 2]");
+      assertThat(written).isNotEmpty();
+      assertThat(keys).containsAll(written).doesNotContain("[1.5, 2]", "[1]");
     }
   }
 

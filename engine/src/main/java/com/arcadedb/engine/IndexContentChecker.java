@@ -289,10 +289,11 @@ final class IndexContentChecker {
 
   /**
    * Whether the index holds the pair now: a record written after the walk, which the scan met, is not a missing entry, and an
-   * entry removed after the walk is no finding.
+   * entry removed after the walk is no finding. The entries are read as stored: a lookup would also read the old spelling of a list
+   * or a number and drop the holders of an old spelling (issues #12160 and #12233), and the pair asked about is the one written.
    */
   private boolean isIndexed(final LSMTreeIndex index, final Object[] keys, final RID rid) {
-    final IndexCursor cursor = index.get(keys);
+    final IndexCursor cursor = index.getStored(keys);
     try {
       while (cursor.hasNext()) {
         // the contract of IndexCursor says next() is never null: guarded anyway, a null must not abort the comparison

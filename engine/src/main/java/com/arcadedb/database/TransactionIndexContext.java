@@ -1273,17 +1273,22 @@ public class TransactionIndexContext {
     final Object[] legacyKeys = index.legacyKeysOf(key.keyValues, key.rid);
     if (legacyKeys == null)
       return;
-    final Index idx = index.getTypeName() == null ?
-        index :
+    final TypeIndex typeIndex = index.getTypeName() == null ?
+        null :
         database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
-    if (idx == null)
-      return;
-    // a holder this transaction deleted has its old entry removed in the transaction, which the lookup does not return
-    try (final IndexCursor found = idx.get(legacyKeys)) {
-      while (found.hasNext()) {
-        final RID holder = found.next().getIdentity();
-        if (!holder.equals(key.rid) && index.holdsKey(holder, key.keyValues))
-          throw new DuplicatedKeyException(idx.getName(), Arrays.toString(key.keyValues), holder);
+    final IndexInternal[] indexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : new IndexInternal[] { index };
+    for (final IndexInternal bucketIndex : indexes) {
+      if (!(bucketIndex instanceof LSMTreeIndex lsmIndex))
+        continue;
+      // the entries as stored: a lookup of the old text as a key drops the holders of the old spelling, which are the ones wanted
+      // here. A holder this transaction deleted no longer holds the value
+      try (final IndexCursor found = lsmIndex.getStored(legacyKeys)) {
+        while (found.hasNext()) {
+          final RID holder = found.next().getIdentity();
+          if (!holder.equals(key.rid) && index.holdsKey(holder, key.keyValues))
+            throw new DuplicatedKeyException(typeIndex != null ? typeIndex.getName() : index.getName(),
+                Arrays.toString(key.keyValues), holder);
+        }
       }
     }
   }

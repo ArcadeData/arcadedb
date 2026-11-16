@@ -103,6 +103,23 @@ class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
     assertThat(checkDatabaseErrors()).isZero();
   }
 
+  /**
+   * The STRING '1.0' spells the old key of the number 1.0, and since #9132 the two are different keys: an old entry of the number
+   * is no holder of the STRING, for a seek or for the uniqueness check (PR #12166 review).
+   */
+  @Test
+  void aStringSpelledLikeAnOldNumberKeyIsNotTheNumber() {
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE n.v IS UNIQUE");
+    database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 0, v: 1.0})"));
+    writeLegacyEntries("K[v]", "K");
+
+    database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 1, v: '1.0'})"));
+    // SQL answers the rows of the seek as they are, so a holder that does not hold the STRING would be one of them
+    assertThat(ids("SELECT id FROM K WHERE v = :p", Map.of("p", "1.0"), "sql")).containsExactly(1);
+    assertThat(ids("SELECT id FROM K WHERE v = :p", Map.of("p", 1.0), "sql")).containsExactly(0);
+    assertThat(checkDatabaseErrors()).isZero();
+  }
+
   /** After REBUILD INDEX every entry is under the canonical key: 1.0 and 1 are one key again. */
   @Test
   void rebuildKeysTheLegacyNumbersCanonically() {
