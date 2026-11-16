@@ -32,6 +32,7 @@ import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.TimeBoundRegex;
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
@@ -136,6 +137,10 @@ public class FullTextQueryExecutor {
   // The compounded caret boost (e.g. `title:java^3`) of the BoostQuery currently being descended, multiplied into recorded
   // scoring tokens. Lucene's QueryParser already parses `^` into a BoostQuery; this is where that boost takes effect for BM25.
   private       float              currentBoost        = 1.0f;
+  // The query text last parsed, and the query collectQueryMatches decides: a boolean query of negations alone answers the
+  // complement of what they match only as that query, never nested in it (issue #12164)
+  private       String             queryText;
+  private       Query              root;
 
   // Throttle for the scoring-token-cap WARNING. A new executor is created per query, so a per-query flag would still log on every
   // execution of a repeated huge wildcard; this static throttle bounds it to once per window across the JVM (matching the 60s
@@ -197,12 +202,16 @@ public class FullTextQueryExecutor {
    * @return a configured QueryParser
    */
   private QueryParser createQueryParser() {
+    return createQueryParser(analyzer);
+  }
+
+  private QueryParser createQueryParser(final Analyzer parserAnalyzer) {
     // Restricted to some fields, an unqualified clause is expanded by Lucene's own parser into the OR of that clause over
     // each of them - a term, a phrase, a prefix, a wildcard and a fuzzy term alike - which the collectors below then look up
     // under the field-qualified keys the index stores for a multi-property index (issue #9910)
     final QueryParser parser = restrictedFields != null ?
-        new MultiFieldQueryParser(restrictedFields, analyzer) :
-        new QueryParser(DEFAULT_FIELD, analyzer);
+        new MultiFieldQueryParser(restrictedFields, parserAnalyzer) :
+        new QueryParser(DEFAULT_FIELD, parserAnalyzer);
     if (metadata != null) {
       parser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
       if ("AND".equalsIgnoreCase(metadata.getDefaultOperator())) {
@@ -261,7 +270,7 @@ public class FullTextQueryExecutor {
     tokensOnly = true;
     try {
       // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
-      collectMatches(query, new HashMap<>(), new HashSet<>());
+      collectMatches(query, new HashMap<>());
     } finally {
       tokensOnly = false;
     }
@@ -273,11 +282,9 @@ public class FullTextQueryExecutor {
   @FunctionalInterface
   interface RecordMatcher {
     /**
-     * @param keys     the stored keys the record has a posting under
-     * @param excluded its first cell is set when a MUST_NOT clause matches the record: the search subtracts what such a clause
-     *                 matches from the matches of the whole query, wherever the clause sits in it
+     * @param keys the stored keys the record has a posting under
      */
-    boolean matches(Set<String> keys, boolean[] excluded);
+    boolean matches(Set<String> keys);
   }
 
   /**
@@ -289,8 +296,8 @@ public class FullTextQueryExecutor {
 
   /**
    * The query as {@link #collectQueryMatches} decides it, for one record at a time, or null when a clause of it is not decided by
-   * the record alone (issue #11683): a wildcard, prefix, fuzzy or regexp clause matches the keys of the whole index, and a
-   * MUST_NOT clause beside no MUST clause answers the complement of the bucket's other matches.
+   * the record alone (issue #11683): a wildcard, prefix, fuzzy or regexp clause matches the keys of the whole index, and a query
+   * of negations alone answers the complement of the bucket's other matches.
    * <p>
    * The scoring tokens are this executor's own map in its iteration order, which is the order {@link #executeQuery} hands it to
    * the BM25 pass: the tokens-only walk records the same tokens in the same order as the matching walk, since both visit the
@@ -299,6 +306,7 @@ public class FullTextQueryExecutor {
   RecordQuery recordQuery(final String queryString) {
     resetState();
     final Query query = parseQuery(queryString);
+    root = query;
     final RecordMatcher matcher = recordMatcher(query);
     if (matcher == null)
       return null;
@@ -313,12 +321,10 @@ public class FullTextQueryExecutor {
       final List<RecordMatcher> musts = new ArrayList<>();
       final List<RecordMatcher> shoulds = new ArrayList<>();
       for (final BooleanClause clause : bq.clauses()) {
-        final RecordMatcher matcher = switch (clause.occur()) {
-          case MUST_NOT -> exclusionMatcher(clause.query());
-          case MUST, SHOULD -> recordMatcher(clause.query());
-          // collectMatches ignores a FILTER clause: no parser of ours writes one, so it is left to the index
-          case FILTER -> null;
-        };
+        // collectMatches ignores a FILTER clause: no parser of ours writes one, so it is left to the index
+        if (clause.occur() == BooleanClause.Occur.FILTER)
+          return null;
+        final RecordMatcher matcher = recordMatcher(clause.query());
         if (matcher == null)
           return null;
         switch (clause.occur()) {
@@ -327,33 +333,32 @@ public class FullTextQueryExecutor {
           default -> shoulds.add(matcher);
         }
       }
-      // Without a MUST clause, MUST_NOT clauses answer the whole bucket minus what they match when no SHOULD clause matches any
-      // record of the bucket: a fact about the other records
-      if (!exclusions.isEmpty() && musts.isEmpty())
-        return null;
+      if (musts.isEmpty() && shoulds.isEmpty())
+        // Negations alone answer the complement of what they match as the whole query, which is a fact about the other records,
+        // and nothing nested in it (issue #12164)
+        return exclusions.isEmpty() || bq != root ? keys -> false : null;
       final boolean conjunction = !musts.isEmpty();
-      return (keys, excluded) -> {
+      return keys -> {
         for (final RecordMatcher exclusion : exclusions)
-          if (exclusion.matches(keys, excluded))
-            excluded[0] = true;
-        // Every clause is decided, as collectMatches collects every one: a MUST_NOT clause nested in any of them excludes the
-        // record from the whole answer
-        boolean all = true;
-        for (final RecordMatcher must : musts)
-          if (!must.matches(keys, excluded))
-            all = false;
-        boolean any = false;
+          if (exclusion.matches(keys))
+            return false;
+        if (conjunction) {
+          for (final RecordMatcher must : musts)
+            if (!must.matches(keys))
+              return false;
+          return true;
+        }
         for (final RecordMatcher should : shoulds)
-          if (should.matches(keys, excluded))
-            any = true;
-        return conjunction ? all : any;
+          if (should.matches(keys))
+            return true;
+        return false;
       };
     }
     if (query instanceof final BoostQuery bq)
       return recordMatcher(bq.getQuery());
     if (query instanceof final TermQuery tq) {
       final String key = buildSearchKey(tq.getTerm().field(), tq.getTerm().text());
-      return (keys, excluded) -> keys.contains(key);
+      return keys -> keys.contains(key);
     }
     if (query instanceof final PhraseQuery pq) {
       // collectPhraseMatches requires every term and not their order
@@ -361,7 +366,7 @@ public class FullTextQueryExecutor {
       final String[] phraseKeys = new String[terms.length];
       for (int i = 0; i < terms.length; i++)
         phraseKeys[i] = buildSearchKey(terms[i].field(), terms[i].text());
-      return (keys, excluded) -> {
+      return keys -> {
         if (phraseKeys.length == 0)
           return false;
         for (final String key : phraseKeys)
@@ -371,32 +376,6 @@ public class FullTextQueryExecutor {
       };
     }
     return null;
-  }
-
-  /** {@link #collectTermsForExclusion} for one record: whether the record is among what a MUST_NOT clause excludes. */
-  private RecordMatcher exclusionMatcher(final Query query) {
-    if (query instanceof final BooleanQuery bq) {
-      final List<RecordMatcher> parts = new ArrayList<>();
-      for (final BooleanClause clause : bq.clauses()) {
-        if (clause.occur() == BooleanClause.Occur.MUST_NOT)
-          continue;
-        final RecordMatcher part = exclusionMatcher(clause.query());
-        if (part == null)
-          return null;
-        parts.add(part);
-      }
-      return (keys, excluded) -> {
-        for (final RecordMatcher part : parts)
-          if (part.matches(keys, excluded))
-            return true;
-        return false;
-      };
-    }
-    final RecordMatcher leaf = recordMatcher(query);
-    if (leaf == null)
-      return null;
-    // collectTermsForExclusion matches a leaf with an exclusion set of its own, which it then drops
-    return (keys, excluded) -> leaf.matches(keys, new boolean[1]);
   }
 
   /**
@@ -416,6 +395,7 @@ public class FullTextQueryExecutor {
   private Query parseQuery(final String queryString) {
     try {
       // QueryParser is not thread-safe, so create one per invocation.
+      queryText = queryString;
       return createQueryParser().parse(queryString);
     } catch (final ParseException e) {
       throw new FullTextQueryParseException("Invalid search query: " + queryString, e);
@@ -468,46 +448,47 @@ public class FullTextQueryExecutor {
 
   private Map<RID, AtomicInteger> collectQueryMatches(final Query query) {
     final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
-    final Set<RID> excluded = new HashSet<>();
-
-    collectMatches(query, scoreMap, excluded);
-
-    // Remove excluded RIDs
-    for (final RID rid : excluded) {
-      scoreMap.remove(rid);
-    }
+    root = query;
+    collectMatches(query, scoreMap);
     return scoreMap;
   }
 
-  private void collectMatches(final Query query, final Map<RID, AtomicInteger> scoreMap,
-      final Set<RID> excluded) {
+  /**
+   * Collects the records {@code query} matches into {@code scoreMap}, with the CLASSIC coordination score. A boolean query is
+   * decided as Lucene decides it (issue #12164): the records of its MUST clauses, or of any of its SHOULD clauses when it has no MUST
+   * clause, less the records its own MUST_NOT clauses match, each of those clauses decided as a whole query in turn. A boolean query
+   * of MUST_NOT clauses alone matches nothing, except as the whole query, where it answers the complement of what they match.
+   */
+  private void collectMatches(final Query query, final Map<RID, AtomicInteger> scoreMap) {
 
     if (query instanceof final BooleanQuery bq) {
       if (tokensOnly) {
         // Only the positive clauses contribute scoring tokens; recurse to capture them and skip all set intersection/merge work.
         for (final BooleanClause clause : bq.clauses())
           if (clause.occur() != BooleanClause.Occur.MUST_NOT)
-            collectMatches(clause.query(), scoreMap, excluded);
+            collectMatches(clause.query(), scoreMap);
         return;
       }
 
-      // First pass: collect MUST_NOT terms and track whether any exist
-      boolean hasMustNotClauses = false;
-      for (final BooleanClause clause : bq.clauses()) {
+      // The MUST_NOT clauses first: they record no scoring token, so the positive clauses record theirs in the order the
+      // tokens-only walk does
+      Set<RID> excluded = null;
+      for (final BooleanClause clause : bq.clauses())
         if (clause.occur() == BooleanClause.Occur.MUST_NOT) {
-          hasMustNotClauses = true;
-          collectTermsForExclusion(clause.query(), excluded);
+          if (excluded == null)
+            excluded = new HashSet<>();
+          collectExcluded(clause.query(), excluded);
         }
-      }
 
-      // Second pass: process MUST and SHOULD terms
       Map<RID, AtomicInteger> mustResults = null;
       final Map<RID, AtomicInteger> shouldResults = new HashMap<>();
+      boolean positive = false;
 
       for (final BooleanClause clause : bq.clauses()) {
         if (clause.occur() == BooleanClause.Occur.MUST) {
+          positive = true;
           final Map<RID, AtomicInteger> termResults = new HashMap<>();
-          collectMatches(clause.query(), termResults, excluded);
+          collectMatches(clause.query(), termResults);
 
           if (mustResults == null) {
             mustResults = termResults;
@@ -523,10 +504,12 @@ public class FullTextQueryExecutor {
             }
           }
         } else if (clause.occur() == BooleanClause.Occur.SHOULD) {
-          collectMatches(clause.query(), shouldResults, excluded);
+          positive = true;
+          collectMatches(clause.query(), shouldResults);
         }
       }
 
+      final Map<RID, AtomicInteger> matches = new HashMap<>();
       if (mustResults != null) {
         // MUST clauses exist: only include documents that satisfy all MUST clauses
         // SHOULD clauses add bonus score to documents that already match MUST
@@ -538,19 +521,21 @@ public class FullTextQueryExecutor {
           if (shouldResults.containsKey(rid)) {
             totalScore += shouldResults.get(rid).get();
           }
-          scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(totalScore);
+          matches.put(rid, new AtomicInteger(totalScore));
         }
-      } else if (!shouldResults.isEmpty()) {
+      } else if (positive) {
         // No MUST clauses: SHOULD results are returned (standard OR behavior)
-        for (final Map.Entry<RID, AtomicInteger> entry : shouldResults.entrySet()) {
-          tick();
-          scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0))
-              .addAndGet(entry.getValue().get());
-        }
-      } else if (hasMustNotClauses) {
-        // Pure negative query (only MUST_NOT, no positive clauses): seed with every indexed
-        // record so executeQuery() can subtract the excluded set to form the complement.
-        collectAllIndexedRids(scoreMap);
+        matches.putAll(shouldResults);
+      } else if (excluded != null && bq == root && !positiveClausesAnalyzedAway()) {
+        // A query written as negations alone: seed with every indexed record, so that subtracting the negations below answers the
+        // complement. Lucene answers nothing for it, and so does such a group nested in a query
+        collectAllIndexedRids(matches);
+      }
+
+      for (final Map.Entry<RID, AtomicInteger> entry : matches.entrySet()) {
+        tick();
+        if (excluded == null || !excluded.contains(entry.getKey()))
+          scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0)).addAndGet(entry.getValue().get());
       }
 
     } else if (query instanceof BoostQuery bq) {
@@ -558,7 +543,7 @@ public class FullTextQueryExecutor {
       final float saved = currentBoost;
       currentBoost *= bq.getBoost();
       try {
-        collectMatches(bq.getQuery(), scoreMap, excluded);
+        collectMatches(bq.getQuery(), scoreMap);
       } finally {
         currentBoost = saved;
       }
@@ -578,31 +563,43 @@ public class FullTextQueryExecutor {
     // Other Lucene query types (e.g., TermRangeQuery) are intentionally ignored.
   }
 
-  private void collectTermsForExclusion(final Query query, final Set<RID> excluded) {
-    if (query instanceof final BooleanQuery bq) {
-      for (final BooleanClause clause : bq.clauses()) {
-        // A nested MUST_NOT inside an exclusion context is a double negation (e.g. NOT (A AND NOT B) - B should NOT be excluded).
-        // Skip such clauses so their terms are not wrongly added to the exclusion set. (Fully representing the positive
-        // contribution of a double-negated term would require general boolean evaluation; this at least avoids excluding it.)
-        if (clause.occur() == BooleanClause.Occur.MUST_NOT)
-          continue;
-        collectTermsForExclusion(clause.query(), excluded);
-      }
-      return;
-    }
-    // Delegate every other leaf query type to collectMatches so any positive collector
-    // automatically has matching exclusion support; the empty excluded set isolates this scratch
-    // collection from the caller's accumulator. Tokens matched here are negative (MUST_NOT) and must
-    // not contribute to BM25 scoring, so suppress token capture for the duration of the scan.
+  /**
+   * Adds the records a MUST_NOT clause matches to {@code excluded}: the clause decided as a query of its own, so a negated group is
+   * the records matching the group (issue #12164). Its terms are negative and record no BM25 scoring token.
+   */
+  private void collectExcluded(final Query query, final Set<RID> excluded) {
     final boolean previous = collectingExclusion;
     collectingExclusion = true;
     try {
-      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
-      collectMatches(query, tempMap, new HashSet<>());
-      excluded.addAll(tempMap.keySet());
+      final Map<RID, AtomicInteger> matches = new HashMap<>();
+      collectMatches(query, matches);
+      excluded.addAll(matches.keySet());
     } finally {
       collectingExclusion = previous;
     }
+  }
+
+  /**
+   * Whether the query, parsed as negations alone, was written with positive clauses the analyzer dropped (stop words, or text
+   * without a token, as in {@code the -java}). Those clauses match nothing, so the query does too, as in Lucene: answering the
+   * complement of the negations would answer for clauses the user did not write. Parsed again with an analyzer that keeps every
+   * whitespace-separated word, the query shows the clauses it was written with.
+   */
+  private boolean positiveClausesAnalyzedAway() {
+    if (queryText == null)
+      return false;
+    final Query written;
+    try {
+      written = createQueryParser(new WhitespaceAnalyzer()).parse(queryText);
+    } catch (final ParseException e) {
+      return false;
+    }
+    if (!(written instanceof final BooleanQuery bq))
+      return true;
+    for (final BooleanClause clause : bq.clauses())
+      if (clause.occur() != BooleanClause.Occur.MUST_NOT)
+        return true;
+    return false;
   }
 
   /**

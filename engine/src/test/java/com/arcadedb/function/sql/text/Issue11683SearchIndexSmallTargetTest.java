@@ -58,10 +58,12 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
   private static final List<String> PER_RECORD = List.of(//
       "alpha", "zeta", "alpha beta", "alpha beta gamma delta", "zeta epsilon delta gamma beta alpha", "+alpha +beta",
       "+alpha -gamma", "+zeta -alpha", "\"alpha beta\"", "\"beta zeta\"", "alpha^3 beta gamma^0.5", "+delta (alpha zeta)",
-      "alpha (+beta -zeta)", "alpha missingword", "content:alpha zeta");
+      "alpha (+beta -zeta)", "alpha missingword", "content:alpha zeta",
+      // a negation beside optional clauses takes from their matches only (issue #12164), so the record decides it
+      "alpha -beta", "alpha (beta -zeta)");
 
   /** Queries the record alone does not decide: the complete search answers them, as before. */
-  private static final List<String> COMPLETE = List.of("alph*", "zet?", "alpha -beta", "-alpha", "alpah~", "missingword");
+  private static final List<String> COMPLETE = List.of("alph*", "zet?", "-alpha", "alpah~", "missingword");
 
   @ParameterizedTest
   @ValueSource(ints = { 1, 4 })
@@ -134,7 +136,7 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
       for (final String query : List.of("alpha beta", "zeta", "+gamma -alpha", "\"beta zeta\" delta^2"))
         assertScoredOnItsOwn(titleAndBody, query, fields, arts);
 
-    for (final String query : List.of("alph*", "zet?", "alpha -beta", "-alpha", "alpah~", "/al.*/"))
+    for (final String query : List.of("alph*", "zet?", "-alpha", "alpah~", "/al.*/"))
       assertThat(FullTextRecordScorer.prepare(content, query, null, WorkGuard.forCommandDeadline(null))).as(query).isNull();
   }
 
