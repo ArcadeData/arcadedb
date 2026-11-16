@@ -232,6 +232,17 @@ public class TransactionManager {
    */
   private final Set<Long>                   recoveryGapWarnedPages = new HashSet<>();
   /**
+   * Per page (see {@link #pageKey}) of the running replay: the version on disk its WAL chain was checked against and the highest
+   * version up to it that the WAL holds no entry of, 0 when it holds them all (#12225). An older entry has a complete chain when it
+   * is at or above that version, so the chain of a page is walked once, not once per entry. Touched by the replay thread only.
+   */
+  private final Map<Long, long[]>           recoveryChainGaps = new HashMap<>();
+  /**
+   * The WAL versions the last crash recovery looked up to tell whether an older entry has a complete chain (#12225). Touched by
+   * the replay thread only, read by tests.
+   */
+  private long                              recoveryChainProbes;
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -557,6 +568,11 @@ public class TransactionManager {
   void cancelHousekeepingForTesting() {
     if (housekeeping != null)
       housekeeping.cancel(false);
+  }
+
+  /** Test-support hook (issue #12225): the WAL versions the last crash recovery looked up for the chain of older entries. */
+  long getRecoveryChainProbesForTesting() {
+    return recoveryChainProbes;
   }
 
   public void close(final boolean drop) {
@@ -1312,6 +1328,7 @@ public class TransactionManager {
         recoveryPageVersions = collectWALPageVersions(recoveryFiles);
         recoveryAppliedPages.clear();
         recoveryGapWarnedPages.clear();
+        recoveryChainGaps.clear();
 
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
         for (int i = 0; i < recoveryFiles.length; ++i) {
@@ -1509,6 +1526,7 @@ public class TransactionManager {
       recoveryPageVersions = null;
       recoveryAppliedPages.clear();
       recoveryGapWarnedPages.clear();
+      recoveryChainGaps.clear();
       // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
       // not deleted, so the next open replays it again.
       if (recoveryFiles != null && !inputReleased)
@@ -1580,21 +1598,48 @@ public class TransactionManager {
    * writer of each byte, exactly as the commits did. An entry followed by a gap would overwrite bytes that a later version,
    * whose WAL file was dropped after a successful fsync (so it is durable), had changed.
    * <br>
-   * Returns the first version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry
-   * of for the page: 0 when the chain is complete (the entry is a repair candidate), -1 when the question does not apply (not a
-   * crash recovery replay, or the replay already applied an entry to the page).
+   * Returns a version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry of for the
+   * page (the first one while the page has not been warned about yet, see {@link #warnOlderEntryWithGap}): 0 when the chain is
+   * complete (the entry is a repair candidate), -1 when the question does not apply (not a crash recovery replay, or the replay
+   * already applied an entry to the page).
    */
   private long firstMissingChainVersion(final int fileId, final int pageNumber, final long entryVersion, final long diskVersion) {
     final Map<Long, IntHashSet> versions = recoveryPageVersions;
-    if (versions == null || recoveryAppliedPages.contains(pageKey(fileId, pageNumber)))
+    final long key = pageKey(fileId, pageNumber);
+    if (versions == null || recoveryAppliedPages.contains(key))
       return -1;
-    final IntHashSet pageVersions = versions.get(pageKey(fileId, pageNumber));
+    final IntHashSet pageVersions = versions.get(key);
     if (pageVersions == null)
       return -1;
-    for (long v = entryVersion + 1; v <= diskVersion; ++v)
-      if (!pageVersions.contains((int) v))
+
+    // #12225: THE CHAIN OF A PAGE IS THE SAME FOR EVERY ONE OF ITS OLDER ENTRIES, SO IT IS WALKED ONCE, DOWN FROM THE DISK VERSION
+    // TO THE HIGHEST VERSION THE WAL HOLDS NO ENTRY OF (0 WHEN IT HOLDS THEM ALL). WALKING IT AGAIN UP FROM EACH ENTRY COST V^2/2
+    // LOOKUPS FOR A PAGE WITH V VERSIONS IN THE WAL: MINUTES FOR A TIMESERIES SHARD PAGE AFTER 160,000 ONE-ROW COMMITS
+    long[] chain = recoveryChainGaps.get(key);
+    if (chain == null || chain[0] != diskVersion) {
+      long highestMissing = diskVersion;
+      while (highestMissing > 0 && containsChainVersion(pageVersions, highestMissing))
+        --highestMissing;
+      chain = new long[] { diskVersion, highestMissing };
+      recoveryChainGaps.put(key, chain);
+    }
+
+    // EVERY VERSION AFTER THE ENTRY UP TO THE ONE ON DISK IS IN THE WAL
+    if (chain[1] <= entryVersion)
+      return 0;
+
+    // ONLY THE WARNING READS WHICH VERSION IS MISSING, ONCE PER PAGE: AFTER IT ANY MISSING VERSION ABOVE THE ENTRY ANSWERS
+    if (recoveryGapWarnedPages.contains(key))
+      return chain[1];
+    for (long v = entryVersion + 1; v < chain[1]; ++v)
+      if (!containsChainVersion(pageVersions, v))
         return v;
-    return 0;
+    return chain[1];
+  }
+
+  private boolean containsChainVersion(final IntHashSet pageVersions, final long version) {
+    ++recoveryChainProbes;
+    return pageVersions.contains((int) version);
   }
 
   /**

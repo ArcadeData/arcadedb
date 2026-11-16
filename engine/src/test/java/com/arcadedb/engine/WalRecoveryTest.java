@@ -461,6 +461,109 @@ class WalRecoveryTest {
       }
     }
 
+    private record CrashedPage(String filePath, long finalVersion, int finalContentSize, RID rid, int lastValue) {
+    }
+
+    /**
+     * Commits {@code versions} updates of one record, each its own transaction and so its own version of the same bucket page,
+     * keeps them off the disk and kills the database: the WAL then holds one entry per version of that page.
+     */
+    private CrashedPage crashWithManyVersionsOfOnePage(final DatabaseFactory factory, final int versions) throws Exception {
+      if (factory.exists())
+        factory.open().drop();
+
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      db.getSchema().createDocumentType("Doc");
+      final RID[] rid = new RID[1];
+      db.transaction(() -> rid[0] = db.newDocument("Doc").set("n", -1).save().getIdentity());
+      db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+
+      final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Doc").getBuckets(false).get(0);
+      final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
+
+      assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+          .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
+
+      for (int i = 0; i < versions; ++i) {
+        final int n = i;
+        db.transaction(() -> db.lookupByRID(rid[0], true).asDocument().modify().set("n", n).save());
+      }
+
+      // THE ONLY RECORD OF THE BUCKET LIVES IN ITS PAGE 0
+      final ImmutablePage committed = db.getPageManager()
+          .getImmutablePage(new PageId(db, bucket.getFileId(), 0), file.getPageSize(), false, false);
+      final CrashedPage crashed = new CrashedPage(file.getFilePath(), committed.getVersion(), committed.getContentSize(), rid[0],
+          versions - 1);
+
+      ((LocalDatabase) db).kill();
+      db.close();
+      return crashed;
+    }
+
+    private static void writeHeader(final CrashedPage crashed, final long version) throws Exception {
+      try (final RandomAccessFile raf = new RandomAccessFile(crashed.filePath(), "rw")) {
+        raf.seek(0);
+        assertThat(raf.readInt()).as("the updates must not have reached the disk").isLessThan((int) crashed.finalVersion() - 1);
+        raf.seek(0);
+        raf.writeInt((int) version);
+        raf.writeInt(crashed.finalContentSize());
+      }
+    }
+
+    /**
+     * #12225: every WAL entry older than the page on disk walked the WAL versions from itself up to the disk version, so a page with
+     * V versions in the WAL cost V^2/2 lookups (a TIMESERIES shard page 0 after 160,000 one-row commits took minutes to replay). The
+     * chain of a page is the same for each of its entries: it is looked up once, so the cost stays linear in the versions.
+     */
+    @Test
+    void aCompleteChainOfManyVersionsIsCheckedOncePerPage() throws Exception {
+      final int versions = 3_000;
+      final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+      final CrashedPage crashed = crashWithManyVersionsOfOnePage(factory, versions);
+
+      // THE DISK HOLDS THE LAST VERSION: EVERY OLDER ENTRY IS A REPAIR CANDIDATE WITH A COMPLETE CHAIN
+      writeHeader(crashed, crashed.finalVersion());
+
+      final Database reopened = factory.open();
+      try {
+        assertThat(reopened.lookupByRID(crashed.rid(), true).asDocument().getInteger("n")).isEqualTo(crashed.lastValue());
+        assertThat(((DatabaseInternal) reopened).getTransactionManager().getRecoveryChainProbesForTesting())
+            .as("the chain of the page is looked up once, not once per older entry (#12225)").isLessThanOrEqualTo(3L * versions);
+      } finally {
+        reopened.close();
+        factory.close();
+      }
+    }
+
+    /** #12225: the same holds when the chain has a gap: the entries stay skipped, one warning, and the lookups stay linear. */
+    @Test
+    void aGappedChainOfManyVersionsIsCheckedOncePerPage() throws Exception {
+      final int versions = 3_000;
+      final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+      final CrashedPage crashed = crashWithManyVersionsOfOnePage(factory, versions);
+
+      // TWO VERSIONS BEYOND THE LAST ONE THE WAL KNOWS: NO OLDER ENTRY HAS A COMPLETE CHAIN
+      writeHeader(crashed, crashed.finalVersion() + 2);
+
+      final CapturingLogger captured = new CapturingLogger();
+      final Logger previousLogger = LogManager.instance().getLogger();
+      LogManager.instance().setLogger(captured);
+      final Database reopened;
+      try {
+        reopened = factory.open();
+      } finally {
+        LogManager.instance().setLogger(previousLogger);
+      }
+      try {
+        assertThat(captured.warnings()).as("the skipped entries of the gapped chain are reported once per page").hasSize(1);
+        assertThat(((DatabaseInternal) reopened).getTransactionManager().getRecoveryChainProbesForTesting())
+            .as("the chain of the page is looked up once, not once per older entry (#12225)").isLessThanOrEqualTo(3L * versions);
+      } finally {
+        reopened.close();
+        factory.close();
+      }
+    }
+
     private static final class CapturingLogger implements Logger {
       private final List<String> warnings = new CopyOnWriteArrayList<>();
 
