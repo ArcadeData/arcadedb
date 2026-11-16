@@ -1195,7 +1195,9 @@ class CypherWriteVisibilityTest {
    * {@code CALL} subquery in front of the MERGE "fixed" it by draining the rows.
    * <p>
    * openCypher requires a query's reads to be unaffected by that query's own writes; Neo4j plants an {@code Eager} in front of
-   * the MERGE and answers 121 rows to both of the reporter's queries.
+   * the MERGE and answers 121 rows to both of the reporter's queries. The first {@code CALL} body returns its imported columns
+   * under new names: returning {@code alias5, alias6} as written by the reporter is rejected, by Neo4j and since issue #11689
+   * by ArcadeDB too, because a {@code CALL} subquery cannot return a name the outer scope already binds.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -1213,7 +1215,7 @@ class CypherWriteVisibilityTest {
             MATCH (:l2 {k7: false})
             RETURN alias5, alias6
           } = 1
-          RETURN alias5, alias6
+          RETURN alias5 AS matched5, alias6 AS matched6
         }
         MERGE (:l11:l2:l10:l0 {k0: false, k7: false, id: 128})
         RETURN alias5, alias6, COUNT { MATCH (n) } AS graphNodeCount""";
@@ -1228,7 +1230,7 @@ class CypherWriteVisibilityTest {
             MATCH (:l2 {k7: false})
             RETURN alias5, alias6
           } = 1
-          RETURN alias5, alias6
+          RETURN alias5 AS matched5, alias6 AS matched6
         }
         CALL () {
           CALL db.index.vector.queryNodes('__ArcadeVectorBarrierProbe[embedding]', 1, [1.0, 0.0, 0.0]) YIELD node, score

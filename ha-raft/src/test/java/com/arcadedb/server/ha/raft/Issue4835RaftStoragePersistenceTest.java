@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (data loss / split-brain).
  * <p>
  * The fix makes Kubernetes deployments persist storage by default while still honoring an explicit
- * {@code raftPersistStorage=false}. This test exercises {@link RaftHAServer#resolvePersistStorage}
+ * {@code raftPersistStorage=false}. This test exercises {@link RaftStorageFiles#resolvePersistStorage}
  * directly across the full decision matrix, without standing up a Ratis cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -54,7 +54,7 @@ class Issue4835RaftStoragePersistenceTest {
     // lagging follower into a permanently diverged node on a cold restart, so storage is preserved
     // unless the operator explicitly opts into ephemeral. Outside Kubernetes, with nothing set, persist.
     final ContextConfiguration config = new ContextConfiguration();
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isTrue();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isTrue();
   }
 
   @Test
@@ -62,14 +62,14 @@ class Issue4835RaftStoragePersistenceTest {
     // A throwaway/test cluster can still opt into ephemeral storage explicitly.
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isFalse();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isFalse();
   }
 
   @Test
   void nonK8sHonorsExplicitPersist() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isTrue();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isTrue();
   }
 
   @Test
@@ -77,7 +77,7 @@ class Issue4835RaftStoragePersistenceTest {
     // The core fix: under Kubernetes, with no explicit raftPersistStorage, storage must be preserved.
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, true);
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isTrue();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isTrue();
   }
 
   @Test
@@ -86,7 +86,7 @@ class Issue4835RaftStoragePersistenceTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, true);
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isFalse();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isFalse();
   }
 
   @Test
@@ -94,7 +94,7 @@ class Issue4835RaftStoragePersistenceTest {
     System.setProperty(persistKey, "false");
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, true);
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isFalse();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isFalse();
   }
 
   @Test
@@ -102,19 +102,19 @@ class Issue4835RaftStoragePersistenceTest {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_K8S, true);
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, true);
-    assertThat(RaftHAServer.resolvePersistStorage(config)).isTrue();
+    assertThat(RaftStorageFiles.resolvePersistStorage(config)).isTrue();
   }
 
   @Test
   void isExplicitlyConfiguredDetectsContextAndSystemProperty() {
     final ContextConfiguration config = new ContextConfiguration();
-    assertThat(RaftHAServer.isExplicitlyConfigured(config, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)).isFalse();
+    assertThat(RaftStorageFiles.isExplicitlyConfigured(config, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)).isFalse();
 
     config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
-    assertThat(RaftHAServer.isExplicitlyConfigured(config, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)).isTrue();
+    assertThat(RaftStorageFiles.isExplicitlyConfigured(config, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)).isTrue();
 
     final ContextConfiguration empty = new ContextConfiguration();
     System.setProperty(persistKey, "false");
-    assertThat(RaftHAServer.isExplicitlyConfigured(empty, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)).isTrue();
+    assertThat(RaftStorageFiles.isExplicitlyConfigured(empty, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)).isTrue();
   }
 }

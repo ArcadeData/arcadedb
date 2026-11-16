@@ -19,28 +19,53 @@
 package com.arcadedb.function;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class FunctionRegistryTest {
+  private List<Function> registeredBefore;
 
   @BeforeEach
   void setUp() {
+    // the SQL functions register themselves when the factory singleton loads: let that happen before the snapshot, never
+    // inside a test that runs on a cleared registry
+    DefaultSQLFunctionFactory.getInstance();
+    registeredBefore = new ArrayList<>(FunctionRegistry.getAllFunctions());
     FunctionRegistry.clear();
   }
 
+  /**
+   * Puts back every function the registry held before the test, not only the Cypher built-ins: the SQL functions are
+   * registered once, by the {@code DefaultSQLFunctionFactory} singleton, so a registry left without them stayed without them for
+   * every later test in the same JVM, and a census over the registry silently skipped them (issue #11927).
+   */
   @AfterEach
   void tearDown() {
     FunctionRegistry.clear();
     // Re-register Cypher built-in functions into the unified registry so other tests are not affected
     CypherFunctionRegistry.reset();
+    for (final Function function : registeredBefore)
+      FunctionRegistry.registerOrReplace(function);
+  }
+
+  /** Issue #11927: the teardown restores the SQL functions too, which nothing else would ever register again. */
+  @Test
+  void tearDownRestoresTheSqlFunctions() {
+    assertThat(registeredBefore.stream().map(f -> f.getName().toLowerCase(Locale.ROOT))).contains("cypherrid");
+    tearDown();
+    assertThat(FunctionRegistry.hasFunction("cypherRID")).isTrue();
+    assertThat(FunctionRegistry.size()).isEqualTo(registeredBefore.size());
   }
 
   @Test

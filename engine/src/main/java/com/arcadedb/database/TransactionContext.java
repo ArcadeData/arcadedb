@@ -368,6 +368,11 @@ public class TransactionContext implements Transaction {
    * a database with a columnar mark target only. Null outside tests.
    */
   public static volatile Runnable                    afterFirstColumnarMarkForTesting;
+  /**
+   * Test seam (#11592): runs on the committing thread in phase 1, after the edge-list heads are merged and before the deferred writes
+   * and the page-version checks, so a test can apply a replicated entry in between. Null outside tests.
+   */
+  public static volatile Runnable                    afterEdgeListHeadMergeForTesting;
   // The pages of the commit as ColumnarIndexManager.packPage keys, sorted, and the page numbers of one file at a time: reused
   // across the commits of this context, grown when a commit has more pages than any before
   private       long[]                               columnarMarkKeys      = new long[0];
@@ -418,6 +423,14 @@ public class TransactionContext implements Transaction {
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
+  // #11592: TransactionManager.getVertexDeleteSequence() when this transaction began. A vertex deleted by a commit after it may be
+  // one this transaction read alive, and its RID may hold a vertex created since
+  private       long                                 vertexDeleteEpoch;
+  // #11592: TransactionManager.getVertexPageAppliesStarted() before a leader commit's first deleted-vertex check, and whether one
+  // of them passed. An apply takes no commit lock: one that starts after a check can still publish the page the commit then merges
+  // or rebases onto, so a commit that a vertex-page apply overlapped is refused once phase 1 read every page it builds on
+  private       long                                 vertexPageAppliesAtChecks;
+  private       boolean                              vertexDeleteChecked;
   // #10588: TransactionManager.getIndexRegistrationSequence() when this transaction began. An index bound to a type after it owes
   // this transaction's writes to the buckets it covers an entry each, made up at the commit
   private       long                                 indexRegistrationSequenceAtBegin;
@@ -515,6 +528,8 @@ public class TransactionContext implements Transaction {
   private       Map<String, Object>                  attachments                 = null;
   // #10040: the client opened this transaction and ends it with its own COMMIT/ROLLBACK, see setClientManaged()
   private       boolean                              clientManaged               = false;
+  // #11588: a server opened this transaction around one request, as its auto-commit, see setImplicit()
+  private       boolean                              implicit                    = false;
 
   // #5279: above this many tracked insert reservations the parallel arrays are dropped instead of being reused, so a
   // one-off bulk insert does not keep its (per-record) tracking arrays alive on a long-lived transaction context.
@@ -566,6 +581,7 @@ public class TransactionContext implements Transaction {
     publishedCommitsAtBegin = database.getTransactionManager().getPublishedCommits();
     nestedPublications = 0;
     mergedEdgeEpoch = database.getTransactionManager().getMergedEdges().getSequence();
+    vertexDeleteEpoch = database.getTransactionManager().getVertexDeleteSequence();
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
@@ -1545,6 +1561,23 @@ public class TransactionContext implements Transaction {
   /** Declares this transaction opened by the client. See {@link #isClientManaged()}. */
   public void setClientManaged(final boolean clientManaged) {
     this.clientManaged = clientManaged;
+  }
+
+  /**
+   * Whether a server opened this transaction around one request on the client's behalf, as its auto-commit: the HTTP
+   * command handler, the gRPC auto-wrap, the MCP tools, the implicit block of a Postgres pipeline. Neo4j calls it an
+   * implicit transaction. Every other transaction belongs to its caller, an embedded {@code begin()} or
+   * {@code transaction()} included, and is not one: a {@code CALL { ... } IN TRANSACTIONS} commits its batches on their
+   * own and is refused there, since the caller's rollback could not undo them (issue #11588). A transaction the client
+   * later declares its own ({@link #isClientManaged()}) stops being implicit. Released by {@link #reset()}.
+   */
+  public boolean isImplicit() {
+    return implicit && !clientManaged;
+  }
+
+  /** Declares this transaction opened by a server around one request. See {@link #isImplicit()}. */
+  public void setImplicit(final boolean implicit) {
+    this.implicit = implicit;
   }
 
   public boolean hasCallbackKey(final String key) {
@@ -2594,6 +2627,13 @@ public class TransactionContext implements Transaction {
       final RID segmentRID = entry.getKey();
       if (edgeSegmentPageKey(segmentRID) != pageKey)
         continue;
+
+      // #11592: the vertex these appends were made for can have been deleted since the transaction began, and the vertex now at
+      // its RID be a new one whose first chunk reuses the RID of this one: replayed in place, the appends would give the new
+      // vertex these relationships
+      final RID appendsOwner = entry.getValue().owner;
+      if (appendsOwner != null)
+        refuseVertexDeletedSinceBegin(appendsOwner, true);
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
@@ -4234,9 +4274,13 @@ public class TransactionContext implements Transaction {
 
       // #11498: BEFORE the deferred writes below, so a vertex whose edge-list head a concurrent transaction moved is written as
       // the merge of the two, and a write that cannot be merged fails here rather than after the work that follows
+      vertexPageAppliesAtChecks = database.getTransactionManager().getVertexPageAppliesStarted();
       if (updatedRecords != null) {
         overflowFilledEdgeChunks(isLeader);
         mergeEdgeListHeads(isLeader);
+        final Runnable afterMerge = afterEdgeListHeadMergeForTesting;
+        if (afterMerge != null)
+          afterMerge.run();
       }
 
       // Process updatedRecords AFTER acquiring locks
@@ -4394,6 +4438,10 @@ public class TransactionContext implements Transaction {
             pages.add(p);
           }
         }
+
+      // #11592: after every read of a committed page above. An apply marks its pages, then counts itself, then publishes: one whose
+      // page a merge or rebase above started from either was marked when the vertex was checked, or moved the count since
+      refuseVertexPageApplyDuringChecks();
 
       Binary result = null;
 
@@ -4646,6 +4694,11 @@ public class TransactionContext implements Transaction {
         mergedEdgesReserved = false;
         database.getTransactionManager().getMergedEdges().committed(mergedEdgeMarked, mergedEdgeMarkedCount);
       }
+
+      // #11592: AFTER the deletes are published and while the vertices' files are still locked, so a transaction that began before
+      // this bump and writes one of them is refused by mergeEdgeListHeads, and one that began after it cannot have read them alive
+      if (!deletedRecordsInTx.isEmpty())
+        database.getTransactionManager().recordsDeleted(deletedRecordsInTx);
 
       // UPDATE RECORD COUNT
       // #10618: this runs after publishPages and outside the lock a page snapshot takes, so for a moment a reader
@@ -5246,6 +5299,7 @@ public class TransactionContext implements Transaction {
     newRecordRIDs = null;
     staleEdgeListWrites = null;
     mergedEdgeListBases = null;
+    vertexDeleteChecked = false;
     edgeListHeadMergeRefused = false;
     newRecords.clear();
     // Reached only with callbacks left when the transaction ends without running them (a failed commit, a rollback past the
@@ -5262,6 +5316,7 @@ public class TransactionContext implements Transaction {
     afterCompletionOwner = null;
     attachments = null;
     clientManaged = false;
+    implicit = false;
     commitLockTimeout = null;
     useWALOverride = null;
     appendOnlyInserts = false;
@@ -5676,6 +5731,14 @@ public class TransactionContext implements Transaction {
       final int slot = (int) (rid.getPosition() % maxRecordsInPage);
       final PageId pageId = new PageId(database, bucket.getFileId(), pageNumber);
 
+      // #11592: the vertex was deleted by a commit after this transaction began, and a vertex created since can hold its RID. No
+      // image tells the two apart (a vertex created with the same properties has the same bytes), so neither the heads of the
+      // one this transaction read nor its write go onto the vertex there now: refused, as with the slot merge off. Before the
+      // version check: a transaction that pins the page only after the new vertex was committed finds the version it pinned
+      // current, and a read of identical bytes is not marked stale. Two volatile reads when no vertex was ever deleted. A vertex
+      // this transaction created on a RID freed since it began is its own and keeps its relationships
+      refuseVertexDeletedSinceBegin(rid, isLeader);
+
       final MutablePage pinned = modifiedPages.get(pageId);
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
         // the common case: nobody committed the page since this transaction pinned it. Answered from the version alone
@@ -5715,6 +5778,32 @@ public class TransactionContext implements Transaction {
       mergedEdgeListBases.put(rid, committed);
       database.getPageManager().incrementEdgeListHeadMerges();
     }
+  }
+
+  /**
+   * #11592: refuses the commit when the vertex at {@code rid} may have been deleted, and its RID taken by a new vertex, since this
+   * transaction began, unless the vertex there is one this transaction created. A leader commit notes that a check passed, for
+   * {@link #refuseVertexPageApplyDuringChecks}: a follower's commit cannot rebase onto a page an apply moved, its version check
+   * refuses it.
+   */
+  private void refuseVertexDeletedSinceBegin(final RID rid, final boolean isLeader) {
+    if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch)) {
+      if (!isCreatedInTransaction(rid))
+        throw new ConcurrentModificationException(
+            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
+    } else if (isLeader)
+      vertexDeleteChecked = true;
+  }
+
+  /**
+   * #11592: refuses a leader commit whose deleted-vertex checks a replicated apply reaching a vertex bucket started after: the apply
+   * can have published a page the merge or a rebase started from after the check of a vertex on it. One volatile read; applies run
+   * on a leader only while it catches up after a promotion and on the reconcile path of a failed publication.
+   */
+  private void refuseVertexPageApplyDuringChecks() {
+    if (vertexDeleteChecked && database.getTransactionManager().getVertexPageAppliesStarted() != vertexPageAppliesAtChecks)
+      throw new ConcurrentModificationException(
+          "A replicated transaction wrote vertex pages while this transaction was committing. Please retry the operation");
   }
 
   /**
@@ -5807,6 +5896,10 @@ public class TransactionContext implements Transaction {
         previousHead = appends.ownerOut ? queuedVertex.getOutEdgesHeadChunk() : queuedVertex.getInEdgesHeadChunk();
       } else if (ownerQueued == null) {
         // not written by this transaction: written from its committed image, which the lock keeps as it is
+        // #11592: the vertex the transaction appended for can have been deleted since it began, and the vertex at its RID now be
+        // a new one, with a chunk of its own at the RID of the one appended to. Written from that image, the new head would give
+        // the new vertex these relationships; mergeEdgeListHeads skips an owner queued here, so it is refused here
+        refuseVertexDeletedSinceBegin(owner, isLeader);
         final int ownerMaxRecords = ownerBucket.getMaxRecordsInPage();
         final PageId ownerPageId = new PageId(database, ownerBucket.getFileId(), (int) (owner.getPosition() / ownerMaxRecords));
         final ImmutablePage ownerPage = committedPage(ownerPageId, ownerBucket.getPageSize());

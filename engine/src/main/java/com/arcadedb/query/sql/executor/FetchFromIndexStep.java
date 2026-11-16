@@ -1241,7 +1241,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
   }
 
-  private static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
+  static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
       final byte[] keyTypes, final IndexMetadata metadata) {
     final Object[] key = new Object[bound.length];
     for (int i = 0; i < bound.length; i++) {

@@ -26,6 +26,11 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.graph.SQLFunctionCypherRID;
+import com.arcadedb.function.sql.math.SQLFunctionEval;
+import com.arcadedb.function.sql.text.SQLFunctionSearchFieldsMore;
+import com.arcadedb.function.sql.text.SQLFunctionSearchIndexMore;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -35,8 +40,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.TreeSet;
+import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -220,11 +226,12 @@ class SqlParserRobustnessTest {
     void everyRegistryFunctionRejectsTooFewArgumentsCleanly() {
       int tried = 0;
       final List<String> offenders = new ArrayList<>();
-      for (final String name : new TreeSet<>(FunctionRegistry.getFunctionNames())) {
-        final Function function = FunctionRegistry.get(name);
+      for (final Map.Entry<String, Function> entry : declaredFunctions().entrySet()) {
+        final String name = entry.getKey();
+        final Function function = entry.getValue();
         final String lower = name.toLowerCase();
         // names with two dots (node.degree.in) parse in SQL as a method call on a property (node.degree).in(), not as a registry call
-        if (function == null || name.indexOf('.') != name.lastIndexOf('.') || function.getMinArgs() < 1 || lower.contains("sleep") || lower.contains("load") || lower.contains("cypher.run"))
+        if (name.indexOf('.') != name.lastIndexOf('.') || function.getMinArgs() < 1 || lower.contains("sleep") || lower.contains("load") || lower.contains("cypher.run"))
           continue;
         final String args = IntStream.range(0, function.getMinArgs() - 1).mapToObj(i -> "1").collect(Collectors.joining(", "));
         tried++;
@@ -245,10 +252,11 @@ class SqlParserRobustnessTest {
     @Test
     void callsAtTheDeclaredBoundsAreNeverArityErrors() {
       final List<String> offenders = new ArrayList<>();
-      for (final String name : new TreeSet<>(FunctionRegistry.getFunctionNames())) {
-        final Function function = FunctionRegistry.get(name);
+      for (final Map.Entry<String, Function> entry : declaredFunctions().entrySet()) {
+        final String name = entry.getKey();
+        final Function function = entry.getValue();
         final String lower = name.toLowerCase();
-        if (function == null || name.indexOf('.') != name.lastIndexOf('.') || lower.contains("sleep") || lower.contains("load") || lower.contains("cypher.run"))
+        if (name.indexOf('.') != name.lastIndexOf('.') || lower.contains("sleep") || lower.contains("load") || lower.contains("cypher.run"))
           continue;
         final int min = function.getMinArgs();
         final int max = function.getMaxArgs();
@@ -266,6 +274,59 @@ class SqlParserRobustnessTest {
         }
       }
       assertThat(offenders).isEmpty();
+    }
+
+    /**
+     * The census must not depend on what other tests left in the shared {@link FunctionRegistry} (issue #11927): it scans the
+     * built-in SQL function factory, the authority every SQL function is registered from, including the functions registered
+     * as a class (stateful, never placed in the registry), together with whatever the registry holds.
+     */
+    @Test
+    void theCensusReachesTheSqlFunctionFactory() {
+      final Map<String, Function> declared = declaredFunctions();
+      assertThat(declared).as("the census reaches DefaultSQLFunctionFactory's instance-registered functions")
+          .containsKeys(SQLFunctionCypherRID.NAME, SQLFunctionSearchFieldsMore.NAME.toLowerCase(Locale.ROOT),
+              SQLFunctionSearchIndexMore.NAME.toLowerCase(Locale.ROOT));
+      assertThat(declared).as("the census reaches DefaultSQLFunctionFactory's class-registered (stateful) functions")
+          .containsKey(SQLFunctionEval.NAME);
+      assertThat(declared.keySet()).as("the census reaches every name DefaultSQLFunctionFactory registers")
+          .containsAll(DefaultSQLFunctionFactory.getInstance().getFunctionNames());
+    }
+
+    /** Issue #11927: the arity these functions enforce is the arity they declare, so the parse-time gate and the registry agree. */
+    @Test
+    void functionsDeclareTheArityTheyEnforce() {
+      assertThat(new SQLFunctionCypherRID().getMinArgs()).isEqualTo(1);
+      assertThat(new SQLFunctionCypherRID().getMaxArgs()).isEqualTo(1);
+      assertThat(new SQLFunctionSearchFieldsMore().getMinArgs()).isEqualTo(2);
+      assertThat(new SQLFunctionSearchFieldsMore().getMaxArgs()).isEqualTo(3);
+      assertThat(new SQLFunctionSearchIndexMore().getMinArgs()).isEqualTo(2);
+      assertThat(new SQLFunctionSearchIndexMore().getMaxArgs()).isEqualTo(3);
+      assertThat(new SQLFunctionEval().getMinArgs()).isEqualTo(1);
+      assertThat(new SQLFunctionEval().getMaxArgs()).isEqualTo(1);
+
+      for (final String call : new String[] { "cypherRID()", "cypherRID(1, 2)", "fulltext.searchFieldsMore('a')",
+          "fulltext.searchFieldsMore('a', '#1:0', {}, 'x')", "fulltext.searchIndexMore('a')", "fulltext.searchIndexMore('a', '#1:0', {}, 'x')",
+          "eval()", "eval('1 = 1', 'x')" })
+        assertThatThrownBy(() -> drain("sql", "SELECT " + call + " AS r")).as("sql " + call).isInstanceOf(CommandSemanticException.class)
+            .hasMessageContaining("expects");
+    }
+
+    /**
+     * Every function SQL can call, keyed by the lower-case name it answers to: the shared {@link FunctionRegistry} plus every name
+     * of {@link DefaultSQLFunctionFactory}, so a test that cleared the registry earlier in the same JVM cannot shrink the census.
+     */
+    private Map<String, Function> declaredFunctions() {
+      final Map<String, Function> declared = new TreeMap<>();
+      for (final String name : FunctionRegistry.getFunctionNames()) {
+        final Function function = FunctionRegistry.get(name);
+        if (function != null)
+          declared.put(name, function);
+      }
+      final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+      for (final String name : factory.getFunctionNames())
+        declared.putIfAbsent(name.toLowerCase(Locale.ROOT), factory.getFunctionInstance(name));
+      return declared;
     }
 
     private void drain(final String language, final String query) {
