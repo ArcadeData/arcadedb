@@ -5670,7 +5670,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // still has one.
             String chainProblem = null;
             try {
-              if (chunkPageId >= getTotalPages())
+              if (chunkPageId >= getReadablePageCount())
                 chainProblem = "next chunk pointer out of range";
               else {
                 chunkPage = database.getTransaction()
