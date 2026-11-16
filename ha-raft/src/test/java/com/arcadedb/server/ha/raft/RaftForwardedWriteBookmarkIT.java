@@ -126,6 +126,8 @@ class RaftForwardedWriteBookmarkIT extends BaseRaftHATest {
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("language", "sql").put("command", sql).toString()));
     if (readAfter != null)
       request.header("X-ArcadeDB-Read-Consistency", "read_your_writes").header("X-ArcadeDB-Read-After", readAfter);
-    return HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build().send(request.build(), HttpResponse.BodyHandlers.ofString());
+    try (final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build()) {
+      return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    }
   }
 }
