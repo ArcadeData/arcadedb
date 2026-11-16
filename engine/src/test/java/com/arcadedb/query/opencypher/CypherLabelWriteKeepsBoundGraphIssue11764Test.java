@@ -114,6 +114,56 @@ class CypherLabelWriteKeepsBoundGraphIssue11764Test extends TestHelper {
     assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isEqualTo(2L);
   }
 
+  /**
+   * FOREACH buffers a batch of rows before serving them: a label write of a step downstream (a CALL body) replaces the node
+   * the rows still buffered hold, and they are served with the live record.
+   */
+  @Test
+  void aRowBufferedByForeachFollowsALabelWriteOfALaterStep() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Person {id: 1})-[:KNOWS]->(:Person {id: 2})"));
+    final List<Result> rows = rows("""
+        MATCH (n:Person {id: 1})
+        UNWIND [1, 2, 3] AS i
+        WITH n, [n] AS held, i
+        FOREACH (x IN [i] | SET n.seen = x)
+        CALL (n) { SET n:Tmp REMOVE n:Tmp }
+        WITH i, n, held
+        OPTIONAL MATCH (h)-[r:KNOWS]->() WHERE h = held[0]
+        RETURN i, n, held[0] AS h, r""");
+    assertThat(rows).hasSize(3);
+    final Object live = identity(rows.get(2), "n");
+    for (final Result row : rows) {
+      assertThat(identity(row, "n")).as("row %s", row).isEqualTo(live);
+      assertThat(identity(row, "h")).as("row %s", row).isEqualTo(live);
+      assertThat(row.<Object>getProperty("r")).as("row %s", row).isNotNull();
+    }
+    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isEqualTo(2L);
+    assertThat(count("MATCH (n:Tmp) RETURN count(n) AS c")).isEqualTo(0L);
+  }
+
+  /**
+   * A CALL subquery serves the rows of a batch after running the body of each: a row produced before a later row's body
+   * replaced the same node is served with the live record, not the intermediate one that body deleted.
+   */
+  @Test
+  void aRowProducedByCallFollowsALaterRowsLabelWrite() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Person {id: 1})-[:KNOWS]->(:Person {id: 2})"));
+    final List<Result> rows = rows("""
+        MATCH (n:Person {id: 1})
+        UNWIND [1, 2, 3] AS i
+        WITH n, [n] AS held, i
+        CALL (n) { SET n:Tmp REMOVE n:Tmp }
+        WITH i, n, held
+        OPTIONAL MATCH (h)-[r:KNOWS]->() WHERE h = held[0]
+        RETURN i, n, held[0] AS h, r""");
+    assertThat(rows).hasSize(3);
+    final Object live = identity(rows.get(2), "n");
+    for (final Result row : rows) {
+      assertThat(identity(row, "n")).as("row %s", row).isEqualTo(live);
+      assertThat(row.<Object>getProperty("r")).as("row %s", row).isNotNull();
+    }
+  }
+
   /** The same through a direct SET/REMOVE, without FOREACH: the alias in the list follows the rewrite. */
   @Test
   void aDirectLabelRoundTripKeepsTheListBoundNodeConnected() {

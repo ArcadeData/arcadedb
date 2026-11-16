@@ -139,8 +139,6 @@ public class ForeachStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       private final LabelReplacements labelReplacements = LabelReplacements.of(context);
-      // WHETHER A LABEL WRITE OF THIS BATCH REPLACED A RECORD: ONLY THEN CAN A ROW BUFFERED BEFORE IT HOLD A DELETED ONE
-      private boolean batchReplaced = false;
 
       @Override
       public boolean hasNext() {
@@ -157,11 +155,11 @@ public class ForeachStep extends AbstractExecutionStep {
         if (!hasNext())
           throw new NoSuchElementException();
         final Result result = buffer.get(bufferIndex++);
-        // A later row of the same batch may have replaced a record this one holds after it was buffered (a label write on
-        // the same node): served with the live records, not the deleted intermediates (issue #11764). A batch that replaced
-        // nothing is served as it is, without a walk of its rows
-        if (batchReplaced)
-          labelReplacements.redirect(result);
+        // A record this row holds may have been replaced after it was buffered: by a later row of the same batch, or by a
+        // label write of a step downstream that consumed the rows served before it (a CALL body). Served with the live
+        // records, not the deleted ones (issue #11764). Free while the statement replaced nothing: redirect() returns at
+        // once, and otherwise it is one walk per row served
+        labelReplacements.redirect(result);
         if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
           // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
           // SET OPEN
@@ -183,15 +181,6 @@ public class ForeachStep extends AbstractExecutionStep {
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
-        final long replacementsBefore = labelReplacements.getReplacementCount();
-        try {
-          fetchBatch(n);
-        } finally {
-          batchReplaced = labelReplacements.getReplacementCount() != replacementsBefore;
-        }
-      }
-
-      private void fetchBatch(final int n) {
 
         if (prevResults == null) {
           if (hasPrevious)
