@@ -36,9 +36,9 @@ import java.util.stream.Stream;
  * Procedure: algo.randomWalk(startNode, steps, relTypes?, direction?, seed?)
  * <p>
  * Performs a uniform random walk of exactly {@code steps} hops from {@code startNode},
- * stopping early if a dead-end is reached. The full graph adjacency is materialised once
- * using primitive {@code int[][]} arrays; the walk itself uses only a single {@code int[]}
- * (no heap allocation in the inner loop).
+ * stopping early if a dead-end is reached. Only the rows of the vertices it steps on are read: from the records when no
+ * Graph Analytical View covers the graph, from the view otherwise (issue #12176); the walk itself uses a single
+ * {@code int[]}.
  * </p>
  * <p>
  * Example:
@@ -101,15 +101,10 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
-
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(startVertex.getIdentity());
+    // The walk reads the rows of the `steps` vertices it steps on, from the records when no view covers the graph rather than
+    // after loading every vertex and edge of the database (issue #12176)
+    final Neighborhood graph = openNeighborhood(db, relTypes, context, false);
+    final int srcIdx = graph.nodeOf(startVertex);
     if (srcIdx < 0)
       return Stream.empty();
 
@@ -135,7 +130,7 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
       // accepts "negative = no limit". A memory bound is not a time bound, so the walk carries its own
       // checkpoint rather than a caveat saying it does not.
       guard.checkPeriodically(step);
-      final int[] neighbors = adj[cur];
+      final int[] neighbors = graph.neighbors(cur, dir);
       if (neighbors.length == 0)
         break;
       cur = neighbors[rnd.nextInt(neighbors.length)];
@@ -145,7 +140,8 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     // Build RID list from walk (one ArrayList allocation)
     final List<RID> rids = new ArrayList<>(walkLen);
     for (int i = 0; i < walkLen; i++)
-      rids.add(graph.getVertex(walk[i]).getIdentity());
+      rids.add(graph.ridOf(walk[i]));
+    graph.reserveVisited();
 
     // The walk knows the vertices it stepped on; the edges it stepped over are attached so the path is one (issue #9913)
     final TraversalPath path = buildPath(attachEdges(rids, relTypes, dir, null).ridsWithEdges(), db);

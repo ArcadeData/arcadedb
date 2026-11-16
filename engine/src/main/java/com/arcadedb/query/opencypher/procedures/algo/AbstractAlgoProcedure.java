@@ -1098,6 +1098,21 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * The neighbour rows of a procedure anchored on one or two vertices, which reads the nodes it reaches from them and no other
+   * (issue #12176): without a view, from the records of those vertices, rather than loading every vertex and every edge of the
+   * database first; with one, from the view one node at a time, rather than copying the adjacency of the whole graph out of it.
+   *
+   * @param wholeGraph the answer covers every node of the graph (a cutoff that keeps the nodes sharing nothing with the
+   *                   source), so the graph is loaded whole, as before
+   */
+  protected Neighborhood openNeighborhood(final Database db, final String[] relTypes, final CommandContext context,
+      final boolean wholeGraph) {
+    if (!wholeGraph && findProvider(db, relTypes, context) == null)
+      return new Neighborhood.OfRecords(incomingSideContext(db, context), relTypes, newMemoryBudget(db));
+    return new Neighborhood.OfGraph(loadGraph(db, null, relTypes, context), relTypes, wholeGraph);
+  }
+
+  /**
    * The context a walk of the records reads the incoming side of the unidirectional edge types through (issue #8629):
    * the call's own, so its scans are shared with the rest of the query, or a context of its own for a caller that has
    * none.

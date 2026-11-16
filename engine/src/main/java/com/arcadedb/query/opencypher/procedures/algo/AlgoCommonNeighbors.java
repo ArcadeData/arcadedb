@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -88,39 +87,33 @@ public class AlgoCommonNeighbors extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
-
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    // A cutoff of one or more keeps only the nodes with a neighbour in common with the source, two hops away: only those are
+    // read, from the records when no view covers the graph (issue #12176). A cutoff of zero or less keeps every node
+    final boolean wholeGraph = cutoff <= 0;
+    final Neighborhood graph = openNeighborhood(db, relTypes, context, wholeGraph);
+    final int srcIdx = graph.nodeOf(sourceVertex);
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Build BitSet of source neighbors for O(1) membership checks
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
+    final int[] srcNeighbors = Neighborhood.distinctSorted(graph.neighbors(srcIdx, dir));
 
     final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
+    for (final int v : wholeGraph ? graph.allNodes() : graph.nodesReaching(srcNeighbors, dir)) {
       if (v == srcIdx)
         continue;
       int count = 0;
-      for (final int w : adj[v])
-        if (srcNeighbors.get(w))
+      for (final int w : graph.neighbors(v, dir))
+        if (Neighborhood.contains(srcNeighbors, w))
           count++;
       if (count >= cutoff) {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node1", sourceVertex.getIdentity());
-        r.setProperty("node2", graph.getRID(v));
+        r.setProperty("node2", graph.ridOf(v));
         r.setProperty("commonNeighbors", count);
         results.add(r);
       }
     }
+    graph.reserveVisited();
     results.sort(Comparator.comparingInt((Result r) -> (int) r.getProperty("commonNeighbors")).reversed());
     return results.stream();
   }

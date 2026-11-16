@@ -25,9 +25,10 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -88,47 +89,49 @@ public class AlgoAdamicAdar extends AbstractAlgoProcedure {
     final double cutoff        = optionalNumberArg(args, 3, "cutoff", 0.0).doubleValue();
 
     final Database db = context.getDatabase();
-    final GraphData graph = loadGraph(db, null, relTypes, context);
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    // A score above a cutoff of zero or more comes from a common neighbour, so only the nodes two hops away are read, from the
+    // records when no view covers the graph (issue #12176). A negative cutoff keeps every node
+    final boolean wholeGraph = !(cutoff >= 0);
+    final Neighborhood graph = openNeighborhood(db, relTypes, context, wholeGraph);
+    final int srcIdx = graph.nodeOf(sourceVertex);
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Build BitSet of source's neighbors for fast membership checks
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
-
-    // Accumulate Adamic-Adar contributions into a primitive double array (no boxing)
-    final double[] aaScores = new double[n];
-
-    for (final int w : adj[srcIdx]) {
-      final int degree = adj[w].length;
+    // Accumulated per node in the order the contributions arrive, so a score sums the same terms in the same order as before
+    final Map<Integer, Double> aaScores = new HashMap<>();
+    for (final int w : graph.neighbors(srcIdx, dir)) {
+      final int[] row = graph.neighbors(w, dir);
+      final int degree = row.length;
       if (degree <= 1)
         continue;  // log(1) = 0, skip to avoid division by zero / zero contribution
       final double contribution = 1.0 / Math.log(degree);
-      for (final int v : adj[w]) {
+      for (final int v : row) {
         if (v != srcIdx)
-          aaScores[v] += contribution;
+          aaScores.merge(v, contribution, Double::sum);
       }
+    }
+
+    final int[] candidates;
+    if (wholeGraph)
+      candidates = graph.allNodes();
+    else {
+      candidates = aaScores.keySet().stream().mapToInt(Integer::intValue).toArray();
+      graph.sortInGraphOrder(candidates);
     }
 
     // Collect results above cutoff, sorted by score descending
     final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx || aaScores[v] <= cutoff)
+    for (final int v : candidates) {
+      final double score = aaScores.getOrDefault(v, 0.0);
+      if (v == srcIdx || score <= cutoff)
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex.getIdentity());
-      r.setProperty("node2", graph.getRID(v));
-      r.setProperty("score", aaScores[v]);
+      r.setProperty("node2", graph.ridOf(v));
+      r.setProperty("score", score);
       results.add(r);
     }
+    graph.reserveVisited();
     results.sort(Comparator.comparingDouble((Result r) -> (double) r.getProperty("score")).reversed());
     return results.stream();
   }

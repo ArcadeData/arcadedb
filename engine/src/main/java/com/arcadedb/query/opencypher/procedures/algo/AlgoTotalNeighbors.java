@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.BitSet;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -87,30 +86,24 @@ public class AlgoTotalNeighbors extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
-
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int idx1 = graph.indexOf(node1.getIdentity());
-    final int idx2 = graph.indexOf(node2.getIdentity());
+    // The rows of the two nodes and nothing else: from their records when no view covers the graph (issue #12176)
+    final Neighborhood graph = openNeighborhood(db, relTypes, context, false);
+    final int idx1 = graph.nodeOf(node1);
+    final int idx2 = graph.nodeOf(node2);
     if (idx1 < 0 || idx2 < 0)
       return Stream.empty();
 
     // |N(u) ∪ N(v)| = |N(u)| + |N(v)| - |N(u) ∩ N(v)|
-    final BitSet n1Set = new BitSet(n);
-    for (final int j : adj[idx1])
-      n1Set.set(j);
+    final int[] row1 = graph.neighbors(idx1, dir);
+    final int[] row2 = graph.neighbors(idx2, dir);
+    final int[] n1Set = Neighborhood.distinctSorted(row1);
 
     int common = 0;
-    for (final int j : adj[idx2]) {
-      if (n1Set.get(j))
+    for (final int j : row2)
+      if (Neighborhood.contains(n1Set, j))
         common++;
-    }
-    final long total = (long) adj[idx1].length + adj[idx2].length - common;
+    final long total = (long) row1.length + row2.length - common;
+    graph.reserveVisited();
 
     final ResultInternal r = new ResultInternal();
     r.setProperty("node1", node1);

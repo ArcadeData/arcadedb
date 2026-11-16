@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -89,46 +89,39 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
-
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    // A score above a cutoff of zero or more comes from a common neighbour, so only the nodes two hops away are read, from the
+    // records when no view covers the graph (issue #12176). A negative cutoff keeps every node
+    final boolean wholeGraph = !(cutoff >= 0);
+    final Neighborhood graph = openNeighborhood(db, relTypes, context, wholeGraph);
+    final int srcIdx = graph.nodeOf(sourceVertex);
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Build BitSet of source neighbors for O(1) membership checks
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
+    final int[] srcNeighbors = Neighborhood.distinctSorted(graph.neighbors(srcIdx, dir));
+    // The degree of each neighbour of the source, read once: every candidate shares some of them
+    final int[] srcNeighborDegrees = new int[srcNeighbors.length];
+    for (int i = 0; i < srcNeighbors.length; i++)
+      srcNeighborDegrees[i] = graph.neighbors(srcNeighbors[i], dir).length;
 
-    // Accumulate Resource Allocation scores into a primitive double array (no boxing)
-    final double[] raScores = new double[n];
-
-    for (int v = 0; v < n; v++) {
+    final List<Result> results = new ArrayList<>();
+    for (final int v : wholeGraph ? graph.allNodes() : graph.nodesReaching(srcNeighbors, dir)) {
       if (v == srcIdx)
         continue;
       double score = 0.0;
-      for (final int w : adj[v])
-        if (srcNeighbors.get(w) && adj[w].length > 0)
-          score += 1.0 / adj[w].length;
-      raScores[v] = score;
-    }
-
-    final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx || raScores[v] <= cutoff)
+      for (final int w : graph.neighbors(v, dir)) {
+        final int i = Arrays.binarySearch(srcNeighbors, w);
+        if (i >= 0 && srcNeighborDegrees[i] > 0)
+          score += 1.0 / srcNeighborDegrees[i];
+      }
+      if (score <= cutoff)
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex.getIdentity());
-      r.setProperty("node2", graph.getRID(v));
-      r.setProperty("score", raScores[v]);
+      r.setProperty("node2", graph.ridOf(v));
+      r.setProperty("score", score);
       results.add(r);
     }
+    graph.reserveVisited();
     results.sort(Comparator.comparingDouble((Result r) -> (double) r.getProperty("score")).reversed());
     return results.stream();
   }
