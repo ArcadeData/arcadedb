@@ -124,8 +124,8 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("graph/olap/GraphAnalyticalView#unlistedVertexBuckets", GAV_INTERNAL),
       // QUERY PLANNING AND EXECUTION
       Map.entry("query/opencypher/Labels#matchingVertexTypes", PLANNER),
-      Map.entry("query/opencypher/executor/CypherExecutionPlan#labelsAreTypeDisjoint", PLANNER),
-      Map.entry("query/opencypher/executor/CypherExecutionPlan$PairJoinStatistics#vertices", PLANNER),
+      Map.entry("query/opencypher/executor/HopEdgeTrackingAnalyzer#labelsAreTypeDisjoint", PLANNER),
+      Map.entry("query/opencypher/executor/CountStarShapeDetector$PairJoinStatistics#vertices", PLANNER),
       Map.entry("query/opencypher/executor/operators/GAVEdgeRef#trackedEdgeTypes", PLANNER),
       Map.entry("query/opencypher/executor/steps/PairHashJoinOp#executeOLTP", PLANNER),
       Map.entry("query/opencypher/executor/steps/PartitionedTriangleOp#executeOLTP", PLANNER),

@@ -47,8 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * silently, and because the pages were cut by SKIP/LIMIT over that rewritten order the caller could not even restore
  * the intended order client-side without pulling every page.
  * <p>
- * The wrapper now adds {@code ORDER BY @rid} only when the caller asked for no order of its own; a caller-supplied
- * ORDER BY is left to do its job inside the sub-query, which the wrapper no longer re-sorts.
+ * The wrapper then added {@code ORDER BY @rid} only when the caller asked for no order of its own. Since issue #11800
+ * there is no wrapper at all: PAGED runs the caller's query once and cuts the pages from its rows, so the order is the
+ * query's own by construction. The tests stay as the contract.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -194,10 +195,9 @@ public class Issue7029GrpcPagedOrderByIT extends BaseGrpcServerTest {
 
   @Test
   void pagedModeStillPagesStablyWhenTheCallerAsksForNoOrder() {
-    // Without a caller-supplied ORDER BY the wrapper keeps ordering by @rid, which is what makes SKIP/LIMIT paging
-    // sound. RID order is not insertion order - the type's buckets are filled round-robin - so what is asserted here
-    // is what @rid buys: every row delivered exactly once, and the same total order on every run, so the pages of one
-    // scan cannot drop or duplicate a row.
+    // Without a caller-supplied ORDER BY the pages are cut from one scan (issue #11800; the wrapper used to order by
+    // @rid to make its per-page SKIP/LIMIT sound): every row is delivered exactly once, and on a database nobody is
+    // writing to a re-run repeats the scan's order.
     final String query = "SELECT FROM " + VERTEX1_TYPE_NAME + " WHERE seq IS NOT NULL";
 
     final List<Long> seq = streamPagedSeq(query);
@@ -205,10 +205,10 @@ public class Issue7029GrpcPagedOrderByIT extends BaseGrpcServerTest {
     for (long i = 0; i < ROWS; i++)
       expected.add(i);
 
-    assertThat(seq).as("with no caller order, @rid paging must deliver every row exactly once")
+    assertThat(seq).as("with no caller order, paging must deliver every row exactly once")
         .hasSize(ROWS)
         .containsExactlyInAnyOrderElementsOf(expected);
-    assertThat(streamPagedSeq(query)).as("@rid gives the pages a stable total order, so a re-run repeats it")
+    assertThat(streamPagedSeq(query)).as("the pages are cut from one scan, so a re-run on a quiet database repeats it")
         .containsExactlyElementsOf(seq);
   }
 }

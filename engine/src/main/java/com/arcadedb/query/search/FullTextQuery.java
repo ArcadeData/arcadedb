@@ -223,8 +223,9 @@ public final class FullTextQuery {
     try {
       return FullTextSearch.resolveFullTextIndex(database, indexName);
     } catch (final SchemaException e) {
-      throw new IllegalArgumentException(
-          "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);
+      // still a schema refusal, with the indexes the caller can pick from (issue #11633)
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal, re-worded
+      throw new SchemaException("Full-text index '" + indexName + "' does not exist. " + describeAvailable(database));
     } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException(
           "Index '" + indexName + "' is not a full-text index. " + describeAvailable(database), e);
@@ -239,8 +240,9 @@ public final class FullTextQuery {
     try {
       return FullTextSearch.resolveFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
-      throw new IllegalArgumentException(
-          "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);
+      // still a schema refusal, with the indexes the caller can pick from (issue #11633)
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal, re-worded
+      throw new SchemaException("Full-text index '" + indexName + "' does not exist. " + describeAvailable(database));
     } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException(
           "Index '" + indexName + "' is not a full-text index. " + describeAvailable(database), e);

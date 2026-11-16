@@ -937,7 +937,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
         continue;
       if (!wholeKey) {
         try {
-          if (!index.supportsOrderedIterations())
+          // a prefix range misses a record whose unbound column is indexed BY ITEM with no element, or is null in an index
+          // that skips nulls, and reaches one with several elements several times: the scan answers those
+          if (!index.supportsOrderedIterations() || !index.prefixReachesEveryRecord(matchCount))
             continue;
         } catch (final IndexException e) {
           continue; // dropped or rebuilt since it was checked: not a candidate, the scan answers

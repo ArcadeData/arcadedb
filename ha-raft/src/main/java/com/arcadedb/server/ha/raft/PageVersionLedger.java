@@ -326,7 +326,7 @@ final class PageVersionLedger {
 
   /**
    * Decodes the page headers of a replicated WAL transaction without materializing the deltas. Same layout as
-   * {@link ArcadeStateMachine#deserializeWalTransaction(byte[])}: txId, timestamp, page count, segment size, then per
+   * {@link CommittedEntryDecoding#deserializeWalTransaction(byte[])}: txId, timestamp, page count, segment size, then per
    * page the file id, page number, delta range, target version, page size and the delta bytes.
    *
    * @throws ReplicationException when the bytes do not describe a well-formed transaction
