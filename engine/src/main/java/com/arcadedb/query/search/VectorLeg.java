@@ -213,7 +213,8 @@ public final class VectorLeg {
       rawIndex = database.getSchema().getIndexByName(indexName);
     } catch (final SchemaException e) {
       // still a schema refusal, with the indexes the caller can pick from (issue #11633)
-      throw new SchemaException("Vector index '" + indexName + "' does not exist. " + describeAvailableIndexes(database, sparse), e);
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal, re-worded
+      throw new SchemaException("Vector index '" + indexName + "' does not exist. " + describeAvailableIndexes(database, sparse));
     }
 
     if (!(rawIndex instanceof final TypeIndex typeIndex))

@@ -577,9 +577,10 @@ public final class HybridSearch {
     try {
       typeIndexes = FullTextSearch.resolveFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
-      // still a schema refusal, with the indexes the caller can pick from (issue #11633: it was re-wrapped as a generic one)
+      // still a schema refusal, with the indexes the caller can pick from (issue #11633: it was re-wrapped as a generic one);
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal
       throw new SchemaException("Full-text index '" + indexName + "' does not exist. Available full-text "
-          + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
+          + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database));
     } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException("Index '" + indexName + "' is not a full-text index. Available full-text "
           + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);

@@ -124,5 +124,7 @@ class Issue11633MissingObjectRefusalTest extends TestHelper {
     final Throwable error = catchThrowable(call::execute);
     assertThat(error).isInstanceOf(SchemaException.class).hasMessageContaining("does not exist");
     assertThat(ErrorCategory.of(error)).isEqualTo(ErrorCategory.SCHEMA);
+    // HTTP answers a SchemaException that carries a cause as a server fault (500): the refusal of a missing index carries none
+    assertThat(error.getCause()).isNull();
   }
 }
