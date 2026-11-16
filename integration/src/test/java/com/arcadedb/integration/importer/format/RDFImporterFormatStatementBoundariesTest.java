@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -114,6 +115,19 @@ class RDFImporterFormatStatementBoundariesTest {
     final ImporterContext context = load(new RDFImporterFormat(" "), settings, content);
     assertThat(context.errors.get()).isEqualTo(1);
     assertThat(edges()).containsOnly(Map.entry("http://a/p", "http://a/s>http://a/o"));
+  }
+
+  /** What the overlong line costs: the reader keeps no more of it than a statement within the limit can be. */
+  @Test
+  void overlongLineIsNotKeptWhole() throws Exception {
+    final NTriplesStatement statement = new NTriplesStatement(" ", 100);
+    final String overlong = "<http://a/s> <http://a/p> \"" + "x".repeat(1_000_000) + "\" .";
+    assertThat(statement.readLine(new StringReader(overlong + "\r\n<http://a/s> <http://a/p> <http://a/o> .\n"))).isTrue();
+    assertThat(statement.lineLength()).isEqualTo(overlong.length());
+    assertThat(statement.lineTooLong()).isTrue();
+    assertThat(statement.line().length()).isLessThanOrEqualTo(4 * 100 + 4096);
+
+    assertThat(statement.readLine(new StringReader(""))).isFalse();
   }
 
   /** Without maxPropertySize a term is bounded the way the delimited-text reading bounded a cell: 4,096 characters. */
