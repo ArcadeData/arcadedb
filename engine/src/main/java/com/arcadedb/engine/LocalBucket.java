@@ -7706,7 +7706,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final int previousCoverage = currentPage.beginCoveredWrite(firstChunkCoverage);
     // #11925: the head chunk fills exactly the availableSpaceForFirstChunk bytes it is given, and every caller gives it
     // either the slot's own footprint (plus what an in-page shift just claimed for it) or the run to the end of the
-    // content area, so it leaves no hole. The chunks placed after it, on this page or another, are not declared.
+    // content area, so it leaves no hole. The chunks placed after it, on this page or another, are declared by
+    // writeContinuationChunks: each one is appended at the content end of its page.
     final boolean previousPackedWrite = currentPage.beginPackedWrite();
     final int byteWritten;
     int chunkSize;
