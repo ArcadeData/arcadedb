@@ -407,7 +407,9 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, out);
     }
     case LINK_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
+      // A RID, as the embedded engine answers a link and the HTTP driver answers a LINK column: the rid TEXT read a link back
+      // as a String, so (Identifiable) doc.get(name) failed and a re-save wrote it back as a string (issue #12195)
+      return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()));
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
       return dbgDec("fromGrpcValue", v, toBigDecimal(d));

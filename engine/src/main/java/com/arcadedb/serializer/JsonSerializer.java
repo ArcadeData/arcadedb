@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IterableGraph;
@@ -231,8 +232,10 @@ public class JsonSerializer {
         // client with no hint for the column would hand back as that String instead of the number.
         // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
         // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
-        // tells the client the marker string stands for a number. Every other element row keeps its shape.
-        final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
+        // tells the client the marker string stands for a number. Issue #12195: the same holds for a LINK, or a list or
+        // map of links, which goes out as its "#12:0" text and was read back by the remote client as a String. Every other
+        // element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaPropertyType == null && (carriesNonFinite(value) || carriesLinks(value));
         final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
             hintElementRow);
@@ -286,6 +289,8 @@ public class JsonSerializer {
       Type elementType = detectHomogeneousTemporalElementType(elements);
       if (elementType == null)
         elementType = detectNonFiniteFloatingElementType(elements);
+      if (elementType == null)
+        elementType = detectHomogeneousLinkElementType(elements);
       if (elementType != null)
         propertyTypes.append('(').append(elementType.getId()).append(')');
     }
@@ -975,6 +980,36 @@ public class JsonSerializer {
         return null;
     }
     return elementType;
+  }
+
+  /**
+   * Whether an undeclared property's value is a link, or a list or map of links only (issue #12195): JSON carries a link as
+   * its "#12:0" text, so without a hint the remote client cannot tell it from a string.
+   */
+  private static boolean carriesLinks(final Object value) {
+    if (value instanceof Identifiable)
+      return true;
+    if (value instanceof Collection<?> collection)
+      return detectHomogeneousLinkElementType(collection) != null;
+    if (value instanceof Map<?, ?> map)
+      return detectHomogeneousLinkElementType(map.values()) != null;
+    return false;
+  }
+
+  /**
+   * {@link Type#LINK} when every non-null element is a link (and there is at least one), null otherwise: the element type a
+   * LIST/MAP hint carries in parentheses ("friends:9(11)") so the client rebuilds each item as a RID (issue #12195).
+   */
+  private static Type detectHomogeneousLinkElementType(final Collection<?> collection) {
+    boolean found = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (!(element instanceof Identifiable))
+        return null;
+      found = true;
+    }
+    return found ? Type.LINK : null;
   }
 
   /**
