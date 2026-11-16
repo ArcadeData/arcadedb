@@ -160,6 +160,15 @@ public class AllReduceExpression implements Expression {
     return false;
   }
 
+  /**
+   * An aggregate nested in any part makes the expression an aggregation too, as for {@link ReduceExpression} (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    return initialValue.containsAggregation() || listExpression.containsAggregation() || reduceExpression.containsAggregation()
+        || predicateExpression.containsAggregation();
+  }
+
   @Override
   public String getText() {
     return text;
