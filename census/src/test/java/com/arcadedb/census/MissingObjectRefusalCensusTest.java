@@ -20,10 +20,12 @@ package com.arcadedb.census;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -236,7 +238,7 @@ class MissingObjectRefusalCensusTest {
     assertThat(constructions(CompiledClasses.ofTheProbes(), MISSING).keySet()).containsExactlyInAnyOrder(
         "census/ShapeProbes$MissingObject#concatenated", "census/ShapeProbes$MissingObject#throughALocal",
         "census/ShapeProbes$MissingObject#asAnArgumentFailure", "census/ShapeProbes$MissingObject#withTheMessageSecond",
-        "census/ShapeProbes$MissingObjectWrapping#<init>");
+        "census/ShapeProbes$MissingObjectWrapping#<init>", "census/ShapeProbes$MissingObjectThrowing#<init>");
   }
 
   /**
@@ -270,14 +272,19 @@ class MissingObjectRefusalCensusTest {
 
   /**
    * A throwable constructor handing its message to {@code super(...)} or {@code this(...)}: the subclass passes on what its
-   * caller wrote, and the caller's construction is the site. A throwable a constructor builds of another type is a site of its own.
+   * caller wrote, and the caller's construction is the site. Told apart by the receiver, which is {@code this} itself, from a
+   * throwable the constructor builds with {@code new}, whatever its type (its own super class included): that is a site of its own.
    */
   private static boolean isDelegation(final CallOperands.Site site, final Throwables throwables) {
-    if (!site.key().endsWith("#<init>"))
+    if (!site.key().endsWith("#<init>") || !throwables.isThrowable(site.in().owner().name))
       return false;
-    final String enclosing = site.in().owner().name;
-    return throwables.isThrowable(enclosing) && (site.call().owner.equals(enclosing) || site.call().owner.equals(
-        site.in().owner().superName));
+    final Set<AbstractInsnNode> receivers = site.operand(0);
+    if (receivers.isEmpty())
+      return false;
+    for (final AbstractInsnNode receiver : receivers)
+      if (!(receiver instanceof VarInsnNode load) || load.getOpcode() != Opcodes.ALOAD || load.var != 0)
+        return false;
+    return true;
   }
 
   /**

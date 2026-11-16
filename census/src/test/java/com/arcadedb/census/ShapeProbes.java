@@ -220,6 +220,18 @@ final class ShapeProbes {
   }
 
   /**
+   * A throwable constructor that builds a refusal of its own super class: the super(...) call is a delegation, the new
+   * RuntimeException is a site, although both calls name the same constructor.
+   */
+  static final class MissingObjectThrowing extends RuntimeException {
+    MissingObjectThrowing(final boolean refuse) {
+      super("outer");
+      if (refuse)
+        throw new RuntimeException("Index not found");
+    }
+  }
+
+  /**
    * {@link RemoteUnguardedNextCensusTest}: the census ranged over the classes of two modules named in a list, so a read of a
    * remote answer anywhere else - the console holds its database as a {@link BasicDatabase} - was outside it (#11452).
    */
