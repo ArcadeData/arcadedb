@@ -138,6 +138,9 @@ public class ForeachStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      private final LabelReplacements labelReplacements = LabelReplacements.of(context);
+      // WHETHER A LABEL WRITE OF THIS BATCH REPLACED A RECORD: ONLY THEN CAN A ROW BUFFERED BEFORE IT HOLD A DELETED ONE
+      private boolean batchReplaced = false;
 
       @Override
       public boolean hasNext() {
@@ -155,8 +158,10 @@ public class ForeachStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         final Result result = buffer.get(bufferIndex++);
         // A later row of the same batch may have replaced a record this one holds after it was buffered (a label write on
-        // the same node): served with the live records, not the deleted intermediates (issue #11764)
-        LabelReplacements.of(context).redirect(result);
+        // the same node): served with the live records, not the deleted intermediates (issue #11764). A batch that replaced
+        // nothing is served as it is, without a walk of its rows
+        if (batchReplaced)
+          labelReplacements.redirect(result);
         if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
           // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
           // SET OPEN
@@ -178,6 +183,15 @@ public class ForeachStep extends AbstractExecutionStep {
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
+        final long replacementsBefore = labelReplacements.getReplacementCount();
+        try {
+          fetchBatch(n);
+        } finally {
+          batchReplaced = labelReplacements.getReplacementCount() != replacementsBefore;
+        }
+      }
+
+      private void fetchBatch(final int n) {
 
         if (prevResults == null) {
           if (hasPrevious)
@@ -293,10 +307,11 @@ public class ForeachStep extends AbstractExecutionStep {
         final ResultInternal iterationRow = new ResultInternal();
         for (final String prop : inputRow.getPropertyNames())
           iterationRow.setProperty(prop, inputRow.getProperty(prop));
-        iterationRow.setProperty(variable, element);
         // The list was evaluated once, before the first iteration: an element an earlier iteration replaced ([n, n] with a
-        // label write on x) is bound as its live record, not as the deleted original
-        labelReplacements.redirect(iterationRow);
+        // label write on x) is bound as its live record, not as the deleted original. The other bindings come from the
+        // outer row, kept live below
+        iterationRow.setProperty(variable, labelReplacements.resolveValue(element));
+        final long replacementsBefore = labelReplacements.getReplacementCount();
 
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
         context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
@@ -316,8 +331,10 @@ public class ForeachStep extends AbstractExecutionStep {
         // A label write in the body replaced the record under a new RID: every binding of the outer row that still holds
         // the original follows it, the ones the sync above does not reach included - a list, a map, a relationship
         // re-attached to the new record. Left behind, {@code [n]} kept the deleted original and a traversal from it missed
-        // the relationship the write moved (issue #11670), as the CALL subquery already redirects its outer row
-        labelReplacements.redirect(inputRow);
+        // the relationship the write moved (issue #11670), as the CALL subquery already redirects its outer row. Walked only
+        // after an iteration that replaced something, so a body without label writes costs nothing
+        if (labelReplacements.getReplacementCount() != replacementsBefore)
+          labelReplacements.redirect(inputRow);
       }
     } catch (final Exception e) {
       if (e instanceof RuntimeException re)

@@ -90,6 +90,8 @@ public final class LabelReplacements {
 
   private final Map<RID, Vertex> vertices = new HashMap<>();
   private final Map<RID, Edge>   edges    = new HashMap<>();
+  // HOW MANY VERTICES {@link #replace} REWROTE: A CHANGE DETECTOR, SO A CALLER RE-WALKS ITS ROW ONLY WHEN SOMETHING MOVED
+  private       long             replacements;
 
   /**
    * The replacement map of the statement {@code context} belongs to, created on first use.
@@ -121,6 +123,22 @@ public final class LabelReplacements {
     if (inner == null || outer == null)
       return;
     inner.setCachedValue(CONTEXT_KEY, of(outer));
+  }
+
+  /**
+   * Increases every time a vertex is replaced, and never goes back (a {@link #restore} does not rewind it): a caller that
+   * compares two readings knows whether anything moved in between, and skips the walk of a row when nothing did.
+   */
+  public long getReplacementCount() {
+    return replacements;
+  }
+
+  /**
+   * The live form of a single value - a vertex, an edge, or a path, list or map holding them - or the value itself when
+   * nothing inside it was replaced. What {@link #redirect} does for each value of a row, for a caller binding one value.
+   */
+  public Object resolveValue(final Object value) {
+    return vertices.isEmpty() ? value : redirectValue(value);
   }
 
   public boolean isEmpty() {
@@ -409,6 +427,7 @@ public final class LabelReplacements {
     // goes, or resolve() would follow it back to the vertex that replaced it - a cycle
     vertices.remove(newVertex.getIdentity());
     vertices.put(originalRid, newVertex);
+    ++replacements;
 
     // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
     // what the write actually did is what explains a stall that has already happened.
