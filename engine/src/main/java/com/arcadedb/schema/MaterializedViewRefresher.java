@@ -130,7 +130,8 @@ public class MaterializedViewRefresher {
 
         // #11019: a pass that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
         final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(view.getStatus());
-        view.setStatus(MaterializedViewStatus.BUILDING);
+        // #12252: reported, never saved: a schema save while the pass runs keeps the status it started from
+        view.markPassRunning();
         final long startNs = System.nanoTime();
 
         if (delta == null)

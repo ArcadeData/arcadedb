@@ -78,6 +78,12 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
+  /**
+   * The status the schema saves (issue #12252): the last one set with {@link #setStatus}, never the BUILDING of a running refresh
+   * ({@link #markRefreshRunning}), so a schema save made while a refresh runs (a late-sample record, another DDL) does not ship
+   * BUILDING to the followers, whose load turns it into STALE. The BUILDING set at creation is saved as before.
+   */
+  private volatile MaterializedViewStatus persistedStatus;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
   private final    AtomicBoolean          refreshRequested  = new AtomicBoolean(false);
 
@@ -103,6 +109,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     this.watermark = Watermark.UNSET;
     this.lastRefreshTime = 0;
     this.status = MaterializedViewStatus.VALID;
+    this.persistedStatus = MaterializedViewStatus.VALID;
   }
 
   @Override
@@ -251,6 +258,15 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   public void setStatus(final MaterializedViewStatus status) {
     this.status = status;
+    this.persistedStatus = status;
+  }
+
+  /**
+   * Reports BUILDING while a refresh runs, without changing the status the schema saves (issue #12252): the refresh ends by setting
+   * the status it settles in.
+   */
+  void markRefreshRunning() {
+    this.status = MaterializedViewStatus.BUILDING;
   }
 
   public void setWatermarkTs(final long watermarkTs) {
@@ -532,7 +548,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
       json.put("invalidatedToTs", pending.toTs());
     }
     json.put("lastRefreshTime", lastRefreshTime);
-    json.put("status", status.name());
+    json.put("status", persistedStatus.name());
     return json;
   }
 
@@ -564,7 +580,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     if (json.has("invalidatedFromTs") && json.has("invalidatedToTs"))
       ca.invalidation.set(new Invalidation(json.getLong("invalidatedFromTs"), json.getLong("invalidatedToTs")));
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
-    ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
+    ca.setStatus(MaterializedViewStatus.valueOf(json.getString("status", "VALID")));
     return ca;
   }
 
