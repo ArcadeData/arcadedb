@@ -54,7 +54,9 @@ class ResultInternalPropertiesOfTest extends TestHelper {
   void aProjectionRowAnswersItsOwnValuesWithoutReadingTheRecord() {
     database.transaction(() -> {
       final CountingImmutableDocument document = countingDocument();
-      final ResultInternal row = new ResultInternal(document);
+      // A projection row as the executor builds one: its own values, with the record it was projected from kept as the element
+      final ResultInternal row = new ResultInternal(database);
+      row.setElement(document);
       row.setProperty("x", 10);
       row.setProperty("y", null);
       row.setProperty("a", "shadows the record");
@@ -100,7 +102,8 @@ class ResultInternalPropertiesOfTest extends TestHelper {
       recordRow.removeProperty("b");
       assertThat(ResultInternal.propertiesOf(recordRow)).containsExactlyEntriesOf(byName(recordRow)).doesNotContainKey("b");
 
-      final ResultInternal projection = new ResultInternal(rid.asDocument(true));
+      final ResultInternal projection = new ResultInternal(database);
+      projection.setElement(rid.asDocument(true));
       projection.setProperty("x", 1);
       projection.setProperty("y", 2);
       projection.removeProperty("x");
