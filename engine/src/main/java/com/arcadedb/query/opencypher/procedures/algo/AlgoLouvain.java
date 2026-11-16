@@ -19,9 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -30,11 +28,12 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import com.arcadedb.utility.IntIntHashMap;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -108,14 +107,16 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
-    if (vertices.isEmpty())
+    // Every vertex and every edge type, read once: through a Graph Analytical View when one covers the graph, from the
+    // records otherwise (issue #12169).
+    final GraphData graph = loadGraph(db, null, null, context);
+    final int n = graph.nodeCount;
+    if (n == 0)
       return Stream.empty();
 
-    final int n = vertices.size();
-    final Map<Vertex, Integer> vertexIndex = new HashMap<>(n);
-    for (int i = 0; i < n; i++)
-      vertexIndex.put(vertices.get(i), i);
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.BOTH, weightProperty);
+    final int[][] adj = weighted.neighbors();
+    final double[][] adjWeights = weighted.weights();
 
     // Initialize: each node in its own community
     final int[] community = new int[n];
@@ -126,26 +127,24 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     double totalWeight = 0.0;
     final double[] nodeDegree = new double[n];
     for (int i = 0; i < n; i++) {
-      final Vertex v = vertices.get(i);
-      // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
-      for (final Edge edge : edgesOf(context, v, Vertex.DIRECTION.BOTH)) {
-        try {
-          double w = 1.0;
-          if (weightProperty != null) {
-            final Object wObj = edge.get(weightProperty);
-            if (wObj instanceof Number num)
-              w = num.doubleValue();
-          }
-          nodeDegree[i] += w;
-          totalWeight += w;
-        } catch (final RecordNotFoundException e) {
-          GhostEdgeReporter.reportSkipped(e);
-        }
+      for (final double w : adjWeights[i]) {
+        nodeDegree[i] += w;
+        totalWeight += w;
       }
     }
     totalWeight /= 2.0; // Each edge counted twice
 
-    double prevModularity = computeModularity(vertices, community, vertexIndex, nodeDegree, totalWeight, weightProperty);
+    // The weighted degree of every community, kept up to date as vertices move. Reading it here instead of summing
+    // the degrees of the community's members over every vertex is what makes a pass O(E) rather than O(E x V)
+    // (issue #12169). Community ids are vertex indexes, so community i starts with vertex i alone.
+    graph.memory().reserve(saturatingProduct(3L * n, DOUBLE_BYTES), "the community degrees and modularity buffers",
+        n + " nodes");
+    final double[] communityDegree = nodeDegree.clone();
+    final double[] scratchDegree = new double[n];
+    final double[] scratchInternal = new double[n];
+
+    double prevModularity = computeModularity(adj, adjWeights, community, nodeDegree, totalWeight, scratchDegree,
+        scratchInternal);
 
     // Phase 1: Modularity optimization
     for (int iter = 0; iter < maxIterations; iter++) {
@@ -155,34 +154,16 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
       boolean changed = false;
 
       for (int i = 0; i < n; i++) {
-        // One node is already O(deg x n) - getCommunityDegree() scans every node once per candidate community -
-        // so the per-node checkpoint is unthrottled: 1024 of these would be 1024 whole-graph scans of latency.
-        guard.check();
-        final Vertex v = vertices.get(i);
+        guard.checkPeriodically(i);
         final int currentCommunity = community[i];
 
-        // Compute neighbor community weights
+        // Compute neighbor community weights. A HashMap, as when they were read off the edge records: the order the
+        // candidates are tried in decides which of two equal gains wins.
+        final int[] neighbors = adj[i];
+        final double[] weights = adjWeights[i];
         final Map<Integer, Double> neighborCommunityWeight = new HashMap<>();
-        for (final Edge edge : edgesOf(context, v, Vertex.DIRECTION.BOTH)) {
-          try {
-            final Vertex neighbor = edge.getOut().equals(v.getIdentity()) ?
-                edge.getInVertex() : edge.getOutVertex();
-            final Integer neighborIdx = vertexIndex.get(neighbor);
-            if (neighborIdx == null)
-              continue;
-
-            double w = 1.0;
-            if (weightProperty != null) {
-              final Object wObj = edge.get(weightProperty);
-              if (wObj instanceof Number num)
-                w = num.doubleValue();
-            }
-            final int neighborComm = community[neighborIdx];
-            neighborCommunityWeight.merge(neighborComm, w, Double::sum);
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
+        for (int k = 0; k < neighbors.length; k++)
+          neighborCommunityWeight.merge(community[neighbors[k]], weights[k], Double::sum);
 
         // Find best community to move to
         int bestCommunity = currentCommunity;
@@ -194,8 +175,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
             continue;
 
           // Modularity gain = 2 * w_ic - k_i * sum_c / m
-          final double communityTotalDegree = getCommunityDegree(community, nodeDegree, candidateCommunity, n);
-          final double gain = entry.getValue() - nodeDegree[i] * communityTotalDegree / (2.0 * totalWeight);
+          final double gain = entry.getValue() - nodeDegree[i] * communityDegree[candidateCommunity] / (2.0 * totalWeight);
 
           if (gain > bestGain) {
             bestGain = gain;
@@ -204,6 +184,8 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         }
 
         if (bestCommunity != currentCommunity) {
+          communityDegree[currentCommunity] -= nodeDegree[i];
+          communityDegree[bestCommunity] += nodeDegree[i];
           community[i] = bestCommunity;
           changed = true;
         }
@@ -212,78 +194,64 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
       if (!changed)
         break;
 
-      final double newModularity = computeModularity(vertices, community, vertexIndex, nodeDegree, totalWeight, weightProperty);
+      final double newModularity = computeModularity(adj, adjWeights, community, nodeDegree, totalWeight, scratchDegree,
+          scratchInternal);
       if (Math.abs(newModularity - prevModularity) < tolerance)
         break;
       prevModularity = newModularity;
     }
 
-    final double finalModularity = computeModularity(vertices, community, vertexIndex, nodeDegree, totalWeight, weightProperty);
+    final double finalModularity = computeModularity(adj, adjWeights, community, nodeDegree, totalWeight, scratchDegree,
+        scratchInternal);
 
-    // Remap community IDs to be sequential starting from 0
+    // Remap community IDs to be sequential starting from 0. A view keeps the slot of a vertex deleted since it was
+    // built as a hole with no RID and no edges: it is neither reported nor numbered.
     final IntIntHashMap communityRemap = new IntIntHashMap();
+    final List<Result> results = new ArrayList<>(n);
     int nextId = 0;
     for (int i = 0; i < n; i++) {
+      final RID rid = graph.getRID(i);
+      if (rid == null)
+        continue;
       if (!communityRemap.containsKey(community[i]))
         communityRemap.put(community[i], nextId++);
-    }
-
-    return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i).getIdentity());
+      result.setProperty("node", rid);
       result.setProperty("communityId", communityRemap.get(community[i], -1));
       result.setProperty("modularity", finalModularity);
-      return (Result) result;
-    });
-  }
-
-  private double getCommunityDegree(final int[] community, final double[] nodeDegree, final int targetCommunity, final int n) {
-    double total = 0.0;
-    for (int i = 0; i < n; i++) {
-      if (community[i] == targetCommunity)
-        total += nodeDegree[i];
+      results.add(result);
     }
-    return total;
+    return results.stream();
   }
 
-  private double computeModularity(final List<Vertex> vertices, final int[] community,
-      final Map<Vertex, Integer> vertexIndex, final double[] nodeDegree,
-      final double totalWeight, final String weightProperty) {
+  /**
+   * Q = sum_c [ L_c/m - (d_c/(2m))^2 ] with L_c the weight of the edges inside community c and d_c the sum of the
+   * weighted degrees of its vertices. Community ids are vertex indexes (0..n-1). Every edge is listed at both of its
+   * ends, so the weight met inside community c is 2 x L_c. d_c is summed again here, vertex by vertex, rather than
+   * taken from the running totals of the moves, so the reported modularity does not carry their rounding.
+   */
+  private static double computeModularity(final int[][] adj, final double[][] adjWeights, final int[] community,
+      final double[] nodeDegree, final double totalWeight, final double[] communityDegree, final double[] internalWeight) {
     if (totalWeight == 0.0)
       return 0.0;
 
-    // Q = sum_c [ L_c/m - (d_c/(2m))^2 ] with L_c the weight of the edges inside community c and d_c the sum of the
-    // weighted degrees of its vertices. Community ids are vertex indexes (0..n-1).
-    final int n = vertices.size();
-    final double[] internalWeight = new double[n];
-    final double[] communityDegree = new double[n];
-
+    final int n = adj.length;
+    Arrays.fill(communityDegree, 0.0);
+    Arrays.fill(internalWeight, 0.0);
     for (int i = 0; i < n; i++) {
-      communityDegree[community[i]] += nodeDegree[i];
-      final Vertex v = vertices.get(i);
-      for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-        try {
-          final Integer j = vertexIndex.get(edge.getInVertex());
-          if (j == null || community[i] != community[j])
-            continue;
-
-          double w = 1.0;
-          if (weightProperty != null) {
-            final Object wObj = edge.get(weightProperty);
-            if (wObj instanceof Number num)
-              w = num.doubleValue();
-          }
-          internalWeight[community[i]] += w;
-        } catch (final RecordNotFoundException e) {
-          GhostEdgeReporter.reportSkipped(e);
-        }
-      }
+      final int c = community[i];
+      communityDegree[c] += nodeDegree[i];
+      final int[] neighbors = adj[i];
+      final double[] weights = adjWeights[i];
+      for (int k = 0; k < neighbors.length; k++)
+        if (community[neighbors[k]] == c)
+          internalWeight[c] += weights[k];
     }
 
     double modularity = 0.0;
     for (int c = 0; c < n; c++) {
       final double share = communityDegree[c] / (2.0 * totalWeight);
-      modularity += internalWeight[c] / totalWeight - share * share;
+      modularity += internalWeight[c] / (2.0 * totalWeight) - share * share;
     }
     return modularity;
   }

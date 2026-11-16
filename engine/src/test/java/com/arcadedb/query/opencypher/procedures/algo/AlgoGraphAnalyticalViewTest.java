@@ -179,6 +179,89 @@ class AlgoGraphAnalyticalViewTest {
       return result;
     }
 
+    // ── algo.louvain ────────────────────────────────────────────────────────
+
+    @Test
+    void louvainRunsOverTheViewAndReportsTheModularityOfItsPartition() {
+      // Issue #12169: louvain read the edge records on every pass and never looked for a view. Two weighted triangles
+      // joined by a light bridge, with a reciprocal pair inside the second one.
+      final String[] names = { "A", "B", "C", "D", "E", "F" };
+      final Object[][] edges = { { "A", "B", 3.0 }, { "B", "C", 2.0 }, { "C", "A", 4.0 }, { "D", "E", 5.0 }, { "E", "D", 1.0 },
+          { "E", "F", 2.0 }, { "F", "D", 3.0 }, { "C", "D", 1.0 } };
+      final Map<String, Vertex> vertices = new HashMap<>();
+      database.transaction(() -> {
+        for (final String name : names)
+          vertices.put(name, node(name));
+        for (final Object[] edge : edges)
+          vertices.get((String) edge[0]).newEdge("E", vertices.get((String) edge[1]), "w", edge[2]).save();
+      });
+      final Map<RID, String> nameOf = new HashMap<>();
+      for (final Map.Entry<String, Vertex> entry : vertices.entrySet())
+        nameOf.put(entry.getValue().getIdentity(), entry.getKey());
+
+      // Without a view, one local-moving pass in vertex order: A joins C (gain 4 - 7 x 7 / 42), B joins them, D joins
+      // E, E then leaves for F (2 - 8 x 5 / 42 > 0, the removal is not priced) and F joins D.
+      final Object[] args = { Map.of("weightProperty", "w") };
+      final Map<String, Integer> oltp = new HashMap<>();
+      final double oltpModularity = louvain(newContext(), args, nameOf, oltp);
+      assertThat(partition(oltp)).isEqualTo(Set.of(Set.of("A", "B", "C"), Set.of("D", "F"), Set.of("E")));
+      assertThat(oltpModularity).isCloseTo(modularity(edges, oltp), within(1e-12));
+
+      // The view lists the vertices and their neighbours in an order of its own, and the greedy moves depend on it, so
+      // the partition may differ: the modularity reported is still the weighted modularity of the partition returned.
+      final GraphAnalyticalView view = buildView("louvain-view");
+      try {
+        final BasicCommandContext csrContext = newContext();
+        final Map<String, Integer> csr = new HashMap<>();
+        final double csrModularity = louvain(csrContext, args, nameOf, csr);
+        assertCSRAccelerated(csrContext);
+        assertThat(csr.keySet()).containsExactlyInAnyOrder(names);
+        assertThat(csrModularity).isCloseTo(modularity(edges, csr), within(1e-12));
+      } finally {
+        view.drop();
+      }
+    }
+
+    private double louvain(final CommandContext context, final Object[] args, final Map<RID, String> nameOf,
+        final Map<String, Integer> communities) {
+      double modularity = Double.NaN;
+      for (final Result row : drain(new AlgoLouvain().execute(args, null, context))) {
+        communities.put(nameOf.get((RID) row.getProperty("node")), ((Number) row.getProperty("communityId")).intValue());
+        modularity = ((Number) row.getProperty("modularity")).doubleValue();
+      }
+      return modularity;
+    }
+
+    /** Newman's weighted modularity of {@code communities} over the undirected reading of {@code edges}. */
+    private static double modularity(final Object[][] edges, final Map<String, Integer> communities) {
+      double m = 0.0;
+      final Map<Integer, Double> internal = new HashMap<>();
+      final Map<Integer, Double> degree = new HashMap<>();
+      for (final Object[] edge : edges) {
+        final double w = (Double) edge[2];
+        final int cu = communities.get((String) edge[0]);
+        final int cv = communities.get((String) edge[1]);
+        m += w;
+        degree.merge(cu, w, Double::sum);
+        degree.merge(cv, w, Double::sum);
+        if (cu == cv)
+          internal.merge(cu, w, Double::sum);
+      }
+      double q = 0.0;
+      for (final Map.Entry<Integer, Double> entry : degree.entrySet()) {
+        final double share = entry.getValue() / (2.0 * m);
+        q += internal.getOrDefault(entry.getKey(), 0.0) / m - share * share;
+      }
+      return q;
+    }
+
+    private static Set<Set<String>> partition(final Map<String, Integer> communities) {
+      final Map<Integer, Set<String>> members = new HashMap<>();
+      for (final Map.Entry<String, Integer> entry : communities.entrySet())
+        members.computeIfAbsent(entry.getValue(), k -> new HashSet<>()).add(entry.getKey());
+      return new HashSet<>(members.values());
+    }
+
     // ── algo.betweenness ────────────────────────────────────────────────────
 
     @Test
