@@ -4298,6 +4298,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         sealedBlobs, finalSealedChunks);
     // Published: nothing below may send the caller into a quarantine for a change every node now holds.
     published[0] = true;
+    // The entry creating the new files is in the log: a commit waiting on one of them dispatches after it, so the locks need
+    // not stay held through the deferred persistence (issue #12236). The outer finally releases whatever is left.
+    releaseCompactionLocks();
     // And whatever held this database's compactions off is over (issue #9558). Only HERE, not on the early return of a
     // compaction that had nothing to publish: that one proves nothing about the payload that was too large to ship.
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
@@ -4335,7 +4338,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /**
    * Takes over the commit lock of a file the compaction running on this thread created, until the entry publishing the
-   * compaction is accepted or the compaction fails (issue #12236). A commit that passed {@link #waitForActiveRecordingSession}
+   * compaction is accepted (released right then, before the deferred persistence) or the compaction fails (issue #12236). A commit that passed {@link #waitForActiveRecordingSession}
    * before the compaction opened its session, and reached its file locks only after the swap, used to lock the new mutable
    * file the swap had just released and dispatch its entry while the compaction was still building the one that creates the
    * file: the followers skipped its pages, the file did not exist there yet, then created the file one version behind and

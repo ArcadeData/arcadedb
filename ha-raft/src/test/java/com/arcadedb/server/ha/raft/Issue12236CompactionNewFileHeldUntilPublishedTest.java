@@ -214,6 +214,39 @@ class Issue12236CompactionNewFileHeldUntilPublishedTest {
     assertThat(followerIndex.countEntries()).as("index entries on the follower").isEqualTo(RECORDS + 2L);
   }
 
+  /**
+   * The lock of the new file the compaction took over must go with the session when the entry publishing it is refused, so a
+   * later commit on the index does not wait on a file nobody will ever release.
+   */
+  @Test
+  void theHeldLockIsReleasedWhenPublishingTheCompactionFails() {
+    final Set<Integer> createdByCompaction = ConcurrentHashMap.newKeySet();
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    broker.on("replicateSchema", args -> {
+      @SuppressWarnings("unchecked")
+      final Map<Integer, String> filesToAdd = (Map<Integer, String>) args[2];
+      createdByCompaction.addAll(filesToAdd.keySet());
+      throw new IllegalStateException("the broker refuses the compaction entry");
+    });
+    leaderOver(broker);
+
+    final TypeIndex leaderIndex = (TypeIndex) leaderDb.getSchema().getIndexByName(INDEX_NAME);
+    leaderIndex.scheduleCompaction();
+    try {
+      leaderIndex.compact();
+    } catch (final Exception expected) {
+      // the failed publication is rethrown after the quarantine
+    }
+
+    assertThat(createdByCompaction).as("the compaction reached its publishing entry").isNotEmpty();
+    for (final LockManager.LockStats lock : leaderDb.getTransactionManager().getLockStats())
+      for (final int fileId : createdByCompaction)
+        assertThat(lock.resource()).as("a lock still held on the new file %d", fileId).isNotEqualTo(String.valueOf(fileId));
+
+    // A commit on the compacted index goes through instead of waiting on a leaked lock
+    // (a commit blocked on it would throw after COMMIT_LOCK_TIMEOUT, the hang detector set in setUp)
+    leaderDb.transaction(() -> leaderDb.newDocument("Work").set("id", "later").save());  }
+
   private int waitersOnAnyOf(final Collection<Integer> fileIds) {
     int waiters = 0;
     for (final LockManager.LockStats lock : leaderDb.getTransactionManager().getLockStats())
