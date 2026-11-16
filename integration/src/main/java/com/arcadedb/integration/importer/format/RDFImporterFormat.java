@@ -34,9 +34,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.univocity.parsers.csv.CsvParserSettings;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.Reader;
 import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
@@ -129,7 +131,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // EACH LINE IS READ AS ONE N-TRIPLES STATEMENT, NOT AS DELIMITED TEXT: A CSV PARSER DROPPED THE EMPTY LITERAL "" (THE
     // TERMINATOR '.' BECAME THE OBJECT), STRIPPED THE QUOTES OF A PLAIN LITERAL ONLY (SO "http://a/o" WAS THE SAME VERTEX AS
     // <http://a/o>) AND DECODED NO ESCAPE (ISSUE #12049)
-    final NTriplesStatement statement = new NTriplesStatement(termSeparator(settings), settings.getIntValue("maxPropertySize", 0));
+    // maxPropertySize BOUNDS A TERM AS IT BOUNDED A CELL OF THE DELIMITED-TEXT READING, WITH THE SAME DEFAULT (4,096)
+    final NTriplesStatement statement = new NTriplesStatement(termSeparator(settings),
+        settings.getIntValue("maxPropertySize", new CsvParserSettings().getMaxCharsPerColumn()));
     final String[] terms = new String[3];
 
     // THE VERTEX PROPERTY THE IRIs ARE KEYED BY, READ ONCE AND KEPT LOCAL. IT USED TO BE settings.typeIdProperty,
@@ -203,7 +207,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
     int txCount = 0;
 
-    try (final BufferedReader reader = new BufferedReader(sourceReader(parser))) {
+    try (final Reader reader = new BufferedReader(sourceReader(parser))) {
       ensureVertexType(database, settings.vertexTypeName, typeIdProperty);
 
       // A transaction not active here despite ownsTransaction being false is exactly the invariant violation
@@ -216,9 +220,10 @@ public class RDFImporterFormat extends CSVImporterFormat {
       txOpen[0] = resolvesTransaction;
       ownTx[0] = ImporterTransactions.currentTransaction(database);
 
-      String text;
       long line = -1;
-      while ((text = reader.readLine()) != null) {
+      // BOUNDED: A LINE LONGER THAN ANY STATEMENT WITHIN maxPropertySize IS NOT KEPT WHOLE, AND IS REFUSED BELOW AS A ROW ERROR
+      while (statement.readLine(reader)) {
+        final String text = statement.line();
         // N-TRIPLES ALLOWS BLANK LINES AND COMMENT LINES: NEITHER IS A STATEMENT, AS THE CSV PARSER THIS REPLACES SKIPPED THEM
         if (isBlankOrComment(text))
           continue;
@@ -242,6 +247,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
           // FORMAT CAN MAKE AN EDGE OUT OF. CHECKED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO,
           // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). ANY RUN OF
           // WHITESPACE OR OF THE SEPARATOR BETWEEN TERMS IS ONE GAP (ISSUE #8159).
+          if (statement.lineTooLong())
+            throw new ImportException("Row at line " + line + " is " + statement.lineLength() + " characters long, more than a "
+                + "statement of terms within maxPropertySize=" + statement.maxLength() + " can be: " + text.substring(0, 80) + "...");
           final int found = statement.parse(text, terms);
           if (found < 3)
             throw new ImportException(
@@ -388,12 +396,13 @@ public class RDFImporterFormat extends CSVImporterFormat {
     type.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, typeIdProperty);
   }
 
-  /** The separator between the terms besides whitespace: the delimiter the source was detected (or configured) with. */
-  private char termSeparator(final ImporterSettings settings) {
+  /**
+   * The separator between the terms: the delimiter the source was detected (or configured) with, whole, so a delimiter of more
+   * than one character ({@code ";;"}) separates terms as it separated cells.
+   */
+  private String termSeparator(final ImporterSettings settings) {
     final String delimiter = delimiterFor(settings);
-    if ("\\t".equals(delimiter))
-      return '\t';
-    return delimiter.length() == 1 ? delimiter.charAt(0) : ' ';
+    return "\\t".equals(delimiter) ? "\t" : delimiter;
   }
 
   private static boolean isBlankOrComment(final String text) {

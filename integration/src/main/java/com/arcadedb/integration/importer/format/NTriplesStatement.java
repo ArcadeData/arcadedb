@@ -20,6 +20,9 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.integration.importer.ImportException;
 
+import java.io.IOException;
+import java.io.Reader;
+
 /**
  * Reads the terms of one N-Triples statement (one line) as the RDF importer keys them: the subject and the object become
  * the key of a vertex, the predicate the label of the edge between them (issue #12049).
@@ -37,15 +40,26 @@ import com.arcadedb.integration.importer.ImportException;
  * other delimiter (a comma-separated triple file, or a delimiter the user set) the terms are separated by that delimiter,
  * whitespace around it is ignored, and text that follows a term without the delimiter ends the statement there - the way
  * the delimited-text reading this replaces put it in the same cell. A term that is none of the above is taken as written.
- * What follows the third term (the {@code .}, or the graph of an N-Quads statement) is ignored. A term longer than
- * {@code maxLength} (when positive) is refused, as the {@code maxPropertySize} setting refused it before.
+ * What follows the third term (the {@code .}, or the graph of an N-Quads statement) is ignored. A blank-node label ends
+ * before a final {@code .}, which is the terminator, not part of the label. A term longer than {@code maxLength} (when
+ * positive) is refused, as the {@code maxPropertySize} setting refused a cell before.
+ * <p>
+ * {@link #readLine} reads one line of the source keeping at most {@link #lineLimit} characters of it: a statement within
+ * the term limit is never longer, so a longer line is refused without being held whole in memory.
  */
 final class NTriplesStatement {
   static final String XSD_STRING = "http://www.w3.org/2001/XMLSchema#string";
 
-  private final char          delimiter;
+  // A STATEMENT IS AT MOST FOUR TERMS (AN N-QUADS GRAPH IS THE FOURTH): THIS MUCH ROOM IS LEFT FOR SEPARATORS AND THE TERMINATOR
+  private static final int SEPARATOR_ROOM = 4096;
+
+  private final String        delimiter;
   private final boolean       whitespaceSeparates;
   private final int           maxLength;
+  private final long          lineLimit;
+  private final StringBuilder lineBuffer = new StringBuilder();
+  private       long          lineLength;
+  private       boolean       skipLineFeed;
   private final StringBuilder buffer  = new StringBuilder();
   // THE DECODED LEXICAL FORM OF THE LITERAL BEING READ: WHAT A USER READS, WHERE buffer HOLDS THE KEY
   private final StringBuilder lexical = new StringBuilder();
@@ -58,10 +72,58 @@ final class NTriplesStatement {
   private       String        objectLanguage;
   private       String        objectDatatype;
 
-  NTriplesStatement(final char delimiter, final int maxLength) {
+  NTriplesStatement(final String delimiter, final int maxLength) {
     this.delimiter = delimiter;
-    this.whitespaceSeparates = delimiter == ' ' || delimiter == '\t';
+    this.whitespaceSeparates = " ".equals(delimiter) || "\t".equals(delimiter);
     this.maxLength = maxLength;
+    this.lineLimit = maxLength > 0 ? 4L * maxLength + SEPARATOR_ROOM : Long.MAX_VALUE;
+  }
+
+  /**
+   * Reads the next line of {@code reader} (ended by LF, CR or CRLF), keeping at most {@link #lineLimit} characters of it in
+   * {@link #line()} and counting the rest in {@link #lineLength()}. Answers false at the end of the source.
+   */
+  boolean readLine(final Reader reader) throws IOException {
+    lineBuffer.setLength(0);
+    lineLength = 0;
+    int c = reader.read();
+    if (skipLineFeed) {
+      skipLineFeed = false;
+      if (c == '\n')
+        c = reader.read();
+    }
+    if (c < 0)
+      return false;
+    while (c >= 0 && c != '\n') {
+      if (c == '\r') {
+        skipLineFeed = true;
+        break;
+      }
+      if (lineLength < lineLimit)
+        lineBuffer.append((char) c);
+      ++lineLength;
+      c = reader.read();
+    }
+    return true;
+  }
+
+  /** The line {@link #readLine} read, cut at {@link #lineLimit} characters when it was longer. */
+  String line() {
+    return lineBuffer.toString();
+  }
+
+  /** The length of the line {@link #readLine} read, whatever of it was kept. */
+  long lineLength() {
+    return lineLength;
+  }
+
+  /** Whether the line {@link #readLine} read is longer than a statement whose terms are within the term limit can be. */
+  boolean lineTooLong() {
+    return lineLength > lineLimit;
+  }
+
+  int maxLength() {
+    return maxLength;
   }
 
   /**
@@ -81,10 +143,16 @@ final class NTriplesStatement {
         break;
       if (found > 0 && !whitespaceSeparates) {
         // A TERM IS FOLLOWED BY THE DELIMITER OR BY NOTHING: ANYTHING ELSE ENDS THE STATEMENT, LEAVING IT SHORT
-        if (line.charAt(pos) != delimiter)
+        if (!atDelimiter())
           break;
-        while (pos < line.length() && (line.charAt(pos) == delimiter || isWhitespace(line.charAt(pos))))
-          ++pos;
+        while (pos < line.length()) {
+          if (atDelimiter())
+            pos += delimiter.length();
+          else if (isWhitespace(line.charAt(pos)))
+            ++pos;
+          else
+            break;
+        }
         if (pos >= line.length())
           break;
       }
@@ -126,8 +194,12 @@ final class NTriplesStatement {
   }
 
   private void skipWhitespace() {
-    while (pos < line.length() && (isWhitespace(line.charAt(pos)) || (whitespaceSeparates && line.charAt(pos) == delimiter)))
+    while (pos < line.length() && isWhitespace(line.charAt(pos)))
       ++pos;
+  }
+
+  private boolean atDelimiter() {
+    return line.startsWith(delimiter, pos);
   }
 
   private static boolean isWhitespace(final char c) {
@@ -141,12 +213,13 @@ final class NTriplesStatement {
     if (c == '"')
       return readLiteral();
     final int begin = pos;
-    while (pos < line.length()) {
-      final char ch = line.charAt(pos);
-      if (isWhitespace(ch) || ch == delimiter)
-        break;
+    while (pos < line.length() && !isWhitespace(line.charAt(pos)) && !atDelimiter())
       ++pos;
-    }
+    // A BLANK-NODE LABEL NEVER ENDS WITH '.': A FINAL ONE IS THE STATEMENT TERMINATOR ("_:b1."), AND KEEPING IT MADE A LATER
+    // "_:b1" ANOTHER VERTEX. A '.' INSIDE THE LABEL ("_:a.b") IS PART OF IT
+    if (line.startsWith("_:", begin))
+      while (pos - begin > 2 && line.charAt(pos - 1) == '.')
+        --pos;
     return line.substring(begin, pos);
   }
 
