@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Tag;
@@ -53,6 +54,10 @@ class RaftForwardedWriteBookmarkIT extends BaseRaftHATest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
+    final String plugins = config.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
+    config.setValue(GlobalConfiguration.SERVER_PLUGINS, plugins == null || plugins.isEmpty() ?
+        ForwardThenFailTestPlugin.class.getName() :
+        plugins + "," + ForwardThenFailTestPlugin.class.getName());
   }
 
   @Override
@@ -62,14 +67,44 @@ class RaftForwardedWriteBookmarkIT extends BaseRaftHATest {
 
   @Test
   void aWriteForwardedByAFollowerIsAnsweredWithABookmarkThatCoversIt() throws Exception {
+    final int followerIndex = followerIndex();
+    final long bookmark = writeThroughAHeldFollower(followerIndex, "/command/" + getDatabaseName(), true);
+
+    final HttpResponse<String> read = post(followerIndex, "/query/" + getDatabaseName(),
+        "SELECT FROM " + TYPE_NAME + " WHERE k = 1", String.valueOf(bookmark));
+    assertThat(read.statusCode()).isEqualTo(200);
+    assertThat(new JSONObject(read.body()).getJSONArray("result").length())
+        .as("a read_your_writes read with the bookmark must see the write").isEqualTo(1);
+  }
+
+  /**
+   * A request that forwards a write and then fails was answered after the handler's {@code finally} had cleared what the request
+   * forwarded, so the bookmark on its error answer stood at this node's own applied index, below the write the leader had
+   * committed. A failed answer carries a bookmark so that the writes made before the failure stay readable (issue #5862), and
+   * this one did not cover them.
+   */
+  @Test
+  void aFailedRequestThatForwardedAWriteIsAnsweredWithABookmarkThatCoversIt() throws Exception {
+    final int followerIndex = followerIndex();
+    writeThroughAHeldFollower(followerIndex, "/test/forward-then-fail?database=" + getDatabaseName(), false);
+  }
+
+  private int followerIndex() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    final int followerIndex = (leaderIndex + 1) % getServerCount();
-    final String dbName = getDatabaseName();
-
-    assertThat(post(leaderIndex, "/command/" + dbName, "CREATE DOCUMENT TYPE " + TYPE_NAME + " IF NOT EXISTS", null).statusCode())
-        .isEqualTo(200);
+    assertThat(post(leaderIndex, "/command/" + getDatabaseName(), "CREATE DOCUMENT TYPE " + TYPE_NAME + " IF NOT EXISTS", null)
+        .statusCode()).isEqualTo(200);
     waitForAllServers();
+    return (leaderIndex + 1) % getServerCount();
+  }
+
+  /**
+   * Sends {@code INSERT ... SET k = 1} to {@code path} on the follower while its apply thread is held off the database, and
+   * returns the bookmark it was answered with, which must be past the leader's applied index before the write.
+   */
+  private long writeThroughAHeldFollower(final int followerIndex, final String path, final boolean succeeds) throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    final String dbName = getDatabaseName();
 
     // Hold the follower's apply thread off the database: the install apply gate is the lock it takes before applying an entry
     // for it (as in Issue8454SnapshotSourceBehindFollowerIT). The leader still commits with the other follower.
@@ -90,29 +125,32 @@ class RaftForwardedWriteBookmarkIT extends BaseRaftHATest {
     }, "issue11740-follower-gate");
     gateHolder.start();
 
-    final long bookmark;
     try {
       assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
       final long leaderAppliedBefore = getRaftPlugin(leaderIndex).getRaftHAServer().getLastAppliedIndex();
 
-      final HttpResponse<String> write = post(followerIndex, "/command/" + dbName, "INSERT INTO " + TYPE_NAME + " SET k = 1", null);
-      assertThat(write.statusCode()).as("the forwarded INSERT failed: %s", write.body()).isEqualTo(200);
+      final HttpResponse<String> write = post(followerIndex, path, "INSERT INTO " + TYPE_NAME + " SET k = 1", null);
+      if (succeeds)
+        assertThat(write.statusCode()).as("the forwarded INSERT failed: %s", write.body()).isEqualTo(200);
+      else
+        assertThat(write.statusCode()).as("the request must fail after its write was forwarded: %s", write.body())
+            .isGreaterThanOrEqualTo(400);
+      try (final ResultSet written = getServerDatabase(leaderIndex, dbName).query("sql",
+          "SELECT count(*) AS n FROM " + TYPE_NAME + " WHERE k = 1")) {
+        assertThat(written.next().<Number>getProperty("n").longValue()).as("the leader must have the forwarded write")
+            .isEqualTo(1L);
+      }
       assertThat(followerRaft.getLastAppliedIndex()).as("the follower must not have applied the write, or this proves nothing")
           .isLessThanOrEqualTo(leaderAppliedBefore);
 
-      bookmark = Long.parseLong(write.headers().firstValue(BOOKMARK).orElse("-1"));
+      final long bookmark = Long.parseLong(write.headers().firstValue(BOOKMARK).orElse("-1"));
       assertThat(bookmark).as("the bookmark of a forwarded write must be at or past the write, which comes after index %d",
           leaderAppliedBefore).isGreaterThan(leaderAppliedBefore);
+      return bookmark;
     } finally {
       release.countDown();
       gateHolder.join(TimeUnit.SECONDS.toMillis(30));
     }
-
-    final HttpResponse<String> read = post(followerIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME + " WHERE k = 1",
-        String.valueOf(bookmark));
-    assertThat(read.statusCode()).isEqualTo(200);
-    assertThat(new JSONObject(read.body()).getJSONArray("result").length())
-        .as("a read_your_writes read with the bookmark must see the write").isEqualTo(1);
   }
 
   private HttpResponse<String> post(final int serverIndex, final String path, final String sql, final String readAfter)
