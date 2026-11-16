@@ -21,14 +21,16 @@ package com.arcadedb.query.opencypher.rewriter;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
-import com.arcadedb.query.opencypher.ast.WhereClause;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Rewrites the ORDER BY items of a collapsing projection that repeat one of the projected
@@ -146,23 +148,20 @@ public class ProjectedOrderByNormalizer {
    * well defined, and Neo4j answers it on the grouping key. What is left pointing at a collapsed variable after the
    * rewrite is refused by the scope check.
    *
-   * @param where      the WHERE of the WITH, may be null
+   * @param where      the condition of the WITH's WHERE as written, may be null
    * @param items      the projected items of the WITH
    * @param collapsing whether the projection collapses its input rows (DISTINCT or aggregating). A plain WITH keeps its
    *                   input scope, so its WHERE is returned unchanged
    *
-   * @return the original clause when nothing matched, a rewritten copy otherwise
+   * @return the original condition when nothing matched, a rewritten copy otherwise
    */
-  public static WhereClause normalizeWhere(final WhereClause where, final List<ReturnClause.ReturnItem> items,
+  public static BooleanExpression normalizeWhere(final BooleanExpression where, final List<ReturnClause.ReturnItem> items,
       final boolean collapsing) {
-    if (!collapsing || where == null || where.getConditionExpression() == null || items == null || items.isEmpty())
+    if (!collapsing || where == null || items == null || items.isEmpty())
       return where;
 
-    final BooleanExpression condition = where.getConditionExpression();
-    final Object substituted = newSubstituter(items).rewrite(condition);
-    if (substituted == condition || !(substituted instanceof BooleanExpression))
-      return where;
-    return new WhereClause((BooleanExpression) substituted);
+    final Object substituted = newSubstituter(items).rewrite(where);
+    return substituted instanceof BooleanExpression booleanExpression ? booleanExpression : where;
   }
 
   /**
@@ -172,10 +171,19 @@ public class ProjectedOrderByNormalizer {
   private static ProjectedExpressionSubstituter newSubstituter(final List<ReturnClause.ReturnItem> items) {
     final Map<String, String> outputNameByExpressionText = new HashMap<>();
     final Map<String, String> outputNameByVariable = new HashMap<>();
+    final Set<String> outputNames = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : items)
+      outputNames.add(item.getOutputName());
 
     for (final ReturnClause.ReturnItem item : items) {
       final Expression expression = item.getExpression();
-      if (expression == null)
+      if (expression == null || item.isStar())
+        continue;
+
+      // An expression reading a variable that another item projects under its name is not reachable from after the
+      // projection: there the name is that item's column. WITH DISTINCT a AS b, b AS c WHERE b = 1 compares the column b
+      // (from a), and mapping b to c would compare another value (issue #12245)
+      if (readsAnotherOutput(expression, item.getOutputName(), outputNames))
         continue;
 
       // First projection of an expression wins, matching the leftmost-column reading of a duplicate
@@ -185,6 +193,38 @@ public class ProjectedOrderByNormalizer {
     }
 
     return new ProjectedExpressionSubstituter(outputNameByExpressionText, outputNameByVariable);
+  }
+
+  private static boolean readsAnotherOutput(final Expression expression, final String ownOutputName, final Set<String> outputNames) {
+    final VariableCollector collector = new VariableCollector();
+    collector.rewrite(expression);
+    for (final String variable : collector.variables)
+      if (!variable.equals(ownOutputName) && outputNames.contains(variable))
+        return true;
+    return false;
+  }
+
+  /**
+   * The variables an expression reads, through the same traversal the substitution uses.
+   */
+  private static final class VariableCollector extends ProjectedExpressionSubstituter {
+    private final Set<String> variables = new HashSet<>();
+
+    private VariableCollector() {
+      super(Map.of(), Map.of());
+    }
+
+    @Override
+    protected Expression visitVariable(final VariableExpression expr) {
+      variables.add(expr.getVariableName());
+      return expr;
+    }
+
+    @Override
+    protected Expression visitPropertyAccess(final PropertyAccessExpression expr) {
+      variables.add(expr.getVariableName());
+      return expr;
+    }
   }
 
   /**

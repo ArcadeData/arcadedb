@@ -113,7 +113,7 @@ public class CypherDateTime implements CypherTemporalValue {
         throw new IllegalArgumentException(epochKey + " cannot be selected together with date or time.");
       final long epoch = TemporalMapFields.epochValue(epochKey, map.get(epochKey));
       final Instant instant = epochMillis ? Instant.ofEpochMilli(epoch) : Instant.ofEpochSecond(epoch);
-      final ZoneId zone = map.containsKey("timezone") ? TemporalUtil.parseZone(map.get("timezone").toString()) : ZoneOffset.UTC;
+      final ZoneId zone = map.containsKey("timezone") ? TemporalUtil.parseZone(TemporalMapFields.timezoneText(map)) : ZoneOffset.UTC;
       return new CypherDateTime(withFieldOverrides(instant.atZone(zone), map));
     }
 
@@ -123,19 +123,19 @@ public class CypherDateTime implements CypherTemporalValue {
       final Object dtVal = map.get("datetime");
       final boolean baseHasTimezone = dtVal instanceof CypherDateTime;
       // A local datetime has no zone: it is read in UTC, or in the map's timezone below
-      ZonedDateTime base = baseHasTimezone ?
+      final ZonedDateTime base = baseHasTimezone ?
           ((CypherDateTime) dtVal).getValue() :
           TemporalMapFields.dateTimeOf(dtVal).atZone(ZoneOffset.UTC);
       // The fields apply in the base's own zone, then a zoned base moves to the map's timezone at the same instant, as Neo4j
       // does: {datetime: datetime('2021-05-15T10:00+02:00'), timezone: '+01:00', hour: 3} is 02:00+01:00. Converting first
-      // answered 03:00+01:00, another instant (issue #12297). A local base has no instant to keep: it is read in the timezone
+      // answered 03:00+01:00, another instant (issue #12297). A local base has no instant to keep: its overridden local
+      // date-time is read in the timezone, so a gap of the zone is resolved on the final value, not on the base
+      final ZonedDateTime overridden = withFieldOverrides(base, map);
       if (map.containsKey("timezone")) {
-        final ZoneId newZone = TemporalUtil.parseZone(map.get("timezone").toString());
-        if (baseHasTimezone)
-          return new CypherDateTime(withFieldOverrides(base, map).withZoneSameInstant(newZone));
-        base = base.withZoneSameLocal(newZone);
+        final ZoneId newZone = TemporalUtil.parseZone(TemporalMapFields.timezoneText(map));
+        return new CypherDateTime(baseHasTimezone ? overridden.withZoneSameInstant(newZone) : overridden.withZoneSameLocal(newZone));
       }
-      return new CypherDateTime(withFieldOverrides(base, map));
+      return new CypherDateTime(overridden);
     }
 
     final LocalDate baseDate = map.containsKey("date") ? TemporalMapFields.dateOf(map.get("date")) : null;
@@ -166,7 +166,7 @@ public class CypherDateTime implements CypherTemporalValue {
     ZonedDateTime result = ZonedDateTime.of(datePart, timePart != null ? timePart : LocalTime.MIDNIGHT, initialZone);
 
     if (map.containsKey("timezone")) {
-      final ZoneId newZone = TemporalUtil.parseZone(map.get("timezone").toString());
+      final ZoneId newZone = TemporalUtil.parseZone(TemporalMapFields.timezoneText(map));
       if (timeHasTimezone)
         result = result.withZoneSameInstant(newZone);
       else

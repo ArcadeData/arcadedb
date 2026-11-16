@@ -76,6 +76,29 @@ class Issue12245WithCollapsingWhereScopeTest extends TestHelper {
   }
 
   @Test
+  void aLiteralFirstPredicateStillMatchesItsProjection() {
+    // The WHERE is canonicalized to n.id > 1: the rewrite has to run on the predicate as written
+    final List<Object> counts = new ArrayList<>();
+    database.query("opencypher", "MATCH (n:Node) WITH 1 < n.id AS big, count(*) AS c WHERE 1 < n.id RETURN big, c").stream()
+        .forEach(r -> counts.add(r.getProperty("big") + ":" + r.getProperty("c")));
+    assertThat(counts).containsExactly("true:2");
+  }
+
+  @Test
+  void aGroupingKeyInsideAListLiteralReadsItsColumn() {
+    assertThat(rows("MATCH (n:Node) WITH n.b AS v, count(*) AS c WHERE true IN [n.b] RETURN v, c")).containsExactly("true:2");
+  }
+
+  @Test
+  void aProjectedAliasThatReusesAnIncomingNameKeepsItsMeaning() {
+    // b in the WHERE is the column b (from a), not the incoming b that is projected as c
+    final List<String> values = new ArrayList<>();
+    database.query("opencypher", "WITH 1 AS a, 2 AS b WITH DISTINCT a AS b, b AS c WHERE b = 1 RETURN b, c").stream()
+        .forEach(r -> values.add(r.getProperty("b") + ":" + r.getProperty("c")));
+    assertThat(values).containsExactly("1:2");
+  }
+
+  @Test
   void whereReadingAPropertyOfAProjectedVariableFollowsItsColumn() {
     final List<Object> ids = new ArrayList<>();
     database.query("opencypher", "MATCH (n:Node) WITH n AS m, count(*) AS c WHERE n.id > 1 RETURN m.id AS id ORDER BY id")

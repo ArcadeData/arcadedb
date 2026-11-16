@@ -83,11 +83,11 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
       final Map<String, Object> map = (Map<String, Object>) args[0];
       // A map holding only a timezone is the current localdatetime in that zone (issue #12297): it used to read as a map
       // with no year, which defaulted to January 1 of the current year
-      if (map.size() == 1 && map.containsKey("timezone") && map.get("timezone") != null) {
-        final ZonedDateTime now = CypherFunctionHelper.getStatementTime(context, TemporalUtil.parseZone(map.get("timezone").toString()));
-        return new CypherLocalDateTime(now.toLocalDateTime());
-      }
       try {
+        if (map.size() == 1 && map.containsKey("timezone") && map.get("timezone") != null) {
+          final ZonedDateTime now = CypherFunctionHelper.getStatementTime(context, TemporalUtil.parseZone(map.get("timezone").toString()));
+          return new CypherLocalDateTime(now.toLocalDateTime());
+        }
         return CypherLocalDateTime.fromMap(map);
       } catch (final DateTimeException | IllegalArgumentException e) {
         // A field outside its range (month 13, week 54 of any year, February 30, nanosecond 10^9) is the caller's error, not an

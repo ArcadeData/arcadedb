@@ -151,6 +151,10 @@ class Issue12298TemporalParsingTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "INSERT INTO Z SET zd = '2015-07-21T21:40:32.142-04:00[Europe/London]'"))).hasStackTraceContaining(
         "Timezone and offset do not match");
+    // A form only the general parser reads (an offset with seconds, a space before the time) is checked as well
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("sql", "INSERT INTO Z SET zd = '2015-07-21T21:40:32-04:00:00[Europe/London]'"))).hasStackTraceContaining(
+        "Timezone and offset do not match");
     assertThat(database.countType("Z", false)).isZero();
 
     database.transaction(() -> database.command("sql", "INSERT INTO Z SET zd = '2015-07-21T21:40:32.142+01:00[Europe/London]'"));

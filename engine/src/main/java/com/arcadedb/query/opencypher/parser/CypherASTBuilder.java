@@ -858,9 +858,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Parse WHERE clause (applied after projection). A WHERE that repeats a grouping key reads the projected column
     // (issue #12245), as ORDER BY does below
+    // The rewrite runs on the predicate as written, before the canonicalization that may reorder it (1 < n.id becomes
+    // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
-    if (ctx.whereClause() != null)
-      whereClause = ProjectedOrderByNormalizer.normalizeWhere(visitWhereClause(ctx.whereClause()), items, distinct || aggregating);
+    if (ctx.whereClause() != null) {
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+          items, distinct || aggregating);
+      whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
+    }
 
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;

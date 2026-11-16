@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.time.LocalTime;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.DateTimeException;
 import java.util.Map;
 
 /**
@@ -84,8 +85,16 @@ public class TimeTruncateFunction implements StatelessFunction {
     if (args.length >= 3 && args[2] instanceof Map) {
       final Map<String, Object> adjustMap = (Map<String, Object>) args[2];
       truncated = CypherFunctionHelper.applyTimeMap(truncated, adjustMap, true);
-      if (adjustMap.containsKey("timezone"))
-        offset = TemporalUtil.parseOffset(adjustMap.get("timezone").toString());
+      final Object timezone = adjustMap.get("timezone");
+      // A null timezone names no zone: refused as Neo4j refuses it, as an invalid zone is
+      if (timezone == null && adjustMap.containsKey("timezone"))
+        throw new CommandSemanticException("time.truncate() timezone cannot be null");
+      if (timezone != null)
+        try {
+          offset = TemporalUtil.parseOffset(timezone.toString());
+        } catch (final DateTimeException e) {
+          throw new CommandSemanticException("time.truncate() timezone is not a valid offset or zone: " + timezone);
+        }
     }
     return new CypherTime(OffsetTime.of(truncated, offset));
   }

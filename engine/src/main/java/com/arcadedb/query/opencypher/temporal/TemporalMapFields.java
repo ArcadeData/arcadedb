@@ -311,6 +311,16 @@ public final class TemporalMapFields {
     return TemporalUtil.toLongField(name, value);
   }
 
+  /**
+   * The text of the map's {@code timezone}. A null timezone names no zone and is refused, as Neo4j refuses it.
+   */
+  public static String timezoneText(final Map<String, Object> map) {
+    final Object timezone = map.get("timezone");
+    if (timezone == null)
+      throw new IllegalArgumentException("Cannot convert to ZoneId: null");
+    return timezone.toString();
+  }
+
   static String describe(final Object value) {
     if (value == null)
       return "null";
@@ -361,6 +371,10 @@ public final class TemporalMapFields {
     final Object value = map.get(name);
     if (value == null)
       return map.containsKey(name) ? whenNull : ABSENT;
-    return TemporalUtil.toIntField(name, value);
+    final int field = TemporalUtil.toIntField(name, value);
+    // No field has this value in its range: given explicitly, it must not read as a field the map omits
+    if (field == ABSENT)
+      throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
+    return field;
   }
 }

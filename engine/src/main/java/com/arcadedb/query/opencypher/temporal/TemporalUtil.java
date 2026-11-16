@@ -61,6 +61,28 @@ public final class TemporalUtil {
   }
 
   /**
+   * {@code parsed}, the datetime a lenient parser read from {@code text}, refused when the text states an offset its zone
+   * does not have there: {@code ZonedDateTime.parse} takes such an offset as a preference only and answers another instant
+   * or another local time than the text states (issue #12298). The openCypher parser refuses the same text itself; this
+   * covers the other parsers, which accept forms it does not (an offset with seconds, a space before the time).
+   */
+  public static ZonedDateTime requireOffsetMatchesZone(final String text, final ZonedDateTime parsed) {
+    final int bracket = text.indexOf('[');
+    if (bracket < 0 || parsed.getZone() instanceof ZoneOffset)
+      return parsed;
+    final OffsetDateTime stated;
+    try {
+      stated = OffsetDateTime.parse(text.substring(0, bracket).trim().replace(' ', 'T'));
+    } catch (final DateTimeException e) {
+      // No offset stated: the zone alone decides
+      return parsed;
+    }
+    if (!stated.getOffset().equals(parsed.getOffset()) || !stated.toLocalDateTime().equals(parsed.toLocalDateTime()))
+      throw new InvalidTemporalTextException("Timezone and offset do not match: " + text);
+    return parsed;
+  }
+
+  /**
    * Parse the timezone of a TIME: an offset like "+01:00", "+0100" or "Z", or a named zone ("UTC", "Asia/Tokyo"), which
    * stands for the offset the zone has now, as Neo4j reads it: a time has no date to resolve a daylight saving rule
    * against. A named zone used to be refused with a {@code DateTimeException} (issue #10199).

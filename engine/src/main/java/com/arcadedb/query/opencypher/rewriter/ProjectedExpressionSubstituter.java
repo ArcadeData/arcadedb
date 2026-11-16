@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
@@ -165,6 +166,33 @@ public class ProjectedExpressionSubstituter extends ExpressionRewriter {
     if (inner == expr.getBooleanExpression() || !(inner instanceof BooleanExpression))
       return expr;
     return new BooleanWrapperExpression((BooleanExpression) inner);
+  }
+
+  /**
+   * Rewrites the elements of a list literal: {@code WHERE true IN [n.b]} holds the grouping key inside the list.
+   */
+  @Override
+  protected Expression visitList(final ListExpression expr) {
+    final List<Expression> elements = expr.getElements();
+    List<Expression> rewritten = null;
+    for (int i = 0; i < elements.size(); i++) {
+      final Expression element = elements.get(i);
+      final Expression newElement = rewriteOperand(element);
+      if (newElement != element) {
+        if (rewritten == null)
+          rewritten = new ArrayList<>(elements);
+        rewritten.set(i, newElement);
+      }
+    }
+    if (rewritten == null)
+      return expr;
+    final StringBuilder text = new StringBuilder("[");
+    for (int i = 0; i < rewritten.size(); i++) {
+      if (i > 0)
+        text.append(", ");
+      text.append(rewritten.get(i).getText());
+    }
+    return new ListExpression(rewritten, text.append(']').toString());
   }
 
   private Expression rewriteOperand(final Expression operand) {

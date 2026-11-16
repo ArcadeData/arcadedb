@@ -93,6 +93,9 @@ class Issue12297TemporalMapFieldsTest extends TestHelper {
       "datetime({date: date('2021-05-15'), time: time('10:00+02:00'), timezone: '+01:00', hour: 3})               | 2021-05-15T02:00+01:00",
       "time({time: time('10:00+02:00'), timezone: '+01:00', hour: 3})                                             | 02:00+01:00",
       "time({time: localtime('10:00'), timezone: '+01:00', hour: 3})                                              | 03:00+01:00",
+      // a local base: its overridden local date-time is read in the zone, so the gap of March 28 does not move March 29
+      "datetime({datetime: localdatetime('2021-03-28T02:30'), timezone: 'Europe/Berlin', day: 29})                | 2021-03-29T02:30+02:00[Europe/Berlin]",
+      "datetime({datetime: localdatetime('2021-03-28T02:30'), timezone: 'Europe/Berlin'})                         | 2021-03-28T03:30+02:00[Europe/Berlin]",
       // the Neo4j accessor name of dayOfQuarter
       "date('2021-05-15').quarterDay                                                                               | 45",
       "localdatetime('2021-05-15T10:00').quarterDay                                                                | 45" })
@@ -154,7 +157,15 @@ class Issue12297TemporalMapFieldsTest extends TestHelper {
       "duration({days: null})                                                           | days must be a number value",
       "duration({days: '1'})                                                            | days must be a number value",
       "duration({days: 1, foo: 1})                                                      | Unknown field: foo",
+      // an invalid or null timezone is a client error
+      "date({timezone: 'Not/AZone'})                                                    | date()",
+      "datetime({timezone: 'Not/AZone'})                                                | datetime()",
+      "time.truncate('hour', time('10:11Z'), {timezone: 'nope'})                        | time.truncate() timezone is not a valid",
+      "time.truncate('hour', time('10:11Z'), {timezone: null})                          | time.truncate() timezone cannot be null",
+      "datetime.truncate('hour', datetime('2021-05-15T10:11Z'), {timezone: null})       | datetime.truncate() timezone cannot be null",
+      "datetime({year: 2020, timezone: null})                                           | Cannot convert to ZoneId",
       // ranges
+      "date({date: date('2020-05-15'), month: -2147483648})                             | Invalid value for month",
       "date({year: 2021, quarter: 5})                                                   | QuarterOfYear",
       "date({year: 2021, ordinalDay: 366})                                              | 366",
       "date({year: 2015, quarter: 1, dayOfQuarter: 91})                                 | Quarter 1 of 2015 only has 90 days" })

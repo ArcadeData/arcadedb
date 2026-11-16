@@ -74,7 +74,7 @@ public class CypherTime implements CypherTemporalValue {
     }
 
     if (map.containsKey("timezone")) {
-      final ZoneOffset newOffset = TemporalUtil.parseOffset(map.get("timezone").toString());
+      final ZoneOffset newOffset = TemporalUtil.parseOffset(TemporalMapFields.timezoneText(map));
       // The fields apply in the base's own offset, then a base that has one moves to the new offset at the same instant, as
       // Neo4j does: {time: time('10:00+02:00'), timezone: '+01:00', hour: 3} is 02:00+01:00 (issue #12297)
       if (base != null && baseHasTimezone)
