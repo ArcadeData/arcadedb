@@ -854,7 +854,7 @@ public class FullTextQueryExecutor {
       database.getIndexer().forEachIndexKey(index, document, keys -> {
         for (int i = 0; i < keys.length && !found[0]; i++)
           if ((property < 0 || property == i) && keys[i] != null)
-            found[0] = phrase.matches(LSMTreeFullTextIndex.tokenPositions(indexAnalyzer, keys[i], phrase.terms()));
+            found[0] = phrase.matches(LSMTreeFullTextIndex.tokenPositions(indexAnalyzer, keys[i], phrase.terms()), this::tick);
       });
       return !found[0];
     });
@@ -870,57 +870,76 @@ public class FullTextQueryExecutor {
     private final int[]       offsets;
     private final int         slop;
     private final Set<String> distinct;
+    // per term, the index of the previous term of the phrase that is the same token, or -1
+    private final int[]       previousSame;
 
     private PhrasePositions(final PhraseQuery query) {
       final Term[] queryTerms = query.getTerms();
       this.terms = new String[queryTerms.length];
       for (int i = 0; i < queryTerms.length; i++)
         terms[i] = queryTerms[i].text();
+      // in ascending order: PhraseQuery takes its positions in order
       this.offsets = query.getPositions();
       this.slop = query.getSlop();
       this.distinct = Set.copyOf(Arrays.asList(terms));
+      this.previousSame = new int[terms.length];
+      for (int i = 0; i < terms.length; i++) {
+        previousSame[i] = -1;
+        for (int j = i - 1; j >= 0 && previousSame[i] < 0; j--)
+          if (terms[j].equals(terms[i]))
+            previousSame[i] = j;
+      }
     }
 
     private Set<String> terms() {
       return distinct;
     }
 
-    /** @param positions per term, its count in the first cell and its positions in ascending order after it */
-    private boolean matches(final Map<String, int[]> positions) {
+    /**
+     * A placement has a smallest offset (a position less its query position), the offset of one occurrence of one term: each of
+     * those is tried as the bottom of a window {@code slop} wide, which holds the phrase when every term has a free position in it.
+     * That is a number of windows linear in the occurrences, each decided in one pass over the terms, where trying every placement
+     * of a repeated term grew with the factorial of its occurrences (review of #12180).
+     *
+     * @param positions per term, its count in the first cell and its positions in ascending order after it
+     * @param tick      called once per window, so a terminated or timed-out statement stops inside the check
+     */
+    private boolean matches(final Map<String, int[]> positions, final Runnable tick) {
       final int[][] lists = new int[terms.length][];
       for (int i = 0; i < terms.length; i++) {
         lists[i] = positions.get(terms[i]);
         if (lists[i] == null)
           return false;
       }
-      return place(0, lists, new int[terms.length], 0, 0);
+      final int[] taken = new int[terms.length];
+      for (int i = 0; i < terms.length; i++)
+        for (int k = 1; k <= lists[i][0]; k++) {
+          tick.run();
+          if (fits(lists[i][k] - offsets[i], lists, taken))
+            return true;
+        }
+      return false;
     }
 
-    private boolean place(final int i, final int[][] lists, final int[] chosen, final int min, final int max) {
-      if (i == terms.length)
-        return true;
-      final int[] list = lists[i];
-      final int count = list[0];
-      // the term's offset (its position less its query position) has to keep the spread of all offsets within the slop
-      final int low = i == 0 ? Integer.MIN_VALUE : max - slop + offsets[i];
-      final int high = i == 0 ? Integer.MAX_VALUE : min + slop + offsets[i];
-      for (int k = firstAtLeast(list, count, low); k <= count && list[k] <= high; k++) {
-        final int position = list[k];
-        if (takenBySameTerm(i, position, chosen))
-          continue;
-        chosen[i] = position;
-        final int offset = position - offsets[i];
-        if (place(i + 1, lists, chosen, i == 0 ? offset : Math.min(min, offset), i == 0 ? offset : Math.max(max, offset)))
-          return true;
+    /**
+     * Whether every term has a position whose offset lies between {@code low} and {@code low + slop}, a term repeated in the phrase a
+     * later position each time. The terms are taken in query order, each given the first position of its range after the one the
+     * same term took last. That loses no placement: the ranges of the occurrences of one term are equally wide and come in query
+     * order, so the earliest position never takes one a later occurrence needed, and two occurrences of a term placed the other way
+     * round spread no wider once swapped (each offset they would get lies between the two they had).
+     */
+    private boolean fits(final int low, final int[][] lists, final int[] taken) {
+      for (int i = 0; i < terms.length; i++) {
+        int from = low + offsets[i];
+        if (previousSame[i] >= 0)
+          from = Math.max(from, taken[previousSame[i]] + 1);
+        final int[] list = lists[i];
+        final int k = firstAtLeast(list, list[0], from);
+        if (k > list[0] || list[k] > low + offsets[i] + slop)
+          return false;
+        taken[i] = list[k];
       }
-      return false;
-    }
-
-    private boolean takenBySameTerm(final int i, final int position, final int[] chosen) {
-      for (int j = 0; j < i; j++)
-        if (chosen[j] == position && terms[j].equals(terms[i]))
-          return true;
-      return false;
+      return true;
     }
 
     private static int firstAtLeast(final int[] list, final int count, final int value) {

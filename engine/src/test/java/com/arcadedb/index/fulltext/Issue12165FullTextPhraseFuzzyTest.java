@@ -22,10 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,6 +89,27 @@ class Issue12165FullTextPhraseFuzzyTest extends TestHelper {
     // a term repeated in the phrase needs as many occurrences
     assertThat(search("Doc", "\"machine machine\"~1").keySet()).containsExactly(5);
     assertThat(search("Doc", "\"learning learning\"~3").keySet()).containsExactly(4);
+  }
+
+  /**
+   * A phrase repeating one term many times, with a large slop, over a record holding the term as often: placing the repeated term
+   * must not try every order of its positions (review of #12180). The timeout is a hang detector only.
+   */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void aPhraseRepeatingATermIsPlacedWithoutTryingEveryOrder() {
+    final String machines = "machine ".repeat(12);
+    database.transaction(() -> {
+      insert("Doc", 20, machines + "filler ".repeat(200) + "learning");
+      insert("Doc", 21, machines + "learning");
+    });
+    // the twelve terms and learning fit within the slop in record 21 only: in record 20 learning is 200 positions away
+    assertThat(search("Doc", "\"" + machines + "learning\"~100").keySet()).containsExactly(21);
+    assertThat(search("Doc", "\"" + machines + "learning\"").keySet()).containsExactly(21);
+    // repeated terms around another one, as Lucene 10.6 answers them on the same records
+    assertThat(search("Doc", "\"machine learning machine\"~2").keySet()).containsExactlyInAnyOrder(5, 21);
+    assertThat(search("Doc", "\"machine machine machine\"~3").keySet()).containsExactlyInAnyOrder(20, 21);
+    assertThat(search("Doc", "\"machine machine\"~1").keySet()).containsExactlyInAnyOrder(5, 20, 21);
   }
 
   @Test
