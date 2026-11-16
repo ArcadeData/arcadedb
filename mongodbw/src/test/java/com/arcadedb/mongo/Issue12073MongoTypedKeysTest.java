@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -189,6 +190,44 @@ class Issue12073MongoTypedKeysTest {
       insert("Decimals", new Document("_id", i).append("d", values.get(i)));
     for (int i = 0; i < values.size(); i++)
       assertThat(find("Decimals", new Document("_id", i)).getFirst().get("d")).isEqualTo(values.get(i));
+  }
+
+  @Test
+  void anIncrementOfAStoredSpecialDecimalIsANumber() {
+    insert("Incs", new Document("_id", 1).append("d", Decimal128.NEGATIVE_ZERO), new Document("_id", 2).append("d", Decimal128.NaN),
+        new Document("_id", 3).append("d", Decimal128.POSITIVE_INFINITY));
+    for (int id = 1; id <= 3; id++)
+      command("update", "Incs", new Document("updates",
+          List.of(new Document("q", new Document("_id", id)).append("u", new Document("$inc", new Document("d", 1))))));
+    assertThat(find("Incs", new Document("_id", 1)).getFirst().get("d")).isEqualTo(new Decimal128(BigDecimal.ONE));
+    assertThat(find("Incs", new Document("_id", 2)).getFirst().get("d")).isEqualTo(Decimal128.NaN);
+    assertThat(find("Incs", new Document("_id", 3)).getFirst().get("d")).isEqualTo(Decimal128.POSITIVE_INFINITY);
+  }
+
+  @Test
+  void anUpdateWithoutAFilterCannotWriteAKeyProperty() {
+    insert("Reserved", new Document("_id", 1).append("a", 1));
+    for (final String op : List.of("$set", "$unset", "$inc"))
+      assertThatThrownBy(() -> command("update", "Reserved", new Document("updates", List.of(new Document("q", new Document()).append("u",
+          new Document(op, new Document(MongoKeys.ID_KEY, 5))))))).as(op).isInstanceOf(MongoServerError.class);
+    assertThatThrownBy(() -> insert("Reserved", new Document("_id", 1))).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void aUniqueIndexOnAFieldNamedWithACommaIsOnThatField() {
+    command("createIndexes", "Commas", new Document("indexes", List.of(new Document("key", new Document("a,b", 1)).append("name", "ab_1")
+        .append("unique", true))));
+    insert("Commas", new Document("_id", 1).append("a,b", 1), new Document("_id", 2).append("a,b", 2));
+    assertThatThrownBy(() -> insert("Commas", new Document("_id", 3).append("a,b", 1))).isInstanceOf(DuplicatedKeyException.class);
+    assertThat(MongoKeys.pathsOf(MongoKeys.propertyOf(new String[] { "a,b" }))).containsExactly("a,b");
+    assertThat(MongoKeys.pathsOf(MongoKeys.propertyOf(new String[] { "a\\", "b" }))).containsExactly("a\\", "b");
+    assertThat(MongoKeys.propertyOf(new String[] { "a,b" })).isNotEqualTo(MongoKeys.propertyOf(new String[] { "a", "b" }));
+  }
+
+  @Test
+  void aDateIsOneKeyWhetherItIsADateOrAnInstant() {
+    final Date date = new Date(1_700_000_000_123L);
+    assertThat(MongoKeys.key(date.toInstant())).isEqualTo(MongoKeys.key(date));
   }
 
   private void insert(final String collection, final Document... documents) {

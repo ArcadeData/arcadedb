@@ -930,6 +930,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!database.getSchema().existsType(collectionName) || u == null)
       return UpdateCount.NONE;
 
+    // a key property is the plugin's, not the client's: the fields of every operator are checked before the SQL UPDATE, which
+    // writes them as they are (a replacement has no key property: a field starting with '$' makes the update an operator one)
+    if (!isReplacement(u))
+      for (final Object operand : u.values())
+        if (operand instanceof Document fields)
+          for (final String field : fields.keySet())
+            MongoKeys.checkNotKey(field);
+
     // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
     // for any shape of data). Only an update without a filter stays one SQL UPDATE.
     // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
@@ -1333,8 +1341,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private static Number numberOf(final Object value) {
-    if (value == null || value instanceof Number)
-      return (Number) value;
+    // a Decimal128 NaN, infinity or negative zero is stored as a tagged map (issue #12073)
+    final Object number = MongoBsonValues.isTagged(value) ? MongoBsonValues.toBson(value) : value;
+    if (number == null || number instanceof Number)
+      return (Number) number;
     throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
   }
 
@@ -1368,9 +1378,28 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
+    if (isNonFinite(current) || isNonFinite(delta)) {
+      // a Decimal128 NaN or infinity (stored as a tagged map, issue #12073) stays one, as mongod's decimal arithmetic keeps it
+      final double sum = doubleOf(current) + doubleOf(delta);
+      return Double.isNaN(sum) ? Decimal128.NaN : sum > 0 ? Decimal128.POSITIVE_INFINITY : Decimal128.NEGATIVE_INFINITY;
+    }
     if (current instanceof BigDecimal || delta instanceof BigDecimal || current instanceof Decimal128 || delta instanceof Decimal128)
       return MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta));
     return current.doubleValue() + delta.doubleValue();
+  }
+
+  private static boolean isNonFinite(final Number number) {
+    return number instanceof Decimal128 decimal && ((decimal.getHigh() >>> 58) & 0x1E) == 0x1E;
+  }
+
+  private static double doubleOf(final Number number) {
+    if (!(number instanceof Decimal128 decimal))
+      return number.doubleValue();
+    if (((decimal.getHigh() >>> 58) & 0x1F) == 0x1F)
+      return Double.NaN;
+    if (isNonFinite(decimal))
+      return decimal.getHigh() < 0 ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
+    return MongoBsonValues.toBigDecimal(decimal).doubleValue();
   }
 
   private static boolean isIntegral(final Number number) {

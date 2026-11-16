@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
@@ -425,31 +426,37 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * Writes a derived key on every record of a collection, in transactions of {@link #BACKFILL_BATCH} records: the key of the
    * {@code _id} ({@code paths == null}, not for a record without one) or the key of {@code paths}. Each batch is its OWN
    * transaction, committed before the index is built on the keys whatever transaction the caller holds (issue #9977). The caller
-   * holds the exclusive lock, so no write of the plugin runs meanwhile.
+   * holds the exclusive lock, so no write of the plugin runs meanwhile. One scan of the buckets feeds the batches, so the memory
+   * held is one batch of RIDs whatever the size of the collection.
    */
   static void backfillKeys(final Database database, final String collectionName, final String property, final String[] paths) {
-    final List<RID> rids = new ArrayList<>();
-    try (final ResultSet rs = database.query("SQL", "select @rid from " + Identifier.quote(collectionName))) {
-      while (rs.hasNext())
-        rs.next().getIdentity().ifPresent(rids::add);
-    }
-    for (int from = 0; from < rids.size(); from += BACKFILL_BATCH) {
-      final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
-      try {
-        for (final RID rid : rids.subList(from, Math.min(rids.size(), from + BACKFILL_BATCH))) {
-          final MutableDocument record = rid.asDocument().modify();
-          if (paths == null) {
-            if (!record.has("_id"))
-              continue;
-            record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"))));
-          } else
-            record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertDocumentToMongoDB(record), paths));
-          record.save();
-        }
-        tx.commit();
-      } finally {
-        tx.rollbackIfMine();
+    final List<RID> batch = new ArrayList<>(BACKFILL_BATCH);
+    final Iterator<Record> scan = database.iterateType(collectionName, true);
+    while (scan.hasNext()) {
+      batch.add(scan.next().getIdentity());
+      if (batch.size() == BACKFILL_BATCH || !scan.hasNext()) {
+        writeKeys(database, batch, property, paths);
+        batch.clear();
       }
+    }
+  }
+
+  private static void writeKeys(final Database database, final List<RID> rids, final String property, final String[] paths) {
+    final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+    try {
+      for (final RID rid : rids) {
+        final MutableDocument record = rid.asDocument().modify();
+        if (paths == null) {
+          if (!record.has("_id"))
+            continue;
+          record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"))));
+        } else
+          record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertDocumentToMongoDB(record), paths));
+        record.save();
+      }
+      tx.commit();
+    } finally {
+      tx.rollbackIfMine();
     }
   }
 

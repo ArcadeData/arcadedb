@@ -29,6 +29,7 @@ import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Date;
@@ -45,7 +46,9 @@ import java.util.Map;
  * NumberDecimal("1.00") are one key), a missing field is a null, a document compares field by field in order.
  * <p>
  * Known differences: an array is one key, not one per element (mongod indexes each element of an array, a multikey index), and
- * only the documents this plugin writes carry the keys (a record written through SQL or another protocol has none).
+ * only the documents this plugin writes carry the keys: a record written through SQL or another protocol has none, so no unique
+ * index of the plugin covers it and, once the collection has the {@code _id} key index, a filter on {@code _id} (which selects its
+ * candidates through that index) does not find it.
  */
 final class MongoKeys {
   static final String PREFIX = "$unique:";
@@ -67,12 +70,40 @@ final class MongoKeys {
           "The field name prefix '" + PREFIX + "' is reserved");
   }
 
+  /**
+   * The name of the key property of a field list: the fields joined with commas, a comma or a backslash in a field name escaped
+   * with a backslash, so that {@code ["a,b"]} and {@code ["a", "b"]} are two properties and {@link #pathsOf} reads either back.
+   */
   static String propertyOf(final String[] paths) {
-    return PREFIX + String.join(",", paths);
+    final StringBuilder buffer = new StringBuilder(PREFIX);
+    for (int i = 0; i < paths.length; i++) {
+      if (i > 0)
+        buffer.append(',');
+      for (int c = 0; c < paths[i].length(); c++) {
+        final char ch = paths[i].charAt(c);
+        if (ch == ',' || ch == '\\')
+          buffer.append('\\');
+        buffer.append(ch);
+      }
+    }
+    return buffer.toString();
   }
 
   static String[] pathsOf(final String property) {
-    return property.substring(PREFIX.length()).split(",");
+    final List<String> paths = new ArrayList<>();
+    final StringBuilder path = new StringBuilder();
+    for (int c = PREFIX.length(); c < property.length(); c++) {
+      final char ch = property.charAt(c);
+      if (ch == '\\' && c + 1 < property.length())
+        path.append(property.charAt(++c));
+      else if (ch == ',') {
+        paths.add(path.toString());
+        path.setLength(0);
+      } else
+        path.append(ch);
+    }
+    paths.add(path.toString());
+    return paths.toArray(new String[0]);
   }
 
   /**
@@ -161,6 +192,9 @@ final class MongoKeys {
       buffer.append('o').append(objectId.getHexData());
     else if (value instanceof Date date)
       buffer.append('d').append(date.getTime()).append(';');
+    else if (value instanceof Instant instant)
+      // a BSON date: the decoder and the stored form both read it as an Instant, a client document may hold a Date
+      buffer.append('d').append(instant.toEpochMilli()).append(';');
     else if (value instanceof Document document) {
       buffer.append('{');
       for (final Map.Entry<String, Object> entry : document.entrySet()) {
