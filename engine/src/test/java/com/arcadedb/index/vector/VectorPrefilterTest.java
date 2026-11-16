@@ -1428,9 +1428,11 @@ class VectorPrefilterTest {
 
       final Set<RID> real = ridsOf(3, 19, 31);
       final Set<RID> wide = new LinkedHashSet<>(real);
-      // RIDs of a bucket this index knows nothing about, purely to push the allow-list past the ordinal count.
+      // RIDs of this index's own bucket that hold no record, purely to push the allow-list past the ordinal count. Members of
+      // another bucket would not do: a search counts only the members of the index's own bucket (issue #11765).
+      final int ownBucket = index.getAssociatedBucketId();
       for (int i = 0; wide.size() <= ordinalMap.length; i++)
-        wide.add(new RID(9999, i));
+        wide.add(new RID(ownBucket, 1_000_000 + i));
       assertThat(wide.size()).as("the allow-list has to be wide enough to take the other branch")
           .isGreaterThan(ordinalMap.length);
 
