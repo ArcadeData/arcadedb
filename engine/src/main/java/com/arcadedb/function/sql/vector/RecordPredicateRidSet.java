@@ -31,7 +31,9 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -42,6 +44,10 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
@@ -97,6 +103,12 @@ import java.util.logging.Level;
  * {@code filter} subquery pays on every call anyway. Capping that walk would answer fewer rows than exist, so it is not capped;
  * for a small, known set of RIDs the {@code filter} option remains the plan that scans only them.
  * <p>
+ * A subquery of a SQL condition is lifted out of it once per call, as the planner of a {@code SELECT} lifts the subqueries of its
+ * {@code WHERE} into LETs (issue #12112): an uncorrelated one runs on the first test and its rows are read by every later one,
+ * where evaluated in place it ran again for every candidate; one that refers to {@code $parent} still runs before each test.
+ * Their values are variables of a context of the call's own, a child of the caller's, so they neither overwrite the
+ * enclosing statement's own lifted subqueries (the generated aliases are the same) nor outlive the call.
+ * <p>
  * A selective predicate an index can answer skips that walk (issue #10921): when its equalities ({@code where: {tenant: 1}}, or
  * the {@code tenant = :t} conjuncts of a condition) bind every property of an index on the searched bucket, the index lists the
  * candidates ({@link #listCandidates}), and when they are few enough the search scores them directly, the plan of a short
@@ -132,6 +144,12 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private final ConcurrentHashMap<Integer, Listing> listings = new ConcurrentHashMap<>();
   // The equalities an index may answer, extracted on the first listing: null until then
   private volatile Lookup                       lookup;
+  // The subqueries lifted out of the condition (issue #12112), null when it holds none
+  private final LiftedSubquery[]                subqueries;
+  // Where the condition is evaluated: the caller's context, or a child of it holding the values of the lifted subqueries
+  private final CommandContext                  evaluationContext;
+  // Whether the uncorrelated subqueries ran: on the first test of the call. Read and written under this set's lock
+  private       boolean                         uncorrelatedBound;
 
   /**
    * The equalities of the predicate an index may answer, and whether they are the whole predicate.
@@ -146,14 +164,31 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private record Listing(int bound, Candidates candidates) {
   }
 
+  /**
+   * A subquery lifted out of the condition, which reads its value through the variable {@code alias}: an uncorrelated one runs
+   * once per call, one that refers to {@code $parent} before each test, as the LET steps of a {@code SELECT} run them.
+   */
+  private record LiftedSubquery(String alias, Statement statement, boolean correlated) {
+  }
+
   private RecordPredicateRidSet(final CommandContext context, final Map<String, Object> equalities, final WhereClause condition,
-      final Predicate<Document> predicate, final Set<RID> restrictTo) {
+      final Predicate<Document> predicate, final Set<RID> restrictTo, final LiftedSubquery[] subqueries) {
     this.database = context.getDatabase();
     this.context = context;
     this.equalities = equalities;
     this.condition = condition;
     this.predicate = predicate;
     this.restrictTo = restrictTo;
+    this.subqueries = subqueries;
+    if (subqueries == null)
+      this.evaluationContext = context;
+    else {
+      // Not registered as the caller's child, which would change how the caller's own variables resolve
+      final BasicCommandContext own = new BasicCommandContext();
+      own.setDatabase(context.getDatabase());
+      own.setParentWithoutOverridingChild(context);
+      this.evaluationContext = own;
+    }
     // The statement's deadline and termination, asked before each record this set loads (issue #10782): a selective
     // predicate keeps the filtered walk going until it has met every vector it can reach, and the walk itself is
     // JVector's, with no check of its own. The interrupt flag is left alone, as on every generic executor path
@@ -166,7 +201,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
    * candidates (issue #10782). The predicate is called under this set's lock, so it may rely on one call at a time.
    */
   public static Set<RID> matching(final Predicate<Document> predicate, final CommandContext context) {
-    return new RecordPredicateRidSet(context, null, null, predicate, null);
+    return new RecordPredicateRidSet(context, null, null, predicate, null, null);
   }
 
   /**
@@ -189,7 +224,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       final LinkedHashMap<String, Object> equalities = new LinkedHashMap<>(map.size());
       for (final Map.Entry<?, ?> e : map.entrySet())
         equalities.put(String.valueOf(e.getKey()), e.getValue());
-      return new RecordPredicateRidSet(context, equalities, null, null, filter);
+      return new RecordPredicateRidSet(context, equalities, null, null, filter, null);
     }
     if (where instanceof String text) {
       if (text.isBlank())
@@ -207,10 +242,49 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       } catch (final Exception e) {
         throw new CommandSQLParsingException(functionName + " 'where' is not a valid condition: " + text, e);
       }
-      return new RecordPredicateRidSet(context, null, condition, null, filter);
+      return new RecordPredicateRidSet(context, null, condition, null, filter, liftSubqueries(condition));
     }
     throw new CommandSQLParsingException(
         functionName + " 'where' must be a map of property to value or a SQL condition, got " + where.getClass().getSimpleName());
+  }
+
+  /**
+   * Replaces every subquery of {@code condition} with a variable the tests bind, as the planner of a {@code SELECT} lifts the
+   * subqueries of its {@code WHERE} into LETs (issue #12112): left in place, an uncorrelated subquery ran again for every
+   * candidate tested. The condition was parsed for this call alone, so rewriting it touches nothing shared. Null when the
+   * condition holds no subquery, which then costs nothing more than before.
+   */
+  private static LiftedSubquery[] liftSubqueries(final WhereClause condition) {
+    final SubQueryCollector collector = new SubQueryCollector();
+    condition.extractSubQueries(collector);
+    final Map<Identifier, Statement> found = collector.getSubQueries();
+    if (found.isEmpty())
+      return null;
+    final LiftedSubquery[] lifted = new LiftedSubquery[found.size()];
+    int i = 0;
+    for (final Map.Entry<Identifier, Statement> e : found.entrySet())
+      lifted[i++] = new LiftedSubquery(e.getKey().getStringValue(), e.getValue(), e.getValue().refersToParent());
+    return lifted;
+  }
+
+  /**
+   * Binds the values of the lifted subqueries in the evaluation context: the uncorrelated ones on the first test of the call,
+   * the correlated ones on every test. Called under this set's lock.
+   */
+  private void bindSubqueries() {
+    for (final LiftedSubquery subquery : subqueries)
+      if (subquery.correlated || !uncorrelatedBound)
+        evaluationContext.setVariable(subquery.alias, run(subquery.statement));
+    uncorrelatedBound = true;
+  }
+
+  private List<Result> run(final Statement statement) {
+    final BasicCommandContext subContext = new BasicCommandContext();
+    subContext.setDatabase(context.getDatabase());
+    subContext.setParentWithoutOverridingChild(evaluationContext);
+    // Under both heap limits and closed whatever happens, as the same subquery evaluated in place is (issue #10080)
+    return OperationHeapLimit.materializeForExpression(evaluationContext, "'where' subquery",
+        new LocalResultSet(statement.createExecutionPlan(subContext)));
   }
 
   /**
@@ -285,7 +359,9 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private boolean matchesRecord(final Document record) {
     if (condition != null)
       synchronized (this) {
-        return Boolean.TRUE.equals(condition.matchesFilters(record, context));
+        if (subqueries != null)
+          bindSubqueries();
+        return Boolean.TRUE.equals(condition.matchesFilters(record, evaluationContext));
       }
     if (predicate != null)
       synchronized (this) {
