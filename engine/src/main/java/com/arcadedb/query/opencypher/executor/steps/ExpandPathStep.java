@@ -536,19 +536,8 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
     final List<String> labels = new ArrayList<>(staticLabels.size() + targetNodePattern.getDynamicLabels().size());
     labels.addAll(staticLabels);
     for (final Expression dynamicLabel : targetNodePattern.getDynamicLabels())
-      appendResolvedLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context));
+      Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context));
     return labels;
-  }
-
-  private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
-    if (resolved == null)
-      return;
-    if (resolved instanceof Iterable) {
-      for (final Object item : (Iterable<?>) resolved)
-        if (item != null)
-          labels.add(item.toString());
-    } else
-      labels.add(resolved.toString());
   }
 
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {

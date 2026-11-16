@@ -21,8 +21,10 @@ package com.arcadedb.query.opencypher.parser;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.LabelPredicate;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -33,6 +35,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 /**
  * Utility methods for Cypher parser operations.
@@ -208,6 +211,53 @@ public class ParserUtils {
   public static LabelCheckExpression labelCheckOn(final String variable, final LabelPredicate predicate,
       final Cypher25Parser.LabelExpressionContext ctx) {
     return new LabelCheckExpression(new VariableExpression(variable), predicate, variable + ctx.getText());
+  }
+
+  /**
+   * Compiles the Cypher 25 dynamic {@code $(expression)} labels of a label expression, or returns {@code null} when it has
+   * none.
+   */
+  public static List<Expression> parseDynamicLabels(final Cypher25Parser.LabelExpressionContext ctx,
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
+    if (ctx == null)
+      return null;
+    final List<Cypher25Parser.ExpressionContext> contexts = collectDynamicLabelContexts(ctx);
+    if (contexts.isEmpty())
+      return null;
+    final List<Expression> out = new ArrayList<>(contexts.size());
+    for (final Cypher25Parser.ExpressionContext expressionCtx : contexts)
+      out.add(parser.apply(expressionCtx));
+    return out;
+  }
+
+  /**
+   * The predicate a READ pattern element carries for a label expression with Cypher 25 dynamic {@code $(expr)} labels:
+   * {@code (b:$(expr))}, {@code (b:A|$(expr))}, {@code [r:$(expr)]}. Every read consumer of a pattern evaluates the
+   * element's inline predicate - the clause WHERE it is hoisted into, the single and the variable-length hop, OPTIONAL
+   * MATCH, pattern comprehensions and predicates, {@code COUNT { }}, {@code EXISTS { }} - so the dynamic label is honoured
+   * by all of them instead of only by the steps that read {@code NodePattern.getDynamicLabels()} (issue #11776). For a
+   * relationship, the static types are kept in the check too, since the pattern's type filter is then dropped.
+   */
+  public static LabelCheckExpression dynamicLabelCheckOn(final String variable, final List<String> staticLabels,
+      final List<Expression> dynamicLabels, final Cypher25Parser.LabelExpressionContext ctx) {
+    final LabelCheckExpression.LabelOperator operator = isLabelDisjunction(ctx) ?
+        LabelCheckExpression.LabelOperator.OR :
+        LabelCheckExpression.LabelOperator.AND;
+    return new LabelCheckExpression(new VariableExpression(variable), staticLabels, dynamicLabels, operator,
+        variable + ctx.getText());
+  }
+
+  /**
+   * The static labels of a disjunction, as literal expressions, followed by its dynamic labels: the form a node pattern
+   * {@code (n:A|$(expr))} keeps, so the anchor scan still resolves every alternative and no consumer reads the static
+   * list alone as the filter (issue #11776).
+   */
+  public static List<Expression> staticLabelsFirst(final List<String> staticLabels, final List<Expression> dynamicLabels) {
+    final List<Expression> all = new ArrayList<>(staticLabels.size() + dynamicLabels.size());
+    for (final String label : staticLabels)
+      all.add(new LiteralExpression(label, label));
+    all.addAll(dynamicLabels);
+    return all;
   }
 
   /** ANDs a pattern element's label check (may be null) with its inline WHERE predicate (may be null). */

@@ -753,8 +753,10 @@ final class VariableScopeValidator {
       }
     } else if (boolExpr instanceof IsNullExpression) {
       checkExpressionScope(((IsNullExpression) boolExpr).getExpression(), scope);
-    } else if (boolExpr instanceof LabelCheckExpression) {
-      checkExpressionScope(((LabelCheckExpression) boolExpr).getVariableExpression(), scope);
+    } else if (boolExpr instanceof LabelCheckExpression labelCheck) {
+      checkExpressionScope(labelCheck.getVariableExpression(), scope);
+      for (final Expression dynamicLabel : labelCheck.getDynamicLabels())
+        checkExpressionScope(dynamicLabel, scope);
     } else if (boolExpr instanceof BooleanCoercionExpression) {
       // A WHERE body that is a bare expression coerced to boolean (e.g. any()/all()/none()/single()
       // list predicates, a boolean-typed property, or a comprehension) is scope-checked as a plain

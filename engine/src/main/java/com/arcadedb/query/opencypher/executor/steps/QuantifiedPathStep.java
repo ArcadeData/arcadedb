@@ -498,13 +498,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
 
     final List<String> labels = new ArrayList<>(pattern.getLabels());
     for (final Expression dynamicLabel : pattern.getDynamicLabels()) {
-      final Object resolved = dynamicLabelEvaluator.evaluate(dynamicLabel, input, context);
-      if (resolved instanceof Iterable<?> items) {
-        for (final Object item : items)
-          if (item != null)
-            labels.add(item.toString());
-      } else if (resolved != null)
-        labels.add(resolved.toString());
+      Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, input, context));
     }
     return labels;
   }
