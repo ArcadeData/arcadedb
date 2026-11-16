@@ -50,7 +50,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8556: the automatic leadership hand-offs chose their target with
- * {@link RaftHAServer#selectStepDownTargets}, which screened a peer for lag only. A peer that is down passes that
+ * {@link StepDownTargets#selectStepDownTargets}, which screened a peer for lag only. A peer that is down passes that
  * screen - on an idle cluster its lag does not grow, and right after an election the {@link ClusterMonitor} has no
  * record of any peer, which it reads as "not lagging". A targeted Ratis transfer to it stays pending for the whole
  * budget, and while it is pending the leader refuses every write on every database. The #8491 hand-off then repeated
@@ -75,7 +75,7 @@ class Issue8556HandOffTargetReachabilityTest {
    */
   @Test
   void aPeerThatHasNotAnsweredThisLeaderIsNotReachable() {
-    final Set<String> reachable = RaftHAServer.handoffReachablePeerIds(
+    final Set<String> reachable = StepDownTargets.handoffReachablePeerIds(
         List.of(follower(B, 120L, 40L), follower(C, -1L, 900L)), 5_000L);
 
     assertThat(reachable).containsExactly(B.toString());
@@ -84,7 +84,7 @@ class Issue8556HandOffTargetReachabilityTest {
   /** A peer that died mid-term keeps a high match index, but its last answer ages past the window. */
   @Test
   void aPeerSilentForTheWholeWindowIsNotReachable() {
-    final Set<String> reachable = RaftHAServer.handoffReachablePeerIds(
+    final Set<String> reachable = StepDownTargets.handoffReachablePeerIds(
         List.of(follower(B, 120L, 4_999L), follower(C, 120L, 5_000L)), 5_000L);
 
     assertThat(reachable).containsExactly(B.toString());
@@ -97,22 +97,22 @@ class Issue8556HandOffTargetReachabilityTest {
     degraded.put("peerId", C.toString());
     degraded.put("lastRpcElapsedMs", 10L);
 
-    assertThat(RaftHAServer.handoffReachablePeerIds(List.of(follower(B, 7L, 10L), degraded), 5_000L))
+    assertThat(StepDownTargets.handoffReachablePeerIds(List.of(follower(B, 7L, 10L), degraded), 5_000L))
         .containsExactly(B.toString());
   }
 
   @Test
   void theContactWindowIsTheElectionTimeoutCappedByTheUnreachableThreshold() {
-    assertThat(RaftHAServer.handoffContactWindowMs(5_000L, 10_000L)).isEqualTo(5_000L);
-    assertThat(RaftHAServer.handoffContactWindowMs(5_000L, 2_000L)).isEqualTo(2_000L);
-    assertThat(RaftHAServer.handoffContactWindowMs(5_000L, 0L)).as("threshold disabled").isEqualTo(5_000L);
+    assertThat(StepDownTargets.handoffContactWindowMs(5_000L, 10_000L)).isEqualTo(5_000L);
+    assertThat(StepDownTargets.handoffContactWindowMs(5_000L, 2_000L)).isEqualTo(2_000L);
+    assertThat(StepDownTargets.handoffContactWindowMs(5_000L, 0L)).as("threshold disabled").isEqualTo(5_000L);
   }
 
   // -- The target selection, on each of its consumers --
 
   @Test
   void anUnreachablePeerIsNeverAStepDownTarget() {
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers(), SELF, new ClusterMonitor(1_000L),
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers(), SELF, new ClusterMonitor(1_000L),
         Set.of(B.toString()));
 
     assertThat(targets).extracting(p -> p.getId().toString()).containsExactly(B.toString());
@@ -130,7 +130,7 @@ class Issue8556HandOffTargetReachabilityTest {
     monitor.reset();
     assertThat(monitor.isReplicaLagging(C.toString())).as("the lag screen alone passes it").isFalse();
 
-    assertThat(RaftHAServer.selectStepDownTargets(peers(), SELF, monitor, Set.of())).isEmpty();
+    assertThat(StepDownTargets.selectStepDownTargets(peers(), SELF, monitor, Set.of())).isEmpty();
   }
 
   /** Caught up but unreachable is STALLED (#5291) with a lag under the threshold: the lag test passes it. */
@@ -143,7 +143,7 @@ class Issue8556HandOffTargetReachabilityTest {
     assertThat(monitor.isReplicaLagging(C.toString())).isFalse();
     assertThat(monitor.getReplicaStatus(C.toString())).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
 
-    assertThat(RaftHAServer.selectStepDownTargets(peers(), SELF, monitor))
+    assertThat(StepDownTargets.selectStepDownTargets(peers(), SELF, monitor))
         .extracting(p -> p.getId().toString()).containsExactly(B.toString());
   }
 
@@ -155,15 +155,15 @@ class Issue8556HandOffTargetReachabilityTest {
   void aDeadPeerDoesNotCountAsAHandOffTarget() {
     final List<RaftPeer> selfAndDeadPeer = List.of(peer(SELF), peer(C));
 
-    assertThat(RaftHAServer.hasHandoffTarget(selfAndDeadPeer, SELF, null, Set.of())).isFalse();
-    assertThat(RaftHAServer.hasHandoffTarget(selfAndDeadPeer, SELF, null, Set.of(C.toString()))).isTrue();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(selfAndDeadPeer, SELF, null, Set.of())).isFalse();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(selfAndDeadPeer, SELF, null, Set.of(C.toString()))).isTrue();
   }
 
   @Test
   void theChannelEscalationSkipsAnUnreachablePeer() {
     // B is the wedged follower, C is down: nowhere safe to go.
-    assertThat(RaftHAServer.selectChannelEscalationTarget(peers(), SELF, B.toString(), null, Set.of())).isNull();
-    assertThat(RaftHAServer.selectChannelEscalationTarget(peers(), SELF, B.toString(), null, Set.of(C.toString())))
+    assertThat(PeerChannelRecovery.selectChannelEscalationTarget(peers(), SELF, B.toString(), null, Set.of())).isNull();
+    assertThat(PeerChannelRecovery.selectChannelEscalationTarget(peers(), SELF, B.toString(), null, Set.of(C.toString())))
         .extracting(p -> p.getId().toString()).isEqualTo(C.toString());
   }
 

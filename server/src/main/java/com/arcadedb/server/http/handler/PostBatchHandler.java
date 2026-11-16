@@ -22,12 +22,14 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.network.SilenceBoundedInputStream;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -561,13 +563,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final long expectedRecords = parseExpectedRecords(exchange);
 
       if (streaming)
-        return streamRecordsAsNdJson(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+        return streamRecordsAsNdJson(exchange, databaseName, isCsv, database.getSchema(), builder, inputStream, vertexRefs,
             vertexBatchSize, expectedRecords, haDb);
 
       try {
         // No mapping sink: the buffered encoding has nowhere to put a chunk of it before the end, so it keeps
         // echoing the whole mapping in the terminal object under the MAX_ID_MAPPING_IN_RESPONSE cap.
-        return streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+        return streamRecords(exchange, databaseName, isCsv, database.getSchema(), builder, inputStream, vertexRefs,
             System.currentTimeMillis(), vertexBatchSize, expectedRecords, BatchProgressSink.NONE, null);
       } finally {
         emitCommitIndexBookmark(exchange, haDb);
@@ -595,7 +597,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    *                 difference
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
-      final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
+      final boolean isCsv, final Schema schema, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize,
       final long expectedRecords, final BatchProgressSink progress,
       final VertexRefResolver.EntryConsumer mappingSink) throws Exception {
@@ -607,7 +609,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // failed has to report how much of the payload it had read just as precisely as one that succeeded, which is
     // the whole point of counting the lines (issue #5618).
     final BatchRecordStream stream = isCsv
-        ? new CsvBatchRecordStream(inputStream)
+        ? new CsvBatchRecordStream(inputStream, schema)
         : new JsonlBatchRecordStream(inputStream);
 
     try (stream; final GraphBatch batch = builder.build()) {
@@ -701,15 +703,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
 
       // batch.close() is called by try-with-resources: flushes edges, connects incoming edges
-    } catch (final IllegalArgumentException e) {
-      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID): a batch load
+    } catch (final IllegalArgumentException | SchemaException e) {
+      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID, an edge or vertex type the schema
+      // does not have - a SchemaException since issue #11633, still the caller's 400): a batch load
       // is NOT atomic - GraphBatch commits every commitEvery records, so records handled before the
       // failure may already be durable on disk. Surface how many vertices and edges were attempted so
       // far (plus a partialCommit flag) so a client can reconcile rather than blindly re-POSTing the
       // whole payload - a retry would duplicate the already-committed vertices, whose temporary @id
       // values are not keys (issue #5036).
       //
-      // Only IllegalArgumentException (HTTP 400) is enriched here. Engine/cluster exceptions
+      // Only IllegalArgumentException and SchemaException (HTTP 400) are enriched here. Engine/cluster exceptions
       // (DuplicatedKeyException -> 409, TransactionCommittedRemotelyException -> 409,
       // NeedRetryException -> 503, security -> 403, RecordNotFoundException -> 404, ...) are left to
       // propagate so AbstractServerHttpHandler keeps its status mapping and logs the full stack trace.
@@ -895,7 +898,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    *         reads as "the handler sent it itself", the same contract the SSE paths use
    */
   private ExecutionResponse streamRecordsAsNdJson(final HttpServerExchange exchange, final String databaseName,
-      final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
+      final boolean isCsv, final Schema schema, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final VertexRefResolver vertexRefs, final int vertexBatchSize, final long expectedRecords,
       final HAReplicatedDatabase haDb) throws Exception {
 
@@ -916,7 +919,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         : (ref, rid) -> pendingMapping[0].put(ref, rid.toString());
 
     try {
-      final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+      final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, schema, builder, inputStream, vertexRefs,
           System.currentTimeMillis(), vertexBatchSize, expectedRecords,
           (phase, verticesCreated, edgesCreated, stream, refs, in) -> {
             final JSONObject event = new JSONObject();

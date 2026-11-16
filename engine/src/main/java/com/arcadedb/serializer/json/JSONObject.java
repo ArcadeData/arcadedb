@@ -90,7 +90,7 @@ public class JSONObject implements Map<String, Object> {
         reader.setStrictness(Strictness.LENIENT);
         object = JsonParser.parseReader(reader).getAsJsonObject();
       } catch (Exception e) {
-        throw new JSONException("Invalid JSON object format: " + input, e);
+        throw new JSONException("Invalid JSON object format: " + truncate(input), e);
       }
     } else
       object = new JsonObject();

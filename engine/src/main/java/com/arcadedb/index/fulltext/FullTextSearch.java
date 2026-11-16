@@ -288,7 +288,7 @@ public class FullTextSearch {
    * limit. Matching already happened, so the result set is unaffected - dropped terms simply stop contributing score. Their
    * document frequencies are dropped too, keeping the context free of statistics it will never consult.
    */
-  private static void capScoringTokens(final LinkedHashMap<String, Float> scoringTokens,
+  static void capScoringTokens(final LinkedHashMap<String, Float> scoringTokens,
       final Map<String, Long> documentFrequencies, final int maxTerms) {
     if (scoringTokens.size() <= maxTerms)
       return;
@@ -431,7 +431,7 @@ public class FullTextSearch {
    * here, so what a user may not read is neither matched nor counted, and a wildcard is not expanded over the terms only such a
    * bucket holds.
    */
-  private static List<LSMTreeFullTextIndex> getBucketIndexes(final TypeIndex typeIndex) {
+  static List<LSMTreeFullTextIndex> getBucketIndexes(final TypeIndex typeIndex) {
     final List<LSMTreeFullTextIndex> indexes = new ArrayList<>();
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex && ftIndex.isBucketReadable())
@@ -465,7 +465,7 @@ public class FullTextSearch {
     return first;
   }
 
-  private static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
+  static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Long> documentFrequencies) {
     final LSMTreeFullTextIndex first = bucketIndexes.getFirst();
     first.ensureTypeWideBM25Counters();
@@ -491,9 +491,9 @@ public class FullTextSearch {
   /**
    * Counts type-wide document frequencies with a dedicated posting scan, one scan per token per bucket. Used by the entry
    * points that have no matching pass to fold the counting into: the literal {@link #searchSimple} lookup, whose scoring pass
-   * visits only the tokens it was handed, and {@link #explainScoring}.
+   * visits only the tokens it was handed, {@link #explainScoring}, and the scoring of single records ({@link FullTextRecordScorer}).
    */
-  private static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
+  static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Float> scoringTokens, final WorkGuard guard) {
     documentFrequencyScanInvocations.incrementAndGet();
     guard.check();

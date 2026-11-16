@@ -119,27 +119,27 @@ class Issue8665PeerServiceGapHandOffTargetTest {
   void aPeerThatSharesTheGapIsNotAHandOffCandidate() {
     final Set<String> reachable = Set.of(B.toString(), C.toString());
 
-    final Set<String> eligible = RaftHAServer.withoutServiceGapPeers(reachable, Set.of(B.toString()));
+    final Set<String> eligible = StepDownTargets.withoutServiceGapPeers(reachable, Set.of(B.toString()));
 
     assertThat(eligible).containsExactly(C.toString());
-    assertThat(RaftHAServer.selectStepDownTargets(peers(), SELF, null, eligible)).extracting(p -> p.getId().toString())
+    assertThat(StepDownTargets.selectStepDownTargets(peers(), SELF, null, eligible)).extracting(p -> p.getId().toString())
         .containsExactly(C.toString());
     assertThat(reachable).as("the caller's set is not modified").hasSize(2);
   }
 
   @Test
   void whenEveryPeerSharesTheGapNoOneIsACandidate() {
-    final Set<String> eligible = RaftHAServer.withoutServiceGapPeers(Set.of(B.toString(), C.toString()),
+    final Set<String> eligible = StepDownTargets.withoutServiceGapPeers(Set.of(B.toString(), C.toString()),
         Set.of(B.toString(), C.toString()));
 
-    assertThat(RaftHAServer.hasHandoffTarget(peers(), SELF, null, eligible)).isFalse();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(peers(), SELF, null, eligible)).isFalse();
   }
 
   @Test
   void aHealthyClusterKeepsItsReachableSetAsIs() {
     final Set<String> reachable = Set.of(B.toString(), C.toString());
 
-    assertThat(RaftHAServer.withoutServiceGapPeers(reachable, Set.of())).isSameAs(reachable);
+    assertThat(StepDownTargets.withoutServiceGapPeers(reachable, Set.of())).isSameAs(reachable);
   }
 
   // -- no eligible peer: back off, do not rotate --------------------------------------------------------------------

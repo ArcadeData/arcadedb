@@ -18,7 +18,9 @@
  */
 package com.arcadedb.function.convert;
 
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
@@ -53,6 +55,11 @@ public class ConvertFromJsonMap extends AbstractConvertFunction {
       return null;
 
     final String json = args[0].toString();
-    return new JSONObject(json).toMap();
+    try {
+      return new JSONObject(json).toMap();
+    } catch (final JSONException e) {
+      // issue #11589: a text that is no JSON object is the caller's mistake
+      throw new InvalidArgumentException(getName() + "(): " + e.getMessage(), e);
+    }
   }
 }

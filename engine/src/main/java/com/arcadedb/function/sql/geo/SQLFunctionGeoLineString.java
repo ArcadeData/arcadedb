@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.geo;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -53,8 +54,9 @@ public class SQLFunctionGeoLineString extends SQLFunctionAbstract {
     if (iParams == null || iParams.length < 1 || iParams[0] == null)
       return null;
 
-    @SuppressWarnings("unchecked")
-    final List<Object> points = (List<Object>) iParams[0];
+    // issue #11589: a value that is no list of points is the caller's mistake, not a ClassCastException
+    if (!(iParams[0] instanceof List<?> points))
+      throw new TypeMismatchException(getName() + "() expects a list of points, got " + iParams[0].getClass().getSimpleName());
     if (points.isEmpty())
       return null;
 

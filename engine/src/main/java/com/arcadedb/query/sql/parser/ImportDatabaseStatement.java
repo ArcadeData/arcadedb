@@ -35,7 +35,9 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.io.FileNotFoundException;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.file.NoSuchFileException;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -151,8 +153,16 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         if (cause instanceof IllegalArgumentException) {
           final String message = cause.getMessage();
           failureReason = message != null ? message : cause.getClass().getName();
-        } else
+        } else {
+          // A source that does not exist - a local path nothing is at, a remote URL answering 404 - is the caller's to correct,
+          // not a server fault (issue #11803): refused as a bad argument, naming what could not be found
+          final Throwable missing = missingSource(cause);
+          if (missing != null)
+            throw new IllegalArgumentException(
+                "Error on importing database: the source " + (url != null ? "'" + url.getUrlString() + "' " : "") + "was not found ("
+                    + missing.getMessage() + ")", cause);
           throw new CommandExecutionException("Error on importing database", cause);
+        }
       } finally {
         OperationProgressRegistry.instance().unregister(progress);
       }
@@ -167,6 +177,14 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /** The frame of the chain that says a source does not exist, or {@code null}. */
+  private static Throwable missingSource(final Throwable error) {
+    for (Throwable t = error; t != null; t = t.getCause())
+      if (t instanceof FileNotFoundException || t instanceof NoSuchFileException)
+        return t;
+    return null;
   }
 
   @Override

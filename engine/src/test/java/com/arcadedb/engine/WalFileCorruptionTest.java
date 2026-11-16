@@ -394,7 +394,7 @@ class WalFileCorruptionTest {
    * length, and every segment costs at least {@code PAGE_HEADER_SIZE + 1} bytes (the fixed page header plus
    * a delta of at least one byte, which {@code writeTransactionToBuffer} guarantees), so any legal count
    * satisfies {@code pages * (PAGE_HEADER_SIZE + 1) <= segmentSize}. The equivalent guard already existed on
-   * the Raft entry parser ({@code ArcadeStateMachine.deserializeWalTransaction}, issue #4420) and on the
+   * the Raft entry parser ({@code CommittedEntryDecoding.deserializeWalTransaction}, issue #4420) and on the
    * per-page {@code deltaSize} (issue #4958); only the WAL file reader was left without one.
    */
   @Nested

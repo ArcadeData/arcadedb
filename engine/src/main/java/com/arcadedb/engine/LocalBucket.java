@@ -3705,8 +3705,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             && isSlotFreeInCommittedPage(reusedPageNumber, candidateSlot));
     final int reservedSlot = reserveInsertSlot(tx, reusedPageNumber, holeCandidate ? candidateSlot : -1, holeVerified,
             appendBase, offset, spaceNeeded, foundPage.getMaxContentSize());
-    if (reservedSlot >= 0)
+    if (reservedSlot >= 0) {
       tx.trackInsertSlotReservation(this, reusedPageNumber, reservedSlot);
+      // #11788: a transaction took the page for its continuation chunks between the check above and the reservation. It
+      // looked for reservations after registering, so one of the two sees the other: this one steps back, and the
+      // reservation it tracked is given back when the transaction ends.
+      if (isNewPageOfAnotherTransaction(reusedPageNumber, tx))
+        return -1;
+    }
     return reservedSlot;
   }
 
@@ -3789,6 +3795,49 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         ++res.outstanding;
         return slot;
       }
+    }
+  }
+
+  /**
+   * Asks the page for {@code additionalSpace} more bytes on behalf of a record the calling transaction INSERTED there and
+   * is now growing in place (issue #11788), and promises them when the page has them.
+   * <p>
+   * The insert claimed its footprint through {@link #reserveInsertSlot}, which is what lets the transactions inserting
+   * into one page all fit it at commit. A growth of that record is more of the same page, taken after the claim: the
+   * transaction's own image has the room, because it holds none of the other transactions' records, and the commit-time
+   * replay then finds a page that cannot host the grown record. So the growth is charged to the same space high-water
+   * mark the claims use, measured like a claim: from this transaction's own content end while it is alone on the page,
+   * from the mark once somebody else joined, and in both cases no lower than the committed page when that is newer than
+   * the image this transaction holds (#11498).
+   *
+   * @param ownContentEnd the content end of the page as this transaction wrote it, before the growth
+   *
+   * @return true when the bytes are promised (or the page keeps no reservation to charge them to, and the caller's image
+   * is the whole truth); false when the page cannot promise them and the record has to spill
+   */
+  private boolean reserveGrowthOfInsert(final Object owner, final BasePage page, final int ownContentEnd,
+                                        final int additionalSpace) {
+    final PageInsertReservation res = insertReservations.get(page.getPageId().getPageNumber());
+    if (res == null)
+      return true;
+
+    final int[] committedLayout = committedLayoutIfNewer(page);
+    int contentEnd = committedLayout != null ? Math.max(ownContentEnd, committedLayout[1]) : ownContentEnd;
+    synchronized (res) {
+      if (res.removed)
+        return true;
+      final boolean uncontended = res.soleOwner == owner;
+      // Alone on the page with an image as new as the committed one, the image is the whole truth and the mark is not
+      // read: it only grows, so a transaction rewriting its own records would find the page full. With an OLDER image the
+      // inserts of this transaction were claimed past the committed content the image does not hold, and the mark is
+      // where they end.
+      if (!uncontended || committedLayout != null)
+        contentEnd = Math.max(contentEnd, res.nextFreeOffset);
+      if (contentEnd + additionalSpace > page.getMaxContentSize())
+        return false;
+      if (uncontended || contentEnd + additionalSpace > res.nextFreeOffset)
+        res.nextFreeOffset = contentEnd + additionalSpace;
+      return true;
     }
   }
 
@@ -4210,8 +4259,50 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * empty page any transaction may fill. Between the commit's publish and this call the page is still skipped, which
    * only costs the others that one short window.
    */
-  public void releaseNewPage(final int pageNumber) {
-    inFlightNewPages.remove(pageNumber);
+  public void releaseNewPage(final int pageNumber, final TransactionContext owner) {
+    // Only the owner's own entry: a transaction that asked for a page somebody else owned tracked the attempt before it
+    // knew (see claimPageForChunks), and must not take the page from its owner when it ends
+    inFlightNewPages.remove(pageNumber, owner);
+  }
+
+  /**
+   * Takes an EXISTING page for the continuation chunks of the calling transaction, which owns it from then on like a page
+   * it created (issue #11788), or answers false when the page is not the transaction's to take.
+   * <p>
+   * A continuation chunk is written into a free slot through record-table writes no merge replays, so the page that
+   * receives one is poisoned for its writer: any other transaction committing to it first refuses the writer's commit.
+   * And the slot it takes is one the insert reservations know nothing about: on a page other transactions were inserting
+   * into, the chunk took the very slot one of them had been promised, whose replay then found it taken. Transactions that
+   * insert records and grow them past a page in the same transaction did both to each other, on every page with room.
+   * So a chunk lands on an existing page only when no OTHER transaction holds an insert reservation on it, and the page
+   * is then closed to every other transaction's allocator until its owner ends, as a page it created is.
+   * <p>
+   * The page is registered BEFORE the reservations are looked at, and an inserter looks at the registration AFTER it
+   * reserved (see {@link #claimInsertSlot}): whichever of the two comes second sees the other and steps back.
+   */
+  private boolean claimPageForChunks(final int pageNumber, final TransactionContext tx) {
+    final TransactionContext owner = inFlightNewPages.get(pageNumber);
+    if (owner != null)
+      return owner == tx;
+    // Tracked first: an entry the transaction does not track would never be released
+    tx.trackNewPageReservation(this, pageNumber);
+    if (inFlightNewPages.putIfAbsent(pageNumber, tx) != null)
+      return false;
+    if (isReservedByAnotherTransaction(pageNumber, tx)) {
+      inFlightNewPages.remove(pageNumber, tx);
+      return false;
+    }
+    return true;
+  }
+
+  /** Whether a transaction other than {@code tx} holds an insert reservation on the page (issue #11788). */
+  private boolean isReservedByAnotherTransaction(final int pageNumber, final TransactionContext tx) {
+    final PageInsertReservation res = insertReservations.get(pageNumber);
+    if (res == null)
+      return false;
+    synchronized (res) {
+      return !res.removed && res.outstanding > 0 && res.soleOwner != tx;
+    }
   }
 
   /**
@@ -4354,7 +4445,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // INSERT: the slot must still be free on the committed page (else a concurrent commit used it).
         if (existingPos != 0)
           return false;
-        return writeRecordAtSlot(page, positionInPage, recordCountInPage, body);
+        // #11788: an insert this transaction then grew past its page is the insert of a chunk HEAD, whose chain it
+        // wrote on other pages. No other shape is ever inserted through the merge.
+        if (kind != TransactionContext.SLOT_KIND_RECORD && kind != TransactionContext.SLOT_KIND_FIRST_CHUNK)
+          return false;
+        return writeRecordAtSlot(page, positionInPage, recordCountInPage, body, kind == TransactionContext.SLOT_KIND_FIRST_CHUNK);
       }
 
       // UPDATE: the slot must still hold the record this transaction started from, byte-for-byte, so we never
@@ -4664,9 +4759,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * @param chunkHead whether {@code body} is the image of a chunk head (chunk size, next-chunk pointer, content), written
+   *                  behind the {@link #FIRST_CHUNK} marker, rather than the body of a plain record, written behind its size
+   */
   private boolean writeRecordAtSlot(final MutablePage page, final int positionInPage, final short recordCountInPage,
-                                    final byte[] body) throws IOException {
-    final int spaceNeeded = Binary.getNumberSpace(body.length) + body.length;
+                                    final byte[] body, final boolean chunkHead) throws IOException {
+    final long marker = chunkHead ? FIRST_CHUNK : body.length;
+    final int spaceNeeded = Binary.getNumberSpace(marker) + body.length;
 
     // Measured on the committed page itself. #9694: NOT with the allocator's getAvailableSpaceInPage, which gives up
     // without measuring once the record count reaches maxRecordsInPage (the trap #8401 removed from the delete replay):
@@ -4682,10 +4782,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (positionInPage + 1 > recordCountInPage)
       page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (positionInPage + 1));
 
-    final int sizeLen = page.writeNumber(contentPos, body.length);
+    final int sizeLen = page.writeNumber(contentPos, marker);
     page.writeByteArray(contentPos + sizeLen, body, 0, body.length);
     updatePageStatistics(page, page.getMaxContentSize() - contentPos, -spaceNeeded);
     return true;
+  }
+
+  /**
+   * Reads the image (chunk size, next-chunk pointer, content: what follows the marker) of the chunk HEAD held by
+   * {@code positionInPage}. The disjoint-slot merge uses it to take the final image of a slot this transaction inserted and
+   * then grew past its page from the page the transaction wrote, as {@link #readPlainRecordBody} does for a plain record
+   * (issue #11788).
+   *
+   * @return the image, or {@code null} when the slot is free or does not hold the head chunk of a record of its own, which
+   * the caller turns into a refusal to merge.
+   */
+  public byte[] readHeadChunkImage(final BasePage page, final int positionInPage) {
+    try {
+      if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return null;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0 || page.readNumber(recordPositionInPage) != FIRST_CHUNK)
+        return null;
+      return readChunkImage(page, recordPositionInPage + page.readNumberSize(recordPositionInPage));
+    } catch (final IOException e) {
+      // a page that cannot be read back cannot be replayed: the caller refuses the merge and the transaction retries
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot read back the head chunk in slot %d of page %s for the slot merge", e, positionInPage,
+              page.getPageId());
+      return null;
+    }
   }
 
   /**
@@ -5086,10 +5212,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int growCoverage = page.beginCoveredWrite(growRebasable ?
                 MutablePage.COVERAGE_SLOT_MERGE :
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
+        // #11788: a record this transaction inserted into a page it shares grows there only inside what the page still has
+        // once the room promised to the other in-flight inserters is counted. The image the growth is measured against is
+        // this transaction's own, which shows none of their records: grown by that measure, the replay found the committed
+        // page full and the commit was refused, by transactions that had written no record of this one. A growth the page
+        // cannot promise spills instead, and the head chunk it leaves keeps the footprint the insert reserved.
+        final boolean growthPromised = !growRebasable || !slotInsertedHere//
+                || !growthFitsFreeTail(page, lastRecordPositionInPage, recordPositionInPage, recordSize, isPlaceHolder, bufferSize)//
+                || reserveGrowthOfInsert(slotTx, page, getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage,
+                recordSize), growthAdditionalSpace(recordSize, isPlaceHolder, bufferSize));
         final boolean grown;
         try {
-          grown = growRecordInPage(page, recordCountInPage, recordPositionInPage, lastRecordPositionInPage, recordSize,
-                  isPlaceHolder, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+          grown = growthPromised && growRecordInPage(page, recordCountInPage, recordPositionInPage, lastRecordPositionInPage,
+                  recordSize, isPlaceHolder, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
         } finally {
           page.endCoveredWrite(growCoverage);
         }
@@ -5129,10 +5264,32 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   recordSize);
           final int slotFootprint = (int) (recordSize[0] + recordSize[1]);
           final int freeTailInPage = page.getMaxContentSize() - pageOccupiedInBytes;
+          // #11788: a record this transaction INSERTED into a page it shares and then grew past it, the shape of "insert
+          // the row, then set its large property" in one transaction. It has no committed pre-image, so it stays an
+          // insert, one whose final image is a chunk head: the replay writes that head into the same free slot of the
+          // newer committed page, at the end of its content, as it does for a plain record.
+          // A slot smaller than a chunk header takes the bytes it misses, from the tail or through the shift: more of the page
+          // than the insert claimed, so they are promised like a growth in place, or the spill is not replayable and the
+          // page is poisoned as it was before.
+          final boolean insertSpill = growRebasable && slotInsertedHere && (slotFootprint >= MINIMUM_SPACE_FOR_FIRST_CHUNK
+                  || reserveGrowthOfInsert(slotTx, page, pageOccupiedInBytes, MINIMUM_SPACE_FOR_FIRST_CHUNK - slotFootprint));
           int availableSpaceInCurrentPage = slotFootprint;
-          if (lastRecordPositionInPage == recordPositionInPage)
-            // SINCE IT'S THE LAST RECORD IN THE PAGE, GET ALSO THE REST OF THE SPACE AVAILABLE IN THE PAGE
-            availableSpaceInCurrentPage += freeTailInPage;
+          // what the head chunk is given that the free-space statistics already count as the slot's
+          int headChunkBytesOwned = slotFootprint;
+          if (lastRecordPositionInPage == recordPositionInPage) {
+            if (!insertSpill)
+              // SINCE IT'S THE LAST RECORD IN THE PAGE, GET ALSO THE REST OF THE SPACE AVAILABLE IN THE PAGE
+              availableSpaceInCurrentPage += freeTailInPage;
+            else if (slotFootprint < MINIMUM_SPACE_FOR_FIRST_CHUNK && MINIMUM_SPACE_FOR_FIRST_CHUNK - slotFootprint < freeTailInPage) {
+              // The head keeps the footprint the insert had, so the replay needs on the committed page exactly the room the
+              // insert would have needed there, whatever concurrent commits appended meanwhile: a head that took this
+              // page's tail would fit no page another transaction had written to, and the tail stays for other inserts.
+              // Only a slot too small for a chunk header takes the bytes it misses.
+              updatePageStatistics(page, freeTailInPage, slotFootprint - MINIMUM_SPACE_FOR_FIRST_CHUNK);
+              availableSpaceInCurrentPage = MINIMUM_SPACE_FOR_FIRST_CHUNK;
+              headChunkBytesOwned = MINIMUM_SPACE_FOR_FIRST_CHUNK;
+            }
+          }
 
           // #6149: the slot is too small to host a chunk header, which is the ONLY thing that still makes a record
           // spill into a placeholder - the pre-chunk mechanism, the one shape the disjoint-slot merge cannot replay
@@ -5231,7 +5388,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // chunks land on other pages, which writeMultiPageRecord poisons. Leaving this shape out was not a
             // one-off cost: a transaction whose spill loses the race retries and spills again, so on a contended page
             // the records that have to spill can starve instead of converging.
-            final boolean spillRebasable = growBaseBody != null && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
+            final boolean spillRebasable = (growBaseBody != null || insertSpill) && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
 
             if (slotEnlargement > 0) {
               // #6149: make the slot reach the chunk-header minimum. Declared under the same coverage as the head
@@ -5259,7 +5416,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // above returns first and has the caller delete and recreate it, which is where its chain is written.
             writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceInCurrentPage,
                     spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0,
-                    slotFootprint + Math.max(slotEnlargement, 0), false);
+                    headChunkBytesOwned + Math.max(slotEnlargement, 0), false);
 
             if (!spillRebasable) {
               if (slotMergeOn)
@@ -5267,14 +5424,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             } else if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
               // writeMultiPageRecord may have poisoned this very page meanwhile (a continuation chunk landed on it).
               final long[] chunkMarker = page.readNumberAndSize(recordPositionInPage);
-              final byte[] spillImage = chunkMarker[0] == FIRST_CHUNK ?
-                      readChunkImage(page, (int) (recordPositionInPage + chunkMarker[1])) :
-                      null;
-              if (spillImage != null)
-                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody, spillImage,
-                        TransactionContext.SLOT_KIND_RECORD_SPILLED_TO_CHUNK);
-              else
-                slotTx.poisonSlotRebasePage(fileId, pageId);
+              if (insertSpill) {
+                // #11788: still an insert, and as for every insert no image is kept: the replay reads the head back from
+                // this page (#10661)
+                if (chunkMarker[0] == FIRST_CHUNK)
+                  slotTx.trackRebasableInsertSpilledToChunk(fileId, pageId, positionInPage);
+                else
+                  slotTx.poisonSlotRebasePage(fileId, pageId);
+              } else {
+                final byte[] spillImage = chunkMarker[0] == FIRST_CHUNK ?
+                        readChunkImage(page, (int) (recordPositionInPage + chunkMarker[1])) :
+                        null;
+                if (spillImage != null)
+                  slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody, spillImage,
+                          TransactionContext.SLOT_KIND_RECORD_SPILLED_TO_CHUNK);
+                else
+                  slotTx.poisonSlotRebasePage(fileId, pageId);
+              }
             }
 
             if (LogManager.instance().isLoggable(this, Level.FINE))
@@ -7608,7 +7774,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
               true, pageToAvoid);
 
-      if (!pageAnalysis.createNewPage) {
+      // #11788: an existing page other transactions are inserting into is not this chain's to write on
+      if (!pageAnalysis.createNewPage && claimPageForChunks(pageAnalysis.page.pageId.getPageNumber(), database.getTransaction())) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
 
         if (nextPage.getVersion() != pageAnalysis.page.getVersion()) {
@@ -7979,7 +8146,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
                 true, headChunkPageToAvoid);
-        if (!pageAnalysis.createNewPage) {
+        // #11788: as in writeContinuationChunks, an existing page other transactions are inserting into is not this chain's
+        if (!pageAnalysis.createNewPage && claimPageForChunks(pageAnalysis.page.pageId.getPageNumber(), database.getTransaction())) {
           nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
 
           if (nextPage.getVersion() != pageAnalysis.page.getVersion()) {
@@ -9222,6 +9390,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         continue;
 
       if (pageId >= txVisiblePageHorizon || isNewPageOfAnotherTransaction(pageId, tx))
+        continue;
+
+      if (multiPageRecord && isReservedByAnotherTransaction(pageId, tx))
+        // #11788: a continuation chunk keeps off a page other transactions are inserting into (see claimPageForChunks),
+        // so the search goes on to a page it can have rather than ending on one it cannot
         continue;
 
       final int pageStats = snapPageStats[s];

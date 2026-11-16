@@ -204,7 +204,7 @@ class Issue9891TypeRenameHardeningTest {
       if (partial)
         break;
     }
-    ArcadeStateMachine.renameFiles(db, movedBeforeCrash);
+    SchemaEntryApplier.renameFiles(db, movedBeforeCrash);
     db.kill();
     db.close();
 

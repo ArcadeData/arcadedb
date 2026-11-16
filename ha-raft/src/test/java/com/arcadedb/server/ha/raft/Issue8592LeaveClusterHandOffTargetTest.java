@@ -40,7 +40,7 @@ import static org.mockito.Mockito.mock;
  * targeted transfer the whole 10 s budget. A targeted Ratis transfer to a peer that cannot win stays pending for its
  * whole timeout, and while it is pending the leader refuses every write (#8556).
  * <p>
- * The leave now goes through the shared hand-off: the peers {@link RaftHAServer#selectStepDownTargets} ranks, tried
+ * The leave now goes through the shared hand-off: the peers {@link StepDownTargets#selectStepDownTargets} ranks, tried
  * in order within one budget, and no bare step-down when none takes over - the removal demotes the leader itself.
  * <p>
  * The candidates are also screened for reachability ({@link RaftHAServer#handoffReachablePeers()}, issue #8556), so
