@@ -108,7 +108,8 @@ final class SchemaEntryApplier {
     // entries added - an index, which a transaction committed through this node meanwhile then left out of its pages, on every
     // node - until the replay reached them again. Its files, its renames and its document are already there, or superseded:
     // only its pages are applied, which their versions keep idempotent.
-    final boolean appliedBefore = sm.appliedIndexes.appliedByPreviousSession(decoded.databaseName(), entryIndex);
+    final boolean appliedBefore = sm.appliedIndexes.appliedByPreviousSession(decoded.databaseName(), entryIndex)
+        && !createsAFileTheCopyHoldsUnderAnotherName(db, decoded.filesToAdd());
     if (appliedBefore)
       HALog.log(sm, HALog.DETAILED,
           "Schema entry %d of database '%s' was applied by the previous session: keeping the schema and the files of the copy",
@@ -466,6 +467,24 @@ final class SchemaEntryApplier {
       HALog.log(sm, HALog.DETAILED,
           "[%s.applySchema] schema JSON parse failed for diagnostics: %s", dbName, e.getMessage());
     }
+  }
+
+  /**
+   * Whether {@code filesToAdd} names a file id the copy holds under another name (issue #11946). A replayed entry at or below the
+   * position the previous session reached is then not one that session applied to this copy: it is an entry of a previous
+   * incarnation of the database, dropped and created again since, and its pages name by file id files the current copy uses for
+   * others. Skipping its file creation and applying its pages would write them into those files whenever their versions line up,
+   * so such an entry takes the full apply, whose {@link ArcadeStateMachine#createNewFiles} refuses the id and sends the database
+   * to the quarantine and the resync, before any of its pages or its document is applied.
+   */
+  private static boolean createsAFileTheCopyHoldsUnderAnotherName(final DatabaseInternal db, final Map<Integer, String> filesToAdd) {
+    if (filesToAdd == null)
+      return false;
+    for (final Map.Entry<Integer, String> file : filesToAdd.entrySet())
+      if (db.getFileManager().existsFile(file.getKey()) && !db.getFileManager().getFile(file.getKey()).getFileName()
+          .equals(file.getValue()))
+        return true;
+    return false;
   }
 
   /**

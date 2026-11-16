@@ -23,6 +23,11 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ImmutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
@@ -36,12 +41,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11946: a node that restarts replays the Raft log from its snapshot marker, and the schema entries in that stretch carry
@@ -106,17 +113,31 @@ class Issue11946ReplayedSchemaEntryKeepsNewerSchemaTest {
   }
 
   /**
-   * The entry of a previous incarnation of the database names one of its own file ids, which the current copy uses for another
-   * file. It describes a copy that no longer exists: it is skipped rather than taken for a divergence of the current one.
+   * The entry of a previous incarnation of the database (dropped and created again since) names one of its own file ids, which
+   * the current copy uses for another file, and carries a page of it whose version lines up with the current file's. Taken for an
+   * entry the previous session applied to this copy, its pages would be written into that other file. It is refused as a
+   * divergence instead, before any page or document is applied, which quarantines the database and resyncs it.
    */
   @Test
-  void aReplayedEntryOfAPreviousIncarnationIsNotADivergence() {
+  void aReplayedEntryOfAPreviousIncarnationWritesNoPageIntoTheFileThatReusesItsId() throws Exception {
     final int indexFileId = ((TypeIndex) db.getSchema().getIndexByName(INDEX)).getIndexesOnBuckets()[0].getFileId();
-    final Map<Integer, String> previousIncarnationFile = Map.of(indexFileId, "T_0_1.2.262144.v1.umtidx");
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(indexFileId);
+    final PageId pageId = new PageId(db, indexFileId, 0);
+    final ImmutablePage before = db.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, false);
+    final long version = before.getVersion();
 
-    assertThatNoException().isThrownBy(() -> stateMachine().applySchemaEntry(
-        schemaEntry(documentBeforeTheIndex, previousIncarnationFile), 1_000L, false));
-    assertThat(db.getSchema().existsIndex(INDEX)).isTrue();
+    final byte[] page = walPage(indexFileId, (int) version + 1, before.getContentSize());
+    final RaftLogEntryCodec.DecodedEntry entry = RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry(DB,
+        documentBeforeTheIndex, Map.of(indexFileId, "T_0_1.2.262144.v1.umtidx"), Collections.emptyMap(), List.of(page),
+        List.of(Collections.emptyMap())));
+
+    assertThatThrownBy(() -> stateMachine().applySchemaEntry(entry, 1_000L, false))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("diverged");
+
+    assertThat(db.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, false).getVersion())
+        .as("version of the page of the file that reuses the id").isEqualTo(version);
+    assertThat(db.getSchema().existsIndex(INDEX)).as("the index the copy holds").isTrue();
   }
 
   /** An entry the previous session did not reach is applied as before. */
@@ -146,6 +167,24 @@ class Issue11946ReplayedSchemaEntryKeepsNewerSchemaTest {
   private RaftLogEntryCodec.DecodedEntry schemaEntry(final String document, final Map<Integer, String> filesToAdd) {
     return RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry(DB, document, filesToAdd, Collections.emptyMap(),
         Collections.emptyList(), Collections.emptyList()));
+  }
+
+  /** The wire layout {@code deserializeWalTransaction} reads: one 4-byte segment of page 0 of {@code fileId}. */
+  private static byte[] walPage(final int fileId, final int targetVersion, final int contentSize) {
+    final int deltaSize = 4;
+    final ByteBuffer buf = ByteBuffer.allocate(2 * Long.BYTES + 2 * Integer.BYTES + 6 * Integer.BYTES + deltaSize);
+    buf.putLong(1L);
+    buf.putLong(System.currentTimeMillis());
+    buf.putInt(1);
+    buf.putInt(6 * Integer.BYTES + deltaSize);
+    buf.putInt(fileId);
+    buf.putInt(0);                                         // pageNumber
+    buf.putInt(BasePage.PAGE_HEADER_SIZE);                 // changesFrom
+    buf.putInt(BasePage.PAGE_HEADER_SIZE + deltaSize - 1); // changesTo
+    buf.putInt(targetVersion);
+    buf.putInt(contentSize);
+    buf.put(new byte[] { 0x7F, 0x7F, 0x7F, 0x7F });
+    return buf.array();
   }
 
   private ArcadeStateMachine stateMachine() {
