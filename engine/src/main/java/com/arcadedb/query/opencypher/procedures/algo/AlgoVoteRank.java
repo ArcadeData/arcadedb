@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -94,99 +95,210 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
-    // Compute in-degree for each node (votes received)
-    final int[] inDegree = new int[n];
-    for (int i = 0; i < n; i++)
-      for (final int j : adjOut[i])
-        inDegree[j]++;
+    long entries = 0;
+    for (final int[] row : adjOut)
+      entries += row.length;
+    // ints: the voters of each node (offsets and ids), the affected list, the change stamps and the heap's nodes;
+    // doubles: the score and the ability of each node and the heap's scores; the elected flags
+    graph.memory().reserve(saturatingSum(saturatingProduct(saturatingSum(4L * n + 1, entries), INT_BYTES),
+            saturatingProduct(n, 3 * DOUBLE_BYTES + BOOLEAN_BYTES)),
+        "the vote-rank working set", n + " nodes, " + entries + " edge entries");
 
-    // voteScore[i] = initial votes = in-degree[i]
-    final double[] voteScore    = new double[n];
-    final double[] votingAbility = new double[n];
-    for (int i = 0; i < n; i++) {
-      voteScore[i]     = inDegree[i];
-      votingAbility[i] = 1.0;
-    }
+    final int[] electedOrder = elect(adjOut, Math.min(topK, n), guard);
 
-    final boolean[] elected = new boolean[n];
-    final int limit = Math.min(topK, n);
-    final int[] electedOrder = new int[limit];
-    int electedCount = 0;
-
-    while (electedCount < limit) {
-      // One election per round, each a full scan of the nodes plus a two-hop walk from the winner: O(topK x
-      // (V + E)), and topK defaults to "every node" (issue #6302).
-      guard.check();
-      // Find node with highest vote score among non-elected
-      int best = -1;
-      double bestScore = -1.0;
-      for (int i = 0; i < n; i++) {
-        if (!elected[i] && voteScore[i] > bestScore) {
-          bestScore = voteScore[i];
-          best = i;
-        }
-      }
-
-      if (best == -1 || bestScore <= 0.0)
-        break;
-
-      elected[best] = true;
-      electedOrder[electedCount++] = best;
-
-      // Reduce voting ability of out-neighbors of best by 1/degree(best)
-      final int deg = adjOut[best].length;
-      if (deg > 0) {
-        final double reduction = 1.0 / deg;
-        for (final int neighbor : adjOut[best]) {
-          if (!elected[neighbor]) {
-            votingAbility[neighbor] = Math.max(0.0, votingAbility[neighbor] - reduction);
-            // Recompute voteScore for neighbor's in-neighbors
-          }
-        }
-      }
-
-      // Recompute vote scores: for each node, score = sum of votingAbility of its in-neighbors
-      // (only update nodes affected by the change — their out-neighbors of the elected node)
-      for (final int neighbor : adjOut[best]) {
-        if (!elected[neighbor]) {
-          // neighbor's voteScore changes because votingAbility[neighbor] changed — but
-          // voteScore[v] = sum_{u in inNeighbors(v)} votingAbility[u]
-          // We need to find all nodes v that have neighbor as in-neighbor, i.e., adjOut[neighbor] contains v
-          // Actually voteScore[v] depends on votingAbility of those who vote FOR v.
-          // votingAbility[neighbor] changed → affects voteScore[w] for all w in adjOut[neighbor]
-          for (final int w : adjOut[neighbor]) {
-            if (!elected[w]) {
-              // Recompute from scratch for w
-              double sum = 0.0;
-              // We need in-neighbors of w; use adjIn
-              // Since we only have adjOut, rebuild from scratch for w
-              // This is O(n*E) in worst case; use IN adjacency list instead
-              // Mark for full recompute below
-            }
-          }
-        }
-      }
-
-      // Rebuild all vote scores from scratch using votingAbility (simpler, correct approach)
-      // voteScore[v] = sum_{u: u->v in edges} votingAbility[u]
-      for (int v = 0; v < n; v++)
-        voteScore[v] = 0.0;
-      for (int u = 0; u < n; u++) {
-        if (!elected[u]) {
-          for (final int v : adjOut[u])
-            if (!elected[v])
-              voteScore[v] += votingAbility[u];
-        }
-      }
-    }
-
-    final List<Result> results = new ArrayList<>(electedCount);
-    for (int i = 0; i < electedCount; i++) {
+    final List<Result> results = new ArrayList<>(electedOrder.length);
+    for (int i = 0; i < electedOrder.length; i++) {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(electedOrder[i]));
       r.setProperty("rank", i + 1);
       results.add(r);
     }
     return results.stream();
+  }
+
+  /**
+   * Runs the elections over the outgoing adjacency and returns the elected nodes in election order, at most
+   * {@code limit} of them. A node's score is the sum of the voting abilities of the nodes not elected yet that point at
+   * it; each round elects the node of highest score (the lowest index among equals) while that score is positive, and
+   * lowers the ability of each of its out-neighbours by {@code 1 / outDegree(elected)}, never below zero.
+   * <p>
+   * An election changes only the scores within two hops of the elected node (issue #12170): the out-neighbours lose its
+   * vote, and the out-neighbours of each out-neighbour whose ability dropped lose part of that one. Those scores alone
+   * are re-summed, and the next winner comes from a max-heap with lazy deletion (a score that changed is pushed again,
+   * an entry whose score is no longer current is dropped when it surfaces), instead of a full recompute and a scan of
+   * every node per round, which made the default call (every node electable) O(V x (V + E)).
+   * <p>
+   * A score is re-summed over its voters rather than patched by subtracting the change, and the voters are listed in
+   * ascending order, which is the order the full recompute added them in: every score is therefore bit for bit the one
+   * the full recompute produced, and so is every tie and every election. Patching would have let rounding pick a
+   * different winner between two equal scores.
+   */
+  static int[] elect(final int[][] adjOut, final int limit, final WorkGuard guard) {
+    final int n = adjOut.length;
+
+    // The voters of each node, in ascending order: a CSR built by walking the voters in ascending order
+    final int[] voterStart = new int[n + 1];
+    for (final int[] row : adjOut)
+      for (final int v : row)
+        voterStart[v + 1]++;
+    for (int i = 0; i < n; i++)
+      voterStart[i + 1] += voterStart[i];
+    final int[] voters = new int[voterStart[n]];
+    final int[] cursor = Arrays.copyOf(voterStart, n);
+    for (int u = 0; u < n; u++)
+      for (final int v : adjOut[u])
+        voters[cursor[v]++] = u;
+
+    final double[] score = new double[n];
+    final double[] ability = new double[n];
+    final ScoreHeap heap = new ScoreHeap(n);
+    for (int i = 0; i < n; i++) {
+      score[i] = voterStart[i + 1] - voterStart[i];
+      ability[i] = 1.0;
+      if (score[i] > 0.0)
+        heap.push(score[i], i);
+    }
+
+    final boolean[] elected = new boolean[n];
+    final int[] affectedStamp = new int[n];
+    final int[] affected = cursor; // reused: the cursors are spent
+    final int[] electedOrder = new int[limit];
+    int electedCount = 0;
+
+    while (electedCount < limit) {
+      guard.checkPeriodically(electedCount);
+
+      // The winner: the top entry whose score is still current. A node whose score fell to zero is never pushed, so an
+      // empty heap means no node left has a positive score
+      int best = -1;
+      while (heap.size() > 0) {
+        final int top = heap.topNode();
+        final double topScore = heap.topScore();
+        heap.pop();
+        if (!elected[top] && topScore == score[top]) {
+          best = top;
+          break;
+        }
+      }
+      if (best < 0)
+        break;
+
+      elected[best] = true;
+      electedOrder[electedCount++] = best;
+      final int stamp = electedCount; // never 0, the initial stamp
+      int affectedCount = 0;
+
+      // Its out-neighbours lose its vote
+      for (final int v : adjOut[best])
+        if (!elected[v] && affectedStamp[v] != stamp) {
+          affectedStamp[v] = stamp;
+          affected[affectedCount++] = v;
+        }
+
+      // Each out-neighbour votes less, once per edge from the elected node, and so do the scores it contributes to
+      final int degree = adjOut[best].length;
+      if (degree > 0) {
+        final double reduction = 1.0 / degree;
+        for (final int neighbor : adjOut[best]) {
+          if (elected[neighbor])
+            continue;
+          final double lowered = Math.max(0.0, ability[neighbor] - reduction);
+          if (lowered == ability[neighbor])
+            continue;
+          ability[neighbor] = lowered;
+          for (final int w : adjOut[neighbor])
+            if (!elected[w] && affectedStamp[w] != stamp) {
+              affectedStamp[w] = stamp;
+              affected[affectedCount++] = w;
+            }
+        }
+      }
+
+      for (int k = 0; k < affectedCount; k++) {
+        final int w = affected[k];
+        double sum = 0.0;
+        for (int p = voterStart[w]; p < voterStart[w + 1]; p++) {
+          final int u = voters[p];
+          if (!elected[u])
+            sum += ability[u];
+        }
+        if (sum != score[w]) {
+          score[w] = sum;
+          if (sum > 0.0)
+            heap.push(sum, w);
+        }
+      }
+    }
+    return electedCount == limit ? electedOrder : Arrays.copyOf(electedOrder, electedCount);
+  }
+
+  /** A binary max-heap of (score, node) entries in two primitive arrays: higher score first, lower node among equals. */
+  private static final class ScoreHeap {
+    private double[] scores;
+    private int[]    nodes;
+    private int      size;
+
+    ScoreHeap(final int capacity) {
+      scores = new double[Math.max(16, capacity)];
+      nodes = new int[scores.length];
+    }
+
+    int size() {
+      return size;
+    }
+
+    double topScore() {
+      return scores[0];
+    }
+
+    int topNode() {
+      return nodes[0];
+    }
+
+    private static boolean before(final double scoreA, final int nodeA, final double scoreB, final int nodeB) {
+      return scoreA > scoreB || (scoreA == scoreB && nodeA < nodeB);
+    }
+
+    void push(final double score, final int node) {
+      if (size == scores.length) {
+        final int grown = scores.length + (scores.length >> 1);
+        scores = Arrays.copyOf(scores, grown);
+        nodes = Arrays.copyOf(nodes, grown);
+      }
+      int i = size++;
+      while (i > 0) {
+        final int parent = (i - 1) >>> 1;
+        if (!before(score, node, scores[parent], nodes[parent]))
+          break;
+        scores[i] = scores[parent];
+        nodes[i] = nodes[parent];
+        i = parent;
+      }
+      scores[i] = score;
+      nodes[i] = node;
+    }
+
+    void pop() {
+      final int last = --size;
+      if (last == 0)
+        return;
+      final double score = scores[last];
+      final int node = nodes[last];
+      int i = 0;
+      while (true) {
+        int child = 2 * i + 1;
+        if (child >= last)
+          break;
+        if (child + 1 < last && before(scores[child + 1], nodes[child + 1], scores[child], nodes[child]))
+          child++;
+        if (!before(scores[child], nodes[child], score, node))
+          break;
+        scores[i] = scores[child];
+        nodes[i] = nodes[child];
+        i = child;
+      }
+      scores[i] = score;
+      nodes[i] = node;
+    }
   }
 }

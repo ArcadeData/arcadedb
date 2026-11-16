@@ -26,10 +26,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -37,8 +35,8 @@ import java.util.stream.Stream;
  * <p>
  * Performs agglomerative hierarchical clustering using graph-based single-linkage.
  * Starts with each node in its own cluster and repeatedly merges the two clusters
- * with the highest inter-cluster similarity (number of common neighbors / Jaccard).
- * Uses Union-Find for efficient cluster management.
+ * linked by the edge of highest similarity (the number of neighbours its two ends share, each end counted in its own
+ * neighbourhood). Uses Union-Find for efficient cluster management.
  * </p>
  * <p>
  * Example:
@@ -97,88 +95,178 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for Jaccard similarity: a nodeCount x nodeCount bit matrix, reserved before the
-    // first BitSet is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] neighborSets = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      neighborSets[i].set(i); // include self for union calculation
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
-    }
+    long entries = 0;
+    for (final int[] row : adj)
+      entries += row.length;
+    // ints: the forward adjacency (offsets, ids, triangle counts: half the entries each at most), the edge list (two
+    // ends, a similarity and a position in the merge order per edge: half the entries), the union-find and the result;
+    // the similarity histogram is at most one int per node
+    graph.memory().reserve(saturatingProduct(saturatingSum(saturatingProduct(entries, 3L), 6L * n + 2), INT_BYTES),
+        "the edge similarities", n + " nodes, " + entries + " edge entries");
 
-    // Union-Find
-    final int[] parent = new int[n];
-    final int[] rank = new int[n];
-    for (int i = 0; i < n; i++)
-      parent[i] = i;
-
-    int currentClusters = n;
-    final int targetClusters = Math.max(1, Math.min(numClusters, n));
-
-    // Agglomerative: repeatedly merge until we have targetClusters
-    while (currentClusters > targetClusters) {
-      // One merge per round and a full scan of the graph to choose it: O(V x (V + E)) bit-set intersections,
-      // sized by the graph and by a cluster target that defaults to 2 (issue #6302).
-      guard.check();
-      // Find the two nodes (representing different clusters) with highest similarity
-      // Similarity = common neighbors (Jaccard numerator) — use BitSet AND cardinality
-      int bestU = -1;
-      int bestV = -1;
-      int bestSim = -1;
-
-      for (int u = 0; u < n; u++) {
-        guard.checkPeriodically(u);
-        final int rootU = find(parent, u);
-        for (final int v : adj[u]) {
-          if (v <= u)
-            continue;
-          final int rootV = find(parent, v);
-          if (rootU == rootV)
-            continue;
-
-          // Jaccard similarity: |N(u) ∩ N(v)| / |N(u) ∪ N(v)|
-          final BitSet intersection = (BitSet) neighborSets[u].clone();
-          intersection.and(neighborSets[v]);
-          final int sim = intersection.cardinality();
-
-          if (sim > bestSim) {
-            bestSim = sim;
-            bestU = rootU;
-            bestV = rootV;
-          }
-        }
-      }
-
-      if (bestU < 0 || bestV < 0)
-        break; // no connected clusters to merge
-
-      union(parent, rank, bestU, bestV);
-      currentClusters--;
-    }
-
-    // Remap cluster IDs (find roots) to sequential IDs
-    final Map<Integer, Integer> clusterRemap = new HashMap<>();
-    int nextId = 0;
-    for (int i = 0; i < n; i++) {
-      final int root = find(parent, i);
-      if (!clusterRemap.containsKey(root))
-        clusterRemap.put(root, nextId++);
-    }
+    final int[] cluster = cluster(adj, Math.max(1, Math.min(numClusters, n)), guard);
 
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
-      r.setProperty("cluster", clusterRemap.get(find(parent, i)));
+      r.setProperty("cluster", cluster[i]);
       results.add(r);
     }
     return results.stream();
   }
 
-  private int find(final int[] parent, int x) {
+  /**
+   * Clusters the nodes of an undirected adjacency ({@code BOTH} rows) down to {@code targetClusters} clusters, or to the
+   * connected components when there are more of them, and returns the cluster of each node, numbered in order of first
+   * appearance. Each merge joins the two clusters linked by the edge of highest similarity, the similarity of an edge
+   * {@code (u, v)} being {@code |N(u) ∩ N(v)|} with each node counted in its own neighbourhood, so {@code 2 + } the
+   * triangles the edge closes. Among edges of equal similarity the first met by the scan "node by ascending index, then
+   * its row in order" wins.
+   * <p>
+   * The neighbourhoods never change while the clusters merge, so neither does any similarity, and merging along the
+   * best edge between two clusters one round at a time is Kruskal's algorithm over the edges in decreasing similarity,
+   * stopped at the target (issue #12171): an edge passed over because both its ends were in one cluster is never
+   * between two clusters again. Each similarity is therefore computed once, the edges are ordered by a stable counting
+   * sort (similarities are bounded by the node count), and the merges cost a union-find each, instead of a whole-graph
+   * scan per merge with an {@code n}-bit set cloned per edge and an {@code n x n} bit matrix behind it.
+   * <p>
+   * The triangles of every edge come from one pass of the forward algorithm over the simple graph (self-loops and
+   * repeated neighbours dropped), each node listing only its neighbours of higher (degree, index) rank: every triangle is
+   * met once, from its lowest-ranked node, and credited to its three edges. That is O(E^1.5) whatever the degrees, where
+   * a merge of the two full rows per edge is O(sum of degree²), which a supernode turns quadratic.
+   */
+  static int[] cluster(final int[][] adj, final int targetClusters, final WorkGuard guard) {
+    final int n = adj.length;
+
+    // Forward adjacency: the neighbours of higher rank, sorted, without duplicates. Every edge {u, v} with u != v sits in
+    // the forward row of exactly one of its ends
+    final int[] forwardStart = new int[n + 1];
+    for (int u = 0; u < n; u++)
+      for (final int v : adj[u])
+        if (v != u && ranksAbove(adj, v, u))
+          forwardStart[u + 1]++;
+    for (int u = 0; u < n; u++)
+      forwardStart[u + 1] += forwardStart[u];
+    final int[] forward = new int[forwardStart[n]];
+    for (int u = 0; u < n; u++) {
+      guard.checkPeriodically(u);
+      int p = forwardStart[u];
+      for (final int v : adj[u])
+        if (v != u && ranksAbove(adj, v, u))
+          forward[p++] = v;
+    }
+    // Sort each row and drop its repeated neighbours, compacting the rows towards the front (a row never moves right)
+    int write = 0;
+    for (int u = 0; u < n; u++) {
+      guard.checkPeriodically(u);
+      final int from = forwardStart[u];
+      final int to = forwardStart[u + 1];
+      forwardStart[u] = write;
+      Arrays.sort(forward, from, to);
+      int last = -1;
+      for (int p = from; p < to; p++)
+        if (forward[p] != last)
+          forward[write++] = last = forward[p];
+    }
+    forwardStart[n] = write;
+
+    // Triangles per forward edge: u lowest-ranked, v and w in its forward row, w also in v's
+    final int[] triangles = new int[write];
+    for (int u = 0; u < n; u++) {
+      guard.check(); // one node costs the forward rows of its forward neighbours
+      final int uEnd = forwardStart[u + 1];
+      for (int a = forwardStart[u]; a < uEnd; a++) {
+        final int v = forward[a];
+        int iu = forwardStart[u];
+        int iv = forwardStart[v];
+        final int vEnd = forwardStart[v + 1];
+        while (iu < uEnd && iv < vEnd) {
+          final int x = forward[iu];
+          final int y = forward[iv];
+          if (x < y)
+            iu++;
+          else if (x > y)
+            iv++;
+          else {
+            triangles[a]++;
+            triangles[iu++]++;
+            triangles[iv++]++;
+          }
+        }
+      }
+    }
+
+    // The edges in the order the scan meets them, with their similarities
+    int edgeCount = 0;
+    for (int u = 0; u < n; u++)
+      for (final int v : adj[u])
+        if (v > u)
+          edgeCount++;
+    final int[] edgeU = new int[edgeCount];
+    final int[] edgeV = new int[edgeCount];
+    final int[] similarity = new int[edgeCount];
+    int maxSimilarity = 0;
+    for (int u = 0, e = 0; u < n; u++) {
+      guard.checkPeriodically(u);
+      for (final int v : adj[u]) {
+        if (v <= u)
+          continue;
+        final int lower = ranksAbove(adj, v, u) ? u : v;
+        final int upper = lower == u ? v : u;
+        final int s = triangles[Arrays.binarySearch(forward, forwardStart[lower], forwardStart[lower + 1], upper)];
+        edgeU[e] = u;
+        edgeV[e] = v;
+        similarity[e++] = s;
+        maxSimilarity = Math.max(maxSimilarity, s);
+      }
+    }
+
+    // Stable counting sort by decreasing similarity, so equal similarities keep the scan order
+    final int[] bucket = new int[maxSimilarity + 2];
+    for (int e = 0; e < edgeCount; e++)
+      bucket[maxSimilarity - similarity[e] + 1]++;
+    for (int b = 1; b < bucket.length; b++)
+      bucket[b] += bucket[b - 1];
+    final int[] mergeOrder = new int[edgeCount];
+    for (int e = 0; e < edgeCount; e++)
+      mergeOrder[bucket[maxSimilarity - similarity[e]]++] = e;
+
+    // Kruskal, stopped at the target
+    final int[] parent = new int[n];
+    final int[] rank = new int[n];
+    for (int i = 0; i < n; i++)
+      parent[i] = i;
+    int clusters = n;
+    for (int k = 0; k < edgeCount && clusters > targetClusters; k++) {
+      guard.checkPeriodically(k);
+      final int e = mergeOrder[k];
+      if (union(parent, rank, edgeU[e], edgeV[e]))
+        clusters--;
+    }
+
+    // Number the clusters in order of first appearance
+    final int[] clusterOfRoot = new int[n];
+    Arrays.fill(clusterOfRoot, -1);
+    final int[] cluster = new int[n];
+    int nextId = 0;
+    for (int i = 0; i < n; i++) {
+      final int root = find(parent, i);
+      if (clusterOfRoot[root] < 0)
+        clusterOfRoot[root] = nextId++;
+      cluster[i] = clusterOfRoot[root];
+    }
+    return cluster;
+  }
+
+  /** Whether {@code v} ranks above {@code u}: higher degree, or the same degree and a higher index. */
+  private static boolean ranksAbove(final int[][] adj, final int v, final int u) {
+    final int dv = adj[v].length;
+    final int du = adj[u].length;
+    return dv > du || (dv == du && v > u);
+  }
+
+  private static int find(final int[] parent, int x) {
     while (parent[x] != x) {
       parent[x] = parent[parent[x]]; // path compression (halving)
       x = parent[x];
@@ -186,11 +274,12 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     return x;
   }
 
-  private void union(final int[] parent, final int[] rank, final int a, final int b) {
+  /** Joins the clusters of {@code a} and {@code b}, answering false when they were one already. */
+  private static boolean union(final int[] parent, final int[] rank, final int a, final int b) {
     final int ra = find(parent, a);
     final int rb = find(parent, b);
     if (ra == rb)
-      return;
+      return false;
     if (rank[ra] < rank[rb])
       parent[ra] = rb;
     else if (rank[ra] > rank[rb])
@@ -199,5 +288,6 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       parent[rb] = ra;
       rank[ra]++;
     }
+    return true;
   }
 }

@@ -676,7 +676,8 @@ class AlgoMemoryBudgetTest {
    * the {@code O(n²/64)} build ahead of them did not.
    * <p>
    * {@code algo.triangleCount} was the fifth, and no longer builds one at all: since issue #10203 it intersects
-   * sorted neighbour sets, so its working memory is the adjacency it already prices.
+   * sorted neighbour sets, so its working memory is the adjacency it already prices. {@code algo.hierarchicalClustering}
+   * followed with issue #12171: its working set is linear in the edges, and it prices that instead.
    */
   @Nested
   class BitsetMatrixBudget {
@@ -723,12 +724,11 @@ class AlgoMemoryBudgetTest {
       }
     }
 
-    /** The four procedures, each with a call that reaches its bit matrix. */
+    /** The procedures that still build one, each with a call that reaches its bit matrix. */
     private static final String[][] CALLS = {
         { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
         { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
-        { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
-        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
+        { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" } };
 
     @Test
     void everyBitsetMatrixIsRefusedWhenItDoesNotFitTheBudget() {
@@ -751,6 +751,22 @@ class AlgoMemoryBudgetTest {
           BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
 
       assertThat(drain("CALL algo.triangleCount() YIELD node RETURN node")).hasSize(4);
+    }
+
+    @Test
+    void hierarchicalClusteringPricesItsEdgeSimilaritiesInsteadOfAMatrix() {
+      // Kruskal over similarities computed once holds a few ints per edge entry and per node, and no bit matrix at all
+      // (issue #12171): the refusal names that working set, sized by the edges
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+          BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
+
+      assertThatThrownBy(() -> drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node"))
+          .hasStackTraceContaining("algo.hierarchicalClustering(): the edge similarities")
+          .hasStackTraceContaining("(4 nodes, 10 edge entries)")
+          .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+      assertThat(drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node")).hasSize(4);
     }
 
     @Test
