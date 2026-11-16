@@ -20,47 +20,46 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexReplayConclusion;
+import com.arcadedb.utility.IntHashSet;
+import io.github.jbellis.jvector.vector.types.VectorFloat;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 
 /**
- * What one transaction's commit replay published into an {@link LSMVectorIndex}'s process-wide in-memory state, so
- * that a rollback can take it back (issue #7931).
+ * What one transaction's commit replay did to an {@link LSMVectorIndex}, and what it holds back from other readers until
+ * the commit concludes (issues #7931 and #11962).
  * <p>
- * This is a RECORD, not behaviour: {@link LSMVectorIndex#undoReplay(VectorIndexReplayUndo)} owns the reversal,
- * because reversing it needs the index's write lock and its private fields. The journal is filled in by the three
- * replay entry points ({@code put}, {@code putBatch} and {@code remove}) as they go.
+ * This is a RECORD, not behaviour: {@link LSMVectorIndex#publishReplay(VectorIndexReplayUndo)} owns the publication and
+ * {@link LSMVectorIndex#undoReplay(VectorIndexReplayUndo)} the reversal, because both need the index's write lock and its
+ * private fields. The journal is filled in by the three replay entry points ({@code put}, {@code putBatch} and
+ * {@code remove}) as they go.
  * <p>
- * <b>Why this index publishes eagerly.</b> It is the EAGER half of {@link IndexReplayConclusion} - it writes during
- * the replay and takes it back on abort, so it leaves {@code publishIndexReplay()} at its default no-op. Deferring
- * the way {@code LSMSparseVectorIndex} does (issue #7933) is not open to it: the replay allocates vector ids and
- * writes them ONTO the transaction's own index pages, so the allocation has to be decided while those pages are
- * being written, not after. The eager shape is workable here because everything it publishes stays reachable: the
- * in-memory state is reversible field by field, and the one way it can be republished from under the journal - a
- * concurrent compaction or rebuild - is answered by judging each tombstone against the generation in force at undo
- * time (see {@link #locationsAtReplay}). The
- * sparse memtable has no such handle: once a flush has sealed it into a {@code .sparseseg} file, the posting is on
- * disk and no in-memory compensation can reach it.
+ * <b>What the replay does and what it holds back.</b> The replay allocates vector ids and writes them ONTO the
+ * transaction's own index pages, so the allocation has to be decided while those pages are being written, not after: the
+ * ids, the page entries, the mutation counter and the graph state are the replay's. What other readers see of a vector -
+ * its location in the location index and its entry in the delta buffer, and the tombstone of a vector a REMOVE retires -
+ * is held here and published by {@link #publishIndexReplay()} once the transaction's pages are (issue #11962). Published
+ * at replay, as it used to be, a search in the window - the whole quorum round trip on a Raft leader - answered the RID of
+ * a record nobody could read yet, or of one whose commit was then refused, and missed a record an update had already
+ * retired the committed vector of; and the rollback had to take each of those back from under whatever a rebuild had
+ * republished meanwhile (issue #7931). The sparse index holds its postings back the same way (issue #7933).
  * <p>
- * <b>Why it is recorded rather than derived.</b> Issue #7931 suggested rebuilding the compensation set from the
- * transaction's own queued index operations. That is not enough: a queued REMOVE carries only a RID and a dummy
- * key, and the vector ids it tombstoned were resolved from the location index AT REPLAY TIME - and then released
- * by the very tombstone, so they can no longer be read back from it afterwards. Nor do the queued operations say
- * which ids the replay allocated, or which delta entries it dropped. Recording as we go is the only way the set is
- * exact, and it also costs nothing on the paths that never abort.
+ * <b>Why it is recorded rather than derived.</b> A queued REMOVE carries only a RID, and the vector ids it retires are
+ * resolved from the location index AT REPLAY TIME, which the queued operations cannot say afterwards; nor do they say
+ * which ids the replay allocated or where it wrote them. Recording as we go is the only way the set is exact.
  * <p>
  * <b>Why nothing here is synchronized.</b> Not because a transaction is strictly thread-confined - the split
  * commit of issue #6965 concludes the 2nd phase on the Raft apply thread ({@code RaftReplicatedDatabase} calls
- * {@code completeCommit()} / {@code concludeFailedPhase2()} there), and the latter can reach {@code rollback()}
- * when the publish failed before the WAL append. It is because the journal is never touched by two threads at
- * once and the handoff that gives the apply thread this transaction carries the happens-before edge for
- * everything the replay wrote: the originating thread is parked on the acknowledgement while that thread works.
+ * {@code completeCommit()} / {@code concludeFailedPhase2()} there), and either conclusion can run there. It is because
+ * the journal is never touched by two threads at once and the handoff that gives the apply thread this transaction
+ * carries the happens-before edge for everything the replay wrote: the originating thread is parked on the
+ * acknowledgement while that thread works.
  * <p>
- * The reversal additionally runs while the transaction still holds the index file's commit lock, which is what
- * keeps a concurrent TRANSACTION from having moved the same ids meanwhile. A compaction or a rebuild is not
- * covered by that lock: see {@link #locationsAtReplay}.
+ * Both conclusions run while the transaction still holds the index file's commit lock, which is what keeps a concurrent
+ * transaction - and a compaction, which takes the same lock - from having moved the same ids meanwhile. A full rebuild is
+ * not covered by that lock and can republish the locations in between: the publication is applied to the generation in
+ * force when it runs, and a rebuild that read the pages before them carries it over (see
+ * {@code LSMVectorIndex.publishLocationIndex}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -68,23 +67,23 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   private final LSMVectorIndex index;
 
   // Primitive arrays rather than lists of boxes: a bulk load replays thousands of operations per transaction, and
-  // this has to stay off the garbage collector's back on the path that DOES commit, where the journal is simply
-  // dropped at the end.
-  int[] allocatedIds = null;
-  int   allocatedCount;
+  // this has to stay off the garbage collector's back on the path that DOES commit.
+  /** The vectors this replay added: published as one location and one delta entry each when the commit stands. */
+  int[]            addedIds     = null;
+  RID[]            addedRids    = null;
+  long[]           addedOffsets = null;
+  VectorFloat<?>[] addedVectors = null;
+  int              addedCount;
 
-  int[]  tombstonedIds           = null;
-  long[] tombstonedOffsetAndFlag = null;
-  RID[]  tombstonedRids          = null;
-  int    tombstonedCount;
+  /** The vectors this replay's REMOVEs retire: tombstoned, and dropped from the delta buffer, when the commit stands. */
+  int[]      retiredIds  = null;
+  RID[]      retiredRids = null;
+  int        retiredCount;
   /**
-   * The tombstones recorded before the last {@link #rebaseTo}. A renumbering compaction reuses id numbers, so only the
-   * ones recorded since are on the id space the allocations below come from.
+   * The same ids, for the membership test a REMOVE replayed twice for one RID asks: the ordered lane can replay it twice when a
+   * same-transaction rewrite collapses into one queued key, and the location still calls the id live until the publication.
    */
-  int    tombstonedAtRebase;
-
-  /** The delta-buffer entries this replay's deletes dropped, which have to go back in. Null until one is dropped. */
-  List<LSMVectorIndex.DeltaVectorEntry> droppedDeltaEntries = null;
+  IntHashSet retiredSet  = null;
 
   /** What this replay added to {@code mutationsSinceSerialize}. */
   int mutationsCharged;
@@ -96,80 +95,58 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   LSMVectorIndex.GraphState graphStateFlippedFrom = null;
 
   /**
-   * The location index the replay last wrote to. A compaction or a rebuild republishes {@code residentLocations}
-   * wholesale: a compaction from the committed pages alone, so it holds none of this transaction's tombstones and the
-   * offsets recorded here address the file it replaced; a full rebuild carries the tombstones over and reads the same
-   * file (issue #11099). The undo therefore judges each tombstone by whether the current generation still holds it, and
-   * this identity only scopes the disjointness assertion there.
-   * <p>
-   * NOT final, and re-anchored by {@link #rebaseTo}: one transaction's replay is not one locked section.
-   * {@code put} and {@code remove} take and release the index write lock per call, so a rebuild can republish
-   * BETWEEN two operations of the same replay, leaving one journal describing two different instances.
+   * Set by the one conclusion this journal answers. A second one would publish or refund a second time - silently, since
+   * neither is idempotent - so it is refused loudly instead. The throw is safe: {@code TransactionContext} catches it and
+   * logs, precisely so a failure here cannot stop the commit or the rollback from releasing its file locks.
    */
-  VectorLocationIndex locationsAtReplay;
+  private boolean concluded;
 
-  /**
-   * Set by the one call {@link #undoIndexReplay()} answers. A second call would refund every counter a second
-   * time - silently, since none of the refunds is idempotent - so it is refused loudly instead. The throw is
-   * safe: {@code TransactionContext.undoIndexReplay()} catches it and logs, precisely so a failure here cannot
-   * stop the rollback from releasing its file locks.
-   */
-  private boolean undone;
-
-  VectorIndexReplayUndo(final LSMVectorIndex index, final VectorLocationIndex locationsAtReplay) {
+  VectorIndexReplayUndo(final LSMVectorIndex index) {
     this.index = index;
-    this.locationsAtReplay = locationsAtReplay;
   }
 
   /**
-   * Re-anchors the journal after the index republished its locations mid-replay. Nothing is discarded: a full rebuild
-   * carries the replay's tombstones into the generation it publishes (issue #11099), so they still have to be lifted on
-   * abort, and {@link LSMVectorIndex#undoReplay} decides that per id, against the generation in force at undo time,
-   * lifting a tombstone only where that generation still holds it. A compaction publishes none, which is how the offsets
-   * its rewrite invalidated are never replayed.
+   * A vector this replay added: the id it allocated, the record, the absolute file offset of the page entry it wrote, and
+   * the vector the delta scan scores until a rebuild takes it into the graph.
    */
-  void rebaseTo(final VectorLocationIndex current) {
-    locationsAtReplay = current;
-    tombstonedAtRebase = tombstonedCount;
-  }
-
-  /** An id this replay allocated: its location, its delta entry and its mutation have to go away on abort. */
-  void recordAllocated(final int id) {
-    if (allocatedIds == null)
-      allocatedIds = new int[8];
-    else if (allocatedCount == allocatedIds.length)
-      allocatedIds = Arrays.copyOf(allocatedIds, allocatedCount * 2);
-    allocatedIds[allocatedCount++] = id;
-  }
-
-  /**
-   * An id this replay tombstoned, together with the location it held. Both are needed: {@code markDeleted} releases
-   * the location, so un-tombstoning has to put the exact offset back rather than leave the id live-but-unaddressed.
-   *
-   * @param id             the tombstoned vector id
-   * @param offsetAndFlag  its packed location, read BEFORE the tombstone released it
-   * @param rid            the record it pointed at
-   */
-  void recordTombstoned(final int id, final long offsetAndFlag, final RID rid) {
-    if (tombstonedIds == null) {
-      tombstonedIds = new int[8];
-      tombstonedOffsetAndFlag = new long[8];
-      tombstonedRids = new RID[8];
-    } else if (tombstonedCount == tombstonedIds.length) {
-      tombstonedIds = Arrays.copyOf(tombstonedIds, tombstonedCount * 2);
-      tombstonedOffsetAndFlag = Arrays.copyOf(tombstonedOffsetAndFlag, tombstonedCount * 2);
-      tombstonedRids = Arrays.copyOf(tombstonedRids, tombstonedCount * 2);
+  void recordAdded(final int id, final RID rid, final long offset, final VectorFloat<?> vector) {
+    if (addedIds == null) {
+      addedIds = new int[8];
+      addedRids = new RID[8];
+      addedOffsets = new long[8];
+      addedVectors = new VectorFloat<?>[8];
+    } else if (addedCount == addedIds.length) {
+      addedIds = Arrays.copyOf(addedIds, addedCount * 2);
+      addedRids = Arrays.copyOf(addedRids, addedCount * 2);
+      addedOffsets = Arrays.copyOf(addedOffsets, addedCount * 2);
+      addedVectors = Arrays.copyOf(addedVectors, addedCount * 2);
     }
-    tombstonedIds[tombstonedCount] = id;
-    tombstonedOffsetAndFlag[tombstonedCount] = offsetAndFlag;
-    tombstonedRids[tombstonedCount] = rid;
-    ++tombstonedCount;
+    addedIds[addedCount] = id;
+    addedRids[addedCount] = rid;
+    addedOffsets[addedCount] = offset;
+    addedVectors[addedCount] = vector;
+    ++addedCount;
   }
 
-  void recordDroppedDelta(final LSMVectorIndex.DeltaVectorEntry entry) {
-    if (droppedDeltaEntries == null)
-      droppedDeltaEntries = new ArrayList<>();
-    droppedDeltaEntries.add(entry);
+  /** Whether a REMOVE of this replay already retired {@code id}. */
+  boolean retires(final int id) {
+    return retiredSet != null && retiredSet.contains(id);
+  }
+
+  /** A vector this replay's REMOVE retires, and the record it belonged to when the replay resolved it. */
+  void recordRetired(final int id, final RID rid) {
+    if (retiredIds == null) {
+      retiredIds = new int[8];
+      retiredRids = new RID[8];
+      retiredSet = new IntHashSet(16);
+    } else if (retiredCount == retiredIds.length) {
+      retiredIds = Arrays.copyOf(retiredIds, retiredCount * 2);
+      retiredRids = Arrays.copyOf(retiredRids, retiredCount * 2);
+    }
+    retiredIds[retiredCount] = id;
+    retiredRids[retiredCount] = rid;
+    ++retiredCount;
+    retiredSet.add(id);
   }
 
   /** Only the FIRST flip is recorded: that is the state the index was in before this transaction touched it. */
@@ -178,13 +155,24 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
       graphStateFlippedFrom = previous;
   }
 
+  /** The transaction's changes stand: what the replay held back becomes visible to every reader. */
+  @Override
+  public void publishIndexReplay() {
+    conclude("published");
+    index.publishReplay(this);
+  }
+
+  /** The transaction rolled back: what it held back is dropped, and what the replay charged the index is refunded. */
   @Override
   public void undoIndexReplay() {
-    if (undone)
-      throw new IllegalStateException(
-          "the replay compensation for index '" + index.getName() + "' was already applied; applying it twice "
-              + "would refund its counters twice");
-    undone = true;
+    conclude("undone");
     index.undoReplay(this);
+  }
+
+  private void conclude(final String how) {
+    if (concluded)
+      throw new IllegalStateException("the replay of index '" + index.getName() + "' was already concluded; it cannot be "
+          + how + " a second time");
+    concluded = true;
   }
 }

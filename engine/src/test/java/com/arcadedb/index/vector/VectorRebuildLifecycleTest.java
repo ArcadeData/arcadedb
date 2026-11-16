@@ -833,7 +833,7 @@ class VectorRebuildLifecycleTest {
       assertThat(stat("graphState")).as("precondition: a write promoted the state")
           .isEqualTo(LSMVectorIndex.GraphState.MUTABLE.ordinal());
 
-      final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index, null);
+      final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index);
       undo.recordGraphFlip(LSMVectorIndex.GraphState.LOADING);
       undo.mutationsCharged = Integer.MAX_VALUE; // floored at zero by the refund: nothing left pending
       index.undoReplay(undo);
