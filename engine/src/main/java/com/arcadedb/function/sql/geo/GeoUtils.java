@@ -38,6 +38,7 @@ import org.locationtech.spatial4j.shape.Circle;
 import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
+import org.locationtech.spatial4j.shape.SpatialRelation;
 import org.locationtech.spatial4j.shape.jts.JtsGeometry;
 import org.locationtech.spatial4j.shape.jts.JtsShapeFactory;
 
@@ -198,6 +199,53 @@ public class GeoUtils {
           e.getMessage());
       return null;
     }
+  }
+
+  /**
+   * Whether {@code a} covers {@code b}: every point of {@code b} is a point of {@code a}, so a shape contains itself, as
+   * OGC {@code ST_Contains}, JTS and PostGIS answer. The relation {@code geo.contains} answers; {@link #within} is its
+   * converse.
+   * <p>
+   * Spatial4j's {@code relate} returns a single relation, in which CONTAINS and WITHIN are OGC's covers and covered-by.
+   * For two equal shapes it answers one of the two, which one depending on the kinds of shape and their order (CONTAINS
+   * for a polygon against itself, WITHIN for a box read as a rectangle against the same box written with an extra vertex),
+   * and INTERSECTS for two equal points. Reading CONTAINS alone, and WITHIN alone for {@code geo.within}, left a shape out of
+   * itself, and an indexed {@code geo.within(coords, <shape>)} missed the record holding that very shape (issue #12271).
+   */
+  public static boolean contains(final Shape a, final Shape b) {
+    final SpatialRelation relation = a.relate(b);
+    if (relation == SpatialRelation.CONTAINS)
+      return true;
+    return relation == SpatialRelation.WITHIN ? sameSet(a, b) : equalPoints(relation, a, b);
+  }
+
+  /**
+   * Whether {@code a} lies inside {@code b}: {@code within(a, b) == contains(b, a)}, so a shape is within itself. The
+   * relation {@code geo.within} and the {@code isWithin()} method answer.
+   */
+  public static boolean within(final Shape a, final Shape b) {
+    final SpatialRelation relation = a.relate(b);
+    if (relation == SpatialRelation.WITHIN)
+      return true;
+    return relation == SpatialRelation.CONTAINS ? sameSet(a, b) : equalPoints(relation, a, b);
+  }
+
+  /** Spatial4j answers INTERSECTS for two points that are equal, DISJOINT otherwise. */
+  private static boolean equalPoints(final SpatialRelation relation, final Shape a, final Shape b) {
+    return relation == SpatialRelation.INTERSECTS && a instanceof Point && b instanceof Point;
+  }
+
+  /**
+   * Whether two shapes, one of which covers the other, are the same set of points. A circle is compared as written, the
+   * polygon JTS would make of it being an approximation.
+   */
+  private static boolean sameSet(final Shape a, final Shape b) {
+    if (a.equals(b))
+      return true;
+    if (a instanceof Circle || b instanceof Circle)
+      return false;
+    final JtsShapeFactory shapeFactory = SPATIAL_CONTEXT.getShapeFactory();
+    return shapeFactory.getGeometryFrom(a).equalsTopo(shapeFactory.getGeometryFrom(b));
   }
 
   /**
