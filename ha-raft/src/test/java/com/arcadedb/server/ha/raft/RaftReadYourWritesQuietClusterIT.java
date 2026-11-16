@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -46,8 +47,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("slow")
 class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
-  private static final String   TYPE_NAME    = "QuietRyw";
-  private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(60);
+  private static final String   TYPE_NAME             = "QuietRyw";
+  private static final Duration HTTP_TIMEOUT          = Duration.ofSeconds(60);
+  private static final int      ELECTION_TIMEOUT_MIN  = 10_000;
+  // Ratis sends a heartbeat every half of the minimum election timeout
+  private static final long     HEARTBEAT_INTERVAL_MS = ELECTION_TIMEOUT_MIN / 2;
 
   @Override
   protected boolean persistentRaftStorage() {
@@ -58,8 +62,8 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
     config.setValue(GlobalConfiguration.HA_QUORUM, "majority");
-    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN, 10_000);
-    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX, 12_000);
+    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MIN);
+    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX, ELECTION_TIMEOUT_MIN + 2_000);
   }
 
   @Override
@@ -90,13 +94,14 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
     final HttpResponse<String> leaderRead = post(leaderIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME, null);
     final String bookmark = leaderRead.headers().firstValue("X-ArcadeDB-Commit-Index").orElseThrow();
 
-    final long start = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     final HttpResponse<String> read = post(followerIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME + " WHERE k = 1", bookmark);
-    final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
     assertThat(read.statusCode()).isEqualTo(200);
     assertThat(new JSONObject(read.body()).getJSONArray("result").length()).as("the read must see the write").isEqualTo(1);
-    assertThat(elapsedMs).as("a read_your_writes read waited %d ms for bookmark %s", elapsedMs, bookmark).isLessThan(2_000L);
+    stopwatch.assertGaveUpWithin(HEARTBEAT_INTERVAL_MS / 2,
+        "a read_your_writes read released by the write it waits for, rather than one waiting for the next heartbeat to bring "
+            + "the metadata entry after the write (bookmark " + bookmark + ")");
   }
 
   private HttpResponse<String> post(final int serverIndex, final String path, final String sql, final String readAfter)
@@ -110,6 +115,8 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("language", "sql").put("command", sql).toString()));
     if (readAfter != null)
       request.header("X-ArcadeDB-Read-Consistency", "read_your_writes").header("X-ArcadeDB-Read-After", readAfter);
-    return HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build().send(request.build(), HttpResponse.BodyHandlers.ofString());
+    try (final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build()) {
+      return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    }
   }
 }

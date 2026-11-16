@@ -69,8 +69,9 @@ public interface HAReplicatedDatabase {
   }
 
   /**
-   * Returns the last applied Raft index, or -1 if not available.
-   * Used to set the commit index bookmark header in write responses.
+   * Returns the read-your-writes bookmark this node answers a request with, or -1 if not available: the index of the last
+   * entry its state machine applied, which leaves out the metadata entries the replication layer appends on its own (issue
+   * #11742). Used to set the commit index bookmark header in responses.
    */
   default long getLastAppliedIndex() {
     return -1;
