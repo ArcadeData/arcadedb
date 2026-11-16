@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -30,6 +32,7 @@ import com.arcadedb.schema.VertexType;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -232,25 +235,22 @@ public class GraphAnalyticalViewRegistry {
    * hold vertices, edges or edge lists. Telling a view costs a counter increment on the applying thread: the view reports STALE
    * from then on and rebuilds when a query asks for it (see {@link GraphAnalyticalView#onReplicatedCommit()}).
    * <p>
-   * Called after the pages are written. A view registered after the read of the registry below is built by a scan that starts
+   * The views are those the query planner can serve, named or built without a name: the traversal provider registry holds both,
+   * where this registry holds only the named ones.
+   * <p>
+   * Called after the pages are written. A view registered after the read of the providers below is built by a scan that starts
    * after its registration, so it reads them.
    */
   public static void onTransactionApplied(final Database database, final WALFile.WALTransaction tx) {
-    final Database unwrapped = unwrap(database);
-    // Without the lock first: a database with no view, the common case, costs one lookup
-    if (!REGISTRY.containsKey(unwrapped))
+    // A single volatile read when no database has a view, the common case
+    if (!GraphTraversalProviderRegistry.hasAnyProviders())
       return;
-    final GraphAnalyticalView[] views;
-    synchronized (REGISTRY) {
-      final HashMap<String, GraphAnalyticalView> registered = REGISTRY.get(unwrapped);
-      if (registered == null || registered.isEmpty())
-        return;
-      views = registered.values().toArray(new GraphAnalyticalView[0]);
-    }
-    if (!writesGraphBuckets(database.getSchema(), tx))
+    final List<GraphTraversalProvider> providers = GraphTraversalProviderRegistry.getProviders(database);
+    if (providers.isEmpty() || !writesGraphBuckets(database.getSchema(), tx))
       return;
-    for (final GraphAnalyticalView view : views)
-      view.onReplicatedCommit();
+    for (final GraphTraversalProvider provider : providers)
+      if (provider instanceof GraphAnalyticalView view)
+        view.onReplicatedCommit();
   }
 
   /**

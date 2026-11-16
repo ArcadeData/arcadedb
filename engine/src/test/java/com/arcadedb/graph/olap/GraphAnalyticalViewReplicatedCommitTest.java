@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -106,6 +107,64 @@ class GraphAnalyticalViewReplicatedCommitTest extends TestHelper {
     assertThat(reopened.awaitReady(60, TimeUnit.SECONDS)).isTrue();
     assertThat(reopened.isRestoredFromPersistedCsr()).isFalse();
     assertThat(reopened.getEdgeCount()).isEqualTo(10);
+  }
+
+  /** Review on #12258: the CSR an earlier close persisted would pass its certificate again at the next open. */
+  @Test
+  void aPersistedCsrIsDroppedByTheFirstReplicatedCommit() {
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g UPDATE MODE SYNCHRONOUS");
+    assertThat(GraphAnalyticalViewRegistry.get(database, "g").awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    reopenDatabase();
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "g").isFile()).as("persisted by the close").isTrue();
+
+    GraphAnalyticalViewRegistry.onTransactionApplied(database, entryWriting(bucketOf("V")));
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "g").isFile()).as("dropped by the replicated commit").isFalse();
+
+    for (int open = 0; open < 2; open++) {
+      reopenDatabase();
+      final GraphAnalyticalView reopened = GraphAnalyticalViewRegistry.get(database, "g");
+      assertThat(reopened.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(reopened.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+      assertThat(reopened.getEdgeCount()).isEqualTo(10);
+    }
+  }
+
+  /** Review on #12258: a view the builder made without a name serves queries too, and must hear of the commit as well. */
+  @Test
+  void anUnnamedViewHearsOfAReplicatedCommit() {
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    try {
+      assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+      GraphAnalyticalViewRegistry.onTransactionApplied(database, entryWriting(bucketOf("E")));
+      assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    } finally {
+      view.drop();
+    }
+  }
+
+  /**
+   * Review on #12258: a build that scans in the caller's REPEATABLE_READ transaction may read pages that transaction holds from
+   * before a replicated commit, so it does not report the view current once one was counted; a query then rebuilds it.
+   */
+  @Test
+  void aBuildInARepeatableReadTransactionDoesNotVouchForReplicatedCommits() {
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g UPDATE MODE SYNCHRONOUS");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g");
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    GraphAnalyticalViewRegistry.onTransactionApplied(database, entryWriting(bucketOf("V")));
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      view.build();
+      assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    } finally {
+      database.rollback();
+    }
+
+    assertThat(edges()).isEqualTo(10);
+    Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+        .until(() -> view.getStatus() == GraphAnalyticalView.Status.READY);
   }
 
   @Test

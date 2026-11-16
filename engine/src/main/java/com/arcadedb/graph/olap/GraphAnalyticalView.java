@@ -602,8 +602,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // transaction already cached, treat the certificate as unusable whenever that risk exists at all, rather
     // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
     // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
-    final boolean certificateMayBeUnsound = database.isTransactionActive()
-        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    // The level of the transaction the scan runs in, which begin(level) can set apart from the database's default
+    // (review on #12258)
+    final boolean certificateMayBeUnsound = database.isTransactionActive() && ((DatabaseInternal) database).getTransaction()
+        .getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
 
     // The scan runs on the calling thread but OUTSIDE this instance's monitor, exactly as buildAsync()'s runs on its
     // worker: holding the monitor for a scan as long as the graph is big stalled every commit callback, status wait
@@ -638,8 +640,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     try {
       final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
-      // Before the scan, like the certificate: a replicated commit counted after this point may be missing from what it reads
-      final long replicatedMark = replicatedCommits.get();
+      // Before the scan, like the certificate: a replicated commit counted after this point may be missing from what it
+      // reads. A scan in the caller's REPEATABLE_READ transaction may read pages that transaction holds from before a
+      // commit counted already, so it vouches for none once one was counted: the view then reports STALE, and the next
+      // query rebuilds it in a fresh transaction
+      final long replicated = replicatedCommits.get();
+      final long replicatedMark = certificateMayBeUnsound && replicated > 0 ? -1L : replicated;
       final long buildStart = System.currentTimeMillis();
       final Runnable beforeScan = beforeBuildScanForTest;
       if (beforeScan != null)
@@ -3432,9 +3438,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * when a query asks for it ({@link #requestRebuildForReplicatedCommits()}), never on this thread. A build in flight sampled
    * the count before its scan, so it publishes behind the commit and the next query asks for one more. An OFF view stays STALE
    * until it is rebuilt, as after a local commit.
+   * <p>
+   * The first one also deletes the CSR and contraction orders an earlier close persisted: the transaction counter their
+   * certificate checks does not move for such a commit, so the next open would restore them as current. Deleted here rather than
+   * at the next close, which a crash can skip. A later close persists the view again once a scan has read every commit counted.
    */
   void onReplicatedCommit() {
-    replicatedCommits.incrementAndGet();
+    if (replicatedCommits.incrementAndGet() == 1 && name != null) {
+      GraphAnalyticalViewCSRPersistence.delete(database, name);
+      for (final ContractionHierarchy hierarchy : contractionHierarchies)
+        CCHOrderPersistence.delete(hierarchy.orderFile());
+    }
   }
 
   /**

@@ -159,7 +159,7 @@ class Issue12250GavFollowsReplicatedCommitsIT extends BaseRaftHATest {
 
   /** The edges of every hub by SQL out() and by Cypher, and the edges of hub h0 by Cypher. */
   private static void assertEdgeCounts(final Database database, final long all, final long ofHubZero) {
-    assertThat(count(database, "sql", "SELECT count(*) AS c FROM L")).as("records").isEqualTo(all);
+    assertThat(count(database, "sql", "SELECT count(@rid) AS c FROM L")).as("records").isEqualTo(all);
     assertThat(count(database, "sql", "SELECT sum(out('L').size()) AS c FROM H")).as("SQL out()").isEqualTo(all);
     assertThat(count(database, "cypher", "MATCH (:H)-[r:L]->() RETURN count(r) AS c")).as("Cypher").isEqualTo(all);
     assertThat(count(database, "cypher", "MATCH (h:H {h: 'h0'})-->(x) RETURN count(x) AS c")).as("Cypher from h0")
