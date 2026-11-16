@@ -43,6 +43,15 @@ public class ForwardThenFailTestPlugin implements ServerPlugin {
       super(httpServer);
     }
 
+    /**
+     * Outside a transaction, as {@code /query} runs: inside the one {@code requiresTransaction()} opens, a follower runs the
+     * write locally in that transaction (issue #10040) instead of forwarding it, and the failure rolls it back.
+     */
+    @Override
+    protected boolean requiresTransaction() {
+      return false;
+    }
+
     @Override
     protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
         final JSONObject payload) {
