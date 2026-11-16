@@ -102,7 +102,7 @@ class CypherFunctionSecurityTest extends TestHelper {
 
     final ResultSet rs = database.query("opencypher", "RETURN util.compress($data) AS result", "data", new String(atCap));
 
-    assertThat(rs.next().<String>getProperty("result")).isNotEmpty();
+    assertThat(rs.next().<byte[]>getProperty("result")).isNotEmpty();
   }
 
   @Test
@@ -110,17 +110,17 @@ class CypherFunctionSecurityTest extends TestHelper {
     // Test that valid compression works
     final ResultSet resultSet = database.query("opencypher", "RETURN util.compress('Hello World') AS result");
     assertThat(resultSet.hasNext()).isTrue();
-    assertThat(resultSet.next().<String>getProperty("result")).isNotNull();
+    assertThat(resultSet.next().<byte[]>getProperty("result")).isNotEmpty();
   }
 
   @Test
   void utilDecompressRoundTrip() {
     // The control for the two zip-bomb tests below: a payload under the cap still round-trips.
     final ResultSet compressResult = database.query("opencypher", "RETURN util.compress('test') AS compressed");
-    final String compressed = compressResult.next().getProperty("compressed").toString();
+    final byte[] compressed = compressResult.next().getProperty("compressed");
 
-    final ResultSet decompressResult = database.query("opencypher",
-        "RETURN util.decompress('" + compressed + "') AS result");
+    final ResultSet decompressResult = database.query("opencypher", "RETURN util.decompress($data) AS result", "data",
+        compressed);
     assertThat(decompressResult.hasNext()).isTrue();
     assertThat(decompressResult.next().<String>getProperty("result")).isEqualTo("test");
   }
