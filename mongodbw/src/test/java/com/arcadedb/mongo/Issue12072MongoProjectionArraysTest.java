@@ -131,5 +131,24 @@ class Issue12072MongoProjectionArraysTest {
         .hasMessageContaining("Path collision at a.b remaining portion b");
     assertThatThrownBy(() -> project(new Document("a.b", 0).append("a", 0))).isInstanceOf(MongoServerError.class)
         .hasMessageContaining("Path collision at a");
+    // the _id paths collide like any other, in both orders (mongod 7)
+    assertThatThrownBy(() -> project(new Document("_id", 1).append("_id.x", 1))).isInstanceOf(MongoServerError.class)
+        .hasMessageContaining("Path collision at _id.x remaining portion x");
+    assertThatThrownBy(() -> project(new Document("_id.x", 1).append("_id", 1))).isInstanceOf(MongoServerError.class)
+        .hasMessageContaining("Path collision at _id");
+  }
+
+  @Test
+  void aPathBelowTheIdIsProjectedLikeAnyOtherPath() {
+    // the _id of the stored document is 1: there is no x below it, so mongod answers an empty document
+    assertThat(project(new Document("_id.x", 1))).isEqualTo(new Document());
+    assertThat(project(new Document("_id.x", 1).append("z", 1))).isEqualTo(new Document("z", 3));
+    assertThat(project(new Document("_id.x", 0)).get("_id")).isEqualTo(1);
+  }
+
+  @Test
+  void thePositionalOperatorIsRefusedLikeTheOtherProjectionOperators() {
+    assertThatThrownBy(() -> project(new Document("items.$", 1))).isInstanceOf(MongoServerError.class)
+        .hasStackTraceContaining("Projection operator on 'items.$' is not supported");
   }
 }

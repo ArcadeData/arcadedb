@@ -661,22 +661,26 @@ public class MongoDBToSqlTranslator {
   }
 
   /**
-   * Checks a find projection, including its paths: a path and one below it collide, as mongod refuses them (errors 31249 and
-   * 31250), whether or not a document would be projected.
+   * Checks a find projection, including its paths: a path and one below it collide, the {@code _id} paths included, as mongod
+   * refuses them (errors 31249 and 31250), whether or not a document would be projected. The positional operator ({@code a.$}) is
+   * refused like the other projection operators.
    */
   static FindProjection findProjection(final Document fields, final String idField) {
     final boolean inclusion = isInclusionProjection(fields, idField);
     final Map<String, Object> tree = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> entry : fields.entrySet())
-      // the _id flag is read on its own; any other flag is of the projection's kind, isInclusionProjection refused a mix
-      if (!idField.equals(entry.getKey()))
-        addProjectionPath(tree, entry.getKey());
+      // any flag but the _id's is of the projection's kind (isInclusionProjection refused a mix); the plain _id flag is read on
+      // its own when the document is projected, but it collides with a path below the _id like any other path
+      addProjectionPath(tree, entry.getKey());
     return new FindProjection(inclusion, !fields.containsKey(idField) || Utils.isTrue(fields.get(idField)), idField, tree);
   }
 
   @SuppressWarnings("unchecked")
   private static void addProjectionPath(final Map<String, Object> tree, final String path) {
     final String[] segments = path.split("\\.");
+    for (final String segment : segments)
+      if ("$".equals(segment))
+        throw new IllegalArgumentException("Projection operator on '" + path + "' is not supported");
     Map<String, Object> node = tree;
     for (int i = 0; i < segments.length; i++) {
       final Object child = node.get(segments[i]);
@@ -728,7 +732,8 @@ public class MongoDBToSqlTranslator {
       for (final Map.Entry<String, Object> entry : document.entrySet()) {
         final String key = entry.getKey();
         final Object value = entry.getValue();
-        if (top && idField.equals(key)) {
+        if (top && idField.equals(key) && !(node.get(key) instanceof Map)) {
+          // the plain _id: kept unless excluded. A path below it ("_id.x") is projected like any other path
           if (idIncluded)
             result.put(key, value);
           continue;
