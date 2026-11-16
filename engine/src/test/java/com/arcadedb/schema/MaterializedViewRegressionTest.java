@@ -1601,6 +1601,110 @@ class MaterializedViewRegressionTest {
   }
 
   /**
+   * Regression for #12252: a schema save made while a refresh ran (any DDL, a continuous aggregate's late-sample record) wrote the
+   * in-memory BUILDING of the running pass, which a schema load turns into STALE (the crash-recovery rule). The pass then ended VALID
+   * without saving again, because it started VALID. Under HA the saved document is what the followers load, so they reported STALE a
+   * view or aggregate the leader reported VALID over the same rows; a reopen loads it the same way, which is what these tests check.
+   */
+  @Nested
+  class StatusSavedDuringRefresh extends TestHelper {
+
+    @Test
+    void aSchemaSaveDuringAViewPassKeepsTheStatusItStartedFrom() {
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.command("sql", "CREATE MATERIALIZED VIEW MG AS SELECT cat, count(*) AS c FROM P GROUP BY cat REFRESH INCREMENTAL");
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'a'"));
+      assertThat(status("materializedViews", "MG")).isEqualTo("VALID");
+
+      // the next pass saves the schema from inside, as a DDL committed by another client while it runs does
+      final AtomicReference<String> statusDuringPass = new AtomicReference<>();
+      final AtomicReference<String> savedDuringPass = new AtomicReference<>();
+      final AtomicBoolean saved = new AtomicBoolean();
+      final DocumentType backingType = database.getSchema().getType("MG");
+      backingType.getEvents().registerListener(
+          (BeforeRecordCreateListener) record -> saveOnce(saved, statusDuringPass, savedDuringPass, "MG"));
+      backingType.getEvents().registerListener(
+          (BeforeRecordUpdateListener) record -> saveOnce(saved, statusDuringPass, savedDuringPass, "MG"));
+
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'b'"));
+
+      assertThat(saved.get()).as("the schema was saved during the pass").isTrue();
+      assertThat(statusDuringPass.get()).as("the pass reports BUILDING while it runs").isEqualTo("BUILDING");
+      assertThat(savedDuringPass.get()).as("the save made during the pass writes the status the pass started from")
+          .isEqualTo("VALID");
+      assertThat(status("materializedViews", "MG")).isEqualTo("VALID");
+
+      reopenDatabase();
+
+      assertThat(status("materializedViews", "MG")).isEqualTo("VALID");
+    }
+
+    @Test
+    void aSchemaSaveDuringAnAggregateRefreshKeepsTheStatusItStartedFrom() {
+      database.command("sql", "CREATE TIMESERIES TYPE S TIMESTAMP ts TAGS (h STRING) FIELDS (v DOUBLE) SHARDS 1");
+      database.transaction(() -> database.command("sql", "INSERT INTO S SET ts = ?, h = 's1', v = 1.0", 1700000000000L));
+      database.command("sql", "CREATE CONTINUOUS AGGREGATE ca AS SELECT ts.timeBucket('1h', ts) AS hr, sum(v) AS total FROM S GROUP BY hr");
+      assertThat(status("continuousAggregates", "ca")).isEqualTo("VALID");
+
+      // a refresh that does not move the watermark saves nothing at its end: the save made while it runs is the last one
+      final AtomicReference<String> statusDuringRefresh = new AtomicReference<>();
+      final AtomicReference<String> savedDuringRefresh = new AtomicReference<>();
+      ContinuousAggregateRefresher.TEST_AFTER_IN_FLIGHT_READ_HOOK = () -> {
+        statusDuringRefresh.set(database.getSchema().getContinuousAggregate("ca").getStatus());
+        ((LocalSchema) database.getSchema()).saveConfiguration();
+        savedDuringRefresh.set(savedStatus("continuousAggregates", "ca"));
+      };
+      try {
+        database.command("sql", "REFRESH CONTINUOUS AGGREGATE ca").close();
+      } finally {
+        ContinuousAggregateRefresher.TEST_AFTER_IN_FLIGHT_READ_HOOK = null;
+      }
+
+      assertThat(statusDuringRefresh.get()).as("the refresh reports BUILDING while it runs").isEqualTo("BUILDING");
+      assertThat(savedDuringRefresh.get()).as("the save made during the refresh writes the status it started from")
+          .isEqualTo("VALID");
+      assertThat(status("continuousAggregates", "ca")).isEqualTo("VALID");
+
+      reopenDatabase();
+
+      assertThat(status("continuousAggregates", "ca")).isEqualTo("VALID");
+    }
+
+    @Test
+    void theBuildingMarkOfACreationIsStillSaved() {
+      // the BUILDING a creation sets is the crash-recovery mark, and it is saved: only the BUILDING of a later pass is not
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'a'"));
+      database.command("sql", "CREATE MATERIALIZED VIEW MG AS SELECT cat, count(*) AS c FROM P GROUP BY cat REFRESH MANUAL");
+      final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("MG");
+      view.setStatus(MaterializedViewStatus.BUILDING);
+
+      assertThat(savedStatus("materializedViews", "MG")).isEqualTo("BUILDING");
+    }
+
+    private boolean saveOnce(final AtomicBoolean saved, final AtomicReference<String> statusDuringPass,
+        final AtomicReference<String> savedDuringPass, final String viewName) {
+      if (saved.compareAndSet(false, true)) {
+        statusDuringPass.set(database.getSchema().getMaterializedView(viewName).getStatus());
+        ((LocalSchema) database.getSchema()).saveConfiguration();
+        savedDuringPass.set(savedStatus("materializedViews", viewName));
+      }
+      return true;
+    }
+
+    private String status(final String schemaTable, final String name) {
+      try (final ResultSet rs = database.query("sql", "SELECT status FROM schema:" + schemaTable + " WHERE name = ?", name)) {
+        return rs.next().getProperty("status");
+      }
+    }
+
+    /** The status the schema document carries, as a save writes it and an HA follower loads it. */
+    private String savedStatus(final String section, final String name) {
+      return ((LocalSchema) database.getSchema()).toJSON().getJSONObject(section).getJSONObject(name).getString("status");
+    }
+  }
+
+  /**
    * Regression for #11020: {@code TRUNCATE TYPE} on the backing type of a continuous aggregate emptied it and left its watermark where it was,
    * so the next refresh recomputed only the buckets at or after the watermark: every bucket behind it was lost for good, with the
    * aggregate reporting VALID. A materialized view truncated the same way answered no rows while reporting VALID, and a row
