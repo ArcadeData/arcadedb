@@ -1058,6 +1058,33 @@ public class GraphDatabaseChecker {
     return edgeRID.getPosition() < 0 && database.getSchema().getTypeByBucketId(edgeRID.getBucketId()) == null;
   }
 
+  /**
+   * A LIGHTWEIGHT entry whose other endpoint is gone (issue #12249): left on the surviving vertex by a delete that did not
+   * disconnect it, such as {@code DROP TYPE ... UNSAFE} of the other endpoint's vertex type. A record-backed edge in that state
+   * is found through its record ({@link #loadEndpointVertex}); a lightweight one has no record, so the vertex the entry names is
+   * probed directly. One existence probe per lightweight entry, answered from the transaction cache or one slot of a page.
+   */
+  private boolean isLightEdgeEndpointMissing(final RID endpoint) {
+    return !database.existsRecord(endpoint);
+  }
+
+  private static void reportMissingLightEdgeEndpoint(final CheckReport report, final RID edgeRID, final RID vertexIdentity,
+      final RID endpoint, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors) {
+    report.warn("vertex " + vertexIdentity + " lists a lightweight edge in bucket " + edgeRID.getBucketId() + " to the vertex "
+        + endpoint + " that is not found (deleted?)");
+    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, endpoint,
+        "Record " + endpoint + " not found");
+    ++report.invalidLinks;
+  }
+
+  /** Prunes the entry the walk stands on and counts the repair, as the walks do for every entry they condemn. */
+  private static void pruneDanglingEntry(final Iterator<Pair<RID, RID>> entries, final RID edgeRID, final CheckReport report,
+      final AdjacencyProbeCache probeCache) {
+    pruneEntry(entries, edgeRID, report);
+    probeCache.clear();
+    ++report.prunedDanglingEntries;
+  }
+
   private static void reportStaleLightweightEntry(final CheckReport report, final RID edgeRID, final RID vertexIdentity) {
     report.warn("vertex " + vertexIdentity + " lists a lightweight edge in bucket " + edgeRID.getBucketId()
         + " whose edge type no longer exists");
@@ -1170,9 +1197,16 @@ public class GraphDatabaseChecker {
               reportStaleLightweightEntry(report, edgeRID, vertexIdentity);
               removeEntry = true;
             } else {
-              if (edgeRID.getPosition() < 0)
-                // LIGHTWEIGHT EDGE
+              if (edgeRID.getPosition() < 0) {
+                // LIGHTWEIGHT EDGE: no record to validate, only the other endpoint (issue #12249)
+                if (isLightEdgeEndpointMissing(vertexRID)) {
+                  reportMissingLightEdgeEndpoint(report, edgeRID, vertexIdentity, vertexRID, missingReferences,
+                      missingReferenceErrors);
+                  if (fix)
+                    pruneDanglingEntry(in, edgeRID, report, probeCache);
+                }
                 continue;
+              }
 
               try {
                 final Edge edge = asEdgeOrDanglingEntry(edgeRID);
@@ -1412,6 +1446,14 @@ public class GraphDatabaseChecker {
             } else {
               try {
                 if (edgeRID.getPosition() < 0) {
+                  if (isLightEdgeEndpointMissing(vertexRID)) {
+                    reportMissingLightEdgeEndpoint(report, edgeRID, vertexIdentity, vertexRID, missingReferences,
+                        missingReferenceErrors);
+                    if (fix)
+                      pruneDanglingEntry(out, edgeRID, report, probeCache);
+                    continue;
+                  }
+
                   // LIGHTWEIGHT EDGE: there is no record to validate. What CAN go wrong is the same edge appearing
                   // twice - a lightweight edge is the triple (type, out, in), so two entries with the same edge-type
                   // bucket and the same destination are one edge stored twice. That state is reachable because the
