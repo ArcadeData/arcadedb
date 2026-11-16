@@ -848,6 +848,8 @@ final class CypherStepBuilder {
         // What the subquery returns joins the outer scope, exactly as a CALL's YIELD names do, so a following
         // MATCH can push a predicate that reads one of them into its scan instead of filtering behind it.
         collectSubqueryOutputVariables(subqueryClause, boundVariables);
+        // A name the body returns for an imported tainted variable is that entity under a new name (issue #11534)
+        EagerBarriers.propagateTaintThroughSubquery(subqueryClause, disconnectedTaintedVariables);
         break;
       }
     }

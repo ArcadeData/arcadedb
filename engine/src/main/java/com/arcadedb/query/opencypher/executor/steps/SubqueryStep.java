@@ -22,9 +22,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -37,6 +40,8 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -607,6 +612,8 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */
   private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
+    if (innerMayWrite)
+      refreshWrittenBindings(outerRow);
     final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
         database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(), null, expressionEvaluator);
     return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
@@ -623,6 +630,79 @@ public class SubqueryStep extends AbstractExecutionStep {
   public void close() {
     closeStreamedBody();
     super.close();
+  }
+
+  /**
+   * Before a body that can write runs for the outer row, points the row's nodes and relationships, the members of the paths
+   * it carries, and the records nested in its lists and maps, at the copies the transaction wrote, so the body reads what the
+   * runs for the earlier rows wrote (issue #11534). The body runs once per row, in order, and each run is meant to see the
+   * effects of the ones before it: {@code CALL (p0) { WITH [r IN relationships(p0) | r.k] AS before ... SET r.k = 'K' }}
+   * read the value from before the write of an earlier row whenever the row had been produced ahead of that write, which a
+   * {@code WITH} or an unrelated aggregating subquery in front of the CALL made happen for a different set of rows, and so
+   * changed what the query returned. Importing {@code relationships(p0)} as a list, or inside a map, must give the same
+   * answer as importing the path. A body that cannot write keeps the snapshot the row carries: issue #6362 is why.
+   * <p>
+   * Only what the transaction WROTE replaces a binding, never a read-only cached copy, and a list or map is copied only
+   * when one of its elements changes. While the transaction has written nothing the row is not walked at all.
+   */
+  private void refreshWrittenBindings(final Result row) {
+    if (!(row instanceof ResultInternal mutable))
+      return;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || !tx.hasWrittenRecords())
+      return;
+    for (final String name : row.getPropertyNames()) {
+      final Object value = row.getProperty(name);
+      final Object written = writtenCopy(value);
+      if (written != value)
+        mutable.setProperty(name, written);
+    }
+  }
+
+  /** @return {@code value} with every record in it replaced by the transaction's written copy, or {@code value} itself when none changed */
+  private static Object writtenCopy(final Object value) {
+    if (value instanceof Document doc)
+      return WrittenCopy.of(doc);
+    if (value instanceof TraversalPath path) {
+      TraversalPath live = path;
+      for (final Vertex vertex : path.getVertices())
+        live = withWrittenCopy(live, vertex);
+      for (final Edge edge : path.getEdges())
+        live = withWrittenCopy(live, edge);
+      return live;
+    }
+    if (value instanceof List<?> list) {
+      List<Object> copy = null;
+      int i = 0;
+      for (final Object element : list) {
+        final Object written = writtenCopy(element);
+        if (written != element && copy == null)
+          copy = new ArrayList<>(list);
+        if (copy != null)
+          copy.set(i, written);
+        ++i;
+      }
+      return copy != null ? copy : list;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> copy = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object element = entry.getValue();
+        final Object written = writtenCopy(element);
+        if (written != element) {
+          if (copy == null)
+            copy = new LinkedHashMap<>(map);
+          copy.put(entry.getKey(), written);
+        }
+      }
+      return copy != null ? copy : map;
+    }
+    return value;
+  }
+
+  private static TraversalPath withWrittenCopy(final TraversalPath path, final Document member) {
+    final Document written = WrittenCopy.of(member);
+    return written != member ? path.withRecord(member.getIdentity(), written) : path;
   }
 
   /**
