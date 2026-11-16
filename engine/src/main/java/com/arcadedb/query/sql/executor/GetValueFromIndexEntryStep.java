@@ -231,7 +231,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     if (strategy == null)
       chooseStrategy(context, prevStep);
 
-    return switch (strategy) {
+    final ResultSet rows = switch (strategy) {
       case SCAN -> scanStep.syncPull(context, nRecords);
       case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> {
         if (!parallelDecided) {
@@ -244,6 +244,30 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       }
       case INDEX_ORDER -> indexOrderResultSet(context, prevStep, nRecords);
     };
+    // The scan sets $current itself. The index fetch before this step set it to the index entry it emitted ({key, rid}): every
+    // record loaded here becomes $current, as every other fetch step does, so a LET subquery reads the outer record through
+    // $parent.$current (issue #12301)
+    return strategy == Strategy.SCAN ? rows : new CurrentRecordResultSet(rows, context);
+  }
+
+  /** The rows of {@code rows}, each one set as the context's {@code $current} when it is handed on. */
+  private record CurrentRecordResultSet(ResultSet rows, CommandContext context) implements ResultSet {
+    @Override
+    public boolean hasNext() {
+      return rows.hasNext();
+    }
+
+    @Override
+    public Result next() {
+      final Result result = rows.next();
+      context.setVariable("current", result);
+      return result;
+    }
+
+    @Override
+    public void close() {
+      rows.close();
+    }
   }
 
   /**
