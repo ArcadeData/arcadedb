@@ -233,7 +233,7 @@ class LSMTreeIndexCompactionConcurrentCommitTest extends TestHelper {
       final IndexCursor cursor = typeIndex().iterator(true);
       while (cursor.hasNext()) {
         final RID rid = cursor.next().getIdentity();
-        entries.add(cursor.getKeys()[0] + "|" + rid);
+        assertThat(entries.add(cursor.getKeys()[0] + "|" + rid)).as("the index returns %s once", rid).isTrue();
       }
     });
     assertThat(records).hasSize(recordsBefore);
@@ -309,8 +309,10 @@ class LSMTreeIndexCompactionConcurrentCommitTest extends TestHelper {
 
   private static Set<RID> ridsOf(final IndexCursor cursor) {
     final Set<RID> rids = new HashSet<>();
-    while (cursor.hasNext())
-      rids.add(cursor.next().getIdentity());
+    while (cursor.hasNext()) {
+      final RID rid = cursor.next().getIdentity();
+      assertThat(rids.add(rid)).as("the lookup returns %s once", rid).isTrue();
+    }
     return rids;
   }
 
