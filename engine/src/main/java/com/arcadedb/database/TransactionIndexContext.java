@@ -26,6 +26,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
@@ -1263,6 +1264,31 @@ public class TransactionIndexContext {
   }
 
   /**
+   * The uniqueness of a list key on a property nothing declares, checked under the text an older build keyed the list by too
+   * (issue #12160): the entries such a build wrote keep that text until the index is rebuilt, so the check on the canonical key
+   * alone let a copy of an old list in. A holder found under the old text is a duplicate only when it holds this list: the old
+   * text of a list is also the key of a STRING spelled the same way, which is another value.
+   */
+  private void checkUniqueLegacyListKeys(final LSMTreeIndex index, final IndexKey key) {
+    final Object[] legacyKeys = index.legacyListKeysOf(key.keyValues, key.rid);
+    if (legacyKeys == null)
+      return;
+    final Index idx = index.getTypeName() == null ?
+        index :
+        database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
+    if (idx == null)
+      return;
+    // a holder this transaction deleted has its old entry removed in the transaction, which the lookup does not return
+    try (final IndexCursor found = idx.get(legacyKeys)) {
+      while (found.hasNext()) {
+        final RID holder = found.next().getIdentity();
+        if (!holder.equals(key.rid) && index.holdsKey(holder, key.keyValues))
+          throw new DuplicatedKeyException(idx.getName(), Arrays.toString(key.keyValues), holder);
+      }
+    }
+  }
+
+  /**
    * Checks unique indexes integrity. Since a type index is composed by multiple bucket indexes, the deleted keys are first collected across all the indexes.
    */
   private void checkUniqueIndexKeys() {
@@ -1285,6 +1311,8 @@ public class TransactionIndexContext {
               final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
               final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
+              if (index instanceof LSMTreeIndex lsmIndex)
+                checkUniqueLegacyListKeys(lsmIndex, entry);
             }
           }
         }

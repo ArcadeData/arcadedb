@@ -706,6 +706,53 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return convertedKeys;
   }
 
+  /**
+   * The keys as a build before #11615 wrote them, or null when that build wrote them the same way (issue #12160). A list on a
+   * property nothing declares was keyed by the text {@code List.toString()} gives it, each number spelled as Java spells it
+   * ({@code [1.5, 2.0]}), where {@link #convertKeysToDeclaredTypes} now spells each floating point element canonically
+   * ({@code [1.5, 2]}). An index such a build wrote keeps those entries until it is rebuilt, so a seek, a removal and a uniqueness
+   * check look under both texts. An array was keyed by its identity text then, which no seek ever found: it has no old key to look
+   * under.
+   *
+   * @param keys          the keys as given to the index
+   * @param convertedKeys the same keys after {@link #convertKeysToDeclaredTypes}
+   */
+  Object[] legacyListKeys(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return null;
+    Object[] legacyKeys = null;
+    for (int i = 0; i < keys.length && i < convertedKeys.length; ++i) {
+      if (!(keys[i] instanceof Collection) || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING || !isUndeclaredProperty(i))
+        continue;
+      // Type.convert writes a collection with no property as List.toString() writes it, numbers included (Type.elementsText)
+      Object legacyKey = Type.convertIndexKeyOrNull(database, keys[i], String.class);
+      if (legacyKey instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
+          && caseInsensitiveKeys[i])
+        legacyKey = string.toLowerCase(Locale.ROOT);
+      if (legacyKey == null || legacyKey.equals(convertedKeys[i]))
+        continue;
+      if (legacyKeys == null)
+        legacyKeys = convertedKeys.clone();
+      legacyKeys[i] = legacyKey;
+    }
+    return legacyKeys;
+  }
+
+  /**
+   * Whether converted keys can be the canonical key of a list an older build keyed another way (issue #12160): a STRING key of a
+   * property nothing declares that reads as a list. Answers without loading anything, so that a caller holding only converted
+   * keys loads the record they came from only when it can matter.
+   */
+  boolean mayBeCanonicalListKey(final Object[] convertedKeys) {
+    if (convertedKeys == null)
+      return false;
+    for (int i = 0; i < convertedKeys.length && i < binaryKeyTypes.length; ++i)
+      if (binaryKeyTypes[i] == BinaryTypes.TYPE_STRING && convertedKeys[i] instanceof String string && string.startsWith("[")
+          && isUndeclaredProperty(i))
+        return true;
+    return false;
+  }
+
   /** True when the schema declares no property for the i-th key: the Cypher fallback of an index created before any value existed. */
   private boolean isUndeclaredProperty(final int keyIndex) {
     final LSMTreeIndex main = mainIndex;

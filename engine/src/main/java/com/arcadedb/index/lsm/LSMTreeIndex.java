@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
@@ -34,6 +35,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexBuildTestHooks;
@@ -63,7 +65,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
@@ -707,6 +711,108 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (!areReadAsKeys(keys, convertedKeys))
       return EMPTY_CURSOR;
 
+    final Object[] legacyKeys = mutable.legacyListKeys(keys, convertedKeys);
+    if (legacyKeys != null)
+      return withLegacyListEntries(convertedKeys, legacyKeys, limit);
+    return getConverted(convertedKeys, limit);
+  }
+
+  /**
+   * The entries of {@code convertedKeys}, with the entries an older build wrote for the same list under {@code legacyKeys}
+   * (issue #12160, see {@link LSMTreeIndexAbstract#legacyListKeys}). An old entry counts only when its record holds the list: the
+   * old text of a list is also the key of a STRING spelled the same way, which is another value.
+   */
+  private IndexCursor withLegacyListEntries(final Object[] convertedKeys, final Object[] legacyKeys, final int limit) {
+    final Set<IndexCursorEntry> entries = new LinkedHashSet<>();
+    final Set<RID> seen = new HashSet<>();
+    try (final IndexCursor cursor = getConverted(convertedKeys, limit)) {
+      while (cursor.hasNext()) {
+        final Identifiable next = cursor.next();
+        if (seen.add(next.getIdentity()))
+          entries.add(new IndexCursorEntry(convertedKeys, next, 1));
+      }
+    }
+    if (limit < 0 || entries.size() < limit)
+      try (final IndexCursor cursor = getConverted(legacyKeys, -1)) {
+        while (cursor.hasNext() && (limit < 0 || entries.size() < limit)) {
+          final Identifiable next = cursor.next();
+          if (!seen.contains(next.getIdentity()) && holdsKey(next.getIdentity(), convertedKeys)) {
+            seen.add(next.getIdentity());
+            entries.add(new IndexCursorEntry(convertedKeys, next, 1));
+          }
+        }
+      }
+    return entries.isEmpty() ? EMPTY_CURSOR : new TempIndexCursor(entries);
+  }
+
+  /**
+   * Whether the record at {@code rid} holds {@code convertedKeys} in this index, as its put() converted them: false for a record that
+   * is gone.
+   */
+  public boolean holdsKey(final RID rid, final Object[] convertedKeys) {
+    final Document document;
+    try {
+      final Record record = getDatabase().lookupByRID(rid, true);
+      document = record != null ? record.asDocument(true) : null;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+    if (document == null)
+      return false;
+    final boolean[] holds = new boolean[1];
+    getDatabase().getIndexer().forEachIndexKey(this, document, keys -> {
+      if (!holds[0])
+        try {
+          holds[0] = Arrays.equals(convertKeys(keys), convertedKeys);
+        } catch (final IllegalArgumentException e) {
+          // a value the key type cannot read holds no key here
+        }
+    });
+    return holds[0];
+  }
+
+  /**
+   * The keys an older build wrote for {@code keys}, or null when it wrote them as {@code convertedKeys} (issue #12160, see
+   * {@link LSMTreeIndexAbstract#legacyListKeys}).
+   *
+   * @param convertedKeys {@code keys} after {@link #convertLookupKeys}
+   */
+  public Object[] legacyListKeys(final Object[] keys, final Object[] convertedKeys) {
+    return mutable.legacyListKeys(keys, convertedKeys);
+  }
+
+  /**
+   * The keys an older build wrote for the list the record at {@code rid} holds under {@code convertedKeys}, or null when it wrote
+   * them the same way or the record holds no such list (issue #12160). For a caller that has only the converted keys, as the
+   * uniqueness check at commit has: the record is loaded only for a key that can be the canonical key of a list.
+   */
+  public Object[] legacyListKeysOf(final Object[] convertedKeys, final RID rid) {
+    if (!mutable.mayBeCanonicalListKey(convertedKeys))
+      return null;
+    final Document document;
+    try {
+      final Record record = getDatabase().lookupByRID(rid, true);
+      document = record != null ? record.asDocument(true) : null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+    if (document == null)
+      return null;
+    final Object[][] legacyKeys = new Object[1][];
+    getDatabase().getIndexer().forEachIndexKey(this, document, keys -> {
+      if (legacyKeys[0] == null)
+        try {
+          if (Arrays.equals(convertKeys(keys), convertedKeys))
+            legacyKeys[0] = mutable.legacyListKeys(keys, convertedKeys);
+        } catch (final IllegalArgumentException e) {
+          // a value the key type cannot read holds no key here
+        }
+    });
+    return legacyKeys[0];
+  }
+
+  /** The entries of keys already converted to the declared types: the pending changes of the transaction over the pages. */
+  private IndexCursor getConverted(final Object[] convertedKeys, final int limit) {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
@@ -805,7 +911,6 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public void remove(final Object[] keys) {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
-
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
@@ -815,18 +920,44 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         mutable.remove(convertedKeys);
         return null;
       });
+
+    // #12160: the entries an older build wrote for this list go too, and only those: the old text is also the key of a STRING
+    final Object[] legacyKeys = mutable.legacyListKeys(keys, convertedKeys);
+    if (legacyKeys != null)
+      for (final RID holder : legacyEntryHolders(legacyKeys))
+        if (holdsKey(holder, convertedKeys))
+          removeConverted(legacyKeys, holder);
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
+    removeConverted(convertedKeys, rid);
 
+    // #12160: the entry an older build wrote for this record's list goes too. Looked up first, so that a list no old entry stands
+    // for leaves no removal in the index
+    final Object[] legacyKeys = rid != null ? mutable.legacyListKeys(keys, convertedKeys) : null;
+    if (legacyKeys != null && legacyEntryHolders(legacyKeys).contains(rid.getIdentity()))
+      removeConverted(legacyKeys, rid);
+  }
+
+  private List<RID> legacyEntryHolders(final Object[] legacyKeys) {
+    final List<RID> holders = new ArrayList<>();
+    try (final IndexCursor cursor = getConverted(legacyKeys, -1)) {
+      while (cursor.hasNext())
+        holders.add(cursor.next().getIdentity());
+    }
+    return holders;
+  }
+
+  /** Removes the entry of {@code rid} under keys already converted. */
+  private void removeConverted(final Object[] convertedKeys, final Identifiable rid) {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys,
-              rid.getIdentity());
+              rid != null ? rid.getIdentity() : null);
     else
       lock.executeInReadLock(() -> {
         mutable.remove(convertedKeys, rid);

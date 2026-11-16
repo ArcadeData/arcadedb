@@ -123,7 +123,7 @@ final class IndexContentChecker {
       for (int i = 0; i < indexes.size(); i++) {
         final Summary summary = fromRecords[i];
         recordPairs.clear();
-        forEachRecordPair(indexes.get(i), document, (fingerprint, keys) -> {
+        forEachRecordPair(indexes.get(i), document, (fingerprint, keys, legacyKeys) -> {
           // a record holding a key twice (a list item repeated) has one entry for it
           if (recordPairs.add(fingerprint))
             summary.add(fingerprint);
@@ -215,8 +215,12 @@ final class IndexContentChecker {
     scanRecords(bucket, type, document -> {
       tick.run();
       final RID rid = document.getIdentity();
-      forEachRecordPair(index, document, (fingerprint, keys) -> {
+      forEachRecordPair(index, document, (fingerprint, keys, legacyKeys) -> {
         if (valid.contains(fingerprint) || isIndexed(index, keys, rid))
+          return;
+        // #12160: a list an older build indexed holds its entry under the text that build keyed it by
+        if (legacyKeys != null && (valid.contains(fingerprint(legacyKeys, index.getBinaryKeyTypes(), rid)) || isIndexed(index,
+            legacyKeys, rid)))
           return;
         // the same judgement under the commit locks: the record still holds the key and the index still has no entry for it
         final Verdict verdict = underCommitLocks(bucket, index, () -> {
@@ -224,8 +228,10 @@ final class IndexContentChecker {
           if (now == null)
             return Verdict.GONE;
           final boolean[] holds = new boolean[1];
-          forEachRecordPair(index, now, (recordFingerprint, recordKey) -> holds[0] |= recordFingerprint == fingerprint);
-          return holds[0] && !isIndexed(index, keys, rid) ? Verdict.MISSING : Verdict.GONE;
+          forEachRecordPair(index, now, (recordFingerprint, recordKey, recordLegacyKeys) -> holds[0] |= recordFingerprint == fingerprint);
+          return holds[0] && !isIndexed(index, keys, rid) && (legacyKeys == null || !isIndexed(index, legacyKeys, rid)) ?
+              Verdict.MISSING :
+              Verdict.GONE;
         });
         valid.add(fingerprint);
         if (verdict == Verdict.INCONCLUSIVE)
@@ -264,11 +270,15 @@ final class IndexContentChecker {
   private boolean holdsKey(final LSMTreeIndex index, final Document document, final long fingerprint, final Object[] keys,
       final LongHashSet valid, final List<String> recordKeys) {
     final boolean[] holds = new boolean[1];
-    forEachRecordPair(index, document, (recordFingerprint, recordKey) -> {
+    forEachRecordPair(index, document, (recordFingerprint, recordKey, legacyKey) -> {
       if (recordFingerprint == fingerprint)
         holds[0] = true;
       else if (sameKey(keys, recordKey, index.getBinaryKeyTypes())) {
         // one key under the index's comparator that the fingerprint spells two ways: valid, and so is the record's pair
+        holds[0] = true;
+        valid.add(recordFingerprint);
+      } else if (legacyKey != null && sameKey(keys, legacyKey, index.getBinaryKeyTypes())) {
+        // #12160: the entry an older build wrote for the record's list, under the text it keyed the list by
         holds[0] = true;
         valid.add(recordFingerprint);
       } else if (recordKeys.size() < 4)
@@ -348,7 +358,8 @@ final class IndexContentChecker {
 
   @FunctionalInterface
   private interface PairConsumer {
-    void accept(long fingerprint, Object[] storedKeys);
+    /** @param legacyKeys the keys an older build wrote for the same pair (issue #12160), or null when it wrote these */
+    void accept(long fingerprint, Object[] storedKeys, Object[] legacyKeys);
   }
 
   @FunctionalInterface
@@ -374,7 +385,7 @@ final class IndexContentChecker {
       }
       if (!indexesNulls && LSMTreeIndexAbstract.isKeyNull(stored))
         return;
-      consumer.accept(fingerprint(stored, keyTypes, rid), stored);
+      consumer.accept(fingerprint(stored, keyTypes, rid), stored, index.legacyListKeys(keys, stored));
     });
   }
 
