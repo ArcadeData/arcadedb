@@ -1072,6 +1072,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         return newMutableIndex;
       });
 
+      // Issue #12236: the new mutable file stays locked until the cluster knows it (an HA compaction publishes it later), so
+      // a commit that resolves this index from now on cannot ship its entries into it ahead of the entry creating it
+      if (database.getWrappedDatabaseInstance().keepLockedUntilCompactionIsPublished(lockedNewFileId.get()))
+        lockedNewFileId.set(-1);
+
       final Runnable afterSwapHook = AFTER_SWAP_TEST_HOOK.get();
       if (afterSwapHook != null)
         afterSwapHook.run();
