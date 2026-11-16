@@ -36,8 +36,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -1523,6 +1525,234 @@ class CypherWriteVisibilityTest {
       for (final Result row : rows)
         pairs.add(row.getProperty("alias5") + ":" + row.getProperty("alias6") + ":" + row.getProperty("graphNodeCount"));
       return pairs;
+    }
+  }
+
+  /**
+   * Issue #11534 (consolidating #11532 and #11533): a read-only vector-index subquery, or a plain {@code WITH}, placed in front of
+   * a correlated write changed what the query returned.
+   * <ul>
+   *   <li>#11532: a writing {@code CALL} body read a record the outer row held with the value from before the write the run
+   *   for an earlier row had made to it, because that write went to the transaction's copy and the row still held the object
+   *   it was produced with. How many rows a step read ahead decided which reads went stale, so a {@code WITH} in front of the
+   *   CALL moved them. A writing body is now seeded with the copies the transaction wrote, paths included. A read-only body
+   *   keeps the row's snapshot (issue #6362).</li>
+   *   <li>#11533: a {@code CALL (n0) { RETURN n0 AS n21 }} after a {@code WITH} hid that {@code n21} is the {@code n0} of a
+   *   disconnected MATCH, so {@code DETACH DELETE n21} streamed behind the MATCH and the later rows of its other component lost
+   *   the nodes the earlier rows had deleted: 200 rows instead of 210.</li>
+   * </ul>
+   */
+  @Nested
+  class Issue11534VectorBarrierKeepsRowsAndValues extends TestHelper {
+    private static final String VECTOR_BARRIER = """
+        CALL () {
+          CALL db.index.vector.queryNodes('Probe[embedding]', 1, [1.0, 0.0, 0.0]) YIELD node, score
+          RETURN count(*) AS discard
+        }
+        """;
+
+    private static final String PATH_BODY = """
+        CALL (p0) {
+          WITH [rel IN relationships(p0) | rel.k3] AS before, relationships(p0) AS rels
+          UNWIND rels AS rel
+          SET rel.k3 = 'K'
+          RETURN before
+        }
+        RETURN before, [r IN relationships(p0) | toString(id(r))] AS ids, [n IN nodes(p0) | toString(id(n))] AS path""";
+
+    private static final String DELETE_MATCH = "MATCH ({k6: false}), (n0 {k5: false, k9: false}), (n1 {k0: '1'})-[]->()\n";
+    private static final String DELETE_TAIL  = "CALL (n0) { RETURN n0 AS n21 }\nDETACH DELETE n21\nRETURN count(*) AS rows";
+
+    private void createVectorProbe() {
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (:Probe {embedding: [1.0, 0.0, 0.0]})").close();
+        database.command("opencypher", """
+            CREATE VECTOR INDEX ProbeEmbedding FOR (n:Probe) ON n.embedding \
+            OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'cosine'}}""").close();
+      });
+    }
+
+    @Test
+    void vectorBarrierInFrontOfACorrelatedSetKeepsTheValuesTheRowsRead() {
+      createVectorProbe();
+      database.transaction(() -> database.command("opencypher",
+          "CREATE (a), (b) WITH a, b UNWIND range(1, 8) AS i CREATE (a)-[:LINK {k3: 'old'}]->(b)").close());
+
+      final List<Result> left = runAndReset("MATCH p0 = () -[*1..2]-()\n" + PATH_BODY);
+      final List<Result> right = runAndReset("MATCH p0 = () -[*1..2]-()\n" + VECTOR_BARRIER + "WITH p0\n" + PATH_BODY);
+      final List<Result> withOnly = runAndReset("MATCH p0 = () -[*1..2]-()\nWITH p0\n" + PATH_BODY);
+
+      assertThat(left).hasSize(240);
+      assertThat(befores(right)).containsExactlyElementsOf(befores(left));
+      assertThat(befores(withOnly)).containsExactlyElementsOf(befores(left));
+
+      for (final List<Result> rows : List.of(left, right, withOnly))
+        assertEachRelationshipReadOldOnce(rows);
+    }
+
+    /**
+     * The same body handed the relationships as a list, or inside a map, rather than as the path: the records nested in the
+     * imported value are lined up with the transaction's writes as well, so the answer does not depend on how the body
+     * receives them.
+     */
+    @Test
+    void relationshipsImportedInAListOrAMapSeeTheWritesOfEarlierRows() {
+      database.transaction(() -> database.command("opencypher",
+          "CREATE (a), (b) WITH a, b UNWIND range(1, 8) AS i CREATE (a)-[:LINK {k3: 'old'}]->(b)").close());
+      final String tail = "RETURN before, [r IN relationships(p0) | toString(id(r))] AS ids, [n IN nodes(p0) | toString(id(n))] AS path";
+
+      final List<Result> listed = runAndReset("""
+          MATCH p0 = () -[*1..2]-()
+          WITH p0, relationships(p0) AS rels
+          CALL (rels) {
+            WITH rels, [rel IN rels | rel.k3] AS before
+            UNWIND rels AS rel
+            SET rel.k3 = 'K'
+            RETURN before
+          }
+          """ + tail);
+      final List<Result> mapped = runAndReset("""
+          MATCH p0 = () -[*1..2]-()
+          WITH p0, {rels: relationships(p0)} AS m
+          CALL (m) {
+            WITH m, [rel IN m.rels | rel.k3] AS before
+            UNWIND m.rels AS rel
+            SET rel.k3 = 'K'
+            RETURN before
+          }
+          """ + tail);
+
+      assertThat(listed).hasSize(240);
+      assertEachRelationshipReadOldOnce(listed);
+      assertThat(mapped).hasSize(240);
+      assertEachRelationshipReadOldOnce(mapped);
+    }
+
+    /**
+     * Each run of the body reads its relationships and then writes them: only the first path through a relationship can read
+     * it before the write. The UNWIND returns a 2-hop path's row twice, so each path is counted once.
+     */
+    private void assertEachRelationshipReadOldOnce(final List<Result> rows) {
+      final Map<String, Integer> oldReads = new TreeMap<>();
+      final Set<String> paths = new HashSet<>();
+      for (final Result row : rows) {
+        if (!paths.add(row.getProperty("path").toString() + row.getProperty("ids")))
+          continue;
+        final List<String> ids = row.getProperty("ids");
+        final List<String> before = row.getProperty("before");
+        for (int i = 0; i < ids.size(); i++)
+          if ("old".equals(before.get(i)))
+            oldReads.merge(ids.get(i), 1, Integer::sum);
+      }
+      assertThat(paths).hasSize(128);
+      assertThat(oldReads).hasSize(8);
+      assertThat(oldReads.values()).containsOnly(1);
+    }
+
+    /** Every reader inside a writing body sees what the run for an earlier row wrote: property, chained, map, properties(), keys(). */
+    @Test
+    void everyReaderOfAHeldRecordSeesTheWriteOfAnEarlierRow() {
+      database.transaction(() -> database.command("opencypher", "CREATE (:A {c: 0})").close());
+      final List<Result> rows = new ArrayList<>();
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", """
+            MATCH (a:A)
+            UNWIND [1, 2, 3] AS i
+            CALL (a, i) {
+              WITH a, i, a.c AS before, head([a]).c AS chained, [x IN [a] | x.c] AS listed, a{.c} AS projected,
+                   a{.*} AS all, properties(a) AS props, keys(a) AS keys
+              SET a.c = i
+              SET a['k' + i] = i
+              RETURN before, chained, listed, projected, all, props, keys
+            }
+            RETURN i, before, chained, listed, projected, all, props, keys""")) {
+          while (rs.hasNext())
+            rows.add(rs.next());
+        }
+      });
+
+      assertThat(rows).hasSize(3);
+      for (final Result row : rows) {
+        final long previous = number(row.getProperty("i")) - 1;
+        assertThat(number(row.getProperty("before"))).isEqualTo(previous);
+        assertThat(number(row.getProperty("chained"))).isEqualTo(previous);
+        assertThat(number(((List<?>) row.getProperty("listed")).getFirst())).isEqualTo(previous);
+        assertThat(number(((Map<?, ?>) row.getProperty("projected")).get("c"))).isEqualTo(previous);
+        assertThat(number(((Map<?, ?>) row.getProperty("all")).get("c"))).isEqualTo(previous);
+        assertThat(number(((Map<?, ?>) row.getProperty("props")).get("c"))).isEqualTo(previous);
+        assertThat((List<?>) row.getProperty("keys")).hasSize(1 + (int) previous);
+      }
+    }
+
+    @Test
+    void vectorBarrierInFrontOfACorrelatedDeleteKeepsEveryRow() {
+      createDeleteGraph();
+      assertThat(deleteRows(DELETE_MATCH + DELETE_TAIL)).isEqualTo(210L);
+
+      createDeleteGraph();
+      assertThat(deleteRows(DELETE_MATCH + VECTOR_BARRIER + "WITH n0\n" + DELETE_TAIL)).isEqualTo(210L);
+    }
+
+    /** The reporter's control: the vector search is not needed, the WITH alone lost the rows. */
+    @Test
+    void withInFrontOfACorrelatedDeleteKeepsEveryRow() {
+      createDeleteGraph();
+      assertThat(deleteRows(DELETE_MATCH + "WITH n0\n" + DELETE_TAIL)).isEqualTo(210L);
+
+      // the importing-WITH form of the subquery, and CALL (*)
+      createDeleteGraph();
+      assertThat(deleteRows(DELETE_MATCH + "WITH n0\nCALL { WITH n0 RETURN n0 AS n21 }\nDETACH DELETE n21\nRETURN count(*) AS rows"))
+          .isEqualTo(210L);
+      createDeleteGraph();
+      assertThat(deleteRows(DELETE_MATCH + "WITH n0\nCALL (*) { RETURN n0 AS n21 }\nDETACH DELETE n21\nRETURN count(*) AS rows"))
+          .isEqualTo(210L);
+    }
+
+    private long number(final Object value) {
+      return ((Number) value).longValue();
+    }
+
+    private void createDeleteGraph() {
+      database.transaction(() -> {
+        database.command("opencypher", "MATCH (n) WHERE NOT n:Probe DETACH DELETE n").close();
+        database.command("opencypher",
+            "CREATE (n1 {k0: '1', k6: false}), (n3 {k5: false, k9: false, k6: false}), (n1)-[:LINK]->(n3)").close();
+        database.command("opencypher", "UNWIND range(0, 12) AS i CREATE ({k5: false, k9: false, k6: false})").close();
+      });
+      if (!database.getSchema().existsType("Probe"))
+        createVectorProbe();
+    }
+
+    private long deleteRows(final String query) {
+      final long[] rows = new long[1];
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", query)) {
+          rows[0] = ((Number) rs.next().getProperty("rows")).longValue();
+        }
+      });
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n) WHERE NOT n:Probe RETURN count(n) AS c")) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
+      }
+      return rows[0];
+    }
+
+    private List<Result> runAndReset(final String query) {
+      final List<Result> rows = new ArrayList<>();
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", query)) {
+          while (rs.hasNext())
+            rows.add(rs.next());
+        }
+      });
+      database.transaction(() -> database.command("opencypher", "MATCH ()-[r:LINK]->() SET r.k3 = 'old'").close());
+      return rows;
+    }
+
+    private List<String> befores(final List<Result> rows) {
+      final List<String> befores = new ArrayList<>(rows.size());
+      for (final Result row : rows)
+        befores.add(row.getProperty("path") + "=" + row.getProperty("before"));
+      return befores;
     }
   }
 }

@@ -318,6 +318,37 @@ final class EagerBarriers {
   }
 
   /**
+   * Carries the taint across a {@code CALL} subquery the way {@link #propagateTaintThroughRenames} carries it across a
+   * {@code WITH ... AS} (issue #11534): {@code CALL (n0) { RETURN n0 AS n21 }} hands the outer query the same entity under a new
+   * name, so a later {@code DELETE n21} races the not-yet-produced rows of the disconnected MATCH exactly as {@code DELETE n0}
+   * would. What the body does with an imported variable is not followed, so every name it returns is tainted as soon as it can
+   * see a tainted one: through an explicit scope that names it or {@code *}, or through the importing {@code WITH} of a body with
+   * no scope clause. A body that imports nothing tainted ({@code CALL () { ... }}) returns nothing tainted.
+   */
+  static void propagateTaintThroughSubquery(final SubqueryClause subqueryClause,
+      final Set<String> disconnectedTaintedVariables) {
+    if (disconnectedTaintedVariables.isEmpty() || subqueryClause.getInnerStatement() == null)
+      return;
+    final ReturnClause returnClause = subqueryClause.getInnerStatement().getReturnClause();
+    if (returnClause == null || !importsTaintedVariable(subqueryClause, disconnectedTaintedVariables))
+      return;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (!item.isStar())
+        disconnectedTaintedVariables.add(item.getOutputName());
+  }
+
+  private static boolean importsTaintedVariable(final SubqueryClause subqueryClause,
+      final Set<String> disconnectedTaintedVariables) {
+    final List<String> scope = subqueryClause.getScopeVariables();
+    if (scope == null)
+      return true; // CALL { WITH n ... }: the importing WITH is not parsed here, so assume it imports one
+    for (final String variable : scope)
+      if ("*".equals(variable) || disconnectedTaintedVariables.contains(variable))
+        return true;
+    return false;
+  }
+
+  /**
    * True when at least one of the given DELETE targets might read a variable in {@code
    * disconnectedTaintedVariables} - see {@link #closeMatchSegment}.
    * <p>
