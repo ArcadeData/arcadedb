@@ -325,7 +325,6 @@ public class AggregationStep extends AbstractExecutionStep {
     });
   }
 
-
   /**
    * Holds information about a complex aggregation expression that contains
    * one or more aggregation sub-expressions within a larger expression.
