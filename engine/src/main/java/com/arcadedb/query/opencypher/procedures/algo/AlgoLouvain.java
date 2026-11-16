@@ -173,11 +173,12 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     final double[] scratchA = new double[n];
     final double[] scratchB = new double[n];
-    double prevModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB);
+    double prevModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB, guard);
 
     final double[] candidateWeight = new double[n]; // all zero between two nodes
     final boolean[] touched = new boolean[n];
     final int[] candidates = new int[n];
+    int work = 0; // adjacency entries walked: a vertex of high degree is many of them, so the checkpoint counts these
 
     for (int iter = 0; iter < maxIterations; iter++) {
       // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the graph settles, so
@@ -193,6 +194,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
         int candidateCount = 0;
         for (int k = 0; k < row.length; k++) {
+          guard.checkPeriodically(++work);
           final int c = community[row[k]];
           if (!touched[c]) {
             touched[c] = true;
@@ -227,13 +229,13 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
       if (!changed)
         break;
 
-      final double newModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB);
+      final double newModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB, guard);
       if (Math.abs(newModularity - prevModularity) < tolerance)
         break;
       prevModularity = newModularity;
     }
 
-    final double finalModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB);
+    final double finalModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB, guard);
 
     // Number the communities from 0 in order of first appearance (community ids are node indexes)
     final int[] remap = candidates; // reused
@@ -254,21 +256,25 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
    * so the internal weights summed over the rows are twice L_c. The two scratch arrays are cleared first.
    */
   private static double modularity(final int[][] neighbors, final double[][] weights, final int[] community,
-      final double[] nodeDegree, final double totalWeight, final double[] internalWeight, final double[] communityDegree) {
+      final double[] nodeDegree, final double totalWeight, final double[] internalWeight, final double[] communityDegree,
+      final WorkGuard guard) {
     if (totalWeight == 0.0)
       return 0.0;
 
     final int n = neighbors.length;
     Arrays.fill(internalWeight, 0.0);
     Arrays.fill(communityDegree, 0.0);
+    int work = 0;
     for (int i = 0; i < n; i++) {
       final int c = community[i];
       communityDegree[c] += nodeDegree[i];
       final int[] row = neighbors[i];
       final double[] rowWeights = weights[i];
-      for (int k = 0; k < row.length; k++)
+      for (int k = 0; k < row.length; k++) {
+        guard.checkPeriodically(++work);
         if (community[row[k]] == c)
           internalWeight[c] += rowWeights[k];
+      }
     }
 
     double modularity = 0.0;

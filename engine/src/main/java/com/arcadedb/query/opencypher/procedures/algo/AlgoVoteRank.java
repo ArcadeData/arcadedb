@@ -98,13 +98,15 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     long entries = 0;
     for (final int[] row : adjOut)
       entries += row.length;
-    // ints: the voters of each node (offsets and ids), the affected list, the change stamps and the heap's nodes;
-    // doubles: the score and the ability of each node and the heap's scores; the elected flags
-    graph.memory().reserve(saturatingSum(saturatingProduct(saturatingSum(4L * n + 1, entries), INT_BYTES),
-            saturatingProduct(n, 3 * DOUBLE_BYTES + BOOLEAN_BYTES)),
+    final int limit = Math.min(topK, n);
+    // ints: the voters of each node (offsets and ids), the affected list, the change stamps, the heap's nodes (bounded
+    // at twice the node count, see ScoreHeap) and the election order; doubles: the score and the ability of each node
+    // and the heap's scores; the elected flags
+    graph.memory().reserve(saturatingSum(saturatingProduct(saturatingSum(saturatingSum(5L * n + 1 + ScoreHeap.SLACK, entries), limit),
+            INT_BYTES), saturatingProduct(4L * n + ScoreHeap.SLACK, DOUBLE_BYTES) + n * BOOLEAN_BYTES),
         "the vote-rank working set", n + " nodes, " + entries + " edge entries");
 
-    final int[] electedOrder = elect(adjOut, Math.min(topK, n), guard);
+    final int[] electedOrder = elect(adjOut, limit, guard);
 
     final List<Result> results = new ArrayList<>(electedOrder.length);
     for (int i = 0; i < electedOrder.length; i++) {
@@ -132,6 +134,10 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
    * ascending order, which is the order the full recompute added them in: every score is therefore bit for bit the one
    * the full recompute produced, and so is every tie and every election. Patching would have let rounding pick a
    * different winner between two equal scores.
+   * <p>
+   * The heap holds at most twice the node count: when the stale entries fill it, it is rebuilt from the live scores,
+   * which costs O(V) after at least V pushes. The checkpoint counts work (entries popped, edges and voters walked), not
+   * elections, so a deadline is observed after a bounded amount of work however the work falls across the elections.
    */
   static int[] elect(final int[][] adjOut, final int limit, final WorkGuard guard) {
     final int n = adjOut.length;
@@ -151,27 +157,26 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
 
     final double[] score = new double[n];
     final double[] ability = new double[n];
-    final ScoreHeap heap = new ScoreHeap(n);
+    final boolean[] elected = new boolean[n];
     for (int i = 0; i < n; i++) {
       score[i] = voterStart[i + 1] - voterStart[i];
       ability[i] = 1.0;
-      if (score[i] > 0.0)
-        heap.push(score[i], i);
     }
+    final ScoreHeap heap = new ScoreHeap(n);
+    heap.rebuild(score, elected);
 
-    final boolean[] elected = new boolean[n];
     final int[] affectedStamp = new int[n];
     final int[] affected = cursor; // reused: the cursors are spent
     final int[] electedOrder = new int[limit];
     int electedCount = 0;
+    int work = 0;
 
     while (electedCount < limit) {
-      guard.checkPeriodically(electedCount);
-
       // The winner: the top entry whose score is still current. A node whose score fell to zero is never pushed, so an
       // empty heap means no node left has a positive score
       int best = -1;
       while (heap.size() > 0) {
+        guard.checkPeriodically(work++);
         final int top = heap.topNode();
         final double topScore = heap.topScore();
         heap.pop();
@@ -189,11 +194,13 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       int affectedCount = 0;
 
       // Its out-neighbours lose its vote
-      for (final int v : adjOut[best])
+      for (final int v : adjOut[best]) {
+        guard.checkPeriodically(work++);
         if (!elected[v] && affectedStamp[v] != stamp) {
           affectedStamp[v] = stamp;
           affected[affectedCount++] = v;
         }
+      }
 
       // Each out-neighbour votes less, once per edge from the elected node, and so do the scores it contributes to
       final int degree = adjOut[best].length;
@@ -206,11 +213,13 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
           if (lowered == ability[neighbor])
             continue;
           ability[neighbor] = lowered;
-          for (final int w : adjOut[neighbor])
+          for (final int w : adjOut[neighbor]) {
+            guard.checkPeriodically(work++);
             if (!elected[w] && affectedStamp[w] != stamp) {
               affectedStamp[w] = stamp;
               affected[affectedCount++] = w;
             }
+          }
         }
       }
 
@@ -218,33 +227,48 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
         final int w = affected[k];
         double sum = 0.0;
         for (int p = voterStart[w]; p < voterStart[w + 1]; p++) {
+          guard.checkPeriodically(work++);
           final int u = voters[p];
           if (!elected[u])
             sum += ability[u];
         }
         if (sum != score[w]) {
           score[w] = sum;
-          if (sum > 0.0)
-            heap.push(sum, w);
+          if (sum > 0.0) {
+            if (heap.isFull())
+              heap.rebuild(score, elected); // w included: its score is already the new one
+            else
+              heap.push(sum, w);
+          }
         }
       }
     }
     return electedCount == limit ? electedOrder : Arrays.copyOf(electedOrder, electedCount);
   }
 
-  /** A binary max-heap of (score, node) entries in two primitive arrays: higher score first, lower node among equals. */
-  private static final class ScoreHeap {
-    private double[] scores;
-    private int[]    nodes;
-    private int      size;
+  /**
+   * A binary max-heap of (score, node) entries in two primitive arrays: higher score first, lower node among equals. Its
+   * capacity is fixed at twice the node count plus {@link #SLACK}; {@link #rebuild} brings it back to one entry per live
+   * score when the stale ones fill it, so it never grows past what the call reserved.
+   */
+  static final class ScoreHeap {
+    static final int SLACK = 16;
 
-    ScoreHeap(final int capacity) {
-      scores = new double[Math.max(16, capacity)];
+    private final double[] scores;
+    private final int[]    nodes;
+    private       int      size;
+
+    ScoreHeap(final int nodeCount) {
+      scores = new double[2 * nodeCount + SLACK];
       nodes = new int[scores.length];
     }
 
     int size() {
       return size;
+    }
+
+    boolean isFull() {
+      return size == scores.length;
     }
 
     double topScore() {
@@ -255,16 +279,23 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       return nodes[0];
     }
 
+    /** Replaces the content with one entry per node not elected whose score is positive, heapified bottom-up in O(n). */
+    void rebuild(final double[] score, final boolean[] elected) {
+      size = 0;
+      for (int i = 0; i < score.length; i++)
+        if (!elected[i] && score[i] > 0.0) {
+          scores[size] = score[i];
+          nodes[size++] = i;
+        }
+      for (int i = (size >>> 1) - 1; i >= 0; i--)
+        siftDown(i, scores[i], nodes[i]);
+    }
+
     private static boolean before(final double scoreA, final int nodeA, final double scoreB, final int nodeB) {
       return scoreA > scoreB || (scoreA == scoreB && nodeA < nodeB);
     }
 
     void push(final double score, final int node) {
-      if (size == scores.length) {
-        final int grown = scores.length + (scores.length >> 1);
-        scores = Arrays.copyOf(scores, grown);
-        nodes = Arrays.copyOf(nodes, grown);
-      }
       int i = size++;
       while (i > 0) {
         final int parent = (i - 1) >>> 1;
@@ -280,16 +311,17 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
 
     void pop() {
       final int last = --size;
-      if (last == 0)
-        return;
-      final double score = scores[last];
-      final int node = nodes[last];
-      int i = 0;
+      if (last > 0)
+        siftDown(0, scores[last], nodes[last]);
+    }
+
+    /** Places (score, node) at {@code i} or below, moving the better child up while it comes before. */
+    private void siftDown(int i, final double score, final int node) {
       while (true) {
         int child = 2 * i + 1;
-        if (child >= last)
+        if (child >= size)
           break;
-        if (child + 1 < last && before(scores[child + 1], nodes[child + 1], scores[child], nodes[child]))
+        if (child + 1 < size && before(scores[child + 1], nodes[child + 1], scores[child], nodes[child]))
           child++;
         if (!before(scores[child], nodes[child], score, node))
           break;

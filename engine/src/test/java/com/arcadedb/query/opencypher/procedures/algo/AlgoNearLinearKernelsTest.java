@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -183,6 +184,33 @@ class AlgoNearLinearKernelsTest {
     }
   }
 
+  /**
+   * The adjacency is read one row at a time, so an edge deleted between two row reads can be left in one row only. The
+   * forward rows are filled from whichever row names the edge, so such an edge is still one edge, where looking for its
+   * mirror entry failed with an {@code ArrayIndexOutOfBoundsException}.
+   */
+  @Test
+  void hierarchicalClusteringToleratesAnEdgeListedByOneRowOnly() {
+    final Random random = new Random(121710);
+    for (int round = 0; round < 80; round++) {
+      final int n = 2 + random.nextInt(120);
+      final int[][] adj = randomGraph(random, n, random.nextInt(5 * n + 1)).both();
+      for (int u = 0; u < n; u++)
+        if (adj[u].length > 0 && random.nextInt(4) == 0)
+          adj[u] = Arrays.copyOf(adj[u], random.nextInt(adj[u].length)); // drops the tail of the row, mirrors stay
+      final int target = 1 + random.nextInt(n);
+
+      final int[] cluster = AlgoHierarchicalClustering.cluster(adj, target, NO_DEADLINE);
+
+      assertThat(cluster).as("round %d", round).hasSize(n);
+      final int clusters = Arrays.stream(cluster).max().orElse(-1) + 1;
+      assertThat(clusters).as("round %d", round).isGreaterThanOrEqualTo(target);
+      for (int i = 0; i < n; i++)
+        assertThat(cluster[i]).as("round %d: ids are numbered in order of first appearance", round)
+            .isLessThanOrEqualTo(i == 0 ? 0 : Arrays.stream(cluster, 0, i).max().orElse(-1) + 1);
+    }
+  }
+
   /** The former algorithm: one merge per round, along the first edge of highest similarity in scan order. */
   private static int[] referenceHierarchicalClustering(final int[][] adj, final int targetClusters) {
     final int n = adj.length;
@@ -251,6 +279,37 @@ class AlgoNearLinearKernelsTest {
             .containsExactly(referenceVoteRank(graph.out(), limit));
       }
     }
+  }
+
+  /**
+   * Sources point at every center and every center at every sink: each election of a center lowers every sink score, so
+   * the lazy heap receives a fresh entry per sink per election and its stale entries pile up far past the node count.
+   * The heap is rebuilt from the live scores when it fills its fixed capacity (twice the node count), so it never grows
+   * past what the call reserved, and the elections are still those of the full recompute.
+   */
+  @Test
+  void voteRankRebuildsItsHeapWhenStaleEntriesFillIt() {
+    final int sources = 61, centers = 60, sinks = 60;
+    final int n = sources + centers + sinks;
+    final int edges = sources * centers + centers * sinks;
+    final int[] src = new int[edges];
+    final int[] dst = new int[edges];
+    int e = 0;
+    for (int s = 0; s < sources; s++)
+      for (int c = 0; c < centers; c++) {
+        src[e] = s;
+        dst[e++] = sources + c;
+      }
+    for (int c = 0; c < centers; c++)
+      for (int k = 0; k < sinks; k++) {
+        src[e] = sources + c;
+        dst[e++] = sources + centers + k;
+      }
+    final Graph graph = Graph.of(n, src, dst, new double[edges]);
+    assertThat(centers * sinks).as("pushes the centers' elections cause, against the heap capacity")
+        .isGreaterThan(2 * n + AlgoVoteRank.ScoreHeap.SLACK);
+
+    assertThat(AlgoVoteRank.elect(graph.out(), n, NO_DEADLINE)).containsExactly(referenceVoteRank(graph.out(), n));
   }
 
   /** The former algorithm: a scan of every node for the winner and a full recompute of every score per round. */

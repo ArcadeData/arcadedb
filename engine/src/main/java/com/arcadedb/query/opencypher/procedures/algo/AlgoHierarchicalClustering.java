@@ -98,10 +98,10 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     long entries = 0;
     for (final int[] row : adj)
       entries += row.length;
-    // ints: the forward adjacency (offsets, ids, triangle counts: half the entries each at most), the edge list (two
-    // ends, a similarity and a position in the merge order per edge: half the entries), the union-find and the result;
-    // the similarity histogram is at most one int per node
-    graph.memory().reserve(saturatingProduct(saturatingSum(saturatingProduct(entries, 3L), 6L * n + 2), INT_BYTES),
+    // ints: the forward adjacency (offsets and fill cursors per node, ids: one per entry before the duplicates go,
+    // triangle counts: half the entries at most), the edge list (two ends, a similarity and a position in the merge order
+    // per edge: half the entries), the union-find and the result; the similarity histogram is at most one int per node
+    graph.memory().reserve(saturatingProduct(saturatingSum(saturatingProduct(entries, 4L), 7L * n + 2), INT_BYTES),
         "the edge similarities", n + " nodes, " + entries + " edge entries");
 
     final int[] cluster = cluster(adj, Math.max(1, Math.min(numClusters, n)), guard);
@@ -140,21 +140,26 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     final int n = adj.length;
 
     // Forward adjacency: the neighbours of higher rank, sorted, without duplicates. Every edge {u, v} with u != v sits in
-    // the forward row of exactly one of its ends
+    // the forward row of exactly one of its ends, its lower-ranked one, whichever row listed it: a row that names a
+    // neighbour whose own row does not name it back (an edge deleted between the two row reads) still yields one edge
     final int[] forwardStart = new int[n + 1];
     for (int u = 0; u < n; u++)
       for (final int v : adj[u])
-        if (v != u && ranksAbove(adj, v, u))
-          forwardStart[u + 1]++;
+        if (v != u)
+          forwardStart[(ranksAbove(adj, v, u) ? u : v) + 1]++;
     for (int u = 0; u < n; u++)
       forwardStart[u + 1] += forwardStart[u];
     final int[] forward = new int[forwardStart[n]];
+    final int[] fill = Arrays.copyOf(forwardStart, n);
     for (int u = 0; u < n; u++) {
       guard.checkPeriodically(u);
-      int p = forwardStart[u];
       for (final int v : adj[u])
-        if (v != u && ranksAbove(adj, v, u))
-          forward[p++] = v;
+        if (v != u) {
+          if (ranksAbove(adj, v, u))
+            forward[fill[u]++] = v;
+          else
+            forward[fill[v]++] = u;
+        }
     }
     // Sort each row and drop its repeated neighbours, compacting the rows towards the front (a row never moves right)
     int write = 0;
@@ -173,8 +178,9 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
 
     // Triangles per forward edge: u lowest-ranked, v and w in its forward row, w also in v's
     final int[] triangles = new int[write];
+    int work = 0; // merge steps: one node can cost many, so the checkpoint counts these rather than nodes
     for (int u = 0; u < n; u++) {
-      guard.check(); // one node costs the forward rows of its forward neighbours
+      guard.check();
       final int uEnd = forwardStart[u + 1];
       for (int a = forwardStart[u]; a < uEnd; a++) {
         final int v = forward[a];
@@ -182,6 +188,7 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
         int iv = forwardStart[v];
         final int vEnd = forwardStart[v + 1];
         while (iu < uEnd && iv < vEnd) {
+          guard.checkPeriodically(++work);
           final int x = forward[iu];
           final int y = forward[iv];
           if (x < y)
