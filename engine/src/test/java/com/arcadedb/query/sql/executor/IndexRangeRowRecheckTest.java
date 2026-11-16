@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -28,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,5 +116,126 @@ class IndexRangeRowRecheckTest extends TestHelper {
       assertThat(rows.next().<Number>getProperty("c").longValue())
           .as("the records moved out of the range before the DELETE reached them are not deleted").isEqualTo(RECORDS / 5 - 1);
     }
+  }
+
+  /**
+   * A range sorted on another property is served in physical order: the step reads every RID of the range first, then loads the
+   * records. A commit landing between the two must not make the load serve a record it moved out of the range.
+   */
+  @Test
+  void aPhysicalOrderLoadDoesNotReturnARecordACommitMovedOutOfTheRange() throws Exception {
+    createFixture(RECORDS, 10, 0);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+    try {
+      final RangeRun run = runWithAMoveAtTheFirstLoad();
+      assertThat(run.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.PHYSICAL_ORDER);
+      assertRowsInRange(run, RECORDS / 5);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+    }
+  }
+
+  /** The same for a range too large to buffer at once, loaded chunk by chunk. */
+  @Test
+  void aChunkedPhysicalOrderLoadDoesNotReturnARecordACommitMovedOutOfTheRange() throws Exception {
+    createFixture(RECORDS, 10, 0);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+    PhysicalOrderRidFetcher.maxBufferedRids = 100;
+    try {
+      final RangeRun run = runWithAMoveAtTheFirstLoad();
+      assertThat(run.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.PHYSICAL_ORDER_CHUNKED);
+      assertRowsInRange(run, RECORDS / 5);
+    } finally {
+      PhysicalOrderRidFetcher.maxBufferedRids = 1 << 20;
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+    }
+  }
+
+  /**
+   * The same when the workers of a parallel scan load the slices of the range, one chunk or several. A worker reads a page of
+   * records at once, so the records are large enough to spread a slice over several pages, which the worker that met the first
+   * record reads after the commit, and the range is selective enough to be loaded in physical order on many workers.
+   */
+  @Test
+  void aParallelPhysicalOrderLoadDoesNotReturnARecordACommitMovedOutOfTheRange() throws Exception {
+    final int pagesPerUnit = database.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 1);
+    try {
+      for (final int bufferCap : new int[] { 1 << 20, 64 }) {
+        PhysicalOrderRidFetcher.maxBufferedRids = bufferCap;
+        createFixture(20_000, 200, 1_000);
+        final RangeRun run = runWithAMoveAtTheFirstLoad();
+        assertThat(run.plan()).as("buffer of %d RIDs", bufferCap).contains("loaded in parallel");
+        assertRowsInRange(run, 200);
+        database.getSchema().dropType("T");
+      }
+    } finally {
+      PhysicalOrderRidFetcher.maxBufferedRids = 1 << 20;
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, pagesPerUnit);
+    }
+  }
+
+  private record RangeRun(List<Object> values, GetValueFromIndexEntryStep.Strategy strategy, String plan) {
+  }
+
+  /**
+   * Type T with an index on {@code v}: {@code records} documents, {@code v} cycling through {@code 0..modulo-1}, each padded with
+   * {@code padding} characters. The range {@code v >= 3 AND v < 5} holds two records of every {@code modulo}.
+   */
+  private void createFixture(final int records, final int modulo, final int padding) {
+    final String pad = "x".repeat(padding);
+    database.transaction(() -> {
+      final var type = database.getSchema().createDocumentType("T");
+      type.createProperty("v", Type.INTEGER);
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "v");
+      for (int i = 0; i < records; i++)
+        database.newDocument("T").set("k", i).set("v", i % modulo).set("pad", pad).save();
+    });
+  }
+
+  /**
+   * Runs a range query sorted on another property, the shape served in physical order. When it loads its first record, another
+   * transaction moves every other record of the range out of it and commits.
+   */
+  private RangeRun runWithAMoveAtTheFirstLoad() {
+    final AtomicBoolean moved = new AtomicBoolean();
+    final AfterRecordReadListener moveOnce = record -> {
+      if (moved.compareAndSet(false, true)) {
+        final FutureTask<Void> move = new FutureTask<>(() -> {
+          database.transaction(() -> database.command("sql", "UPDATE T SET v = 100 WHERE v >= 3 AND v < 5 AND @rid <> ?",
+              record.getIdentity()));
+          return null;
+        });
+        new Thread(move).start();
+        try {
+          move.get(60, TimeUnit.SECONDS);
+        } catch (final Exception e) {
+          throw new IllegalStateException(e);
+        }
+      }
+      return record;
+    };
+    final List<Object> values = new ArrayList<>();
+    database.getEvents().registerListener(moveOnce);
+    try (final ResultSet rows = database.query("sql", "SELECT k, v FROM T WHERE v >= 3 AND v < 5 ORDER BY k")) {
+      while (rows.hasNext())
+        values.add(rows.next().getProperty("v"));
+      final ExecutionPlan plan = rows.getExecutionPlan().get();
+      GetValueFromIndexEntryStep step = null;
+      for (final ExecutionStep candidate : plan.getSteps())
+        if (candidate instanceof GetValueFromIndexEntryStep found)
+          step = found;
+      assertThat(step).as(plan.prettyPrint(0, 2)).isNotNull();
+      return new RangeRun(values, step.getStrategy(), plan.prettyPrint(0, 2));
+    } finally {
+      database.getEvents().unregisterListener(moveOnce);
+      assertThat(moved.get()).as("the commit landed while the range was loaded").isTrue();
+    }
+  }
+
+  private static void assertRowsInRange(final RangeRun run, final int rangeRows) {
+    assertThat(run.values()).as("a record a commit moved out of the range is not returned").hasSizeLessThan(rangeRows);
+    assertThat(run.values()).as("every row a statement returns satisfies its WHERE")
+        .allMatch(v -> v instanceof Integer i && i >= 3 && i < 5);
   }
 }

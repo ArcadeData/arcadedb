@@ -316,9 +316,30 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   boolean isStillInRange(final Document record, final Object entryKey) {
     if (isKeyOf(record, entryKey) || !canVerifyKeys())
       return true;
-    if (!Boolean.TRUE.equals(condition.evaluate(record, context)))
-      return false;
-    return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate(record, context));
+    return new SeekCheck(condition, additionalRangeCondition).matches(record, context);
+  }
+
+  /**
+   * The check of {@link #isStillInRange} without an entry key, for the records of a range loaded in physical order (issue #11790):
+   * the entries are read before any record, and only their RIDs are kept. A copy of the condition of the seek, which a worker of a
+   * parallel load evaluates through its own context; null where the keys cannot be checked on the record, whose records are served
+   * as loaded.
+   */
+  SeekCheck seekCheck() {
+    return canVerifyKeys() ? new SeekCheck(condition, additionalRangeCondition).copy() : null;
+  }
+
+  /** The condition of a seek, evaluated on a record. */
+  record SeekCheck(BooleanExpression condition, BinaryCondition additionalRangeCondition) {
+    boolean matches(final Document record, final CommandContext context) {
+      if (!Boolean.TRUE.equals(condition.evaluate(record, context)))
+        return false;
+      return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate(record, context));
+    }
+
+    SeekCheck copy() {
+      return new SeekCheck(condition.copy(), additionalRangeCondition != null ? additionalRangeCondition.copy() : null);
+    }
   }
 
   /**
