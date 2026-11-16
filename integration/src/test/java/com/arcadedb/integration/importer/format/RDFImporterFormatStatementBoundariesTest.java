@@ -138,6 +138,31 @@ class RDFImporterFormatStatementBoundariesTest {
         .hasMessageContaining("maxPropertySize=4096");
   }
 
+  /**
+   * A term over the limit is refused while it is scanned: a 2,000-character literal within the line bound of a 1,024-character
+   * limit leaves no more than the limit of its value built.
+   */
+  @Test
+  void overlongTermIsRefusedBeforeItsValueIsBuilt() {
+    final NTriplesStatement statement = new NTriplesStatement(" ", 1024);
+    final String text = "<http://a/s> <http://a/p> \"" + "x".repeat(2_000) + "\" .";
+    assertThatThrownBy(() -> statement.parse(text, new String[3])).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Term 3 is longer than maxPropertySize=1024 characters");
+    assertThat(statement.builtTermLength()).isLessThanOrEqualTo(1024);
+  }
+
+  /** A byte-order mark at the start of the file is not part of the first subject. */
+  @Test
+  void leadingByteOrderMarkIsSkipped() throws Exception {
+    load(new RDFImporterFormat(" "), settings(), """
+        \uFEFF<http://a/s> <http://a/p> <http://a/o> .
+        <http://a/s> <http://a/q> "\uFEFFx" .
+        """);
+
+    assertThat(keys()).containsExactlyInAnyOrder("http://a/s", "http://a/o", "\"\uFEFFx\"");
+    assertThat(edges()).containsEntry("http://a/p", "http://a/s>http://a/o");
+  }
+
   private ImporterContext load(final RDFImporterFormat format, final ImporterSettings settings, final String content)
       throws Exception {
     final byte[] bytes = content.getBytes(StandardCharsets.UTF_8);

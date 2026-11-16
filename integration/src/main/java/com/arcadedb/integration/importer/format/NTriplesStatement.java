@@ -42,10 +42,12 @@ import java.io.Reader;
  * the delimited-text reading this replaces put it in the same cell. A term that is none of the above is taken as written.
  * What follows the third term (the {@code .}, or the graph of an N-Quads statement) is ignored. A blank-node label ends
  * before a final {@code .}, which is the terminator, not part of the label. A term longer than {@code maxLength} (when
- * positive) is refused, as the {@code maxPropertySize} setting refused a cell before.
+ * positive) is refused, as the {@code maxPropertySize} setting refused a cell before, as soon as the scan passes the limit and
+ * before the term's value is built.
  * <p>
  * {@link #readLine} reads one line of the source keeping at most {@link #lineLimit} characters of it: a statement within
- * the term limit is never longer, so a longer line is refused without being held whole in memory.
+ * the term limit is never longer, so a longer line is refused without being held whole in memory. A byte-order mark at the
+ * start of the source is skipped, as the delimited-text reading skipped it.
  */
 final class NTriplesStatement {
   static final String XSD_STRING = "http://www.w3.org/2001/XMLSchema#string";
@@ -60,11 +62,15 @@ final class NTriplesStatement {
   private final StringBuilder lineBuffer = new StringBuilder();
   private       long          lineLength;
   private       boolean       skipLineFeed;
+  private       boolean       atSourceStart = true;
   private final StringBuilder buffer  = new StringBuilder();
   // THE DECODED LEXICAL FORM OF THE LITERAL BEING READ: WHAT A USER READS, WHERE buffer HOLDS THE KEY
   private final StringBuilder lexical = new StringBuilder();
   private       String        line;
   private       int           pos;
+  // WHERE THE TERM BEING READ BEGINS, AND ITS NUMBER (1 TO 3), FOR THE LENGTH CHECK THE SCAN LOOPS MAKE
+  private       int           termBegin;
+  private       int           termNumber;
   private       boolean       literalRead;
   private       String        literalLanguage;
   private       String        literalDatatype;
@@ -87,6 +93,12 @@ final class NTriplesStatement {
     lineBuffer.setLength(0);
     lineLength = 0;
     int c = reader.read();
+    if (atSourceStart) {
+      atSourceStart = false;
+      // A UTF-8 FILE SAVED WITH A BYTE-ORDER MARK: KEPT, IT BECAME PART OF THE FIRST SUBJECT'S KEY ("\uFEFF<http://...>")
+      if (c == '\uFEFF')
+        c = reader.read();
+    }
     if (skipLineFeed) {
       skipLineFeed = false;
       if (c == '\n')
@@ -126,6 +138,11 @@ final class NTriplesStatement {
     return maxLength;
   }
 
+  /** How many characters of the last term's key and decoded value the reader built. Visible for testing the term limit. */
+  int builtTermLength() {
+    return Math.max(buffer.length(), lexical.length());
+  }
+
   /**
    * Parses {@code statement} and writes its first three terms into {@code terms}, answering how many it found (fewer than
    * three is a malformed statement, left to the caller to report).
@@ -156,7 +173,8 @@ final class NTriplesStatement {
         if (pos >= line.length())
           break;
       }
-      final int begin = pos;
+      termBegin = pos;
+      termNumber = found + 1;
       literalRead = false;
       terms[found] = readTerm();
       if (found == 2 && literalRead) {
@@ -164,10 +182,7 @@ final class NTriplesStatement {
         objectLanguage = literalLanguage;
         objectDatatype = literalDatatype;
       }
-      if (maxLength > 0 && pos - begin > maxLength)
-        throw new ImportException(
-            "Term " + (found + 1) + " is " + (pos - begin) + " characters long, more than maxPropertySize=" + maxLength + ": "
-                + line.substring(begin, Math.min(pos, begin + 80)) + "...");
+      checkTermLength();
       ++found;
     }
     return found;
@@ -206,6 +221,17 @@ final class NTriplesStatement {
     return c == ' ' || c == '\t';
   }
 
+  /**
+   * Refuses the term being read once the scan has passed {@code maxLength} characters of it. The scan loops call it per
+   * character, so an overlong term is refused before its decoded value and its key are built.
+   */
+  private void checkTermLength() {
+    if (maxLength > 0 && pos - termBegin > maxLength)
+      throw new ImportException(
+          "Term " + termNumber + " is longer than maxPropertySize=" + maxLength + " characters: " + line.substring(termBegin,
+              Math.min(pos, termBegin + 80)) + "...");
+  }
+
   private String readTerm() {
     final char c = line.charAt(pos);
     if (c == '<')
@@ -213,6 +239,7 @@ final class NTriplesStatement {
     if (c == '"')
       return readLiteral();
     final int begin = pos;
+    // NO CHECK IN THIS SCAN: IT BUILDS NOTHING, AND A BLANK-NODE LABEL ONE CHARACTER OVER THE LIMIT MAY BE ITS TERMINATOR
     while (pos < line.length() && !isWhitespace(line.charAt(pos)) && !atDelimiter())
       ++pos;
     // A BLANK-NODE LABEL NEVER ENDS WITH '.': A FINAL ONE IS THE STATEMENT TERMINATOR ("_:b1."), AND KEEPING IT MADE A LATER
@@ -230,6 +257,7 @@ final class NTriplesStatement {
     ++pos;
     while (pos < line.length()) {
       final char c = line.charAt(pos++);
+      checkTermLength();
       if (c == '>')
         return buffer.toString();
       if (c == '\\')
@@ -252,6 +280,7 @@ final class NTriplesStatement {
     boolean closed = false;
     while (pos < line.length()) {
       final char c = line.charAt(pos++);
+      checkTermLength();
       if (c == '"') {
         closed = true;
         break;
@@ -269,8 +298,10 @@ final class NTriplesStatement {
     if (pos < line.length() && line.charAt(pos) == '@') {
       final int tagBegin = pos;
       ++pos;
-      while (pos < line.length() && (Character.isLetterOrDigit(line.charAt(pos)) || line.charAt(pos) == '-'))
+      while (pos < line.length() && (Character.isLetterOrDigit(line.charAt(pos)) || line.charAt(pos) == '-')) {
         ++pos;
+        checkTermLength();
+      }
       buffer.append(line, tagBegin, pos);
       literalLanguage = line.substring(tagBegin + 1, pos);
     } else if (line.startsWith("^^<", pos)) {

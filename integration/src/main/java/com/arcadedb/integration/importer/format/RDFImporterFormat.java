@@ -366,9 +366,8 @@ public class RDFImporterFormat extends CSVImporterFormat {
   }
 
   /**
-   * The vertex type the subjects and objects are keyed into, created with its key property and unique index when the database
-   * does not have it yet. {@code newEdgeByKeys} looks every term up by that index, so an import into a database without the
-   * type failed with "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
+   * Creates the vertex of the literal object of the statement just parsed, keyed by {@code key} (its canonical N-Triples form),
+   * with its decoded value, language tag and datatype, unless a vertex with that key already exists.
    */
   private static void createLiteralVertexIfAbsent(final DatabaseInternal database, final String typeName,
       final String typeIdProperty, final String key, final NTriplesStatement statement) {
@@ -388,6 +387,11 @@ public class RDFImporterFormat extends CSVImporterFormat {
       vertex.set(name, value);
   }
 
+  /**
+   * The vertex type the subjects and objects are keyed into, created with its key property and unique index when the database
+   * does not have it yet. {@code newEdgeByKeys} looks every term up by that index, so an import into a database without the
+   * type failed with "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
+   */
   private static void ensureVertexType(final DatabaseInternal database, final String typeName, final String typeIdProperty) {
     if (database.getSchema().existsType(typeName))
       return;
