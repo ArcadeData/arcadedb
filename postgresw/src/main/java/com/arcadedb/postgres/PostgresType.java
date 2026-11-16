@@ -22,22 +22,36 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.google.gson.Strictness;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -48,6 +62,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -72,6 +88,15 @@ public enum PostgresType {
   TEXT(25, "text", 0, 1009, String.class, -1, value -> value),
   BPCHAR(1042, "bpchar", 0, 1014, String.class, -1, value -> value),
   JSON(114, "json", 0, 199, JSONObject.class, -1, PostgresType::parseJsonText),
+  // The types a driver binds a zoned datetime, a time of day, a duration or a Jsonb wrapper as (issue #11960): each one used to
+  // fail the Bind with "not supported for deserializing". They are read as parameters only, into the engine's ZONED_DATETIME,
+  // LOCAL_TIME, OFFSET_TIME, DURATION and the json value; this protocol never announces a column under them. typarray is 0, as
+  // for the catalog-only types below: no array of them is read, and a typarray must name a row pg_type has (issue #10592).
+  TIMESTAMPTZ(1184, "timestamptz", 0, 0, ZonedDateTime.class, 8, value -> parseTimestampTzText(value)),
+  TIME(1083, "time", 0, 0, LocalTime.class, 8, value -> parseTimeText(value)),
+  TIMETZ(1266, "timetz", 0, 0, OffsetTime.class, 12, value -> parseTimeTzText(value)),
+  INTERVAL(1186, "interval", 0, 0, CypherDuration.class, 16, value -> parseIntervalText(value)),
+  JSONB(3802, "jsonb", 0, 0, JSONObject.class, -1, PostgresType::parseJsonText),
   // The type PostgreSQL has for a blob, and the only honest answer for a byte[] (issue #6411). A byte[] used
   // to be typed as "char"[] (OID 1002) by getTypeForValue and as varchar (OID 1043) by getTypeFromArcade, so
   // a BINARY column's OID depended on whether the result set happened to be empty - and neither answer was
@@ -144,8 +169,9 @@ public enum PostgresType {
     names.put("character", BPCHAR);
     names.put("decimal", NUMERIC);
     names.put("timestamp without time zone", TIMESTAMP);
-    // No "timestamp with time zone" on purpose: timestamptz is a different type from timestamp, and this
-    // protocol has none. Mapping it here would answer a client asking for one with the wrong OID.
+    names.put("timestamp with time zone", TIMESTAMPTZ);
+    names.put("time without time zone", TIME);
+    names.put("time with time zone", TIMETZ);
 
     return Map.copyOf(names);
   }
@@ -158,10 +184,203 @@ public enum PostgresType {
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
   private static final long              POSTGRES_EPOCH_SECONDS      = 946684800L;
   private static final long              POSTGRES_EPOCH_DAYS         = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+  // An offset as a client writes it after a time: +02, +02:00, +02:00:00 or Z (lenient parsing takes all of them); the compact
+  // +0200 and +020000 are given their colons first by withOffsetColons.
+  private static final DateTimeFormatter OFFSET_FORMATTER          = new DateTimeFormatterBuilder().parseLenient()
+      .appendOffset("+HH:MM:ss", "Z").toFormatter();
+  private static final Pattern           COMPACT_OFFSET            = Pattern.compile("([+-]\\d{2})(\\d{2})(\\d{2})?$");
+  // STRICT: a date the calendar does not have (2024-02-30) is refused, not moved to the last day of the month
+  private static final DateTimeFormatter TIMESTAMPTZ_FORMATTER     = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_DATE).appendLiteral('T').append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .optionalStart().append(OFFSET_FORMATTER).optionalEnd().toFormatter().withResolverStyle(ResolverStyle.STRICT);
+  private static final DateTimeFormatter TIMETZ_FORMATTER          = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_TIME).append(OFFSET_FORMATTER).toFormatter();
 
   /**
-   * Parses an inbound json value. A list of documents is sent to the client as a json array (issue #5366), so
-   * the same payload must be accepted back: an array yields a List, anything else a {@link JSONObject}.
+   * A timestamptz parameter (issue #11960): {@code 2024-02-29 13:14:15.123456+02} as PostgreSQL and pgjdbc write it, or the ISO
+   * form with a {@code T}. The offset is kept; a text without one is read as UTC, the zone this protocol reports for the session.
+   */
+  private static ZonedDateTime parseTimestampTzText(final String value) {
+    final String text = value.trim();
+    final String iso = text.length() > 10 && text.charAt(10) == ' ' ? text.substring(0, 10) + 'T' + text.substring(11) : text;
+    try {
+      final var parsed = TIMESTAMPTZ_FORMATTER.parseBest(withOffsetColons(iso.replace(" ", "")), OffsetDateTime::from,
+          LocalDateTime::from);
+      return parsed instanceof OffsetDateTime offset ? offset.toZonedDateTime() : ((LocalDateTime) parsed).atZone(ZoneOffset.UTC);
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("TIMESTAMPTZ", value, e);
+    }
+  }
+
+  private static LocalTime parseTimeText(final String value) {
+    try {
+      return LocalTime.parse(value.trim());
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("TIME", value, e);
+    }
+  }
+
+  private static OffsetTime parseTimeTzText(final String value) {
+    try {
+      return OffsetTime.parse(withOffsetColons(value.trim().replace(" ", "")), TIMETZ_FORMATTER);
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("TIMETZ", value, e);
+    }
+  }
+
+  /** {@code +0200} as {@code +02:00} and {@code +020000} as {@code +02:00:00}, the forms the lenient offset parser reads. */
+  private static String withOffsetColons(final String text) {
+    final Matcher matcher = COMPACT_OFFSET.matcher(text);
+    if (!matcher.find())
+      return text;
+    final String colons = matcher.group(1) + ':' + matcher.group(2) + (matcher.group(3) != null ? ':' + matcher.group(3) : "");
+    return text.substring(0, matcher.start()) + colons;
+  }
+
+  private static final BigDecimal MICROS_PER_SECOND = BigDecimal.valueOf(1_000_000L);
+  private static final BigDecimal MICROS_PER_DAY    = BigDecimal.valueOf(86_400_000_000L);
+  // The digits an interval amount may have on either side of the point. Far more than any interval holds (PostgreSQL counts months
+  // and days in an int32 and the rest in int64 microseconds), and few enough that no scaling of an amount costs anything: an
+  // exponent such as 1e100000000 would otherwise make setScale build a number of a hundred million digits.
+  private static final int        MAX_AMOUNT_DIGITS = 18;
+  private static final String     ISO_AMOUNT        = "([-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))";
+  private static final Pattern    ISO_INTERVAL      = Pattern.compile(
+      "([-+])?P(?:" + ISO_AMOUNT + "Y)?(?:" + ISO_AMOUNT + "M)?(?:" + ISO_AMOUNT + "W)?(?:" + ISO_AMOUNT + "D)?(?:T(?:" + ISO_AMOUNT
+          + "H)?(?:" + ISO_AMOUNT + "M)?(?:" + ISO_AMOUNT + "S)?)?", Pattern.CASE_INSENSITIVE);
+  private static final String[]   ISO_UNITS         = { "years", "months", "weeks", "days", "hours", "minutes", "seconds" };
+  // the year-month field of the SQL-standard form, 1-2 for one year and two months
+  private static final Pattern    YEAR_MONTH_FIELD  = Pattern.compile("([-+]?)(\\d+)-(\\d+)");
+
+  /**
+   * An interval parameter (issue #11960) in the forms PostgreSQL reads: ISO 8601 ({@code P1DT5S}, and the alternative
+   * {@code P0001-02-03T04:05:06}), the postgres style psycopg sends ({@code 1 day 0:00:05}, {@code -1 day 23:59:55}), the verbose one
+   * pgjdbc sends ({@code 0 years 0 mons 1 days 0 hours 0 mins 5.0 secs}, {@code @ 1 day ago}), the signed sql_standard one
+   * ({@code +1 day +5 second +0 microsecond}) and the SQL-standard fields ({@code 1-2} for one year two months, {@code 3 4:05:06}
+   * for three days and a time, a lone number for seconds). A fraction of a month spills into days of 30 and a fraction of a day into
+   * hours, as in PostgreSQL, in the ISO form too. The result is the engine's DURATION value.
+   */
+  static CypherDuration parseIntervalText(final String value) {
+    final String text = value.trim();
+    final long[] monthsAndDays = new long[2];
+    BigDecimal micros = BigDecimal.ZERO;
+    boolean negate = false;
+    try {
+      if (text.startsWith("P") || text.startsWith("-P") || text.startsWith("+P") || text.startsWith("p")) {
+        final Matcher iso = ISO_INTERVAL.matcher(text);
+        if (!iso.matches())
+          // the alternative format, P0001-02-03T04:05:06, whose fields are whole numbers
+          try {
+            return CypherDuration.parse(text);
+          } catch (final RuntimeException e) {
+            throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
+          }
+        boolean any = false;
+        for (int i = 0; i < ISO_UNITS.length; i++) {
+          final String amount = iso.group(i + 2);
+          if (amount != null) {
+            micros = micros.add(addAmount(amount(amount), ISO_UNITS[i], monthsAndDays, value));
+            any = true;
+          }
+        }
+        if (!any)
+          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
+        negate = "-".equals(iso.group(1));
+      } else {
+        final String[] tokens = (text.startsWith("@") ? text.substring(1) : text).trim().toLowerCase(Locale.ENGLISH).split("\\s+");
+        int count = tokens.length;
+        negate = count > 0 && tokens[count - 1].equals("ago");
+        if (negate)
+          count--;
+        if (count == 0 || tokens[0].isEmpty())
+          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
+
+        for (int i = 0; i < count; i++) {
+          final String token = tokens[i];
+          final Matcher yearMonth = YEAR_MONTH_FIELD.matcher(token);
+          if (yearMonth.matches()) {
+            final BigDecimal months = amount(yearMonth.group(2)).multiply(BigDecimal.valueOf(12)).add(amount(yearMonth.group(3)));
+            micros = micros.add(addMonths("-".equals(yearMonth.group(1)) ? months.negate() : months, monthsAndDays));
+          } else if (token.indexOf(':') >= 0)
+            micros = micros.add(timeOfIntervalInMicros(token));
+          else if (i + 1 >= count)
+            // a lone trailing number is seconds, as PostgreSQL reads '5'
+            micros = micros.add(amount(token).multiply(MICROS_PER_SECOND));
+          else if (tokens[i + 1].indexOf(':') >= 0)
+            // a number before the time field is the day field: 3 4:05:06
+            micros = micros.add(addDays(amount(token), monthsAndDays));
+          else {
+            final BigDecimal amount = amount(token);
+            micros = micros.add(addAmount(amount, tokens[++i], monthsAndDays, value));
+          }
+        }
+      }
+      final long totalMicros = micros.setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+      final int sign = negate ? -1 : 1;
+      return new CypherDuration(sign * monthsAndDays[0], sign * monthsAndDays[1], sign * Math.floorDiv(totalMicros, 1_000_000L),
+          sign * Math.floorMod(totalMicros, 1_000_000L) * 1_000L);
+    } catch (final NumberFormatException | ArithmeticException e) {
+      throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
+    }
+  }
+
+  /** Adds {@code amount} of {@code unit}: whole months and days into {@code monthsAndDays}, the rest answered in microseconds. */
+  private static BigDecimal addAmount(final BigDecimal amount, final String unit, final long[] monthsAndDays, final String value) {
+    return switch (unit) {
+      // a fraction of a year is rounded to whole months, as PostgreSQL does (1.1 years is 13 months), not spilled into days
+      case "year", "years", "y", "yr", "yrs" ->
+          addMonths(amount.multiply(BigDecimal.valueOf(12)).setScale(0, RoundingMode.HALF_EVEN), monthsAndDays);
+      case "mon", "mons", "month", "months" -> addMonths(amount, monthsAndDays);
+      case "week", "weeks", "w" -> addDays(amount.multiply(BigDecimal.valueOf(7)), monthsAndDays);
+      case "day", "days", "d" -> addDays(amount, monthsAndDays);
+      case "hour", "hours", "h", "hr", "hrs" -> amount.multiply(BigDecimal.valueOf(3_600_000_000L));
+      case "minute", "minutes", "min", "mins", "m" -> amount.multiply(BigDecimal.valueOf(60_000_000L));
+      case "second", "seconds", "sec", "secs", "s" -> amount.multiply(MICROS_PER_SECOND);
+      case "millisecond", "milliseconds", "msec", "msecs", "ms" -> amount.multiply(BigDecimal.valueOf(1_000L));
+      case "microsecond", "microseconds", "usec", "usecs", "us" -> amount;
+      default -> throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value + " (unknown unit '" + unit + "')");
+    };
+  }
+
+  /** One number of an interval, refused before any arithmetic when it has more digits than {@link #MAX_AMOUNT_DIGITS} allows. */
+  private static BigDecimal amount(final String token) {
+    final BigDecimal amount = new BigDecimal(token);
+    if (amount.scale() > MAX_AMOUNT_DIGITS || amount.precision() - amount.scale() > MAX_AMOUNT_DIGITS)
+      throw new IllegalArgumentException("INTERVAL amount out of range: " + (token.length() > 40 ? token.substring(0, 40) + "..." : token));
+    return amount;
+  }
+
+  /** Adds the whole months to {@code monthsAndDays[0]} and answers the microseconds of what a fraction spills into days of 30. */
+  private static BigDecimal addMonths(final BigDecimal months, final long[] monthsAndDays) {
+    final BigDecimal whole = months.setScale(0, RoundingMode.DOWN);
+    monthsAndDays[0] += whole.longValueExact();
+    return addDays(months.subtract(whole).multiply(BigDecimal.valueOf(30)), monthsAndDays);
+  }
+
+  /** Adds the whole days to {@code monthsAndDays[1]} and answers the fraction of a day in microseconds. */
+  private static BigDecimal addDays(final BigDecimal days, final long[] monthsAndDays) {
+    final BigDecimal whole = days.setScale(0, RoundingMode.DOWN);
+    monthsAndDays[1] += whole.longValueExact();
+    return days.subtract(whole).multiply(MICROS_PER_DAY);
+  }
+
+  /** The {@code [-]h:mm[:ss[.ffffff]]} part of an interval in microseconds, signed as written. */
+  private static BigDecimal timeOfIntervalInMicros(final String token) {
+    final boolean negative = token.startsWith("-");
+    final String unsigned = negative || token.startsWith("+") ? token.substring(1) : token;
+    final String[] parts = unsigned.split(":");
+    if (parts.length < 2 || parts.length > 3)
+      throw new IllegalArgumentException("Cannot parse INTERVAL time '" + token + "'");
+    BigDecimal micros = amount(parts[0]).multiply(BigDecimal.valueOf(3_600_000_000L))
+        .add(amount(parts[1]).multiply(BigDecimal.valueOf(60_000_000L)));
+    if (parts.length == 3)
+      micros = micros.add(amount(parts[2]).multiply(MICROS_PER_SECOND));
+    return negative ? micros.negate() : micros;
+  }
+
+  /**
+   * Parses an inbound json or jsonb value. A list of documents is sent to the client as a json array (issue #5366), so
+   * the same payload must be accepted back: an array yields a List, an object a {@link JSONObject}, and a scalar document (a
+   * number, a string, {@code true}, {@code false} or {@code null}, which PostgreSQL accepts as json too) its value.
    */
   private static Object parseJsonText(final String value) {
     if (value == null)
@@ -169,7 +388,38 @@ public enum PostgresType {
     final String trimmed = value.trim();
     if (!trimmed.isEmpty() && trimmed.charAt(0) == '[')
       return new JSONArray(trimmed).toList();
-    return new JSONObject(value);
+    if (!trimmed.isEmpty() && trimmed.charAt(0) == '{')
+      return new JSONObject(value);
+    return parseJsonScalar(trimmed);
+  }
+
+  /**
+   * A scalar json document, read strictly: the whole text must be one JSON value, so {@code not_json} (an unquoted string a
+   * lenient reader would take as one) is refused, and so is an empty document, which PostgreSQL refuses too and which the parser
+   * would otherwise answer as a JSON null. Converted to its Java value by the same reader that converts a JSON array's elements, so
+   * a number has the type it would have inside an array.
+   */
+  private static Object parseJsonScalar(final String text) {
+    if (text.isEmpty())
+      throw new IllegalArgumentException("Invalid input syntax for type json: the document is empty");
+    try {
+      final JsonReader reader = new JsonReader(new StringReader(text));
+      reader.setStrictness(Strictness.STRICT);
+      final JsonElement element = JsonParser.parseReader(reader);
+      if (reader.peek() != JsonToken.END_DOCUMENT)
+        throw new IllegalArgumentException("Invalid input syntax for type json: '" + abbreviate(text) + "'");
+      final JsonArray holder = new JsonArray(1);
+      holder.add(element);
+      return new JSONArray(holder).toList().getFirst();
+    } catch (final IllegalArgumentException e) {
+      throw e;
+    } catch (final IOException | RuntimeException e) {
+      throw new IllegalArgumentException("Invalid input syntax for type json: '" + abbreviate(text) + "'", e);
+    }
+  }
+
+  private static String abbreviate(final String text) {
+    return text.length() > 40 ? text.substring(0, 40) + "..." : text;
   }
 
   /**
@@ -566,6 +816,9 @@ public enum PostgresType {
       case CHAR -> "\"char\"";
       case BOOLEAN -> "boolean";
       case TIMESTAMP -> "timestamp without time zone";
+      case TIMESTAMPTZ -> "timestamp with time zone";
+      case TIME -> "time without time zone";
+      case TIMETZ -> "time with time zone";
       case VARCHAR -> "character varying";
       case BPCHAR -> "character";
       default -> typeName;
@@ -1422,16 +1675,22 @@ public enum PostgresType {
         final int days = buffer.getInt();
         yield Date.from(LocalDate.ofEpochDay(POSTGRES_EPOCH_DAYS + days).atStartOfDay(ZoneOffset.UTC).toInstant());
       }
-      case TIMESTAMP -> {
-        // PostgreSQL binary TIMESTAMP: int64 microseconds since 2000-01-01T00:00:00Z
+      // PostgreSQL binary TIMESTAMP: int64 microseconds since 2000-01-01T00:00:00Z
+      case TIMESTAMP -> fromPostgresEpochMicros(buffer.getLong());
+      // timestamptz is the same count of an instant, with no zone on the wire: read at UTC (issue #11960)
+      case TIMESTAMPTZ -> fromPostgresEpochMicros(buffer.getLong()).atZone(ZoneOffset.UTC);
+      // time: int64 microseconds since midnight; timetz adds an int32 zone offset in seconds WEST of UTC (the sign PostgreSQL stores)
+      case TIME -> LocalTime.ofNanoOfDay(buffer.getLong() * 1_000L);
+      case TIMETZ -> {
+        final LocalTime time = LocalTime.ofNanoOfDay(buffer.getLong() * 1_000L);
+        yield OffsetTime.of(time, ZoneOffset.ofTotalSeconds(-buffer.getInt()));
+      }
+      // interval: int64 microseconds, int32 days, int32 months
+      case INTERVAL -> {
         final long microseconds = buffer.getLong();
-        long secs = POSTGRES_EPOCH_SECONDS + microseconds / 1_000_000L;
-        int nanos = (int) (microseconds % 1_000_000L) * 1000;
-        if (nanos < 0) {
-          secs -= 1;
-          nanos += 1_000_000_000;
-        }
-        yield LocalDateTime.ofEpochSecond(secs, nanos, ZoneOffset.UTC);
+        final int days = buffer.getInt();
+        final int months = buffer.getInt();
+        yield new CypherDuration(months, days, Math.floorDiv(microseconds, 1_000_000L), Math.floorMod(microseconds, 1_000_000L) * 1_000L);
       }
       case BYTEA -> valueAsBytes.clone();
       case NUMERIC -> parseNumericBinary(buffer);
@@ -1443,12 +1702,24 @@ public enum PostgresType {
         // (json_send emits it verbatim); the length is already provided by the Bind message.
         yield parseJsonText(new String(valueAsBytes, DatabaseFactory.getDefaultCharset()));
       }
+      case JSONB -> {
+        // jsonb_send writes a version byte (1) ahead of the json text
+        if (valueAsBytes.length == 0 || valueAsBytes[0] != 1)
+          throw new PostgresProtocolException("Unsupported binary jsonb version " + (valueAsBytes.length == 0 ? "(empty)" : valueAsBytes[0]));
+        yield parseJsonText(new String(valueAsBytes, 1, valueAsBytes.length - 1, DatabaseFactory.getDefaultCharset()));
+      }
       case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC,
            ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> deserializeBinaryArray(buffer);
       // catalog-only types (issue #11027): listed in pg_type for clients to look up, never bound as a parameter, as before they existed
       case NAME, OID, INT2VECTOR ->
           throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
     };
+  }
+
+  /** A PostgreSQL binary timestamp, microseconds since 2000-01-01T00:00:00 UTC, as the UTC wall time it names. */
+  private static LocalDateTime fromPostgresEpochMicros(final long microseconds) {
+    return LocalDateTime.ofEpochSecond(POSTGRES_EPOCH_SECONDS + Math.floorDiv(microseconds, 1_000_000L),
+        (int) Math.floorMod(microseconds, 1_000_000L) * 1000, ZoneOffset.UTC);
   }
 
   private static List<Object> deserializeBinaryArray(ByteBuffer buffer) {
