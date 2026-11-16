@@ -37,8 +37,9 @@ on:
         default: true
         type: boolean
 
-# One run per PR at a time. A push cancels the run for the head it replaced; a dispatch queues
-# behind a running automatic run instead of killing it.
+# One run per PR at a time. A push cancels the run for the head it replaced; a dispatch waits for a
+# running automatic run instead of killing it. GitHub keeps only one pending run per concurrency
+# group, so a second pending dispatch replaces the first; it does not queue behind it.
 concurrency:
   group: classify-pr-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
@@ -343,9 +344,13 @@ jobs:
           # workspace. A bare `Read` would also reach /proc/self/environ and the runner's files.
           # test-ci-scripts.sh fails the build if this list ever gains a Bash entry or an unpinned
           # Read / Grep / Glob, or if this job gains a write scope.
+          # The deny list backs the allow list up: deny rules beat allow rules from any settings
+          # source, including a base-branch .claude/settings*.json that restoreConfigFromBase loads.
+          # The structured-output tool stays allowed: the decision comes back through it.
           claude_args: |
             --model claude-sonnet-5-5
             --allowed-tools "Read(./**),Grep(./**),Glob(./**)"
+            --disallowed-tools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
             --json-schema '{"type":"object","additionalProperties":false,"required":["areas","severity","verdict","review"],"properties":{"areas":{"type":"array","items":{"type":"string"},"maxItems":5},"severity":{"enum":["severity:critical","severity:major","severity:minor"]},"verdict":{"enum":["lgtm","needs-changes","unsafe"]},"review":{"type":"string"},"security_reason":{"type":"string"}}}'
 
   # Every write. Runs when classify failed too, so a failed review still posts `verdict=none` and the

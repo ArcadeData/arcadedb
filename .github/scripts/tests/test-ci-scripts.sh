@@ -2644,7 +2644,8 @@ expect "the repository's own claude-code-action prompts are executable" 0 "promp
 # classify-pr.yml runs a model over an untrusted PR under pull_request_target, where secrets are
 # present. Its containment is the job split: the `classify` job that runs the model holds no write
 # scope and no write tool, reads files only (each tool pinned to a path, since a bare `Read` reaches
-# /proc/self/environ and the runner's files), and nothing in the workflow checks out the PR head.
+# /proc/self/environ and the runner's files), denies Bash, Edit, Write, NotebookEdit, WebFetch and
+# WebSearch outright, and nothing in the workflow checks out the PR head.
 # The `do not merge` flag of the deleted claude-code-review.yml now lives in pr-classify-apply.js
 # and is pinned by test-pr-workflow-scripts.js.
 echo
@@ -2668,12 +2669,21 @@ else:
     for scope, level in perms.items():
         if level == "write":
             problems.append(f"classify job holds {scope}: write")
-tools = []
+tools, denied = [], []
 for step in classify.get("steps") or []:
     if "anthropics/claude-code-action" in str(step.get("uses", "")):
         args = str((step.get("with") or {}).get("claude_args", ""))
         for m in re.finditer(r"--allowed-?tools(?:=|\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", args):
             tools += [t.strip() for t in m.group(1).strip("\"\x27").split(",") if t.strip()]
+        for m in re.finditer(r"--disallowed-?tools(?:=|\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", args):
+            denied += [t.strip() for t in m.group(1).strip("\"\x27").split(",") if t.strip()]
+# Deny rules beat allow rules from any settings source, so the allow list alone is not enough.
+for name in ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"):
+    if name not in denied:
+        problems.append(f"classify job does not deny {name} in --disallowed-tools")
+for tool in denied:
+    if tool.startswith("StructuredOutput"):
+        problems.append(f"classify job denies the structured-output tool: {tool}")
 if not tools:
     problems.append("classify job has no --allowed-tools list")
 for tool in tools:
@@ -2733,15 +2743,23 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           prompt: Review.
-          claude_args: '--allowed-tools "Read,Grep(./**),Bash(gh pr comment 5:*),Bash(gh api:*)"'
+          claude_args: '--allowed-tools "Read,Grep(./**),Bash(gh pr comment 5:*),Bash(gh api:*)" --disallowed-tools "Edit,Write,StructuredOutput"'
 YAML
 problems="$(classify_pr_problems "$work/classify-pr-bad.yml")"
 for needle in "pull-requests: write" "Read on any path" "Bash(gh pr comment 5:*)" "write tool: Bash(gh api:*)" \
-    "checks out the PR head" "persist-credentials"; do
+    "checks out the PR head" "persist-credentials" "does not deny Bash in" "does not deny NotebookEdit" \
+    "does not deny WebFetch" "does not deny WebSearch" "denies the structured-output tool: StructuredOutput"; do
     if [[ $problems == *"$needle"* ]]; then
         pass "the classify-pr containment check reports: $needle"
     else
         fail "the classify-pr containment check reports: $needle" "$problems"
+    fi
+done
+for needle in "does not deny Edit" "does not deny Write"; do
+    if [[ $problems != *"$needle"* ]]; then
+        pass "the classify-pr containment check accepts a listed deny: $needle"
+    else
+        fail "the classify-pr containment check accepts a listed deny: $needle" "$problems"
     fi
 done
 
