@@ -195,6 +195,11 @@ final class ShapeProbes {
       return new MissingObjectRefusal(404, "Index does not exist");
     }
 
+    // a message handed through a parameter of type Object
+    static Error throughAnObjectParameter() {
+      return new AssertionError((Object) "Index not found");
+    }
+
     // not offenders: the schema family, and a refusal that names no missing object
     static RuntimeException asASchemaFailure(final String name) {
       return new SchemaException("Index '" + name + "' not found");
@@ -228,6 +233,13 @@ final class ShapeProbes {
       super("outer");
       if (refuse)
         throw new RuntimeException("Index not found");
+    }
+  }
+
+  /** A throwable whose constructor spells a missing-object message of its own: a site, though it is a call to super(...). */
+  static final class MissingObjectFixedMessage extends RuntimeException {
+    MissingObjectFixedMessage() {
+      super("Index not found");
     }
   }
 

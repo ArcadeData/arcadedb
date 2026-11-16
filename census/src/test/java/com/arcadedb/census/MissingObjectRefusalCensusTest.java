@@ -20,12 +20,10 @@ package com.arcadedb.census;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
-import org.objectweb.asm.tree.VarInsnNode;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -163,6 +161,7 @@ class MissingObjectRefusalCensusTest {
       Map.entry("server/http/handler/DatabaseAbstractHandler#setTransactionInThreadLocal", SESSION),
       Map.entry("server/http/handler/PostBatchHandler#resolveSession", SESSION),
       Map.entry("server/http/handler/PostCommitHandler#execute", SESSION),
+      Map.entry("server/http/HttpSessionEndedException#<init>", SESSION),
       Map.entry("server/http/ws/insert/WebSocketInsertSessionManager#resolve", SESSION),
       Map.entry("server/http/ws/insert/WebSocketInsertSessionManager#resolveExternalTransaction", SESSION),
       Map.entry("postgres/PostgresNetworkExecutor#applySessionCommand", SESSION),
@@ -238,7 +237,8 @@ class MissingObjectRefusalCensusTest {
     assertThat(constructions(CompiledClasses.ofTheProbes(), MISSING).keySet()).containsExactlyInAnyOrder(
         "census/ShapeProbes$MissingObject#concatenated", "census/ShapeProbes$MissingObject#throughALocal",
         "census/ShapeProbes$MissingObject#asAnArgumentFailure", "census/ShapeProbes$MissingObject#withTheMessageSecond",
-        "census/ShapeProbes$MissingObjectWrapping#<init>", "census/ShapeProbes$MissingObjectThrowing#<init>");
+        "census/ShapeProbes$MissingObjectWrapping#<init>", "census/ShapeProbes$MissingObjectThrowing#<init>",
+        "census/ShapeProbes$MissingObject#throughAnObjectParameter", "census/ShapeProbes$MissingObjectFixedMessage#<init>");
   }
 
   /**
@@ -251,14 +251,16 @@ class MissingObjectRefusalCensusTest {
     final Throwables throwables = new Throwables(classes);
     final Map<String, Set<String>> sites = new TreeMap<>();
     for (final CallOperands.Site site : CallOperands.of(classes,
-        (owner, name, descriptor) -> "<init>".equals(name) && descriptor.contains("Ljava/lang/String;") && throwables.isThrowable(owner)
-            && !throwables.isClassified(owner))) {
-      if (site.key().startsWith("exception/") || isDelegation(site, throwables))
+        (owner, name, descriptor) -> "<init>".equals(name) && throwables.isThrowable(owner) && !throwables.isClassified(owner))) {
+      if (site.key().startsWith("exception/"))
         continue;
-      // the message is a String argument wherever it sits: Refusal(int code, String message) as well as Refusal(String message)
+      // The message is a String argument wherever it sits (Refusal(int code, String message)), or an Object one
+      // (AssertionError(Object)). A constructor handing its own parameter to super(...) passes on what its caller wrote, which
+      // reads as no text here, so it is never a site; one that hands super(...) a message it spells itself is one.
       final Type[] arguments = Type.getArgumentTypes(site.call().desc);
       for (int i = 0; i < arguments.length; i++) {
-        if (!"java.lang.String".equals(arguments[i].getClassName()))
+        final String type = arguments[i].getClassName();
+        if (!"java.lang.String".equals(type) && !"java.lang.Object".equals(type))
           continue;
         for (final AbstractInsnNode origin : site.argument(i)) {
           final String text = textOf(origin);
@@ -268,23 +270,6 @@ class MissingObjectRefusalCensusTest {
       }
     }
     return sites;
-  }
-
-  /**
-   * A throwable constructor handing its message to {@code super(...)} or {@code this(...)}: the subclass passes on what its
-   * caller wrote, and the caller's construction is the site. Told apart by the receiver, which is {@code this} itself, from a
-   * throwable the constructor builds with {@code new}, whatever its type (its own super class included): that is a site of its own.
-   */
-  private static boolean isDelegation(final CallOperands.Site site, final Throwables throwables) {
-    if (!site.key().endsWith("#<init>") || !throwables.isThrowable(site.in().owner().name))
-      return false;
-    final Set<AbstractInsnNode> receivers = site.operand(0);
-    if (receivers.isEmpty())
-      return false;
-    for (final AbstractInsnNode receiver : receivers)
-      if (!(receiver instanceof VarInsnNode load) || load.getOpcode() != Opcodes.ALOAD || load.var != 0)
-        return false;
-    return true;
   }
 
   /**
