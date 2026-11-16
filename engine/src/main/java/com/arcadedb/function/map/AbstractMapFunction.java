@@ -18,8 +18,10 @@
  */
 package com.arcadedb.function.map;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.function.StatelessFunction;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -42,7 +44,7 @@ public abstract class AbstractMapFunction implements StatelessFunction {
   }
 
   /**
-   * Safely extract a Map from an argument.
+   * Safely extract a Map from an argument. A node or relationship is the map of its properties, as for an APOC map argument.
    */
   @SuppressWarnings("unchecked")
   protected Map<String, Object> asMap(final Object arg) {
@@ -50,6 +52,12 @@ public abstract class AbstractMapFunction implements StatelessFunction {
       return null;
     if (arg instanceof Map) {
       return (Map<String, Object>) arg;
+    }
+    if (arg instanceof Document document) {
+      final Map<String, Object> properties = new LinkedHashMap<>();
+      for (final String name : document.getPropertyNames())
+        properties.put(name, document.get(name));
+      return properties;
     }
     throw new IllegalArgumentException("Expected a map, got " + arg.getClass().getSimpleName());
   }
