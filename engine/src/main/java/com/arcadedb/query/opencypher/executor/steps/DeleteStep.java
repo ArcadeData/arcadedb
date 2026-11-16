@@ -539,8 +539,17 @@ public class DeleteStep extends AbstractExecutionStep {
       other.add(obj);
   }
 
-  /** True when the textual target looks like a function call - needs Expression-based evaluation. */
+  /**
+   * True when the textual target needs Expression-based evaluation: a function call, or a target that does not start with a
+   * variable name ({@code [a][0]}, {@code [a, b]}), which the text resolver would look up under an empty name and skip
+   * (issue #12260).
+   */
   private static boolean isFunctionLikeTarget(final String variable) {
+    if (variable.isEmpty())
+      return false;
+    final char first = variable.charAt(0);
+    if (!Character.isJavaIdentifierStart(first) && first != '`')
+      return true;
     final int paren = variable.indexOf('(');
     if (paren <= 0)
       return false;
