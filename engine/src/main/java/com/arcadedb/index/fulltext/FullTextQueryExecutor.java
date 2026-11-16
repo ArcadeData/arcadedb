@@ -306,7 +306,7 @@ public class FullTextQueryExecutor {
   RecordQuery recordQuery(final String queryString) {
     resetState();
     final Query query = parseQuery(queryString);
-    root = query;
+    root = unboosted(query);
     final RecordMatcher matcher = recordMatcher(query);
     if (matcher == null)
       return null;
@@ -448,7 +448,7 @@ public class FullTextQueryExecutor {
 
   private Map<RID, AtomicInteger> collectQueryMatches(final Query query) {
     final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
-    root = query;
+    root = unboosted(query);
     collectMatches(query, scoreMap);
     return scoreMap;
   }
@@ -590,9 +590,11 @@ public class FullTextQueryExecutor {
       return false;
     final Query written;
     try {
-      written = createQueryParser(new WhitespaceAnalyzer()).parse(queryText);
+      written = unboosted(createQueryParser(new WhitespaceAnalyzer()).parse(queryText));
     } catch (final ParseException e) {
-      return false;
+      // the words the analyzer dropped are more clauses than a boolean query may hold: they were written, so the query answers
+      // nothing rather than the complement of its negations
+      return true;
     }
     if (!(written instanceof final BooleanQuery bq))
       return true;
@@ -600,6 +602,17 @@ public class FullTextQueryExecutor {
       if (clause.occur() != BooleanClause.Occur.MUST_NOT)
         return true;
     return false;
+  }
+
+  /**
+   * The query a boost wraps, as many times as it is wrapped: {@code (-banana)^2} is the query of negations alone {@code -banana},
+   * boosted, and answers its complement as the whole query too.
+   */
+  private static Query unboosted(final Query query) {
+    Query wrapped = query;
+    while (wrapped instanceof final BoostQuery boosted)
+      wrapped = boosted.getQuery();
+    return wrapped;
   }
 
   /**

@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.apache.lucene.search.IndexSearcher;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -93,6 +94,8 @@ class Issue12164FullTextNegationTest extends TestHelper {
     // kept from before: the query is the negation, so it answers every indexed record the negation does not match
     assertThat(search("Doc", "-banana").keySet()).containsExactlyInAnyOrder(4, 6, 7, 8);
     assertThat(search("Doc", "-java -apple").keySet()).containsExactly(5);
+    // a boost around the whole query keeps it the whole query (review of #12178)
+    assertThat(search("Doc", "(-banana)^2").keySet()).containsExactlyInAnyOrder(4, 6, 7, 8);
   }
 
   @Test
@@ -101,6 +104,16 @@ class Issue12164FullTextNegationTest extends TestHelper {
     assertThat(search("En", "the was -cherry").keySet()).isEmpty();
     assertThat(search("En", "+the -cherry").keySet()).isEmpty();
     assertThat(search("En", "-cherry").keySet()).containsExactly(2);
+    assertThat(search("En", "(-cherry)^2").keySet()).containsExactly(2);
+    assertThat(search("En", "(the -cherry)^2").keySet()).isEmpty();
+  }
+
+  @Test
+  void positiveClausesTooManyToParseAgainStillAnswerNothing() {
+    // the dropped clauses are more than a boolean query may hold, so the parse that keeps every word fails: the query still answers
+    // nothing rather than the complement of its negation (review of #12178)
+    final String query = "+the ".repeat(IndexSearcher.getMaxClauseCount()) + "-cherry";
+    assertThat(search("En", query).keySet()).isEmpty();
   }
 
   @Test
@@ -108,7 +121,7 @@ class Issue12164FullTextNegationTest extends TestHelper {
     final String rids = database.query("sql", "SELECT @rid AS rid FROM Doc").stream()
         .map(r -> r.getProperty("rid").toString()).collect(Collectors.joining(", ", "[", "]"));
     for (final String query : List.of("java -(+python +ruby)", "apple OR (banana -cherry)", "java -(python -ruby)",
-        "+java +(-python)", "zzz -banana", "java python -ruby"))
+        "+java +(-python)", "zzz -banana", "java python -ruby", "(-banana)^2"))
       assertThat(search(rids, query)).as(query).isEqualTo(search("Doc", query));
   }
 
