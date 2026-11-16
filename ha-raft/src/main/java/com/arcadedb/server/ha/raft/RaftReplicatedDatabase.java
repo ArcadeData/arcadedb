@@ -146,6 +146,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -205,6 +206,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * the database the compaction runs on.
    */
   private final ThreadLocal<List<CallableNoReturn>> compactionPersistence = new ThreadLocal<>();
+  /**
+   * Leader commits that passed the recording-session gate of {@link #commit()} and have not ended, and how many of them the
+   * current thread accounts for (issue #12098). A schema session waits for them before it asks for the exclusive lock, see
+   * {@link #awaitCommitsPastRecordingSessionGate()}.
+   */
+  private final AtomicInteger      commitsPastRecordingSessionGate = new AtomicInteger();
+  private final ThreadLocal<int[]> gatedCommitsOfThisThread        = ThreadLocal.withInitial(() -> new int[1]);
   /**
    * Non-null only while a {@code recordFileChanges} session on THIS thread is shipping its buffered WAL in
    * instalments (issue #6136). Thread-local for the same reason the buffers are, and null everywhere else - notably
@@ -672,10 +680,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // SCHEMA_ENTRY that creates the file on followers, where TransactionManager.applyChanges
     // silently skips pages whose fileId does not exist - dropping the writes and surfacing
     // later as missing index entries (issue #4083). The schema-commit thread itself uses the
-    // schemaWalBuffer below and must not wait on its own session.
-    if (leader && !Boolean.TRUE.equals(isSchemaCommitThread.get()))
-      waitForActiveRecordingSession();
+    // schemaWalBuffer below and must not wait on its own session. A commit that passes is counted until it ends, so a
+    // schema session can wait for it before asking for the exclusive lock (issue #12098).
+    final boolean gated = leader && !Boolean.TRUE.equals(isSchemaCommitThread.get());
+    if (gated)
+      passRecordingSessionGate();
+    try {
+      commitPastRecordingSessionGate(leader);
+    } finally {
+      if (gated)
+        leaveRecordingSessionGate();
+    }
+  }
 
+  /** The two arms of {@link #commit()} past its recording-session gate: the schema-commit thread's and the replicated one. */
+  private void commitPastRecordingSessionGate(final boolean leader) {
     // When commit() is called from inside a recordFileChanges() DDL callback on the leader,
     // the files being created do not yet exist on replicas. Sending a TX_ENTRY now would
     // fail on replicas because the target files are missing. Instead, buffer the WAL data
@@ -2853,6 +2872,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             + " ms), so a schema change cannot allocate file ids safely right now. Please retry");
       }
 
+      // Issue #12098: the commits that passed the gate before this session opened end first, while no writer is queued ahead
+      // of the shared lock they re-enter to conclude. Their entries then apply ahead of the exclusive window below, too.
+      awaitCommitsPastRecordingSessionGate();
+
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
       // Issue #10881: the callback runs under the write lock, where LocalDatabase.recordFileChanges has just checked the write
@@ -4395,9 +4418,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * remains as a defensive safety net for any other recorder thread that crashes mid-session; it
    * is intentionally retained, not dead code.
    */
-  private void waitForActiveRecordingSession() {
+  private boolean waitForActiveRecordingSession() {
     if (proxied.getFileManager().getRecordedChanges() == null)
-      return;
+      return true;
     final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     final long deadline = System.currentTimeMillis() + timeout;
     while (proxied.getFileManager().getRecordedChanges() != null) {
@@ -4405,10 +4428,69 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         HALog.log(this, HALog.BASIC,
             "commit waited %dms for FileManager recording session and gave up; proceeding with TX_ENTRY",
             timeout);
-        return;
+        return false;
       }
       try {
         Thread.sleep(2);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The recording-session gate of a leader commit, counted (issue #12098). The commit is counted BEFORE it looks for a session,
+   * and a schema session counts the commits AFTER it opened ({@link #awaitCommitsPastRecordingSessionGate()}), so the two cannot
+   * miss each other: either the commit sees the session and waits for it, or the session sees the commit and waits for it to
+   * end. A commit that finds a session stands aside while it waits, so the session does not wait for it in turn. One that gave
+   * up waiting goes on, counted, as it did before the count existed.
+   */
+  private void passRecordingSessionGate() {
+    while (true) {
+      commitsPastRecordingSessionGate.incrementAndGet();
+      if (proxied.getFileManager().getRecordedChanges() == null)
+        break;
+      commitsPastRecordingSessionGate.decrementAndGet();
+      if (!waitForActiveRecordingSession()) {
+        commitsPastRecordingSessionGate.incrementAndGet();
+        break;
+      }
+    }
+    gatedCommitsOfThisThread.get()[0]++;
+  }
+
+  private void leaveRecordingSessionGate() {
+    gatedCommitsOfThisThread.get()[0]--;
+    commitsPastRecordingSessionGate.decrementAndGet();
+  }
+
+  /**
+   * Waits, with this schema session already open, for the leader commits that passed the gate of {@link #commit()} before it
+   * opened (issue #12098). Each of them holds, or is waiting for, its commit file locks, and after the quorum round trip it
+   * takes the shared lock again to conclude. Asking for the exclusive lock while one of them is in between deadlocks with them:
+   * the concluding commit cannot re-enter the shared lock behind the queued writer, the writer waits for the commits inside
+   * phase 1, and those wait under the shared lock for the concluding commit's file locks, until {@code commitLockTimeout}
+   * fails them. No commit passes the gate while the session is open, so the count only goes down; the commits of this very
+   * thread (a schema change run from inside a commit) are not waited for. Bounded by the quorum timeout, after which the
+   * session goes on as it did before.
+   */
+  private void awaitCommitsPastRecordingSessionGate() {
+    final int own = gatedCommitsOfThisThread.get()[0];
+    if (commitsPastRecordingSessionGate.get() <= own)
+      return;
+    final long started = System.currentTimeMillis();
+    final long deadline = started + server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    while (commitsPastRecordingSessionGate.get() > own) {
+      if (System.currentTimeMillis() >= deadline) {
+        HALog.log(this, HALog.BASIC,
+            "Schema change on database '%s' waited %dms for %d commit(s) already past the recording-session gate and gave up; "
+                + "proceeding", getName(), System.currentTimeMillis() - started, commitsPastRecordingSessionGate.get() - own);
+        return;
+      }
+      try {
+        Thread.sleep(1);
       } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
         return;
