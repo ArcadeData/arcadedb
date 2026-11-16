@@ -341,8 +341,10 @@ public class AnchorSelector {
    */
   private AnchorSelection tryRangeScan(final LogicalNode node, final String label, final long typeCount,
       final List<IndexStatistics> indexes, final String propertyName, final List<RangePredicate> predicates) {
-    // A hash index cannot be read in key order, so it never serves a range (issue #8835)
-    final IndexStatistics indexStats = findOrderedIndexForProperty(indexes, propertyName);
+    // A hash index cannot be read in key order, so it never serves a range (issue #8835). A range with no bound is
+    // n.p IS NOT NULL, which only an index holding exactly the records whose p is not null answers (issue #12285)
+    final IndexStatistics indexStats = predicates.isEmpty() ? findIsNotNullIndex(indexes, propertyName) :
+        findOrderedIndexForProperty(indexes, propertyName);
 
     // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
     // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
@@ -523,6 +525,15 @@ public class AnchorSelector {
   /** Same as {@link #findIndexForProperty(List, String, boolean)}, skipping the indexes that cannot be read in key order (a hash index). */
   private IndexStatistics findOrderedIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
     return findIndexForProperty(indexes, propertyName, true);
+  }
+
+  /** The index whose whole iteration is {@code n.propertyName IS NOT NULL}, or null (issue #12285). */
+  private static IndexStatistics findIsNotNullIndex(final List<IndexStatistics> indexes, final String propertyName) {
+    if (indexes != null)
+      for (final IndexStatistics index : indexes)
+        if (index.answersIsNotNull() && index.getPropertyNames().size() == 1 && index.getPropertyNames().getFirst().equals(propertyName))
+          return index;
+    return null;
   }
 
   /**
@@ -1080,6 +1091,13 @@ public class AnchorSelector {
         predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
             .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), parameter.getParameterName(), true));
     }
+
+    // n.p IS NOT NULL is the whole of an index that holds one entry for every record whose p is not null and none for the
+    // others: a range with no bound (issue #12285). tryRangeScan accepts it only on such an index; the condition stays in the
+    // WHERE above the anchor like every range predicate.
+    if (expression instanceof IsNullExpression isNull && isNull.isNot()
+        && isNull.getExpression() instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable))
+      predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>());
 
     // Handle AND expressions - both sides may contain range predicates
     if (expression instanceof LogicalExpression) {
