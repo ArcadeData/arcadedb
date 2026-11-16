@@ -27,6 +27,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.RawRecordCallback;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
@@ -1042,11 +1043,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // delete events and every getType() read are dispatched off it. Resolved once per bucket, not per record.
           final DocumentType bucketType = polymorphic ? schema.getTypeByBucketId(b.getFileId()) : type;
           final DocumentType recordType = bucketType != null ? bucketType : type;
-          b.scan((rid, view) -> {
-            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
-                view, null);
-            continueScan.set(callback.onRecord(record));
-            return continueScan.get();
+          b.scan(new RawRecordCallback() {
+            @Override
+            public boolean onRecord(final RID rid, final Binary view) {
+              return onRecord(rid, view, false);
+            }
+
+            @Override
+            public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+              final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
+                  view, null);
+              markReadFromOwnImage(record, fromOwnImage);
+              continueScan.set(callback.onRecord(record));
+              return continueScan.get();
+            }
           }, errorRecordCallback);
 
           if (!continueScan.get())
@@ -1083,8 +1093,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // NULL FOR A BUCKET NO TYPE OWNS ANY MORE, WHOSE RECORDS ARE STILL THERE TO READ (ISSUE #11335)
       final Bucket bucket = schema.getBucketByName(bucketName);
       final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());
-      bucket.scan((rid, view) -> callback.onRecord(recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null)),
-          errorRecordCallback);
+      bucket.scan(new RawRecordCallback() {
+        @Override
+        public boolean onRecord(final RID rid, final Binary view) {
+          return onRecord(rid, view, false);
+        }
+
+        @Override
+        public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+          final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
+          markReadFromOwnImage(record, fromOwnImage);
+          return callback.onRecord(record);
+        }
+      }, errorRecordCallback);
       return null;
     });
   }
@@ -1241,6 +1262,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final LocalBucket bucket = schema.getBucketById(rid.getBucketId(), false);
       return bucket != null && bucket.existsRecord(rid);
     });
+  }
+
+  /** #12320: a vertex built from the transaction's own image of its page carries the heads of that image. */
+  private static void markReadFromOwnImage(final Record record, final boolean fromOwnImage) {
+    if (fromOwnImage && record instanceof ImmutableVertex vertex)
+      vertex.markReadFromOwnImage();
   }
 
   @Override

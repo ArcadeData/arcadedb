@@ -999,6 +999,8 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
     database.command("opencypher", "MATCH (a:V {id: 4}), (b:V {id: 2}) CREATE (a)-[:E]->(b)").close();
     commitFromAnotherThread("opencypher", "MATCH (a:V {id: 2}), (x:V {id: 3}) CREATE (a)-[:E]->(x)");
     database.command("opencypher", "MATCH (a:V {id: 5}), (b:V {id: 2}) CREATE (a)-[:E]->(b)").close();
+    // the read of the list T moved: both of its relationships, nothing of the other list
+    assertThat(edgesOf("MATCH (b:V {id: 2})<-[e:E]-() RETURN count(e) AS c")).isEqualTo(2L);
     final long headMergesBefore = ((DatabaseInternal) database).getPageManager().getStats().edgeListHeadMerges;
     database.commit();
 
@@ -1006,6 +1008,40 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
         .as("the commit went through the edge-list head merge").isGreaterThan(headMergesBefore);
     assertThat(edgesOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS c")).isEqualTo(1L);
     assertThat(edgesOf("MATCH (a:V {id: 2})<-[e:E]-() RETURN count(e) AS c")).isEqualTo(2L);
+  }
+
+  /**
+   * The own-page-image read through {@code scanType}, which builds each vertex from the page view the bucket scan hands over: T
+   * holds the vertices' page, counts vertex 2's outgoing relationships off the scan and then gives vertex 2 a relationship.
+   */
+  @Test
+  void otherListReadThroughAScanOfTheOwnPageImageIsNotReadStale() throws Exception {
+    createGraphWithNoListOnVertex2();
+    // the far end of the concurrent relationship lives on another page: the scan read every slot of the vertices' page, and only
+    // vertex 2 may change there, or the read of the changed far end refuses the commit by itself (#11590)
+    database.transaction(() -> {
+      database.getSchema().createVertexType("W", 1);
+      database.newVertex("W").set("id", 0).save();
+    });
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 4}), (b:V {id: 1}) CREATE (a)-[:E]->(b)").close();
+    commitFromAnotherThread("opencypher", "MATCH (a:V {id: 2}), (w:W {id: 0}) CREATE (a)-[:E]->(w)");
+    final long[] counted = { -1L };
+    database.scanType("V", false, record -> {
+      final Vertex vertex = record.asVertex();
+      if (vertex.getInteger("id") == 2)
+        counted[0] = vertex.countEdges(Vertex.DIRECTION.OUT, "E");
+      return true;
+    });
+    database.command("opencypher", "MATCH (x:V {id: 5}), (b:V {id: 2}) CREATE (x)-[:E]->(b)").close();
+    final Throwable failure = commitOrFailure();
+
+    if (failure == null)
+      assertThat(counted[0]).as("a transaction that commits must have counted the relationship committed before the scan")
+          .isEqualTo(1L);
+    else
+      assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
   }
 
   /** Whether the chunk can take one more entry the size of the concurrent relationship: small bucket ids and positions. */

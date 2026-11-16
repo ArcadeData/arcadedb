@@ -3517,6 +3517,24 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * Whether a head of {@code vertex} that a traversal read off this transaction's own image of its page (#12320) differs from
+   * the head on {@code committedImage}: a commit must not write the vertex from that image under a decision taken on the head
+   * it replaced. A read image that is no plain vertex record answers true, which keeps the conflict.
+   */
+  private boolean isOwnImageHeadReadStale(final LocalBucket bucket, final RID vertex, final byte[] committedImage) {
+    final boolean outRead = outHeadsReadFromOwnImage != null && outHeadsReadFromOwnImage.contains(vertex);
+    final boolean inRead = inHeadsReadFromOwnImage != null && inHeadsReadFromOwnImage.contains(vertex);
+    if (!outRead && !inRead)
+      return false;
+    final MutablePage image = ownPageImageOf(bucket, vertex);
+    final byte[] read = image != null ? bucket.readPlainRecordBody(image, (int) (vertex.getPosition() % bucket.getMaxRecordsInPage())) : null;
+    if (read == null || read.length < VERTEX_HEADS_END || read[0] != Vertex.RECORD_TYPE)
+      return true;
+    return (outRead && !Objects.equals(edgeListHeadAt(read, VERTEX_OUT_HEAD_OFFSET), edgeListHeadAt(committedImage, VERTEX_OUT_HEAD_OFFSET)))
+        || (inRead && !Objects.equals(edgeListHeadAt(read, VERTEX_IN_HEAD_OFFSET), edgeListHeadAt(committedImage, VERTEX_IN_HEAD_OFFSET)));
+  }
+
   /** Whether a traversal read a head of {@code vertex} off a vertex loaded from this transaction's own image of its page. */
   private boolean isEdgeListHeadRead(final MutableVertex vertex, final boolean out) {
     if (vertex.isEdgeListHeadRead(out))
@@ -3526,8 +3544,11 @@ public class TransactionContext implements Transaction {
   }
 
   /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
-  public void trackScanOfPage(final BasePage page) {
+  public boolean trackScanOfPage(final BasePage page) {
+    final long ownImageReadsBefore = ownImageReads;
     trackReadFromPage(page, -1);
+    // #12320: whether the scan reads the page from the transaction's own image, which the records built from it carry
+    return ownImageReads != ownImageReadsBefore;
   }
 
   /**
@@ -5961,6 +5982,10 @@ public class TransactionContext implements Transaction {
             || !(database.getSchema().getTypeByBucketId(owner.getBucketId()) instanceof VertexType type))
           continue;
         ownerType = type;
+        // #12320: a head of the vertex a traversal read off this transaction's own image of its page, moved on the committed
+        // image: the vertex is written from that image here and skipped by mergeEdgeListHeads, so the read is checked now
+        if (isOwnImageHeadReadStale(ownerBucket, owner, ownerImage))
+          continue;
         previousHead = edgeListHeadAt(ownerImage, headOffset);
       } else
         continue;
