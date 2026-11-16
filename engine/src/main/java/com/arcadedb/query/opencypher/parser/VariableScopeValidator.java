@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.query.opencypher.parser.CypherSemanticValidator.VarType;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.*;
 import java.util.*;
@@ -207,6 +208,9 @@ final class VariableScopeValidator {
             // Validate the subquery body: outer variables are visible only if imported (issue #5213).
             validateSubqueryScope(subqueryClause, scope, shadowed);
             final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+            // Exports are checked against the outer scope as it was before this subquery, so a duplicate column inside
+            // the RETURN keeps its ColumnNameConflict error instead of reading as a clash with an earlier export
+            final Set<String> outerScope = innerReturn != null ? new HashSet<>(scope) : null;
             if (innerReturn != null)
               for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems()) {
                 if (item.isStar()) {
@@ -218,10 +222,17 @@ final class VariableScopeValidator {
                       body instanceof UnionStatement union ? union.getQueries().getFirst() : body);
                   if (exported != null)
                     scope.addAll(exported);
-                } else if (item.getAlias() != null)
-                  scope.add(item.getAlias());
-                else if (item.getExpression() instanceof VariableExpression)
-                  scope.add(((VariableExpression) item.getExpression()).getVariableName());
+                } else {
+                  final String exportedName = item.getAlias() != null ? item.getAlias()
+                      : item.getExpression() instanceof VariableExpression variable ? variable.getVariableName() : null;
+                  if (exportedName == null)
+                    continue;
+                  // A subquery cannot export a name the outer scope already binds, imported or not (issue #11689)
+                  if (outerScope.contains(exportedName))
+                    throw new CommandParsingException(
+                        "VariableAlreadyBound: Variable '" + exportedName + "' already declared in outer scope");
+                  scope.add(exportedName);
+                }
               }
             // REPORT STATUS AS s binds s on every row (issue #11595)
             if (subqueryClause.getReportStatusVariable() != null)
@@ -575,6 +586,16 @@ final class VariableScopeValidator {
       final String varName = ((PropertyAccessExpression) expr).getVariableName();
       if (CypherSemanticValidator.isValidVariableName(varName) && !scope.contains(varName))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
+    } else if (expr instanceof ChainedPropertyAccessExpression chained) {
+      // (n {id:1}).id: the receiver of the property read is an expression of its own (issue #11693)
+      checkExpressionScope(chained.getBaseExpression(), scope);
+    } else if (expr instanceof MapProjectionExpression projection) {
+      // n {.id} reads n just as RETURN n does, so an unbound n is refused rather than projected as null (issue #11693)
+      final String varName = projection.getVariableName();
+      if (CypherSemanticValidator.isValidVariableName(varName) && !scope.contains(varName))
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
+      for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+        checkExpressionScope(element.getExpression(), scope);
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkExpressionScope(arg, scope);
@@ -621,6 +642,30 @@ final class VariableScopeValidator {
       final ListIndexExpression lie = (ListIndexExpression) expr;
       checkExpressionScope(lie.getListExpression(), scope);
       checkExpressionScope(lie.getIndexExpression(), scope);
+    } else if (expr instanceof ListSliceExpression slice) {
+      // l[0..3] with l never bound evaluated to null instead of being refused (issue #11686)
+      checkExpressionScope(slice.getListExpression(), scope);
+      checkExpressionScope(slice.getFromExpression(), scope);
+      checkExpressionScope(slice.getToExpression(), scope);
+    } else if (expr instanceof PatternComprehensionExpression pce) {
+      // The pattern binds its own variables (and the optional path variable) for the WHERE and the projection only.
+      // Without this branch an unbound name after | evaluated to null per match instead of being refused (issue #11686)
+      final PathPattern path = pce.getPathPattern();
+      final Set<String> innerScope = new HashSet<>(scope);
+      if (pce.getPathVariable() != null)
+        innerScope.add(pce.getPathVariable());
+      if (path != null) {
+        VariableBindingValidator.addBoundVarsFromPattern(path, innerScope);
+        for (final NodePattern node : path.getNodes())
+          if (node.getProperties() != null)
+            checkPropertyValuesScope(node.getProperties(), innerScope);
+        for (final RelationshipPattern rel : path.getRelationships())
+          if (rel.getProperties() != null)
+            checkPropertyValuesScope(rel.getProperties(), innerScope);
+        checkGroupWhereScope(path, innerScope);
+      }
+      checkExpressionScope(pce.getWhereExpression(), innerScope);
+      checkExpressionScope(pce.getMapExpression(), innerScope);
     } else if (expr instanceof ListPredicateExpression) {
       final ListPredicateExpression lpe = (ListPredicateExpression) expr;
       checkExpressionScope(lpe.getListExpression(), scope);
@@ -811,8 +856,25 @@ final class VariableScopeValidator {
     for (final SetClause.SetItem item : setClause.getItems()) {
       if (CypherSemanticValidator.isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+      final Expression target = item.getTargetExpression();
+      if (target != null) {
+        checkExpressionScope(target, scope);
+        checkSetReceiverIsNotAMap(target);
+      }
       if (item.getValueExpression() != null)
         checkExpressionScope(item.getValueExpression(), scope);
     }
+  }
+
+  /**
+   * A property is written on a node or a relationship only. A map projection ({@code SET (n {id:1}).s = ...}) or a map
+   * literal builds a fresh map, so writing into it changes nothing in the graph: Neo4j refuses the receiver before the
+   * query runs, and so does this, rather than accepting the SET as a silent no-op (issue #11693).
+   */
+  private static void checkSetReceiverIsNotAMap(final Expression target) {
+    if (target instanceof MapProjectionExpression || target instanceof MapExpression)
+      throw new CommandSemanticException(
+          "TypeError: Type mismatch: expected Node or Relationship but was Map. '" + target.getText()
+              + "' is a map, so a property cannot be set on it");
   }
 }

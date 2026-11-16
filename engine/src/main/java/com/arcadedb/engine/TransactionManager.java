@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
@@ -37,9 +38,12 @@ import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
+import com.arcadedb.utility.RidHashSet;
 
 import java.io.*;
 import java.nio.channels.ClosedByInterruptException;
@@ -54,7 +58,9 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -108,6 +114,17 @@ public class TransactionManager {
   private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
   // The relationships committed by a match-or-create, by stripe of their key (#11482)
   private final MergedEdgeRegistry           mergedEdges                  = new MergedEdgeRegistry();
+  // Sequence of the transactions that deleted records, and for each stripe of vertex RIDs the last one that deleted a vertex in it
+  // (#11592). Allocated on the first vertex delete: most databases never delete one. 16K stripes, 128KB; a stripe shared by two
+  // vertices only costs a retry
+  private static final int                   VERTEX_DELETE_STRIPES = 1 << 14;
+  private final AtomicLong                   vertexDeleteSequence = new AtomicLong();
+  private volatile AtomicLongArray           vertexDeletedAt;
+  // For each stripe of vertex bucket pages, the sequence the last replicated apply that wrote one of them took once its pages were
+  // published, and how many applies are writing one of them now (#11592). An entry carries page images, not the records it
+  // deleted: a vertex it deleted, or gave to a new vertex, is one whose page it wrote. Allocated on the first such apply
+  private volatile ReplicatedVertexPages     replicatedVertexPages;
+  private final AtomicLong                   vertexPageAppliesStarted = new AtomicLong();
   // Sequence of the bucket indexes bound to their type, and the number each of them took (#10588): what a transaction that began
   // before an index existed asks at its commit to know which indexes it owes entries to
   private final AtomicLong                   indexRegistrationSequence = new AtomicLong();
@@ -253,6 +270,134 @@ public class TransactionManager {
     final long sequence = unidirectionalEdgeSequence.incrementAndGet();
     // merge(max): with an explicit lock list two commits can reach here out of order
     targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.merge(bucketId, sequence, Math::max));
+  }
+
+  /** The sequence a transaction takes at its begin: a vertex deleted by a commit after it is one it may have read alive (#11592). */
+  public long getVertexDeleteSequence() {
+    return vertexDeleteSequence.get();
+  }
+
+  /**
+   * Whether a vertex with this RID (or one sharing its stripe) was deleted by a commit after {@code sequence} was taken, or a
+   * replicated apply wrote the page of the RID (or one sharing its stripe) after it or is writing it now. The RID can be holding a
+   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592).
+   */
+  public boolean wasVertexDeletedSince(final RID rid, final long sequence) {
+    final AtomicLongArray deletedAt = vertexDeletedAt;
+    if (deletedAt != null && deletedAt.get(vertexDeleteStripe(rid.getBucketId(), rid.getPosition())) > sequence)
+      return true;
+    final ReplicatedVertexPages replicated = replicatedVertexPages;
+    if (replicated == null)
+      return false;
+    // a bucket that is gone took the vertex with it
+    if (!(database.getSchema().getFileByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
+      return true;
+    return replicated.writtenSince(vertexDeleteStripe(rid.getBucketId(), rid.getPosition() / bucket.getMaxRecordsInPage()),
+        sequence);
+  }
+
+  /**
+   * How many replicated (or recovered) entries reaching a vertex bucket started being applied (#11592). Moved after the entry's pages
+   * are marked and before the first one is written, so a commit that checked a vertex before an apply marked its page and read that
+   * page after the apply wrote it reads a different count after the read than before the check.
+   */
+  public long getVertexPageAppliesStarted() {
+    return vertexPageAppliesStarted.get();
+  }
+
+  /**
+   * Called after a transaction published the deletes of {@code deleted}, and while their files are still locked, so a transaction
+   * that writes one of those RIDs and holds its lock at the commit sees the stripe moved (#11592).
+   */
+  public void recordsDeleted(final RidHashSet deleted) {
+    final Schema schema = database.getSchema();
+    final long sequence = vertexDeleteSequence.incrementAndGet();
+    deleted.forEach((bucketId, position) -> {
+      if (!(schema.getTypeByBucketId(bucketId) instanceof VertexType))
+        return;
+      AtomicLongArray deletedAt = vertexDeletedAt;
+      if (deletedAt == null)
+        synchronized (vertexDeleteSequence) {
+          deletedAt = vertexDeletedAt;
+          if (deletedAt == null)
+            vertexDeletedAt = deletedAt = new AtomicLongArray(VERTEX_DELETE_STRIPES);
+        }
+      // max: with an explicit lock list two commits can reach here out of order
+      deletedAt.accumulateAndGet(vertexDeleteStripe(bucketId, position), sequence, Math::max);
+    });
+  }
+
+  /**
+   * Called before a replicated (or recovered) entry writes its first page: the stripes of the vertex bucket pages it carries are
+   * marked as being written, so a transaction committing while the entry is applied cannot merge an edge-list head of a vertex on
+   * one of them (#11592). A follower prepares the commits of its own transactions (commit1stPhase) before it forwards them, so the
+   * entries it applies refuse those too, but only for a vertex on a page they wrote.
+   *
+   * @return the stripes marked, to hand to {@link #replicatedVertexPagesApplied}, or null when the entry reaches no vertex bucket
+   */
+  private int[] replicatedVertexPagesApplying(final WALFile.WALTransaction tx) {
+    if (tx.pages == null)
+      return null;
+    final Schema schema = database.getSchema();
+    int[] stripes = null;
+    int count = 0;
+    for (final WALFile.WALPage page : tx.pages)
+      if (schema.getTypeByBucketId(page.fileId) instanceof VertexType) {
+        if (stripes == null)
+          stripes = new int[tx.pages.length];
+        stripes[count++] = vertexDeleteStripe(page.fileId, page.pageNumber);
+      }
+    if (stripes == null)
+      return null;
+
+    ReplicatedVertexPages replicated = replicatedVertexPages;
+    if (replicated == null)
+      synchronized (vertexDeleteSequence) {
+        replicated = replicatedVertexPages;
+        if (replicated == null)
+          replicatedVertexPages = replicated = new ReplicatedVertexPages();
+      }
+    final int[] marked = count == stripes.length ? stripes : Arrays.copyOf(stripes, count);
+    replicated.applying(marked);
+    vertexPageAppliesStarted.incrementAndGet();
+    return marked;
+  }
+
+  /**
+   * Called after the entry {@link #replicatedVertexPagesApplying} marked the stripes of was written to the pages, also when it threw
+   * (part of it can be published): a transaction that began before the sequence taken here may have read alive a vertex the entry
+   * deleted, and one that began after it read what the entry wrote (#11592).
+   */
+  private void replicatedVertexPagesApplied(final int[] stripes) {
+    replicatedVertexPages.applied(stripes, vertexDeleteSequence.incrementAndGet());
+  }
+
+  /** The stripes of vertex bucket pages replicated applies wrote, and the ones they are writing (#11592). */
+  private static final class ReplicatedVertexPages {
+    private final AtomicLongArray    writtenAt = new AtomicLongArray(VERTEX_DELETE_STRIPES);
+    private final AtomicIntegerArray writing   = new AtomicIntegerArray(VERTEX_DELETE_STRIPES);
+
+    private void applying(final int[] stripes) {
+      for (final int stripe : stripes)
+        writing.incrementAndGet(stripe);
+    }
+
+    private void applied(final int[] stripes, final long sequence) {
+      // the sequence goes in before the mark comes off, so a check that finds the stripe no longer written finds the sequence
+      for (final int stripe : stripes) {
+        writtenAt.accumulateAndGet(stripe, sequence, Math::max);
+        writing.decrementAndGet(stripe);
+      }
+    }
+
+    private boolean writtenSince(final int stripe, final long sequence) {
+      // the mark first: see applied
+      return writing.get(stripe) > 0 || writtenAt.get(stripe) > sequence;
+    }
+  }
+
+  private static int vertexDeleteStripe(final int bucketId, final long position) {
+    return (int) ((bucketId * 0x9E3779B97F4A7C15L + position) & (VERTEX_DELETE_STRIPES - 1));
   }
 
   /**
@@ -1576,7 +1721,10 @@ public class TransactionManager {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
+    int[] vertexPageStripes = null;
     try {
+      // #11592: before the first page is written, so a transaction whose commit overlaps the apply is refused a head merge on them
+      vertexPageStripes = replicatedVertexPagesApplying(tx);
       // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
       // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
       bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
@@ -1588,6 +1736,10 @@ public class TransactionManager {
         commitPublished();
       }
     } finally {
+      // #11592: after the pages are published and before any lock is released, also when the apply threw (part of the entry can be
+      // published): a transaction that began before the sequence this takes is refused a head merge on the pages from now on
+      if (vertexPageStripes != null)
+        replicatedVertexPagesApplied(vertexPageStripes);
       if (bucketLocks != null) {
         // After the fold: a recompute that published while the pages were being written is discarded (#8640)
         for (int i = 0; i < bucketLocks.timedOutCount; i++)

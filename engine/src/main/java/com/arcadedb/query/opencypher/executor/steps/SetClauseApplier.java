@@ -24,6 +24,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -212,6 +214,11 @@ public final class SetClauseApplier {
           // earlier in the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after DELETE t. Unlike the
           // plain-variable branch, this path never goes through resolveLatestDoc(), so the check happens here.
           DeletedEntityMarker.checkNotDeleted(targets[i]);
+          // #11693: only a node or a relationship holds properties. A map (or any other value) is refused here, before
+          // any item of the clause is written, instead of being skipped as if the write had happened.
+          if (targets[i] != null && !(targets[i] instanceof Document))
+            throw new TypeMismatchException("TypeError: Type mismatch: expected Node or Relationship but was "
+                + CypherFunctionHelper.cypherTypeName(targets[i]));
         }
         if (item.getKeyExpression() != null) {
           final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
