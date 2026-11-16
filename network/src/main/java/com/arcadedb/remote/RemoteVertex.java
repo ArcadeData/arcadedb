@@ -38,10 +38,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Vertex type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -149,46 +151,20 @@ public class RemoteVertex {
   }
 
   /**
-   * Returns a lazy iterator that transparently fetches edges in pages of {@code pageSize} elements
-   * over multiple HTTP calls. Each page is one SQL query with SKIP/LIMIT.
+   * Returns a lazy iterator that transparently fetches edges in pages of {@code pageSize} elements over multiple HTTP calls.
+   * Each page is one SQL query that resumes after the RID of the last edge of the previous page (issue #12191): the edges
+   * the caller deletes while iterating, or another client deletes, do not move the next page, as an offset into the edge list
+   * did. {@link Vertex.DIRECTION#BOTH} reads the outgoing edges, then the incoming ones, as the embedded API does.
    */
   public IterableGraph<Edge> getEdgesPaged(final Vertex.DIRECTION direction, final int pageSize, final String... edgeTypes) {
+    checkPageSize(pageSize);
     return new IterableGraph<>() {
       @Override
       public Iterator<Edge> iterator() {
-        return new Iterator<>() {
-          private int currentSkip = 0;
-          private Iterator<Edge> currentPage = Collections.emptyIterator();
-          private boolean done = false;
-
-          private void loadNextPage() {
-            if (done)
-              return;
-            final ResultSet rs = fetch("E", direction, edgeTypes, pageSize, currentSkip);
-            final List<Edge> page = new ArrayList<>(pageSize);
-            while (rs.hasNext())
-              page.add(rs.next().getEdge().get());
-            if (page.size() < pageSize)
-              done = true;
-            currentSkip += page.size();
-            currentPage = page.iterator();
-          }
-
+        return new EdgePagesIterator<>(direction, pageSize, edgeTypes) {
           @Override
-          public boolean hasNext() {
-            if (currentPage.hasNext())
-              return true;
-            if (done)
-              return false;
-            loadNextPage();
-            return currentPage.hasNext();
-          }
-
-          @Override
-          public Edge next() {
-            if (!hasNext())
-              throw new NoSuchElementException();
-            return currentPage.next();
+          protected List<Edge> elementsOf(final Vertex.DIRECTION pageDirection, final List<Edge> edges) {
+            return edges;
           }
         };
       }
@@ -243,47 +219,20 @@ public class RemoteVertex {
   }
 
   /**
-   * Returns a lazy iterator that transparently fetches neighbor vertices in pages of {@code pageSize}
-   * elements over multiple HTTP calls. Each page is one SQL query with SKIP/LIMIT.
+   * Returns a lazy iterator that transparently fetches neighbor vertices in pages of {@code pageSize} elements over multiple
+   * HTTP calls: the page of edges {@link #getEdgesPaged} reads, then their vertices on the other side in one query by RID, so
+   * deleting the vertices while iterating does not skip any either (issue #12191).
    */
   public IterableGraph<Vertex> getVerticesPaged(final Vertex.DIRECTION direction, final int pageSize,
       final String... edgeTypes) {
+    checkPageSize(pageSize);
     return new IterableGraph<>() {
       @Override
       public Iterator<Vertex> iterator() {
-        return new Iterator<>() {
-          private int currentSkip = 0;
-          private Iterator<Vertex> currentPage = Collections.emptyIterator();
-          private boolean done = false;
-
-          private void loadNextPage() {
-            if (done)
-              return;
-            final ResultSet rs = fetch("", direction, edgeTypes, pageSize, currentSkip);
-            final List<Vertex> page = new ArrayList<>(pageSize);
-            while (rs.hasNext())
-              page.add(rs.next().getVertex().get());
-            if (page.size() < pageSize)
-              done = true;
-            currentSkip += page.size();
-            currentPage = page.iterator();
-          }
-
+        return new EdgePagesIterator<>(direction, pageSize, edgeTypes) {
           @Override
-          public boolean hasNext() {
-            if (currentPage.hasNext())
-              return true;
-            if (done)
-              return false;
-            loadNextPage();
-            return currentPage.hasNext();
-          }
-
-          @Override
-          public Vertex next() {
-            if (!hasNext())
-              throw new NoSuchElementException();
-            return currentPage.next();
+          protected List<Vertex> elementsOf(final Vertex.DIRECTION pageDirection, final List<Edge> edges) {
+            return otherVertices(pageDirection, edges);
           }
         };
       }
@@ -293,6 +242,127 @@ public class RemoteVertex {
         return Vertex.class;
       }
     };
+  }
+
+  private static void checkPageSize(final int pageSize) {
+    if (pageSize < 1)
+      throw new IllegalArgumentException("The page size must be positive, it is " + pageSize);
+  }
+
+  /**
+   * Walks the edges of the vertex page by page, in RID order, each page resuming after the last RID read: the outgoing edges,
+   * then the incoming ones for {@link Vertex.DIRECTION#BOTH}. Hands each page of edges to {@link #elementsOf} for what the
+   * iterator returns.
+   */
+  private abstract class EdgePagesIterator<T> implements Iterator<T> {
+    private final Vertex.DIRECTION[] directions;
+    private final int                pageSize;
+    private final String[]           edgeTypes;
+    private       int                directionIndex = 0;
+    private       RID                lastEdge       = null;
+    private       Iterator<T>        currentPage    = Collections.emptyIterator();
+
+    private EdgePagesIterator(final Vertex.DIRECTION direction, final int pageSize, final String[] edgeTypes) {
+      this.directions = direction == Vertex.DIRECTION.BOTH ?
+          new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+          new Vertex.DIRECTION[] { direction };
+      this.pageSize = pageSize;
+      this.edgeTypes = edgeTypes;
+    }
+
+    protected abstract List<T> elementsOf(Vertex.DIRECTION pageDirection, List<Edge> edges);
+
+    @Override
+    public boolean hasNext() {
+      // a loop, not one load: a page of vertices can come back empty when every vertex of its edges was deleted meanwhile
+      while (!currentPage.hasNext()) {
+        if (directionIndex >= directions.length)
+          return false;
+
+        final Vertex.DIRECTION pageDirection = directions[directionIndex];
+        final List<Edge> edges = fetchEdgesAfter(pageDirection, edgeTypes, lastEdge, pageSize);
+        if (edges.size() < pageSize) {
+          // the last page of this direction
+          ++directionIndex;
+          lastEdge = null;
+        } else
+          lastEdge = edges.getLast().getIdentity();
+
+        currentPage = elementsOf(pageDirection, edges).iterator();
+      }
+      return true;
+    }
+
+    @Override
+    public T next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return currentPage.next();
+    }
+  }
+
+  /**
+   * Up to {@code limit} edges of {@code direction} ({@code OUT} or {@code IN}) in RID order, the ones after {@code after}, or
+   * from the first one when it is null.
+   */
+  private List<Edge> fetchEdgesAfter(final Vertex.DIRECTION direction, final String[] types, final RID after,
+      final int limit) {
+    final StringBuilder query = new StringBuilder("select from ( select expand( ")
+        .append(direction == Vertex.DIRECTION.OUT ? "outE" : "inE").append("(");
+    final Map<String, Object> params = new HashMap<>();
+    appendBoundTypes(query, types, params);
+
+    query.append(") ) from ").append(vertex.getIdentity()).append(" )");
+    // a RID literal, not a parameter: a RID sent as a JSON parameter is bound as a string
+    if (after != null)
+      query.append(" WHERE @rid > ").append(after);
+    query.append(" ORDER BY @rid LIMIT ").append(limit);
+
+    final List<Edge> edges = new ArrayList<>(limit);
+    try (final ResultSet rs = remoteDatabase.queryUncounted("sql", query.toString(), params)) {
+      while (rs.hasNext())
+        edges.add(rs.next().getEdge().get());
+    }
+    return edges;
+  }
+
+  /**
+   * The vertices on the other side of {@code edges}, in the order of the edges, read in one query. A vertex deleted since its
+   * edge was read is left out.
+   */
+  private List<Vertex> otherVertices(final Vertex.DIRECTION direction, final List<Edge> edges) {
+    if (edges.isEmpty())
+      return Collections.emptyList();
+
+    final Set<RID> rids = new LinkedHashSet<>(edges.size());
+    for (final Edge edge : edges)
+      rids.add(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+
+    final StringBuilder query = new StringBuilder("select from [");
+    boolean first = true;
+    for (final RID rid : rids) {
+      if (!first)
+        query.append(", ");
+      query.append(rid);
+      first = false;
+    }
+    query.append("]");
+
+    final Map<RID, Vertex> byRid = new HashMap<>(rids.size());
+    try (final ResultSet rs = remoteDatabase.queryUncounted("sql", query.toString(), Collections.emptyMap())) {
+      while (rs.hasNext()) {
+        final Vertex v = rs.next().getVertex().get();
+        byRid.put(v.getIdentity(), v);
+      }
+    }
+
+    final List<Vertex> vertices = new ArrayList<>(edges.size());
+    for (final Edge edge : edges) {
+      final Vertex v = byRid.get(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+      if (v != null)
+        vertices.add(v);
+    }
+    return vertices;
   }
 
   public boolean isConnectedTo(final Identifiable toVertex) {
