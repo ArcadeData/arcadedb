@@ -1136,6 +1136,12 @@ public class DateUtils {
    * a datetime
    */
   public static int compareNumberAndTemporal(final Object left, final Object right) {
+    // A duration (what subtracting two datetimes answers) against a number reads the number as SECONDS, the unit HTTP shows the
+    // duration in: WHERE sysdate() - ts < 3600 is "in the last hour". It used to be greater than every number (issue #12295)
+    if (left instanceof Duration duration && right instanceof Number number)
+      return DurationArithmetic.compareToSeconds(duration, number);
+    if (right instanceof Duration duration && left instanceof Number number)
+      return -DurationArithmetic.compareToSeconds(duration, number);
     if (left instanceof Number number)
       return compareNumberToDateTime(number, right);
     if (right instanceof Number number) {
