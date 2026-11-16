@@ -2540,21 +2540,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    exchange.addResponseCommitListener(ex -> {
-      if (ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
-        return;
-      try {
-        emitCommitIndexBookmark(ex, haDb);
-      } catch (final RuntimeException e) {
-        // This runs from inside Undertow's response-commit path, not from the handler, so it is outside the
-        // exception mapping in handleRequest: letting anything escape here would tear down a response that is
-        // otherwise complete and correct. A missing bookmark costs the client one stale follower read; a torn
-        // response costs it the answer.
-        LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
-            "Cannot read the last applied index while committing the response, the read-your-writes bookmark is "
-                + "not emitted for this request", e);
-      }
-    });
+    exchange.addResponseCommitListener(ex -> emitCommitIndexBookmarkIfAbsent(ex, haDb));
+  }
+
+  /**
+   * Emits the bookmark unless the response already carries one, and never throws. Called by the response-commit listener of
+   * {@link #emitCommitIndexBookmarkOnResponseCommit} and by {@link DatabaseAbstractHandler#execute} just before it clears the
+   * request's read-consistency context, which also holds the bookmark of any write the request forwarded to the leader (issue
+   * #11740): a request that leaves through an exception is answered after that, so the listener alone would answer it with
+   * this node's own applied index, below a write the leader had already committed.
+   */
+  protected static void emitCommitIndexBookmarkIfAbsent(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
+    if (exchange.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+      return;
+    try {
+      emitCommitIndexBookmark(exchange, haDb);
+    } catch (final RuntimeException e) {
+      // Run from inside Undertow's response-commit path, or from a finally block, so outside the exception mapping in
+      // handleRequest: letting anything escape would tear down a response that is otherwise complete and correct, or replace
+      // the request's own failure. A missing bookmark costs the client one stale follower read; a torn response costs it the
+      // answer.
+      LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
+          "Cannot read the last applied index while answering, the read-your-writes bookmark is not emitted for this request",
+          e);
+    }
   }
 
   /**

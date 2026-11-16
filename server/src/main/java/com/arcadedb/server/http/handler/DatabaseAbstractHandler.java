@@ -301,9 +301,15 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     } finally {
       try {
-        // Clear read consistency context
-        if (haDbForRead != null)
+        if (haDbForRead != null) {
+          // A request that left the try through an exception skipped the emit above and is answered after this block, by
+          // handleRequest's error mapping: the response-commit listener would then read the bookmark with the writes this
+          // request forwarded to the leader already cleared below (issue #11740), so it is set here, while they are known
+          if (!exchange.isResponseStarted())
+            emitCommitIndexBookmarkIfAbsent(exchange, haDbForRead);
+          // Clear read consistency context
           haDbForRead.clearReadConsistencyContext();
+        }
 
         if (activeSession != null)
           // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
