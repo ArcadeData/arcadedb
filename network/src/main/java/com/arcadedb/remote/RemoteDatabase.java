@@ -2039,6 +2039,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (!result.has(CAT_PROPERTY))
       return null;
 
+    // A category no record has is answered on the parsed JSON too, so the projection it falls back to is converted once (#8332)
+    final String cat = result.getString(CAT_PROPERTY);
+    if (!"d".equals(cat) && !"v".equals(cat) && !"e".equals(cat))
+      return null;
+
     return map2Record(result.toMap());
   }
 
