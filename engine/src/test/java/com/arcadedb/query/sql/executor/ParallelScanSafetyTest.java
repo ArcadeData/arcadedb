@@ -181,7 +181,7 @@ class ParallelScanSafetyTest extends TestHelper {
 
     // The consumer scans a unit itself when no producer has taken it yet, and drops the producers still queued once
     // every unit is over (#8594, #8591). On a pool still busy with the producers of an earlier test none of this scan's
-    // producers runs at all, which says nothing about the pool they were submitted to (issue #ISSUE). So the scan
+    // producers runs at all, which says nothing about the pool they were submitted to (issue #12099). So the scan
     // starts on an idle pool, and runs again if its consumer still got to every unit first.
     long before = 0;
     long after = 0;
