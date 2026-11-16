@@ -197,6 +197,9 @@ public final class DistinctNumericKey {
    * DISTINCT and GROUP BY).
    */
   private static Object canonicalDecimal(final BigDecimal value) {
+    // The common DECIMAL key, a whole number of up to 18 digits at scale 0, is its long with no stripping and no allocation but the box
+    if (value.scale() == 0 && value.precision() <= 18)
+      return value.longValueExact();
     final BigDecimal stripped = value.signum() == 0 ? BigDecimal.ZERO : value.stripTrailingZeros();
     if (stripped.scale() <= 0 && stripped.precision() - stripped.scale() <= 19 && stripped.compareTo(LONG_MIN) >= 0
         && stripped.compareTo(LONG_MAX) <= 0)

@@ -35,6 +35,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.function.Supplier;
 
 /**
  * SQL arithmetic and ordering of a {@link Duration} - what subtracting two datetimes answers - and of a datetime shifted by an amount
@@ -281,14 +282,10 @@ public final class DurationArithmetic {
     };
   }
 
-  private interface DurationOperation {
-    Duration apply();
-  }
-
   /** A {@link Duration} operation that overflows the range of a duration is the caller's error, not an internal one. */
-  private static Duration exact(final DurationOperation operation) {
+  private static Duration exact(final Supplier<Duration> operation) {
     try {
-      return operation.apply();
+      return operation.get();
     } catch (final ArithmeticException e) {
       throw new ArithmeticErrorException("The duration is out of range: " + e.getMessage(), e);
     }

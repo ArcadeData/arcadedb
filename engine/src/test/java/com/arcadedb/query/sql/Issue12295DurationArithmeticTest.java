@@ -26,14 +26,19 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,6 +149,58 @@ class Issue12295DurationArithmeticTest extends TestHelper {
   }
 
   @Test
+  void everyDatetimeClassMovesByANumberOfMillisecondsOnEitherSide() {
+    final long epoch = 1_614_506_400_000L; // 2021-02-28T10:00:00Z
+    final Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+    calendar.setTimeInMillis(epoch);
+    final Map<String, Object> params = new HashMap<>();
+    params.put("date", new Date(epoch));
+    params.put("cal", calendar);
+    params.put("ts", new Timestamp(epoch));
+    params.put("ld", LocalDate.of(2021, 2, 28));
+    params.put("ins", Instant.ofEpochMilli(epoch));
+    try (final ResultSet rs = database.query("sql",
+        "SELECT :date + 1000 AS d1, 1000 + :date AS d2, :cal + 1000 AS c1, 1000 + :cal AS c2, :ts + 1000 AS t1, 1000 + :ts AS t2, "
+            + ":ld + 86400000 AS l1, 86400000 + :ld AS l2, :ld + 1000 AS l3, :ins - 1000 AS i1", params)) {
+      final Result row = rs.next();
+      assertThat(row.<Date>getProperty("d1")).isEqualTo(new Date(epoch + 1000));
+      assertThat(row.<Date>getProperty("d2")).isEqualTo(new Date(epoch + 1000));
+      assertThat(row.<Calendar>getProperty("c1").getTimeInMillis()).isEqualTo(epoch + 1000);
+      assertThat(row.<Calendar>getProperty("c2").getTimeInMillis()).isEqualTo(epoch + 1000);
+      assertThat(calendar.getTimeInMillis()).as("the operand is not changed").isEqualTo(epoch);
+      assertThat(row.<Object>getProperty("t1")).isInstanceOf(Timestamp.class);
+      assertThat(row.<Timestamp>getProperty("t1").getTime()).isEqualTo(epoch + 1000);
+      assertThat(row.<Timestamp>getProperty("t2").getTime()).isEqualTo(epoch + 1000);
+      assertThat(row.<LocalDate>getProperty("l1")).isEqualTo(LocalDate.of(2021, 3, 1));
+      assertThat(row.<LocalDate>getProperty("l2")).isEqualTo(LocalDate.of(2021, 3, 1));
+      assertThat(row.<LocalDateTime>getProperty("l3")).isEqualTo(LocalDateTime.of(2021, 2, 28, 0, 0, 1));
+      assertThat(row.<Instant>getProperty("i1")).isEqualTo(Instant.ofEpochMilli(epoch - 1000));
+    }
+  }
+
+  @Test
+  void resultsOutOfRangeAreRefused() {
+    final Map<String, Object> params = Map.of("max", LocalDateTime.MAX, "ld", LocalDate.MAX);
+    assertThatThrownBy(() -> single("SELECT :max + 1000 AS v", params)).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> single("SELECT :ld + duration(1, 'day') AS v", params)).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> single("SELECT duration(9223372036854775807, 'second') + 1 AS v"))
+        .isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> single("SELECT duration(9223372036854775807, 'second') * 2 AS v"))
+        .isInstanceOf(ArithmeticErrorException.class);
+  }
+
+  @Test
+  void nanIsAboveEveryDuration() {
+    final Map<String, Object> params = Map.of("nan", Double.NaN, "inf", Double.POSITIVE_INFINITY);
+    final String diff = "(dt - '2021-02-27 10:00:00'.asDateTime())";
+    assertThat(keys("SELECT k FROM DD WHERE k = 1 AND " + diff + " < :nan", params)).containsExactly(1);
+    assertThat(keys("SELECT k FROM DD WHERE k = 1 AND :nan > " + diff, params)).containsExactly(1);
+    assertThat(keys("SELECT k FROM DD WHERE k = 1 AND " + diff + " = :nan", params)).isEmpty();
+    assertThat(keys("SELECT k FROM DD WHERE k = 1 AND " + diff + " < :inf", params)).containsExactly(1);
+    assertThatThrownBy(() -> single("SELECT duration(1, 'day') * :nan AS v", params)).isInstanceOf(ArithmeticErrorException.class);
+  }
+
+  @Test
   void meaninglessPairsAreRefused() {
     assertThatThrownBy(() -> single("SELECT dt + dt AS v FROM DD WHERE k = 1")).isInstanceOf(ArithmeticErrorException.class);
     assertThatThrownBy(() -> single("SELECT duration(1, 'day') - dt AS v FROM DD WHERE k = 1"))
@@ -177,14 +234,22 @@ class Issue12295DurationArithmeticTest extends TestHelper {
   }
 
   private Result single(final String sql) {
-    try (final ResultSet rs = database.query("sql", sql)) {
+    return single(sql, Map.of());
+  }
+
+  private Result single(final String sql, final Map<String, Object> params) {
+    try (final ResultSet rs = database.query("sql", sql, params)) {
       return rs.next();
     }
   }
 
   private List<Integer> keys(final String sql) {
+    return keys(sql, Map.of());
+  }
+
+  private List<Integer> keys(final String sql, final Map<String, Object> params) {
     final List<Integer> result = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql", sql)) {
+    try (final ResultSet rs = database.query("sql", sql, params)) {
       while (rs.hasNext())
         result.add(rs.next().<Number>getProperty("k").intValue());
     }
