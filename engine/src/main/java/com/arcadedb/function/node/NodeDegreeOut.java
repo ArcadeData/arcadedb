@@ -74,8 +74,9 @@ public class NodeDegreeOut extends AbstractNodeFunction {
     if (args.length < 2 || args[1] == null)
       return null;
 
-    if (args[1] instanceof String)
-      return new String[] { (String) args[1] };
+    // APOC reads the argument as one type name, and a blank one as every type (issue #12103)
+    if (args[1] instanceof String s)
+      return s.isBlank() ? null : new String[] { s };
 
     if (args[1] instanceof Collection) {
       final Collection<?> coll = (Collection<?>) args[1];

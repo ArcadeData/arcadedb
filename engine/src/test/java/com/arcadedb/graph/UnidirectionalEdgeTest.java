@@ -878,7 +878,10 @@ class UnidirectionalEdgeTest {
       assertSame("opencypher", "MATCH (n:N) RETURN n, node.degree(n, 'R') AS d", true);
       assertSame("opencypher", "MATCH (n:N) RETURN n, node.degree.in(n, 'R') AS d", true);
       assertSame("opencypher", "MATCH (n:N) RETURN n, node.relationship.exists(n, 'R', 'IN') AS d", true);
-      assertSame("opencypher", "MATCH (n:N) RETURN n, node.relationship.types(n, 'IN') AS d", true);
+      // the direction is the third argument since #12103, '<' the APOC pattern for every incoming relationship
+      assertSame("opencypher", "MATCH (n:N) RETURN n, node.relationship.types(n, null, 'IN') AS d", true);
+      assertSame("opencypher", "MATCH (n:N) RETURN n, node.relationship.types(n, '<') AS d", true);
+      assertSame("opencypher", "MATCH (n:N) RETURN n, node.degree(n, '<R') AS d, node.relationship.exists(n, 'R>') AS e", true);
     }
 
     @Test

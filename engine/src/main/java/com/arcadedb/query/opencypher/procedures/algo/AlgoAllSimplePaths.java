@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -39,9 +40,10 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.allSimplePaths(startNode, endNode, relTypes, maxDepth, [options])
+ * Procedure: algo.allSimplePaths(startNode, endNode, relTypesAndDirections, maxDepth, [options])
  * <p>
- * Finds all simple paths (paths without repeated nodes) between two nodes.
+ * Finds all simple paths (paths without repeated nodes) between two nodes. {@code relTypesAndDirections} is APOC's
+ * relationship pattern ({@code 'ROAD>|<RAIL'}, {@code '>'}, a blank one for every relationship, issue #12103).
  * </p>
  * <p>
  * The optional 5th argument is a configuration map. Supported keys:
@@ -103,7 +105,10 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final String[] relTypes = extractRelTypes(args[2], context);
+    // APOC's relationship pattern (issue #12103): the types walked outgoing and incoming, null for a direction not walked
+    final RelationshipPattern pattern = extractRelationshipPattern(args[2], context);
+    final String[] outTypes = pattern.typesFor(Vertex.DIRECTION.OUT);
+    final String[] inTypes = pattern.typesFor(Vertex.DIRECTION.IN);
     final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
     final Map<String, Object> options = extractConfig(argOrDefault(args, 4, null), "options", OPTION_KEYS);
     final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes", true, context);
@@ -119,7 +124,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     currentPath.add(startNode);
     visited.add(startNode.getIdentity());
 
-    findPaths(startNode, endNode, relTypes, skipRelTypes, skipVertexTypes, maxDepth, currentPath, visited, allPaths,
+    findPaths(startNode, endNode, outTypes, inTypes, skipRelTypes, skipVertexTypes, maxDepth, currentPath, visited, allPaths,
         context, newWorkGuard(context));
 
     return allPaths.stream().map(pathElements -> {
@@ -149,7 +154,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     return result;
   }
 
-  private void findPaths(final Vertex current, final Vertex target, final String[] relTypes,
+  private void findPaths(final Vertex current, final Vertex target, final String[] outTypes, final String[] inTypes,
                          final Set<String> skipRelTypes, final Set<String> skipVertexTypes, final int remainingDepth,
                          final List<Object> currentPath, final Set<RID> visited,
                          final List<List<Object>> allPaths, final CommandContext context, final WorkGuard guard) {
@@ -167,8 +172,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     if (remainingDepth <= 0)
       return;
 
-    final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-        ? current.getEdges(Vertex.DIRECTION.OUT, relTypes)
+    final Iterable<Edge> edges = outTypes == null ? List.of()
+        : outTypes.length > 0 ? current.getEdges(Vertex.DIRECTION.OUT, outTypes)
         : current.getEdges(Vertex.DIRECTION.OUT);
 
     for (final Edge edge : edges) {
@@ -192,7 +197,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
           // leaving no dirty state for the rest of this branch.
           try {
-            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
+            findPaths(neighbor, target, outTypes, inTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
                 context, guard);
           } finally {
             currentPath.removeLast();
@@ -207,7 +212,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     }
 
     // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
-    final Iterable<Edge> inEdges = edgesOf(context, current, Vertex.DIRECTION.IN, relTypes);
+    final Iterable<Edge> inEdges = inTypes == null ? List.of() : edgesOf(context, current, Vertex.DIRECTION.IN, inTypes);
 
     for (final Edge edge : inEdges) {
       if (!skipRelTypes.isEmpty() && skipRelTypes.contains(edge.getTypeName()))
@@ -230,7 +235,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
           // leaving no dirty state for the rest of this branch.
           try {
-            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
+            findPaths(neighbor, target, outTypes, inTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
                 context, guard);
           } finally {
             currentPath.removeLast();
