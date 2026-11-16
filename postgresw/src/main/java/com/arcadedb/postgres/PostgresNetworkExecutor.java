@@ -1838,10 +1838,29 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private Set<String> columnNamesOf(final Result row) {
     final Set<String> names = new LinkedHashSet<>();
-    if (row.isElement())
-      names.addAll(row.getElement().get().getPropertyNames());
+    if (row.isElement()) {
+      final Set<String> excludes = projectionExcludes(row);
+      for (final String name : row.getElement().get().getPropertyNames())
+        if (excludes == null || !excludes.contains(name))
+          names.add(name);
+    }
     names.addAll(row.getPropertyNames());
     return names;
+  }
+
+  /**
+   * The aliases a {@code SELECT *, !name} projection excluded from the row's backing element, or null. The element still holds
+   * them, so every read this surface makes straight off the element has to skip them, or the excluded column is announced and
+   * its stored value sent (issue #11941). The row's own content still answers: a later item of the projection may write the
+   * same alias.
+   */
+  private static Set<String> projectionExcludes(final Result row) {
+    return row instanceof ResultInternal internal ? internal.getProjectionExcludes() : null;
+  }
+
+  private static boolean isExcludedFromElement(final Result row, final String name) {
+    final Set<String> excludes = projectionExcludes(row);
+    return excludes != null && excludes.contains(name);
   }
 
   /**
@@ -1956,9 +1975,21 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, Class<?>> lastScalarClass = new HashMap<>();
 
     boolean atLeastOneElement = false;
+    // the system columns every element row's projection excluded (SELECT *, !@rid): not announced (issue #11941)
+    Set<String> excludedSystemColumns = null;
     for (final Result row : resultSet) {
-      if (row.isElement())
+      if (row.isElement()) {
+        final Set<String> excludes = projectionExcludes(row);
+        if (!atLeastOneElement)
+          excludedSystemColumns = excludes != null ? new HashSet<>(excludes) : null;
+        else if (excludedSystemColumns != null) {
+          if (excludes == null)
+            excludedSystemColumns = null;
+          else
+            excludedSystemColumns.retainAll(excludes);
+        }
         atLeastOneElement = true;
+      }
 
       for (final String p : columnNamesOf(row)) {
         // Determine the PostgreSQL type based on the actual value.
@@ -2022,9 +2053,12 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (atLeastOneElement) {
-      columns.put(RID_PROPERTY, PostgresType.VARCHAR);
-      columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
-      columns.put(CAT_PROPERTY, PostgresType.CHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(RID_PROPERTY))
+        columns.put(RID_PROPERTY, PostgresType.VARCHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(TYPE_PROPERTY))
+        columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(CAT_PROPERTY))
+        columns.put(CAT_PROPERTY, PostgresType.CHAR);
     }
 
     return columns;
@@ -3073,6 +3107,9 @@ public class PostgresNetworkExecutor extends Thread {
    * the same column.
    */
   private static Object columnValue(final Result row, final String propertyName) {
+    // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
+    if (row.isElement() && isExcludedFromElement(row, propertyName))
+      return propertyOf(row, propertyName);
     return switch (propertyName) {
       case RID_PROPERTY -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
       case TYPE_PROPERTY -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
@@ -3317,10 +3354,12 @@ public class PostgresNetworkExecutor extends Thread {
    * unioned through that method because this runs per row on the bulk path and the union allocates a set.
    */
   private static void checkRowFitsAnnouncedColumns(final Result row, final Map<String, PostgresType> columns) {
-    if (row.isElement())
+    if (row.isElement()) {
+      final Set<String> excludes = projectionExcludes(row);
       for (final String name : row.getElement().get().getPropertyNames())
-        if (!columns.containsKey(name))
+        if (!columns.containsKey(name) && (excludes == null || !excludes.contains(name)))
           throw unannouncedCopyColumn(name, columns);
+    }
     for (final String name : row.getPropertyNames())
       if (!columns.containsKey(name))
         throw unannouncedCopyColumn(name, columns);
