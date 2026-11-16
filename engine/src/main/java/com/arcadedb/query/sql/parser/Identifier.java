@@ -271,8 +271,14 @@ public class Identifier extends SimpleNode {
     return "$parent".equals(value);
   }
 
-  public boolean isEarlyCalculated(CommandContext ctx) {
+  public boolean isEarlyCalculated(final CommandContext ctx) {
     if (internalAlias)
+      return true;
+
+    // $parent is the context of the statement that runs this one as a subquery: it is set before the subquery is planned and
+    // stays the same for one execution of its plan, so a key read from it ($parent.$current.id) is resolved when the fetch
+    // starts, as an input parameter is, and an index can serve it (issue #12286)
+    if (refersToParent() && ctx.getParent() != null)
       return true;
 
     return ctx.isScriptVariableDeclared(plainValue); // context variable, for batch scripts
