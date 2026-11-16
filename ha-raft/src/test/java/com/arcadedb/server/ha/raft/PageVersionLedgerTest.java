@@ -402,6 +402,72 @@ class PageVersionLedgerTest {
     validation.join(10_000);
   }
 
+  /** Issue #11921: a publication whose commit throws after its first check must release the validation lock. */
+  @Test
+  void aPublicationThatThrowsAfterItsCheckReleasesTheValidationLock() throws Exception {
+    assertThatThrownBy(() -> ledger.publishOutsideTheLog(DB, () -> {
+      ledger.reservedVersion(DB, 3, 0);
+      throw new ConcurrentModificationException("commit refused after its check");
+    })).isInstanceOf(ConcurrentModificationException.class);
+
+    // Another thread validating the same database must not block: the lock was released on the way out.
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-throw");
+    validation.setDaemon(true);
+    validation.start();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).as("the validation lock leaked by a throwing publication").isTrue();
+    validation.join(10_000);
+
+    // The thread-local is restored too: a check outside any publication takes no lock, so a later validation is not blocked.
+    ledger.reservedVersion(DB, 3, 0);
+    final CountDownLatch validatedAgain = new CountDownLatch(1);
+    final Thread second = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(5, 0, 1))), entry(2), localVersions);
+        validatedAgain.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-restore");
+    second.setDaemon(true);
+    second.start();
+    assertThat(validatedAgain.await(10, TimeUnit.SECONDS)).as("a check outside a publication must not take the lock").isTrue();
+    second.join(10_000);
+  }
+
+  /** Issue #11921: an inner publication of a thread that already holds the lock must not release it for the outer one. */
+  @Test
+  void aNestedPublicationDoesNotReleaseTheLockOfTheEnclosingOne() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-nested");
+    validation.setDaemon(true);
+
+    final boolean validatedAfterInner = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.reservedVersion(DB, 3, 0);
+      ledger.publishOutsideTheLog(DB, () -> ledger.reservedVersion(DB, 4, 0));
+      validation.start();
+      return validated.await(300, TimeUnit.MILLISECONDS);
+    });
+
+    assertThat(validatedAfterInner).as("the inner publication released the enclosing publication's lock").isFalse();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+  }
+
   /** Ages a reservation, since the staleness bound is measured on the wall clock. */
   private void backdate(final String database, final int fileId, final int pageNumber, final long byMs) throws Exception {
     backdate(ledger, database, fileId, pageNumber, byMs);
