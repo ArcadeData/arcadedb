@@ -92,6 +92,9 @@ final class MongoQueryMatcher {
   private static final int SIZE    = 8;
   private static final int EXISTS  = 9;
 
+  /** The type bracket of a value no other bracket holds: comparable only with a value of its own class. */
+  private static final int OTHER = 99;
+
   private final Map<String, String[]> paths = new HashMap<>();
 
   boolean matches(final Document document, final Document query) {
@@ -170,12 +173,12 @@ final class MongoQueryMatcher {
         case "$gte" -> compared(values, GTE, operand);
         case "$lt" -> compared(values, LT, operand);
         case "$lte" -> compared(values, LTE, operand);
-        case "$in" -> in(values, list(operator, operand, "$in needs an array"));
-        case "$nin" -> !in(values, list(operator, operand, "$nin needs an array"));
+        case "$in" -> in(values, list(operand, "$in needs an array"));
+        case "$nin" -> !in(values, list(operand, "$nin needs an array"));
         case "$exists" -> any(values, EXISTS, null, false) == Utils.isTrue(operand);
         case "$type" -> any(values, TYPE, types(operand), true);
         case "$size" -> any(values, SIZE, size(operand), false);
-        case "$all" -> all(values, list(operator, operand, "$all needs an array"));
+        case "$all" -> all(values, list(operand, "$all needs an array"));
         case "$elemMatch" -> elemMatch(values, operand);
         case "$mod" -> mod(values, operand);
         case "$not" -> !not(values, operand);
@@ -212,7 +215,7 @@ final class MongoQueryMatcher {
     return new BsonRegularExpression(pattern, options != null ? options.toString() : null);
   }
 
-  private static List<?> list(final String operator, final Object operand, final String message) {
+  private static List<?> list(final Object operand, final String message) {
     if (!(operand instanceof List<?> list))
       throw new BadValueException(message);
     return list;
@@ -468,8 +471,6 @@ final class MongoQueryMatcher {
 
   /** Equality as {@code mongod} sees it: numbers by value whatever their type, documents field by field in order. */
   static boolean valuesEqual(final Object a, final Object b) {
-    if (a == b)
-      return true;
     final boolean aNull = a == null || a instanceof Missing;
     final boolean bNull = b == null || b instanceof Missing;
     if (aNull || bNull)
@@ -525,8 +526,6 @@ final class MongoQueryMatcher {
     return value instanceof List<?> || operand instanceof List<?> ? ValueComparator.asc().compare(left, operand) :
         ValueComparator.ascWithoutListHandling().compare(left, operand);
   }
-
-  private static final int OTHER = 99;
 
   /** The type bracket of a value: {@code mongod} compares only within one. */
   private static int bracket(final Object value) {
@@ -611,6 +610,7 @@ final class MongoQueryMatcher {
     if (isIntegral(number))
       return BigDecimal.valueOf(number.longValue());
     final double value = number.doubleValue();
+    // the exact binary value, not BigDecimal.valueOf's shortest decimal: mongod compares a double and a decimal exactly
     return Double.isFinite(value) ? new BigDecimal(value) : null;
   }
 }

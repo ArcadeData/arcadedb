@@ -27,9 +27,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -233,6 +236,76 @@ class AlgoMaxFlowTest {
       }
     });
     assertThat(flow("c0", "c" + length, null)).isEqualTo(1.0);
+  }
+
+  /**
+   * Dinic over the sparse residual network against a textbook Edmonds-Karp over a dense matrix, on random multigraphs with
+   * parallel relationships, opposite relationships and self loops, in both the directed and the undirected reading.
+   */
+  @Test
+  void agreesWithAReferenceEdmondsKarpOnRandomNetworks() {
+    final Random random = new Random(11798);
+    final int n = 9;
+    for (int round = 0; round < 25; round++) {
+      final String prefix = "r" + round + "_";
+      final int[][] edges = new int[5 + random.nextInt(25)][];
+      for (int e = 0; e < edges.length; e++)
+        edges[e] = new int[] { random.nextInt(n), random.nextInt(n), 1 + random.nextInt(9) };
+
+      database.transaction(() -> {
+        final MutableVertex[] nodes = new MutableVertex[n];
+        for (int i = 0; i < n; i++)
+          nodes[i] = database.newVertex("Node").set("name", prefix + i).save();
+        for (final int[] edge : edges)
+          nodes[edge[0]].newEdge("PIPE", nodes[edge[1]], true, new Object[] { "capacity", (double) edge[2] }).save();
+      });
+
+      for (int pair = 0; pair < 4; pair++) {
+        final int s = random.nextInt(n);
+        final int t = random.nextInt(n);
+        assertThat(flow(prefix + s, prefix + t, null)).as("round %d, %d -> %d, OUT", round, s, t)
+            .isEqualTo(referenceMaxFlow(n, edges, s, t, false));
+        assertThat(flow(prefix + s, prefix + t, "BOTH")).as("round %d, %d -> %d, BOTH", round, s, t)
+            .isEqualTo(referenceMaxFlow(n, edges, s, t, true));
+      }
+    }
+  }
+
+  private static double referenceMaxFlow(final int n, final int[][] edges, final int s, final int t, final boolean undirected) {
+    if (s == t)
+      return 0;
+    final double[][] residual = new double[n][n];
+    for (final int[] edge : edges)
+      if (edge[0] != edge[1]) {
+        residual[edge[0]][edge[1]] += edge[2];
+        if (undirected)
+          residual[edge[1]][edge[0]] += edge[2];
+      }
+    double flow = 0;
+    while (true) {
+      final int[] parent = new int[n];
+      Arrays.fill(parent, -1);
+      parent[s] = s;
+      final ArrayDeque<Integer> queue = new ArrayDeque<>(List.of(s));
+      while (!queue.isEmpty() && parent[t] < 0) {
+        final int u = queue.poll();
+        for (int v = 0; v < n; v++)
+          if (parent[v] < 0 && residual[u][v] > 0) {
+            parent[v] = u;
+            queue.add(v);
+          }
+      }
+      if (parent[t] < 0)
+        return flow;
+      double path = Double.MAX_VALUE;
+      for (int v = t; v != s; v = parent[v])
+        path = Math.min(path, residual[parent[v]][v]);
+      for (int v = t; v != s; v = parent[v]) {
+        residual[parent[v]][v] -= path;
+        residual[v][parent[v]] += path;
+      }
+      flow += path;
+    }
   }
 
   /** Issue #11798's network: (1)-[cap 3]->(2), (2)-[cap 2]->(1), (2)-[cap 1]->(3). */

@@ -263,7 +263,7 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
             final int a = path[k];
             capacity[a] -= pathFlow;
             capacity[reverse[a]] += pathFlow;
-            if (firstSaturated < 0 && !(capacity[a] > 0))
+            if (firstSaturated < 0 && capacity[a] <= 0)
               firstSaturated = k;
           }
           maxFlow += pathFlow;
