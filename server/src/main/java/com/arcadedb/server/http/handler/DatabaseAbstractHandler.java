@@ -149,6 +149,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       }
 
       activeSession = setTransactionInThreadLocal(exchange, database, user);
+      if (activeSession == null)
+        // A TRANSACTION CONTROL OF ITS OWN ACTS ON THIS REQUEST'S TRANSACTION ALONE: REFUSED BEFORE ANYTHING RUNS (ISSUE #12202)
+        refuseOutsideSession(database, payload);
 
       // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
       // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
@@ -604,6 +607,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean managesItsOwnTransactions(final DatabaseInternal database, final JSONObject payload) {
     return false;
+  }
+
+  /**
+   * Refuses, with an exception, a request that cannot run outside a session: a SQL {@code BEGIN}, {@code COMMIT} or
+   * {@code ROLLBACK} sent as a command of its own would act on the transaction of this one request and end with it (issue
+   * #12202). Called only for a request that runs in no session. Refuses nothing by default.
+   */
+  protected void refuseOutsideSession(final DatabaseInternal database, final JSONObject payload) {
   }
 
   /**

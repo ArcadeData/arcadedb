@@ -44,6 +44,15 @@ public interface QueryEngine {
     }
 
     /**
+     * Whether the statement is a transaction control (SQL {@code BEGIN}, {@code COMMIT}, {@code ROLLBACK}), which an entry point
+     * refuses as a request of its own outside the caller's transaction or session (issue #12202). False unless the language says
+     * otherwise.
+     */
+    default boolean isTransactionControl() {
+      return false;
+    }
+
+    /**
      * Returns the set of operation types this query performs.
      * Provides semantic, parser-based classification of query operations
      * for fine-grained permission checking.

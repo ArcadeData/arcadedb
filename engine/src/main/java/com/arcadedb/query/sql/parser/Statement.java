@@ -377,6 +377,15 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Whether this statement is a transaction control, {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK}. Sent as a request of its
+   * own outside any transaction or session of the caller, it acts on the transaction the server opens around that one request
+   * and ends with it, so a server refuses it there (issue #12202).
+   */
+  public boolean isTransactionControl() {
+    return false;
+  }
+
+  /**
    * Returns the set of operation types executing this statement performs: its own ({@link #getOperationTypesItself()})
    * plus the writes of every statement nested in it (issue #9628). Never empty.
    */

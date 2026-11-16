@@ -81,5 +81,16 @@ public class BeginStatement extends SimpleExecStatement {
     return true;
   }
 
+  /**
+   * A level the engine cannot provide is refused first, with its own words (issue #10386): that error says more than the refusal
+   * of a standalone BEGIN (issue #12202) would.
+   */
+  @Override
+  public boolean isTransactionControl() {
+    if (isolation != null)
+      IsolationLevels.parse(isolation.getStringValue().toUpperCase(Locale.ENGLISH));
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */
