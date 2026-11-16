@@ -1722,7 +1722,12 @@ class CypherWriteVisibilityTest {
           "WITH n0\nFOREACH (l IN [[n0]] | FOREACH (x IN l | DETACH DELETE x))\nRETURN count(*) AS rows",
           "WITH n0, {v: n0} AS m\nUNWIND [m.v] AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
           "WITH [n0] AS l\nWITH l[0] AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
-          "WITH n0\nDETACH DELETE [n0][0]\nRETURN count(*) AS rows")) {
+          "WITH n0\nDETACH DELETE [n0][0]\nRETURN count(*) AS rows",
+          // bound in the MATCH's own segment, before the WITH that closes it
+          "UNWIND [n0] AS n21\nWITH n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
+          "CALL (n0) { RETURN [n0] AS l }\nWITH l\nUNWIND l AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
+          // a target whose text, stripped of whitespace, is one identifier
+          "WITH n0\nFOREACH (i IN [1] | DETACH DELETE CASE WHEN true THEN n0 END)\nRETURN count(*) AS rows")) {
         createDeleteGraph();
         assertThat(deleteRows(DELETE_MATCH + tail)).as(tail).isEqualTo(210L);
       }

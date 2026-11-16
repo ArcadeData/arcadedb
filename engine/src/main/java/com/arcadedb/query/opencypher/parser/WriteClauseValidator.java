@@ -181,6 +181,7 @@ final class WriteClauseValidator {
     return switch (expression) {
       case BooleanWrapperExpression ignored -> true;
       case ComparisonExpressionWrapper ignored -> true;
+      case TernaryLogicalExpression ignored -> true;
       case LiteralExpression literal -> literal.getValue() != null && !(literal.getValue() instanceof Collection)
           && !(literal.getValue() instanceof Map);
       case ArithmeticExpression arithmetic -> arithmetic.getLeft() != null && arithmetic.getRight() != null

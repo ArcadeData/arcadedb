@@ -493,6 +493,9 @@ final class CypherStepBuilder {
     // variable-length relationship), kept forever once tainted (even across a WITH that merely forwards
     // them unchanged) - see EagerBarriers.closeMatchSegment() and EagerBarriers.deleteMayTargetTaintedVariable().
     final Set<String> disconnectedTaintedVariables = new HashSet<>();
+    // The UNWIND and CALL subquery clauses of the open segment, whose names take the taint of the segment's own MATCH variables
+    // only when it closes (issue #12323): see EagerBarriers.closeMatchSegment()
+    final List<ClauseEntry> currentSegmentBindings = new ArrayList<>();
 
     // Shape of everything read so far, weighed against each write clause's own shape to decide where an
     // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
@@ -596,6 +599,7 @@ final class CypherStepBuilder {
         boundVariables.add(unwindClause.getVariable());
         // An element of a list built of a tainted entity is that entity under a new name (issue #12323)
         EagerBarriers.propagateTaintThroughUnwind(unwindClause, disconnectedTaintedVariables);
+        currentSegmentBindings.add(entry);
         break;
 
       case LOAD_CSV:
@@ -635,7 +639,7 @@ final class CypherStepBuilder {
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
             // the skipped WITH starts a new segment (issue #6631)
-            EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+            EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
           }
@@ -651,7 +655,7 @@ final class CypherStepBuilder {
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
             // the skipped WITH starts a new segment (issue #6631)
-            EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+            EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
           }
@@ -672,7 +676,7 @@ final class CypherStepBuilder {
         // variable bound by a disconnected-pattern MATCH (e.g. WITH n, o) does not resolve the #6491
         // hazard for that variable, since rows still flow through it one at a time rather than being
         // fully consumed; EagerBarriers.closeMatchSegment() taints it before the segment is cleared.
-        EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+        EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
         // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
         // new name too, or a later DELETE of m would find nothing tainted under that name.
         EagerBarriers.propagateTaintThroughRenames(withClause, disconnectedTaintedVariables);
@@ -762,7 +766,7 @@ final class CypherStepBuilder {
         final DeleteClause deleteClause = entry.getTypedClause();
         if (!deleteClause.isEmpty() && currentStep != null) {
           final boolean eagerMaterialize = EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
-              || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause.getVariables(), disconnectedTaintedVariables);
+              || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause, disconnectedTaintedVariables);
           final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
@@ -851,6 +855,7 @@ final class CypherStepBuilder {
         collectSubqueryOutputVariables(subqueryClause, boundVariables);
         // A name the body returns for an imported tainted variable is that entity under a new name (issue #11534)
         EagerBarriers.propagateTaintThroughSubquery(subqueryClause, disconnectedTaintedVariables);
+        currentSegmentBindings.add(entry);
         break;
       }
     }

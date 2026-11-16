@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
@@ -281,7 +282,7 @@ final class EagerBarriers {
    * that no longer strictly needs it (e.g. after several more WITH-forwarding hops), never miss one that
    * does; see the class-level trade-off note on {@link #matchClausesHaveDisconnectedPatterns}.
    */
-  static void closeMatchSegment(final List<MatchClause> currentSegmentMatchClauses,
+  static void closeMatchSegment(final List<MatchClause> currentSegmentMatchClauses, final List<ClauseEntry> currentSegmentBindings,
       final Set<String> disconnectedTaintedVariables) {
     if (matchClausesNeedEagerDelete(currentSegmentMatchClauses))
       for (final MatchClause match : currentSegmentMatchClauses)
@@ -294,6 +295,15 @@ final class EagerBarriers {
               disconnectedTaintedVariables.add(relationship.getVariable());
         }
     currentSegmentMatchClauses.clear();
+    // An UNWIND or a CALL subquery of the segment bound its names before the segment's MATCH variables were tainted, so
+    // they are carried over now, in the order the clauses ran (issue #12323): MATCH (n), (o) UNWIND [o] AS m WITH n, m
+    // DETACH DELETE m is as hazardous as deleting o
+    for (final ClauseEntry binding : currentSegmentBindings)
+      if (binding.getType() == ClauseEntry.ClauseType.UNWIND)
+        propagateTaintThroughUnwind(binding.getTypedClause(), disconnectedTaintedVariables);
+      else if (binding.getType() == ClauseEntry.ClauseType.SUBQUERY)
+        propagateTaintThroughSubquery(binding.getTypedClause(), disconnectedTaintedVariables);
+    currentSegmentBindings.clear();
   }
 
   /**
@@ -362,27 +372,43 @@ final class EagerBarriers {
   }
 
   /**
-   * True when at least one of the given DELETE targets might read a variable in {@code
-   * disconnectedTaintedVariables} - see {@link #closeMatchSegment}.
+   * True when at least one target of the DELETE might read a variable in {@code disconnectedTaintedVariables} - see
+   * {@link #closeMatchSegment}.
    * <p>
-   * A target that is a bare variable name is checked directly. A target that is a chained-access or
-   * function-call expression (e.g. {@code endNode(r)}, {@code p.node.id}) is not parsed here - it is
-   * conservatively treated as a possible reference to any tainted variable, mirroring how {@code
-   * DeleteStep} itself only special-cases the plain-variable form and falls back to full expression
-   * evaluation otherwise.
+   * Decided on the parsed target, never on its text, which the parser hands over with the whitespace stripped
+   * ({@code CASE WHEN true THEN x END} reads as one identifier): a plain variable is looked up, any other expression is walked
+   * for a read of a tainted variable ({@code endNode(r)}, {@code [n][0]}, {@code CASE ... END}). A target with no parsed
+   * expression is looked up when it is one identifier, and taken as a possible read of any tainted variable otherwise.
    */
-  static boolean deleteMayTargetTaintedVariable(final List<String> deleteTargets,
-      final Set<String> disconnectedTaintedVariables) {
-    if (disconnectedTaintedVariables.isEmpty() || deleteTargets == null)
+  static boolean deleteMayTargetTaintedVariable(final DeleteClause deleteClause, final Set<String> disconnectedTaintedVariables) {
+    if (disconnectedTaintedVariables.isEmpty() || deleteClause == null || deleteClause.getVariables() == null)
       return false;
-    for (final String target : deleteTargets) {
-      if (target.indexOf('.') < 0 && target.indexOf('[') < 0 && target.indexOf('(') < 0) {
-        if (disconnectedTaintedVariables.contains(target))
+    final List<String> targets = deleteClause.getVariables();
+    final List<Expression> expressions = deleteClause.getExpressions();
+    for (int i = 0; i < targets.size(); i++) {
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      if (expression instanceof VariableExpression variable) {
+        if (disconnectedTaintedVariables.contains(variable.getVariableName()))
           return true;
-      } else
-        return true; // non-trivial expression: cannot rule out a reference to a tainted variable
+      } else if (expression != null) {
+        if (CypherVariableUsage.expressionReferencesAnyVariable(expression, disconnectedTaintedVariables))
+          return true;
+      } else if (!isPlainIdentifier(targets.get(i)) || disconnectedTaintedVariables.contains(targets.get(i)))
+        return true;
     }
     return false;
+  }
+
+  /** Whether the whole target is one identifier: letters, digits and underscores, not starting with a digit. */
+  private static boolean isPlainIdentifier(final String target) {
+    if (target.isEmpty() || !(Character.isLetter(target.charAt(0)) || target.charAt(0) == '_'))
+      return false;
+    for (int i = 1; i < target.length(); i++) {
+      final char c = target.charAt(i);
+      if (!Character.isLetterOrDigit(c) && c != '_')
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -402,7 +428,7 @@ final class EagerBarriers {
     }
     for (final ClauseEntry entry : foreachClause.getInnerClauses()) {
       if (entry.getType() == ClauseEntry.ClauseType.DELETE) {
-        if (deleteMayTargetTaintedVariable(((DeleteClause) entry.getTypedClause()).getVariables(), scope))
+        if (deleteMayTargetTaintedVariable((DeleteClause) entry.getTypedClause(), scope))
           return true;
       } else if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
         if (foreachDeleteMayTargetTaintedVariable(entry.getTypedClause(), scope))

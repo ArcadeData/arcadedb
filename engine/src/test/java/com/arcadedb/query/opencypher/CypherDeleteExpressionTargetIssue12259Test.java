@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -105,6 +106,26 @@ class CypherDeleteExpressionTargetIssue12259Test extends TestHelper {
     assertThat(keysLeft()).isEqualTo("[0, 2]");
   }
 
+  /**
+   * The parser hands the target text over with its whitespace stripped, so a CASE that reads no property is one identifier as text
+   * ({@code CASEWHENtrueTHENaELSEbEND}): the target is told apart on its parsed expression, never on that text.
+   */
+  @Test
+  void caseWhoseTextLooksLikeAnIdentifierIsEvaluated() {
+    run(MATCH + "DETACH DELETE CASE WHEN true THEN a ELSE b END");
+    assertThat(keysLeft()).isEqualTo("[1, 3]");
+  }
+
+  /** Every variable an expression target reads has to be in scope, as a plain variable target does. */
+  @Test
+  void undefinedVariableInsideAnExpressionTargetIsRefused() {
+    assertThatThrownBy(() -> run(MATCH + "DETACH DELETE [a, missing]")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("missing");
+    assertThatThrownBy(() -> run(MATCH + "DETACH DELETE (missing)")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("missing");
+    assertThat(nodes()).isEqualTo(4L);
+  }
+
   /** What the text resolver already read keeps working: a variable, a map key, a literal and a parameter index. */
   @Test
   void chainedTargetsStillWork() {
@@ -121,6 +142,7 @@ class CypherDeleteExpressionTargetIssue12259Test extends TestHelper {
   void scalarTargetsAreStillRefused() {
     assertThatThrownBy(() -> run(MATCH + "DELETE 1 + 1")).isInstanceOf(CommandParsingException.class);
     assertThatThrownBy(() -> run(MATCH + "DELETE a:V")).isInstanceOf(CommandParsingException.class);
+    assertThatThrownBy(() -> run(MATCH + "DELETE (true OR false)")).isInstanceOf(CommandParsingException.class);
     assertThat(nodes()).isEqualTo(4L);
   }
 

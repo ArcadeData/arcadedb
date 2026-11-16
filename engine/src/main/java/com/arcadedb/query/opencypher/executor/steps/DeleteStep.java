@@ -31,6 +31,7 @@ import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -402,18 +403,17 @@ public class DeleteStep extends AbstractExecutionStep {
     final List<Expression> expressions = deleteClause.getExpressions();
     for (int i = 0; i < variables.size(); i++) {
       final String variable = variables.get(i);
-      final Object obj;
-      // Only a plain chain is read from the text; anything else ([a][0], [a, b], (a), l[i], CASE ...) has no variable name
-      // in front for the text resolver to start from, and is evaluated (issue #12259)
-      if (expressions != null && i < expressions.size() && expressions.get(i) != null && !isPlainChainTarget(variable))
-        obj = expressions.get(i).evaluate(row, context);
-      else
-        obj = resolveDeleteTarget(variable, row);
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      // Decided on the parsed expression, never on the text, which the parser hands over with its whitespace stripped: a plain
+      // variable is read off the row, anything else ([a][0], [a, b], (a), l[i], CASE ...) is evaluated (issue #12259)
+      // (a) is a plain variable too: looked up by its name, not by the text
+      final String name = expression instanceof VariableExpression plain ? plain.getVariableName() : expression == null ? variable : null;
+      final Object obj = name != null ? resolveDeleteTarget(name, row) : expression.evaluate(row, context);
       if (obj == null)
         continue;
       collectDeleteTargets(obj, edges, other);
-      if (deletedVars != null && !variable.contains(".") && !variable.contains("[") && !variable.contains("("))
-        deletedVars.add(variable);
+      if (deletedVars != null && name != null && !name.contains(".") && !name.contains("[") && !name.contains("("))
+        deletedVars.add(name);
     }
   }
 
@@ -537,44 +537,6 @@ public class DeleteStep extends AbstractExecutionStep {
         collectDeleteTargets(value, edges, other);
     } else
       other.add(obj);
-  }
-
-  /**
-   * True when the textual target is a chain {@link #resolveChainedAccess} reads in full: an identifier followed by any
-   * number of {@code .key}, {@code [digits]} and {@code [$param]} accesses. Every other target is evaluated from its parsed
-   * expression.
-   */
-  private static boolean isPlainChainTarget(final String target) {
-    final int length = target.length();
-    if (length == 0 || !Character.isJavaIdentifierStart(target.charAt(0)) || target.charAt(0) == '$')
-      return false;
-    int pos = 1;
-    while (pos < length && Character.isJavaIdentifierPart(target.charAt(pos)))
-      pos++;
-    while (pos < length) {
-      final char c = target.charAt(pos);
-      if (c == '.') {
-        final int start = ++pos;
-        while (pos < length && Character.isJavaIdentifierPart(target.charAt(pos)))
-          pos++;
-        if (pos == start)
-          return false;
-      } else if (c == '[') {
-        int start = ++pos;
-        if (pos < length && target.charAt(pos) == '$') {
-          start = ++pos;
-          while (pos < length && Character.isJavaIdentifierPart(target.charAt(pos)))
-            pos++;
-        } else
-          while (pos < length && Character.isDigit(target.charAt(pos)))
-            pos++;
-        if (pos == start || pos >= length || target.charAt(pos) != ']')
-          return false;
-        pos++;
-      } else
-        return false;
-    }
-    return true;
   }
 
   private Object resolveDeleteTarget(final String variable, final Result result) {
