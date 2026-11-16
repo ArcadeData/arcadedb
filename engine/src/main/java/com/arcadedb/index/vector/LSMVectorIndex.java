@@ -11793,6 +11793,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } finally {
       lock.writeLock().unlock();
     }
+
+    // The after-commit hook asked whether the file is bloated enough to compact before this publication, while the vectors
+    // the commit retired were still live: asked again now that the live count is the committed one
+    if (undo.retiredCount > 0)
+      onAfterCommit();
   }
 
   /**
