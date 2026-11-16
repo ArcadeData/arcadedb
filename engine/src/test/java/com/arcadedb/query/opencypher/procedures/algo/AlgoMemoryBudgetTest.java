@@ -774,8 +774,8 @@ class AlgoMemoryBudgetTest {
     @Test
     void cliquePricesItsSearchStackAtThePeakDepth() {
       // The live frames hold sorted candidate and excluded sets bounded by the starting node's neighbourhood (issue #12173), priced
-      // at their peak: 600 bytes admit the graph and its adjacency (552) and refuse the first frame
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 600L);
+      // at their peak: 700 bytes admit the graph and its adjacency (552), the degeneracy order and ranks (96) and refuse the first frame
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
 
       assertThatThrownBy(() -> drain("CALL algo.clique() YIELD clique RETURN clique"))
           .hasStackTraceContaining("the clique search stack")

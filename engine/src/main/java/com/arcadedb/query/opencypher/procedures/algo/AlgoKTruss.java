@@ -217,31 +217,61 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
       if (truss > nodeTruss[v])
         nodeTruss[v] = truss;
 
-      // Every triangle (u, v, w) still standing loses this edge: its other two edges lose one of support, down to s
-      final int[] nu = adj[u];
-      final int[] nv = adj[v];
-      int iu = 0;
-      int iv = 0;
-      while (iu < nu.length && iv < nv.length) {
-        final int a = nu[iu];
-        final int b = nv[iv];
-        if (a < b)
-          iu++;
-        else if (a > b)
-          iv++;
-        else {
-          final int uw = arcEdge[offsets[u] + iu];
-          final int vw = arcEdge[offsets[v] + iv];
-          if (!removed[uw] && !removed[vw]) {
-            lowerSupport(uw, s, support, binStart, order, position);
-            lowerSupport(vw, s, support, binStart, order, position);
-          }
-          iu++;
-          iv++;
-        }
-      }
+      // Every triangle (u, v, w) still standing loses this edge: its other two edges lose one of support, down to s. A support of
+      // zero means no triangle is left (a support is never below the triangles still standing), so there is nothing to walk
+      if (s > 0)
+        lowerSupportOfTriangles(u, v, s, adj, offsets, arcEdge, removed, support, binStart, order, position);
     }
     return nodeTruss;
+  }
+
+  /**
+   * Lowers the support of the two other edges of every triangle (u, v, w) whose edges are all still standing. The common neighbours
+   * are found by a binary search per entry of the shorter row when the other is much longer (a hub), and by a merge otherwise, so the
+   * work is bounded by the shorter row whatever the node numbering.
+   */
+  private static void lowerSupportOfTriangles(final int u, final int v, final int floor, final int[][] adj, final int[] offsets,
+      final int[] arcEdge, final boolean[] removed, final int[] support, final int[] binStart, final int[] order, final int[] position) {
+    final int[] nu = adj[u];
+    final int[] nv = adj[v];
+    if ((long) nu.length * 8 < nv.length || (long) nv.length * 8 < nu.length) {
+      final boolean uShorter = nu.length <= nv.length;
+      final int[] shortRow = uShorter ? nu : nv;
+      final int[] longRow = uShorter ? nv : nu;
+      final int shortNode = uShorter ? u : v;
+      final int longNode = uShorter ? v : u;
+      for (int is = 0; is < shortRow.length; is++) {
+        final int il = Arrays.binarySearch(longRow, shortRow[is]);
+        if (il >= 0)
+          lowerSupportOfTriangle(arcEdge[offsets[shortNode] + is], arcEdge[offsets[longNode] + il], floor, removed, support, binStart,
+              order, position);
+      }
+      return;
+    }
+    int iu = 0;
+    int iv = 0;
+    while (iu < nu.length && iv < nv.length) {
+      final int a = nu[iu];
+      final int b = nv[iv];
+      if (a < b)
+        iu++;
+      else if (a > b)
+        iv++;
+      else {
+        lowerSupportOfTriangle(arcEdge[offsets[u] + iu], arcEdge[offsets[v] + iv], floor, removed, support, binStart, order,
+            position);
+        iu++;
+        iv++;
+      }
+    }
+  }
+
+  private static void lowerSupportOfTriangle(final int first, final int second, final int floor, final boolean[] removed,
+      final int[] support, final int[] binStart, final int[] order, final int[] position) {
+    if (!removed[first] && !removed[second]) {
+      lowerSupport(first, floor, support, binStart, order, position);
+      lowerSupport(second, floor, support, binStart, order, position);
+    }
   }
 
   /**

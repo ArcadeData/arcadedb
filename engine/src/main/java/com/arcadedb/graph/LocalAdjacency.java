@@ -27,6 +27,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.LongConsumer;
 
 /**
  * The adjacency rows of the vertices a call actually reads, read from the records on demand and numbered as they are met
@@ -49,13 +50,23 @@ import java.util.Map;
  * row holds the same neighbours, possibly in another order.
  * <p>
  * A vertex is asked whether it exists once, when it is first met, and a row is read once and kept, so a call pays for the
- * vertices it reaches and the rows it reads, never for the rest of the database. Not thread-safe: one instance per call.
+ * vertices it reaches and the rows it reads, never for the rest of the database. What it holds is charged to the caller as it is
+ * about to be allocated, in chunks of at most {@link #CHARGE_CHUNK_BYTES}, so a budget refuses a supernode's row while it is being
+ * read rather than after it is on the heap. Not thread-safe: one instance per call.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
   private static final int[]    EMPTY    = new int[0];
   private static final String[] NO_TYPES = new String[0];
+  /**
+   * What one vertex met costs: its RID, its entry in the RID map (with the boxed node number) and its slot in the RID and row arrays.
+   * Charged when the vertex is met, whether it turns out to exist or not, since the map remembers both answers.
+   */
+  public static final  long     NODE_BYTES         = 96L;
+  /** The most that is allocated before it is charged: a charge per vertex met would cost more than the vertex itself. */
+  public static final  long     CHARGE_CHUNK_BYTES = 64L * 1024;
+  private static final long     FAR_ENTRY_BYTES    = Integer.BYTES + Long.BYTES;
 
   private final DatabaseInternal  database;
   private final EdgeListScanner   scanner;
@@ -63,6 +74,7 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
   private final boolean           typed;
   private final EdgeBucketMask    typeMask;
   private final CommandContext    context;
+  private final LongConsumer      charge;
   private final Map<RID, Integer> nodes = new HashMap<>();
   private       RID[]             rids  = new RID[16];
   // ONE ROW CACHE PER DIRECTION, INDEXED BY Vertex.DIRECTION.ordinal(), CREATED ON FIRST USE
@@ -73,6 +85,8 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
   private       long              entryCount;
   // THE EDGE BUCKET WHOSE READ PERMISSION WAS ASKED LAST: ENTRIES COME IN RUNS OF ONE BUCKET
   private       int               lastReadableEdgeBucketId = -1;
+  // BYTES ABOUT TO BE ALLOCATED AND NOT CHARGED YET: NEVER MORE THAN CHARGE_CHUNK_BYTES
+  private       long              uncharged;
 
   // THE ROW BEING READ: THE FAR ENDS OF THE ENTRIES THE TYPE FILTER ACCEPTED, AS (BUCKET, POSITION)
   private int[]  farBuckets   = new int[16];
@@ -84,14 +98,17 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
    * @param edgeTypes the edge types to follow, subtypes included; null or empty for all of them
    * @param context   the call's context, which the incoming side of the unidirectional types is read through and shares its scans
    *                  with; may be null when no unidirectional type can be involved
+   * @param charge    told the bytes about to be allocated, before they are, and expected to throw to refuse them; may be null
    */
-  public LocalAdjacency(final DatabaseInternal database, final String[] edgeTypes, final CommandContext context) {
+  public LocalAdjacency(final DatabaseInternal database, final String[] edgeTypes, final CommandContext context,
+      final LongConsumer charge) {
     this.database = database;
     this.scanner = new EdgeListScanner(database);
     this.edgeTypes = edgeTypes != null ? edgeTypes : NO_TYPES;
     this.typed = this.edgeTypes.length > 0;
     this.typeMask = typed ? EdgeBucketMask.of(database, this.edgeTypes) : null;
     this.context = context;
+    this.charge = charge;
   }
 
   /**
@@ -99,11 +116,18 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
    * record deleted, a RID not saved yet).
    */
   public int nodeOf(final RID rid) {
+    final int node = resolve(rid);
+    flushCharge();
+    return node;
+  }
+
+  private int resolve(final RID rid) {
     if (rid == null || rid.getBucketId() < 0 || rid.getPosition() < 0)
       return -1;
     final Integer known = nodes.get(rid);
     if (known != null)
       return known;
+    charge(NODE_BYTES);
     final int node = database.existsRecord(rid) ? register(rid) : -1;
     nodes.put(rid, node);
     return node;
@@ -140,6 +164,7 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
       // THE READ CAN NUMBER NEW NODES AND GROW THE CACHES: STORED IN THE CURRENT ONE
       rows[direction.ordinal()][node] = row;
       entryCount += row.length;
+      flushCharge();
     }
     return row;
   }
@@ -170,10 +195,11 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
     }
 
     // RESOLVED AFTER THE SCAN, NOT IN visit(): ASKING WHETHER A VERTEX EXISTS READS A PAGE, WHICH THE SCANNER'S READ IS NOT THE PLACE FOR
+    charge((long) farCount * Integer.BYTES);
     final int[] row = new int[farCount];
     int size = 0;
     for (int i = 0; i < farCount; i++) {
-      final int neighbour = nodeOf(new RID(farBuckets[i], farPositions[i]));
+      final int neighbour = resolve(new RID(farBuckets[i], farPositions[i]));
       if (neighbour >= 0)
         row[size++] = neighbour;
     }
@@ -223,8 +249,25 @@ public final class LocalAdjacency implements EdgeListScanner.EntryVisitor {
     addFar(vertexBucketId, vertexPosition);
   }
 
+  /** Adds {@code bytes} about to be allocated to what is owed, charging it once a chunk is owed. */
+  private void charge(final long bytes) {
+    uncharged += bytes;
+    if (uncharged >= CHARGE_CHUNK_BYTES)
+      flushCharge();
+  }
+
+  private void flushCharge() {
+    if (uncharged > 0 && charge != null) {
+      final long bytes = uncharged;
+      uncharged = 0;
+      charge.accept(bytes);
+    }
+  }
+
   private void addFar(final int bucketId, final long position) {
     if (farCount == farBuckets.length) {
+      // THE SCRATCH IS KEPT FROM ROW TO ROW: ONLY ITS GROWTH IS NEW HEAP, CHARGED BEFORE IT IS TAKEN
+      charge(farCount * FAR_ENTRY_BYTES);
       farBuckets = Arrays.copyOf(farBuckets, farCount * 2);
       farPositions = Arrays.copyOf(farPositions, farCount * 2);
     }

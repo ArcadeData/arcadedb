@@ -103,8 +103,10 @@ public class AlgoCommonNeighbors extends AbstractAlgoProcedure {
 
     // A node sharing no neighbour counts 0, and is listed only when the cutoff admits 0
     final List<Result> results = new ArrayList<>();
+    int candidate = 0;
     for (final int v : candidateNodes(db, graph, shared, srcIdx, cutoff <= 0)) {
-      guard.checkPeriodically(results.size());
+      // Every candidate advances the checkpoint, not only the accepted ones: a cutoff that rejects most of them must not skip it
+      guard.checkPeriodically(candidate++);
       final int slot = shared.slotOf(v);
       final int count = slot >= 0 ? shared.count(slot) : 0;
       if (count >= cutoff) {

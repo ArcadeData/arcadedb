@@ -115,7 +115,8 @@ public class AlgoClique extends AbstractAlgoProcedure {
     // Eppstein, Loffler and Strash: one search per node in degeneracy order, over its neighbours peeled after it (the candidates)
     // and before it (the excluded). Every maximal clique is found exactly once, from its earliest member, and each search starts
     // from at most degeneracy-many candidates however large the graph
-    final int[] order = degeneracyOrder(adj, null);
+    final int[] order = degeneracyOrder(adj, null, graph.memory());
+    graph.memory().reserve(saturatingProduct(n, INT_BYTES), "the degeneracy ranks", n + " nodes");
     final int[] rank = new int[n];
     for (int i = 0; i < n; i++)
       rank[order[i]] = i;
@@ -346,6 +347,13 @@ public class AlgoClique extends AbstractAlgoProcedure {
   private static int[] difference(final int[] set, final int len, final int[] row) {
     final int[] out = new int[len];
     int count = 0;
+    if ((long) len * 8 < row.length) {
+      // A few candidates against a long row (a hub as pivot): a binary search each instead of a walk of the whole row
+      for (int i = 0; i < len; i++)
+        if (Arrays.binarySearch(row, set[i]) < 0)
+          out[count++] = set[i];
+      return count == len ? out : Arrays.copyOf(out, count);
+    }
     int j = 0;
     for (int i = 0; i < len; i++) {
       final int a = set[i];

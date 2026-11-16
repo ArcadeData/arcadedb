@@ -765,6 +765,25 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * of a clique search started from it (issue #12173). The degree of a node is the length of its row.
    */
   protected static int[] degeneracyOrder(final int[][] adj, final int[] core) {
+    return degeneracyOrder(adj, core, null);
+  }
+
+  /**
+   * {@link #degeneracyOrder(int[][], int[])} with its working arrays (three of the node count, two of the highest degree) reserved
+   * against {@code memory} before they are allocated, when it is not null. The returned order is one of them.
+   */
+  protected static int[] degeneracyOrder(final int[][] adj, final int[] core, final MemoryBudget memory) {
+    if (memory != null) {
+      int maxDegree = 0;
+      for (final int[] row : adj)
+        maxDegree = Math.max(maxDegree, row.length);
+      memory.reserve(saturatingProduct(saturatingSum(3L * adj.length, 2L * (maxDegree + 1)), INT_BYTES),
+          "the degeneracy order", adj.length + " nodes, highest degree " + maxDegree);
+    }
+    return peel(adj, core);
+  }
+
+  private static int[] peel(final int[][] adj, final int[] core) {
     final int n = adj.length;
     final int[] deg = new int[n];
     int maxDeg = 0;
@@ -1253,8 +1272,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return new Neighbourhood(dense, null, relTypes, memory);
       }
     }
-    return new Neighbourhood(null, new LocalAdjacency((DatabaseInternal) db, relTypes, incomingSideContext(db, context)), relTypes,
-        memory);
+    // Charged as the rows are read, before what they hold is allocated: a supernode's row is refused while it is being read
+    final LocalAdjacency local = new LocalAdjacency((DatabaseInternal) db, relTypes, incomingSideContext(db, context),
+        bytes -> memory.reserve(bytes, "the neighbourhood rows", "rows read on demand, " + bytes + " bytes more"));
+    return new Neighbourhood(null, local, relTypes, memory);
   }
 
   /**
@@ -1278,8 +1299,6 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // THE ROWS READ FROM THE VIEW, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
     @SuppressWarnings("unchecked")
     private final Map<Integer, int[]>[]  viewRows = new Map[3];
-    private       long                   chargedNodes;
-    private       long                   chargedEntries;
 
     private Neighbourhood(final GraphTraversalProvider provider, final LocalAdjacency local, final String[] relTypes,
         final MemoryBudget memory) {
@@ -1301,11 +1320,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     /** The node id of the vertex {@code rid}, -1 when the graph holds no such vertex. */
     public int nodeOf(final RID rid) {
-      if (provider != null)
-        return provider.getNodeId(rid);
-      final int node = local.nodeOf(rid);
-      charge();
-      return node;
+      return provider != null ? provider.getNodeId(rid) : local.nodeOf(rid);
     }
 
     /** The RID of node {@code node}; null for a node of a view whose vertex went away. */
@@ -1318,11 +1333,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * {@link GraphData#adjacency} lists them. The array is shared: do not modify it.
      */
     public int[] neighbors(final int node, final Vertex.DIRECTION direction) {
-      if (provider == null) {
-        final int[] row = local.row(node, direction);
-        charge();
-        return row;
-      }
+      if (provider == null)
+        return local.row(node, direction);
       Map<Integer, int[]> rows = viewRows[direction.ordinal()];
       if (rows == null) {
         rows = new HashMap<>();
@@ -1366,18 +1378,6 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         nodes[size++] = node;
       }
       return Arrays.copyOf(nodes, size);
-    }
-
-    /** Charges the vertices met and the entries read since the last charge. */
-    private void charge() {
-      final long nodes = local.nodeCount() - chargedNodes;
-      final long entries = local.entryCount() - chargedEntries;
-      if (nodes == 0 && entries == 0)
-        return;
-      memory.reserve(saturatingSum(saturatingProduct(nodes, OLTP_VERTEX_BYTES), saturatingProduct(entries, INT_BYTES)),
-          "the neighbourhood rows", local.nodeCount() + " nodes, " + local.entryCount() + " edge entries");
-      chargedNodes = local.nodeCount();
-      chargedEntries = local.entryCount();
     }
   }
 

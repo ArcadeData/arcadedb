@@ -92,7 +92,7 @@ public class AlgoKCore extends AbstractAlgoProcedure {
 
     // Batagelj-Zaversnik O(V+E) k-core algorithm with bucket sort
     final int[] core = new int[n];
-    degeneracyOrder(adj, core);
+    degeneracyOrder(adj, core, graph.memory());
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();

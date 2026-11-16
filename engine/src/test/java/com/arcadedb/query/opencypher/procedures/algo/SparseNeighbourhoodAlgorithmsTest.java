@@ -327,6 +327,25 @@ class SparseNeighbourhoodAlgorithmsTest {
     }
 
     @Test
+    void aStarWhoseHubComesLastIsAnsweredFromTheLeaves() {
+      // The hub is created last, so it has the highest node id and every leaf search and every edge removal meets its long row:
+      // the clique search and the truss peeling answer from the short side instead of walking it once per leaf
+      final int leaves = 3_000;
+      database.transaction(() -> {
+        final MutableVertex[] leaf = new MutableVertex[leaves];
+        for (int i = 0; i < leaves; i++)
+          leaf[i] = database.newVertex("N").set("k", i).save();
+        final MutableVertex hub = database.newVertex("N").set("k", -1).save();
+        for (final MutableVertex l : leaf)
+          l.newEdge("R", hub);
+      });
+      final List<Result> cliques = drain(new AlgoClique().execute(new Object[] { "R", 2 }, null, newContext()));
+      assertThat(cliques).hasSize(leaves).allSatisfy(row -> assertThat(row.<Integer>getProperty("size")).isEqualTo(2));
+      assertThat(drain(new AlgoKTruss().execute(new Object[] { "R" }, null, newContext())))
+          .hasSize(leaves + 1).allSatisfy(row -> assertThat(row.<Integer>getProperty("trussNumber")).isEqualTo(2));
+    }
+
+    @Test
     void aSelfLoopIsNoTriangleOfItsOwn() {
       // a - b with a self-loop on a: the old bit matrix counted a among the common neighbours of a and b and gave the edge a
       // phantom triangle (truss 3). The truss is defined on the simple graph, where a - b closes no triangle
@@ -436,7 +455,7 @@ class SparseNeighbourhoodAlgorithmsTest {
       for (final String[] types : new String[][] { null, { "R" } })
         for (final Vertex.DIRECTION dir : directions) {
           final int[][] whole = GraphEngine.buildAdjacencyList(vertices, index, dir, types);
-          final LocalAdjacency local = new LocalAdjacency((DatabaseInternal) database, types, newContext());
+          final LocalAdjacency local = new LocalAdjacency((DatabaseInternal) database, types, newContext(), null);
           for (int i = 0; i < vertices.size(); i++) {
             final List<RID> expected = new ArrayList<>();
             for (final int j : whole[i])

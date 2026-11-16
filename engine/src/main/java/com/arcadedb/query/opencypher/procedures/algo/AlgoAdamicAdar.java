@@ -118,8 +118,10 @@ public class AlgoAdamicAdar extends AbstractAlgoProcedure {
     // Collect results above cutoff, sorted by score descending. A node no walk reached scores 0, and is listed only when the
     // cutoff admits 0 (a negative one)
     final List<Result> results = new ArrayList<>();
+    int candidate = 0;
     for (final int v : candidateNodes(db, graph, aaScores, srcIdx, cutoff < 0.0 || Double.isNaN(cutoff))) {
-      guard.checkPeriodically(results.size());
+      // Every candidate advances the checkpoint, not only the accepted ones: a cutoff that rejects most of them must not skip it
+      guard.checkPeriodically(candidate++);
       final int slot = aaScores.slotOf(v);
       final double score = slot >= 0 ? aaScores.score(slot) : 0.0;
       if (score <= cutoff)

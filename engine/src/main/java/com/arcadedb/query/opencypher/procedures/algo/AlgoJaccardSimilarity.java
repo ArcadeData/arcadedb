@@ -104,8 +104,10 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
     // A node sharing no neighbour scores 0, and is listed only when the cutoff admits 0 (a negative one)
     final boolean everyNode = cutoff < 0.0 || Double.isNaN(cutoff);
     final List<Result> results = new ArrayList<>();
+    int candidate = 0;
     for (final int v : candidateNodes(db, graph, shared, srcIdx, everyNode)) {
-      guard.checkPeriodically(results.size());
+      // Every candidate advances the checkpoint, not only the accepted ones: a cutoff that rejects most of them must not skip it
+      guard.checkPeriodically(candidate++);
       final int slot = shared.slotOf(v);
       final int intersection = slot >= 0 ? shared.count(slot) : 0;
       final int union = srcDeg + graph.neighbors(v, dir).length - intersection;
