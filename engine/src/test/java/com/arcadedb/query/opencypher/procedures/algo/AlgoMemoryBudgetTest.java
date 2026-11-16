@@ -255,14 +255,16 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void maxFlowRejectsCapacityMatricesLargerThanTheBudget() {
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+    void maxFlowRejectsAResidualNetworkLargerThanTheBudget() {
+      // Since #11798 the residual network is sparse: 2 arcs per relationship (32 bytes each) and 6 ints per node, priced
+      // after the graph (384), its adjacency (144) and the unit capacities (160) - 688 bytes the budget admits.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 800L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
           CALL algo.maxFlow(a, c) YIELD maxFlow \
           RETURN maxFlow"""))
-          .hasStackTraceContaining("the capacity and residual matrices would need 512 bytes (2 matrices of 4 x 4 nodes)")
+          .hasStackTraceContaining("the residual network would need 376 bytes (4 nodes, 8 residual arcs)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
     }
 
