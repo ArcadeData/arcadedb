@@ -119,10 +119,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       if (forwarded == LeaderCommandForwarder.STREAMED)
         return null;
       if (forwarded != null) {
-        if (forwarded.getCode() == 200 && command_lc.startsWith(CREATE_DATABASE))
-          awaitForwardedChange(extractTarget(command, CREATE_DATABASE), true);
-        else if (forwarded.getCode() == 200 && command_lc.startsWith(DROP_DATABASE))
-          awaitForwardedChange(extractTarget(command, DROP_DATABASE), false);
+        if (forwarded.getCode() == 200) {
+          if (command_lc.startsWith(CREATE_DATABASE))
+            awaitForwardedChange(extractTarget(command, CREATE_DATABASE), true);
+          else if (command_lc.startsWith(DROP_DATABASE))
+            awaitForwardedChange(extractTarget(command, DROP_DATABASE), false);
+        }
         return forwarded;
       }
     }

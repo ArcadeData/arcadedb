@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +50,13 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
   private static final String   NEW_DATABASE     = "createdThroughAFollower";
   private static final String   DROPPED_DATABASE = "droppedThroughAFollower";
   private static final Duration HTTP_TIMEOUT     = Duration.ofSeconds(30);
+
+  private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
+
+  @AfterEach
+  void closeHttpClient() {
+    httpClient.close();
+  }
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
@@ -189,6 +197,6 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
         .build();
-    return HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build().sendAsync(request, HttpResponse.BodyHandlers.ofString());
+    return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
   }
 }
