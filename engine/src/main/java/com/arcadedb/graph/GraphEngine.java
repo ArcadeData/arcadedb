@@ -3002,10 +3002,12 @@ public class GraphEngine {
    * Whether the edge list(s) of {@code vertex} in {@code direction} hold more than {@code limit} entries, of any type. The
    * entries are stepped without reading an edge or a vertex record, and never past the one after {@code limit}, so the
    * answer costs what walking a short list would and stays bounded on a super-node: no list keeps a count to read instead.
-   * True when a list, or a stripe of one, whose head the vertex names cannot be loaded, which is not the same answer as a
-   * vertex with no list.
-   * A planner deciding at run time between walking a vertex's relationships and seeking the far ends it looks for asks
-   * this (issue #11715).
+   * <p>
+   * Answers true when a list, or a stripe of one, whose head the vertex names cannot be loaded: such a list is not a short
+   * one, and a vertex with no list at all answers false.
+   * <p>
+   * Used by the openCypher operator that decides per row between walking a vertex's relationships and seeking the far ends
+   * it looks for (issue #11715), which lives outside this package.
    */
   public boolean hasMoreEdgeEntriesThan(final VertexInternal vertex, final Vertex.DIRECTION direction, final long limit) {
     final Iterator<RID> entries = entriesOf(getMostUpdatedVertex(vertex), direction);
