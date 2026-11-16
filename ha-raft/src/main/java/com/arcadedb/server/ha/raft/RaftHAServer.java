@@ -4243,11 +4243,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * schema-delta" sends them to the node that has not been upgraded.
    */
   public List<String> peersMissingCapability(final String capability) {
+    return peerCapabilities.peersMissing(otherConfiguredPeerIds(), capability);
+  }
+
+  /**
+   * {@link #peersMissingCapability} for a framed optional section of {@code TX_ENTRY}: a peer that answered with it and has
+   * only stopped answering since is not missing (issue #12122, see {@link PeerCapabilityRegistry#peersMissingFramedSection}).
+   */
+  List<String> peersMissingFramedSection(final String capability) {
+    return peerCapabilities.peersMissingFramedSection(otherConfiguredPeerIds(), capability);
+  }
+
+  private List<String> otherConfiguredPeerIds() {
     final List<String> peerIds = new ArrayList<>();
     for (final RaftPeer peer : configuredPeers())
       if (!peer.getId().equals(localPeerId))
         peerIds.add(peer.getId().toString());
-    return peerCapabilities.peersMissing(peerIds, capability);
+    return peerIds;
   }
 
   /**
@@ -4304,7 +4316,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   final TxPreparedAtCapabilityCache txPreparedAtCapability = new TxPreparedAtCapabilityCache(
-      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_PREPARED_AT_INDEX), System::currentTimeMillis, 1_000L);
+      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_PREPARED_AT_INDEX, true), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Cached for a
@@ -4316,7 +4328,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // The same short-lived, membership-aware verdict as the prepared-at one above, asked on every commit as well
   final TxPreparedAtCapabilityCache fullTextCorpusDeltaCapability = new TxPreparedAtCapabilityCache(
-      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS), System::currentTimeMillis, 1_000L);
+      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS, true), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-fulltext-corpus-deltas} section, so a transaction may carry the effect it had on
@@ -4328,7 +4340,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // Asked on every write of a float or double array, so the same short-lived, membership-aware verdict as the two above
   final TxPreparedAtCapabilityCache fixedWidthFloatArraysCapability = new TxPreparedAtCapabilityCache(
-      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS), System::currentTimeMillis, 1_000L);
+      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS, false), System::currentTimeMillis, 1_000L);
 
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
   public boolean isTxSchemaCheckEnabled() {
