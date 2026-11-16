@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -149,6 +150,53 @@ final class EagerBarriers {
   static boolean matchClausesNeedEagerDelete(final List<MatchClause> matchClauses) {
     return matchClausesHaveDisconnectedPatterns(matchClauses)
         || MatchClause.hasVariableLengthRelationships(matchClauses);
+  }
+
+  /**
+   * True when a {@code DETACH DELETE} removes a node that a relationship pattern of the given MATCH clause(s) binds, so the
+   * DELETE must read its whole upstream row set before the first deletion (issue #12254).
+   * <p>
+   * A fixed-length relationship pattern is expanded by walking the edge list of the node it starts from while the rows of
+   * that node are still being produced. Detaching that node (or the node at the other end, which the walk reaches as an
+   * anchor of its own later) removes the relationships the walk has not reached yet, so the walk ends early and the rows it
+   * would have produced are silently lost: {@code MATCH (a)-[r]->(b) DETACH DELETE a, b} over 500 relationships deleted
+   * 166 nodes, and every other write clause of the statement ran for those rows only. Neo4j reads the MATCH to completion
+   * first. A {@code DELETE} without DETACH cannot hit this: it refuses a node that still has a relationship until the last
+   * row, and deleting the matched relationship itself is safe for the walk.
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the DELETE
+   */
+  static boolean detachDeletesTraversedNode(final DeleteClause deleteClause, final List<MatchClause> matchClauses) {
+    if (!deleteClause.isDetach() || matchClauses == null || matchClauses.isEmpty())
+      return false;
+    final Set<String> traversed = new HashSet<>();
+    collectTraversedNodeVariables(matchClauses, traversed);
+    return deleteMayTargetTaintedVariable(deleteClause.getVariables(), traversed);
+  }
+
+  /**
+   * True when a {@code DETACH DELETE} removes a node a relationship pattern bound in an earlier segment of the statement
+   * (see {@link #detachDeletesTraversedNode}): a WITH that forwards rows one at a time does not end the walk that produces
+   * them, so {@code MATCH (a)-[r]->(b) WITH a, b DETACH DELETE a} carries the same hazard.
+   */
+  static boolean detachDeletesTraversedNode(final DeleteClause deleteClause, final Set<String> traversedNodeVariables) {
+    return deleteClause.isDetach() && deleteMayTargetTaintedVariable(deleteClause.getVariables(), traversedNodeVariables);
+  }
+
+  /**
+   * Adds every node and path variable of the path patterns that hold a relationship to {@code target}: the nodes whose edge
+   * lists the MATCH walks while it is still producing rows (see {@link #detachDeletesTraversedNode}).
+   */
+  static void collectTraversedNodeVariables(final List<MatchClause> matchClauses, final Set<String> target) {
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.getPathPatterns())
+        if (path.getRelationshipCount() > 0) {
+          for (final NodePattern node : path.getNodes())
+            if (node.getVariable() != null)
+              target.add(node.getVariable());
+          if (path.hasPathVariable())
+            target.add(path.getPathVariable());
+        }
   }
 
   /**
@@ -279,9 +327,13 @@ final class EagerBarriers {
    * of the statement - this can only make {@link #deleteMayTargetTaintedVariable} keep guarding a DELETE
    * that no longer strictly needs it (e.g. after several more WITH-forwarding hops), never miss one that
    * does; see the class-level trade-off note on {@link #matchClausesHaveDisconnectedPatterns}.
+   * <p>
+   * The node variables of the segment's relationship patterns are added to {@code traversedNodeVariables} for the same
+   * reason: a later {@code DETACH DELETE} of one of them still races the walk that produces the rows (issue #12254, see
+   * {@link #detachDeletesTraversedNode}).
    */
   static void closeMatchSegment(final List<MatchClause> currentSegmentMatchClauses,
-      final Set<String> disconnectedTaintedVariables) {
+      final Set<String> disconnectedTaintedVariables, final Set<String> traversedNodeVariables) {
     if (matchClausesNeedEagerDelete(currentSegmentMatchClauses))
       for (final MatchClause match : currentSegmentMatchClauses)
         for (final PathPattern path : match.getPathPatterns()) {
@@ -292,6 +344,7 @@ final class EagerBarriers {
             if (relationship.getVariable() != null)
               disconnectedTaintedVariables.add(relationship.getVariable());
         }
+    collectTraversedNodeVariables(currentSegmentMatchClauses, traversedNodeVariables);
     currentSegmentMatchClauses.clear();
   }
 
