@@ -185,6 +185,11 @@ final class ShapeProbes {
       return new DatabaseOperationException(message);
     }
 
+    // issue #11633: a type outside the ArcadeDB exceptions was outside the census
+    static RuntimeException asAnArgumentFailure(final String name) {
+      return new IllegalArgumentException("Edge type '" + name + "' not found");
+    }
+
     // not offenders: the schema family, and a refusal that names no missing object
     static RuntimeException asASchemaFailure(final String name) {
       return new SchemaException("Index '" + name + "' not found");

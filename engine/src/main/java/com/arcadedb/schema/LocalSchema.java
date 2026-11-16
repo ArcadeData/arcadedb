@@ -57,6 +57,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
@@ -6423,7 +6424,7 @@ public class LocalSchema implements Schema {
         existing.registerFunction(function);
       } else {
         if (newLibrary == null)
-          throw new IllegalArgumentException("Function library '" + libraryName + "' not defined");
+          throw new UnknownFunctionException(libraryName, "Function library '" + libraryName + "' not defined");
         newLibrary.registerFunction(function);
         functionLibraries.put(libraryName, newLibrary);
       }
@@ -6435,7 +6436,7 @@ public class LocalSchema implements Schema {
    * Removes a user-defined function from its library: the schema change behind {@code DELETE FUNCTION}. Runs inside a
    * schema recording session for the reason {@link #defineFunction} does (issue #8404).
    *
-   * @throws IllegalArgumentException if the library is not defined
+   * @throws UnknownFunctionException if the library is not defined
    */
   public void deleteFunction(final String libraryName, final String functionName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -6458,12 +6459,12 @@ public class LocalSchema implements Schema {
   public FunctionLibraryDefinition getFunctionLibrary(final String name) {
     final FunctionLibraryDefinition flib = functionLibraries.get(name);
     if (flib == null)
-      throw new IllegalArgumentException("Function library '" + name + "' not defined");
+      throw new UnknownFunctionException(name, "Function library '" + name + "' not defined");
     return flib;
   }
 
   @Override
-  public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
+  public FunctionDefinition getFunction(final String libraryName, final String functionName) {
     return getFunctionLibrary(libraryName).getFunction(functionName);
   }
 

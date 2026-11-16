@@ -53,13 +53,16 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
+import de.bwaldvogel.mongo.backend.aggregation.stage.ProjectStage;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
+import de.bwaldvogel.mongo.exception.FailedToOptimizePipelineError;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import de.bwaldvogel.mongo.exception.MongoServerException;
+import de.bwaldvogel.mongo.exception.TypeMismatchException;
 import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
@@ -69,6 +72,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
@@ -361,7 +366,53 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Aggregation aggregation = Aggregation.fromPipeline(pipeline, plugin, this, collection, oplog);
     aggregation.validate(document);
 
-    return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
+    return firstBatchCursorResponse(collectionName, "firstBatch", computeResult(aggregation, pipeline, collection, oplog), 0);
+  }
+
+  /**
+   * The documents of a pipeline, its top-level {@code $match} stages tested with {@link MongoQueryMatcher} (issue #12074): the
+   * library's own match stage answers differently from {@code mongod}, and {@code countDocuments} is a pipeline. The stages between
+   * two {@code $match} run as the library runs them, on the stream the previous part produced; the failures are reported as
+   * {@link Aggregation#computeResult()} reports them. A {@code $match} nested in a sub-pipeline ({@code $facet}, {@code $lookup},
+   * {@code $unionWith}) is still the library's.
+   */
+  private List<Document> computeResult(final Aggregation aggregation, final List<Document> pipeline, final MongoCollection<?> collection,
+      final Oplog oplog) {
+    boolean matches = false;
+    for (final Document stage : pipeline)
+      if (stage.get("$match") instanceof Document) {
+        matches = true;
+        break;
+      }
+    if (!matches)
+      return aggregation.computeResult();
+
+    try {
+      Stream<Document> stream = collection.queryAllAsStream();
+      List<Document> segment = new ArrayList<>();
+      for (final Document stage : pipeline) {
+        if (stage.size() == 1 && stage.get("$match") instanceof Document query) {
+          stream = runSegment(segment, stream, collection, oplog);
+          segment = new ArrayList<>();
+          final MongoQueryMatcher matcher = new MongoQueryMatcher();
+          stream = stream.filter(candidate -> matcher.matches(candidate, query));
+        } else
+          segment.add(stage);
+      }
+      return runSegment(segment, stream, collection, oplog).collect(Collectors.toList());
+    } catch (final TypeMismatchException | FailedToOptimizePipelineError | ProjectStage.InvalidProjectException e) {
+      throw e;
+    } catch (final MongoServerError e) {
+      if (e.hasCode(ErrorCode._15998, ErrorCode._40353))
+        throw e;
+      throw new MongoServerError(e.getCode(), e.getCodeName(),
+          "PlanExecutor error during aggregation :: caused by :: " + e.getMessageWithoutErrorCode(), e);
+    }
+  }
+
+  private Stream<Document> runSegment(final List<Document> segment, final Stream<Document> stream, final MongoCollection<?> collection,
+      final Oplog oplog) {
+    return segment.isEmpty() ? stream : Aggregation.fromPipeline(segment, plugin, this, collection, oplog).runStagesAsStream(stream);
   }
 
   /**

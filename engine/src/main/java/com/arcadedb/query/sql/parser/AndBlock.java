@@ -156,6 +156,14 @@ public class AndBlock extends BooleanExpression {
     return false;
   }
 
+  @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    for (final BooleanExpression block : subBlocks)
+      if (block.setsSimilarity(context))
+        return true;
+    return false;
+  }
+
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     if (subBlocks == null) {
       return null;

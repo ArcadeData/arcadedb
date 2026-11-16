@@ -2716,9 +2716,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) sourceVertex).set(sourceVertexKeyNames[i], sourceVertexKeyValues[i]);
         ((MutableVertex) sourceVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source vertex with key " + Arrays.toString(sourceVertexKeyNames) + "=" + Arrays.toString(
-                sourceVertexKeyValues));
+                sourceVertexKeyValues), null);
     } else
       sourceVertex = v1Result.next().getIdentity().asVertex();
 
@@ -2732,9 +2732,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) destinationVertex).set(destinationVertexKeyNames[i], destinationVertexKeyValues[i]);
         ((MutableVertex) destinationVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
@@ -2778,9 +2778,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) destinationVertex).set(destinationVertexKeyNames[i], destinationVertexKeyValues[i]);
         ((MutableVertex) destinationVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
