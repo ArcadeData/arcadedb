@@ -56,6 +56,7 @@ import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.DelegatingAnalyzerWrapper;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
@@ -114,6 +115,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   private final Analyzer              indexAnalyzer;
   private final Analyzer              queryAnalyzer;
   private final FullTextIndexMetadata ftMetadata;
+  // The analyzer of each indexed property that has one of its own on a multi-property index (issue #12163), for its field-prefixed
+  // postings and the queries qualified to it; null for a property analyzed by the analyzer of the index, null altogether when none
+  // has one
+  private final Analyzer[]            propertyAnalyzers;
+  // What a query is parsed with: the analyzer of the property a clause is qualified to when it has one, the query analyzer otherwise
+  private final Analyzer              parserAnalyzer;
   private       TypeIndex             typeIndex;
 
   /**
@@ -182,6 +189,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
+    this.propertyAnalyzers = createPropertyAnalyzers(metadata);
+    this.parserAnalyzer = createParserAnalyzer(metadata, propertyAnalyzers, queryAnalyzer);
     bindLengthRule(metadata, indexAnalyzer);
     if (metadata != null && metadata.isBM25()) {
       index.setStoreTermFrequency(true);
@@ -204,6 +213,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
+    this.propertyAnalyzers = createPropertyAnalyzers(metadata);
+    this.parserAnalyzer = createParserAnalyzer(metadata, propertyAnalyzers, queryAnalyzer);
     bindLengthRule(metadata, indexAnalyzer);
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
     if (metadata != null && metadata.isBM25()) {
@@ -228,6 +239,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = null;
     this.indexAnalyzer = new StandardAnalyzer();
     this.queryAnalyzer = new StandardAnalyzer();
+    this.propertyAnalyzers = null;
+    this.parserAnalyzer = queryAnalyzer;
   }
 
   /**
@@ -432,8 +445,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     int ticks = 0;
 
     for (final QueryTerm term : queryTerms) {
-      // Analyze the term value
-      final List<String> keywords = analyzeText(queryAnalyzer, new Object[] { term.value });
+      // Analyze the term value, with the property's own analyzer when the term is qualified to one that has it (issue #12163)
+      final List<String> keywords = analyzeText(queryAnalyzerFor(term.fieldName), new Object[] { term.value });
 
       for (final String k : keywords) {
         final IndexCursor rids;
@@ -655,7 +668,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final Map<String, Float> tokenBoosts = new HashMap<>();
     for (final QueryTerm term : queryTerms) {
       final float boost = term.fieldName != null ? ftMetadata.getFieldBoost(term.fieldName) : 1.0f;
-      for (final String k : analyzeText(queryAnalyzer, new Object[] { term.value })) {
+      for (final String k : analyzeText(queryAnalyzerFor(term.fieldName), new Object[] { term.value })) {
         final String storedKey = term.fieldName != null ? term.fieldName + ":" + k : k;
         tokenBoosts.merge(storedKey, boost, Math::max);
       }
@@ -1359,19 +1372,20 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       for (final String k : keywords)
         postings.accept(k, rids);
     } else {
-      // Multi-property - prefix tokens with field name
+      // Multi-property - prefix tokens with field name. The prefixed tokens are analyzed by the property's own analyzer when it has
+      // one (issue #12163), the unprefixed ones by the analyzer of the index, the one an unqualified query is analyzed with
       final List<String> propertyNames = getPropertyNames();
       for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
         if (keys[i] == null)
           continue;
         final String fieldName = propertyNames.get(i);
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
-        for (final String k : keywords) {
-          // Store with field prefix for field-specific queries
+        // Store with field prefix for field-specific queries
+        for (final String k : fieldKeywords(i, keys[i], keywords))
           postings.accept(fieldName + ":" + k, rids);
-          // Also store without prefix for unqualified queries
+        // Also store without prefix for unqualified queries
+        for (final String k : keywords)
           postings.accept(k, rids);
-        }
       }
     }
     return 0;
@@ -1427,11 +1441,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         continue;
       final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
       docLen += documentLength(keywords);
-      final Map<String, Integer> fieldTf = new HashMap<>();
-      for (final String k : keywords) {
-        fieldTf.merge(k, 1, Integer::sum);
+      for (final String k : keywords)
         globalTf.merge(k, 1, Integer::sum);
-      }
+      final Map<String, Integer> fieldTf = new HashMap<>();
+      for (final String k : fieldKeywords(i, keys[i], keywords))
+        fieldTf.merge(k, 1, Integer::sum);
       fieldNames.add(propertyNames.get(i));
       fieldTfs.add(fieldTf);
     }
@@ -1539,12 +1553,21 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final String fieldName = propertyNames.get(i);
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
-        for (final String k : keywords) {
+        for (final String k : fieldKeywords(i, keys[i], keywords))
           underlyingIndex.remove(new String[] { fieldName + ":" + k });
+        for (final String k : keywords)
           underlyingIndex.remove(new String[] { k });
-        }
       }
     }
+  }
+
+  /**
+   * The tokens of the field-prefixed postings of the property at {@code index}, whose value is {@code value}: analyzed by the
+   * property's own analyzer when it has one (issue #12163), otherwise the {@code keywords} the analyzer of the index gave.
+   */
+  private List<String> fieldKeywords(final int index, final Object value, final List<String> keywords) {
+    final Analyzer propertyAnalyzer = propertyAnalyzers != null ? propertyAnalyzers[index] : null;
+    return propertyAnalyzer != null ? analyzeText(propertyAnalyzer, new Object[] { value }) : keywords;
   }
 
   /**
@@ -1572,10 +1595,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final String fieldName = propertyNames.get(i);
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
         docLen += documentLength(keywords);
-        for (final String k : keywords) {
+        for (final String k : fieldKeywords(i, keys[i], keywords))
           underlyingIndex.remove(new String[] { fieldName + ":" + k }, rid);
+        for (final String k : keywords)
           underlyingIndex.remove(new String[] { k }, rid);
-        }
       }
     }
 
@@ -1678,7 +1701,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public String getUpgradeWarning() {
-    return underlyingIndex.getUpgradeWarning();
+    final String underlyingWarning = underlyingIndex.getUpgradeWarning();
+    if (underlyingWarning != null)
+      return underlyingWarning;
+    // The definition names per-field analyzers its postings were not written with (issue #12163)
+    if (ftMetadata == null || ftMetadata.getFieldAnalyzers().isEmpty() || ftMetadata.isFieldAnalyzersApplied())
+      return null;
+    return "The per-field analyzers " + ftMetadata.getFieldAnalyzers() + " of this full-text index are not applied: its postings "
+        + "were written by a version that ignored them, so every property is still analyzed with the analyzer of the index, at "
+        + "write and at query time, until the index is rebuilt";
   }
 
   @Override
@@ -1876,6 +1907,29 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * The analyzer a Lucene query on this index is parsed with: for a clause qualified to a property that has an analyzer of its own,
+   * that analyzer, otherwise the query analyzer (issue #12163). The field names the parser hands it are the qualifiers, the stored
+   * property name or its base name.
+   */
+  Analyzer getParserAnalyzer() {
+    return parserAnalyzer;
+  }
+
+  /** The analyzer of {@code storedProperty} when it has one of its own (issue #12163), or null. */
+  Analyzer getPropertyAnalyzer(final String storedProperty) {
+    if (propertyAnalyzers == null || storedProperty == null)
+      return null;
+    final int index = getPropertyNames().indexOf(storedProperty);
+    return index >= 0 && index < propertyAnalyzers.length ? propertyAnalyzers[index] : null;
+  }
+
+  /** The analyzer a direct-lookup term qualified to {@code storedProperty} is analyzed with (null: unqualified). */
+  private Analyzer queryAnalyzerFor(final String storedProperty) {
+    final Analyzer propertyAnalyzer = getPropertyAnalyzer(storedProperty);
+    return propertyAnalyzer != null ? propertyAnalyzer : queryAnalyzer;
+  }
+
+  /**
    * Returns the index analyzer.
    *
    * @return the index analyzer
@@ -1926,14 +1980,71 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (metadata == null)
       return new StandardAnalyzer();
 
-    final String analyzerClass = forIndexing ? metadata.getIndexAnalyzerClass() : metadata.getQueryAnalyzerClass();
+    // The analyzer of the only property of a one-property index is the analyzer of the index (issue #12163)
+    final String onlyPropertyAnalyzer = metadata.propertyNames != null && metadata.propertyNames.size() == 1 ?
+        appliedFieldAnalyzerClass(metadata, metadata.propertyNames.getFirst()) :
+        null;
+    final String analyzerClass = onlyPropertyAnalyzer != null ? onlyPropertyAnalyzer :
+        forIndexing ? metadata.getIndexAnalyzerClass() : metadata.getQueryAnalyzerClass();
+    return instantiateAnalyzer(analyzerClass);
+  }
 
+  private static Analyzer instantiateAnalyzer(final String analyzerClass) {
     try {
       final Class<?> clazz = Class.forName(analyzerClass);
       return (Analyzer) clazz.getDeclaredConstructor().newInstance();
     } catch (final Exception e) {
       throw new IndexException("Cannot instantiate analyzer: " + analyzerClass, e);
     }
+  }
+
+  /**
+   * The class of the analyzer {@code property} has of its own, or null: the one the definition names for it, unless the postings
+   * were written without it by a version that ignored per-field analyzers (issue #12163), whose index goes on analyzing every
+   * property with the analyzer of the index until it is rebuilt.
+   */
+  private static String appliedFieldAnalyzerClass(final FullTextIndexMetadata metadata, final String property) {
+    if (!metadata.isFieldAnalyzersApplied())
+      return null;
+    return metadata.getFieldAnalyzers().get(property);
+  }
+
+  /** One analyzer per property of a multi-property index, null where the property has none of its own; null when none has one. */
+  private static Analyzer[] createPropertyAnalyzers(final FullTextIndexMetadata metadata) {
+    if (metadata == null || metadata.propertyNames == null || metadata.propertyNames.size() < 2 || metadata.getFieldAnalyzers()
+        .isEmpty())
+      return null;
+    final Analyzer[] analyzers = new Analyzer[metadata.propertyNames.size()];
+    boolean any = false;
+    for (int i = 0; i < analyzers.length; i++) {
+      final String analyzerClass = appliedFieldAnalyzerClass(metadata, metadata.propertyNames.get(i));
+      if (analyzerClass != null) {
+        analyzers[i] = instantiateAnalyzer(analyzerClass);
+        any = true;
+      }
+    }
+    return any ? analyzers : null;
+  }
+
+  /** The analyzer of the query parser: each qualifier of a property with an analyzer of its own picks it, by stored or base name. */
+  private static Analyzer createParserAnalyzer(final FullTextIndexMetadata metadata, final Analyzer[] propertyAnalyzers,
+      final Analyzer queryAnalyzer) {
+    if (propertyAnalyzers == null)
+      return queryAnalyzer;
+    final Map<String, Analyzer> byField = new HashMap<>();
+    for (int i = 0; i < propertyAnalyzers.length; i++)
+      if (propertyAnalyzers[i] != null) {
+        final String property = metadata.propertyNames.get(i);
+        byField.put(property, propertyAnalyzers[i]);
+        byField.put(Index.basePropertyName(property), propertyAnalyzers[i]);
+      }
+    return new DelegatingAnalyzerWrapper(Analyzer.PER_FIELD_REUSE_STRATEGY) {
+      @Override
+      protected Analyzer getWrappedAnalyzer(final String fieldName) {
+        final Analyzer propertyAnalyzer = byField.get(fieldName);
+        return propertyAnalyzer != null ? propertyAnalyzer : queryAnalyzer;
+      }
+    };
   }
 
   /**

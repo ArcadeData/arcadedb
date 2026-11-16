@@ -183,7 +183,8 @@ public class FullTextQueryExecutor {
       final RIDFilter ridFilter) {
     this.index = index;
     this.guard = guard;
-    this.analyzer = index.getAnalyzer();
+    // a clause qualified to a property with an analyzer of its own is analyzed with it (issue #12163)
+    this.analyzer = index.getParserAnalyzer();
     this.metadata = index.getFullTextMetadata();
     this.propertyNames = index.getPropertyNames();
     this.restrictedFields = restrictedFields != null ? restrictedFields.toArray(new String[0]) : null;
@@ -817,7 +818,7 @@ public class FullTextQueryExecutor {
 
   private void collectPrefixMatches(final PrefixQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getPrefix().field();
-    final String prefix = normalizeText(query.getPrefix().text());
+    final String prefix = normalizeText(field, query.getPrefix().text());
     if (prefix.isEmpty())
       return;
 
@@ -827,7 +828,7 @@ public class FullTextQueryExecutor {
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String pattern = normalizeText(query.getTerm().text());
+    final String pattern = normalizeText(field, query.getTerm().text());
     if (pattern.isEmpty())
       return;
 
@@ -867,7 +868,7 @@ public class FullTextQueryExecutor {
 
   private void collectFuzzyMatches(final FuzzyQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String term = normalizeText(query.getTerm().text());
+    final String term = normalizeText(field, query.getTerm().text());
     if (term.isEmpty())
       return;
 
@@ -889,7 +890,7 @@ public class FullTextQueryExecutor {
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getRegexp().field();
-    final String regexText = normalizeText(query.getRegexp().text());
+    final String regexText = normalizeText(field, query.getRegexp().text());
     if (regexText.isEmpty())
       return;
 
@@ -1027,13 +1028,15 @@ public class FullTextQueryExecutor {
    * {@code Fo*} into a prefix the stored {@code Foo} could never match (issue #7000). This is also what the Lucene
    * QueryParser itself does for the prefix, wildcard and fuzzy forms; the regexp form it hands over untouched.
    */
-  private String normalizeText(final String text) {
+  private String normalizeText(final String field, final String text) {
     if (text == null || text.isEmpty())
       return "";
     // Normalized under the one field name the write path tokenizes every property under (LSMTreeFullTextIndex.tokenize),
     // not under the query's qualifier: a field-aware analyzer folds by that name, and the stored tokens are what the
-    // pattern has to match.
-    return analyzer.normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text).utf8ToString();
+    // pattern has to match. A clause qualified to a property with an analyzer of its own is folded by it (issue #12163).
+    final Analyzer propertyAnalyzer = isUnqualified(field) ? null : index.getPropertyAnalyzer(storedField(field));
+    return (propertyAnalyzer != null ? propertyAnalyzer : analyzer).normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text)
+        .utf8ToString();
   }
 
   /**
