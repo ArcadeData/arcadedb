@@ -707,25 +707,31 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   /**
-   * The keys as a build before #11615 wrote them, or null when that build wrote them the same way (issue #12160). A list on a
-   * property nothing declares was keyed by the text {@code List.toString()} gives it, each number spelled as Java spells it
-   * ({@code [1.5, 2.0]}), where {@link #convertKeysToDeclaredTypes} now spells each floating point element canonically
-   * ({@code [1.5, 2]}). An index such a build wrote keeps those entries until it is rebuilt, so a seek, a removal and a uniqueness
-   * check look under both texts. An array was keyed by its identity text then, which no seek ever found: it has no old key to look
-   * under.
+   * The keys as an older build wrote them, or null when it wrote them the same way. On a property nothing declares, two builds
+   * keyed a value by the text Java gives it where {@link #convertKeysToDeclaredTypes} now writes a canonical text, and an index
+   * they wrote keeps those entries until it is rebuilt, so a seek, a removal and a uniqueness check look under both texts:
+   * <ul>
+   * <li>a floating point or decimal number, by {@code toString()} before #9132 (26.9.1): {@code 1.0}, {@code -0.0},
+   * {@code 1.0E300} where the canonical key is {@code 1}, {@code 0} and the plain digits (issue #12233);</li>
+   * <li>a list, by {@code List.toString()} before #11615: {@code [1.5, 2.0]} where the canonical key is {@code [1.5, 2]}
+   * (issue #12160).</li>
+   * </ul>
+   * Both are the text {@code Type.convert} still gives such a value without a property. An array was keyed by its identity text
+   * then, which no seek ever found: it has no old key to look under.
    *
    * @param keys          the keys as given to the index
    * @param convertedKeys the same keys after {@link #convertKeysToDeclaredTypes}
    */
-  Object[] legacyListKeys(final Object[] keys, final Object[] convertedKeys) {
+  Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
     if (keys == null || convertedKeys == null)
       return null;
     Object[] legacyKeys = null;
     for (int i = 0; i < keys.length && i < convertedKeys.length; ++i) {
-      if (!(keys[i] instanceof Collection) || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING || !isUndeclaredProperty(i))
+      final Object key = keys[i];
+      if (!(key instanceof Collection || key instanceof Double || key instanceof Float || key instanceof BigDecimal)
+          || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING || !isUndeclaredProperty(i))
         continue;
-      // Type.convert writes a collection with no property as List.toString() writes it, numbers included (Type.elementsText)
-      Object legacyKey = Type.convertIndexKeyOrNull(database, keys[i], String.class);
+      Object legacyKey = Type.convertIndexKeyOrNull(database, key, String.class);
       if (legacyKey instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])
         legacyKey = string.toLowerCase(Locale.ROOT);
@@ -739,16 +745,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   /**
-   * Whether converted keys can be the canonical key of a list an older build keyed another way (issue #12160): a STRING key of a
-   * property nothing declares that reads as a list. Answers without loading anything, so that a caller holding only converted
-   * keys loads the record they came from only when it can matter.
+   * Whether converted keys can be the canonical key of a value an older build keyed another way ({@link #legacyKeys}): a STRING key
+   * of a property nothing declares that reads as a list or as a number. Answers without loading anything, so that a caller holding
+   * only converted keys loads the record they came from only when it can matter.
    */
-  boolean mayBeCanonicalListKey(final Object[] convertedKeys) {
+  boolean mayBeCanonicalKeyOfLegacyValue(final Object[] convertedKeys) {
     if (convertedKeys == null)
       return false;
     for (int i = 0; i < convertedKeys.length && i < binaryKeyTypes.length; ++i)
-      if (binaryKeyTypes[i] == BinaryTypes.TYPE_STRING && convertedKeys[i] instanceof String string && string.startsWith("[")
-          && isUndeclaredProperty(i))
+      if (binaryKeyTypes[i] == BinaryTypes.TYPE_STRING && convertedKeys[i] instanceof String string && !string.isEmpty()
+          && (string.charAt(0) == '[' || string.charAt(0) == '-' || Character.isDigit(string.charAt(0))) && isUndeclaredProperty(i))
         return true;
     return false;
   }

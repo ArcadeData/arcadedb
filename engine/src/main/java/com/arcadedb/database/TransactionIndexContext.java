@@ -1264,13 +1264,13 @@ public class TransactionIndexContext {
   }
 
   /**
-   * The uniqueness of a list key on a property nothing declares, checked under the text an older build keyed the list by too
-   * (issue #12160): the entries such a build wrote keep that text until the index is rebuilt, so the check on the canonical key
-   * alone let a copy of an old list in. A holder found under the old text is a duplicate only when it holds this list: the old
-   * text of a list is also the key of a STRING spelled the same way, which is another value.
+   * The uniqueness of a list or number key on a property nothing declares, checked under the text an older build keyed the value
+   * by too (issues #12160 and #12233): the entries such a build wrote keep that text until the index is rebuilt, so the check on the
+   * canonical key alone let a copy of an old value in. A holder found under the old text is a duplicate only when it holds this
+   * value: the old text of a list or a number is also the key of a STRING spelled the same way, which is another value.
    */
-  private void checkUniqueLegacyListKeys(final LSMTreeIndex index, final IndexKey key) {
-    final Object[] legacyKeys = index.legacyListKeysOf(key.keyValues, key.rid);
+  private void checkUniqueLegacyKeys(final LSMTreeIndex index, final IndexKey key) {
+    final Object[] legacyKeys = index.legacyKeysOf(key.keyValues, key.rid);
     if (legacyKeys == null)
       return;
     final Index idx = index.getTypeName() == null ?
@@ -1312,7 +1312,7 @@ public class TransactionIndexContext {
               final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
               if (index instanceof LSMTreeIndex lsmIndex)
-                checkUniqueLegacyListKeys(lsmIndex, entry);
+                checkUniqueLegacyKeys(lsmIndex, entry);
             }
           }
         }

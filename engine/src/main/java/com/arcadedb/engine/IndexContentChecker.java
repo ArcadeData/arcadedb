@@ -218,7 +218,7 @@ final class IndexContentChecker {
       forEachRecordPair(index, document, (fingerprint, keys, legacyKeys) -> {
         if (valid.contains(fingerprint) || isIndexed(index, keys, rid))
           return;
-        // #12160: a list an older build indexed holds its entry under the text that build keyed it by
+        // #12160, #12233: a list or a number an older build indexed holds its entry under the text that build keyed it by
         if (legacyKeys != null && (valid.contains(fingerprint(legacyKeys, index.getBinaryKeyTypes(), rid)) || isIndexed(index,
             legacyKeys, rid)))
           return;
@@ -278,7 +278,7 @@ final class IndexContentChecker {
         holds[0] = true;
         valid.add(recordFingerprint);
       } else if (legacyKey != null && sameKey(keys, legacyKey, index.getBinaryKeyTypes())) {
-        // #12160: the entry an older build wrote for the record's list, under the text it keyed the list by
+        // #12160, #12233: the entry an older build wrote for the record's value, under the text it keyed the value by
         holds[0] = true;
         valid.add(recordFingerprint);
       } else if (recordKeys.size() < 4)
@@ -358,7 +358,7 @@ final class IndexContentChecker {
 
   @FunctionalInterface
   private interface PairConsumer {
-    /** @param legacyKeys the keys an older build wrote for the same pair (issue #12160), or null when it wrote these */
+    /** @param legacyKeys the keys an older build wrote for the same pair (issues #12160 and #12233), or null when it wrote these */
     void accept(long fingerprint, Object[] storedKeys, Object[] legacyKeys);
   }
 
@@ -385,7 +385,7 @@ final class IndexContentChecker {
       }
       if (!indexesNulls && LSMTreeIndexAbstract.isKeyNull(stored))
         return;
-      consumer.accept(fingerprint(stored, keyTypes, rid), stored, index.legacyListKeys(keys, stored));
+      consumer.accept(fingerprint(stored, keyTypes, rid), stored, index.legacyKeys(keys, stored));
     });
   }
 

@@ -711,18 +711,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (!areReadAsKeys(keys, convertedKeys))
       return EMPTY_CURSOR;
 
-    final Object[] legacyKeys = mutable.legacyListKeys(keys, convertedKeys);
+    final Object[] legacyKeys = mutable.legacyKeys(keys, convertedKeys);
     if (legacyKeys != null)
-      return withLegacyListEntries(convertedKeys, legacyKeys, limit);
+      return withLegacyEntries(convertedKeys, legacyKeys, limit);
     return getConverted(convertedKeys, limit);
   }
 
   /**
-   * The entries of {@code convertedKeys}, with the entries an older build wrote for the same list under {@code legacyKeys}
-   * (issue #12160, see {@link LSMTreeIndexAbstract#legacyListKeys}). An old entry counts only when its record holds the list: the
-   * old text of a list is also the key of a STRING spelled the same way, which is another value.
+   * The entries of {@code convertedKeys}, with the entries an older build wrote for the same value under {@code legacyKeys}
+   * (issues #12160 and #12233, see {@link LSMTreeIndexAbstract#legacyKeys}). An old entry counts only when its record holds the
+   * value: the old text of a list or a number is also the key of a STRING spelled the same way, which is another value.
    */
-  private IndexCursor withLegacyListEntries(final Object[] convertedKeys, final Object[] legacyKeys, final int limit) {
+  private IndexCursor withLegacyEntries(final Object[] convertedKeys, final Object[] legacyKeys, final int limit) {
     final Set<IndexCursorEntry> entries = new LinkedHashSet<>();
     final Set<RID> seen = new HashSet<>();
     try (final IndexCursor cursor = getConverted(convertedKeys, limit)) {
@@ -796,22 +796,22 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
-   * The keys an older build wrote for {@code keys}, or null when it wrote them as {@code convertedKeys} (issue #12160, see
-   * {@link LSMTreeIndexAbstract#legacyListKeys}).
+   * The keys an older build wrote for {@code keys}, or null when it wrote them as {@code convertedKeys} (issues #12160 and #12233,
+   * see {@link LSMTreeIndexAbstract#legacyKeys}).
    *
    * @param convertedKeys {@code keys} after {@link #convertLookupKeys}
    */
-  public Object[] legacyListKeys(final Object[] keys, final Object[] convertedKeys) {
-    return mutable.legacyListKeys(keys, convertedKeys);
+  public Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
+    return mutable.legacyKeys(keys, convertedKeys);
   }
 
   /**
-   * The keys an older build wrote for the list the record at {@code rid} holds under {@code convertedKeys}, or null when it wrote
-   * them the same way or the record holds no such list (issue #12160). For a caller that has only the converted keys, as the
-   * uniqueness check at commit has: the record is loaded only for a key that can be the canonical key of a list.
+   * The keys an older build wrote for the value the record at {@code rid} holds under {@code convertedKeys}, or null when it wrote
+   * them the same way or the record holds no such value (issues #12160 and #12233). For a caller that has only the converted keys,
+   * as the uniqueness check at commit has: the record is loaded only for a key that can be the canonical key of a list or a number.
    */
-  public Object[] legacyListKeysOf(final Object[] convertedKeys, final RID rid) {
-    if (!mutable.mayBeCanonicalListKey(convertedKeys))
+  public Object[] legacyKeysOf(final Object[] convertedKeys, final RID rid) {
+    if (!mutable.mayBeCanonicalKeyOfLegacyValue(convertedKeys))
       return null;
     final Document document;
     try {
@@ -827,7 +827,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       if (legacyKeys[0] == null)
         try {
           if (sameKey(convertKeys(keys), convertedKeys))
-            legacyKeys[0] = mutable.legacyListKeys(keys, convertedKeys);
+            legacyKeys[0] = mutable.legacyKeys(keys, convertedKeys);
         } catch (final IllegalArgumentException e) {
           // a value the key type cannot read holds no key here
         }
@@ -945,8 +945,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         return null;
       });
 
-    // #12160: the entries an older build wrote for this list go too, and only those: the old text is also the key of a STRING
-    final Object[] legacyKeys = mutable.legacyListKeys(keys, convertedKeys);
+    // #12160, #12233: the entries an older build wrote for this value go too, and only those: the old text is also the key of a
+    // STRING
+    final Object[] legacyKeys = mutable.legacyKeys(keys, convertedKeys);
     if (legacyKeys != null)
       for (final RID holder : legacyEntryHolders(legacyKeys))
         if (holdsKey(holder, convertedKeys))
@@ -959,9 +960,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     final Object[] convertedKeys = convertKeys(keys);
     removeConverted(convertedKeys, rid);
 
-    // #12160: the entry an older build wrote for this record's list goes too. Looked up first, so that a list no old entry stands
-    // for leaves no removal in the index
-    final Object[] legacyKeys = rid != null ? mutable.legacyListKeys(keys, convertedKeys) : null;
+    // #12160, #12233: the entry an older build wrote for this record's value goes too. Looked up first, so that a value no old entry
+    // stands for leaves no removal in the index
+    final Object[] legacyKeys = rid != null ? mutable.legacyKeys(keys, convertedKeys) : null;
     if (legacyKeys != null && holdsLegacyEntry(legacyKeys, rid.getIdentity()))
       removeConverted(legacyKeys, rid);
   }
