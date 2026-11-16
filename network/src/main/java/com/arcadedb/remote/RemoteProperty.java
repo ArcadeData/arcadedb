@@ -25,6 +25,7 @@ import com.arcadedb.schema.Type;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -39,8 +40,27 @@ import java.util.Map;
 public class RemoteProperty extends AbstractProperty {
 
   RemoteProperty(final DocumentType owner, final Map<String, Object> record) {
-    super(owner, (String) record.get("name"), Type.getTypeByName((String) record.get("type")), (Integer) record.get("id"));
+    super(owner, (String) record.get("name"), typeOf((String) record.get("type")), (Integer) record.get("id"));
     reload(record);
+  }
+
+  /**
+   * The type schema:types names. The server writes the constant's name ({@code ARRAY_OF_LONGS}), which
+   * {@link Type#getTypeByName} does not know for the five array types, whose declared name is {@code Long[]} and the like:
+   * such a property had no type on the client, so its values kept the list the JSON parser built instead of being read as the
+   * primitive array they are (issue #12189).
+   */
+  static Type typeOf(final String name) {
+    if (name == null)
+      return null;
+    final Type type = Type.getTypeByName(name);
+    if (type != null)
+      return type;
+    try {
+      return Type.valueOf(name.toUpperCase(Locale.ENGLISH));
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
   }
 
   @Override

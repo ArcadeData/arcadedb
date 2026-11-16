@@ -243,7 +243,12 @@ class GrpcTypeConverter {
       final int len = Array.getLength(o);
       for (int i = 0; i < len; i++)
         lb.addValues(element.apply(Array.get(o, i)));
-      return GrpcValue.newBuilder().setListValue(lb.build()).build();
+      // a primitive numeric array keeps its class on the client (issue #12189)
+      final GrpcValue.Builder vb = GrpcValue.newBuilder().setListValue(lb.build());
+      final String logicalType = GrpcArrayCodec.logicalTypeOf(o);
+      if (logicalType != null)
+        vb.setLogicalType(logicalType);
+      return vb.build();
     }
 
     return null;
