@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -31,7 +32,6 @@ import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnionStatement;
-import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
@@ -351,13 +351,15 @@ final class EagerBarriers {
   /**
    * Propagates taint through a {@code WITH ... AS alias} rename: a rename doesn't change how rows flow
    * any more than a same-name passthrough does (see {@link #closeMatchSegment}), so if the item being
-   * renamed is a bare reference to an already-tainted variable, its new alias is tainted too - otherwise
-   * a later DELETE of the alias would find nothing tainted under that name, even though it is exactly as
-   * hazardous as deleting the original variable would have been.
+   * renamed reads an already-tainted variable, its new alias is tainted too - otherwise a later DELETE of
+   * the alias would find nothing tainted under that name, even though it is exactly as hazardous as
+   * deleting the original variable would have been.
    * <p>
-   * Only a bare variable reference is recognised as "the same entity under a new name" ({@code WITH n AS
-   * m}); an item computed from a tainted variable by any other expression ({@code WITH n.id AS m}, {@code
-   * WITH count(n) AS m}) produces a value that is no longer that entity, so it carries no taint forward.
+   * Any item that reads a tainted variable taints its alias, not only a bare rename ({@code WITH n AS m}):
+   * a list or map holding the entity ({@code WITH [a, b] AS victims}) is deleted as the entities it holds.
+   * A scalar computed from it ({@code WITH n.id AS m}) is tainted as well; DELETE refuses such a value, so
+   * the over-approximation never costs a valid statement anything. An item whose variables cannot be
+   * listed is tainted conservatively.
    */
   static void propagateTaintThroughRenames(final WithClause withClause,
       final Set<String> disconnectedTaintedVariables) {
@@ -365,8 +367,7 @@ final class EagerBarriers {
       return;
     for (final ReturnClause.ReturnItem item : withClause.getItems())
       if (!item.isStar() && item.getAlias() != null
-          && item.getExpression() instanceof VariableExpression variableExpression
-          && disconnectedTaintedVariables.contains(variableExpression.getVariableName()))
+          && CypherReferencedVariables.of(item.getExpression()).referencesAny(disconnectedTaintedVariables))
         disconnectedTaintedVariables.add(item.getAlias());
   }
 

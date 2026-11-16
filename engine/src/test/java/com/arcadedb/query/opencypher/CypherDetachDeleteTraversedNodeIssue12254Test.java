@@ -48,13 +48,13 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
   }
 
   private long countVertices() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V")) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }
 
   private long countWithX() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V WHERE x = 1")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V WHERE x = 1")) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }
@@ -125,6 +125,14 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
   void secondDetachDeleteAfterWithDeletesEveryNeighbour() {
     createFan();
     rowsOf("MATCH (a:V {k: 0})-[r]->(b) DETACH DELETE a WITH b DETACH DELETE b");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** A list projection of the traversed nodes carries the hazard of the nodes it holds. */
+  @Test
+  void detachDeleteOfListProjectionDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r:F]->(b) WITH [a, b] AS victims DETACH DELETE victims");
     assertThat(countVertices()).isZero();
   }
 
