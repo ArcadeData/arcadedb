@@ -44,8 +44,10 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -98,6 +100,7 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
     } else {
       // Standard TinkerPop import for RID-format IDs, or a first line with no id at all. Inside a caller-owned
       // transaction the reader must not commit it (issue #9783): see AbstractTinkerPopImporterFormat.
+      completeIncomingEdges(lines);
       final String content = String.join("\n", lines);
       try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
         // The types the export writes (issue #10202), so a Byte, a BigDecimal or a date is read back as one
@@ -106,6 +109,83 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
       } catch (final IOException e) {
         throw new ImportException("Error on importing GraphSON", e);
       }
+    }
+  }
+
+  /**
+   * Adds to the {@code inE} of its target vertex every edge that a line lists in an {@code outE} only (issue #12255).
+   * <p>
+   * TinkerPop's GraphSON reader creates each edge from the {@code inE} entry of its target, the side it reads once the source
+   * is known, and ignores {@code outE}. An adjacency list that names every edge on both sides loses nothing that way, but an
+   * edge of a UNIDIRECTIONAL type has no incoming side: the export writes it in the {@code outE} of its source only, so every
+   * one of them was dropped by the round trip, silently. Any other producer that leaves an edge out of {@code inE} lost it
+   * too. The missing entry is built from the {@code outE} one (its id, the source as {@code outV}, its properties), so the
+   * reader creates the edge as it creates every other. The lines that need no entry are left untouched.
+   */
+  static void completeIncomingEdges(final List<String> lines) {
+    final Set<String> incoming = new HashSet<>();
+    final List<JSONObject> vertices = new ArrayList<>(lines.size());
+    for (final String line : lines) {
+      final JSONObject vertex = new JSONObject(line);
+      vertices.add(vertex);
+      final JSONObject inEdges = vertex.getJSONObject("inE", null);
+      if (inEdges != null)
+        for (final String label : inEdges.keySet()) {
+          final JSONArray entries = inEdges.getJSONArray(label, null);
+          if (entries != null)
+            for (int i = 0; i < entries.length(); i++)
+              incoming.add(String.valueOf(entries.getJSONObject(i).opt("id")));
+        }
+    }
+
+    // TARGET VERTEX ID -> LABEL -> THE inE ENTRIES IT IS MISSING
+    final Map<String, Map<String, JSONArray>> missing = new HashMap<>();
+    for (final JSONObject vertex : vertices) {
+      final JSONObject outEdges = vertex.getJSONObject("outE", null);
+      if (outEdges == null)
+        continue;
+      for (final String label : outEdges.keySet()) {
+        final JSONArray entries = outEdges.getJSONArray(label, null);
+        if (entries == null)
+          continue;
+        for (int i = 0; i < entries.length(); i++) {
+          final JSONObject entry = entries.getJSONObject(i);
+          final Object edgeId = entry.opt("id");
+          final Object target = entry.opt("inV");
+          if (edgeId == null || target == null || incoming.contains(String.valueOf(edgeId)))
+            continue;
+          final JSONObject incomingEntry = new JSONObject().put("id", edgeId).put("outV", vertex.get("id"));
+          final JSONObject properties = entry.getJSONObject("properties", null);
+          if (properties != null)
+            incomingEntry.put("properties", properties);
+          missing.computeIfAbsent(String.valueOf(target), k -> new HashMap<>()).computeIfAbsent(label, k -> new JSONArray())
+              .put(incomingEntry);
+        }
+      }
+    }
+    if (missing.isEmpty())
+      return;
+
+    for (int i = 0; i < vertices.size(); i++) {
+      final JSONObject vertex = vertices.get(i);
+      final Map<String, JSONArray> toAdd = missing.get(String.valueOf(vertex.opt("id")));
+      if (toAdd == null)
+        continue;
+      JSONObject inEdges = vertex.getJSONObject("inE", null);
+      if (inEdges == null) {
+        inEdges = new JSONObject();
+        vertex.put("inE", inEdges);
+      }
+      for (final Map.Entry<String, JSONArray> byLabel : toAdd.entrySet()) {
+        JSONArray entries = inEdges.getJSONArray(byLabel.getKey(), null);
+        if (entries == null) {
+          entries = new JSONArray();
+          inEdges.put(byLabel.getKey(), entries);
+        }
+        for (int j = 0; j < byLabel.getValue().length(); j++)
+          entries.put(byLabel.getValue().getJSONObject(j));
+      }
+      lines.set(i, vertex.toString());
     }
   }
 
