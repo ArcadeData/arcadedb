@@ -1638,7 +1638,7 @@
         {
           "name": "create.vRelationship",
           "syntax": "create.vRelationship(...)",
-          "description": "Create a virtual relationship (not persisted) between two nodes",
+          "description": "Create a virtual relationship (not persisted) between two nodes: (from, type, properties, to)",
           "since": "cypher"
         }
       ],
@@ -1888,7 +1888,7 @@
         {
           "name": "path.slice",
           "syntax": "path.slice(...)",
-          "description": "Extract a subpath from index 'from' to 'to' (based on relationship count)",
+          "description": "Extract the subpath of 'length' relationships starting at relationship 'offset' (length -1 = to the end)",
           "since": "cypher"
         },
         {

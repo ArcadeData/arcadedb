@@ -18,16 +18,20 @@
  */
 package com.arcadedb.query.opencypher.procedures.meta;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.BiConsumer;
 
 /**
  * Abstract base class for meta/schema procedures.
@@ -61,26 +65,39 @@ public abstract class AbstractMetaProcedure implements CypherProcedure {
     return result;
   }
 
-  protected String mapPropertyType(final Type type) {
-    return switch (type) {
-      case STRING -> "String";
-      case INTEGER -> "Integer";
-      case LONG -> "Long";
-      case SHORT -> "Short";
-      case BYTE -> "Byte";
-      case FLOAT -> "Float";
-      case DOUBLE -> "Double";
-      case BOOLEAN -> "Boolean";
-      case DATETIME, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND -> "DateTime";
-      case DATE -> "Date";
-      case BINARY -> "ByteArray";
-      case LIST -> "List";
-      case MAP -> "Map";
-      case EMBEDDED -> "Map";
-      case LINK -> "Relationship";
-      case DECIMAL -> "BigDecimal";
-      case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "NumberArray";
-      default -> type.name();
-    };
+  /**
+   * The optional APOC {@code config} map, the first argument of the procedures that take one; absent or null is the
+   * default configuration.
+   */
+  protected MetaConfig config(final Object[] args) {
+    final Map<String, Object> config = optionalMapArg(args, 0, "config");
+    return config.isEmpty() ? MetaConfig.DEFAULT : new MetaConfig(config);
+  }
+
+  /**
+   * Hands {@code action} the nodes APOC's {@code nodeTypeProperties} / {@code relTypeProperties} examine: label by label
+   * (the labels {@code config} accepts), every {@link MetaConfig#skipFor}-th node carrying it, with the vertex type it
+   * belongs to. A node with several labels is examined once under each of them, as APOC examines it.
+   */
+  protected static void forEachSampledNode(final Database database, final MetaLabels labels, final MetaConfig config,
+      final BiConsumer<VertexType, Record> action) {
+    for (final String label : labels.allLabels()) {
+      if (!config.acceptsLabel(label))
+        continue;
+      final List<VertexType> types = labels.typesCarrying(label);
+      long count = 0L;
+      for (final VertexType type : types)
+        count += database.countType(type.getName(), false);
+      final long skip = config.skipFor(count);
+      long index = 0L;
+      for (final VertexType type : types) {
+        final Iterator<Record> records = database.iterateType(type.getName(), false);
+        while (records.hasNext()) {
+          final Record record = records.next();
+          if (index++ % skip == 0L)
+            action.accept(type, record);
+        }
+      }
+    }
   }
 }

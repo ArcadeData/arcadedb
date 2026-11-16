@@ -20,6 +20,7 @@ package com.arcadedb.function.graph;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.graph.VirtualElement;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -50,6 +51,8 @@ public class ElementIdFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
+    if (args[0] instanceof VirtualElement virtual)
+      return virtual.getVirtualElementId();
     if (args[0] instanceof Identifiable)
       return ((Identifiable) args[0]).getIdentity().toString();
     return null;

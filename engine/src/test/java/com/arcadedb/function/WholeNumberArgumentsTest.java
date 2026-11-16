@@ -253,11 +253,11 @@ class WholeNumberArgumentsTest {
       database.transaction(() -> database.command("opencypher", "CREATE (:N10850 {k: 0})-[:R]->(:N10850 {k: 1})-[:R]->(:N10850 {k: 2})"));
       final String match = "MATCH p = (a:N10850 {k: 0})-[:R*2]->(b:N10850) ";
 
-      // to 4294967297 used to wrap to 1 and answer one relationship
+      // a length of 4294967297 used to wrap to 1 and answer one relationship
       assertThat(cypher(match + "RETURN length(path.slice(p, 0, " + WRAPS_TO_ONE + ")) AS v")).isEqualTo(2L);
       assertThat(cypher(match + "RETURN length(path.slice(p, 1.0)) AS v")).isEqualTo(1L);
 
-      assertThatThrownBy(() -> cypher(match + "RETURN path.slice(p, 0.5) AS v")).hasStackTraceContaining("path.slice() requires a whole number <index>");
+      assertThatThrownBy(() -> cypher(match + "RETURN path.slice(p, 0.5) AS v")).hasStackTraceContaining("path.slice() requires a whole number <offset>");
     }
 
     // ---------------------------------------------------------------- text.* helpers
