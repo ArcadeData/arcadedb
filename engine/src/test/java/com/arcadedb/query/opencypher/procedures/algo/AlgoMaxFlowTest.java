@@ -192,8 +192,11 @@ class AlgoMaxFlowTest {
       final MutableVertex y = database.newVertex("Node").set("name", "Y").save();
       x.newEdge("PIPE", y, true, new Object[] { "capacity", 1.5 }).save();
       x.newEdge("PIPE", y, true, new Object[] { "capacity", 2.5 }).save();
-      // A self loop carries nothing anywhere.
+      // A self loop carries nothing anywhere, and neither does a capacity that is not positive.
       x.newEdge("PIPE", x, true, new Object[] { "capacity", 100.0 }).save();
+      x.newEdge("PIPE", y, true, new Object[] { "capacity", -5.0 }).save();
+      x.newEdge("PIPE", y, true, new Object[] { "capacity", 0.0 }).save();
+      x.newEdge("PIPE", y, true, new Object[] { "capacity", Double.NaN }).save();
     });
     assertThat(flow("X", "Y", null)).isEqualTo(4.0);
     assertThat(flow("Y", "X", null)).isEqualTo(0.0);
