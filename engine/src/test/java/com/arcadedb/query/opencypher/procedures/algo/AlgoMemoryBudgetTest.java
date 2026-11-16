@@ -732,10 +732,10 @@ class AlgoMemoryBudgetTest {
      * arrays: priced like the rest, and still served under the default budget and with the budget disabled.
      */
     private static final String[][] CALLS = {
-        { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
-        { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
+        { "algo.knn", "CALL algo.knn(2) YIELD node1 RETURN node1" },
+        { "algo.kTruss", "CALL algo.kTruss() YIELD nodeId RETURN nodeId" },
         { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
-        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
+        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD nodeId RETURN nodeId" } };
 
     @Test
     void triangleCountNeedsNoMatrixAnyMore() {
@@ -754,13 +754,13 @@ class AlgoMemoryBudgetTest {
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
           BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
 
-      assertThatThrownBy(() -> drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node"))
+      assertThatThrownBy(() -> drain("CALL algo.hierarchicalClustering(null, 2) YIELD nodeId RETURN nodeId"))
           .hasStackTraceContaining("algo.hierarchicalClustering(): the edge similarities")
           .hasStackTraceContaining("(4 nodes, 10 edge entries)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
 
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
-      assertThat(drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node")).hasSize(4);
+      assertThat(drain("CALL algo.hierarchicalClustering(null, 2) YIELD nodeId RETURN nodeId")).hasSize(4);
     }
 
     @Test
@@ -769,7 +769,7 @@ class AlgoMemoryBudgetTest {
       // the edges since issue #12173, where it used to be two nodeCount x nodeCount bit matrices
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 600L);
 
-      assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD node RETURN node"))
+      assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD nodeId RETURN nodeId"))
           .hasStackTraceContaining("the truss decomposition would need 205 bytes (4 nodes, 5 edges)");
     }
 

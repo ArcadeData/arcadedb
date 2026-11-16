@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.opencypher.rewriter;
 
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -132,6 +134,35 @@ public class ProjectedOrderByNormalizer {
     }
 
     return rewritten == null ? orderBy : new OrderByClause(rewritten);
+  }
+
+  /**
+   * Returns the WHERE of a collapsing WITH with the parts that repeat a projected expression, or read a property of a
+   * projected variable, replaced by references to the corresponding output column (issue #12245).
+   * <p>
+   * That WHERE runs on the collapsed rows, where the variables that fed the projection have no value any more:
+   * {@code WITH n.b AS v, count(*) AS c WHERE n.b IS NOT NULL} read {@code n.b} as null and filtered every group out.
+   * The rule is the one ORDER BY follows: a grouping key is constant within its group, so a predicate built on it is
+   * well defined, and Neo4j answers it on the grouping key. What is left pointing at a collapsed variable after the
+   * rewrite is refused by the scope check.
+   *
+   * @param where      the WHERE of the WITH, may be null
+   * @param items      the projected items of the WITH
+   * @param collapsing whether the projection collapses its input rows (DISTINCT or aggregating). A plain WITH keeps its
+   *                   input scope, so its WHERE is returned unchanged
+   *
+   * @return the original clause when nothing matched, a rewritten copy otherwise
+   */
+  public static WhereClause normalizeWhere(final WhereClause where, final List<ReturnClause.ReturnItem> items,
+      final boolean collapsing) {
+    if (!collapsing || where == null || where.getConditionExpression() == null || items == null || items.isEmpty())
+      return where;
+
+    final BooleanExpression condition = where.getConditionExpression();
+    final Object substituted = newSubstituter(items).rewrite(condition);
+    if (substituted == condition || !(substituted instanceof BooleanExpression))
+      return where;
+    return new WhereClause((BooleanExpression) substituted);
   }
 
   /**

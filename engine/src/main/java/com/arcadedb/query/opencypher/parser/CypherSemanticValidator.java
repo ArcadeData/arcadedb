@@ -107,6 +107,7 @@ public class CypherSemanticValidator {
     ProjectionValidator.validateReturnStar(statement);
     FunctionArgumentValidator.validateFunctionArgumentTypes(statement);
     v.validateCallYieldConclusion(statement);
+    validateYieldedOutputs(statement);
     v.validateNestedStatements(statement);
   }
 
@@ -485,6 +486,36 @@ public class CypherSemanticValidator {
               + "side-effect-only statement");
   }
 
+  /**
+   * A {@code YIELD} names columns of the procedure's declared output (issue #11975). An undeclared name used to be bound to
+   * null on every row, so a misspelt column read as a procedure that answered nothing; Neo4j refuses it before the query
+   * runs with "Unknown procedure output". Only a procedure the registry resolves has a declared signature: a custom
+   * {@code DEFINE FUNCTION} or SQL function called through {@code CALL} has none and is not checked.
+   */
+  private static void validateYieldedOutputs(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null)
+      return;
+
+    for (final ClauseEntry entry : clauses) {
+      if (entry.getType() != ClauseEntry.ClauseType.CALL)
+        continue;
+      final CallClause callClause = entry.getTypedClause();
+      if (!callClause.hasYield() || callClause.isYieldAll())
+        continue;
+      final CypherProcedure procedure = callClause.resolveProcedure();
+      if (procedure == null)
+        continue;
+      final List<String> declared = procedure.getYieldFields();
+      if (declared == null || declared.isEmpty())
+        continue;
+      for (final CallClause.YieldItem item : callClause.getYieldItems())
+        if (!declared.contains(item.getFieldName()))
+          throw new CommandParsingException(
+              "Unknown procedure output: `" + item.getFieldName() + "`. " + callClause.getProcedureName() + "() yields " + declared);
+    }
+  }
+
   // ==================================================
   // Phase 11: Every phase above, applied to each body
   // ==================================================
@@ -562,6 +593,7 @@ public class CypherSemanticValidator {
     ProjectionValidator.validateExpressionAliases(body);
     ProjectionValidator.validateReturnStar(body);
     validateCallYieldConclusion(body);
+    validateYieldedOutputs(body);
   }
 
   /**

@@ -18,10 +18,16 @@
  */
 package com.arcadedb.query.opencypher.rewriter;
 
+import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.RegexExpression;
+import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 
 import java.util.ArrayList;
@@ -79,6 +85,15 @@ public class ProjectedExpressionSubstituter extends ExpressionRewriter {
         return new VariableExpression(outputName);
     }
 
+    // A predicate that repeats a projected predicate reads its column, coerced back to the predicate it stands for:
+    // WITH n.b = true AS flag, count(*) AS c WHERE n.b = true (issue #12245). A BooleanExpression sits only where a
+    // BooleanExpression is expected, so the coercion keeps the type the parent casts it to
+    if (expression instanceof BooleanExpression booleanExpression) {
+      final String outputName = outputNameByExpressionText.get(booleanExpression.getText());
+      if (outputName != null)
+        return new BooleanCoercionExpression(new VariableExpression(outputName));
+    }
+
     // A property read of a projected variable follows that variable to the column it landed in
     if (expression instanceof PropertyAccessExpression) {
       final PropertyAccessExpression propertyAccess = (PropertyAccessExpression) expression;
@@ -88,6 +103,75 @@ public class ProjectedExpressionSubstituter extends ExpressionRewriter {
     }
 
     return super.rewrite(expression);
+  }
+
+  /**
+   * The predicates below hold their operands as expressions the base rewriter does not descend into. A WHERE of a
+   * collapsing WITH is built of them ({@code WHERE n.b IS NOT NULL}, issue #12245), so the substitution has to reach
+   * their operands too.
+   */
+  @Override
+  protected BooleanExpression visitBooleanCoercion(final BooleanCoercionExpression expr) {
+    final Expression operand = rewriteOperand(expr.getExpression());
+    return operand == expr.getExpression() ? expr : new BooleanCoercionExpression(operand);
+  }
+
+  @Override
+  protected BooleanExpression visitIsNull(final IsNullExpression expr) {
+    final Expression operand = rewriteOperand(expr.getExpression());
+    return operand == expr.getExpression() ? expr : new IsNullExpression(operand, expr.isNot());
+  }
+
+  @Override
+  protected BooleanExpression visitStringMatch(final StringMatchExpression expr) {
+    final Expression operand = rewriteOperand(expr.getExpression());
+    final Expression pattern = rewriteOperand(expr.getPattern());
+    if (operand == expr.getExpression() && pattern == expr.getPattern())
+      return expr;
+    return new StringMatchExpression(operand, pattern, expr.getMatchType());
+  }
+
+  @Override
+  protected BooleanExpression visitRegex(final RegexExpression expr) {
+    final Expression operand = rewriteOperand(expr.getExpression());
+    final Expression pattern = rewriteOperand(expr.getPattern());
+    if (operand == expr.getExpression() && pattern == expr.getPattern())
+      return expr;
+    return new RegexExpression(operand, pattern);
+  }
+
+  @Override
+  protected BooleanExpression visitIn(final InExpression expr) {
+    final Expression operand = rewriteOperand(expr.getExpression());
+    final List<Expression> list = expr.getList();
+    List<Expression> rewrittenList = null;
+    for (int i = 0; i < list.size(); i++) {
+      final Expression element = list.get(i);
+      final Expression newElement = rewriteOperand(element);
+      if (newElement != element) {
+        if (rewrittenList == null)
+          rewrittenList = new ArrayList<>(list);
+        rewrittenList.set(i, newElement);
+      }
+    }
+    if (operand == expr.getExpression() && rewrittenList == null)
+      return expr;
+    return new InExpression(operand, rewrittenList != null ? rewrittenList : list);
+  }
+
+  @Override
+  protected Expression visitBooleanWrapper(final BooleanWrapperExpression expr) {
+    final Object inner = rewrite(expr.getBooleanExpression());
+    if (inner == expr.getBooleanExpression() || !(inner instanceof BooleanExpression))
+      return expr;
+    return new BooleanWrapperExpression((BooleanExpression) inner);
+  }
+
+  private Expression rewriteOperand(final Expression operand) {
+    if (operand == null)
+      return null;
+    final Object rewritten = rewrite(operand);
+    return rewritten instanceof Expression ? (Expression) rewritten : operand;
   }
 
   /**

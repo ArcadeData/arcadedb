@@ -1223,6 +1223,10 @@ public enum Type {
               // The declared type keeps the zone the text names, a region included (issue #8572)
               try {
                 return CypherDateTime.parse(valueAsString).getValue();
+              } catch (final TemporalUtil.InvalidTemporalTextException e) {
+                // An offset the zone does not have there: the general parse would keep the zone and replace the offset,
+                // storing another instant than the text states (issue #12298)
+                throw new IllegalArgumentException(e.getMessage(), e);
               } catch (final RuntimeException e) {
                 // not Cypher datetime text: the general parse below decides
               }

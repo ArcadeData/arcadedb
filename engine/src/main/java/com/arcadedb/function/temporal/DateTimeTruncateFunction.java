@@ -86,7 +86,7 @@ public class DateTimeTruncateFunction implements StatelessFunction {
       return null;
     if (args.length >= 3 && args[2] instanceof Map) {
       final Map<String, Object> adjustMap = (Map<String, Object>) args[2];
-      truncated = CypherFunctionHelper.applyDateTimeMap(truncated, adjustMap);
+      truncated = CypherFunctionHelper.applyDateTimeMap(truncated, adjustMap, true);
       if (adjustMap.containsKey("timezone"))
         zone = TemporalUtil.parseZone(adjustMap.get("timezone").toString());
     }

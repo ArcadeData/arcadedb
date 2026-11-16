@@ -23,14 +23,16 @@ import java.time.OffsetTime;
 import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
-import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
 
 /**
  * OpenCypher Time value wrapping java.time.OffsetTime.
  * Represents a time with timezone offset.
  */
 public class CypherTime implements CypherTemporalValue {
+  private static final Set<String> TIME_SELECTIONS = Set.of("time", "timezone");
+
   private final OffsetTime value;
 
   public CypherTime(final OffsetTime value) {
@@ -41,79 +43,53 @@ public class CypherTime implements CypherTemporalValue {
     return new CypherTime(OffsetTime.now(ZoneOffset.UTC));
   }
 
+  /**
+   * Parses a time in the ISO 8601 forms Neo4j accepts, UTC without an offset, see {@link TemporalParser} (issue #12298).
+   */
   public static CypherTime parse(final String str) {
-    // Split time part from offset
-    final int offsetIdx = findOffsetIndex(str);
-    if (offsetIdx < 0) {
-      // No timezone offset — default to UTC for deterministic behavior
-      final LocalTime localTime = CypherLocalTime.parseLocalTime(str);
-      return new CypherTime(OffsetTime.of(localTime, ZoneOffset.UTC));
-    }
-
-    final String timePart = str.substring(0, offsetIdx);
-    final String offsetPart = TemporalUtil.normalizeOffsetInString(str.substring(offsetIdx));
-
-    final LocalTime localTime = CypherLocalTime.parseLocalTime(timePart);
-    final ZoneOffset offset = "Z".equalsIgnoreCase(offsetPart) ? ZoneOffset.UTC : ZoneOffset.of(offsetPart);
-    return new CypherTime(OffsetTime.of(localTime, offset));
+    return new CypherTime(TemporalParser.parseTime(str));
   }
 
-  private static int findOffsetIndex(final String str) {
-    // Search from end for offset indicator
-    for (int i = str.length() - 1; i >= 0; i--) {
-      final char c = str.charAt(i);
-      if (c == 'Z' || c == 'z')
-        return i;
-      if ((c == '+' || c == '-') && i > 0)
-        return i;
-    }
-    return -1;
-  }
 
+
+  /**
+   * A time from a map of fields, optionally adjusting the {@code time:} base the map names, in the map's {@code timezone};
+   * see {@link TemporalMapFields} (issue #12297). A map holding nothing but a {@code timezone} is the current time in that
+   * zone, which needs the statement clock and is answered by the {@code time()} function.
+   */
   public static CypherTime fromMap(final Map<String, Object> map) {
-    // Check for base time
+    TemporalMapFields.checkKeys(map, false, true, TIME_SELECTIONS);
     OffsetTime base = null;
     boolean baseHasTimezone = false;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherTime) {
-        base = ((CypherTime) timeVal).value;
+      if (timeVal instanceof CypherTime time) {
+        base = time.value;
         baseHasTimezone = true;
-      } else if (timeVal instanceof CypherLocalTime)
-        base = ((CypherLocalTime) timeVal).getValue().atOffset(ZoneOffset.UTC);
-      else if (timeVal instanceof CypherDateTime) {
-        base = ((CypherDateTime) timeVal).getValue().toOffsetDateTime().toOffsetTime();
+      } else if (timeVal instanceof CypherDateTime dateTime) {
+        base = dateTime.getValue().toOffsetDateTime().toOffsetTime();
         baseHasTimezone = true;
-      } else if (timeVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) timeVal).getValue().toLocalTime().atOffset(ZoneOffset.UTC);
+      } else
+        base = TemporalMapFields.timeOf(timeVal).atOffset(ZoneOffset.UTC);
     }
 
-    final int hour = map.containsKey("hour") ? toInt(map.get("hour")) : (base != null ? base.getHour() : 0);
-    final int minute = map.containsKey("minute") ? toInt(map.get("minute")) : (base != null ? base.getMinute() : 0);
-    final int second = map.containsKey("second") ? toInt(map.get("second")) : (base != null ? base.getSecond() : 0);
-    final int nanos = TemporalUtil.computeNanos(map, base != null ? base.getNano() : 0);
-
-    ZoneOffset offset = base != null ? base.getOffset() : ZoneOffset.UTC;
     if (map.containsKey("timezone")) {
       final ZoneOffset newOffset = TemporalUtil.parseOffset(map.get("timezone").toString());
-      if (base != null && baseHasTimezone) {
-        // Convert base to new timezone first (same instant), then apply field overrides
-        final OffsetTime converted = base.withOffsetSameInstant(newOffset);
-        if (!map.containsKey("hour") && !map.containsKey("minute") && !map.containsKey("second"))
-          return new CypherTime(converted);
-        // Apply field overrides on the timezone-converted time
-        final int h = map.containsKey("hour") ? toInt(map.get("hour")) : converted.getHour();
-        final int m = map.containsKey("minute") ? toInt(map.get("minute")) : converted.getMinute();
-        final int s = map.containsKey("second") ? toInt(map.get("second")) : converted.getSecond();
-        final int n = TemporalUtil.computeNanos(map, converted.getNano());
-        return new CypherTime(OffsetTime.of(h, m, s, n, newOffset));
-      }
-      if (base != null && !map.containsKey("hour") && !map.containsKey("minute") && !map.containsKey("second"))
-        return new CypherTime(base.withOffsetSameLocal(newOffset));
-      offset = newOffset;
+      // The fields apply in the base's own offset, then a base that has one moves to the new offset at the same instant, as
+      // Neo4j does: {time: time('10:00+02:00'), timezone: '+01:00', hour: 3} is 02:00+01:00 (issue #12297)
+      if (base != null && baseHasTimezone)
+        return new CypherTime(
+            OffsetTime.of(requireTime(TemporalMapFields.resolveTime(map, base.toLocalTime())), base.getOffset()).withOffsetSameInstant(newOffset));
+      return new CypherTime(OffsetTime.of(requireTime(TemporalMapFields.resolveTime(map, base != null ? base.toLocalTime() : null)), newOffset));
     }
+    return new CypherTime(OffsetTime.of(requireTime(TemporalMapFields.resolveTime(map, base != null ? base.toLocalTime() : null)),
+        base != null ? base.getOffset() : ZoneOffset.UTC));
+  }
 
-    return new CypherTime(OffsetTime.of(hour, minute, second, nanos, offset));
+  private static LocalTime requireTime(final LocalTime time) {
+    if (time == null)
+      throw new IllegalArgumentException("hour must be specified");
+    return time;
   }
 
   public OffsetTime getValue() {
