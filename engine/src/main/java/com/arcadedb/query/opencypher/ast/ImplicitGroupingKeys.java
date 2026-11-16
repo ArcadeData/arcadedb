@@ -33,8 +33,8 @@ import java.util.List;
  * <p>
  * Only the map projections reached outside every aggregate call are collected, through the composite shapes that keep
  * their operands evaluated once per group: a map literal entry, a list element, a non-aggregating function argument, an
- * arithmetic operand, a comparison or predicate operand, an indexed, sliced or property-accessed operand
- * ({@code [p{n: count(f)}][0]}), a {@code CASE} part. A map projection inside an aggregate's argument is evaluated per
+ * arithmetic operand, a comparison, predicate or logical operand, an indexed, sliced or property-accessed operand
+ * ({@code [p{n: count(f)}][0]}), a {@code CASE} part, the initial value and list of a {@code reduce()}. A map projection inside an aggregate's argument is evaluated per
  * input row and groups nothing.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -105,6 +105,15 @@ public final class ImplicitGroupingKeys {
     case ComparisonExpressionWrapper wrapper -> {
       variables = collect(wrapper.getComparison().getLeft(), variables);
       variables = collect(wrapper.getComparison().getRight(), variables);
+    }
+    case TernaryLogicalExpression logical -> {
+      variables = collect(logical.getLeft(), variables);
+      variables = collect(logical.getRight(), variables);
+    }
+    // The initial value and the list run once per group; the body runs per element, over names reduce() binds
+    case ReduceExpression reduce -> {
+      variables = collect(reduce.getInitialValue(), variables);
+      variables = collect(reduce.getListExpression(), variables);
     }
     case CaseExpression caseExpression -> {
       if (caseExpression.getCaseExpression() != null)

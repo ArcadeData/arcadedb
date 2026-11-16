@@ -66,6 +66,9 @@ class CypherAggregatingMapGroupingIssue12316Test extends TestHelper {
     assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) RETURN {who: p{.name, n: count(f)}} AS m ORDER BY m.who.name", "m"))
         .containsExactly(Map.of("who", Map.of("name", "a", "n", 2L)), Map.of("who", Map.of("name", "d", "n", 1L)));
 
+    // As the initial value of a reduce(), the projection still groups
+    assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) RETURN 0 AS k, reduce(m = p{.name, n: count(f)}, x IN [] | m) AS m ORDER BY m.name",
+        "m")).containsExactly(Map.of("name", "a", "n", 2L), Map.of("name", "d", "n", 1L));
     // Under an index, a slice or a chained property access, the projection still groups
     assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) RETURN [p{.name, n: count(f)}][0] AS m ORDER BY m.name", "m"))
         .containsExactly(Map.of("name", "a", "n", 2L), Map.of("name", "d", "n", 1L));
@@ -113,6 +116,9 @@ class CypherAggregatingMapGroupingIssue12316Test extends TestHelper {
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN {age: coalesce(p.age, count(f))} AS m");
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN coalesce(p.age, count(f)) AS m");
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS k, {isB: f.name IN ['b'], n: count(f)} AS m");
+    // A logical operator over a non-grouping value, next to an aggregate or wrapping one
+    assertAmbiguous("UNWIND [{v: true}, {v: false}] AS p RETURN {v: p.v AND true, n: count(*)} AS m");
+    assertAmbiguous("UNWIND [{v: true}, {v: false}] AS p RETURN p.v OR count(*) > 0 AS m");
     // Only the exact property projected is a key: p.v varies within the group of p.k
     assertAmbiguous("UNWIND [{k: 1, v: 10}, {k: 1, v: 20}] AS p RETURN p.k AS k, {v: p.v, n: count(*)} AS m");
     assertAmbiguous("UNWIND [{k: 1, v: 10}, {k: 1, v: 20}] AS p RETURN p.k, p.v + count(*) AS m");

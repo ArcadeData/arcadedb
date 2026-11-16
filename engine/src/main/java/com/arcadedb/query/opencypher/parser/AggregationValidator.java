@@ -358,6 +358,11 @@ final class AggregationValidator {
       checkOperand(wrapper.getComparison().getLeft(), scope);
       checkOperand(wrapper.getComparison().getRight(), scope);
     }
+    // AND, OR, XOR and NOT over values: {v: p.v AND count(*) > 0, ...}
+    case TernaryLogicalExpression logical -> {
+      checkOperand(logical.getLeft(), scope);
+      checkOperand(logical.getRight(), scope);
+    }
     case MapProjectionExpression projection -> {
       // An aggregating projection groups by its own variable (in the scope already, see collectGroupingScope), so every
       // part of it may read that variable (issue #12316)
@@ -522,6 +527,10 @@ final class AggregationValidator {
     case ComparisonExpressionWrapper wrapper -> {
       collectFreeVariables(wrapper.getComparison().getLeft(), locals, keyed, out);
       collectFreeVariables(wrapper.getComparison().getRight(), locals, keyed, out);
+    }
+    case TernaryLogicalExpression logical -> {
+      collectFreeVariables(logical.getLeft(), locals, keyed, out);
+      collectFreeVariables(logical.getRight(), locals, keyed, out);
     }
     case null, default -> {
       // A literal, a parameter, or a shape not modelled
