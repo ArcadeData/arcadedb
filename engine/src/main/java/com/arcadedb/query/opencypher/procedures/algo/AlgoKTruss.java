@@ -155,36 +155,82 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
       }
     }
 
-    // Support: every triangle u < v < w found once from its lowest edge, by a sorted merge of the two rows past v
+    final int[] support = triangleSupports(memory, guard, adj, offsets, arcEdge, m);
+    return new Peeling(adj, offsets, arcEdge, edgeU, edgeV, support).run(guard, n);
+  }
+
+  /**
+   * The triangles every edge closes, each triangle found once (Chiba and Nishizeki's degree ordering): every edge is oriented from
+   * the end of lower (degree, id) to the other, and a triangle is found from its lowest end u, as an out-neighbour w of u that is also
+   * an out-neighbour of another out-neighbour v of u. A node has at most O(sqrt(E)) out-neighbours of degree at least its own, so the
+   * listing is O(E^1.5) whatever the node numbering, where a walk of the rows past each neighbour scans a hub's row once per leaf.
+   */
+  private static int[] triangleSupports(final MemoryBudget memory, final WorkGuard guard, final int[][] adj, final int[] offsets,
+      final int[] arcEdge, final int m) {
+    final int n = adj.length;
+    int maxDegree = 0;
+    for (final int[] row : adj)
+      maxDegree = Math.max(maxDegree, row.length);
+    // The rank of every node, its out-arcs (offset, neighbour, edge), the marks of one node's out-neighbours, the degree buckets and
+    // the supports
+    memory.reserve(saturatingProduct(saturatingSum(saturatingSum(4L * n, 3L * m), maxDegree + 2L), INT_BYTES),
+        "the triangle listing", n + " nodes, " + m + " edges");
+
+    // Rank by (degree, id): a counting sort over the degree, stable over the ids
+    final int[] bucket = new int[maxDegree + 2];
+    for (final int[] row : adj)
+      bucket[row.length + 1]++;
+    for (int d = 0; d <= maxDegree; d++)
+      bucket[d + 1] += bucket[d];
+    final int[] rank = new int[n];
+    for (int u = 0; u < n; u++)
+      rank[u] = bucket[adj[u].length]++;
+
+    // The out-arcs of every node: to the neighbours of higher rank, with the edge they stand for
+    final int[] outOffsets = new int[n + 1];
+    for (int u = 0; u < n; u++) {
+      int out = 0;
+      for (final int v : adj[u])
+        if (rank[v] > rank[u])
+          out++;
+      outOffsets[u + 1] = outOffsets[u] + out;
+    }
+    final int[] outNeighbour = new int[m];
+    final int[] outEdge = new int[m];
+    for (int u = 0; u < n; u++) {
+      int o = outOffsets[u];
+      final int[] row = adj[u];
+      for (int k = 0; k < row.length; k++)
+        if (rank[row[k]] > rank[u]) {
+          outNeighbour[o] = row[k];
+          outEdge[o++] = arcEdge[offsets[u] + k];
+        }
+    }
+
     final int[] support = new int[m];
+    // THE EDGE FROM THE CURRENT u TO EACH OF ITS OUT-NEIGHBOURS, -1 FOR ANY OTHER NODE
+    final int[] edgeFromU = new int[n];
+    Arrays.fill(edgeFromU, -1);
     for (int u = 0; u < n; u++) {
       guard.check();
-      final int[] nu = adj[u];
-      for (int k = -Arrays.binarySearch(nu, u) - 1; k < nu.length; k++) {
-        final int v = nu[k];
-        final int[] nv = adj[v];
-        final int uv = arcEdge[offsets[u] + k];
-        int iu = k + 1;
-        int iv = -Arrays.binarySearch(nv, v) - 1;
-        while (iu < nu.length && iv < nv.length) {
-          final int a = nu[iu];
-          final int b = nv[iv];
-          if (a < b)
-            iu++;
-          else if (a > b)
-            iv++;
-          else {
+      for (int o = outOffsets[u]; o < outOffsets[u + 1]; o++)
+        edgeFromU[outNeighbour[o]] = outEdge[o];
+      for (int o = outOffsets[u]; o < outOffsets[u + 1]; o++) {
+        final int v = outNeighbour[o];
+        final int uv = outEdge[o];
+        for (int p = outOffsets[v]; p < outOffsets[v + 1]; p++) {
+          final int uw = edgeFromU[outNeighbour[p]];
+          if (uw >= 0) {
             support[uv]++;
-            support[arcEdge[offsets[u] + iu]]++;
-            support[arcEdge[offsets[v] + iv]]++;
-            iu++;
-            iv++;
+            support[uw]++;
+            support[outEdge[p]]++;
           }
         }
       }
+      for (int o = outOffsets[u]; o < outOffsets[u + 1]; o++)
+        edgeFromU[outNeighbour[o]] = -1;
     }
-
-    return new Peeling(adj, offsets, arcEdge, edgeU, edgeV, support).run(guard, n);
+    return support;
   }
 
   /**

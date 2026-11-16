@@ -1501,16 +1501,36 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * nodes of a {@link Neighbourhood} is given in, the same with and without a view (issue #12176).
    */
   protected static int[] sortedByRid(final Neighbourhood neighbourhood, final int[] nodes, final int size) {
-    final Integer[] boxed = new Integer[size];
+    // The live nodes and a merge buffer of the same size, both primitive: nothing boxed, and both priced before they are taken
+    neighbourhood.memory().reserve(saturatingProduct(2L * size, INT_BYTES), "the candidate ordering", size + " nodes");
+    int[] sorted = new int[size];
     int live = 0;
     for (int i = 0; i < size; i++)
       if (neighbourhood.ridOf(nodes[i]) != null)
-        boxed[live++] = nodes[i];
-    Arrays.sort(boxed, 0, live, (a, b) -> neighbourhood.ridOf(a).compareTo(neighbourhood.ridOf(b)));
-    final int[] sorted = new int[live];
-    for (int i = 0; i < live; i++)
-      sorted[i] = boxed[i];
-    return sorted;
+        sorted[live++] = nodes[i];
+    if (live < size)
+      sorted = Arrays.copyOf(sorted, live);
+
+    // Bottom-up merge sort: stable, O(n log n), no recursion
+    int[] from = sorted;
+    int[] to = new int[live];
+    for (int width = 1; width < live; width *= 2) {
+      for (int lo = 0; lo < live; lo += 2 * width) {
+        final int mid = Math.min(lo + width, live);
+        final int hi = Math.min(lo + 2 * width, live);
+        int i = lo, j = mid, k = lo;
+        while (i < mid && j < hi)
+          to[k++] = neighbourhood.ridOf(from[j]).compareTo(neighbourhood.ridOf(from[i])) < 0 ? from[j++] : from[i++];
+        while (i < mid)
+          to[k++] = from[i++];
+        while (j < hi)
+          to[k++] = from[j++];
+      }
+      final int[] swap = from;
+      from = to;
+      to = swap;
+    }
+    return from;
   }
 
   /**

@@ -346,6 +346,28 @@ class SparseNeighbourhoodAlgorithmsTest {
     }
 
     @Test
+    void twoHubsNumberedFirstAndLastShareTheirLeavesWithoutATriangle() {
+      // K(2, L): every leaf is linked to both hubs, the hubs are not linked, so there is no triangle. Numbered hub, leaves, hub,
+      // every edge (first hub, leaf) used to walk the rest of the leaves against the last hub's row while listing the triangles
+      final int leaves = 3_000;
+      database.transaction(() -> {
+        final MutableVertex first = database.newVertex("N").set("k", -1).save();
+        final MutableVertex[] leaf = new MutableVertex[leaves];
+        for (int i = 0; i < leaves; i++)
+          leaf[i] = database.newVertex("N").set("k", i).save();
+        final MutableVertex last = database.newVertex("N").set("k", -2).save();
+        for (final MutableVertex l : leaf) {
+          first.newEdge("R", l);
+          l.newEdge("R", last);
+        }
+      });
+      assertThat(drain(new AlgoKTruss().execute(new Object[] { "R" }, null, newContext())))
+          .hasSize(leaves + 2).allSatisfy(row -> assertThat(row.<Integer>getProperty("trussNumber")).isEqualTo(2));
+      final List<Result> cliques = drain(new AlgoClique().execute(new Object[] { "R", 2 }, null, newContext()));
+      assertThat(cliques).hasSize(2 * leaves).allSatisfy(row -> assertThat(row.<Integer>getProperty("size")).isEqualTo(2));
+    }
+
+    @Test
     void aSelfLoopIsNoTriangleOfItsOwn() {
       // a - b with a self-loop on a: the old bit matrix counted a among the common neighbours of a and b and gave the edge a
       // phantom triangle (truss 3). The truss is defined on the simple graph, where a - b closes no triangle
