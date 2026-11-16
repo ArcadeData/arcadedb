@@ -190,6 +190,16 @@ class AlgoNearLinearKernelsTest {
    * mirror entry failed with an {@code ArrayIndexOutOfBoundsException}.
    */
   @Test
+  void anEdgeListedByOneRowOnlyStillMergesWhicheverRowListsIt() {
+    // listed by the lower-index end only, then by the higher-index end only
+    assertThat(AlgoHierarchicalClustering.cluster(new int[][] { { 1 }, {} }, 1, NO_DEADLINE)).containsExactly(0, 0);
+    assertThat(AlgoHierarchicalClustering.cluster(new int[][] { {}, { 0 } }, 1, NO_DEADLINE)).containsExactly(0, 0);
+    // a triangle whose edges are each listed by one end only, in both orientations, still closes: the chain 0-1-2 merges
+    assertThat(AlgoHierarchicalClustering.cluster(new int[][] { { 1 }, { 2 }, { 0 } }, 1, NO_DEADLINE)).containsExactly(0, 0, 0);
+    assertThat(AlgoHierarchicalClustering.cluster(new int[][] { {}, { 0 }, { 1, 0 } }, 1, NO_DEADLINE)).containsExactly(0, 0, 0);
+  }
+
+  @Test
   void hierarchicalClusteringToleratesAnEdgeListedByOneRowOnly() {
     final Random random = new Random(121710);
     for (int round = 0; round < 80; round++) {

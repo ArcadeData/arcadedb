@@ -204,12 +204,23 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       }
     }
 
-    // The edges in the order the scan meets them, with their similarities
+    // The edges in the order the scan meets them, with their similarities: an edge is met from the row of its lower-index
+    // end, and from the other end's row only when the lower one does not list it (an edge left in one row only), which
+    // the scan knows because the lower row was walked first and marked the edge
+    final boolean[] met = new boolean[write];
     int edgeCount = 0;
-    for (int u = 0; u < n; u++)
+    for (int u = 0; u < n; u++) {
+      guard.checkPeriodically(u);
       for (final int v : adj[u])
-        if (v > u)
-          edgeCount++;
+        if (v != u) {
+          final int f = forwardIndex(adj, forward, forwardStart, u, v);
+          if (v > u || !met[f]) {
+            met[f] = true;
+            edgeCount++;
+          }
+        }
+    }
+    Arrays.fill(met, false);
     final int[] edgeU = new int[edgeCount];
     final int[] edgeV = new int[edgeCount];
     final int[] similarity = new int[edgeCount];
@@ -217,15 +228,16 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     for (int u = 0, e = 0; u < n; u++) {
       guard.checkPeriodically(u);
       for (final int v : adj[u]) {
-        if (v <= u)
+        if (v == u)
           continue;
-        final int lower = ranksAbove(adj, v, u) ? u : v;
-        final int upper = lower == u ? v : u;
-        final int s = triangles[Arrays.binarySearch(forward, forwardStart[lower], forwardStart[lower + 1], upper)];
+        final int f = forwardIndex(adj, forward, forwardStart, u, v);
+        if (v < u && met[f])
+          continue;
+        met[f] = true;
         edgeU[e] = u;
         edgeV[e] = v;
-        similarity[e++] = s;
-        maxSimilarity = Math.max(maxSimilarity, s);
+        similarity[e++] = triangles[f];
+        maxSimilarity = Math.max(maxSimilarity, triangles[f]);
       }
     }
 
@@ -264,6 +276,13 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       cluster[i] = clusterOfRoot[root];
     }
     return cluster;
+  }
+
+  /** Position of the edge {u, v} in the forward rows: in the row of its lower-ranked end, which always lists it. */
+  private static int forwardIndex(final int[][] adj, final int[] forward, final int[] forwardStart, final int u, final int v) {
+    final int lower = ranksAbove(adj, v, u) ? u : v;
+    final int upper = lower == u ? v : u;
+    return Arrays.binarySearch(forward, forwardStart[lower], forwardStart[lower + 1], upper);
   }
 
   /** Whether {@code v} ranks above {@code u}: higher degree, or the same degree and a higher index. */
