@@ -101,6 +101,12 @@ public class FileManager {
    * can be snapshotting anyway.
    */
   private volatile DroppedFileHandler droppedFileHandler = null;
+  /**
+   * Runs in {@link #syncFile(int)} between reading the directory generation a file owes and forcing its directory (issue
+   * #11932), so a test can put a rename of the file and its force into that window. {@code null} outside tests.
+   */
+  // @VisibleForTesting
+  volatile Runnable beforeDirectoryForceForTesting = null;
 
   @FunctionalInterface
   public interface DroppedFileHandler {
@@ -387,6 +393,9 @@ public class FileManager {
       // a failed one stays owed for the next caller, and the sync itself still does not fail on it
       final long owed = pcf.directorySyncOwed();
       if (owed != 0L) {
+        final Runnable beforeDirectoryForce = beforeDirectoryForceForTesting;
+        if (beforeDirectoryForce != null)
+          beforeDirectoryForce.run();
         final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
         // A platform without directory fsync, or fsync off, owes nothing to retry
         if (parent != null && (FileUtils.forceDirectory(parent.toPath()) || FileUtils.directoryForceSkipped()))

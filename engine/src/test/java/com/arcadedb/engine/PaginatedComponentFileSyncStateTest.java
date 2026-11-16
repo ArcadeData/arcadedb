@@ -333,6 +333,49 @@ class PaginatedComponentFileSyncStateTest {
         .isGreaterThan(covered);
   }
 
+  /**
+   * The same interleaving through {@link FileManager#syncFile(int)} (issue #11932): the file is renamed and forced by another
+   * caller after the sync read the generation it owes and before it forced the directory. That force covers only the
+   * generation it read, so the rename stays owed, and the next sync of the file forces the directory again for it.
+   */
+  @Test
+  void aRenameForcedWhileASyncOfTheFileForcesItsDirectoryStaysOwedToTheNextSync() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("renamedInWindow"));
+      final List<Long> owedAtEachDirectoryForce = new ArrayList<>();
+      final AtomicBoolean renamed = new AtomicBoolean();
+      fileManager.beforeDirectoryForceForTesting = () -> {
+        owedAtEachDirectoryForce.add(file.directorySyncOwed());
+        if (renamed.compareAndSet(false, true))
+          try {
+            file.renameComponent("renamedInWindowAgain");
+            assertThat(file.forceIfModified()).as("the rename forced by another caller").isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+          } catch (final IOException e) {
+            throw new RuntimeException(e);
+          }
+      };
+
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(owedAtEachDirectoryForce).as("directory forces of the first sync").hasSize(1);
+      final long coveredByTheFirst = owedAtEachDirectoryForce.getFirst();
+      assertThat(coveredByTheFirst).isPositive();
+      assertThat(file.directorySyncOwed()).as("the rename forced after the first sync read its generation is still owed")
+          .isGreaterThan(coveredByTheFirst);
+
+      // The file itself is clean now: only the directory entry of the rename is owed, and the next sync forces it
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(owedAtEachDirectoryForce).as("the next sync forced the directory").hasSize(2);
+      assertThat(file.directorySyncOwed()).as("the directory force of the next sync covered the rename").isZero();
+
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(owedAtEachDirectoryForce).as("a sync that owes nothing forces no directory").hasSize(2);
+    } finally {
+      fileManager.beforeDirectoryForceForTesting = null;
+      fileManager.close();
+    }
+  }
+
   @Test
   void aDirectoryForceThatFailedLeavesItsGenerationOwed() throws Exception {
     final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
