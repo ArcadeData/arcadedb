@@ -723,11 +723,9 @@ class AlgoMemoryBudgetTest {
       }
     }
 
-    /** The four procedures, each with a call that reaches its bit matrix. */
+    /** The procedures that still build one, each with a call that reaches its bit matrix. */
     private static final String[][] CALLS = {
         { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
-        { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
-        { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
         { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
 
     @Test
@@ -754,25 +752,26 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void kTrussPricesItsSecondMatrixSeparately() {
-      // computeFullTrussDecomposition builds a second bit matrix while the first is still alive, so the peak is
-      // twice the shape - which is what a running total is for.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+    void kTrussPricesItsPeelingState() {
+      // Since issue #12173 the decomposition holds sorted neighbour rows and per-edge state instead of two bit
+      // matrices: 700 bytes admit the graph and its adjacency (552) and refuse that state on top of them.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
 
       assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD node RETURN node"))
-          .hasStackTraceContaining("the neighbour bitsets of the truss decomposition")
-          .hasStackTraceContaining("(4 x 4 nodes)");
+          .hasStackTraceContaining("the edge ids and the truss peeling state")
+          .hasStackTraceContaining("(4 nodes, 5 edges)");
     }
 
     @Test
     void cliquePricesItsSearchStackAtThePeakDepth() {
-      // The Bron-Kerbosch frames are five bit sets each and the stack is as deep as the largest clique reached,
-      // so at its peak the stack is a second nodeCount x nodeCount structure.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+      // The stack is as deep as the largest clique reached and each frame holds sets of up to three times the
+      // maximum degree (issue #12173: they were five n-bit sets). 700 bytes admit the graph, its adjacency and the
+      // first frame, and refuse the second.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
 
       assertThatThrownBy(() -> drain("CALL algo.clique() YIELD clique RETURN clique"))
           .hasStackTraceContaining("the clique search stack")
-          .hasStackTraceContaining("frame");
+          .hasStackTraceContaining("2 frames of up to 3 nodes");
     }
 
     @Test
