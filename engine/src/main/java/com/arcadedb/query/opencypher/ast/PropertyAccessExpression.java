@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
@@ -62,9 +63,9 @@ public class PropertyAccessExpression implements PropertyReadExpression {
       return readLinkedProperty(rid, propertyName);
     } else if (variable instanceof Document) {
       return TemporalUtil.convertFromStorage((Document) variable, propertyName);
-    } else if (variable instanceof Map) {
-      // Handle Map types (e.g., from UNWIND with parameter maps)
-      return ((Map<?, ?>) variable).get(propertyName);
+    } else if (variable instanceof Map<?, ?> map) {
+      // Handle Map types (e.g., from UNWIND with parameter maps); a point raises on a coordinate it does not have (issue #12276)
+      return CypherPointFunction.readProperty(map, propertyName);
     } else if (variable instanceof Result) {
       // Handle Result types (nested results)
       return ((Result) variable).getProperty(propertyName);
