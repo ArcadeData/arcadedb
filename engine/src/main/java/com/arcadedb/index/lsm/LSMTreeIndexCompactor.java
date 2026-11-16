@@ -23,11 +23,13 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.LockManager;
 
 import java.io.IOException;
 import java.util.*;
@@ -37,6 +39,8 @@ public class LSMTreeIndexCompactor {
   private static final ThreadLocal<CompactionTestHook> COMPACTION_TEST_HOOK = new ThreadLocal<>();
 
   private boolean debug = false;
+  // The commit lock of the mutable file while this compaction holds it, -1 otherwise (issue #12206)
+  private int     lockedMutableFileId = -1;
 
   static void setCompactionTestHook(final CompactionTestHook hook) {
     if (hook == null)
@@ -68,10 +72,78 @@ public class LSMTreeIndexCompactor {
     // reclaim compacted files retired by previous full compactions once their readers are gone
     mainIndex.dropRetiredCompactedIndexes();
 
+    // The pages up to the last SEALED one are merged without a lock: a commit writes only into the last page of the file, a
+    // sealed page never changes again, and the swap copies the pages after it under the commit lock. With no sealed page (the
+    // state every swap leaves behind: the empty first page that keeps the header and the open page it carried over) the merge
+    // has to take the open page, which commits are still writing into, and the swap then copies nothing. So the commit lock is
+    // held from before that page is read until the swap: without it, what a commit wrote to the page in between reached
+    // neither the compacted series nor the new mutable file, and went with the old file (issue #12206)
+    final int lastSealedPage = findLastSealedPage(mutableIndex, totalPages);
+    if (lastSealedPage < 0)
+      lockMutableFile(mainIndex, mutableIndex);
+    try {
+      // under the lock no commit writes to the file: every page is merged, the open one included
+      final int lastPageToMerge = lastSealedPage < 0 ? mutableIndex.getTotalPages() - 1 : lastSealedPage;
+      return compactPages(mainIndex, mutableIndex, lastPageToMerge, startTime);
+    } finally {
+      releaseMutableFileLock(database);
+    }
+  }
+
+  /**
+   * The last page of the mutable file no commit can write to any more, or -1 when there is none. A commit writes only into
+   * the last page and seals it once it is full, before it adds the next one, so every page before the last sealed one is
+   * sealed too, but for the empty first page a swap leaves behind, which is never written.
+   */
+  private static int findLastSealedPage(final LSMTreeIndexMutable mutableIndex, final int totalPages) throws IOException {
+    final DatabaseInternal database = mutableIndex.getDatabase();
+    for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
+      final ImmutablePage page = database.getPageManager()
+          .getImmutablePage(new PageId(database, mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, false);
+      if (!mutableIndex.isMutable(page))
+        return pageIndex;
+    }
+    return -1;
+  }
+
+  /**
+   * Takes the lock commits take on the mutable file, waiting as long as a commit waits for it. The swap and the drop of the
+   * replaced file ask for it on the same thread and find it held.
+   *
+   * @throws TimeoutException when the commits did not leave the file free in time: {@link LSMTreeIndex#compact()} leaves the
+   *                          compaction to a later round
+   */
+  private void lockMutableFile(final LSMTreeIndex mainIndex, final LSMTreeIndexMutable mutableIndex) {
+    final DatabaseInternal database = mutableIndex.getDatabase();
+    final int fileId = mutableIndex.getFileId();
+    final LockManager.LOCK_STATUS locked = database.getTransactionManager().tryLockFile(fileId,
+        database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
+    if (locked == LockManager.LOCK_STATUS.NO)
+      throw new TimeoutException("Cannot compact index '" + mainIndex.getName() + "': timeout locking file " + fileId);
+    if (locked == LockManager.LOCK_STATUS.YES)
+      lockedMutableFileId = fileId;
+  }
+
+  /**
+   * Lets the commits of the index in again, as soon as the swap is in: what follows it (the retirement of the compacted file a
+   * full compaction replaced) takes the lock of another file of the index, which a commit waiting for this one may already
+   * hold. Idempotent.
+   */
+  private void releaseMutableFileLock(final DatabaseInternal database) {
+    if (lockedMutableFileId < 0)
+      return;
+    final int fileId = lockedMutableFileId;
+    lockedMutableFileId = -1;
+    database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
+  }
+
+  private boolean compactPages(final LSMTreeIndex mainIndex, final LSMTreeIndexMutable mutableIndex, final int lastPageToMerge,
+      final long startTime) throws IOException, InterruptedException {
+    final DatabaseInternal database = mutableIndex.getDatabase();
     LSMTreeIndexCompacted compactedIndex = mutableIndex.getSubIndex();
 
     if (compactedIndex != null && isFullCompactionDue(database, mainIndex, compactedIndex)) {
-      final Boolean fullResult = compactFull(mainIndex, mutableIndex, compactedIndex, startTime);
+      final Boolean fullResult = compactFull(mainIndex, mutableIndex, compactedIndex, lastPageToMerge, startTime);
       if (fullResult != null)
         return fullResult;
       // the full merge could not run in a single pass (RAM bound): fall back to an incremental round
@@ -98,7 +170,7 @@ public class LSMTreeIndexCompactor {
     // compaction), also drop it, or every failed first-compaction would leak a registered TEMP file.
     final int preCompactionPages = compactedIndex.getTotalPages();
     try {
-      return compactInternal(mainIndex, mutableIndex, compactedIndex);
+      return compactInternal(mainIndex, mutableIndex, compactedIndex, lastPageToMerge);
     } catch (final Throwable e) {
       // Drain in-flight flushes of the orphan pages FIRST: the flush path's updatePageCount would otherwise
       // race this rollback and re-raise the count right after it was reset.
@@ -181,7 +253,8 @@ public class LSMTreeIndexCompactor {
    * @return TRUE on success, null when the merge cannot run in a single pass (caller falls back)
    */
   private Boolean compactFull(final LSMTreeIndex mainIndex, final LSMTreeIndexMutable mutableIndex,
-      final LSMTreeIndexCompacted oldCompacted, final long startTime) throws IOException, InterruptedException {
+      final LSMTreeIndexCompacted oldCompacted, final int lastPageToMerge, final long startTime)
+      throws IOException, InterruptedException {
     final DatabaseInternal database = mutableIndex.getDatabase();
     final int pageSize = mutableIndex.getPageSize();
 
@@ -190,31 +263,19 @@ public class LSMTreeIndexCompactor {
     if (indexCompactionRAM > maxUsableRAM)
       indexCompactionRAM = maxUsableRAM;
 
-    // FIND LAST IMMUTABLE PAGE TO COMPACT (the pages after it stay in the new mutable file)
-    final int totalPages = mutableIndex.getTotalPages();
-    int lastImmutablePage = totalPages - 1;
-    for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
-      final ImmutablePage page = database.getPageManager()
-          .getImmutablePage(new PageId(database, mutableIndex.getFileId(), pageIndex), pageSize, false, false);
-      if (!mutableIndex.isMutable(page)) {
-        lastImmutablePage = pageIndex;
-        break;
-      }
-    }
-
     final int seriesCount = oldCompacted.getSeriesCount();
-    final long ramNeeded = (seriesCount + lastImmutablePage + 1L) * pageSize;
+    final long ramNeeded = (seriesCount + lastPageToMerge + 1L) * pageSize;
     if (ramNeeded > indexCompactionRAM) {
       LogManager.instance().log(mainIndex, Level.INFO,
           "Full compaction of index '%s' needs %s for a single-pass merge (%d series + %d mutable pages) but only %s are configured: falling back to incremental compaction",
-          null, mainIndex.getName(), FileUtils.getSizeAsString(ramNeeded), seriesCount, lastImmutablePage + 1,
+          null, mainIndex.getName(), FileUtils.getSizeAsString(ramNeeded), seriesCount, lastPageToMerge + 1,
           FileUtils.getSizeAsString(indexCompactionRAM));
       return null;
     }
 
     LogManager.instance().log(mainIndex, Level.INFO,
         "Full compaction of index '%s' (series=%d mutablePagesToCompact=%d deadKeysSkippedByScans=%d threadId=%d)...", null,
-        mainIndex.getName(), seriesCount, lastImmutablePage + 1, mainIndex.getDeadEntriesSkippedSinceFullCompaction(),
+        mainIndex.getName(), seriesCount, lastPageToMerge + 1, mainIndex.getDeadEntriesSkippedSinceFullCompaction(),
         Thread.currentThread().threadId());
 
     // INPUT CURSORS ORDERED OLDEST -> NEWEST: the compacted series first (newIterators returns them newest
@@ -224,11 +285,11 @@ public class LSMTreeIndexCompactor {
     final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> seriesCursors = oldCompacted.newIterators(true, null, null);
     Collections.reverse(seriesCursors);
 
-    final int totalCursors = seriesCursors.size() + lastImmutablePage + 1;
+    final int totalCursors = seriesCursors.size() + lastPageToMerge + 1;
     final LSMTreeIndexUnderlyingAbstractCursor[] iterators = new LSMTreeIndexUnderlyingAbstractCursor[totalCursors];
     for (int i = 0; i < seriesCursors.size(); ++i)
       iterators[i] = seriesCursors.get(i);
-    for (int i = 0; i <= lastImmutablePage; ++i)
+    for (int i = 0; i <= lastPageToMerge; ++i)
       iterators[seriesCursors.size() + i] = mutableIndex.newPageIterator(i, -1, true);
 
     final byte[] keyTypes = mutableIndex.getBinaryKeyTypes();
@@ -354,7 +415,8 @@ public class LSMTreeIndexCompactor {
       if (testHook != null)
         testHook.afterSeriesWritten(newCompacted);
 
-      mainIndex.splitIndex(lastImmutablePage + 1, newCompacted);
+      mainIndex.splitIndex(lastPageToMerge + 1, newCompacted);
+      releaseMutableFileLock(database);
       newCompacted.setEntryCount(streamWriter.getWrittenEntries());
       mainIndex.resetDeadEntriesSkippedSinceFullCompaction();
 
@@ -403,9 +465,8 @@ public class LSMTreeIndexCompactor {
   }
 
   private boolean compactInternal(final LSMTreeIndex mainIndex, final LSMTreeIndexMutable mutableIndex,
-      final LSMTreeIndexCompacted compactedIndex) throws IOException, InterruptedException {
+      final LSMTreeIndexCompacted compactedIndex, final int lastPageToMerge) throws IOException, InterruptedException {
     final DatabaseInternal database = mutableIndex.getDatabase();
-    final int totalPages = mutableIndex.getTotalPages();
     final long startTime = System.currentTimeMillis();
 
     final byte[] keyTypes = mutableIndex.getBinaryKeyTypes();
@@ -436,22 +497,11 @@ public class LSMTreeIndexCompactor {
       LSMTreeIndexDebugger.printIndex(mainIndex);
     }
 
-    // FIND LAST IMMUTABLE PAGE TO COMPACT
-    int lastImmutablePage = totalPages - 1;
-    for (int pageIndex = totalPages - 1; pageIndex > -1; --pageIndex) {
-      final ImmutablePage page = database.getPageManager()
-          .getImmutablePage(new PageId(database, mutableIndex.getFileId(), pageIndex), mutableIndex.getPageSize(), false, false);
-      if (!mutableIndex.isMutable(page)) {
-        lastImmutablePage = pageIndex;
-        break;
-      }
-    }
-
-    LogManager.instance().log(mainIndex, Level.FINE, "- Compacting pages 0-%d (threadId=%d)", null, lastImmutablePage,
+    LogManager.instance().log(mainIndex, Level.FINE, "- Compacting pages 0-%d (threadId=%d)", null, lastPageToMerge,
         Thread.currentThread().threadId());
 
-    for (int pageIndex = 0; pageIndex <= lastImmutablePage; ) {
-      final long totalRAMNeeded = (lastImmutablePage - pageIndex + 1L) * mutableIndex.getPageSize();
+    for (int pageIndex = 0; pageIndex <= lastPageToMerge; ) {
+      final long totalRAMNeeded = (lastPageToMerge - pageIndex + 1L) * mutableIndex.getPageSize();
 
       if (totalRAMNeeded > indexCompactionRAM) {
         pagesToCompact = (int) (indexCompactionRAM / mutableIndex.getPageSize());
@@ -462,7 +512,7 @@ public class LSMTreeIndexCompactor {
                 null, pagesToCompact, FileUtils.getSizeAsString(indexCompactionRAM), FileUtils.getSizeAsString(totalRAMNeeded),
                 Thread.currentThread().threadId());
       } else
-        pagesToCompact = lastImmutablePage - pageIndex + 1;
+        pagesToCompact = lastPageToMerge - pageIndex + 1;
 
       final var rootPage = streamWriter.startSeries();
 
@@ -605,7 +655,7 @@ public class LSMTreeIndexCompactor {
       LogManager.instance().log(mainIndex, Level.FINE,
           "- compacted %d pages, remaining %d pages (totalKeys=%d totalValues=%d totalMergedKeys=%d totalMergedValues=%d, threadId=%d)",
           null, compactedPages,
-          lastImmutablePage - compactedPages + 1, totalKeys, totalValues, totalMergedKeys, totalMergedValues,
+          lastPageToMerge - compactedPages + 1, totalKeys, totalValues, totalMergedKeys, totalMergedValues,
           Thread.currentThread().threadId());
 
       pageIndex += pagesToCompact;
@@ -614,7 +664,8 @@ public class LSMTreeIndexCompactor {
     final String oldMutableFileName = mutableIndex.getName();
     final int oldMutableFileId = mutableIndex.getFileId();
 
-    final LSMTreeIndexMutable newIndex = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
+    final LSMTreeIndexMutable newIndex = mainIndex.splitIndex(lastPageToMerge + 1, compactedIndex);
+    releaseMutableFileLock(database);
     compactedIndex.addEntries(streamWriter.getWrittenEntries());
 
     LogManager.instance().log(mainIndex, Level.FINE,
