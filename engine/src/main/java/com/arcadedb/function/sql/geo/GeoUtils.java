@@ -210,8 +210,13 @@ public class GeoUtils {
    * short way round. A circle is its centre less its radius. The distance between those two points is the great-circle
    * one, so it is exact for a point and, for a larger shape, close to the shortest distance on the sphere but not always
    * equal to it: the plane picks the nearest edge in degrees, and a degree of longitude is shorter the nearer the pole.
+   * <p>
+   * NaN when either shape is EMPTY: it has no position, so it is at no distance from anything and {@code geo.dWithin}
+   * answers false for it (issue #12277).
    */
   public static double distanceDegrees(final Shape a, final Shape b) {
+    if (a.isEmpty() || b.isEmpty())
+      return Double.NaN;
     if (a instanceof Circle circle)
       return Math.max(0.0, distanceDegrees(circle.getCenter(), b) - circle.getRadius());
     if (b instanceof Circle circle)
