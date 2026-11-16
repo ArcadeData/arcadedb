@@ -184,6 +184,27 @@ class TimeAndDurationPropertyValidationIssue12296Test extends TestHelper {
     }
 
     @Test
+    void itComparesWithTheOtherDatetimeKinds() {
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (n:LD {v: localdatetime('9999-12-31T23:59:59.999999999')})");
+        database.command("opencypher", "CREATE (n:LD {v: localdatetime('2020-01-01T00:00:00.000000001')})");
+      });
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (n:LD) WHERE n.v > localdatetime('2262-04-12T00:00:00') RETURN count(n) AS c")) {
+        assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
+      }
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n:LD) RETURN n.v AS v ORDER BY n.v DESC")) {
+        assertThat(rs.next().getProperty("v").toString()).isEqualTo("9999-12-31T23:59:59.999999999");
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM LD WHERE v > '2262-04-12T00:00:00'")) {
+        assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT v FROM LD ORDER BY v DESC")) {
+        assertThat((Object) rs.next().getProperty("v")).isEqualTo(LocalDateTime.parse("9999-12-31T23:59:59.999999999"));
+      }
+    }
+
+    @Test
     void aValueInsideTheNanosRangeIsStoredAsBefore() {
       database.transaction(() -> database.command("opencypher", "CREATE (n:LD {v: localdatetime('2020-01-01T00:00:00.000000001')})"));
       assertThat(readUndeclared()).isEqualTo(LocalDateTime.parse("2020-01-01T00:00:00.000000001"));

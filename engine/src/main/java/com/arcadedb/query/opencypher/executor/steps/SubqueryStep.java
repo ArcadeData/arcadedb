@@ -352,7 +352,9 @@ public class SubqueryStep extends AbstractExecutionStep {
       private int batchNumber = 0;
       // ON ERROR BREAK met a failed batch: no later batch runs (issue #11595)
       private boolean broken = false;
-      // The records the batches committed so far wrote, re-read in the outer rows produced before (issue #12324)
+      // The records the batches committed so far wrote, re-read in the outer rows produced before (issue #12324). It holds every
+      // record the statement writes, at 16 bytes each, until the statement ends: an outer row produced before the first commit
+      // can reach any later batch (a WITH ... ORDER BY in front produces them all up front), so no batch's writes can be dropped
       private RidHashSet committedWrites = null;
 
       @Override

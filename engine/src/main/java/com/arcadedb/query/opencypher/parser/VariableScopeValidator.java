@@ -43,6 +43,10 @@ final class VariableScopeValidator {
    * used as a procedure, a {@code DEFINE FUNCTION}): the call binds the columns of the rows it answers, which only running it
    * tells, so every name is taken as defined until a projection resets the scope with {@link #clear()} (issue #12124). A copy
    * keeps the openness, so an ORDER BY, a list comprehension or a subquery body reads the same scope.
+   * <p>
+   * Only {@link #contains(Object)} answers for the open state, which is the one question this validator asks of a scope. A bulk
+   * query ({@code containsAll}, {@code retainAll}, iteration) sees only the names added, so a new check must go through
+   * {@code contains}.
    */
   static final class Scope extends HashSet<String> {
     private boolean open;
