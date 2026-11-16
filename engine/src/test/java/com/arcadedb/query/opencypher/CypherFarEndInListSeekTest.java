@@ -108,6 +108,26 @@ class CypherFarEndInListSeekTest extends TestHelper {
     }
   }
 
+  /**
+   * A list the row binds (an UNWIND element, or an expression over one) can differ from row to row, while the operator resolves
+   * its keys once per execution. Such a list is never planned as a seek, even when the row order is invisible: the hop keeps the
+   * walk and gives the walk's answers.
+   */
+  @Test
+  void aListTheRowBindsKeepsTheWalk() {
+    buildGraph();
+    final Map<String, Object> params = Map.of("h", "hub", "lists",
+        List.of(List.of("x3", "x5"), List.of("x7"), List.of("x9", "x1500", "x12", "missing")));
+    for (final String statement : new String[] {
+        "UNWIND $lists AS ts MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN ts RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "UNWIND $lists AS ts MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN ts + ['x2'] RETURN b.k AS id, r.p AS p ORDER BY id, p",
+        "UNWIND $lists AS ts MATCH (a:N {k: $h})-[r:T]->(b:N) WHERE b.k IN ts RETURN count(*) AS id, 0 AS p" }) {
+      assertThat(explain(statement, params)).as(statement).doesNotContain("SeekOrWalkExpand");
+      assertThat(rowsInOrder(statement, params)).as(statement).isNotEmpty()
+          .isEqualTo(rowsInOrder(statement.replace("b.k ", "b.m "), params));
+    }
+  }
+
   @Test
   void answersAsTheWalkDoes() {
     buildGraph();
@@ -285,7 +305,11 @@ class CypherFarEndInListSeekTest extends TestHelper {
   }
 
   private String explain(final String query) {
-    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query, Map.of("h", "hub", "ts", List.of("x1")))) {
+    return explain(query, Map.of("h", "hub", "ts", List.of("x1")));
+  }
+
+  private String explain(final String query, final Map<String, Object> params) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query, params)) {
       return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
   }
