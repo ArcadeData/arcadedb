@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the algo.maxFlow Cypher procedure.
@@ -130,5 +132,24 @@ class AlgoMaxFlowTest {
     final Result result = rs.next();
     final Object val = result.getProperty("maxFlow");
     assertThat(((Number) val).doubleValue()).isGreaterThan(0.0);
+  }
+
+  /**
+   * Issue #12214: with the same node as source and sink the augmenting-path loop never ended (forever with the default
+   * arcadedb.command.timeout of 0). The call is refused before any work. The short timeout makes the old behaviour fail
+   * this test in two seconds instead of hanging it.
+   */
+  @Test
+  void sameNodeAsSourceAndSinkIsRefused() {
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 2000L);
+
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("opencypher", """
+          MATCH (s:Node {name: 'S'})
+          CALL algo.maxFlow(s, s, 'PIPE', 'capacity') YIELD maxFlow
+          RETURN maxFlow""");
+      while (rs.hasNext())
+        rs.next();
+    }).hasStackTraceContaining("algo.maxFlow(): sourceNode and sinkNode are the same node");
   }
 }

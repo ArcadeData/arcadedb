@@ -84,6 +84,11 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
     final Vertex sinkNode         = extractVertex(args[1], "sinkNode");
     final String[] relTypes       = extractRelTypes(argOrDefault(args, 2, null), context);
     final String capacityProperty = extractString(argOrDefault(args, 3, null), "capacityProperty");
+    // The flow from a node to itself is undefined, and the augmenting-path loop below never ends on it: the BFS marks
+    // the source as reached, so the sink always looks reached too (issue #12214). Refused as networkx and Neo4j GDS do.
+    if (sourceNode.getIdentity().equals(sinkNode.getIdentity()))
+      throw new IllegalArgumentException(
+          getName() + "(): sourceNode and sinkNode are the same node (" + sourceNode.getIdentity() + ")");
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
