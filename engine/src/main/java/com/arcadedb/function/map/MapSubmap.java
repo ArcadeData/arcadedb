@@ -27,7 +27,7 @@ import java.util.Map;
 
 /**
  * map.submap(map, keys, [values], [fail]) - Extract a submap containing only specified keys, as APOC's
- * {@code apoc.map.submap}: a key the map lacks takes the value at the same position of {@code values}, and without one it is
+ * {@code apoc.map.submap}: a key the map lacks takes the non-null value at the same position of {@code values}, and without one it is
  * an error unless {@code fail} (default true) is false, in which case it maps to null (issue #12105).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -84,7 +84,8 @@ public class MapSubmap extends AbstractMapFunction {
       final String keyStr = key.toString();
       if (map.containsKey(keyStr))
         result.put(keyStr, map.get(keyStr));
-      else if (i < values.size())
+      else if (i < values.size() && values.get(i) != null)
+        // A null default is no default, as in APOC: the key still fails when fail is true
         result.put(keyStr, values.get(i));
       else if (fail)
         throw new IllegalArgumentException(
