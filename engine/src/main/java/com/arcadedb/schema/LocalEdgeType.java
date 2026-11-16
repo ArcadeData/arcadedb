@@ -18,13 +18,21 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeBucketMask;
+import com.arcadedb.graph.Vertex;
 
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
@@ -84,9 +92,10 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
   }
 
   /**
-   * Flips the lightweight flag. Only legal while the type holds no edge records: switching an already-populated type
-   * would leave those records addressable but unreachable from any creation path. Existing lightweight entries in
-   * vertex edge lists are unaffected either way, because the flag is not consulted on read.
+   * Flips the lightweight flag. Only legal while the type holds no edges of the shape it is leaving: switching an
+   * already-populated type would leave those records addressable but unreachable from any creation path, and the
+   * lightweight edges of a type declared regular are still returned by traversals while every statement that reads the
+   * type (count(*), DELETE FROM, TRUNCATE TYPE) misses them (issue #12248).
    */
   public void setLightweight(final boolean lightweight) {
     checkForSchemaMutation();
@@ -95,6 +104,12 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
         if (bucket.count() > 0)
           throw new SchemaException("Cannot declare edge type '" + getName()
               + "' LIGHTWEIGHT because it already contains edge records. Create a new lightweight type instead");
+    if (!lightweight && this.lightweight) {
+      final String found = findLightweightEdge(false);
+      if (found != null)
+        throw new SchemaException("Cannot declare edge type '" + getName() + "' not LIGHTWEIGHT because it holds " + found
+            + ", which would no longer be reachable through the type. Delete them first or create a new type instead");
+    }
     // Inside a schema recording session, which saves schema.json and, under HA, ships it to the followers (issue #9747).
     // The inherited-constraint check is part of it, under the lock that orders it against a CREATE PROPERTY or an
     // addSuperType elsewhere in the hierarchy (issue #9846)
@@ -182,10 +197,54 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
     return message.append(". Or declare the type without LIGHTWEIGHT").toString();
   }
 
+  /**
+   * Declares or withdraws UNIQUE. On a LIGHTWEIGHT type there is no index whose build would validate the edges already there,
+   * so a pair of vertices joined by two of its edges is looked for first: declaring the constraint over it would advertise a
+   * guarantee the data breaks (issue #12248), where a record-backed type refuses the same ALTER on its index build.
+   */
   public void setUnique(final boolean unique) {
     checkForSchemaMutation();
+    if (unique && !this.unique && lightweight) {
+      final String duplicate = findLightweightEdge(true);
+      if (duplicate != null)
+        throw new SchemaException("Cannot declare edge type '" + getName() + "' UNIQUE because it holds " + duplicate
+            + ". Delete the extra edges first");
+    }
     // See setLightweight: a lightweight type builds no index, so nothing else would have shipped this flag (issue #9747)
     getSchema().getEmbedded().recordChange(() -> this.unique = unique);
+  }
+
+  /**
+   * Walks the outgoing edge list of every vertex for the lightweight edges of this type: they have no record, so the vertices'
+   * lists are the only place they are stored (the bucket scan of a type never sees them, see DROP TYPE). Stops at the first
+   * one, or with {@code duplicatePair} at the first ordered pair of vertices that holds two of them.
+   *
+   * @return what was found, worded for an error message, or null
+   */
+  private String findLightweightEdge(final boolean duplicatePair) {
+    final Database database = getSchema().getEmbedded().getDatabase();
+    final int bucketId = getFirstBucketId();
+    for (final DocumentType type : getSchema().getTypes()) {
+      if (type.getType() != Vertex.RECORD_TYPE)
+        continue;
+      final Iterator<Record> vertices = database.iterateType(type.getName(), false);
+      while (vertices.hasNext()) {
+        final Vertex vertex = vertices.next().asVertex();
+        Set<RID> targets = null;
+        for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT, getName())) {
+          final RID rid = edge.getIdentity();
+          if (rid.getPosition() >= 0 || rid.getBucketId() != bucketId)
+            continue;
+          if (!duplicatePair)
+            return "lightweight edges (one from " + vertex.getIdentity() + " to " + edge.getIn() + ")";
+          if (targets == null)
+            targets = new HashSet<>();
+          if (!targets.add(edge.getIn()))
+            return "two lightweight edges from " + vertex.getIdentity() + " to " + edge.getIn();
+        }
+      }
+    }
+    return null;
   }
 
   /**
