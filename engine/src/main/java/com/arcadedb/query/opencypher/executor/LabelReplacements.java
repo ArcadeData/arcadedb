@@ -188,6 +188,27 @@ public final class LabelReplacements {
   }
 
   /**
+   * Follows the replacement chain of an edge and returns the live record, or the argument itself when it was never
+   * re-attached. An edge moves once per endpoint relabelled: relabelling its source re-creates it, and relabelling its
+   * target later re-creates that copy again, so the first replacement is itself deleted by then and a path redirected to it
+   * reported a relationship incident to neither of its live endpoints (issue #11763).
+   */
+  public Edge resolveEdge(final Edge edge) {
+    if (edge == null || edges.isEmpty())
+      return edge;
+    final RID rid = edge.getIdentity();
+    if (rid == null)
+      return edge;
+    Edge current = edges.get(rid);
+    if (current == null)
+      return edge;
+    Edge next;
+    while ((next = edges.get(current.getIdentity())) != null)
+      current = next;
+    return current;
+  }
+
+  /**
    * Points every alias of a row that still refers to a replaced vertex or to one of its re-attached edges at the
    * live record. Called before a row is written to and again after each replacement, so all aliases of the same
    * node observe the same state.
@@ -230,13 +251,8 @@ public final class LabelReplacements {
     if (value instanceof Vertex vertex)
       return resolve(vertex);
 
-    if (value instanceof Edge edge) {
-      if (edges.isEmpty())
-        return value;
-      final RID rid = edge.getIdentity();
-      final Edge live = rid != null ? edges.get(rid) : null;
-      return live != null ? live : value;
-    }
+    if (value instanceof Edge edge)
+      return resolveEdge(edge);
 
     if (value instanceof TraversalPath path)
       return redirectPath(path);

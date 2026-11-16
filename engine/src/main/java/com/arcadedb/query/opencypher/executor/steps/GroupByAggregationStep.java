@@ -106,6 +106,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
     }
 
+    // The variable of an aggregating map projection is a grouping key the row does not carry (issue #12316): one group per
+    // value of it, so the projection reads it from a row of its own group. Not added again when it is projected bare.
+    for (final String variable : ImplicitGroupingKeys.of(returnClause.getReturnItems()))
+      if (!isProjectedBare(groupingKeys, variable))
+        groupingKeys.add(new GroupingKey(null, new VariableExpression(variable)));
+
     // Convert aggregation items to arrays for fast indexed access (avoids per-row HashMap lookups)
     final int aggCount = aggregationItems.size();
     final FunctionCallExpression[] aggExpressions = new FunctionCallExpression[aggCount];
@@ -403,7 +409,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         final ResultInternal groupResult = new ResultInternal();
 
         for (int i = 0; i < groupingKeys.size(); i++)
-          groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values[i]);
+          if (groupingKeys.get(i).outputName != null)
+            groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values[i]);
 
         for (int i = 0; i < aggCount; i++)
           groupResult.setProperty(aggOutputNames[i], groupAgg.aggregatorArray[i].getAggregatedResult());
@@ -430,6 +437,14 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         cost += System.nanoTime() - beginBuild;
     }
     return results;
+  }
+
+  /** Whether {@code variable} is already a grouping key as itself, {@code RETURN p, p{n: count(*)}}. */
+  private static boolean isProjectedBare(final List<GroupingKey> groupingKeys, final String variable) {
+    for (final GroupingKey key : groupingKeys)
+      if (key.expression instanceof VariableExpression bare && bare.getVariableName().equals(variable))
+        return true;
+    return false;
   }
 
   /**

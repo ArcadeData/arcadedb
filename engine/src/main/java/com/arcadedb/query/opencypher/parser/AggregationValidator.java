@@ -91,7 +91,7 @@ final class AggregationValidator {
     // Check for ambiguous aggregation in ORDER BY for aggregating RETURN
     if (statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()
         && statement.getOrderByClause() != null) {
-      final Set<String> groupingVars = collectGroupingVariables(statement.getReturnClause().getReturnItems());
+      final GroupingScope groupingVars = collectGroupingScope(statement.getReturnClause().getReturnItems());
       for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
         final Expression expr = item.getExpressionAST();
         if (expr != null && expr.containsAggregation())
@@ -102,7 +102,7 @@ final class AggregationValidator {
     // Check for ambiguous aggregation in ORDER BY for aggregating WITH
     for (final WithClause withClause : statement.getWithClauses()) {
       if (withClause.hasAggregations() && withClause.getOrderByClause() != null) {
-        final Set<String> groupingVars = collectGroupingVariables(withClause.getItems());
+        final GroupingScope groupingVars = collectGroupingScope(withClause.getItems());
         // Collect projected names and expression texts for non-projected aggregation check
         final Set<String> projectedNames = new HashSet<>();
         for (final ReturnClause.ReturnItem projItem : withClause.getItems()) {
@@ -169,6 +169,23 @@ final class AggregationValidator {
       checkNestedAggregation(lce.getListExpression(), insideAggregation);
       if (lce.getMapExpression() != null)
         checkAggregationInListComprehension(lce.getMapExpression());
+    } else if (expr instanceof PatternComprehensionExpression pce) {
+      // The projection of a pattern comprehension runs once per match of the pattern, inside one outer row: an aggregate
+      // there has no group to fold, as in a list comprehension (issue #12316)
+      if ((pce.getMapExpression() != null && pce.getMapExpression().containsAggregation())
+          || (pce.getWhereExpression() != null && pce.getWhereExpression().containsAggregation()))
+        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in pattern comprehensions");
+    } else if (expr instanceof MapExpression map) {
+      for (final Expression entry : map.getEntries().values())
+        checkNestedAggregation(entry, insideAggregation);
+    } else if (expr instanceof MapProjectionExpression projection) {
+      for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+        if (element.isKeyExpression())
+          checkNestedAggregation(element.getExpression(), insideAggregation);
+    } else if (expr instanceof ReduceExpression reduce) {
+      checkNestedAggregation(reduce.getInitialValue(), insideAggregation);
+      checkNestedAggregation(reduce.getListExpression(), insideAggregation);
+      checkNestedAggregation(reduce.getReduceExpression(), insideAggregation);
     } else if (expr instanceof CaseExpression) {
       final CaseExpression caseExpr = (CaseExpression) expr;
       if (caseExpr.getCaseExpression() != null)
@@ -204,14 +221,8 @@ final class AggregationValidator {
   }
 
   private static void checkAggregationInListComprehension(final Expression expr) {
-    if (expr == null)
-      return;
-    if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
+    if (expr != null && expr.containsAggregation())
       throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in list comprehensions");
-    if (expr instanceof ArithmeticExpression) {
-      checkAggregationInListComprehension(((ArithmeticExpression) expr).getLeft());
-      checkAggregationInListComprehension(((ArithmeticExpression) expr).getRight());
-    }
   }
 
   private static void checkAggregationInWhere(final WhereClause whereClause) {
@@ -285,11 +296,16 @@ final class AggregationValidator {
    * non-aggregated sub-expressions. The rules are:
    * - Simple variable/property references matching grouping keys are OK
    * - Literals and parameters are OK
-   * - Complex expressions (arithmetic, etc.) containing variables are AMBIGUOUS
+   * - Complex expressions (arithmetic, a map, a list, a function call...) are OK only when every variable they read
+   *   outside an aggregate is projected as itself (a "bare" grouping key, single-valued per group), is read through a
+   *   property access projected as a grouping key itself, or is bound by the expression itself (a comprehension's
+   *   iterator, a reduce accumulator); any other variable is AMBIGUOUS (Neo4j 42I18)
    * - Variable/property references NOT matching grouping keys are AMBIGUOUS
+   * - The variable of an aggregating map projection is a grouping key of its own, {@code p{.name, n: count(f)}}: the
+   *   projection groups by it (issue #12316, the Neo4j idiom), see {@link ImplicitGroupingKeys}
    */
   private static void checkAmbiguousAggregation(final List<ReturnClause.ReturnItem> items) {
-    final Set<String> groupingVars = collectGroupingVariables(items);
+    final GroupingScope scope = collectGroupingScope(items);
     for (final ReturnClause.ReturnItem item : items) {
       final Expression expr = item.getExpression();
       if (!expr.containsAggregation())
@@ -298,14 +314,35 @@ final class AggregationValidator {
       if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
         continue;
       // Mixed expression — check non-aggregated parts
-      checkMixedAggregation(expr, groupingVars);
+      checkMixedAggregation(expr, scope);
+    }
+  }
+
+  /**
+   * What a non-aggregated part of an aggregating item may read: the variables of the grouping items (coarse, as a simple
+   * reference {@code n} or {@code n.p}), and among them the ones projected as themselves, which any expression may read
+   * because they are single-valued per group, and the property accesses projected as grouping keys themselves
+   * ({@code a.name} in {@code RETURN a.name, {foo: a.name = 'x', kids: collect(c)}}, TCK Return6 [6]): those are
+   * single-valued too, where another property of the same variable is not (Neo4j 42I18).
+   */
+  private record GroupingScope(Set<String> groupingVars, Set<String> bareVars, Set<String> keyedProperties) {
+    /** This scope with {@code names} single-valued too: an implicit grouping key, or names the expression binds. */
+    GroupingScope with(final String... names) {
+      final Set<String> grouping = new HashSet<>(groupingVars);
+      final Set<String> bare = new HashSet<>(bareVars);
+      for (final String name : names)
+        if (name != null) {
+          grouping.add(name);
+          bare.add(name);
+        }
+      return new GroupingScope(grouping, bare, keyedProperties);
     }
   }
 
   /**
    * Recursively checks a mixed aggregation expression for ambiguous non-aggregated parts.
    */
-  private static void checkMixedAggregation(final Expression expr, final Set<String> groupingVars) {
+  private static void checkMixedAggregation(final Expression expr, final GroupingScope scope) {
     if (expr == null)
       return;
     if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
@@ -318,118 +355,240 @@ final class AggregationValidator {
       final boolean rightAgg = right != null && right.containsAggregation();
 
       if (leftAgg && !rightAgg) {
-        validateNonAggPart(right, groupingVars);
-        checkMixedAggregation(left, groupingVars);
+        validateNonAggPart(right, scope);
+        checkMixedAggregation(left, scope);
       } else if (!leftAgg && rightAgg) {
-        validateNonAggPart(left, groupingVars);
-        checkMixedAggregation(right, groupingVars);
+        validateNonAggPart(left, scope);
+        checkMixedAggregation(right, scope);
       } else {
-        checkMixedAggregation(left, groupingVars);
-        checkMixedAggregation(right, groupingVars);
+        checkMixedAggregation(left, scope);
+        checkMixedAggregation(right, scope);
       }
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkMixedAggregation(arg, groupingVars);
+        checkMixedAggregation(arg, scope);
     } else if (expr instanceof BooleanWrapperExpression) {
-      checkMixedAggregationInBoolean(((BooleanWrapperExpression) expr).getBooleanExpression(), groupingVars);
+      checkMixedAggregationInBoolean(((BooleanWrapperExpression) expr).getBooleanExpression(), scope);
     } else if (expr instanceof ComparisonExpressionWrapper) {
       final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
-      checkMixedAggregation(comp.getLeft(), groupingVars);
-      checkMixedAggregation(comp.getRight(), groupingVars);
+      checkMixedAggregation(comp.getLeft(), scope);
+      checkMixedAggregation(comp.getRight(), scope);
+    } else if (expr instanceof MapProjectionExpression projection) {
+      // An aggregating projection groups by its own variable (in the scope already, see collectGroupingScope), so every
+      // part of it may read that variable (issue #12316)
+      for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+        if (element.isKeyExpression())
+          checkOperand(element.getExpression(), scope);
+    } else if (expr instanceof MapExpression map) {
+      // A map literal has no variable of its own: {name: p.name, n: count(f)} reads p, which must be a grouping key
+      for (final Expression entry : map.getEntries().values())
+        checkOperand(entry, scope);
+    } else if (expr instanceof ListExpression list) {
+      for (final Expression element : list.getElements())
+        checkOperand(element, scope);
+    } else if (expr instanceof ReduceExpression reduce) {
+      checkOperand(reduce.getInitialValue(), scope);
+      checkOperand(reduce.getListExpression(), scope);
+      checkOperand(reduce.getReduceExpression(), scope.with(reduce.getAccumulatorVariable(), reduce.getIteratorVariable()));
+    } else if (expr instanceof CaseExpression caseExpr) {
+      checkOperand(caseExpr.getCaseExpression(), scope);
+      for (final CaseAlternative alt : caseExpr.getAlternatives()) {
+        checkOperand(alt.getWhenExpression(), scope);
+        checkOperand(alt.getThenExpression(), scope);
+      }
+      checkOperand(caseExpr.getElseExpression(), scope);
     }
   }
 
-  private static void checkMixedAggregationInBoolean(final BooleanExpression boolExpr, final Set<String> groupingVars) {
+  /** One operand of a composite aggregating expression: aggregating itself, or a non-aggregated part to validate. */
+  private static void checkOperand(final Expression operand, final GroupingScope scope) {
+    if (operand == null)
+      return;
+    if (operand.containsAggregation())
+      checkMixedAggregation(operand, scope);
+    else
+      validateNonAggPart(operand, scope);
+  }
+
+  private static void checkMixedAggregationInBoolean(final BooleanExpression boolExpr, final GroupingScope scope) {
     if (boolExpr instanceof ComparisonExpression) {
-      checkMixedAggregation(((ComparisonExpression) boolExpr).getLeft(), groupingVars);
-      checkMixedAggregation(((ComparisonExpression) boolExpr).getRight(), groupingVars);
+      checkMixedAggregation(((ComparisonExpression) boolExpr).getLeft(), scope);
+      checkMixedAggregation(((ComparisonExpression) boolExpr).getRight(), scope);
     } else if (boolExpr instanceof LogicalExpression) {
-      checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), groupingVars);
+      checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), scope);
       if (((LogicalExpression) boolExpr).getRight() != null)
-        checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), groupingVars);
+        checkMixedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), scope);
     }
   }
 
   /**
    * Validates that a non-aggregated part in a mixed expression is not ambiguous.
    */
-  private static void validateNonAggPart(final Expression expr, final Set<String> groupingVars) {
+  private static void validateNonAggPart(final Expression expr, final GroupingScope scope) {
     if (expr == null)
       return;
     // Simple variable reference — OK if it's a grouping key
     if (expr instanceof VariableExpression) {
-      if (!groupingVars.contains(((VariableExpression) expr).getVariableName()))
+      if (!scope.groupingVars().contains(((VariableExpression) expr).getVariableName()))
         throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
       return;
     }
     // Simple property access — OK if the variable is a grouping key
     if (expr instanceof PropertyAccessExpression) {
-      if (!groupingVars.contains(((PropertyAccessExpression) expr).getVariableName()))
+      if (!scope.groupingVars().contains(((PropertyAccessExpression) expr).getVariableName()))
         throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
       return;
     }
     // Literals and stars are always OK
     if (expr instanceof LiteralExpression || expr instanceof StarExpression)
       return;
-    // Complex expressions containing variables are ambiguous
-    if (hasVariableRefOutsideAggregation(expr))
-      throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+    // A complex expression is single-valued per group only when everything it reads is: a variable projected as itself,
+    // or one the expression binds. Grouping by n.a + n.b does not make n single-valued (TCK Return6 [21]).
+    final Set<String> read = new HashSet<>();
+    collectFreeVariables(expr, Set.of(), scope.keyedProperties(), read);
+    for (final String variable : read)
+      if (!scope.bareVars().contains(variable))
+        throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
   }
 
-  private static boolean hasVariableRefOutsideAggregation(final Expression expr) {
-    if (expr == null)
-      return false;
-    if (expr instanceof VariableExpression || expr instanceof PropertyAccessExpression)
-      return true;
-    if (expr instanceof LiteralExpression || expr instanceof StarExpression)
-      return false;
-    if (expr instanceof FunctionCallExpression) {
-      final FunctionCallExpression func = (FunctionCallExpression) expr;
-      if (func.isAggregation())
-        return false; // Variables inside aggregation arguments are OK
-      for (final Expression arg : func.getArguments())
-        if (hasVariableRefOutsideAggregation(arg))
-          return true;
-      return false;
+  /**
+   * Collects the variables {@code expr} reads outside every aggregate call, leaving out the ones it binds itself
+   * ({@code locals}: a comprehension's iterator, a reduce accumulator, the variables of a pattern comprehension's
+   * pattern). A shape not modelled here contributes nothing, as it did before this walk existed.
+   * <p>
+   * The variables of a pattern comprehension's pattern are taken as its own: without the scope of the clause a variable
+   * the pattern joins on cannot be told from one it introduces, and refusing a valid query is the worse of the two errors.
+   */
+  private static void collectFreeVariables(final Expression expr, final Set<String> locals, final Set<String> keyed,
+      final Set<String> out) {
+    switch (expr) {
+    case VariableExpression variable -> addFree(variable.getVariableName(), locals, out);
+    case PropertyAccessExpression property -> {
+      if (!keyed.contains(property.getText()))
+        addFree(property.getVariableName(), locals, out);
     }
-    if (expr instanceof ArithmeticExpression)
-      return hasVariableRefOutsideAggregation(((ArithmeticExpression) expr).getLeft())
-          || hasVariableRefOutsideAggregation(((ArithmeticExpression) expr).getRight());
-    if (expr instanceof BooleanWrapperExpression)
-      return hasBooleanVarRefOutsideAgg(((BooleanWrapperExpression) expr).getBooleanExpression());
-    if (expr instanceof ComparisonExpressionWrapper) {
-      final ComparisonExpression comp = ((ComparisonExpressionWrapper) expr).getComparison();
-      return hasVariableRefOutsideAggregation(comp.getLeft())
-          || hasVariableRefOutsideAggregation(comp.getRight());
+    case FunctionCallExpression function -> {
+      if (!function.isAggregation())
+        for (final Expression arg : function.getArguments())
+          collectFreeVariables(arg, locals, keyed, out);
     }
-    return false;
+    case ArithmeticExpression arithmetic -> {
+      collectFreeVariables(arithmetic.getLeft(), locals, keyed, out);
+      collectFreeVariables(arithmetic.getRight(), locals, keyed, out);
+    }
+    case MapProjectionExpression projection -> {
+      addFree(projection.getVariableName(), locals, out);
+      for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+        if (element.isKeyExpression())
+          collectFreeVariables(element.getExpression(), locals, keyed, out);
+    }
+    case MapExpression map -> {
+      for (final Expression entry : map.getEntries().values())
+        collectFreeVariables(entry, locals, keyed, out);
+    }
+    case ListExpression list -> {
+      for (final Expression element : list.getElements())
+        collectFreeVariables(element, locals, keyed, out);
+    }
+    case CaseExpression caseExpr -> {
+      collectFreeVariables(caseExpr.getCaseExpression(), locals, keyed, out);
+      for (final CaseAlternative alt : caseExpr.getAlternatives()) {
+        collectFreeVariables(alt.getWhenExpression(), locals, keyed, out);
+        collectFreeVariables(alt.getThenExpression(), locals, keyed, out);
+      }
+      collectFreeVariables(caseExpr.getElseExpression(), locals, keyed, out);
+    }
+    case ListComprehensionExpression comprehension -> {
+      collectFreeVariables(comprehension.getListExpression(), locals, keyed, out);
+      final Set<String> inner = withLocals(locals, comprehension.getVariable());
+      collectFreeVariables(comprehension.getWhereExpression(), inner, keyed, out);
+      collectFreeVariables(comprehension.getMapExpression(), inner, keyed, out);
+    }
+    case ReduceExpression reduce -> {
+      collectFreeVariables(reduce.getInitialValue(), locals, keyed, out);
+      collectFreeVariables(reduce.getListExpression(), locals, keyed, out);
+      collectFreeVariables(reduce.getReduceExpression(),
+          withLocals(locals, reduce.getAccumulatorVariable(), reduce.getIteratorVariable()), keyed, out);
+    }
+    case PatternComprehensionExpression comprehension -> {
+      final Set<String> inner = withLocals(locals, comprehension.getPathVariable());
+      final PathPattern pattern = comprehension.getPathPattern();
+      if (pattern != null) {
+        if (pattern.getNodes() != null)
+          for (final NodePattern node : pattern.getNodes())
+            if (node != null && node.getVariable() != null)
+              inner.add(node.getVariable());
+        if (pattern.getRelationships() != null)
+          for (final RelationshipPattern relationship : pattern.getRelationships())
+            if (relationship != null && relationship.getVariable() != null)
+              inner.add(relationship.getVariable());
+      }
+      collectFreeVariables(comprehension.getWhereExpression(), inner, keyed, out);
+      collectFreeVariables(comprehension.getMapExpression(), inner, keyed, out);
+    }
+    case BooleanWrapperExpression wrapper -> collectFreeVariables(wrapper.getBooleanExpression(), locals, keyed, out);
+    case ComparisonExpressionWrapper wrapper -> collectFreeVariables(wrapper.getComparison(), locals, keyed, out);
+    case null, default -> {
+      // A literal, a parameter, or a shape not modelled
+    }
+    }
   }
 
-  private static boolean hasBooleanVarRefOutsideAgg(final BooleanExpression boolExpr) {
-    if (boolExpr == null)
-      return false;
-    if (boolExpr instanceof ComparisonExpression)
-      return hasVariableRefOutsideAggregation(((ComparisonExpression) boolExpr).getLeft())
-          || hasVariableRefOutsideAggregation(((ComparisonExpression) boolExpr).getRight());
-    if (boolExpr instanceof LogicalExpression) {
-      if (hasBooleanVarRefOutsideAgg(((LogicalExpression) boolExpr).getLeft()))
-        return true;
-      return ((LogicalExpression) boolExpr).getRight() != null
-          && hasBooleanVarRefOutsideAgg(((LogicalExpression) boolExpr).getRight());
+  private static void collectFreeVariables(final BooleanExpression expr, final Set<String> locals, final Set<String> keyed,
+      final Set<String> out) {
+    switch (expr) {
+    case ComparisonExpression comparison -> {
+      collectFreeVariables(comparison.getLeft(), locals, keyed, out);
+      collectFreeVariables(comparison.getRight(), locals, keyed, out);
     }
-    return false;
+    case LogicalExpression logical -> {
+      collectFreeVariables(logical.getLeft(), locals, keyed, out);
+      collectFreeVariables(logical.getRight(), locals, keyed, out);
+    }
+    case IsNullExpression isNull -> collectFreeVariables(isNull.getExpression(), locals, keyed, out);
+    case null, default -> {
+      // A shape not modelled
+    }
+    }
   }
 
-  private static Set<String> collectGroupingVariables(final List<ReturnClause.ReturnItem> items) {
+  private static void addFree(final String variable, final Set<String> locals, final Set<String> out) {
+    if (variable != null && !locals.contains(variable))
+      out.add(variable);
+  }
+
+  private static Set<String> withLocals(final Set<String> locals, final String... names) {
+    final Set<String> extended = new HashSet<>(locals);
+    for (final String name : names)
+      if (name != null)
+        extended.add(name);
+    return extended;
+  }
+
+  private static GroupingScope collectGroupingScope(final List<ReturnClause.ReturnItem> items) {
     final Set<String> vars = new HashSet<>();
+    final Set<String> bare = new HashSet<>();
+    final Set<String> keyed = new HashSet<>();
     for (final ReturnClause.ReturnItem item : items)
       if (!item.getExpression().containsAggregation()) {
         collectVariableNamesFromExpression(item.getExpression(), vars);
+        if (item.getExpression() instanceof VariableExpression variable)
+          bare.add(variable.getVariableName());
+        else if (item.getExpression() instanceof PropertyAccessExpression property)
+          keyed.add(property.getText());
         // Also include the alias as a valid grouping reference
-        if (item.getAlias() != null)
+        if (item.getAlias() != null) {
           vars.add(item.getAlias());
+          bare.add(item.getAlias());
+        }
       }
-    return vars;
+    // The variables the aggregation groups by without projecting them: the very set GroupByAggregationStep adds as hidden
+    // keys, so what this accepts is what the step groups by (issue #12316)
+    for (final String implicit : ImplicitGroupingKeys.of(items)) {
+      vars.add(implicit);
+      bare.add(implicit);
+    }
+    return new GroupingScope(vars, bare, keyed);
   }
 
   static void collectVariableNamesFromExpression(final Expression expr, final Set<String> vars) {
@@ -443,24 +602,6 @@ final class AggregationValidator {
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         collectVariableNamesFromExpression(arg, vars);
-    }
-  }
-
-  private static void collectVariableRefsOutsideAggregation(final Expression expr, final Set<String> vars) {
-    if (expr == null)
-      return;
-    if (expr instanceof VariableExpression)
-      vars.add(((VariableExpression) expr).getVariableName());
-    else if (expr instanceof PropertyAccessExpression)
-      vars.add(((PropertyAccessExpression) expr).getVariableName());
-    else if (expr instanceof FunctionCallExpression) {
-      if (((FunctionCallExpression) expr).isAggregation())
-        return; // Stop at aggregation boundary
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        collectVariableRefsOutsideAggregation(arg, vars);
-    } else if (expr instanceof ArithmeticExpression) {
-      collectVariableRefsOutsideAggregation(((ArithmeticExpression) expr).getLeft(), vars);
-      collectVariableRefsOutsideAggregation(((ArithmeticExpression) expr).getRight(), vars);
     }
   }
 
