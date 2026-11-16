@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -44,12 +46,14 @@ import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.io.InputStream;
 import java.net.ConnectException;
 import java.net.URI;
@@ -59,13 +63,16 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -819,10 +826,22 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   /**
-   * Query parameters as they go on the wire. A {@link LocalDate} is sent as the typed marker {@code {"$date": "2024-01-15"}} rather
-   * than as a number: the server reads a number in a comparison as epoch days, so {@code WHERE fecha = ?} never matched the epoch
-   * milliseconds the plain JSON form carries (issue #10908). A server older than the marker sees a map for such a parameter.
-   * Returns the same map when no parameter holds a date.
+   * Query parameters as they go on the wire. A value JSON cannot carry with its type is sent as a typed marker the server
+   * decodes before binding it, so the parameter is bound as the embedded API binds the same Java value:
+   * <ul>
+   * <li>{@link LocalDate}: {@code {"$date": "2024-01-15"}}. The server reads a number in a comparison as epoch days, so
+   * {@code WHERE fecha = ?} never matched the epoch milliseconds the plain JSON form carried (issue #10908)</li>
+   * <li>{@link RID}, and a record that has an identity: {@code {"$rid": "#12:0"}}, a link rather than its text</li>
+   * <li>{@link BigDecimal}: {@code {"$decimal": "0.10"}}, rather than a JSON number the server parses as a double</li>
+   * <li>{@code byte[]}: {@code {"$bytes": "<base64>"}}, rather than a list of integers</li>
+   * <li>{@link Date}: {@code {"$datetime": <epoch millis>}}; {@link LocalDateTime}, {@link Instant} and {@link ZonedDateTime}:
+   * {@code $localDateTime}, {@code $instant} and {@code $zonedDateTime} with their ISO-8601 text, nanoseconds and zone kept,
+   * rather than LONG epoch milliseconds (issue #12187)</li>
+   * <li>a document without an identity (an embedded document): a map of its properties, encoded the same way, with its
+   * {@code @type}</li>
+   * </ul>
+   * Collections and maps are encoded item by item. A server older than a marker sees a map for such a parameter.
+   * Returns the same map when no parameter needed a marker.
    */
   static Map<String, Object> encodeParameters(final Map<String, Object> params) {
     Map<String, Object> result = null;
@@ -836,9 +855,38 @@ public class RemoteHttpComponent extends RWLockContext {
     return result != null ? result : params;
   }
 
-  private static Object encodeParameter(final Object value) {
+  static Object encodeParameter(final Object value) {
+    if (value == null || value instanceof String || value instanceof Number && !(value instanceof BigDecimal) || value instanceof Boolean)
+      return value;
     if (value instanceof LocalDate date)
       return Map.of("$date", date.toString());
+    if (value instanceof RID rid)
+      return Map.of("$rid", rid.toString());
+    if (value instanceof BigDecimal decimal)
+      return Map.of("$decimal", decimal.toString());
+    if (value instanceof byte[] bytes)
+      return Map.of("$bytes", Base64.getEncoder().encodeToString(bytes));
+    if (value instanceof Date date)
+      return Map.of("$datetime", date.getTime());
+    if (value instanceof LocalDateTime dateTime)
+      return Map.of("$localDateTime", dateTime.toString());
+    if (value instanceof Instant instant)
+      return Map.of("$instant", instant.toString());
+    if (value instanceof ZonedDateTime zoned)
+      return Map.of("$zonedDateTime", zoned.format(DateTimeFormatter.ISO_ZONED_DATE_TIME));
+    if (value instanceof Document document) {
+      if (document.getIdentity() != null)
+        return Map.of("$rid", document.getIdentity().toString());
+      // AN EMBEDDED DOCUMENT: ITS PROPERTIES, EACH ENCODED, AND THE TYPE THE SERVER BUILDS IT WITH
+      final Map<String, Object> embedded = new LinkedHashMap<>();
+      if (document.getTypeName() != null)
+        embedded.put(Property.TYPE_PROPERTY, document.getTypeName());
+      for (final String name : document.getPropertyNames())
+        embedded.put(name, encodeParameter(document.get(name)));
+      return embedded;
+    }
+    if (value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      return Map.of("$rid", identifiable.getIdentity().toString());
     if (value instanceof Collection<?> collection) {
       List<Object> rewritten = null;
       int i = 0;

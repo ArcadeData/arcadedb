@@ -82,7 +82,6 @@ import java.util.function.Consumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase
@@ -2019,15 +2018,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   protected RID saveRecord(final MutableDocument record) {
     RID rid = record.getIdentity();
-    final JSONObject json = record.toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    // The content travels as a PARAMETER, not as JSON text spliced into the statement: the parameter encoding keeps the Java
+    // type of every value (a link, a decimal, binary, a date-time), which a JSON literal cannot, so an undeclared property is
+    // stored as the embedded API stores it (issue #12186)
+    final Map<String, Object> content = contentParameter(record);
     if (rid != null) {
       // SQL UPDATE matches zero records both when the RID no longer exists (e.g. the record was deleted or the transaction
       // that created it was rolled back) and when a before-update listener vetoed the write. The first must fail with
       // RecordNotFoundException to be consistent with the embedded engine and the gRPC remote (issue #4562), the second with
       // RecordVetoedException, as the gRPC remote does (issue #10161): the probe tells them apart, on the refusal path only
       final long updated;
-      try (final ResultSet result = command("sql", "update " + rid + " content " + json)) {
+      try (final ResultSet result = command("sql", "update " + rid + " content :content", content)) {
         updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
       }
       if (updated == 0) {
@@ -2039,7 +2040,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       stats.updateRecord.incrementAndGet();
     } else {
       final ResultSet result = command("sql",
-          "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
+          "insert into " + Identifier.quote(record.getTypeName()) + " content :content", content);
       rid = insertedRID(result, record);
       trackCreatedRecord(record);
       stats.createRecord.incrementAndGet();
@@ -2052,17 +2053,23 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-    final JSONObject json = record.toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    final Map<String, Object> content = contentParameter(record);
     // Both names escaped: the bucket name is caller-supplied on this overload, and the type name is only as
     // trustworthy as whoever built the record (PR #7942 review).
     final ResultSet result = command("sql",
         "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
-            + " content " + json);
+            + " content :content", content);
     final RID newRID = insertedRID(result, record);
     trackCreatedRecord(record);
     stats.createRecord.incrementAndGet();
     return newRID;
+  }
+
+  /**
+   * The record's properties, without metadata, as the {@code :content} parameter of the INSERT/UPDATE that saves it.
+   */
+  private static Map<String, Object> contentParameter(final MutableDocument record) {
+    return Map.of("content", record.toMap(false));
   }
 
   /**
