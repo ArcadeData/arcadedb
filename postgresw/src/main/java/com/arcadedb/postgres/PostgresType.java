@@ -687,6 +687,31 @@ public enum PostgresType {
   }
 
   /**
+   * A lazy multi-value as the list of its elements, any other value as it is (issue #11957): the {@link Iterable} that
+   * {@code out()}, {@code in()}, {@code outE()} and {@code inE()} answer, or the {@link Iterator} of a nested result set. A
+   * column holding one is then typed and serialized like any other collection (a json array of the records, a text[] of
+   * scalars), the way the gRPC encoder sends it as a list since #11044, where the serializer, which has no arm for a
+   * non-collection iterable, used to send its identity string ({@code com.arcadedb.graph.GraphEngine$10@72d8f43f}) in a
+   * column announced as json. An {@link Iterator} is walked once: the caller keeps the list rather than the iterator.
+   */
+  public static Object materializeLazyMultiValue(final Object value) {
+    final Iterator<?> iterator;
+    if (value instanceof Collection<?>)
+      return value;
+    else if (value instanceof Iterable<?> iterable)
+      iterator = iterable.iterator();
+    else if (value instanceof Iterator<?> it)
+      iterator = it;
+    else
+      return value;
+
+    final List<Object> list = new ArrayList<>();
+    while (iterator.hasNext())
+      list.add(iterator.next());
+    return list;
+  }
+
+  /**
    * Maps an ArcadeDB schema Type to a PostgreSQL type, resolving the element type of a LIST from the
    * property's declared "OF" clause.
    *
