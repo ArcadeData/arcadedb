@@ -101,6 +101,22 @@ class Issue12255GraphSONUnidirectionalEdgesTest {
     }
   }
 
+  /** The target vertex has no inE key at all: the only edge into it is listed in the outE of its source. */
+  @Test
+  void targetWithoutInEIsImported() throws Exception {
+    Files.writeString(HAND_WRITTEN.toPath(), """
+        {"id":"#1:0","label":"V","outE":{"R":[{"id":"#9:0","inV":"#1:1","properties":{"w":{"@type":"g:Int32","@value":5}}}]},"properties":{"name":[{"id":{"@type":"g:Int64","@value":0},"value":"a"}]}}
+        {"id":"#1:1","label":"V","properties":{"name":[{"id":{"@type":"g:Int64","@value":1},"value":"b"}]}}
+        """, StandardCharsets.UTF_8);
+    try (final Database target = new DatabaseFactory(TARGET_PATH).create()) {
+      target.command("sql", "IMPORT DATABASE file://" + HAND_WRITTEN.getAbsolutePath());
+      assertThat(count(target, "R")).isEqualTo(1L);
+      try (final ResultSet rs = target.query("opencypher", "MATCH (x {name: 'a'})-[r:R]->(y {name: 'b'}) WHERE r.w = 5 RETURN count(r) AS c")) {
+        assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
+      }
+    }
+  }
+
   /** A producer that lists an edge in the outE of its source only, with RID-shaped ids as an ArcadeDB export has them. */
   @Test
   void edgeListedOnlyInOutEIsImported() throws Exception {

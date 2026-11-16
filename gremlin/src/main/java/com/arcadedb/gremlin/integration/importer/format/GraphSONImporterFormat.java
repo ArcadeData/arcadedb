@@ -123,11 +123,12 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
    * reader creates the edge as it creates every other. The lines that need no entry are left untouched.
    */
   static void completeIncomingEdges(final List<String> lines) {
+    // PASS 1: THE IDS OF THE EDGES SOME inE LISTS, AND THE LINE OF EACH VERTEX. EACH LINE IS PARSED AND DROPPED, NO TREE IS KEPT
     final Set<String> incoming = new HashSet<>();
-    final List<JSONObject> vertices = new ArrayList<>(lines.size());
-    for (final String line : lines) {
-      final JSONObject vertex = new JSONObject(line);
-      vertices.add(vertex);
+    final Map<String, Integer> lineOfVertex = new HashMap<>();
+    for (int n = 0; n < lines.size(); n++) {
+      final JSONObject vertex = new JSONObject(lines.get(n));
+      lineOfVertex.put(String.valueOf(vertex.opt("id")), n);
       final JSONObject inEdges = vertex.getJSONObject("inE", null);
       if (inEdges != null)
         for (final String label : inEdges.keySet()) {
@@ -138,9 +139,12 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
         }
     }
 
-    // TARGET VERTEX ID -> LABEL -> THE inE ENTRIES IT IS MISSING
+    // PASS 2: TARGET VERTEX ID -> LABEL -> THE inE ENTRIES IT IS MISSING. ONLY THE MISSING ENTRIES ARE KEPT
     final Map<String, Map<String, JSONArray>> missing = new HashMap<>();
-    for (final JSONObject vertex : vertices) {
+    for (final String line : lines) {
+      if (!line.contains("\"outE\""))
+        continue;
+      final JSONObject vertex = new JSONObject(line);
       final JSONObject outEdges = vertex.getJSONObject("outE", null);
       if (outEdges == null)
         continue;
@@ -166,11 +170,13 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
     if (missing.isEmpty())
       return;
 
-    for (int i = 0; i < vertices.size(); i++) {
-      final JSONObject vertex = vertices.get(i);
-      final Map<String, JSONArray> toAdd = missing.get(String.valueOf(vertex.opt("id")));
-      if (toAdd == null)
+    // PASS 3: RE-PARSE ONLY THE LINES OF THE VERTICES THAT ARE THE TARGET OF A MISSING ENTRY
+    for (final Map.Entry<String, Map<String, JSONArray>> target : missing.entrySet()) {
+      final Integer i = lineOfVertex.get(target.getKey());
+      if (i == null)
         continue;
+      final JSONObject vertex = new JSONObject(lines.get(i));
+      final Map<String, JSONArray> toAdd = target.getValue();
       JSONObject inEdges = vertex.getJSONObject("inE", null);
       if (inEdges == null) {
         inEdges = new JSONObject();
