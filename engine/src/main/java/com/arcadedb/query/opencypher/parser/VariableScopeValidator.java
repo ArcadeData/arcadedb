@@ -849,7 +849,10 @@ final class VariableScopeValidator {
       if (rel instanceof QuantifiedPathPattern group) {
         checkBooleanExpressionScope(group.getInnerWhere(), scope);
         checkGroupWhereScope(group.getInnerPattern(), scope);
-      }
+      } else if (rel.getWhereExpression() != null)
+        // A relationship's inline predicate, a dynamic type [r:$(expr)] included, is not hoisted into the clause WHERE:
+        // an undefined name in it would otherwise evaluate to null and match every relationship (issue #11776)
+        checkBooleanExpressionScope(rel.getWhereExpression(), scope);
   }
 
   private static void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {

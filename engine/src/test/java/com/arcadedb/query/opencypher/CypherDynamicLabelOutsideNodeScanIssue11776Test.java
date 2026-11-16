@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11776: a Cypher 25 dynamic {@code $(expr)} label was honoured by the node scan, the variable-length hop and the
@@ -298,7 +299,57 @@ class CypherDynamicLabelOutsideNodeScanIssue11776Test extends TestHelper {
     void mergeWithADynamicLabelStaysIdempotent() {
       create("MERGE (n:$('E') {x:5})");
       create("MERGE (n:$('E') {x:5})");
-      assertThat(column("MATCH (n:E) RETURN count(*) AS c", "c")).containsExactly(1L);
+      assertThat(column("MATCH (n:E) RETURN count(n) AS c", "c")).containsExactly(1L);
+    }
+  }
+
+  /** Findings from the PR review. */
+  @Nested
+  class ReviewFindings {
+    /** {@code $(list)} is {@code $all(list)}: under {@code |} it is one conjunctive operand, A OR (B AND C). */
+    @Test
+    void aListValuedDynamicLabelInADisjunctionIsOneConjunctiveOperand() {
+      create("CREATE (s:S), (a:A {x:1}), (b:B {x:2}), (bc:B:C {x:3}), (c:C {x:4}), "
+          + "(s)-[:R]->(a), (s)-[:R]->(b), (s)-[:R]->(bc), (s)-[:R]->(c)");
+      assertThat(column("MATCH (n) WHERE n:A|$(['B','C']) RETURN n.x AS x ORDER BY x", "x")).containsExactly(1, 3);
+      assertThat(column("MATCH (n) WHERE n:A|$($l) RETURN n.x AS x ORDER BY x", "x", "l", List.of("B", "C"))).containsExactly(1, 3);
+      assertThat(column("MATCH (n:A|$(['B','C'])) RETURN n.x AS x ORDER BY x", "x")).containsExactly(1, 3);
+      assertThat(column("MATCH (:S)-[:R]->(n:A|$(['B','C'])) RETURN n.x AS x ORDER BY x", "x")).containsExactly(1, 3);
+      // a one-element list and a plain string are the single label
+      assertThat(column("MATCH (n) WHERE n:A|$(['B']) RETURN n.x AS x ORDER BY x", "x")).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void aListValuedDynamicTypeInADisjunctionCannotMatchAnEdge() {
+      create("CREATE (s:S), (t:T), (s)-[:A {x:1}]->(t), (s)-[:B {x:2}]->(t), (s)-[:C {x:3}]->(t)");
+      assertThat(column("MATCH (:S)-[r:A|$(['B','C'])]->() RETURN r.x AS x ORDER BY x", "x")).containsExactly(1);
+      assertThat(column("MATCH (:S)-[r]->() WHERE r:A|$(['B','C']) RETURN r.x AS x ORDER BY x", "x")).containsExactly(1);
+      assertThat(column("MATCH (:S)-[r:A|$(['B'])]->() RETURN r.x AS x ORDER BY x", "x")).containsExactly(1, 2);
+    }
+
+    @Test
+    void anUndefinedNameInADynamicRelationshipTypeIsRejected() {
+      create("CREATE (a:A)-[:R]->(:B)");
+      assertThatThrownBy(() -> column("MATCH (a:A)-[r:$(missingType)]->(n) RETURN n", "n"))
+          .hasMessageContaining("missingType");
+      assertThat(column("WITH 'R' AS t MATCH (:A)-[r:$(t)]->(n) RETURN count(n) AS c", "c")).containsExactly(1L);
+    }
+
+    @Test
+    void shortestPathExpressionChecksTheEndpointLabels() {
+      create("CREATE (a:A {x:0}), (b:B {x:1}), (c:B:C {x:2}), (a)-[:R]->(b), (b)-[:R]->(c)");
+      assertThat(column("MATCH (a:A), (b:B) RETURN b.x AS x, shortestPath((a)-[:R*]->(b:$('C'))) IS NULL AS none ORDER BY x",
+          "none")).containsExactly(true, false);
+      assertThat(column("MATCH (a:A), (b:B) RETURN b.x AS x, shortestPath((a)-[:R*]->(b:C)) IS NULL AS none ORDER BY x",
+          "none")).containsExactly(true, false);
+    }
+
+    /** A dynamic label that evaluates to null adds no constraint, on a node and on a relationship alike. */
+    @Test
+    void aNullDynamicLabelAddsNoConstraintOnNodesAndRelationships() {
+      create("CREATE (a:A)-[:R]->(:B)");
+      assertThat(column("MATCH (n:A) RETURN n:$(null) AS b", "b")).containsExactly(true);
+      assertThat(column("MATCH ()-[r]->() RETURN r:$(null) AS b", "b")).containsExactly(true);
     }
   }
 }

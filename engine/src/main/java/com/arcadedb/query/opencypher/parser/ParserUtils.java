@@ -237,6 +237,9 @@ public class ParserUtils {
    * MATCH, pattern comprehensions and predicates, {@code COUNT { }}, {@code EXISTS { }} - so the dynamic label is honoured
    * by all of them instead of only by the steps that read {@code NodePattern.getDynamicLabels()} (issue #11776). For a
    * relationship, the static types are kept in the check too, since the pattern's type filter is then dropped.
+   * <p>
+   * On the anchor of a MATCH the dynamic expression is evaluated twice per row, once to pick the label scan and once by
+   * this check, so a non-deterministic expression ({@code rand()}) can disagree with itself.
    */
   public static LabelCheckExpression dynamicLabelCheckOn(final String variable, final List<String> staticLabels,
       final List<Expression> dynamicLabels, final Cypher25Parser.LabelExpressionContext ctx) {

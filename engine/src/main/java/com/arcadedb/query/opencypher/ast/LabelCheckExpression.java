@@ -126,6 +126,9 @@ public class LabelCheckExpression implements BooleanExpression {
       return false;
     }
 
+    if (operator == LabelOperator.OR && !dynamicLabels.isEmpty())
+      return evaluateDisjunctionWithDynamicLabels(value, result, context);
+
     final List<String> labels = resolveLabels(result, context);
 
     if (value instanceof Vertex vertex)
@@ -153,6 +156,43 @@ public class LabelCheckExpression implements BooleanExpression {
     }
 
     return false;
+  }
+
+  /**
+   * {@code A|$(expr)}: {@code $(expr)} is {@code $all(expr)}, so a list value is ONE operand that requires every label in
+   * it, {@code A OR (B AND C)}, and an edge (exactly one type) can only satisfy a one-label operand. A dynamic operand that
+   * evaluates to null or to an empty list adds no operand; with no operand left at all there is no constraint, as for a
+   * conjunction.
+   */
+  private Object evaluateDisjunctionWithDynamicLabels(final Object value, final Result result, final CommandContext context) {
+    if (!(value instanceof Vertex) && !(value instanceof Edge))
+      return false;
+
+    boolean anyOperand = false;
+    for (final String label : labels) {
+      anyOperand = true;
+      if (matchesOperand(value, List.of(label)))
+        return true;
+    }
+
+    final List<String> operand = new ArrayList<>();
+    for (final Expression dynamicLabel : dynamicLabels) {
+      operand.clear();
+      Labels.appendDynamicMatchLabels(operand, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(dynamicLabel, result, context));
+      if (operand.isEmpty())
+        continue;
+      anyOperand = true;
+      if (matchesOperand(value, operand))
+        return true;
+    }
+    return !anyOperand;
+  }
+
+  /** Whether a vertex has every label of the operand, or an edge is of its only type (polymorphic, issue #9124). */
+  private static boolean matchesOperand(final Object value, final List<String> operand) {
+    if (value instanceof Vertex vertex)
+      return Labels.matches(vertex, operand, false);
+    return operand.size() == 1 && ((Edge) value).getType().instanceOf(operand.getFirst());
   }
 
   private List<String> resolveLabels(final Result result, final CommandContext context) {
