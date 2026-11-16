@@ -26,6 +26,7 @@ import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
@@ -12801,6 +12802,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Deferring graph build on close for index %s: %d vectors is at or above the async rebuild threshold "
                 + "(%d), so the rebuild is deferred to the next search on this index instead of blocking close()",
             indexName, vectorIndex().size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
+        flushDeferredRebuild = true;
+        markCloseTimeRebuildDeferred(gf);
+      } else if (needsBuild && getDatabase().getEmbedded() instanceof LocalDatabase local && local.isClosedForReopen()) {
+        // A close for reopen (HA snapshot install, idle close) refuses begin(), which the from-scratch build needs: the
+        // build would burn its whole CPU cost and then fail with DatabaseIsReopeningException, logging two SEVERE traces
+        // and persisting nothing. Defer to the next search on the reopened index instead, as the large-index arm does.
+        LogManager.instance().log(this, Level.FINE,
+            "Deferring graph build on close for index %s: the database is closing for reopen and refuses the build's transaction",
+            indexName);
         flushDeferredRebuild = true;
         markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild) {
