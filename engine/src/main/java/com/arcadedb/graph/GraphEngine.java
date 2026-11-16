@@ -495,15 +495,51 @@ public class GraphEngine {
     if (initializer != null)
       initializer.accept(edge);
 
+    // An @out / @in among the properties named another endpoint for the record (MutableEdge.setMetadata): the lists follow the
+    // record (issue #12247), checked before the save so a refused endpoint stores nothing
+    final VertexInternal source = (VertexInternal) newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, fromVertex);
+    final Identifiable destination = newEdgeEndpoint(edge, Vertex.DIRECTION.IN, toVertex);
+
     // A VETO LEAVES THE EDGE WITHOUT AN IDENTITY: WIRING IT WOULD HAND THE ADJACENCY LIST A null RID (issue #10085)
     if (!(bucketName != null ? edge.saveReportingVeto(bucketName) : edge.saveReportingVeto()))
       return null;
 
-    connectOutgoingEdge(fromVertex, toVertex, edge);
+    connectOutgoingEdge(source, destination, edge);
     if (type.isBidirectional())
-      connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
+      connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
     return edge;
+  }
+
+  /**
+   * The vertex a new edge is wired to in {@code direction}: {@code given} (the FROM or the TO of the creation), unless the edge's
+   * record names another one through an {@code @out} / {@code @in} set among its properties ({@link MutableEdge#setMetadata}).
+   * Every reader of the edge trusts the record, so the adjacency lists follow it, as an UPDATE re-points an existing edge: wiring
+   * the edge into the lists of {@code given} instead left a record and lists that disagreed, which CHECK DATABASE FIX then
+   * resolved by deleting the edge (issue #12247). The named vertex is refused on the same terms as a FROM or TO is.
+   *
+   * @throws VertexNotFoundException  when the named vertex does not exist or was deleted in this transaction
+   * @throws IllegalArgumentException when the named record is not a vertex
+   */
+  public Identifiable newEdgeEndpoint(final Edge edge, final Vertex.DIRECTION direction, final Identifiable given) {
+    final RID named = direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn();
+    if (named == null || named.equals(given.getIdentity()))
+      return given;
+
+    final String side = direction == Vertex.DIRECTION.OUT ? "source" : "destination";
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.isDeletedInTransaction(named))
+      throw deletedEndpoint(named, side);
+
+    final Record record;
+    try {
+      record = database.lookupByRID(named, true);
+    } catch (final RecordNotFoundException e) {
+      throw new VertexNotFoundException("Cannot create an edge whose " + side + " vertex " + named + " does not exist", named, e);
+    }
+    if (!(record instanceof Vertex vertex))
+      throw new IllegalArgumentException("Cannot create an edge whose " + side + " is " + named + ": it is not a vertex");
+    return getMostUpdatedVertex(asVertexInternal(vertex));
   }
 
   /**
