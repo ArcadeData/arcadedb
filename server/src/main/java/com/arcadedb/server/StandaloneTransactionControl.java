@@ -70,9 +70,22 @@ public final class StandaloneTransactionControl {
           + "or, in SQL, send the whole block as one 'sqlscript' command");
   }
 
-  /** A prefix test, so every other command pays no parse: the text starts with BEGIN, START, COMMIT or ROLLBACK. */
+  /**
+   * A prefix test, so every other command pays no parse: the text starts with BEGIN, START, COMMIT or ROLLBACK, also behind an
+   * EXPLAIN or PROFILE prefix. SQL PROFILE and both openCypher prefixes run the transaction control they wrap; the engine's own
+   * {@code isTransactionControl()} then decides, so a SQL EXPLAIN, which only plans, is not refused.
+   */
   private static boolean startsWithTransactionControl(final String command) {
     final int start = PostCommandHandler.skipLeadingSpaceAndComments(command);
+    if ((command.regionMatches(true, start, "explain", 0, 7) || command.regionMatches(true, start, "profile", 0, 7))
+        && command.length() > start + 7 && Character.isWhitespace(command.charAt(start + 7))) {
+      final String wrapped = command.substring(start + 7);
+      return startsWithTransactionControlWord(wrapped, PostCommandHandler.skipLeadingSpaceAndComments(wrapped));
+    }
+    return startsWithTransactionControlWord(command, start);
+  }
+
+  private static boolean startsWithTransactionControlWord(final String command, final int start) {
     return command.regionMatches(true, start, "begin", 0, 5) || command.regionMatches(true, start, "start", 0, 5)
         || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8);
   }

@@ -169,8 +169,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
 
         /**
-         * START TRANSACTION, COMMIT and ROLLBACK (issue #12232). A level the engine cannot provide is left to the execution, which
-         * refuses it with its own words (issue #10386).
+         * START TRANSACTION, COMMIT and ROLLBACK (issue #12232), also behind EXPLAIN or PROFILE: command() runs a transaction
+         * control whichever prefix it carries. A level the engine cannot provide is left to the execution, which refuses it with
+         * its own words (issue #10386).
          */
         @Override
         public boolean isTransactionControl() {

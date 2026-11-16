@@ -25,6 +25,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.HttpSessionManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.URI;
@@ -64,6 +65,28 @@ class Issue12202StandaloneTransactionControlIT extends BaseGraphServerTest {
 
     assertThat(response.statusCode()).isEqualTo(400);
     assertThat(response.body()).contains("CommandSemanticException").contains("RemoteDatabase.begin()");
+  }
+
+  /**
+   * Behind a prefix that still runs the statement (SQL PROFILE, openCypher PROFILE and EXPLAIN), the transaction control is refused
+   * too (review of PR #12230).
+   */
+  @ParameterizedTest
+  @CsvSource({ "opencypher,PROFILE START TRANSACTION", "opencypher,PROFILE COMMIT", "opencypher,PROFILE ROLLBACK",
+      "opencypher,EXPLAIN START TRANSACTION", "sql,PROFILE BEGIN", "sql,profile rollback" })
+  void aTransactionControlBehindAnExecutingPrefixIsAClientError(final String language, final String statement) throws Exception {
+    final HttpResponse<String> response = command(language, statement, null);
+
+    assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    assertThat(response.body()).contains("CommandSemanticException").contains("RemoteDatabase.begin()");
+  }
+
+  /** A SQL EXPLAIN only plans the statement it wraps, so it is not refused. */
+  @Test
+  void aSqlExplainOfATransactionControlIsNotRefused() throws Exception {
+    final HttpResponse<String> response = command("sql", "EXPLAIN BEGIN", null);
+
+    assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
   }
 
   @Test
