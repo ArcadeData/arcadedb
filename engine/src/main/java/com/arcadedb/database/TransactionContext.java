@@ -3599,6 +3599,14 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Records a read of edge-list chunk {@code rid} that a reader served from {@link #getWrittenRecord(RID)}, the object this
+   * transaction queued for it, as {@link #getRecordFromCache(RID)} records one (#11590, #11769): an adjacency scan of the list.
+   */
+  public void trackReadOfWrittenEdgeSegment(final RID rid) {
+    trackReadOfWrittenChunk(rid);
+  }
+
+  /**
    * Records a read of edge-list chunk {@code rid} served from the object this transaction queued for it (#11590): the chunk it
    * holds is its own writes on top of the chunk as it read it, and the commit-time merges replay those writes onto the committed
    * chunk. Recorded on the chunk's slot of the page the transaction holds, as a read from that page is; deferred inside an
@@ -3619,15 +3627,12 @@ public class TransactionContext implements Transaction {
   }
 
   private void markChunkRead(final RID rid) {
-    if (modifiedPages == null)
-      return;
+    // #11769: on a page this transaction created too, where it puts the first chunk of a list, or a chunk in front of a full one:
+    // the edge-list head merge asks whether the application read such a chunk
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
-    if (bucket == null)
-      return;
-    final int maxRecordsInPage = bucket.getMaxRecordsInPage();
-    final MutablePage image = modifiedPages.get(new PageId(database, rid.getBucketId(), (int) (rid.getPosition() / maxRecordsInPage)));
+    final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
     if (image != null)
-      image.markSlotRead((int) (rid.getPosition() % maxRecordsInPage));
+      image.markSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage()));
   }
 
   private boolean isTrackingReadsFromOwnImage() {
@@ -6004,6 +6009,12 @@ public class TransactionContext implements Transaction {
       if (firstPutInFront == null || (committedHead != null && !isClassicEdgeSegment(committedHead)))
         throw new ConcurrentModificationException(
             "Edge list head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction. Please retry the operation");
+      // #11769: a walk of the list as this transaction holds it starts on the chunks it put in front, and stops on the head it read:
+      // the application that read one of them missed the chunks the other transaction put in front, and what it decided on that
+      // read (a DELETE of every relationship, a count) must not be committed with them re-linked behind
+      if (isChunkPutInFrontRead(ownHead, firstPutInFront))
+        throw new ConcurrentModificationException("Edge list of vertex " + vertex.getIdentity()
+            + " was read by this transaction before a concurrent transaction changed it. Please retry the operation");
 
       firstPutInFront.setPrevious(committedHead != null ? committedHead : NO_PREVIOUS_SEGMENT);
       final RID segmentRID = firstPutInFront.getIdentity();
@@ -6037,6 +6048,44 @@ public class TransactionContext implements Transaction {
       current = previous;
     }
     return null;
+  }
+
+  /**
+   * Whether the application read one of the chunks this transaction put in front of an edge list, from {@code ownHead} down to
+   * {@code last} included (#11769): the chain {@link #firstChunkPutInFront} validated. The reads are the ones recorded on the
+   * chunks' slots of the pages this transaction holds (#11590), an edge append's own reads of a chunk it wrote excluded.
+   */
+  private boolean isChunkPutInFrontRead(final RID ownHead, final MutableEdgeSegment last) {
+    RID current = ownHead;
+    while (current != null) {
+      if (isRecordReadFromOwnImage(current))
+        return true;
+      if (current.equals(last.getIdentity()))
+        return false;
+      final MutableEdgeSegment segment = ownEdgeSegment(current);
+      if (segment == null)
+        return true;
+      current = segment.getPreviousRID();
+    }
+    return true;
+  }
+
+  /** Whether a read of record {@code rid} was recorded on the page this transaction holds for it, modified or created (#11590). */
+  private boolean isRecordReadFromOwnImage(final RID rid) {
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
+    final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
+    return image != null && (image.isWholePageRead() || image.isSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage())));
+  }
+
+  /** The page this transaction holds for record {@code rid} of {@code bucket}, modified or created, null when it holds none. */
+  private MutablePage ownPageImageOf(final LocalBucket bucket, final RID rid) {
+    if (rid.getPosition() < 0)
+      return null;
+    final PageId pageId = new PageId(database, rid.getBucketId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage()));
+    final MutablePage image = modifiedPages != null ? modifiedPages.get(pageId) : null;
+    if (image != null)
+      return image;
+    return newPages != null ? newPages.get(pageId) : null;
   }
 
   /**
