@@ -19,8 +19,11 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.function.text.TextLevenshteinDistance;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -48,6 +51,7 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.WildcardQuery;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -356,8 +360,10 @@ public class FullTextQueryExecutor {
       return (keys, excluded) -> keys.contains(key);
     }
     if (query instanceof final PhraseQuery pq) {
-      // collectPhraseMatches requires every term and not their order
       final Term[] terms = pq.getTerms();
+      if (terms.length > 1)
+        // the positions of the terms are not among the keys of the record's postings (issue #12165)
+        return null;
       final String[] phraseKeys = new String[terms.length];
       for (int i = 0; i < terms.length; i++)
         phraseKeys[i] = buildSearchKey(terms[i].field(), terms[i].text());
@@ -765,10 +771,9 @@ public class FullTextQueryExecutor {
   }
 
   private void collectPhraseMatches(final PhraseQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    // For phrase queries, all terms must match in the same document
-    // Note: We can't verify word order without position indexing, so we just require all terms.
-    // Every phrase term is looked up under the SAME key a single-term query would use (buildSearchKey), so a phrase
-    // qualified to a field stays within that field and takes that field's boost; looking the terms up by their bare
+    // For phrase queries, all terms must match in the same document, and then at the positions the phrase gives them
+    // (keepPhraseMatches). Every phrase term is looked up under the SAME key a single-term query would use (buildSearchKey), so
+    // a phrase qualified to a field stays within that field and takes that field's boost; looking the terms up by their bare
     // text matched the phrase across every indexed property while the single-term form of the same query was correctly
     // restricted (issue #7000).
     final Term[] terms = query.getTerms();
@@ -807,11 +812,128 @@ public class FullTextQueryExecutor {
       }
     }
 
-    if (intersection != null) {
-      for (final RID rid : intersection.keySet()) {
-        tick();
-        scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(terms.length);
+    if (terms.length > 1)
+      keepPhraseMatches(query, intersection.keySet());
+
+    for (final RID rid : intersection.keySet()) {
+      tick();
+      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(terms.length);
+    }
+  }
+
+  /**
+   * Keeps the records of {@code candidates} that hold the phrase: its terms at the positions the query gives them, moved by no more
+   * than its slop in all, as Lucene's PhraseQuery matches them (issue #12165). The postings keep no position, so each candidate's
+   * indexed values are analyzed again with the index analyzer. A qualified phrase is looked for in its property, an unqualified one in
+   * each property of the index on its own: a phrase does not span two properties. The values of a list are one sequence of
+   * positions, the analyzer's position increment gap apart, as Lucene indexes a multi-valued field.
+   */
+  private void keepPhraseMatches(final PhraseQuery query, final Set<RID> candidates) {
+    final String field = query.getTerms()[0].field();
+    final int property = isUnqualified(field) ? -1 : propertyNames.indexOf(storedField(field));
+    if (property < 0 && !isUnqualified(field))
+      // a qualifier naming no indexed property: its keys are literal tokens, which the values do not hold as such
+      return;
+
+    final PhrasePositions phrase = new PhrasePositions(query);
+    final Analyzer indexAnalyzer = index.getIndexAnalyzer();
+    final DatabaseInternal database = index.getDatabase();
+    candidates.removeIf(rid -> {
+      tick();
+      if (rid.getBucketId() < 0)
+        return false;
+      final Record record;
+      try {
+        record = database.lookupByRID(rid, true);
+      } catch (final RecordNotFoundException e) {
+        return true;
       }
+      if (!(record instanceof final Document document))
+        return true;
+      final boolean[] found = new boolean[1];
+      database.getIndexer().forEachIndexKey(index, document, keys -> {
+        for (int i = 0; i < keys.length && !found[0]; i++)
+          if ((property < 0 || property == i) && keys[i] != null)
+            found[0] = phrase.matches(LSMTreeFullTextIndex.tokenPositions(indexAnalyzer, keys[i], phrase.terms()));
+      });
+      return !found[0];
+    });
+  }
+
+  /**
+   * The terms of a phrase, their positions in the query and its slop. A record holds the phrase when each term can be given one of
+   * its positions in the value, a term repeated in the phrase a different one each time, so that the positions less the query
+   * positions spread over no more than the slop: Lucene's match length, 0 for an exact phrase.
+   */
+  private static final class PhrasePositions {
+    private final String[]    terms;
+    private final int[]       offsets;
+    private final int         slop;
+    private final Set<String> distinct;
+
+    private PhrasePositions(final PhraseQuery query) {
+      final Term[] queryTerms = query.getTerms();
+      this.terms = new String[queryTerms.length];
+      for (int i = 0; i < queryTerms.length; i++)
+        terms[i] = queryTerms[i].text();
+      this.offsets = query.getPositions();
+      this.slop = query.getSlop();
+      this.distinct = Set.copyOf(Arrays.asList(terms));
+    }
+
+    private Set<String> terms() {
+      return distinct;
+    }
+
+    /** @param positions per term, its count in the first cell and its positions in ascending order after it */
+    private boolean matches(final Map<String, int[]> positions) {
+      final int[][] lists = new int[terms.length][];
+      for (int i = 0; i < terms.length; i++) {
+        lists[i] = positions.get(terms[i]);
+        if (lists[i] == null)
+          return false;
+      }
+      return place(0, lists, new int[terms.length], 0, 0);
+    }
+
+    private boolean place(final int i, final int[][] lists, final int[] chosen, final int min, final int max) {
+      if (i == terms.length)
+        return true;
+      final int[] list = lists[i];
+      final int count = list[0];
+      // the term's offset (its position less its query position) has to keep the spread of all offsets within the slop
+      final int low = i == 0 ? Integer.MIN_VALUE : max - slop + offsets[i];
+      final int high = i == 0 ? Integer.MAX_VALUE : min + slop + offsets[i];
+      for (int k = firstAtLeast(list, count, low); k <= count && list[k] <= high; k++) {
+        final int position = list[k];
+        if (takenBySameTerm(i, position, chosen))
+          continue;
+        chosen[i] = position;
+        final int offset = position - offsets[i];
+        if (place(i + 1, lists, chosen, i == 0 ? offset : Math.min(min, offset), i == 0 ? offset : Math.max(max, offset)))
+          return true;
+      }
+      return false;
+    }
+
+    private boolean takenBySameTerm(final int i, final int position, final int[] chosen) {
+      for (int j = 0; j < i; j++)
+        if (chosen[j] == position && terms[j].equals(terms[i]))
+          return true;
+      return false;
+    }
+
+    private static int firstAtLeast(final int[] list, final int count, final int value) {
+      int low = 1;
+      int high = count + 1;
+      while (low < high) {
+        final int mid = (low + high) >>> 1;
+        if (list[mid] < value)
+          low = mid + 1;
+        else
+          high = mid;
+      }
+      return low;
     }
   }
 
@@ -883,8 +1005,40 @@ public class FullTextQueryExecutor {
       final String token = key.substring(fieldPrefix.length());
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
-      return TextLevenshteinDistance.levenshteinDistance(token, term) <= maxEdits;
+      return fuzzyDistance(token, term, query.getTranspositions(), maxEdits) <= maxEdits;
     }, scoreMap, boostFor(field));
+  }
+
+  /**
+   * The edit distance Lucene's FuzzyQuery matches by (issue #12165): over code points, with a transposition of two adjacent
+   * characters counted as one edit when the query allows transpositions, which it does by default (the optimal string alignment
+   * distance), and as two otherwise. Answers {@code maxEdits + 1} at once when the lengths alone differ by more than
+   * {@code maxEdits}.
+   */
+  static int fuzzyDistance(final String token, final String term, final boolean transpositions, final int maxEdits) {
+    final int[] s = token.codePoints().toArray();
+    final int[] t = term.codePoints().toArray();
+    if (Math.abs(s.length - t.length) > maxEdits)
+      return maxEdits + 1;
+    int[] beforePrevious = new int[t.length + 1];
+    int[] previous = new int[t.length + 1];
+    int[] current = new int[t.length + 1];
+    for (int j = 0; j <= t.length; j++)
+      previous[j] = j;
+    for (int i = 1; i <= s.length; i++) {
+      current[0] = i;
+      for (int j = 1; j <= t.length; j++) {
+        int distance = Math.min(Math.min(previous[j], current[j - 1]) + 1, previous[j - 1] + (s[i - 1] == t[j - 1] ? 0 : 1));
+        if (transpositions && i > 1 && j > 1 && s[i - 1] == t[j - 2] && s[i - 2] == t[j - 1])
+          distance = Math.min(distance, beforePrevious[j - 2] + 1);
+        current[j] = distance;
+      }
+      final int[] recycled = beforePrevious;
+      beforePrevious = previous;
+      previous = current;
+      current = recycled;
+    }
+    return previous[t.length];
   }
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
