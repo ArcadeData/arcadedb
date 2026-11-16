@@ -1453,26 +1453,65 @@ final class AggregationShortcutPlanner {
       return null;
 
     final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().size() != 1)
-      return null;
-    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().getFirst();
-    if (!(returnItem.getExpression() instanceof FunctionCallExpression function) || function.getArguments().size() != 1
-        || !(function.getArguments().getFirst() instanceof PropertyAccessExpression access)
-        || !nodePattern.getVariable().equals(access.getVariableName()))
-      return null;
-    final boolean max;
-    if ("max".equalsIgnoreCase(function.getFunctionName()))
-      max = true;
-    else if ("min".equalsIgnoreCase(function.getFunctionName()))
-      max = false;
-    else
+    if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().isEmpty())
       return null;
 
     final String typeName = nodePattern.getLabels().getFirst();
-    final String propertyName = access.getPropertyName();
     final Schema schema = context.getDatabase().getSchema();
     if (!schema.existsType(typeName) || !(schema.getType(typeName) instanceof VertexType type))
       return null;
+
+    // Several aggregates of the whole label, RETURN min(n.k), max(n.k): each one is read from its own index (issue #12284)
+    if (returnClause.getReturnItems().size() > 1) {
+      if (whereClause != null)
+        return null;
+      final List<String> propertyNames = new ArrayList<>();
+      final List<Boolean> maxes = new ArrayList<>();
+      final List<String> aliases = new ArrayList<>();
+      for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+        final PropertyAccessExpression access = indexedMinMaxArgument(item, nodePattern, type);
+        if (access == null)
+          return null;
+        propertyNames.add(access.getPropertyName());
+        maxes.add("max".equalsIgnoreCase(((FunctionCallExpression) item.getExpression()).getFunctionName()));
+        aliases.add(item.getOutputName());
+      }
+      return new IndexMinMaxStep(typeName, propertyNames, maxes, aliases, context);
+    }
+
+    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().getFirst();
+    final PropertyAccessExpression access = indexedMinMaxArgument(returnItem, nodePattern, type);
+    if (access == null)
+      return null;
+    final boolean max = "max".equalsIgnoreCase(((FunctionCallExpression) returnItem.getExpression()).getFunctionName());
+    final String propertyName = access.getPropertyName();
+
+    if (whereClause == null)
+      return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
+
+    final BooleanExpression condition = whereClause.getConditionExpression();
+    final List<RangePredicate> range = new ArrayList<>(2);
+    if (condition == null || !collectRangeOn(condition, nodePattern.getVariable(), propertyName, range) || range.isEmpty())
+      return null;
+    return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), nodePattern.getVariable(), range,
+        condition, context);
+  }
+
+  /**
+   * The property of {@code item} when it is a {@code min(n.p)} or {@code max(n.p)} of the MATCH variable whose answer is one end of
+   * the index on p, else null: an ordered LSM index on p alone, defined on the label, that skips the vertices with no value and holds
+   * its keys case sensitive, on a key type whose index order is Cypher's.
+   */
+  private static PropertyAccessExpression indexedMinMaxArgument(final ReturnClause.ReturnItem item, final NodePattern nodePattern,
+      final VertexType type) {
+    if (!(item.getExpression() instanceof FunctionCallExpression function) || function.getArguments().size() != 1
+        || !(function.getArguments().getFirst() instanceof PropertyAccessExpression access)
+        || !nodePattern.getVariable().equals(access.getVariableName()))
+      return null;
+    if (!"max".equalsIgnoreCase(function.getFunctionName()) && !"min".equalsIgnoreCase(function.getFunctionName()))
+      return null;
+
+    final String propertyName = access.getPropertyName();
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (property == null || !CypherOptimizer.INDEX_ORDERED_KEY_TYPES.contains(property.getType()))
       return null;
@@ -1492,16 +1531,7 @@ final class AggregationShortcutPlanner {
     } catch (final IndexException e) {
       return null;
     }
-
-    if (whereClause == null)
-      return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
-
-    final BooleanExpression condition = whereClause.getConditionExpression();
-    final List<RangePredicate> range = new ArrayList<>(2);
-    if (condition == null || !collectRangeOn(condition, nodePattern.getVariable(), propertyName, range) || range.isEmpty())
-      return null;
-    return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), nodePattern.getVariable(), range,
-        condition, context);
+    return access;
   }
 
   /**

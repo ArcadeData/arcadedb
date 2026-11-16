@@ -911,20 +911,16 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info))
       return false;
 
-    // Check for MAX or MIN aggregate function on a single property
-    final MaxMinInfo maxMinInfo = getMaxMinInfo(info);
-    if (maxMinInfo == null)
+    // Every projected item is a MAX or a MIN of a property, or a count(*), at least one of them a MAX or a MIN (a lone count(*) is
+    // handleHardwiredCountOnType's): each is read on its own and the row is assembled from them (issue #12284)
+    final List<IndexAggregate> aggregates = indexAggregatesOf(statement.getProjection());
+    if (aggregates == null)
       return false;
 
     // Get the document type
     final String typeName = targetClass.getStringValue();
     final DocumentType documentType = context.getDatabase().getSchema().getType(typeName);
     if (documentType == null)
-      return false;
-
-    // Find an index on the property
-    final RangeIndex index = findIndexForProperty(documentType, maxMinInfo.propertyName);
-    if (index == null)
       return false;
 
     // The aggregate is over the records of the target, its subtypes included, and nothing else: the index of a subtype is routinely
@@ -934,13 +930,69 @@ public class SelectExecutionPlanner {
     final int[] targetBuckets = new int[polymorphicBuckets.size()];
     for (int i = 0; i < targetBuckets.length; i++)
       targetBuckets[i] = polymorphicBuckets.get(i);
-    if (!coversBuckets(index, targetBuckets))
-      return false;
+
+    final List<MaxMinFromIndexStep.Part> parts = new ArrayList<>(aggregates.size());
+    for (final IndexAggregate aggregate : aggregates) {
+      if (aggregate.property() == null) {
+        parts.add(MaxMinFromIndexStep.Part.count(aggregate.alias()));
+        continue;
+      }
+      // Find an index on the property
+      final RangeIndex index = findIndexForProperty(documentType, aggregate.property());
+      if (index == null || !coversBuckets(index, targetBuckets))
+        return false;
+      parts.add(new MaxMinFromIndexStep.Part(aggregate.alias(), index, aggregate.max()));
+    }
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, targetBuckets, context));
+    result.chain(new MaxMinFromIndexStep(parts, typeName, targetBuckets, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
+  }
+
+  /**
+   * One aggregate of a statement {@link #handleHardwiredMaxMinOnIndex} can answer.
+   *
+   * @param property the property of a MAX or a MIN, null for a count(*)
+   */
+  private record IndexAggregate(String alias, String property, boolean max) {
+  }
+
+  /**
+   * The aggregates of {@code projection} when every item is a bare {@code max(p)} or {@code min(p)} of a plain property, or
+   * {@code count(*)}, and at least one is a MAX or a MIN; else null. A modifier ({@code max(p).toString()}), an expression around
+   * the aggregate ({@code max(p) + 1}) or one inside it ({@code max(p.length())}) means the index key is not what is projected
+   * (issue #8976), and any other item needs the records.
+   */
+  private static List<IndexAggregate> indexAggregatesOf(final Projection projection) {
+    if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
+      return null;
+    final List<IndexAggregate> aggregates = new ArrayList<>(projection.getItems().size());
+    boolean minOrMax = false;
+    for (final ProjectionItem item : projection.getItems()) {
+      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null
+          || !(item.getExpression().getMathExpression() instanceof BaseExpression base) || base.getModifier() != null
+          || base.getIdentifier() == null || base.getIdentifier().getLevelZero() == null)
+        return null;
+      final FunctionCall functionCall = base.getIdentifier().getLevelZero().getFunctionCall();
+      if (functionCall == null || functionCall.getParams() == null || functionCall.getParams().size() != 1)
+        return null;
+
+      final String alias = item.getProjectionAliasAsString();
+      final String functionName = functionCall.getName().getStringValue().toLowerCase(Locale.ROOT);
+      if ("count".equals(functionName) && "count(*)".equalsIgnoreCase(item.getExpression().toString())) {
+        aggregates.add(new IndexAggregate(alias, null, false));
+        continue;
+      }
+      if (!"max".equals(functionName) && !"min".equals(functionName))
+        return null;
+      final Expression argument = functionCall.getParams().getFirst();
+      if (!argument.isBaseIdentifier())
+        return null;
+      aggregates.add(new IndexAggregate(alias, argument.getDefaultAlias().getStringValue(), "max".equals(functionName)));
+      minOrMax = true;
+    }
+    return minOrMax ? aggregates : null;
   }
 
   /**
@@ -1058,79 +1110,6 @@ public class SelectExecutionPlanner {
           && between.getSecond().isEarlyCalculated(context) && between.getThird() != null
           && between.getThird().isEarlyCalculated(context);
     return false;
-  }
-
-  /**
-   * Information about a MAX/MIN aggregate function.
-   *
-   * @param isMax true for MAX, false for MIN
-   */
-    private record MaxMinInfo(String propertyName, boolean isMax) {
-  }
-
-  /**
-   * Extracts MAX/MIN function info from the query if it's a simple MAX(field) or MIN(field).
-   * Returns null if the projection contains additional operations (e.g., max(field)+1).
-   */
-  private MaxMinInfo getMaxMinInfo(final QueryPlanningInfo info) {
-    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
-        || info.projection.getItems().size() != 1)
-      return null;
-
-    // preAggregateProjection contains the field expression (e.g., "value AS _$$$OALIAS$$$_1")
-    if (info.preAggregateProjection == null || info.preAggregateProjection.getItems().size() != 1)
-      return null;
-
-    // Ensure the projection expression is purely a function call (e.g., max(id)), not a compound
-    // expression like max(id)+1. If the projection has additional arithmetic, the index-optimized
-    // path would skip those operations and return wrong results.
-    final ProjectionItem projItem = info.projection.getItems().getFirst();
-    final Expression projExp = projItem.getExpression();
-    if (projExp.getMathExpression() == null || !(projExp.getMathExpression() instanceof BaseExpression))
-      return null;
-
-    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
-    final Expression exp = aggregateItem.getExpression();
-
-    if (exp.getMathExpression() == null || !(exp.getMathExpression() instanceof BaseExpression base))
-      return null;
-
-    if (base.getModifier() != null)
-      return null;
-
-    if (base.getIdentifier() == null || base.getIdentifier().getLevelZero() == null)
-      return null;
-
-    final FunctionCall functionCall = base.getIdentifier().getLevelZero().getFunctionCall();
-    if (functionCall == null)
-      return null;
-
-    final String functionName = functionCall.getName().getStringValue().toLowerCase(Locale.ROOT);
-    final boolean isMax;
-    if ("max".equals(functionName))
-      isMax = true;
-    else if ("min".equals(functionName))
-      isMax = false;
-    else
-      return null;
-
-    // Get the property name from the pre-aggregate projection
-    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().getFirst();
-    final Expression preAggExp = preAggItem.getExpression();
-
-    if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
-      return null;
-
-    // A MODIFIER (s.length(), s.toUpperCase()) MEANS THE INDEXED VALUE IS NOT WHAT IS AGGREGATED (ISSUE #8976)
-    if (preAggBase.getIdentifier() == null || preAggBase.getModifier() != null)
-      return null;
-
-    // For simple properties like "value", the identifier is in suffix, not levelZero
-    final SuffixIdentifier suffix = preAggBase.getIdentifier().suffix;
-    if (suffix == null || suffix.identifier == null)
-      return null;
-
-    return new MaxMinInfo(suffix.identifier.getStringValue(), isMax);
   }
 
   /** True when the index has a sub-index on every one of the buckets, so that it holds the entries of all their records. */

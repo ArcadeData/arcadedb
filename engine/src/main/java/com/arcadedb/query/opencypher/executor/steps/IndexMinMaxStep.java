@@ -57,10 +57,11 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class IndexMinMaxStep extends AbstractExecutionStep {
-  private final String  typeName;
-  private final String  propertyName;
-  private final boolean max;
-  private final String  outputAlias;
+  private final String   typeName;
+  /** One aggregate per part, in RETURN order: several only for the whole label, with no WHERE (issue #12284). */
+  private final String[]  propertyNames;
+  private final boolean[] maxes;
+  private final String[]  outputAliases;
   /** The MATCH variable and the range of the WHERE, or null for the whole label. */
   private final String               variable;
   private final List<RangePredicate> range;
@@ -79,11 +80,27 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
    */
   public IndexMinMaxStep(final String typeName, final String propertyName, final boolean max, final String outputAlias,
       final String variable, final List<RangePredicate> range, final BooleanExpression filter, final CommandContext context) {
+    this(typeName, new String[] { propertyName }, new boolean[] { max }, new String[] { outputAlias }, variable, range, filter,
+        context);
+  }
+
+  /**
+   * Several aggregates of the whole label in one row ({@code RETURN min(n.k), max(n.k)}, issue #12284), each read from one end of
+   * the index on its property.
+   */
+  public IndexMinMaxStep(final String typeName, final List<String> propertyNames, final List<Boolean> maxes,
+      final List<String> outputAliases, final CommandContext context) {
+    this(typeName, propertyNames.toArray(new String[0]), toArray(maxes), outputAliases.toArray(new String[0]), null, null, null,
+        context);
+  }
+
+  private IndexMinMaxStep(final String typeName, final String[] propertyNames, final boolean[] maxes, final String[] outputAliases,
+      final String variable, final List<RangePredicate> range, final BooleanExpression filter, final CommandContext context) {
     super(context);
     this.typeName = typeName;
-    this.propertyName = propertyName;
-    this.max = max;
-    this.outputAlias = outputAlias;
+    this.propertyNames = propertyNames;
+    this.maxes = maxes;
+    this.outputAliases = outputAliases;
     this.variable = variable;
     this.range = range;
     this.filter = filter;
@@ -96,9 +113,10 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
     executed = true;
 
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
-    final Object value;
+    final ResultInternal result = new ResultInternal();
     try {
-      value = readEnd(context);
+      for (int i = 0; i < propertyNames.length; i++)
+        result.setProperty(outputAliases[i], readEnd(context, propertyNames[i], maxes[i]));
       if (context.isProfiling())
         rowCount++;
     } finally {
@@ -106,14 +124,12 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
         cost += System.nanoTime() - begin;
     }
 
-    final ResultInternal result = new ResultInternal();
-    result.setProperty(outputAlias, value);
     final InternalResultSet resultSet = new InternalResultSet();
     resultSet.add(result);
     return resultSet;
   }
 
-  private Object readEnd(final CommandContext context) {
+  private Object readEnd(final CommandContext context, final String propertyName, final boolean max) {
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
     // Read per execution, not at planning: the plan is cached, and the index can be dropped in between. An empty answer
     // would pass for a label with no values, so fail instead
@@ -128,7 +144,7 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
           "The index on '" + typeName + "." + propertyName + "' is case-insensitive now: re-plan the query");
 
     if (filter != null)
-      return readEndOfRange(context, index);
+      return readEndOfRange(context, index, propertyName, max);
 
     final IndexCursor cursor = index.iterator(!max);
     try {
@@ -150,7 +166,7 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
   /**
    * The first value, from the end the aggregate looks at, of a row of the range that passes the WHERE.
    */
-  private Object readEndOfRange(final CommandContext context, final TypeIndex index) {
+  private Object readEndOfRange(final CommandContext context, final TypeIndex index, final String propertyName, final boolean max) {
     // a comparison with null is never true: a null parameter bound leaves nothing to find, so do not walk the index for it
     for (final RangePredicate predicate : range)
       if (predicate.isParameter() && context.getInputParameters() != null
@@ -186,7 +202,9 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder builder = new StringBuilder();
     builder.append("  ".repeat(Math.max(0, depth * indent)));
-    builder.append(max ? "+ MAX" : "+ MIN").append(" FROM INDEX ").append(typeName).append('[').append(propertyName).append(']');
+    for (int i = 0; i < propertyNames.length; i++)
+      builder.append(i == 0 ? "+ " : ", ").append(maxes[i] ? "MAX" : "MIN").append(" FROM INDEX ").append(typeName).append('[')
+          .append(propertyNames[i]).append(']');
     if (filter != null)
       builder.append(" WHERE ").append(filter.getText());
     if (context.isProfiling()) {
@@ -196,5 +214,12 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
       builder.append(")");
     }
     return builder.toString();
+  }
+
+  private static boolean[] toArray(final List<Boolean> values) {
+    final boolean[] array = new boolean[values.size()];
+    for (int i = 0; i < array.length; i++)
+      array[i] = values.get(i);
+    return array;
   }
 }
