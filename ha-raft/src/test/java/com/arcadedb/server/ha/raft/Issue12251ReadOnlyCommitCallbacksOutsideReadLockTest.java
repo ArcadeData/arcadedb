@@ -90,4 +90,50 @@ class Issue12251ReadOnlyCommitCallbacksOutsideReadLockTest extends BaseRaftHATes
         }
     }
   }
+
+  /** The after-commit callbacks (the ones a materialized view registers) run outside the read lock too. */
+  @Test
+  void aSchemaChangeMadeWhileTheAfterCommitCallbackOfAReadOnlyCommitRunsIsNotHeldOffByIt() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+
+    final AtomicBoolean callbackRan = new AtomicBoolean();
+    final AtomicBoolean schemaChangeEndedWhileTheCallbackRan = new AtomicBoolean();
+    final AtomicReference<Throwable> schemaChangeFailure = new AtomicReference<>();
+    final Thread[] schemaChange = new Thread[1];
+
+    leaderDb.transaction(() -> ((DatabaseInternal) leaderDb).getTransaction().addAfterCommitCallback(() -> {
+      callbackRan.set(true);
+      schemaChange[0] = new Thread(() -> {
+        try {
+          leaderDb.command("sql", "CREATE DOCUMENT TYPE Issue12251AfterCommit").close();
+        } catch (final Throwable t) {
+          schemaChangeFailure.set(t);
+        }
+      }, "schema-change-12251-after-commit");
+      schemaChange[0].start();
+      try {
+        schemaChange[0].join(20_000);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      schemaChangeEndedWhileTheCallbackRan.set(!schemaChange[0].isAlive());
+    }));
+
+    try {
+      assertThat(callbackRan.get()).as("the read-only commit ran its after-commit callback").isTrue();
+      assertThat(schemaChangeEndedWhileTheCallbackRan.get())
+          .as("the schema change completed while the after-commit callback of the read-only commit was running").isTrue();
+      assertThat(schemaChangeFailure.get()).isNull();
+      assertThat(leaderDb.getSchema().existsType("Issue12251AfterCommit")).isTrue();
+    } finally {
+      if (schemaChange[0] != null)
+        try {
+          schemaChange[0].join(60_000);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+    }
+  }
 }
