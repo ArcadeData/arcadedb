@@ -134,7 +134,7 @@ class Issue11946ReplayedSchemaEntryKeepsNewerSchemaTest {
   @Test
   void aCopyCreatedInThisSessionTakesEveryEntry() {
     final ArcadeStateMachine stateMachine = stateMachine();
-    stateMachine.forgetPositionOfPreviousSession(DB);
+    stateMachine.appliedIndexes.forgetPositionOfPreviousSession(DB);
 
     final JSONObject newer = db.getSchema().getEmbedded().toJSON();
     newer.getJSONObject("settings").put("dateFormat", "yyyy/MM/dd");

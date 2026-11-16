@@ -99,9 +99,9 @@ class Issue7037SnapshotInstallSpaceCheckTest {
 
   @Test
   void raftStorageWithNoReportedTotalSpaceIsNotReadAsFull() {
-    assertThat(RaftHAServer.hasRoomForSegments(0L, 0L, 64L << 20)).isTrue();
-    assertThat(RaftHAServer.hasRoomForSegments(0L, 1L << 30, 64L << 20)).isFalse();
-    assertThat(RaftHAServer.hasRoomForSegments(1L << 30, 1L << 30, 64L << 20)).isTrue();
+    assertThat(RaftStorageFiles.hasRoomForSegments(0L, 0L, 64L << 20)).isTrue();
+    assertThat(RaftStorageFiles.hasRoomForSegments(0L, 1L << 30, 64L << 20)).isFalse();
+    assertThat(RaftStorageFiles.hasRoomForSegments(1L << 30, 1L << 30, 64L << 20)).isTrue();
   }
 
   @Test

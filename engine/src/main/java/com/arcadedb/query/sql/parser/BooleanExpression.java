@@ -258,6 +258,14 @@ public abstract class BooleanExpression extends SimpleNode {
     return false;
   }
 
+  /**
+   * Whether evaluating this condition on a record sets {@code $similarity} too, as a more-like-this function condition does
+   * (issue #11773). Implies {@link #setsScore}.
+   */
+  public boolean setsSimilarity(final CommandContext context) {
+    return false;
+  }
+
   public List<AndBlock> flatten() {
     return List.of(encapsulateInAndBlock(this));
   }

@@ -1456,7 +1456,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private long localWalTxId(final ReplicationPayload payload) {
     try {
-      return ArcadeStateMachine.peekWalTransactionId(payload.walData());
+      return CommittedEntryDecoding.peekWalTransactionId(payload.walData());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not read the WAL transaction id of a replicated entry (db=%s): %s", getName(), e.getMessage());
@@ -1520,7 +1520,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // choke point besides the pre-append guard), so reconciliation works on a fenced database - it is the
     // same page-level machinery recovery replay uses on reopen.
     try {
-      final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
+      final WALFile.WALTransaction walTx = CommittedEntryDecoding.deserializeWalTransaction(payload.walData());
       // The BM25 corpus deltas ride with the bucket record counts and obey the same rule: applyChanges folds them only when it
       // advances a page. The local commit folds both as the LAST step of publishing its pages, so a failure before that leaves a
       // page to advance here, and one after it finds every page published and folds nothing (a fold counted twice would be
@@ -2668,7 +2668,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void refuseReadWhileRemovedFromConfiguration(final Database.READ_CONSISTENCY consistency) {
     if (raftHAServer.isRemovedFromConfiguration())
-      throw RaftHAServer.readRefusedWhileRemovedFromConfiguration(getName(), consistency);
+      throw AppliedIndexWaits.readRefusedWhileRemovedFromConfiguration(getName(), consistency);
   }
 
   @Deprecated
@@ -3277,7 +3277,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     for (int i = walEntries.size() - 1; i >= 0; i--) {
       final WALFile.WALTransaction tx;
       try {
-        tx = ArcadeStateMachine.deserializeWalTransaction(walEntries.get(i));
+        tx = CommittedEntryDecoding.deserializeWalTransaction(walEntries.get(i));
       } catch (final RuntimeException e) {
         // Unreadable here means unreadable to nobody's benefit: shipped as it is, as before
         continue;
@@ -3312,7 +3312,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     for (final byte[] wal : buffered) {
       final WALFile.WALTransaction tx;
       try {
-        tx = ArcadeStateMachine.deserializeWalTransaction(wal);
+        tx = CommittedEntryDecoding.deserializeWalTransaction(wal);
       } catch (final RuntimeException e) {
         return true;
       }

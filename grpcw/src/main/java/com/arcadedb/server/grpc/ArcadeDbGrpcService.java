@@ -1188,9 +1188,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       throw new IllegalArgumentException("targetClass is required");
 
     final Schema schema = db.getSchema();
+    // getType refuses a missing type with a SchemaException, answered as one by every protocol (issue #11633)
     final DocumentType dt = schema.getType(cls);
-    if (dt == null)
-      throw new IllegalArgumentException("Class not found: " + cls);
 
     // All properties from the request (proto map) — nested under "record"
     final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();

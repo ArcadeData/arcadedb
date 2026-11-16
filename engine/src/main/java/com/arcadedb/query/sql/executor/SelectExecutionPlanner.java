@@ -177,6 +177,8 @@ public class SelectExecutionPlanner {
    */
   private              String            rangeMinMaxSource;
   private              String            rangeMinMaxAlias;
+  /** The statement's own LIMIT of a rewritten range min()/max(), applied to the one row the fetch gives back (issue #11871). */
+  private              Limit             rangeMinMaxOuterLimit;
   /**
    * Set for the last attempt of a statement whose index kept going away while it was planned and read (issue #9615): the plan
    * then reads the types it targets without their key indexes, which a concurrent DDL cannot take away under it.
@@ -207,6 +209,7 @@ public class SelectExecutionPlanner {
     info = new QueryPlanningInfo();
     rangeMinMaxSource = null;
     rangeMinMaxAlias = null;
+    rangeMinMaxOuterLimit = null;
     info.projection = this.statement.getProjection() == null ? null : this.statement.getProjection().copy();
     info.projection = translateDistinct(info.projection);
     info.distinct = info.projection != null && info.projection.isDistinct();
@@ -477,8 +480,11 @@ public class SelectExecutionPlanner {
 
       handleProjectionsBlock(selectExecutionPlan, info, context);
 
-      if (rangeMinMaxSource != null)
+      if (rangeMinMaxSource != null) {
         selectExecutionPlan.chain(new FirstRowValueStep(rangeMinMaxSource, rangeMinMaxAlias, context));
+        if (rangeMinMaxOuterLimit != null)
+          selectExecutionPlan.chain(new LimitExecutionStep(rangeMinMaxOuterLimit, context));
+      }
 
       chainTimeout(selectExecutionPlan, info, context);
     }
@@ -951,15 +957,19 @@ public class SelectExecutionPlanner {
    * <p>
    * Only the shape where the rewrite is the same query is taken: one {@code min}/{@code max} of a plain property that
    * has an ordered index, nothing but a conjunction of range comparisons of that very property against values that need
-   * no record, and none of the clauses that would see the difference (GROUP BY, ORDER BY, SKIP, LIMIT, LET, UNWIND,
-   * DISTINCT, TIMEOUT). A range excludes null by itself, which is why no null can come first, as it would for an
-   * unranged {@code ORDER BY}.
+   * no record, and none of the clauses that would see the difference (GROUP BY, ORDER BY, SKIP, LET, UNWIND, DISTINCT).
+   * A range excludes null by itself, which is why no null can come first, as it would for an unranged {@code ORDER BY}.
+   * <p>
+   * A LIMIT and a TIMEOUT are kept (issue #11871): the HTTP endpoints append a LIMIT to every SELECT, and clients stamp a
+   * TIMEOUT on their reads, so refusing them left the rewrite unreachable over HTTP. The aggregate gives one row, so the
+   * statement's LIMIT is applied to that row after the {@link FirstRowValueStep} (LIMIT 0 still answers nothing), and a
+   * TIMEOUT only bounds a plan that now ends sooner.
    */
   private void rewriteRangeMinMaxAsOrderedFetch(final CommandContext context) {
     // the ordered fetch stops at the first row, the facets need every match
     if (info.facets != null || info.whereClause == null || info.projection == null || info.target == null || info.distinct || info.expand
-        || info.groupBy != null || info.orderBy != null || info.skip != null || info.limit != null || info.unwind != null
-        || info.perRecordLetClause != null || info.timeout != null || statement.getLetClause() != null)
+        || info.groupBy != null || info.orderBy != null || info.skip != null || info.unwind != null
+        || info.perRecordLetClause != null || statement.getLetClause() != null)
       return;
 
     final Identifier targetClass = info.target.getItem().getIdentifier();
@@ -1023,6 +1033,7 @@ public class SelectExecutionPlanner {
 
     info.projection = projection;
     info.orderBy = orderBy;
+    rangeMinMaxOuterLimit = info.limit;
     info.limit = limit;
     rangeMinMaxSource = propertyName;
     rangeMinMaxAlias = alias;
