@@ -189,7 +189,7 @@ public class SelectCompositeIndexTest extends TestHelper {
   @Test
   void compositeIndexPrefixMatchWithSkipAndLimit() {
     // THE #6565 CANDIDATE CAP (skip + limit) ON THE COMPOSITE-INDEX/ORDER-BY-ELIDED PATH MUST BEHAVE LIKE IT DOES ON
-    // THE SINGLE-PROPERTY PATH (SEE Issue6565SelectIndexCandidateLimitTest)
+    // THE SINGLE-PROPERTY PATH (SEE SelectIndexCandidatesTest.CandidateLimit)
     final SelectCompiled select = database.select().fromType("Supplier")//
         .where().property("key1").eq().value("a")//
         .and().property("key2").eq().value("b")//
@@ -451,7 +451,7 @@ public class SelectCompositeIndexTest extends TestHelper {
   @Test
   void compositeIndexNotUsedWithNotInTheConjunction() {
     // SelectOperator.not HAS NO FLUENT ENTRY POINT ON THE Select BUILDER TODAY (SEE
-    // Issue6565SelectIndexCandidateLimitTest.notLeafIsNeverTreatedAsExactlyIndexed) - THE TREE IS BUILT BY HAND HERE.
+    // SelectIndexCandidatesTest.CandidateLimit.notLeafIsNeverTreatedAsExactlyIndexed) - THE TREE IS BUILT BY HAND HERE.
     // isPureAndConjunction() MUST REJECT A not() ANYWHERE IN AN OTHERWISE COMPOSITE-ELIGIBLE AND CHAIN THE SAME WAY
     // IT ALREADY REJECTS or(), FALLING BACK TO THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH (NO
     // CURSOR AT ALL HERE, SINCE NEITHER key1 NOR key2 HAS ITS OWN STANDALONE INDEX)

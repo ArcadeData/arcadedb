@@ -97,7 +97,7 @@ class SourceTextTestsAreRecordedTest {
       entry("grpcw/src/test/java/com/arcadedb/server/grpc/Issue7472EveryGrpcFailureIsConcealableTest.java", SOURCE_ONLY
           + ": an inlined static final String, and a throwable's message reaching a status is data flow; its call-site scan is "
           + "GrpcFailureConcealmentDecisionCensusTest"),
-      entry("engine/src/test/java/com/arcadedb/serializer/Issue7638DateColumnPrecisionTest.java",
+      entry("engine/src/test/java/com/arcadedb/serializer/JsonTemporalSerializationTest.java",
           SOURCE_ONLY + ": a division by an inlined constant, and a variable named timestamp")));
 
   @Test

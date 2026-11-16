@@ -27,6 +27,7 @@ import com.arcadedb.database.DocumentValidator.StoredValueConstraints;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -35,10 +36,15 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 public class AlterPropertyStatement extends DDLStatement {
+  /** The settings ALTER PROPERTY can change, in the order its documentation lists them. */
+  private static final List<String> SUPPORTED_SETTINGS = List.of("name", "readonly", "mandatory", "notnull", "hidden", "external",
+      "compression", "max", "min", "default", "regexp");
+
   public Expression settingValue;
   public Identifier typeName;
   public Identifier propertyName;
@@ -85,6 +91,11 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase(Locale.ENGLISH);
+      // The setting is checked BEFORE its value is evaluated (issue #11803): an unsupported one used to be reported only after
+      // the value had been, so 'TYPE LONG' was refused for its bare-word value with the advice to quote it, and the quoted form
+      // was then refused for the setting - the advice led to a second failure. A setting no ALTER PROPERTY supports is a
+      // statement that cannot be run, so it is refused as one
+      requireSupportedSetting(setting, typez, property);
       // NAME is read as an identifier - getDefaultAlias() resolves a bare `NAME newName` (mirroring ALTER TYPE ...
       // NAME) or a backtick-quoted `NAME \`odd name\`` to the plain, unescaped name - rather than as an evaluated
       // expression, so it is taken literally rather than resolved as a variable reference, and any backtick
@@ -142,7 +153,8 @@ public class AlterPropertyStatement extends DDLStatement {
         requireStoredValuesWithin(db, typez, property, finalValue, null, null, "" + finalValue, "REGEXP " + finalValue);
         property.setRegexp(finalValue == null ? null : "" + finalValue);
       } else {
-        throw new CommandExecutionException("Setting '" + setting + "' not supported");
+        // unreachable: requireSupportedSetting() refused it above. Kept for a setting added there without an arm here
+        throw new CommandSQLParsingException("Setting '" + setting + "' not supported");
       }
 
       result.setProperty("operation", "alter property");
@@ -156,6 +168,27 @@ public class AlterPropertyStatement extends DDLStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * Refuses a setting ALTER PROPERTY cannot change, naming the ones it can. The TYPE of a property gets its own answer, since it
+   * is the one a caller most often reaches for: a property's type is fixed when it is created, because the records already
+   * hold values of that type and its indexes are keyed on it.
+   */
+  private static void requireSupportedSetting(final String setting, final DocumentType type, final Property property) {
+    if (SUPPORTED_SETTINGS.contains(setting))
+      return;
+
+    final String supported = String.join(", ", SUPPORTED_SETTINGS).toUpperCase(Locale.ENGLISH);
+    if ("type".equals(setting))
+      throw new CommandSQLParsingException(
+          "The type of property " + type.getName() + "." + property.getName() + " cannot be changed: a property keeps the type it "
+              + "was created with. To change it, create a property of the new type, copy the values with UPDATE " + type.getName()
+              + " SET <newProperty> = " + property.getName() + ", drop the old property (with FORCE to drop its indexes too), "
+              + "rename the new one and recreate the indexes on it. ALTER PROPERTY can change " + supported);
+
+    throw new CommandSQLParsingException("Setting '" + setting + "' not supported by ALTER PROPERTY, which can change " + supported
+        + ", or a custom attribute with CUSTOM <name> = <value>");
   }
 
   /**

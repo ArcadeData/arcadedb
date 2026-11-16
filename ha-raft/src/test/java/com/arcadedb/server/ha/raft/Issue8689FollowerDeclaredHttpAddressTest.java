@@ -77,7 +77,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void aCommittedMemberWithNoEntryGetsTheDeclaredAddress() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, MEMBER, JOINED), httpAddresses,
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, MEMBER, JOINED), httpAddresses,
         Map.of(), JOINED, ADDRESS)).isTrue();
     assertThat(httpAddresses.get(JOINED)).isEqualTo(ADDRESS);
   }
@@ -87,7 +87,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void aDerivedEntryIsReplaced() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>(Map.of(JOINED, "localhost:22944"));
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses, Map.of(),
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses, Map.of(),
         JOINED, ADDRESS)).isTrue();
     assertThat(httpAddresses.get(JOINED)).isEqualTo(ADDRESS);
   }
@@ -97,7 +97,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void theSameAddressAgainIsNotAChange() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>(Map.of(JOINED, ADDRESS));
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses, Map.of(),
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses, Map.of(),
         JOINED, ADDRESS)).isFalse();
   }
 
@@ -106,7 +106,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void anEntryThisNodesServerListDeclaredIsKept() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>(Map.of(JOINED, "localhost:2490"));
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses,
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses,
         Map.of(JOINED, "localhost:2490"), JOINED, ADDRESS)).isFalse();
     assertThat(httpAddresses.get(JOINED)).isEqualTo("localhost:2490");
   }
@@ -121,7 +121,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void aDroppedServerListEntryDoesNotOutrankANewerDeclaration() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses,
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, JOINED), httpAddresses,
         Map.of(JOINED, "localhost:2490"), JOINED, ADDRESS)).isTrue();
     assertThat(httpAddresses.get(JOINED)).isEqualTo(ADDRESS);
   }
@@ -131,9 +131,9 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void aPeerOutsideTheCommittedConfigurationIsRefused() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, MEMBER), httpAddresses, Map.of(),
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, MEMBER), httpAddresses, Map.of(),
         JOINED, ADDRESS)).isFalse();
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, null, httpAddresses, Map.of(), JOINED, ADDRESS))
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, null, httpAddresses, Map.of(), JOINED, ADDRESS))
         .as("an unreadable configuration is not proof of membership").isFalse();
     assertThat(httpAddresses).isEmpty();
   }
@@ -143,7 +143,7 @@ class Issue8689FollowerDeclaredHttpAddressTest {
   void thisNodesOwnAddressIsNeverRecorded() {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
 
-    assertThat(RaftHAServer.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, MEMBER), httpAddresses, Map.of(),
+    assertThat(PeerAdmission.recordAdmittedPeerHttpAddress(LEADER, committed(LEADER, MEMBER), httpAddresses, Map.of(),
         LEADER, ADDRESS)).isFalse();
     assertThat(httpAddresses).isEmpty();
   }

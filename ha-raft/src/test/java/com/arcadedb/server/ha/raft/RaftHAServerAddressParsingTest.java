@@ -438,18 +438,18 @@ class RaftHAServerAddressParsingTest {
 
   @Test
   void deriveRoutingAddressCombinesRaftHostWithPort() {
-    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", 7687)).isEqualTo("db1:7687");
-    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", 50051)).isEqualTo("db1:50051");
+    assertThat(PeerEndpoints.deriveRoutingAddress("db1:2434", 7687)).isEqualTo("db1:7687");
+    assertThat(PeerEndpoints.deriveRoutingAddress("db1:2434", 50051)).isEqualTo("db1:50051");
   }
 
   @Test
   void deriveRoutingAddressReturnsNullForNonPositivePort() {
-    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", 0)).isNull();
-    assertThat(RaftHAServer.deriveRoutingAddress("db1:2434", -1)).isNull();
+    assertThat(PeerEndpoints.deriveRoutingAddress("db1:2434", 0)).isNull();
+    assertThat(PeerEndpoints.deriveRoutingAddress("db1:2434", -1)).isNull();
   }
 
   @Test
   void deriveRoutingAddressHandlesIpv6Literal() {
-    assertThat(RaftHAServer.deriveRoutingAddress("[::1]:2434", 7687)).isEqualTo("[::1]:7687");
+    assertThat(PeerEndpoints.deriveRoutingAddress("[::1]:2434", 7687)).isEqualTo("[::1]:7687");
   }
 }

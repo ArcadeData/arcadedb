@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -30,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.DateTimeException;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAccessor;
 
@@ -71,7 +73,7 @@ public class FormatFunction implements StatelessFunction {
 
     // CypherDuration is not a TemporalAccessor, handle separately
     if (args[0] instanceof CypherDuration)
-      throw new CommandExecutionException("format() with a pattern is not supported for Duration values");
+      throw new InvalidArgumentException("format() with a pattern is not supported for Duration values");
 
     // Extract the TemporalAccessor from Cypher temporal types
     final TemporalAccessor temporal;
@@ -88,8 +90,14 @@ public class FormatFunction implements StatelessFunction {
     else if (args[0] instanceof TemporalAccessor)
       temporal = (TemporalAccessor) args[0];
     else
-      throw new CommandExecutionException("format() requires a temporal value as first argument");
+      throw new TypeMismatchException("format() requires a temporal value as first argument");
 
-    return formatter.format(temporal);
+    try {
+      return formatter.format(temporal);
+    } catch (final DateTimeException e) {
+      // a pattern naming a field the value does not carry ('HH' on a date) is the caller's mistake (issue #11589)
+      throw new InvalidArgumentException("format() pattern '" + InvalidArgumentException.quote(pattern) + "' cannot format "
+          + args[0].getClass().getSimpleName() + ": " + e.getMessage(), e);
+    }
   }
 }

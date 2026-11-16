@@ -114,6 +114,26 @@ class StringRidHashMapTest {
     assertThat(seen).isEqualTo(expected);
   }
 
+  /** Issue #11801: the duplicate check of the batch loader enters each id once, in one probe, and never overwrites. */
+  @Test
+  void putIfAbsentAddsOnceAndNeverOverwrites() {
+    final StringRidHashMap map = new StringRidHashMap(4);
+    assertThat(map.putIfAbsent("a", 1, 10)).isTrue();
+    assertThat(map.putIfAbsent("a", 2, 20)).isFalse();
+    assertThat(map.get("a")).isEqualTo(new RID(1, 10));
+    assertThat(map.size()).isEqualTo(1);
+
+    // across resizes, and mixed with put()
+    for (int i = 0; i < 1_000; i++)
+      assertThat(map.putIfAbsent("k" + i, 3, i)).isTrue();
+    for (int i = 0; i < 1_000; i++)
+      assertThat(map.putIfAbsent("k" + i, 4, -i)).isFalse();
+    map.put("k7", 5, 70);
+    assertThat(map.get("k7")).isEqualTo(new RID(5, 70));
+    assertThat(map.get("k8")).isEqualTo(new RID(3, 8));
+    assertThat(map.size()).isEqualTo(1_001);
+  }
+
   /**
    * The reason this class exists: a {@code HashMap<String, RID>} costs ~170 bytes for a key of this length (and four
    * objects), and the load that hit issue #5470 keeps one entry per vertex alive for the whole request.

@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue10088MisdirectedListenerDoesNotBlockTest {
 
   // None of these refusals carries a self-dial probe's nonce (issue #10299)
-  private static final long NO_PROBE = RaftHAServer.NO_PROBE_CALL_ID;
+  private static final long NO_PROBE = MisdirectedRaftRequests.NO_PROBE_CALL_ID;
   private static final String SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   // Every call below arrives from this host; whether one is this node's own is settled by a probe (issue #10299)
   private static final InetSocketAddress FROM_THIS_HOST = new InetSocketAddress(InetAddress.getLoopbackAddress(), 40_000);

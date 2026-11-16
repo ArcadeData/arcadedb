@@ -148,8 +148,8 @@ class Issue8843BootstrapStateInFlightPagesTest {
   /** A sweep over several databases shares one settle deadline: what is left of it, never negative once spent. */
   @Test
   void aSweepSharesOneSettleDeadline() {
-    assertThat(ArcadeStateMachine.settleBudget(System.currentTimeMillis() - 1_000L)).isZero();
-    assertThat(ArcadeStateMachine.settleBudget(System.currentTimeMillis() + 60_000L)).isBetween(1L, 60_000L);
+    assertThat(BootstrapDivergenceCheck.settleBudget(System.currentTimeMillis() - 1_000L)).isZero();
+    assertThat(BootstrapDivergenceCheck.settleBudget(System.currentTimeMillis() + 60_000L)).isBetween(1L, 60_000L);
   }
 
   /**
@@ -162,7 +162,7 @@ class Issue8843BootstrapStateInFlightPagesTest {
     sm.setServer(stubbedServer());
 
     final Sample sample = sampleWhileTheLastCommitIsInFlight(
-        () -> sm.readLocalBootstrapState(DB_NAME, ArcadeStateMachine.settleBudget(0L)).fingerprint());
+        () -> sm.readLocalBootstrapState(DB_NAME, BootstrapDivergenceCheck.settleBudget(0L)).fingerprint());
 
     assertThat(sample.whileInFlight).isEqualTo(sample.rawWhileInFlight);
   }

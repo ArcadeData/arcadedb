@@ -403,7 +403,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    */
   public TypeLSMVectorIndexBuilder withPersistedMetadata(final JSONObject json) {
     if (json != null)
-      vectorMetadata().fromJSON(json);
+      readPersistedDefinition(vectorMetadata(), json);
     return this;
   }
 }

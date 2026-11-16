@@ -18,8 +18,10 @@
  */
 package com.arcadedb.function.convert;
 
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 
 /**
  * convert.fromJsonList(json) - Parse JSON string to list.
@@ -53,6 +55,11 @@ public class ConvertFromJsonList extends AbstractConvertFunction {
       return null;
 
     final String json = args[0].toString();
-    return new JSONArray(json).toList();
+    try {
+      return new JSONArray(json).toList();
+    } catch (final JSONException e) {
+      // issue #11589: a text that is no JSON array is the caller's mistake
+      throw new InvalidArgumentException(getName() + "(): " + e.getMessage(), e);
+    }
   }
 }

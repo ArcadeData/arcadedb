@@ -1307,7 +1307,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.DECR() != null || (ctx.ARROW_LEFT() != null && ctx.identifier() == null)) {
       final MatchPathItem pathItem = new MatchPathItem();
       String methodName;
-      if (ctx.GT() != null || (ctx.MINUS() != null && ctx.ARROW_LEFT() == null)) {
+      // MINUS() is the list of the rule's MINUS tokens, never null: testing it for null took every -- for a --> (issue #11598)
+      if (ctx.GT() != null) {
         // DECR GT = --> = outgoing
         methodName = "out";
       } else if (ctx.ARROW_LEFT() != null) {
@@ -1411,10 +1412,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Check for arrow syntax alternatives
-    if (ctx.MINUS() != null || ctx.ARROW_LEFT() != null || ctx.DECR() != null) {
+    // MINUS() is the list of the rule's MINUS tokens, never null: testing it for null sent the simple methodName{...} form
+    // down this branch as an edge type (issue #11598)
+    if (!ctx.MINUS().isEmpty() || ctx.ARROW_LEFT() != null || ctx.DECR() != null) {
       // Determine method name based on arrow direction
       String methodName;
-      if (ctx.ARROW_LEFT() != null && ctx.MINUS() != null && ctx.identifier() == null) {
+      if (ctx.ARROW_LEFT() != null && !ctx.MINUS().isEmpty() && ctx.identifier() == null) {
         // <-- : anonymous incoming edge
         methodName = "in";
       } else if (ctx.DECR() != null && ctx.GT() != null) {
@@ -6292,6 +6295,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Set unidirectional flag
       if (bodyCtx.UNIDIRECTIONAL() != null) {
         stmt.unidirectional = true;
+      }
+
+      // RETRY n [WAIT ms] (issue #11448): the first INTEGER_LITERAL is the RETRY count, the second the WAIT
+      if (bodyCtx.RETRY() != null) {
+        stmt.retry = Integer.parseInt(bodyCtx.INTEGER_LITERAL(0).getText());
+        if (bodyCtx.WAIT() != null)
+          stmt.wait = Long.parseLong(bodyCtx.INTEGER_LITERAL(1).getText());
       }
 
     } catch (final Exception e) {

@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.fail;
  * the property in against a real 3-node cluster.
  * <p>
  * The workload mirrors the engine-level
- * {@code Issue5381FalseConflictTest#concurrentInPlaceUpdatesOfDistinctCoLocatedRecords}: several records packed onto
+ * {@code ConcurrentEdgeWriteRegressionTest.FalseConflict#concurrentInPlaceUpdatesOfDistinctCoLocatedRecords}: several records packed onto
  * a single bucket page (BUCKETS 1), one owner thread per record hammering same-width in-place updates - the same
  * shape as #5381's fixed-width RID->RID head-pointer flip. Because owners are disjoint, every page-version conflict
  * is provably false, and with 3-phase commit's lock-free replication window those conflicts really do occur on the

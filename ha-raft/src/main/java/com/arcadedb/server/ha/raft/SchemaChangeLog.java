@@ -22,7 +22,7 @@ import java.util.Arrays;
 
 /**
  * The log indexes of the most recent schema-changing entries a node applied on one database, bounded (issue #10067): a ring of
- * primitives, sorted, with no object per entry. {@link ArcadeStateMachine#lastSchemaChangeIndexOf} says WHEN the schema last changed,
+ * primitives, sorted, with no object per entry. {@link SchemaChangeHistory#lastSchemaChangeIndexOf} says WHEN the schema last changed,
  * which is what the leader's check needs; this says HOW MANY changes landed in a stretch of the log, which is what a replica that
  * asked the leader for one schema change needs to know it is the only one it has to account for.
  * <p>

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -55,11 +56,11 @@ public class TextJoin extends AbstractTextFunction {
     if (args[0] == null)
       return null;
 
-    if (!(args[0] instanceof List)) {
+    // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, and is the same LIST to every list function (issue #11582)
+    final List<Object> list = CypherFunctionHelper.asListOrNull(args[0]);
+    if (list == null) {
       throw new IllegalArgumentException("text.join() first argument must be a list");
     }
-
-    final List<?> list = (List<?>) args[0];
     final String delimiter = asString(args[1]);
 
     return list.stream()

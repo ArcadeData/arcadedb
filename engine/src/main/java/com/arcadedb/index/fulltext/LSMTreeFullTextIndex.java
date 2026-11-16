@@ -791,6 +791,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * The statistics {@link #computeBM25Scores} scores this bucket with when no type-wide context is handed to it: the bucket's own
+   * document count and the given document frequencies, which a search of this bucket alone counts on its postings.
+   */
+  BM25ScoringContext bucketScoringContext(final Map<String, Long> documentFrequencies) {
+    ensureCounters();
+    return new BM25ScoringContext(resolveTotalDocs(), resolveAvgDocLength(), documentFrequencies);
+  }
+
+  /**
    * Builds the query-level BM25 scoring explanation surfaced by {@code EXPLAIN}/{@code PROFILE}: the similarity mode, the BM25
    * parameters (k1, b), the corpus statistics (N, avgdl) and, for each scoring token, its document frequency, IDF and applied
    * boost. This is the "why are the scores what they are" view; per-document contributions are intentionally not included since a

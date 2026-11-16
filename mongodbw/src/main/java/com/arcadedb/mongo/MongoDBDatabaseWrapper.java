@@ -53,13 +53,16 @@ import de.bwaldvogel.mongo.backend.DatabaseResolver;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
+import de.bwaldvogel.mongo.backend.aggregation.stage.ProjectStage;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
+import de.bwaldvogel.mongo.exception.FailedToOptimizePipelineError;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import de.bwaldvogel.mongo.exception.MongoServerException;
+import de.bwaldvogel.mongo.exception.TypeMismatchException;
 import de.bwaldvogel.mongo.oplog.Oplog;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
@@ -69,6 +72,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
@@ -84,6 +89,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /**
+   * The fields of a {@code createIndexes} specification this plugin honours ({@code key}, {@code name}, {@code unique}) or that
+   * carry no semantics a built index could miss ({@code background} is a build-scheduling hint, {@code v} the index format
+   * version, {@code ns} the legacy namespace echo).
+   */
+  private static final Set<String> SUPPORTED_INDEX_OPTIONS = Set.of("key", "name", "unique", "background", "v", "ns");
+  /** Boolean index options whose {@code false} is MongoDB's default, so asking for it asks for nothing this plugin lacks. */
+  private static final Set<String> INDEX_OPTIONS_ACCEPTED_WHEN_FALSE = Set.of("sparse", "hidden");
 
   // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
   protected volatile Database                        database;
@@ -353,7 +366,58 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Aggregation aggregation = Aggregation.fromPipeline(pipeline, plugin, this, collection, oplog);
     aggregation.validate(document);
 
-    return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
+    return firstBatchCursorResponse(collectionName, "firstBatch", computeResult(aggregation, pipeline, collection, oplog), 0);
+  }
+
+  /**
+   * The documents of a pipeline, its top-level {@code $match} stages tested with {@link MongoQueryMatcher} (issue #12074): the
+   * library's own match stage answers differently from {@code mongod}, and {@code countDocuments} is a pipeline. The stages between
+   * two {@code $match} run as the library runs them, on the stream the previous part produced; the failures are reported as
+   * {@link Aggregation#computeResult()} reports them. A {@code $match} nested in a sub-pipeline ({@code $facet}, {@code $lookup},
+   * {@code $unionWith}) is still the library's.
+   */
+  private List<Document> computeResult(final Aggregation aggregation, final List<Document> pipeline, final MongoCollection<?> collection,
+      final Oplog oplog) {
+    boolean matches = false;
+    for (final Document stage : pipeline)
+      if (stage.get("$match") instanceof Document) {
+        matches = true;
+        break;
+      }
+    if (!matches)
+      return aggregation.computeResult();
+
+    // a malformed $match is refused before any document is read, as mongod refuses it when it parses the pipeline
+    for (final Document stage : pipeline)
+      if (stage.size() == 1 && stage.get("$match") instanceof Document query)
+        new MongoQueryMatcher().validate(query);
+
+    try {
+      Stream<Document> stream = collection.queryAllAsStream();
+      List<Document> segment = new ArrayList<>();
+      for (final Document stage : pipeline) {
+        if (stage.size() == 1 && stage.get("$match") instanceof Document query) {
+          stream = runSegment(segment, stream, collection, oplog);
+          segment = new ArrayList<>();
+          final MongoQueryMatcher matcher = new MongoQueryMatcher();
+          stream = stream.filter(candidate -> matcher.matches(candidate, query));
+        } else
+          segment.add(stage);
+      }
+      return runSegment(segment, stream, collection, oplog).collect(Collectors.toList());
+    } catch (final TypeMismatchException | FailedToOptimizePipelineError | ProjectStage.InvalidProjectException e) {
+      throw e;
+    } catch (final MongoServerError e) {
+      if (e.hasCode(ErrorCode._15998, ErrorCode._40353))
+        throw e;
+      throw new MongoServerError(e.getCode(), e.getCodeName(),
+          "PlanExecutor error during aggregation :: caused by :: " + e.getMessageWithoutErrorCode(), e);
+    }
+  }
+
+  private Stream<Document> runSegment(final List<Document> segment, final Stream<Document> stream, final MongoCollection<?> collection,
+      final Oplog oplog) {
+    return segment.isEmpty() ? stream : Aggregation.fromPipeline(segment, plugin, this, collection, oplog).runStagesAsStream(stream);
   }
 
   /**
@@ -458,6 +522,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document createIndexes(final Document document) {
     final String collectionName = document.get("createIndexes").toString();
 
+    final Object indexesValue = document.get("indexes");
+    if (indexesValue != null && !(indexesValue instanceof List))
+      throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
+          "The 'indexes' field of createIndexes must be an array of index specifications");
+    final List<Document> indexes = (List<Document>) indexesValue;
+    // VALIDATE EVERY SPECIFICATION BEFORE TOUCHING THE SCHEMA: A REFUSED BATCH CREATES NEITHER THE COLLECTION NOR ANY OF ITS
+    // INDEXES, SO THE CLIENT IS NOT LEFT WITH HALF OF WHAT IT ASKED FOR (ISSUE #11446)
+    if (indexes != null)
+      for (final Object index : indexes) {
+        if (!(index instanceof Document specification))
+          throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
+              "Each element of the 'indexes' field of createIndexes must be a document, found: " + index);
+        validateIndexSpecification(specification);
+      }
+
     final boolean createdCollectionAutomatically;
     if (!database.getSchema().existsType(collectionName)) {
       database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
@@ -470,7 +549,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // <new indexes> stays consistent for clients that check it.
     final int numIndexesBefore = countIndexes(collectionName);
 
-    final List<Document> indexes = (List<Document>) document.get("indexes");
     if (indexes != null)
       for (final Document index : indexes)
         createSingleIndex(collectionName, index);
@@ -489,10 +567,41 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return type.getAllIndexes(false).size() + (MongoDBCollectionWrapper.hasUniqueIdIndex(type) ? 0 : 1);
   }
 
+  /**
+   * Refuses an index specification this plugin cannot honour, instead of acknowledging it with {@code ok:1} and building a plain
+   * ascending index that does something else (issue #11446). Only {@link #SUPPORTED_INDEX_OPTIONS} are accepted, plus the
+   * boolean options in {@link #INDEX_OPTIONS_ACCEPTED_WHEN_FALSE} when they ask for the default; every key must be an ascending
+   * or descending direction, since the special index kinds ({@code text}, {@code hashed}, {@code 2dsphere}, ...) would be built
+   * as ordinary range indexes. A partial filter, a TTL or a collation would change which documents the index holds or how it
+   * compares them, so building the index without them makes it reject documents MongoDB accepts or keep documents MongoDB
+   * removes.
+   */
+  static void validateIndexSpecification(final Document index) {
+    final Object keyValue = index.get("key");
+    if (!(keyValue instanceof Document key) || key.isEmpty())
+      throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
+          "The 'key' field is a required property of an index specification and must be a non-empty document");
+
+    for (final String option : index.keySet()) {
+      if (SUPPORTED_INDEX_OPTIONS.contains(option))
+        continue;
+      if (INDEX_OPTIONS_ACCEPTED_WHEN_FALSE.contains(option) && Boolean.FALSE.equals(index.get(option)))
+        continue;
+      throw new MongoServerError(67, "CannotCreateIndex",
+          "Index option '" + option + "' is not supported by ArcadeDB: the index would be created without it");
+    }
+
+    for (final String field : key.keySet()) {
+      final Object direction = key.get(field);
+      if (!(direction instanceof Number number) || number.doubleValue() == 0D || Double.isNaN(number.doubleValue()))
+        throw new MongoServerError(67, "CannotCreateIndex",
+            "Index kind " + (direction instanceof String ? "'" + direction + "'" : String.valueOf(direction)) + " on field '" + field
+                + "' is not supported by ArcadeDB: only ascending (1) and descending (-1) keys are");
+    }
+  }
+
   private void createSingleIndex(final String collectionName, final Document index) {
     final Document key = (Document) index.get("key");
-    if (key == null || key.isEmpty())
-      return;
 
     final DocumentType type = database.getSchema().getType(collectionName);
     final String[] propertyNames = key.keySet().toArray(new String[0]);

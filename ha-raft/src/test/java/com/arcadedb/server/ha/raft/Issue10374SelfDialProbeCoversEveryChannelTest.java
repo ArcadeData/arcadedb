@@ -195,7 +195,7 @@ class Issue10374SelfDialProbeCoversEveryChannelTest {
     assertThat(primary.get()).isEqualTo(1);
     assertThat(heartbeat.get()).isEqualTo(1);
 
-    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null, MisdirectedRaftRequests.NO_PROBE_CALL_ID);
 
     Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(SELF_DIAL) == 1);
@@ -248,7 +248,7 @@ class Issue10374SelfDialProbeCoversEveryChannelTest {
 
     assertThat(raft.probeSelfDial(MEMBER)).isEqualTo(SelfDialProbeOutcome.MEMBER_ON_SOME_CHANNELS);
 
-    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null, RaftHAServer.NO_PROBE_CALL_ID);
+    raft.onMisdirectedRaftRequest("appendEntries", MEMBER, raft.getLocalPeerId(), null, MisdirectedRaftRequests.NO_PROBE_CALL_ID);
     Awaitility.await("the claim is looked at").atMost(10, TimeUnit.SECONDS)
         .until(() -> log.countFormattedContaining(CLAIM, "issue #10374") == 1);
     assertThat(log.countFormattedContaining(CLAIM, "neither confirmed nor ruled out")).isEqualTo(1);

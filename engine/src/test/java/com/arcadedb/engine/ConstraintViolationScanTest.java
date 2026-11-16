@@ -477,7 +477,7 @@ class ConstraintViolationScanTest extends TestHelper {
    * be dropped from an {@code AfterRecordReadListener} on the re-validation's {@code lookupByRID}, which runs under the
    * database READ lock - and a schema change takes the WRITE lock, which a reader can never be granted, so the test
    * waited for itself forever (#10012). That shape is now refused with an exception, see
-   * {@code Issue10012ReadLockUpgradeTest}.
+   * {@code TransactionRetryAndRollbackTest.ReadLockUpgrade}.
    */
   // #7952
   @Test

@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * which is what Neo4j's own Eager operator does for the same shape. And underneath, a write to a record the same
  * transaction had already deleted is now dropped rather than queued for a commit that reported it as a conflict
  * with a concurrent transaction that never existed - see
- * {@link com.arcadedb.database.Issue7149UpdateAfterDeleteInSameTxTest}.
+ * {@link com.arcadedb.database.TransactionRetryAndRollbackTest.UpdateAfterDeleteInSameTx}.
  * <p>
  * The graph is the reporter's: 128 nodes and 72 relationships, chosen so the 2-hop pattern yields 222 rows over
  * 128 nodes and therefore binds most nodes from several rows.

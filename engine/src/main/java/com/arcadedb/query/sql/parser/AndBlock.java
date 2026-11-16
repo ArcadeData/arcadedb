@@ -30,7 +30,14 @@ import java.util.List;
 import java.util.Map;
 
 public class AndBlock extends BooleanExpression {
+  private static final byte[] NO_SCORING_CHILD = new byte[0];
+  private static final byte   SETS_SCORE       = 1;
+  private static final byte   SETS_SIMILARITY  = 2;
+
   public final List<BooleanExpression> subBlocks;
+  // What each child sets ($score, $similarity), worked out on the first evaluation: one array, so a concurrent execution sees
+  // either nothing or all of it
+  private byte[] scoringChildren;
 
   public AndBlock() {
     this.subBlocks = new ArrayList<>();
@@ -48,17 +55,61 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
+    final byte[] scoring = scoringChildren(context);
+    Float kept = null;
+    Float keptSimilarity = null;
     Boolean hasNull = false;
-    for (final BooleanExpression block : subBlocks) {
-      final Boolean result = block.evaluate(currentRecord, context);
+    for (int i = 0; i < subBlocks.size(); i++) {
+      final Boolean result = subBlocks.get(i).evaluate(currentRecord, context);
       if (result == null) {
         hasNull = true;
       } else if (!result) {
         return false;
+      } else if (scoring != NO_SCORING_CHILD && scoring[i] != 0) {
+        kept = keep(kept, "$score", context);
+        if ((scoring[i] & SETS_SIMILARITY) != 0)
+          keptSimilarity = keep(keptSimilarity, "$similarity", context);
       }
     }
     // If any operand was null and none were false, return null (SQL three-valued logic)
     return hasNull ? null : true;
+  }
+
+  /**
+   * A scoring child that matched through an arm that does not score (a nested OR) leaves 0 in {@code $score}, and in
+   * {@code $similarity} when it holds a more-like-this arm: it must not wipe the value a sibling child already set for the
+   * record (issue #11773 for the similarity).
+   *
+   * @return the value the record has after this child
+   */
+  private static Float keep(final Float kept, final String variable, final CommandContext context) {
+    if (!(context.getVariable(variable) instanceof Number value))
+      return kept;
+    final float current = value.floatValue();
+    if (kept != null && current == 0f && kept > 0f) {
+      context.setVariable(variable, kept);
+      return kept;
+    }
+    return current;
+  }
+
+  /** What each child sets, worked out once: {@link #NO_SCORING_CHILD} when no child sets {@code $score}. */
+  private byte[] scoringChildren(final CommandContext context) {
+    byte[] children = scoringChildren;
+    if (children == null) {
+      children = new byte[subBlocks.size()];
+      boolean any = false;
+      for (int i = 0; i < children.length; i++) {
+        final BooleanExpression child = subBlocks.get(i);
+        if (child.setsScore(context)) {
+          children[i] = (byte) (SETS_SCORE | (child.setsSimilarity(context) ? SETS_SIMILARITY : 0));
+          any = true;
+        }
+      }
+      // benign race: a concurrent execution computes the same value
+      scoringChildren = children = any ? children : NO_SCORING_CHILD;
+    }
+    return children;
   }
 
   @Override
@@ -67,13 +118,21 @@ public class AndBlock extends BooleanExpression {
       return true;
 
     // UNKNOWN AND FALSE is FALSE: a later false operand still decides the result (SQL three-valued logic)
+    final byte[] scoring = scoringChildren(context);
+    Float kept = null;
+    Float keptSimilarity = null;
     boolean hasNull = false;
-    for (final BooleanExpression block : subBlocks) {
-      final Boolean result = block.evaluate(currentRecord, context);
+    for (int i = 0; i < subBlocks.size(); i++) {
+      final Boolean result = subBlocks.get(i).evaluate(currentRecord, context);
       if (result == null)
         hasNull = true;
       else if (!result)
         return false;
+      else if (scoring != NO_SCORING_CHILD && scoring[i] != 0) {
+        kept = keep(kept, "$score", context);
+        if ((scoring[i] & SETS_SIMILARITY) != 0)
+          keptSimilarity = keep(keptSimilarity, "$similarity", context);
+      }
     }
     return hasNull ? null : true;
   }
@@ -104,6 +163,22 @@ public class AndBlock extends BooleanExpression {
       toStringAsOperand(expr, false, params, builder);
       first = false;
     }
+  }
+
+  @Override
+  public boolean setsScore(final CommandContext context) {
+    for (final BooleanExpression block : subBlocks)
+      if (block.setsScore(context))
+        return true;
+    return false;
+  }
+
+  @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    for (final BooleanExpression block : subBlocks)
+      if (block.setsSimilarity(context))
+        return true;
+    return false;
   }
 
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {

@@ -73,7 +73,7 @@ General design principles:
 - **Census tests enumerate from the authority they protect** (#11199). A test shipped as "the next offender is a red
   build" must range over the thing that defines an offender, and must assert that it reached it:
   - if the authority is a method, scan the compiled call sites of that method (see
-    `Issue10850NoNarrowingReadsInFunctionsTest`, `SchemaPresentationReadableWalkCensusTest`); if it is a table or
+    `WholeNumberArgumentsTest.NoNarrowingReads`, `SchemaPresentationReadableWalkCensusTest`); if it is a table or
     registry, read its key set (see `Issue11170MCPToolAnnotationsTest`, `RemoteExceptionRebuilder.names()`)
   - a census over more than one module goes in the `census` module, on `CompiledClasses` (every class of every module
     whatever its package, call sites keyed `class#method`, a named nested class keyed `Outer$Nested`, lambdas and

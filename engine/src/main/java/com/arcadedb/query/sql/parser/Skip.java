@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.NumberUtils;
@@ -62,7 +63,7 @@ public class Skip extends SimpleNode {
       if (paramValue instanceof Number number)
         return NumberUtils.saturateToInt(number);
       else
-        throw new CommandExecutionException("Invalid value for SKIP: " + paramValue);
+        throw new TypeMismatchException("Invalid value for SKIP: " + paramValue + ". SKIP takes a number");
     }
 
     if (expression != null) {
@@ -70,7 +71,7 @@ public class Skip extends SimpleNode {
       if (exprValue instanceof Number number)
         return NumberUtils.saturateToInt(number);
       else
-        throw new CommandExecutionException("Invalid value for SKIP: " + exprValue);
+        throw new TypeMismatchException("Invalid value for SKIP: " + exprValue + ". SKIP takes a number");
     }
 
     throw new CommandExecutionException("No value for SKIP");

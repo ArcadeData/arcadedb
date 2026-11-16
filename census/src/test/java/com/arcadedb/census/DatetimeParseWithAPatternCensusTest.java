@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * how three of them got there ({@code asDateTime(format)}, {@code date(value, format)} and {@code DateParse}). Every
  * text-to-datetime conversion with a pattern goes through {@code DateUtils}, whose methods name what becomes of the offset
  * ({@code parseDateTimeWithFormat}, {@code parseDateTimeKeepingWallClockWithFormat}); the behaviour is pinned by
- * {@code Issue10596ExplicitFormatOffsetTest}.
+ * {@code SqlTemporalComparisonTest.ExplicitFormatOffset}.
  * <p>
  * The census ranges over the authority (#11288): every call of {@code LocalDateTime.parse(CharSequence, DateTimeFormatter)}, or
  * method reference to it, in the compiled classes of every module ({@link CompiledClasses}). The source-text census it replaces

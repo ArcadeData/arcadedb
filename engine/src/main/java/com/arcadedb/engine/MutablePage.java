@@ -25,6 +25,7 @@ import com.arcadedb.database.TrackableBinary;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -127,6 +128,17 @@ public class MutablePage extends BasePage implements TrackableContent {
   // #11394: counts every write that reached this page object and every restore of its bytes, and never goes back. Together with the
   // transaction's own counter it says whether anything under the transaction changed since a derived structure was built from it
   private              long    writeStamp;
+  // #11590: the record slots the transaction owning this image READ from it, and whether it read the page as a whole (a scan,
+  // which also relies on the slots it did not find). The image was taken at the transaction's first write to the page and misses
+  // what other transactions committed there since, so a commit-time merge that replays this transaction's writes onto the newer
+  // page is sound only when every slot read here still holds the same record there, or is one the merge replays. Never cleared:
+  // a read taken back with its statement costs at most a retry. The bit set is allocated at the first read of a single slot.
+  private              BitSet  slotsRead;
+  private              boolean wholePageRead;
+  // #11590: the owning transaction read, through a page a scan kept from an earlier batch, an older version of the page than the one
+  // this image was taken from: those reads missed a commit this image already holds, so no comparison with the committed page at
+  // commit can vouch for them, and the commit is refused
+  private              boolean readAtAnOlderVersion;
 
   /**
    * The bookkeeping of a page that is not part of its bytes, saved by a {@link PageUndoLog} and given back with them.
@@ -609,6 +621,43 @@ public class MutablePage extends BasePage implements TrackableContent {
    */
   public boolean isFullyCoveredBy(final int mechanism) {
     return (uncoveredMechanisms & mechanism) == 0;
+  }
+
+  /** Records that the owning transaction read record slot {@code slot} from this image (#11590). */
+  public void markSlotRead(final int slot) {
+    if (slotsRead == null)
+      slotsRead = new BitSet();
+    slotsRead.set(slot);
+  }
+
+  /** Records that the owning transaction read this image as a whole, as a scan of the page does (#11590). */
+  public void markWholePageRead() {
+    wholePageRead = true;
+  }
+
+  /** Whether the owning transaction read this image as a whole (#11590). */
+  public boolean isWholePageRead() {
+    return wholePageRead;
+  }
+
+  /** Records that the owning transaction read this page, kept by a scan, at an older version than this image's (#11590). */
+  public void markReadAtAnOlderVersion() {
+    readAtAnOlderVersion = true;
+  }
+
+  /** Whether the owning transaction read this page at an older version than this image's (#11590). */
+  public boolean isReadAtAnOlderVersion() {
+    return readAtAnOlderVersion;
+  }
+
+  /** Whether the owning transaction read record slot {@code slot} from this image (#11590). */
+  public boolean isSlotRead(final int slot) {
+    return slotsRead != null && slotsRead.get(slot);
+  }
+
+  /** The first slot at or after {@code fromSlot} the owning transaction read from this image, -1 when none (#11590). */
+  public int nextSlotRead(final int fromSlot) {
+    return slotsRead == null ? -1 : slotsRead.nextSetBit(fromSlot);
   }
 
   @Override

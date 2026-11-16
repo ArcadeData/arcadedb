@@ -20,7 +20,11 @@ package com.arcadedb.server.http.ws.insert;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
@@ -108,6 +112,8 @@ public class WebSocketInsertProtocol {
    * that catches up can carry on. Bounding the SIZE of one frame is issue #7405.
    */
   private static final int    MAX_PENDING_FRAMES = 64;
+  /** The {@link ProtocolContext} tag of every frame this protocol executes. */
+  private static final String PROTOCOL           = "ws";
   /** Channel attribute holding this connection's serial frame queue. */
   private static final String FRAME_QUEUE    = "arcadedb.ws.insert.frameQueue";
   /** Channel attribute recording that the connection-close hook is already registered. */
@@ -220,7 +226,25 @@ public class WebSocketInsertProtocol {
     }
   }
 
+  /**
+   * Runs one frame tagged with this transport (issue #11779). The tag is set here, around EVERY frame, rather than at the
+   * call sites that open database work: the {@code start} frame begins a {@code per_stream} session's transaction and the
+   * {@code commit}/{@code rollback} frame ends it, and an untagged thread reads {@link ProtocolContext#INTERNAL} - the value
+   * the HA directory-replacement and quarantine gate exempts as the engine's own work. The tag the worker carried is
+   * restored afterwards, since the worker is pooled.
+   */
   private void execute(final WebSocketChannel channel, final UUID channelId, final String action,
+      final JSONObject message) {
+    final String callerProtocol = ProtocolContext.get();
+    ProtocolContext.set(PROTOCOL);
+    try {
+      executeFrame(channel, channelId, action, message);
+    } finally {
+      ProtocolContext.set(callerProtocol);
+    }
+  }
+
+  private void executeFrame(final WebSocketChannel channel, final UUID channelId, final String action,
       final JSONObject message) {
     // The principal is re-resolved for EVERY frame, never trusted from the handshake (issue #9311): a user dropped, given a
     // new password or stripped of the database since then must not keep writing for the life of the connection.
@@ -321,8 +345,27 @@ public class WebSocketInsertProtocol {
       // A per_stream commit refused because this node is not the leader is no server fault: the client is to send the
       // load to the leader the refusal names, in 'leaderAddress' (issue #9868)
       final boolean notTheLeader = ServerIsNotTheLeaderException.redirectIn(e) != null;
-      final JSONObject answer = error(notTheLeader ? "Not the leader" : "Internal error",
-          ErrorConcealment.clientMessage(ArcadeDBServer.isProductionMode(configuration), this, "/ws insert", e.getMessage(), e),
+      // Any other retryable refusal is no server fault either: a session's begin or commit refused by the HA gate while this
+      // server replaces or quarantines its copy of the database (issue #11779, now that both run tagged "ws"). Its message is
+      // the engine's own account of the state, with no stored data in it, so it is kept in every mode like the HTTP 503's
+      // ...unless the transaction committed cluster-wide before the failure: a retry would replay a load that is already in,
+      // so the answer says not to, with the label HTTP gives the same outcome (a ConcurrentModificationException of the local
+      // publication is nested in it, and must not turn it into "Retry later")
+      final TransactionCommittedRemotelyException committed = CauseChain.find(e, TransactionCommittedRemotelyException.class);
+      final NeedRetryException retryable = notTheLeader || committed != null ? null : CauseChain.find(e, NeedRetryException.class);
+      final String label;
+      if (notTheLeader)
+        label = "Not the leader";
+      else if (committed != null)
+        label = committed.getClass() == TransactionCommittedRemotelyException.class ?
+            "Transaction committed cluster-wide but the local apply failed - do not retry" :
+            "Transaction committed cluster-wide - do not retry";
+      else
+        label = retryable != null ? "Retry later" : "Internal error";
+      final JSONObject answer = error(label,
+          retryable != null ?
+              retryable.getMessage() :
+              ErrorConcealment.clientMessage(ArcadeDBServer.isProductionMode(configuration), this, "/ws insert", e.getMessage(), e),
           message.getString("sessionId", null), e);
       WebSocketInsertSession.putLeaderAddress(answer, e);
       send(channel, answer);

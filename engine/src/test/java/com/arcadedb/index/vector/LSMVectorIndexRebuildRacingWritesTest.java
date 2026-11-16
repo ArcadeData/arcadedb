@@ -115,7 +115,7 @@ class LSMVectorIndexRebuildRacingWritesTest {
    * transaction aborts (issue #7931). A rebuild that publishes in between carries that tombstone over like any other, so
    * the abort has to lift it in the new generation, or the record it never deleted stays unsearchable.
    * <p>
-   * Driven through the journal directly, as {@code Issue7931AbortedTransactionVectorLeakTest} does: the window is inside
+   * Driven through the journal directly, as {@code VectorTransactionSearchTest.AbortedTransactionVectorLeak} does: the window is inside
    * one {@code commit()}, between the replay and the rollback, where no test thread can step in.
    */
   @Test

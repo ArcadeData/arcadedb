@@ -687,12 +687,17 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       // record fail CREATE INDEX outright (issue #8090, which made convert() itself strict). NOT convertOrNull():
       // that would extend the same mercy to every other mismatch, silently indexing a non-numeric string under a
       // null LONG key where it has always failed the build.
-      if (keyTypes[i] == BinaryTypes.TYPE_STRING && (keys[i] instanceof Double || keys[i] instanceof Float || keys[i] instanceof BigDecimal)
+      final Object key = keys[i];
+      if (keyTypes[i] == BinaryTypes.TYPE_STRING && (key instanceof Double || key instanceof Float || key instanceof BigDecimal)
           && isUndeclaredProperty(i))
         // one number is one key whatever type it was written with, on a property whose values keep their own types (issue #8993)
-        convertedKeys[i] = Type.canonicalNumberKey(keys[i]);
+        convertedKeys[i] = Type.canonicalNumberKey(key);
+      else if (keyTypes[i] == BinaryTypes.TYPE_STRING && (key instanceof Collection || key.getClass().isArray())
+          && isUndeclaredProperty(i))
+        // the same for the numbers in a list or an array, nested ones too: [1.0] and [1] are one key (issue #11578)
+        convertedKeys[i] = Type.canonicalListKey(key);
       else
-        convertedKeys[i] = Type.convertIndexKeyOrNull(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+        convertedKeys[i] = Type.convertIndexKeyOrNull(database, key, BinaryTypes.getClassFromType(keyTypes[i]));
 
       if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])

@@ -91,7 +91,7 @@ class CompactIndexGraphPersistFailureTest {
 
         // Drive the exact rebuild COMPACT INDEX triggers (buildGraphFromScratch(null, true), private and always
         // callback-less on the public compact() path), but with a callback that fails persistence right after
-        // the graph pages are written - the same injection point Issue6503GraphPersistOutOfMemoryTest uses -
+        // the graph pages are written - the same injection point VectorBuildMemoryTest.GraphPersistOutOfMemory uses -
         // so the data file rename has already happened but the replacement graph never gets certified.
         assertThatCode(() -> buildGraphFromScratchWithRetry(lsm,
             (phase, processedNodes, totalNodes, vectorAccesses) -> {
