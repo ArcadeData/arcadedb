@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * readable as soon as it releases its locks, but its change reaches the view only from its after-commit callback, later: a
  * commit the compaction scan read can be delivered after the compaction swapped its CSR in. Merged into the fresh base
  * unchecked, its edge was counted twice, for as long as that base was served (the intermittent failure of
- * {@code Issue10189AsyncViewServesWhileUpdatingTest.aCompactionRebuildsInTheBackgroundWhileTheViewServes}). The compaction
+ * {@code GavViewConcurrencyTest.AsyncViewServesWhileUpdating.aCompactionRebuildsInTheBackgroundWhileTheViewServes}). The compaction
  * now watches its scan as a full build does, so a change delivered late is checked against what the scan read.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

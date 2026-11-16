@@ -448,7 +448,7 @@ public class SelectExecutor {
     return iterator;
   }
 
-  // PACKAGE-PRIVATE (NOT private) SO Issue6565SelectIndexCandidateLimitTest CAN VERIFY THE COMPUTED CAP DIRECTLY:
+  // PACKAGE-PRIVATE (NOT private) SO SelectIndexCandidatesTest.CandidateLimit CAN VERIFY THE COMPUTED CAP DIRECTLY:
   // A RESULT-COUNT ASSERTION CANNOT TELL A CORRECTLY APPLIED CAP APART FROM THE UNCAPPED FALLBACK, SINCE THE
   // LAZY-PULL CONSUMERS (SelectIterator, executeCount()) ALREADY STOP AT skip + limit ON THEIR OWN EITHER WAY
   MultiIndexCursor lookForIndexes() {

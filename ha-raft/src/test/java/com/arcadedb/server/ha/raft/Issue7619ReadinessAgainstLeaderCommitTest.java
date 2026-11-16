@@ -37,9 +37,9 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.arcadedb.server.ha.raft.RaftHAServer.isBehindLeaderCommit;
-import static com.arcadedb.server.ha.raft.RaftHAServer.isEmptyLogInMultiPeerCluster;
-import static com.arcadedb.server.ha.raft.RaftHAServer.isReadyForTrafficState;
+import static com.arcadedb.server.ha.raft.TrafficReadiness.isBehindLeaderCommit;
+import static com.arcadedb.server.ha.raft.TrafficReadiness.isEmptyLogInMultiPeerCluster;
+import static com.arcadedb.server.ha.raft.TrafficReadiness.isReadyForTrafficState;
 import static com.arcadedb.server.ha.raft.RaftHAServer.reportedCommitIndexOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;

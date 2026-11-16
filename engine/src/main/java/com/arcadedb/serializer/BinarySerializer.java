@@ -41,6 +41,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -987,7 +988,7 @@ public class BinarySerializer {
       final Document document = (Document) value;
       final long schemaId = database.getSchema().getDictionary().getIdByName(document.getTypeName(), false);
       if (schemaId == -1)
-        throw new IllegalArgumentException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
+        throw new SchemaException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
       content.putUnsignedNumber(schemaId);
 
       final Binary header = new Binary(8192);

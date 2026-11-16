@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.vector;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.index.vector.VectorUtils;
@@ -82,7 +82,7 @@ public class VectorDistanceFunction implements StatelessFunction {
             count++;
         yield (double) count;
       }
-      default -> throw new CommandExecutionException("vector_distance(): unsupported metric: " + metric
+      default -> throw new InvalidArgumentException("vector_distance(): unsupported metric: " + metric
           + ". Supported metrics: EUCLIDEAN, EUCLIDEAN_SQUARED, COSINE, MANHATTAN, HAMMING");
     };
   }

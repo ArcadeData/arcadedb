@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Shared fixtures for the tests that drive a bucket page into a specific PHYSICAL layout - a full page, a page with
  * no free tail at all - and then assert what the engine made of it. Extracted once the third such test class
- * ({@code Issue6149PlaceholderPrefersChunksTest}, next to {@code Issue5279ConcurrentUpdateTest} and
- * {@code Issue6129ChunkedSlotMergeTest}) would have copied these verbatim for a fourth time.
+ * ({@code ChunkedRecordStorageTest.PlaceholderPrefersChunks}, next to {@code ConcurrentRecordWriteTest.ConcurrentUpdate} and
+ * {@code ChunkedRecordStorageTest.ChunkedSlotMerge}) would have copied these verbatim for a fourth time.
  * <p>
  * The layout these build is a contract of its own: change how a page fills up or how a spill claims the free tail,
  * and every test below has to be re-read, not just re-run. Keeping the fixtures in one place is what makes that
@@ -153,8 +153,8 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
    * the layout that produced #6217, and the one every chunked-read test needs. The RID at index {@code i} sits at
    * slot {@code i} of page 0.
    * <p>
-   * Lifted here from {@code Issue6217ChunkedReadFalseConflictTest} once
-   * {@code Issue6258ChunkedReadRetryAndCorruptionTest} needed the same layout.
+   * Lifted here from {@code ChunkedRecordStorageTest.ChunkedReadFalseConflict} once
+   * {@code ChunkedRecordStorageTest.ChunkedReadRetryAndCorruption} needed the same layout.
    */
   protected RID[] createChunkedRecords(final String typeName) {
     final RID[] rids = new RID[CHUNKED_RECORDS];

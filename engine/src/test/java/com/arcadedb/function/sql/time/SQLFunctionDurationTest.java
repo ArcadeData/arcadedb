@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -66,8 +67,9 @@ class SQLFunctionDurationTest {
 
   @Test
   void durationWithInvalidTimeUnit() {
+    // issue #11589: a unit nothing names is the caller's mistake, a client error, still carrying the parser's refusal
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5, "INVALID_UNIT" }, null)).isInstanceOf(
-        SerializationException.class).hasMessageContaining("Unsupported datetime precision 'INVALID_UNIT'");
+        InvalidArgumentException.class).hasMessageContaining("'INVALID_UNIT'").hasCauseInstanceOf(SerializationException.class);
   }
 
   @Test

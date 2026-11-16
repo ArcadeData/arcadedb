@@ -7939,7 +7939,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       QuantizedBuildVectors.dequantizeInt8(row, offset, metadata.dimensions, scales[0], scales[1], scratch);
     else
       QuantizedBuildVectors.dequantizeBinary(row, offset, metadata.dimensions, scales[0], scratch);
-    return VectorUtils.isZeroVector(scratch);
+    return isUnscorable(scratch);
   }
 
   /**
@@ -8023,16 +8023,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Refuses a query vector COSINE cannot score: the all-zero one (the similarity is undefined) and, under the same rule
+   * {@link #isUnscorable(float[])} applies to the indexed vectors, one whose squared norm the float cosine cannot hold
+   * (issue #11635).
+   */
+  private void checkCosineQueryVector(final float[] queryVector) {
+    if (metadata.similarityFunction != VectorSimilarityFunction.COSINE || VectorUtils.hasCosineScorableNorm(queryVector))
+      return;
+    if (VectorUtils.isZeroVector(queryVector))
+      throw new IllegalArgumentException(
+          "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+    throw new IllegalArgumentException("Query vector magnitude is outside the range COSINE similarity can score: its squared "
+        + "norm must be between 2^-63 and 2^63");
+  }
+
+  /**
    * True for a vector this index cannot score against: an all-zero one under COSINE (the similarity is undefined) and
    * DOT_PRODUCT (which requires unit vectors). Under EUCLIDEAN the origin is a regular point with a well-defined
-   * distance, so it is indexed and returned like any other (issue #8962).
+   * distance, so it is indexed and returned like any other (issue #8962). Under COSINE, a vector whose squared norm the
+   * float cosine cannot hold either, which scored -Infinity or NaN against every other (issue #11635).
    */
   boolean isUnscorable(final float[] vector) {
-    return metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN && VectorUtils.isZeroVector(vector);
+    return switch (metadata.similarityFunction) {
+      case COSINE -> !VectorUtils.hasCosineScorableNorm(vector);
+      case DOT_PRODUCT -> VectorUtils.isZeroVector(vector);
+      case EUCLIDEAN -> false;
+    };
   }
 
   boolean isUnscorable(final VectorFloat<?> vector) {
-    return metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN && VectorUtils.isZeroVector(vector);
+    return switch (metadata.similarityFunction) {
+      case COSINE -> !VectorUtils.hasCosineScorableNorm(vector);
+      case DOT_PRODUCT -> VectorUtils.isZeroVector(vector);
+      case EUCLIDEAN -> false;
+    };
   }
 
   /**
@@ -8975,7 +8999,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The scan with no transaction overlay to account for - every candidate the committed index holds is eligible.
    * This is the signature the method had before issue #7378 added the overlay, kept because it is the meaningful
-   * "nothing uncommitted" call and because {@code Issue5748AllowListBruteForceScanTest} and
+   * "nothing uncommitted" call and because {@code VectorPrefilterTest.AllowListBruteForceScan} and
    * {@code LSMVectorIndexBruteForceScanTest} reach the scan reflectively by it.
    */
   private void bruteForceScan(final VectorFloat<?> queryVectorFloat, final int k,
@@ -9605,9 +9629,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           throw new IllegalArgumentException("Query vector components must be finite numbers: got " + component);
 
       // Check if query vector is all zeros (would cause NaN with cosine similarity)
-      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
-        throw new IllegalArgumentException(
-            "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+      checkCosineQueryVector(queryVector);
 
       // Issue #6531 follow-up: k == 0 is a valid "no results wanted" request, but letting it reach
       // GraphSearcher.search() with topK == 0 throws a NullPointerException deep inside JVector's
@@ -10140,9 +10162,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw new IllegalArgumentException(
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
-      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
-        throw new IllegalArgumentException(
-            "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+      checkCosineQueryVector(queryVector);
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
       guard.check();
@@ -10947,9 +10967,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
       // Check if query vector is all zeros (would cause NaN with cosine similarity)
-      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
-        throw new IllegalArgumentException(
-            "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+      checkCosineQueryVector(queryVector);
 
       // Issue #6531 follow-up: see findNeighborsFromVector's matching short-circuit - k == 0 must not
       // reach GraphSearcher.search() with topK == 0, which NPEs inside JVector's reranking.
@@ -11054,7 +11072,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Re-ranked: the exact path's pre-filter plan, since the PQ-scaled one returns PQ distances (issue #6502). Not
           // re-ranked: the issue #6514 pre-filter plan, the PQ-scored counterpart of the issue #6502 plan in
           // findNeighborsFromVector - see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by
-          // its own selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
+          // its own selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: VectorPrefilterBenchmark.ApproximatePrefilter
           // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default - see
           // VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
           final GlobalConfiguration selectivitySetting = rerank ?

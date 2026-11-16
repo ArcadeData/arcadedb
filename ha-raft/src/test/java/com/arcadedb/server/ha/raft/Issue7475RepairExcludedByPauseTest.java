@@ -121,7 +121,7 @@ class Issue7475RepairExcludedByPauseTest {
       final Thread.State state = thread.getState();
       if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
         for (final StackTraceElement frame : thread.getStackTrace())
-          if (frame.getClassName().endsWith("ArcadeStateMachine") && frame.getMethodName().startsWith("repairEngineWithSealed"))
+          if (frame.getClassName().endsWith("SchemaEntryApplier") && frame.getMethodName().startsWith("repairEngineWithSealed"))
             return;
       if (state == Thread.State.TERMINATED)
         break;

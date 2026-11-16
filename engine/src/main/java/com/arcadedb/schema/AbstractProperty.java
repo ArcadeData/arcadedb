@@ -42,7 +42,7 @@ public abstract class AbstractProperty implements Property {
   // DocumentValidator on every write, so each is volatile, as `external` and `defaultValue` already were for the same reason:
   // without the happens-before edge a write could be validated against a constraint that was altered or dropped. The custom
   // map is read by toJSON() after the lock is released, so it is copy-on-write: an unmodifiable map replaced as a whole.
-  // Issue7299SchemaCopyOnWritePublicationTest sweeps the class for both rules.
+  // PolymorphicBucketCacheTest.SchemaCopyOnWritePublication sweeps the class for both rules.
   protected volatile     Map<String, Object> custom          = Collections.emptyMap();
   protected volatile     boolean             readonly        = false;
   protected volatile     boolean             mandatory       = false;

@@ -20,6 +20,7 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
@@ -89,11 +90,12 @@ public class CollFlatten extends AbstractCollFunction {
     return result;
   }
 
-  @SuppressWarnings("unchecked")
   private void flatten(final List<Object> source, final List<Object> result, final int maxDepth, final int currentDepth) {
     for (final Object item : source) {
-      if (item instanceof List && (maxDepth == -1 || currentDepth < maxDepth))
-        flatten((List<Object>) item, result, maxDepth, currentDepth + 1);
+      // A nested list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array: it is flattened like any other nested
+      // list instead of being kept as one element (issue #11582). A byte[] is a BINARY value, not a sequence, and stays whole
+      if ((item instanceof List || MultiValue.isSequenceArray(item)) && (maxDepth == -1 || currentDepth < maxDepth))
+        flatten(MultiValue.getMultiValueAsList(item), result, maxDepth, currentDepth + 1);
       else
         result.add(item);
     }

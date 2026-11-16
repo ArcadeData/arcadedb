@@ -634,6 +634,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // catch/finally still runs: the observation is stopped (not leaked) and the request is answered
     // with an error rather than propagating an uncaught exception.
     Observation.Scope observationScope = null;
+    // What reached the request boundary, recorded on the span of a 5xx answer (issue #11638)
+    Throwable failure = null;
 
     // Idempotency reservation bookkeeping, visible to the finally block: when this request owns a PENDING
     // marker and execution throws, the finally clears exactly that marker so a concurrent identical retry
@@ -1020,6 +1022,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       clientKeyReservation = null;
 
     } catch (final Throwable e) {
+      failure = e;
       sendMappedErrorResponse(exchange, e);
     } finally {
       // Drop any principal this request bound onto the thread's DatabaseContext in
@@ -1061,7 +1064,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // tracing layer can never skip the core cleanup or the RED timer below; closing the scope is
       // attempted independently to avoid thread-local context leaking across pooled worker threads.
       try {
-        observation.lowCardinalityKeyValue("status", Integer.toString(exchange.getStatusCode()));
+        final int status = exchange.getStatusCode();
+        observation.lowCardinalityKeyValue("status", Integer.toString(status));
+        // Issue #11638: a server error is the ERROR status of the span, and the exception its event, or every tracing backend
+        // shows it as a success. A 4xx is the client's mistake and leaves the status unset (OpenTelemetry HTTP server spans).
+        if (status >= 500)
+          observation.error(failure != null ? failure : new ServerErrorResponse(status));
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.WARNING, "Error tagging tracing observation", t);
       }
@@ -1309,6 +1317,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, schemaObjectExists.getLabel(), schemaObjectExists,
           schemaObjectExists.getKind() != null ? schemaObjectExists.getKind().name() : null, ErrorLogKind.USER);
 
+    // 409 Conflict: the statement names objects that exist and is refused for what the database holds now - a TRUNCATE or DROP
+    // of a type that still has records, a DROP of a property an index uses (issue #11803). The message says how to resolve it,
+    // and the same request is refused again until the state changes, so it is neither a server fault nor retryable. Before the
+    // generic CommandExecutionException arm, which it extends and which answers 500
+    final ObjectInUseException inUse = firstOf(e, cause, ObjectInUseException.class);
+    if (inUse != null)
+      return new ErrorClassification(409, "Object in use", inUse, null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
     // bad write. See issue #4350.
@@ -1456,6 +1472,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TypeMismatchException typeMismatch = typeMismatch(e);
     if (typeMismatch != null) {
       return new ErrorClassification(400, "Cannot execute command", typeMismatch, null, ErrorLogKind.USER);
+    }
+
+    // A function or procedure called with an argument value it is not defined for - a null where it needs a value, text that
+    // does not parse, a number out of range (issue #11589). The same reasoning and the same chain-wide search as the type
+    // mismatch above, and for the same reason ahead of the generic CommandExecutionException arm, which it extends
+    final InvalidArgumentException invalidArgument = CauseChain.find(e, InvalidArgumentException.class);
+    if (invalidArgument != null) {
+      return new ErrorClassification(400, "Cannot execute command", invalidArgument, null, ErrorLogKind.USER);
     }
 
     // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
@@ -2909,5 +2933,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final boolean absent = (value instanceof Double d && !Double.isFinite(d))
         || (value instanceof Float f && !Float.isFinite(f));
     array.put(absent ? JSONObject.NULL : value);
+  }
+
+  /**
+   * The failure recorded on the span of a 5xx answer that no exception reached the request boundary for: a handler answered the
+   * error itself (issue #11638). No stack trace, which would only point at the handler's finally block.
+   */
+  static final class ServerErrorResponse extends RuntimeException {
+    ServerErrorResponse(final int status) {
+      super("The request was answered with HTTP status " + status, null, false, false);
+    }
   }
 }

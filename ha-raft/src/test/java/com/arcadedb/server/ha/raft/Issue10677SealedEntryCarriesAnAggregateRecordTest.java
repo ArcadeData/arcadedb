@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 
-import static com.arcadedb.server.ha.raft.ArcadeStateMachine.carriesAContinuousAggregateRecordNotHeldHere;
+import static com.arcadedb.server.ha.raft.SchemaEntryApplier.carriesAContinuousAggregateRecordNotHeldHere;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**

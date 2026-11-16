@@ -363,20 +363,17 @@ public class AggregationStep extends AbstractExecutionStep {
       collectAggregations(re.getReduceExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof BooleanWrapperExpression bwe) {
       collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof TernaryLogicalExpression logical) {
+      // AND, OR, XOR and NOT in expression position (issue #11597)
+      collectAggregations(logical.getLeft(), innerAggs, innerFunctions);
+      collectAggregations(logical.getRight(), innerAggs, innerFunctions);
     }
   }
 
   private void collectBooleanAggregations(final BooleanExpression boolExpr,
       final Map<String, FunctionCallExpression> innerAggs,
       final Map<String, StatelessFunction> innerFunctions) {
-    if (boolExpr instanceof ComparisonExpression comp) {
-      collectAggregations(comp.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(comp.getRight(), innerAggs, innerFunctions);
-    } else if (boolExpr instanceof LogicalExpression logical) {
-      collectBooleanAggregations(logical.getLeft(), innerAggs, innerFunctions);
-      if (logical.getRight() != null)
-        collectBooleanAggregations(logical.getRight(), innerAggs, innerFunctions);
-    }
+    BooleanWrapperExpression.forEachOperand(boolExpr, operand -> collectAggregations(operand, innerAggs, innerFunctions));
   }
 
   /**

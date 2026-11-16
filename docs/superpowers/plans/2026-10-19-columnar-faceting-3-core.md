@@ -1241,7 +1241,7 @@ Moved out (R18): `suspendApplyHoldsPassesUntilClosed` to Task 13 (needs commit m
 
 - [ ] **Step 2: Run to verify they fail** - `mvn -o -pl engine -am test -Dtest=ColumnarIndexManagerLifecycleTest -Dsurefire.failIfNoSpecifiedTests=false`. Expected: FAIL.
 - [ ] **Step 3: Implement** the manager (apply passes call into `ColumnarApplier`, the draining stub described above, until Task 15) and the `LocalDatabase` wiring.
-- [ ] **Step 4: Run to verify they pass**, then `mvn -o -pl engine -am test -Dtest='ACIDTransactionTest,Issue4511OpenFailureLockLeakTest,FailedOpenPreservesWalTest,Issue5067KillLockSymmetryTest,ColumnarPoolsTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: PASS.
+- [ ] **Step 4: Run to verify they pass**, then `mvn -o -pl engine -am test -Dtest='ACIDTransactionTest,DatabaseOpenCloseLockTest.OpenFailureLockLeak,FailedOpenPreservesWalTest,DatabaseOpenCloseLockTest.KillLockSymmetry,ColumnarPoolsTest' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: PASS.
 - [ ] **Step 5: Stop: changes ready for review** - `ColumnarIndexManager.java`, `ColumnarApplier.java` (stub), `LocalDatabase.java`, the test.
 
 ---
@@ -1301,7 +1301,7 @@ No-WAL handling (spec 6.5, R8): `markPagesWithoutWAL` sets bits like `markPages`
 
 **Files:**
 - Modify: `engine/LocalBucket.java` (new public method near `scan`, `:836`)
-- Modify (test support, R21): `engine/src/test/java/com/arcadedb/database/BucketPageLayoutTestSupport.java` - factor the `sealFirstPage(String)` technique (`:101`) into `public static RID sealFirstPage(Database database, String typeName)` (plus the `fillFirstPage` / `bucketStats` it needs, as static overloads taking the database); the protected instance method delegates, so its existing users (`Issue6149PlaceholderPrefersChunksTest`, `Issue6129ChunkedSlotMergeTest`, `Issue5279ConcurrentUpdateTest`) are unchanged. Since #6149 a record that outgrows its page becomes a chunk chain; a placeholder is produced only on a page with no free tail, which is what `sealFirstPage` builds. Tasks 15 and 19 reuse this helper.
+- Modify (test support, R21): `engine/src/test/java/com/arcadedb/database/BucketPageLayoutTestSupport.java` - factor the `sealFirstPage(String)` technique (`:101`) into `public static RID sealFirstPage(Database database, String typeName)` (plus the `fillFirstPage` / `bucketStats` it needs, as static overloads taking the database); the protected instance method delegates, so its existing users (`ChunkedRecordStorageTest.PlaceholderPrefersChunks`, `ChunkedRecordStorageTest.ChunkedSlotMerge`, `ConcurrentRecordWriteTest.ConcurrentUpdate`) are unchanged. Since #6149 a record that outgrows its page becomes a chunk chain; a placeholder is produced only on a page with no free tail, which is what `sealFirstPage` builds. Tasks 15 and 19 reuse this helper.
 - Test: `engine/LocalBucketCommittedPageVisitorTest.java`
 
 **Interfaces:**
@@ -1334,7 +1334,7 @@ Placeholder pointers and their content always share the bucket (`RID(rid.getBuck
 
 - [ ] **Step 2: Run to verify they fail** - `mvn -o -pl engine -am test -Dtest=LocalBucketCommittedPageVisitorTest -Dsurefire.failIfNoSpecifiedTests=false`. Expected: FAIL.
 - [ ] **Step 3: Implement** `visitCommittedPage` reusing the private helpers (no change to existing behavior) and the static `sealFirstPage` helper.
-- [ ] **Step 4: Run to verify they pass**, plus `mvn -o -pl engine -am test -Dtest='LocalBucket*Test,*Placeholder*Test,*Chunk*Test,Issue5279ConcurrentUpdateTest' -Dsurefire.failIfNoSpecifiedTests=false` (the last one and `Issue6149PlaceholderPrefersChunksTest` / `Issue6129ChunkedSlotMergeTest`, matched by the globs, use the refactored helper). Expected: PASS.
+- [ ] **Step 4: Run to verify they pass**, plus `mvn -o -pl engine -am test -Dtest='LocalBucket*Test,*Placeholder*Test,*Chunk*Test,ConcurrentRecordWriteTest.ConcurrentUpdate' -Dsurefire.failIfNoSpecifiedTests=false` (the last one and `ChunkedRecordStorageTest.PlaceholderPrefersChunks` / `ChunkedRecordStorageTest.ChunkedSlotMerge`, matched by the globs, use the refactored helper). Expected: PASS.
 - [ ] **Step 5: Stop: changes ready for review** - `LocalBucket.java`, `BucketPageLayoutTestSupport.java`, the test.
 
 ---

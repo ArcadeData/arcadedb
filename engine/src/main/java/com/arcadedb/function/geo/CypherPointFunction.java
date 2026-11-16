@@ -91,8 +91,8 @@ public class CypherPointFunction implements StatelessFunction {
     if (args.length == 2) {
       if (args[0] == null || args[1] == null)
         return null;
-      final double x = coerceCoordinate("x", args[0]);
-      final double y = coerceCoordinate("y", args[1]);
+      final double x = wrapLongitude(coerceCoordinate("x", args[0]));
+      final double y = checkLatitude(coerceCoordinate("y", args[1]));
       final Map<String, Object> result = new LinkedHashMap<>();
       result.put("longitude", x);
       result.put("latitude", y);
@@ -119,8 +119,8 @@ public class CypherPointFunction implements StatelessFunction {
       final Object lat = map.get("latitude");
       if (lon == null || lat == null)
         return null;
-      final double x = coerceCoordinate("longitude", lon);
-      final double y = coerceCoordinate("latitude", lat);
+      final double x = wrapLongitude(coerceCoordinate("longitude", lon));
+      final double y = checkLatitude(coerceCoordinate("latitude", lat));
       result.put("longitude", x);
       result.put("latitude", y);
       result.put("x", x);
@@ -179,6 +179,10 @@ public class CypherPointFunction implements StatelessFunction {
       if (crs == null || crsSrid != null)
         crs = crsOfSrid(srid, has3d);
       result.put("crs", crs);
+      if (crs != null && isGeographicCrs(crs)) {
+        checkLatitude(y);
+        result.put("x", wrapLongitude(x));
+      }
       if (srid != null)
         result.put("srid", srid);
     } else {
@@ -187,6 +191,26 @@ public class CypherPointFunction implements StatelessFunction {
     }
 
     return result;
+  }
+
+  /**
+   * Rejects a WGS-84 latitude outside [-90, 90] with a client error, as Neo4j does (issue #11690).
+   */
+  private static double checkLatitude(final double latitude) {
+    if (latitude > 90 || latitude < -90)
+      throw new CommandSemanticException(
+          "Cannot create WGS-84 point with invalid latitude " + latitude + ": valid range is [-90, 90]");
+    return latitude;
+  }
+
+  /**
+   * Wraps a WGS-84 longitude into [-180, 180] the way Neo4j does (adding or subtracting whole turns), so 181 becomes
+   * -179 (issue #11690). Non-finite values are left alone.
+   */
+  static double wrapLongitude(final double longitude) {
+    if (longitude <= 180 && longitude >= -180 || !Double.isFinite(longitude))
+      return longitude;
+    return longitude > 180 ? longitude - 360 * Math.ceil((longitude - 180) / 360) : longitude + 360 * Math.ceil((-180 - longitude) / 360);
   }
 
   /**

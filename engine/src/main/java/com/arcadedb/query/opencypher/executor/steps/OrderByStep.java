@@ -148,9 +148,6 @@ public class OrderByStep extends AbstractExecutionStep {
       private void materializeAndSort() {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          if (context.isProfiling())
-            rowCount++;
-
           // Top-K optimization: Use bounded priority queue when LIMIT is present
           if (limit != null && limit > 0 && !orderByClause.isEmpty()) {
             sortedResults = materializeTopK(limit);
@@ -170,6 +167,9 @@ public class OrderByStep extends AbstractExecutionStep {
               sortedResults.add(row);
               heapLimit.add(sortedResults.size(), row);
             }
+            // PROFILE reports the rows the sort read, not the one call that read them (issue #11702)
+            if (context.isProfiling())
+              rowCount += consumed;
 
             // Sort results according to ORDER BY clause, by keys evaluated once per row (issue #11661)
             if (!orderByClause.isEmpty()) {
@@ -247,6 +247,8 @@ public class OrderByStep extends AbstractExecutionStep {
             // Otherwise discard the row (it's worse than our current top K)
           }
         }
+        if (context.isProfiling())
+          rowCount += consumed;
 
         // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
         // what the heap holds now
@@ -400,6 +402,10 @@ public class OrderByStep extends AbstractExecutionStep {
           return Integer.compare(l1.size(), l2.size());
         }
 
+        // Maps by size, keys, then values, as min() and max() order them: their toString() put {a: 10} before {a: 9}
+        if (v1 instanceof Map<?, ?> m1 && v2 instanceof Map<?, ?> m2)
+          return CypherFunctionHelper.compareMaps(m1, m2, this::compareValues);
+
         // Compare booleans: false < true
         if (v1 instanceof Boolean && v2 instanceof Boolean)
           return Boolean.compare((Boolean) v1, (Boolean) v2);
@@ -496,6 +502,33 @@ public class OrderByStep extends AbstractExecutionStep {
    */
   private static double toComparableDouble(final Number value) {
     return value instanceof Float float1 ? Type.widenFloat(float1) : value.doubleValue();
+  }
+
+  /**
+   * The sort as a plan line: its keys with their directions, the top-k bound a downstream LIMIT gave it, and under PROFILE its
+   * time and the rows it read. The default printed the bare class name, which showed neither what was sorted nor what it cost
+   * (issue #11702).
+   */
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder builder = new StringBuilder("  ".repeat(Math.max(0, depth * indent)));
+    builder.append("+ ORDER BY ");
+    final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
+    for (int i = 0; i < items.size(); i++) {
+      if (i > 0)
+        builder.append(", ");
+      builder.append(items.get(i).getExpression()).append(items.get(i).isAscending() ? " ASC" : " DESC");
+    }
+    // same guard as materializeAndSort: a LIMIT 0 (or an empty clause) sorts every row, so no bound to show
+    if (limit != null && limit > 0 && !orderByClause.isEmpty())
+      builder.append(" (top ").append(limit).append(")");
+    if (context.isProfiling()) {
+      builder.append(" (").append(getCostFormatted());
+      if (rowCount > 0)
+        builder.append(", ").append(getRowCountFormatted());
+      builder.append(")");
+    }
+    return builder.toString();
   }
 
   /** A row and the values of its ORDER BY items, evaluated once when the row is read (issue #11661). */

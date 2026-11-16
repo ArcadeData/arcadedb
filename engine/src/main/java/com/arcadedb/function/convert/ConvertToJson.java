@@ -20,6 +20,7 @@ package com.arcadedb.function.convert;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -71,6 +72,11 @@ public class ConvertToJson extends AbstractConvertFunction {
     if (value instanceof List) {
       return new JSONArray((List<?>) value);
     }
+
+    // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array: serialized as the JSON array it is, not as the
+    // Java identity string "[J@..." (issue #11582)
+    if (MultiValue.isSequenceArray(value))
+      return new JSONArray(MultiValue.getMultiValueAsList(value));
 
     if (value instanceof Document) {
       return ((Document) value).toJSON();

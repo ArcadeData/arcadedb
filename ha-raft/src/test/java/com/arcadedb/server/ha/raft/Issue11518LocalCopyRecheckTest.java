@@ -225,7 +225,7 @@ class Issue11518LocalCopyRecheckTest {
     assertThat(database.getSchema().getEmbedded().isDictionaryLostForExistingTypes()).isTrue();
   }
 
-  /** As {@code Issue11258UnavailableUniqueIndexTest}: the unique index's mutable file swapped for an empty one. */
+  /** As {@code UnavailableUniqueIndexTest}: the unique index's mutable file swapped for an empty one. */
   private String reopenWithAHeaderlessUniqueIndex() throws Exception {
     database.transaction(() -> {
       database.getSchema().createVertexType(TYPE).createProperty("id", Type.INTEGER).createIndex(Schema.INDEX_TYPE.LSM_TREE, true);

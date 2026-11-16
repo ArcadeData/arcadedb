@@ -308,12 +308,12 @@ class HaPeerAddressRoutingMapMutationIT extends BaseRaftHATest {
     final int memberHttpPort = getServerHttpPort(memberIndex);
 
     node.getHttpAddresses().remove(memberId);
-    assertThat(RaftHAServer.extractPort(node.getPeerHttpAddress(memberId)))
+    assertThat(PeerEndpoints.extractPort(node.getPeerHttpAddress(memberId)))
         .as("derived from the member's Raft host plus this node's own port, which names this node").isNotEqualTo(memberHttpPort);
 
     Awaitility.await("the node learns the member's HTTP address back").atMost(60, TimeUnit.SECONDS)
         .pollInterval(250, TimeUnit.MILLISECONDS)
-        .until(() -> RaftHAServer.extractPort(node.getHttpAddresses().get(memberId)) == memberHttpPort);
+        .until(() -> PeerEndpoints.extractPort(node.getHttpAddresses().get(memberId)) == memberHttpPort);
     assertThat(node.getPeerHttpAddress(memberId)).endsWith(":" + memberHttpPort);
     Awaitility.await("and the member's capabilities with it").atMost(30, TimeUnit.SECONDS)
         .pollInterval(250, TimeUnit.MILLISECONDS)

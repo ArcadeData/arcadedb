@@ -34,6 +34,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexMaintenanceSuspension;
@@ -953,8 +954,12 @@ public class GraphBatch implements AutoCloseable {
 
   /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
   private EdgeType edgeType(final String name) {
-    if (!(database.getSchema().getTypeOrNull(name) instanceof EdgeType edgeType))
-      throw new IllegalArgumentException("Edge type '" + name + "' not found");
+    final DocumentType type = database.getSchema().getTypeOrNull(name);
+    // a missing type is a schema refusal, answered as such by every protocol (issue #11633)
+    if (type == null)
+      throw new SchemaException("Edge type '" + name + "' not found");
+    if (!(type instanceof EdgeType edgeType))
+      throw new IllegalArgumentException("Type '" + name + "' is not an edge type");
     return edgeType;
   }
 
@@ -2111,7 +2116,7 @@ public class GraphBatch implements AutoCloseable {
         // EdgeLinkedList.add could have tracked one. That last condition is load-bearing: a segment carrying tracked
         // appends is declared as a whole, rewrites included (#10375), so a bulk write that could reach one must go
         // through EdgeLinkedList.updateRewrittenSegment instead. The refusal is pinned by
-        // Issue9242GraphBatchCallerTransactionTest. See docs/supernode.md §3.
+        // GraphBatchEdgeTest.GraphBatchCallerTransaction. See docs/supernode.md §3.
         if (lastSegmentPromoted) {
           // #5667: the vertex is already a promoted super-node - route this group through the standard,
           // MVCC-safe StripedEdgeList write path instead of the bulk segment path.

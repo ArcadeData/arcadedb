@@ -20,8 +20,10 @@ package com.arcadedb.database;
 
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -65,6 +67,11 @@ public class ImmutableDocument extends BaseDocument {
   // allocation size and cost ~10% of a vertex scan. Written without synchronization like the rest of the record state:
   // an instance shared by threads can at worst gain or miss one retryable conflict.
   private int readInTransaction = -1;
+  // ISSUE #11713: 0, OR THE COMMITS PUBLISHED (SEE commitMark()) WHEN THE WALK THAT HANDED THIS RECORD OUT FROM A GRAPH REFERENCE
+  // - AN ADJACENCY ENTRY, THE ENDPOINT OF AN EDGE - WITHOUT READING IT BEGAN: A LAZY LOAD THAT FINDS IT GONE AFTER A COMMIT MET A
+  // CONCURRENT DELETE (SEE readContentOfLazyRecord()). TWO BYTES OF THE FOUR OF PADDING THIS CLASS ENDS WITH: NEITHER THIS CLASS,
+  // NOR ImmutableVertex, NOR ImmutableEdge GROWS BY IT (48, 56 AND 56 BYTES WITH COMPRESSED POINTERS)
+  private char reachedAtCommit;
 
   protected ImmutableDocument(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
@@ -522,6 +529,72 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Marks this record as handed out from a graph reference without being read, see {@link DatabaseInternal#lookupThroughGraph}.
+   *
+   * @param walkMark {@link #commitMark} of the commits published when the walk that read the reference began
+   */
+  public void markReachedThroughGraph(final char walkMark) {
+    reachedAtCommit = walkMark;
+  }
+
+  /** The mark {@link #markReachedThroughGraph} set, or 0 for a record not handed out from a graph reference. */
+  public char getReachedAtCommit() {
+    return reachedAtCommit;
+  }
+
+  /**
+   * {@code publishedCommits} ({@link com.arcadedb.engine.TransactionManager#getPublishedCommits()}) folded into the 16 bits a
+   * record keeps it in, never 0, which means "not marked". After a multiple of 65535 commits a mark reads as none, and a record
+   * deleted in between answers that it is not found, as it did before issue #11713.
+   */
+  public static char commitMark(final long publishedCommits) {
+    return (char) (Math.floorMod(publishedCommits, 65535L) + 1);
+  }
+
+  /**
+   * What a read of a record reached through the graph answers when the record is gone (issue #11713), whether the read is the
+   * lazy load of its content or a lookup that reads it at once (under REPEATABLE_READ). A record reached through the graph that is
+   * gone was deleted either by a commit published after the walk that read the reference to it began, or before: the delete of a
+   * vertex removes the edges to it in the same commit, so only a reference read before that commit can still name it, and one
+   * read after it is dangling. The first is a conflict with a concurrent writer and answers the retryable
+   * {@link ConcurrentModificationException}; the second, told by as many commits having started publishing now as had finished
+   * when the walk began - none was in flight then and none has started since - answers the {@link RecordNotFoundException} it
+   * always did, which is what the checks and the walks that skip a dangling entry expect. So does a delete of the open
+   * transaction itself, and a record looked up by a caller that named its RID (walkMark 0).
+   *
+   * @return the exception to throw
+   */
+  public static RuntimeException missingGraphRecord(final DatabaseInternal database, final RID rid, final char walkMark,
+      final RecordNotFoundException notFound) {
+    if (walkMark == 0)
+      return notFound;
+    // A COMMIT NESTED IN THE OPEN TRANSACTION, ON THIS THREAD - A NAME THE DICTIONARY REGISTERED FOR A RECORD IT SAVED - IS NOT A
+    // CONCURRENT ONE: IT CANNOT HAVE DELETED A RECORD BEHIND THE WALK'S BACK. COUNTED BY THE OUTERMOST TRANSACTION, THE ONE THE
+    // WALK MARK WAS TAKEN FROM, SO THE TWO SHARE ONE BASELINE
+    final TransactionContext outermost = database.outermostActiveTransaction();
+    final long publishing = database.getTransactionManager().getPublishingCommits() - (outermost != null ?
+        outermost.getNestedPublications() :
+        0L);
+    if (commitMark(publishing) == walkMark)
+      return notFound;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
+      return notFound;
+    return new ConcurrentModificationException(
+        "Record " + rid + " was deleted by a concurrent transaction after it was reached through the graph: retry the operation",
+        notFound);
+  }
+
+  /** The content of a record handed out without it, read now: see {@link #missingGraphRecord} for a record that is gone. */
+  private Binary readContentOfLazyRecord() {
+    try {
+      return database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+    } catch (final RecordNotFoundException e) {
+      throw missingGraphRecord((DatabaseInternal) database, rid, reachedAtCommit, e);
+    }
+  }
+
+  /**
    * Materialises the record if it has not been loaded yet.
    * <p>
    * <b>Postcondition:</b> on return, either {@code buffer} is {@code null} - the record was filtered away by an
@@ -555,7 +628,7 @@ public class ImmutableDocument extends BaseDocument {
       if (rid == null)
         throw new DatabaseOperationException("Document cannot be loaded because RID is null");
 
-      content = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      content = readContentOfLazyRecord();
       // PUBLISH BEFORE FIRING THE EVENTS: A LISTENER READS THIS RECORD'S PROPERTIES OFF THE FIELD
       buffer = content;
       content.position(propertiesStartingPosition);
