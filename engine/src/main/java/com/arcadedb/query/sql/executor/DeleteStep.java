@@ -21,11 +21,13 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.utility.RidHashSet;
 
 /**
  * Deletes records coming from upstream steps. Only the rows the engine actually deleted are passed on: a delete a
@@ -62,6 +64,8 @@ public class DeleteStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();
     final DatabaseInternal database = context.getDatabase();
+    // THE RECORDS THIS STATEMENT DELETED (issue #12256)
+    final RidHashSet deleted = new RidHashSet();
     // deletes one row ahead of what it returns: only valid under a plan that drains every pull (see SkippingResultSet)
     return new SkippingResultSet(prevStep, context, nRecords) {
       @Override
@@ -69,15 +73,22 @@ public class DeleteStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (result.isElement()) {
+            final Record record = result.getElement().get();
+            if (deletedByAnEarlierRow(deleted, record))
+              return null;
             final Result answer = beforeImage(context, result);
-            return database.deleteRecordReportingVeto(result.getElement().get()) ? answer : null;
+            return database.deleteRecordReportingVeto(record) ? answer : null;
           }
           // A PROJECTION THAT CARRIES THE @rid OF A RECORD DELETES THAT RECORD, AS UPDATE WRITES TO IT (ConvertToUpdatableResultStep).
           // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
           // (issue #10336)
-          if (result.getProperty("@rid") instanceof Identifiable identifiable && identifiable.getRecord() instanceof Record record) {
-            final Result answer = beforeImage(context, result);
-            return database.deleteRecordReportingVeto(record) ? answer : null;
+          if (result.getProperty("@rid") instanceof Identifiable identifiable) {
+            if (deletedByAnEarlierRow(deleted, identifiable))
+              return null;
+            if (identifiable.getRecord() instanceof Record record) {
+              final Result answer = beforeImage(context, result);
+              return database.deleteRecordReportingVeto(record) ? answer : null;
+            }
           }
           throw new CommandExecutionException(ConvertToUpdatableResultStep.NOT_A_RECORD);
         } finally {
@@ -86,6 +97,17 @@ public class DeleteStep extends AbstractExecutionStep {
         }
       }
     };
+  }
+
+  /**
+   * True when an earlier row of this statement named the same record, recording it otherwise. The statement deletes the SET of
+   * records its rows name, and a subquery can name one in several rows: {@code SELECT expand(out())} over two parallel edges
+   * names their target twice. The second row used to fail the whole statement with a not-found that told the operator to repair
+   * a consistent database (issue #12256). Parallel lightweight edges are left out: they share one RID and are distinct edges.
+   */
+  private static boolean deletedByAnEarlierRow(final RidHashSet deleted, final Identifiable record) {
+    final RID rid = record.getIdentity();
+    return rid != null && rid.getPosition() >= 0 && !deleted.add(rid);
   }
 
   /**
