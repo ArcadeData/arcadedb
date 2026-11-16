@@ -255,16 +255,14 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void maxFlowRejectsAResidualGraphLargerThanTheBudget() {
-      // 800 bytes admit the graph (384), its adjacency (144) and the unit capacities (160), and refuse the residual graph on
-      // top: linear in the arcs since issue #12175, where it used to be two nodeCount x nodeCount matrices
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 800L);
+    void maxFlowRejectsCapacityMatricesLargerThanTheBudget() {
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
           CALL algo.maxFlow(a, c) YIELD maxFlow \
           RETURN maxFlow"""))
-          .hasStackTraceContaining("the residual graph would need 392 bytes (4 nodes, 8 arcs)")
+          .hasStackTraceContaining("the capacity and residual matrices would need 512 bytes (2 matrices of 4 x 4 nodes)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
     }
 

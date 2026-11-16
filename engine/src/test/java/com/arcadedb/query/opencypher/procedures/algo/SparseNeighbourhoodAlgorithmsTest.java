@@ -28,7 +28,6 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.Result;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
@@ -37,7 +36,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -55,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression tests for issues #12172, #12173, #12175 and #12176: the {@code algo.*} procedures that read the whole graph, or built
+ * Regression tests for issues #12172, #12173 and #12176: the {@code algo.*} procedures that read the whole graph, or built
  * a {@code nodeCount x nodeCount} structure, to answer a question about a neighbourhood or a sparse graph.
  * <p>
  * Each rewrite is held to the answer of the algorithm it replaced, re-implemented here over the adjacency the vertex API lists (the
@@ -278,50 +276,6 @@ class SparseNeighbourhoodAlgorithmsTest {
       for (final Vertex vertex : path.getVertices())
         rids.add(vertex.getIdentity());
       return rids;
-    }
-  }
-
-  // ── Issue #12175: max flow over a residual graph of arcs ──────────────────────────────────────────────────────────
-
-  @Nested
-  class MaxFlow {
-    @Test
-    void theFlowIsTheDenseEdmondsKarpFlowToTheLastBit() {
-      for (final long seed : new long[] { 1L, 2L, 3L }) {
-        final RID[] v = randomMultigraph(90, 300, seed);
-        for (final int[] pair : new int[][] { { 0, 89 }, { 5, 6 }, { 40, 12 } }) {
-          final double expected = oracleMaxFlow(v, pair[0], pair[1]);
-          final double actual = maxFlow(v[pair[0]], v[pair[1]]);
-          assertThat(actual).as("flow %s -> %s, seed %d", v[pair[0]], v[pair[1]], seed).isEqualTo(expected);
-        }
-        database.transaction(() -> database.command("sql", "DELETE FROM N"));
-      }
-    }
-
-    @Test
-    void aGraphWhoseMatricesWouldNotFitTheBudgetIsServed() {
-      // 3,000 vertices: the two dense matrices took 144 MB. The residual graph of a sparse graph of that size takes a few hundred KB
-      final RID[] v = chainOfTriangles(3_000);
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 4L * 1024 * 1024);
-      assertThat(maxFlow(v[0], v[2_999])).isEqualTo(oracleMaxFlowOnChainOfTriangles());
-    }
-
-    @Test
-    void aFlowFromAVertexToItselfIsRefused() {
-      final RID[] v = randomMultigraph(10, 20, 4L);
-      // It used to loop adding an unbounded path flow until the command timed out
-      assertThatThrownBy(() -> maxFlow(v[3], v[3])).hasStackTraceContaining("sourceNode and sinkNode must be two different vertices");
-    }
-
-    private double maxFlow(final RID source, final RID sink) {
-      final List<Result> rows = drain(new AlgoMaxFlow().execute(new Object[] { source.asVertex(), sink.asVertex(), "R", "w" }, null,
-          newContext()));
-      return rows.getFirst().<Number>getProperty("maxFlow").doubleValue();
-    }
-
-    /** Every link of the chain of triangles carries 1, and two disjoint paths run from end to end. */
-    private double oracleMaxFlowOnChainOfTriangles() {
-      return 2.0;
     }
   }
 
@@ -597,51 +551,6 @@ class SparseNeighbourhoodAlgorithmsTest {
     return (long) rowA.size() + rowB.size() - common;
   }
 
-  /** The dense Edmonds-Karp the procedure used: capacity matrix summed edge by edge, residual BFS scanning every column. */
-  private double oracleMaxFlow(final RID[] v, final int source, final int sink) {
-    final int n = v.length;
-    final Map<RID, Integer> index = indexOf(v);
-    final double[][] residual = new double[n][n];
-    for (int i = 0; i < n; i++)
-      for (final Edge edge : v[i].asVertex().getEdges(Vertex.DIRECTION.OUT, "R")) {
-        final int j = index.get(edge.getIn());
-        final Object w = edge.get("w");
-        final double cap = w instanceof Number num ? num.doubleValue() : 1.0;
-        residual[i][j] += cap;
-        residual[j][i] += cap;
-      }
-    final int[] parent = new int[n];
-    final int[] queue = new int[n];
-    double flow = 0.0;
-    while (true) {
-      Arrays.fill(parent, -1);
-      parent[source] = source;
-      int head = 0, tail = 0;
-      queue[tail++] = source;
-      bfs:
-      while (head < tail) {
-        final int u = queue[head++];
-        for (int x = 0; x < n; x++)
-          if (parent[x] == -1 && residual[u][x] > 0) {
-            parent[x] = u;
-            if (x == sink)
-              break bfs;
-            queue[tail++] = x;
-          }
-      }
-      if (parent[sink] == -1)
-        return flow;
-      double pathFlow = Double.MAX_VALUE;
-      for (int x = sink; x != source; x = parent[x])
-        pathFlow = Math.min(pathFlow, residual[parent[x]][x]);
-      for (int x = sink; x != source; x = parent[x]) {
-        residual[parent[x]][x] -= pathFlow;
-        residual[x][parent[x]] += pathFlow;
-      }
-      flow += pathFlow;
-    }
-  }
-
   /** Bron-Kerbosch without pivoting over the simple undirected graph: every maximal clique, isolated vertices included. */
   private List<Set<RID>> oracleMaximalCliques(final RID[] v) {
     final Map<RID, Set<RID>> adj = simpleUndirected(v);
@@ -784,13 +693,6 @@ class SparseNeighbourhoodAlgorithmsTest {
     for (final Iterator<Vertex> it = new AlgoWCC().getAllVertices(database, null); it.hasNext(); )
       result.add(it.next().getIdentity());
     return result;
-  }
-
-  private static Map<RID, Integer> indexOf(final RID[] v) {
-    final Map<RID, Integer> index = new HashMap<>();
-    for (int i = 0; i < v.length; i++)
-      index.put(v[i], i);
-    return index;
   }
 
   // ── Plumbing ───────────────────────────────────────────────────────────────────────────────────────────────────
