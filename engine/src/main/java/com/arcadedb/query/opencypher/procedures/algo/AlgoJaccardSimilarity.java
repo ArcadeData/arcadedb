@@ -102,7 +102,7 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
     final NodeScores shared = scoresThroughNeighbours(graph, srcIdx, dir, w -> 0.0, guard);
 
     // A node sharing no neighbour scores 0, and is listed only when the cutoff admits 0 (a negative one)
-    final boolean everyNode = !(cutoff >= 0.0);
+    final boolean everyNode = cutoff < 0.0 || Double.isNaN(cutoff);
     final List<Result> results = new ArrayList<>();
     for (final int v : candidateNodes(db, graph, shared, srcIdx, everyNode)) {
       guard.checkPeriodically(results.size());

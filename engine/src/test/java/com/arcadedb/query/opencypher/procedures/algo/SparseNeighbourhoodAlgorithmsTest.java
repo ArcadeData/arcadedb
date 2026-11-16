@@ -19,9 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.LocalAdjacency;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
@@ -36,6 +41,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -383,6 +389,69 @@ class SparseNeighbourhoodAlgorithmsTest {
       chainOfTriangles(3_000);
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024);
       assertThat(drain(new AlgoKNN().execute(new Object[] { 2, "R" }, null, newContext()))).isNotEmpty();
+    }
+  }
+
+  // ── LocalAdjacency against the whole-graph build it stands in for ─────────────────────────────────────────────────
+
+  @Nested
+  class LocalAdjacencyParity {
+    @Test
+    void everyRowIsTheWholeGraphRowEntryForEntry() {
+      final RID[] v = randomMultigraph(120, 400, 29L);
+      // Ghost entries (edge records gone, the entries left behind) are followed by both builds; a vertex deleted under its entries
+      // is left out by both
+      database.transaction(() -> {
+        int ghosts = 0;
+        for (final Edge edge : v[0].asVertex().getEdges(Vertex.DIRECTION.BOTH, "R"))
+          if (ghosts++ < 2)
+            TestHelper.deleteRecordAtLowLevel(database, edge.getIdentity());
+        for (final Edge edge : v[7].asVertex().getEdges(Vertex.DIRECTION.OUT, "R"))
+          TestHelper.deleteRecordAtLowLevel(database, edge.getIdentity());
+        TestHelper.deleteRecordAtLowLevel(database, v[50]);
+      });
+      assertParity(Vertex.DIRECTION.values(), false);
+    }
+
+    @Test
+    void theIncomingSideOfAUnidirectionalTypeHoldsTheSameNeighbours() {
+      database.getSchema().buildEdgeType().withName("U").withBidirectional(false).create();
+      database.transaction(() -> {
+        final Random random = new Random(31L);
+        final MutableVertex[] vertices = new MutableVertex[60];
+        for (int i = 0; i < vertices.length; i++)
+          vertices[i] = database.newVertex("N").set("k", i).save();
+        for (int e = 0; e < 150; e++)
+          vertices[random.nextInt(60)].newEdge(e % 3 == 0 ? "R" : "U", vertices[random.nextInt(60)]);
+      });
+      // Read from the edges there, so the neighbours may come in another order: compared as multisets
+      assertParity(Vertex.DIRECTION.values(), true);
+    }
+
+    private void assertParity(final Vertex.DIRECTION[] directions, final boolean anyOrder) {
+      final List<Vertex> vertices = new ArrayList<>();
+      for (final Iterator<Vertex> it = new AlgoWCC().getAllVertices(database, null); it.hasNext(); )
+        vertices.add(it.next());
+      final Map<RID, Integer> index = GraphEngine.buildRidIndex(vertices);
+      for (final String[] types : new String[][] { null, { "R" } })
+        for (final Vertex.DIRECTION dir : directions) {
+          final int[][] whole = GraphEngine.buildAdjacencyList(vertices, index, dir, types);
+          final LocalAdjacency local = new LocalAdjacency((DatabaseInternal) database, types, newContext());
+          for (int i = 0; i < vertices.size(); i++) {
+            final List<RID> expected = new ArrayList<>();
+            for (final int j : whole[i])
+              expected.add(vertices.get(j).getIdentity());
+            final List<RID> actual = new ArrayList<>();
+            for (final int node : local.row(local.nodeOf(vertices.get(i).getIdentity()), dir))
+              actual.add(local.ridOf(node));
+            if (anyOrder)
+              assertThat(actual).as("row of %s over %s, types %s", vertices.get(i), dir, Arrays.toString(types))
+                  .containsExactlyInAnyOrderElementsOf(expected);
+            else
+              assertThat(actual).as("row of %s over %s, types %s", vertices.get(i), dir, Arrays.toString(types))
+                  .containsExactlyElementsOf(expected);
+          }
+        }
     }
   }
 
