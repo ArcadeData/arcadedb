@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 import java.util.stream.Stream;
@@ -41,7 +41,7 @@ import java.util.stream.Stream;
  * to avoid StackOverflow on large graphs.
  * </p>
  * <p>
- * Uses BitSet for candidate and excluded sets to minimize object allocation.
+ * Candidate and excluded sets are sorted arrays of node ids, subsets of one node's neighbours.
  * Returns one result row per maximal clique with size >= minSize.
  * </p>
  * <p>
@@ -59,7 +59,7 @@ public class AlgoClique extends AbstractAlgoProcedure {
   public static final String NAME = "algo.clique";
 
   /**
-   * Heap cost of a {@code StackFrame} object and the deque slot holding it, on top of the bit sets it references.
+   * Heap cost of a {@code StackFrame} object and the deque slot holding it, on top of the arrays it references.
    */
   private static final long STACK_FRAME_OVERHEAD_BYTES = 64L;
 
@@ -105,142 +105,217 @@ public class AlgoClique extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    // Build undirected adjacency as BitSet[] for fast set operations
-    // Treat graph as undirected: merge OUT and IN edges
-    final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
-    final int[][] adjIn  = graph.adjacency(Vertex.DIRECTION.IN,  relTypes);
-
-    // A nodeCount x nodeCount bit matrix, reserved before the first BitSet is allocated and built under the
-    // checkpoint, because the build is itself O(n²/64) (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] adj = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
-      adj[i] = new BitSet(n);
-      for (final int j : adjOut[i])
-        adj[i].set(j);
-      for (final int j : adjIn[i])
-        adj[i].set(j);
-      adj[i].clear(i); // no self-loops
-    }
+    // The undirected simple graph: OUT and IN edges merged, as sorted neighbour sets without self-loops or repeats. Every
+    // set the search handles is a subset of one of them, so it needs memory linear in the graph, not an n x n bit matrix
+    // and n-bit sets per frame (issue #12173).
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    toSimpleNeighbourSets(adj, guard);
+    int maxDegree = 0;
+    for (final int[] row : adj)
+      maxDegree = Math.max(maxDegree, row.length);
 
     final List<Result> results = new ArrayList<>();
 
-    // Iterative Bron-Kerbosch with pivoting
-    // Stack frames: (R as BitSet, P as BitSet, X as BitSet)
-    // We use a Deque of StackFrame objects
+    // Iterative Bron-Kerbosch with pivoting. The root frame has P = every node and X = {}: its pivot is the first node
+    // of highest degree, its candidates the nodes not adjacent to it in ascending order, and as each is expanded it
+    // moves from P to X. That frame is kept as a flag per node rather than as two sets of n nodes.
+    graph.memory().reserve(saturatingProduct(n, BOOLEAN_BYTES), "the expanded flags of the root frame", n + " nodes");
+    final boolean[] expanded = new boolean[n];
+    int pivot = -1;
+    for (int u = 0; u < n; u++)
+      if (pivot < 0 || adj[u].length > adj[pivot].length)
+        pivot = u;
+
+    // Below the root a frame holds P, X and the candidates, each a subset of the neighbours of the node that opened
+    // it, so at most maxDegree nodes each; the stack is as deep as the largest clique the search has reached. Priced
+    // at the peak rather than per push: a frame is popped, and the budget never releases (issue #6375).
+    final long frameBytes = saturatingSum(saturatingProduct(4L * maxDegree + 1, INT_BYTES), STACK_FRAME_OVERHEAD_BYTES);
+    int deepest = 0;
     final Deque<StackFrame> stack = new ArrayDeque<>();
+    int[] clique = new int[16];
+    int step = 0;
 
-    final BitSet initialP = new BitSet(n);
-    initialP.set(0, n);
-    final BitSet initialR = new BitSet(n);
-    final BitSet initialX = new BitSet(n);
-
-    stack.push(new StackFrame(initialR, initialP, initialX));
-
-    // A Bron-Kerbosch frame carries five bit sets of n bits, and the stack is as deep as the largest clique the
-    // search has reached, so at its peak the stack is a second nodeCount x nodeCount structure - larger than the
-    // adjacency matrix above it. Priced at the peak rather than per push: a frame is popped, and the budget never
-    // releases, so charging every push would quote a total nobody is holding (issue #6375).
-    final long frameBytes = saturatingSum(bitsetMatrixBytes(5, n), STACK_FRAME_OVERHEAD_BYTES);
-    int deepest = 1;
-    graph.memory().reserve(frameBytes, "the clique search stack", "1 frame of " + n + " nodes");
-
-    while (!stack.isEmpty()) {
-      if (stack.size() > deepest) {
-        graph.memory().reserve(saturatingProduct(stack.size() - deepest, frameBytes), "the clique search stack",
-            stack.size() + " frames of " + n + " nodes");
-        deepest = stack.size();
-      }
-      // Maximal-clique enumeration is exponential in the graph in the worst case, and neither `minSize` nor
-      // anything else bounds the search - minSize only filters what is reported (issue #6302). One frame costs
-      // at least a bit-set scan, so the check needs no throttle.
-      guard.check();
-      final StackFrame frame = stack.peek();
-
-      if (frame.P.isEmpty() && frame.X.isEmpty()) {
-        // Maximal clique found in frame.R
-        final int size = frame.R.cardinality();
-        if (size >= minSize) {
-          final List<RID> clique = new ArrayList<>(size);
-          for (int i = frame.R.nextSetBit(0); i >= 0; i = frame.R.nextSetBit(i + 1))
-            clique.add(graph.getRID(i));
-          final ResultInternal r = new ResultInternal();
-          r.setProperty("clique", clique);
-          r.setProperty("size", size);
-          results.add(r);
-        }
-        stack.pop();
+    final int[] pivotNeighbors = adj[pivot];
+    int skip = 0;
+    for (int v = 0; v < n; v++) {
+      // Candidates of the root = P \ N(pivot)
+      if (skip < pivotNeighbors.length && pivotNeighbors[skip] == v) {
+        skip++;
         continue;
       }
 
-      if (frame.nextVertex < 0) {
-        // Choose pivot u from P ∪ X that maximizes |N(u) ∩ P|
-        final BitSet pUnionX = (BitSet) frame.P.clone();
-        pUnionX.or(frame.X);
-        int pivot = -1;
-        int maxNeighbors = -1;
-        for (int u = pUnionX.nextSetBit(0); u >= 0; u = pUnionX.nextSetBit(u + 1)) {
-          final BitSet intersect = (BitSet) adj[u].clone();
-          intersect.and(frame.P);
-          final int cnt = intersect.cardinality();
-          if (cnt > maxNeighbors) {
-            maxNeighbors = cnt;
-            pivot = u;
+      // New P = P ∩ N(v) and new X = X ∩ N(v), P being the nodes not expanded yet and X the ones expanded
+      final int[] neighbors = adj[v];
+      int pSize = 0;
+      for (final int w : neighbors)
+        if (!expanded[w])
+          pSize++;
+      final int[] newP = new int[pSize];
+      final int[] newX = new int[neighbors.length - pSize];
+      int p = 0;
+      int x = 0;
+      for (final int w : neighbors) {
+        if (expanded[w])
+          newX[x++] = w;
+        else
+          newP[p++] = w;
+      }
+      expanded[v] = true;
+      clique[0] = v;
+      stack.push(new StackFrame(1, newP, newP.length, newX, newX.length));
+
+      while (!stack.isEmpty()) {
+        if (stack.size() > deepest) {
+          graph.memory().reserve(saturatingProduct(stack.size() - deepest, frameBytes), "the clique search stack",
+              stack.size() + " frames of up to " + maxDegree + " nodes");
+          deepest = stack.size();
+        }
+        // Maximal-clique enumeration is exponential in the graph in the worst case, and neither `minSize` nor anything
+        // else bounds the search - minSize only filters what is reported (issue #6302).
+        guard.checkPeriodically(step++);
+        final StackFrame frame = stack.peek();
+
+        if (frame.pSize == 0 && frame.xSize == 0) {
+          // Maximal clique found in frame.R
+          final int size = frame.depth;
+          if (size >= minSize) {
+            final int[] members = Arrays.copyOf(clique, size);
+            Arrays.sort(members);
+            final List<RID> rids = new ArrayList<>(size);
+            for (final int member : members)
+              rids.add(graph.getRID(member));
+            final ResultInternal r = new ResultInternal();
+            r.setProperty("clique", rids);
+            r.setProperty("size", size);
+            results.add(r);
           }
+          stack.pop();
+          continue;
         }
-        frame.pivot = pivot;
-        // Candidates = P \ N(pivot)
-        final BitSet candidates = (BitSet) frame.P.clone();
-        if (pivot >= 0)
-          candidates.andNot(adj[pivot]);
-        frame.candidates = candidates;
-        frame.nextVertex = candidates.nextSetBit(0);
+
+        if (frame.candidates == null)
+          frame.chooseCandidates(adj);
+
+        if (frame.nextCandidate == frame.candidates.length) {
+          stack.pop();
+          continue;
+        }
+        final int candidate = frame.candidates[frame.nextCandidate++];
+
+        // New R = frame.R ∪ {candidate}, New P = frame.P ∩ N(candidate), New X = frame.X ∩ N(candidate)
+        if (frame.depth == clique.length)
+          clique = Arrays.copyOf(clique, clique.length * 2);
+        clique[frame.depth] = candidate;
+        final int[] childP = intersect(frame.P, frame.pSize, adj[candidate]);
+        final int[] childX = intersect(frame.X, frame.xSize, adj[candidate]);
+
+        // Update current frame: remove the candidate from P, add it to X
+        frame.moveToX(candidate);
+
+        stack.push(new StackFrame(frame.depth + 1, childP, childP.length, childX, childX.length));
       }
-
-      final int v = frame.nextVertex;
-      if (v < 0) {
-        stack.pop();
-        continue;
-      }
-
-      // Advance to next candidate for this frame
-      frame.nextVertex = frame.candidates.nextSetBit(v + 1);
-
-      // New R = frame.R ∪ {v}
-      final BitSet newR = (BitSet) frame.R.clone();
-      newR.set(v);
-
-      // New P = frame.P ∩ N(v)
-      final BitSet newP = (BitSet) frame.P.clone();
-      newP.and(adj[v]);
-
-      // New X = frame.X ∩ N(v)
-      final BitSet newX = (BitSet) frame.X.clone();
-      newX.and(adj[v]);
-
-      // Update current frame: remove v from P, add to X
-      frame.P.clear(v);
-      frame.X.set(v);
-
-      stack.push(new StackFrame(newR, newP, newX));
     }
 
     return results.stream();
   }
 
-  private static final class StackFrame {
-    BitSet R;
-    BitSet P;
-    BitSet X;
-    BitSet candidates;
-    int    pivot      = -1;
-    int    nextVertex = -1;
+  /** The ids of the first {@code size} entries of {@code set} that are also in {@code row}, both sorted, in order. */
+  private static int[] intersect(final int[] set, final int size, final int[] row) {
+    final int[] out = new int[Math.min(size, row.length)];
+    final int count = size <= row.length ?
+        intersectInto(set, size, row, row.length, out) :
+        intersectInto(row, row.length, set, size, out);
+    return count == out.length ? out : Arrays.copyOf(out, count);
+  }
 
-    StackFrame(final BitSet r, final BitSet p, final BitSet x) {
-      this.R = r;
+  /** The size of the intersection of two sorted sets. */
+  private static int intersectionSize(final int[] a, final int aSize, final int[] b, final int bSize) {
+    return aSize <= bSize ? intersectInto(a, aSize, b, bSize, null) : intersectInto(b, bSize, a, aSize, null);
+  }
+
+  /**
+   * Walks the smaller sorted set and looks each id up in the larger one, writing the common ids in order to {@code out}
+   * when it is not null: O(small x log(large)), which a node of high degree next to a small set needs.
+   */
+  private static int intersectInto(final int[] small, final int smallSize, final int[] large, final int largeSize,
+      final int[] out) {
+    int count = 0;
+    int from = 0;
+    for (int i = 0; i < smallSize && from < largeSize; i++) {
+      final int found = Arrays.binarySearch(large, from, largeSize, small[i]);
+      if (found >= 0) {
+        if (out != null)
+          out[count] = small[i];
+        count++;
+        from = found + 1;
+      } else
+        from = -found - 1;
+    }
+    return count;
+  }
+
+  /** One Bron-Kerbosch frame below the root: R is the first {@code depth} entries of the shared clique path. */
+  private static final class StackFrame {
+    final int depth;
+    final int[] P;
+    int pSize;
+    int[] X;
+    int xSize;
+    int[] candidates;
+    int nextCandidate;
+
+    StackFrame(final int depth, final int[] p, final int pSize, final int[] x, final int xSize) {
+      this.depth = depth;
       this.P = p;
+      this.pSize = pSize;
       this.X = x;
+      this.xSize = xSize;
+    }
+
+    /**
+     * Picks the pivot u in P ∪ X that maximizes |N(u) ∩ P|, the first in ascending order among equals, and takes
+     * P \ N(pivot) as the candidates, in ascending order.
+     */
+    void chooseCandidates(final int[][] adj) {
+      int pivot = -1;
+      int maxNeighbors = -1;
+      int p = 0;
+      int x = 0;
+      while (p < pSize || x < xSize) {
+        final int u = x == xSize || (p < pSize && P[p] < X[x]) ? P[p++] : X[x++];
+        final int count = intersectionSize(adj[u], adj[u].length, P, pSize);
+        if (count > maxNeighbors) {
+          maxNeighbors = count;
+          pivot = u;
+        }
+      }
+      final int[] pivotNeighbors = adj[pivot];
+      final int[] out = new int[pSize];
+      int count = 0;
+      int from = 0;
+      for (int i = 0; i < pSize; i++) {
+        final int found = Arrays.binarySearch(pivotNeighbors, from, pivotNeighbors.length, P[i]);
+        if (found >= 0)
+          from = found + 1;
+        else {
+          from = -found - 1;
+          out[count++] = P[i];
+        }
+      }
+      candidates = count == pSize ? out : Arrays.copyOf(out, count);
+      // X gains one node per candidate
+      X = Arrays.copyOf(X, xSize + count);
+    }
+
+    /** Removes {@code v}, which is in P, from P and adds it to X, keeping both sorted. */
+    void moveToX(final int v) {
+      final int inP = Arrays.binarySearch(P, 0, pSize, v);
+      System.arraycopy(P, inP + 1, P, inP, pSize - inP - 1);
+      pSize--;
+      final int inX = -Arrays.binarySearch(X, 0, xSize, v) - 1;
+      System.arraycopy(X, inX, X, inX + 1, xSize - inX);
+      X[inX] = v;
+      xSize++;
     }
   }
 }

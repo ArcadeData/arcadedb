@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
@@ -140,5 +141,39 @@ class AlgoKTrussTest {
 
     assertThat(rs.hasNext()).isFalse();
     emptyDb.drop();
+  }
+
+  /**
+   * Issue #12173: the decomposition held an n x n neighbour bit matrix twice (2 MB each for these 4,000 nodes). On a
+   * ring whose every node also links to the node two ahead, a ring edge is in two triangles and a chord in one: the
+   * chords go at k = 4, which takes the ring edges' support down to 0, so every edge and every ring node has truss 3.
+   */
+  @Test
+  void sparseGraphRunsWithinABudgetSmallerThanTheBitMatrix() {
+    final int n = 4000;
+    database.getSchema().createEdgeType("RING");
+    database.transaction(() -> {
+      final List<MutableVertex> ring = new ArrayList<>(n);
+      for (int i = 0; i < n; i++)
+        ring.add(database.newVertex("Node").set("name", "r" + i).save());
+      for (int i = 0; i < n; i++) {
+        ring.get(i).newEdge("RING", ring.get((i + 1) % n), (Object[]) null).save();
+        ring.get(i).newEdge("RING", ring.get((i + 2) % n), (Object[]) null).save();
+      }
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1_800_000L);
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.kTruss('RING') YIELD nodeId, trussNumber RETURN nodeId.name AS name, trussNumber");
+    int ringNodes = 0;
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      if (row.<String>getProperty("name").startsWith("r")) {
+        assertThat(row.<Integer>getProperty("trussNumber")).isEqualTo(3);
+        ringNodes++;
+      } else
+        assertThat(row.<Integer>getProperty("trussNumber")).isZero();
+    }
+    assertThat(ringNodes).isEqualTo(n);
   }
 }

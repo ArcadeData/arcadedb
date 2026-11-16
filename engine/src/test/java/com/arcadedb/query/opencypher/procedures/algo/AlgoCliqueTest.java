@@ -18,8 +18,10 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -28,7 +30,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -129,5 +133,42 @@ class AlgoCliqueTest {
       results.add(rs.next());
 
     assertThat(results).isNotEmpty();
+  }
+
+  /**
+   * Issue #12173: the search held an n x n neighbour bit matrix (2 MB for these 4,000 nodes) and n-bit sets in every
+   * frame. A ring whose every node also links to the node two ahead has the 4,000 triangles {i, i+1, i+2} as its
+   * maximal cliques, and they are now found with memory linear in the graph.
+   */
+  @Test
+  void sparseGraphRunsWithinABudgetSmallerThanTheBitMatrix() {
+    final int n = 4000;
+    database.getSchema().createEdgeType("RING");
+    database.transaction(() -> {
+      final List<MutableVertex> ring = new ArrayList<>(n);
+      for (int i = 0; i < n; i++)
+        ring.add(database.newVertex("Node").set("name", "r" + i).save());
+      for (int i = 0; i < n; i++) {
+        ring.get(i).newEdge("RING", ring.get((i + 1) % n), (Object[]) null).save();
+        ring.get(i).newEdge("RING", ring.get((i + 2) % n), (Object[]) null).save();
+      }
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1_500_000L);
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.clique('RING', 3) YIELD clique, size RETURN clique, size");
+    final Set<Integer> firsts = new HashSet<>();
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      assertThat(row.<Integer>getProperty("size")).isEqualTo(3);
+      final List<Integer> members = new ArrayList<>();
+      for (final RID rid : row.<List<RID>>getProperty("clique"))
+        members.add(Integer.parseInt(rid.asVertex().getString("name").substring(1)));
+      // {i, i+1, i+2} modulo n: the member followed by the other two
+      final Integer first = members.stream().filter(m -> members.contains((m + 1) % n) && members.contains((m + 2) % n))
+          .findFirst().orElseThrow();
+      firsts.add(first);
+    }
+    assertThat(firsts).hasSize(n);
   }
 }
