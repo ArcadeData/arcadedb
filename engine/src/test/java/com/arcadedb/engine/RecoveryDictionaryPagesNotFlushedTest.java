@@ -36,7 +36,10 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,6 +180,63 @@ class RecoveryDictionaryPagesNotFlushedTest {
         assertThat(((DatabaseInternal) reopened).getSchema().getEmbedded().getDictionary().wasHeaderPageRecreated())
             .as("nothing restored the names the emptied file held").isTrue();
         assertThat(((DatabaseInternal) reopened).getSchema().getEmbedded().isDictionaryLostForExistingTypes()).isTrue();
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      factory.close();
+    }
+  }
+
+  /**
+   * A replay that did not complete (its WAL has a gap) still hands back the name the load left to it: the schema is reloaded and
+   * registers it, and the dictionary stays reported recreated because the replay did not prove its pages restored.
+   */
+  @Test
+  void aNameLeftToAnIncompleteReplayIsRegisteredByTheReloadAndTheDictionaryStaysReportedLost() throws IOException {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    try {
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      db.getSchema().createDocumentType("T").createProperty("id", Long.class);
+      db.transaction(() -> db.newDocument("T").set("id", 1L).save());
+      final String dictionaryPath = db.getSchema().getEmbedded().getDictionary().getOSFile().getPath();
+      final String databasePath = db.getDatabasePath();
+      ((LocalDatabase) db).kill();
+      db.close();
+
+      try (final RandomAccessFile raw = new RandomAccessFile(dictionaryPath, "rw")) {
+        raw.setLength(0);
+      }
+
+      // A corrupt first record followed by a valid transaction record is the pattern the gap detector aborts the recovery on
+      final byte[] garbage = new byte[32];
+      Arrays.fill(garbage, (byte) 0x7F);
+      final byte[] delta = { 1, 2, 3, 4, 5 };
+      final int segmentSize = 24 + delta.length;
+      final ByteBuffer buf = ByteBuffer.allocate(garbage.length + 24 + segmentSize + 12);
+      buf.put(garbage);
+      buf.putLong(42L);
+      buf.putLong(123456L);
+      buf.putInt(1);
+      buf.putInt(segmentSize);
+      buf.putInt(3);
+      buf.putInt(0);
+      buf.putInt(0);
+      buf.putInt(delta.length - 1);
+      buf.putInt(1);
+      buf.putInt(1024);
+      buf.put(delta);
+      buf.putInt(segmentSize);
+      buf.putLong(WALFile.MAGIC_NUMBER);
+      Files.write(new File(databasePath, "txlog_777.wal").toPath(), buf.array());
+
+      final DatabaseInternal reopened = (DatabaseInternal) factory.open();
+      try {
+        assertThat(reopened.getTransactionManager().isLastRecoveryIncomplete()).as("the gap aborted the replay").isTrue();
+        assertThat(reopened.getSchema().getEmbedded().getDictionary().getIdByName("id", false))
+            .as("the reload registered the name the load left to the replay").isGreaterThanOrEqualTo(0);
+        assertThat(reopened.getSchema().getEmbedded().getDictionary().wasHeaderPageRecreated())
+            .as("an incomplete replay does not clear the recreated mark").isTrue();
       } finally {
         reopened.close();
       }
