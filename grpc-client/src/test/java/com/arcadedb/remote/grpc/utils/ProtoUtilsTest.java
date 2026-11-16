@@ -399,7 +399,8 @@ class ProtoUtilsTest {
         .build();
 
     final Object result = ProtoUtils.fromGrpcValue(value);
-    assertThat(result).isEqualTo("#10:5");
+    // a RID, not its text: the embedded engine answers a link as one (issue #12195)
+    assertThat(result).isEqualTo(new RID(10, 5));
   }
 
   @Test
