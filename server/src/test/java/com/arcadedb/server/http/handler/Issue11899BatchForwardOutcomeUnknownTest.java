@@ -31,11 +31,15 @@ import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import javax.net.ssl.SSLHandshakeException;
 import java.io.ByteArrayInputStream;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -72,6 +76,33 @@ class Issue11899BatchForwardOutcomeUnknownTest {
       assertThat(body.getString("exception")).isEqualTo(TransactionOutcomeUnknownException.class.getName());
       assertThat(body.getString("error")).contains(leader.address()).contains("may have been applied");
     }
+  }
+
+  @Test
+  void aTlsHandshakeFailureStaysTheRetryable503() throws Exception {
+    // No load byte left the node when the handshake failed, so this must not become the outcome-unknown 504
+    final HttpClient tls = mock(HttpClient.class);
+    when(tls.send(any(), any())).thenThrow(new SSLHandshakeException("handshake failed"));
+    when(tls.sendAsync(any(), any())).thenReturn(CompletableFuture.failedFuture(new SSLHandshakeException("handshake failed")));
+
+    final ContextConfiguration cfg = new ContextConfiguration();
+    final ArcadeDBServer server = TestServerHelper.unstartedServer((String) null, cfg);
+    final PostBatchHandler handler = new PostBatchHandler(HTTP_SERVERS.of(server));
+
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    when(ha.getLeaderAddress()).thenReturn("leader.example.com:2480");
+    when(ha.getLeaderHttpsAddress()).thenReturn("leader.example.com:2490");
+    when(ha.getPeerHttpsClient()).thenReturn(tls);
+    when(ha.getClusterToken()).thenReturn("test-token");
+
+    final HttpServerExchange exchange = new HttpServerExchange(null);
+    final PostBatchHandler.CountingInputStream body = new PostBatchHandler.CountingInputStream(exchange,
+        new ByteArrayInputStream(LOAD.getBytes(StandardCharsets.UTF_8)));
+    final ExecutionResponse response = handler.forwardBatchToLeader(exchange, ha, "mydb", TestServerHelper.securityUser("root"),
+        "application/x-ndjson", body, false);
+
+    assertThat(response.getCode()).as("body=%s", response.getResponse()).isEqualTo(503);
+    assertThat(response.getResponse()).contains("handshake failed").doesNotContain(TransactionOutcomeUnknownException.class.getName());
   }
 
   private static void assertOutcomeUnknownWhenTheLeaderDropsTheLoad(final boolean streaming) throws Exception {
