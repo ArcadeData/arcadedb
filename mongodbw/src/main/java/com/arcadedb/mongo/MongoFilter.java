@@ -114,6 +114,8 @@ final class MongoFilter {
     } else {
       this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database), true);
       this.matcher = new MongoQueryMatcher();
+      // a malformed filter is refused here, as mongod refuses it when it parses it, even when no document is ever tested
+      this.matcher.validate(normalized);
       this.properties = new HashSet<>();
       collectProperties(normalized, properties);
     }

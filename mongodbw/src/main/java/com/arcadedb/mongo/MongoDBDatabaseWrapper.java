@@ -387,6 +387,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!matches)
       return aggregation.computeResult();
 
+    // a malformed $match is refused before any document is read, as mongod refuses it when it parses the pipeline
+    for (final Document stage : pipeline)
+      if (stage.size() == 1 && stage.get("$match") instanceof Document query)
+        new MongoQueryMatcher().validate(query);
+
     try {
       Stream<Document> stream = collection.queryAllAsStream();
       List<Document> segment = new ArrayList<>();

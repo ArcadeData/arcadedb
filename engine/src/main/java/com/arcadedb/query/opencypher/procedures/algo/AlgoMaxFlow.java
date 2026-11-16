@@ -36,7 +36,7 @@ import java.util.stream.Stream;
  * capacity is the {@code capacityProperty} (1.0 when absent); relationships between the same pair in the same direction
  * add up, and a self loop, a non-positive or a NaN capacity carries nothing. {@code direction} (default {@code OUT})
  * chooses how a relationship is read: {@code OUT} along it, {@code IN} against it, {@code BOTH} as an undirected pipe
- * usable either way. The flow from a node to itself is 0.
+ * usable either way. The flow from a node to itself is 0, and a path made of infinite capacities only makes it infinite.
  * </p>
  * <p>
  * The residual network is held sparse, one arc per relationship plus its reverse arc, and solved with Dinic's
@@ -253,10 +253,13 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
       while (true) {
         guard.checkPeriodically(++work);
         if (u == sink) {
-          double pathFlow = Double.MAX_VALUE;
+          double pathFlow = Double.POSITIVE_INFINITY;
           for (int k = 0; k < depth; k++)
             if (capacity[path[k]] < pathFlow)
               pathFlow = capacity[path[k]];
+          // a path of infinite capacities only: nothing bounds the flow, and no arc of the path would ever be saturated
+          if (pathFlow == Double.POSITIVE_INFINITY)
+            return Double.POSITIVE_INFINITY;
 
           int firstSaturated = -1;
           for (int k = 0; k < depth; k++) {

@@ -190,6 +190,11 @@ final class ShapeProbes {
       return new IllegalArgumentException("Edge type '" + name + "' not found");
     }
 
+    // a message that is not the first argument of the constructor
+    static RuntimeException withTheMessageSecond() {
+      return new MissingObjectRefusal(404, "Index does not exist");
+    }
+
     // not offenders: the schema family, and a refusal that names no missing object
     static RuntimeException asASchemaFailure(final String name) {
       return new SchemaException("Index '" + name + "' not found");
@@ -197,6 +202,20 @@ final class ShapeProbes {
 
     static RuntimeException anotherFailure(final String name) {
       return new CommandExecutionException("Cannot read " + name);
+    }
+  }
+
+  /** A throwable whose message is its second argument; its own super(...) is a delegation, not a site. */
+  static final class MissingObjectRefusal extends RuntimeException {
+    MissingObjectRefusal(final int code, final String message) {
+      super(code + ": " + message);
+    }
+  }
+
+  /** A throwable constructor that builds a refusal of another type: that construction is a site of its own. */
+  static final class MissingObjectWrapping extends RuntimeException {
+    MissingObjectWrapping() {
+      super(new IllegalArgumentException("Type does not exist"));
     }
   }
 

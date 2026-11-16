@@ -20,6 +20,7 @@ package com.arcadedb.census;
 
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
@@ -84,7 +85,7 @@ class MissingObjectRefusalCensusTest {
   private static final String DEPLOYMENT = "a module, class or algorithm missing from the server or the JVM: a deployment fault";
   private static final String SESSION    = "a transaction, cursor, prepared statement or insert session of the connection, answered by "
       + "its protocol's own session code";
-  private static final String SERVER     = "a server user, cluster peer or port: server administration, answered by the control plane "
+  private static final String SERVER     = "a server user, cluster peer, port or support-bundle preview: server administration, answered by the control plane "
       + "or the security layer, not an object of a database";
   private static final String DATABASE   = "a database the server does not hold or the user may not see (one answer for both, so names "
       + "cannot be probed), refused by the endpoint with the databases the user can pick";
@@ -172,6 +173,10 @@ class MissingObjectRefusalCensusTest {
       Map.entry("server/ha/raft/RaftClusterManager#removePeer", SERVER),
       Map.entry("server/ha/raft/RaftHAPlugin#resolveShutdownTarget", SERVER),
       Map.entry("server/gremlin/GremlinServerPlugin#findFreePort", SERVER),
+      Map.entry("server/support/SupportBundleManager#get", SERVER),
+      Map.entry("server/support/SupportBundleManager#lease", SERVER),
+      Map.entry("mongo/MongoDBDatabaseWrapper#aggregateCollection",
+          "a MongoServerError with code 26 NamespaceNotFound: the wire protocol's own answer for a missing collection"),
       Map.entry("server/ServerControlPlane#dropDatabase", DATABASE),
       Map.entry("server/info/SchemaInfo#forUser", DATABASE),
       Map.entry("server/ai/AiSchemaDigest#forUser", DATABASE),
@@ -230,7 +235,8 @@ class MissingObjectRefusalCensusTest {
   void theCensusSeesTheMessageWhereverItIsBuilt() throws Exception {
     assertThat(constructions(CompiledClasses.ofTheProbes(), MISSING).keySet()).containsExactlyInAnyOrder(
         "census/ShapeProbes$MissingObject#concatenated", "census/ShapeProbes$MissingObject#throughALocal",
-        "census/ShapeProbes$MissingObject#asAnArgumentFailure");
+        "census/ShapeProbes$MissingObject#asAnArgumentFailure", "census/ShapeProbes$MissingObject#withTheMessageSecond",
+        "census/ShapeProbes$MissingObjectWrapping#<init>");
   }
 
   /**
@@ -243,17 +249,35 @@ class MissingObjectRefusalCensusTest {
     final Throwables throwables = new Throwables(classes);
     final Map<String, Set<String>> sites = new TreeMap<>();
     for (final CallOperands.Site site : CallOperands.of(classes,
-        (owner, name, descriptor) -> "<init>".equals(name) && descriptor.startsWith("(Ljava/lang/String;") && throwables.isThrowable(owner)
+        (owner, name, descriptor) -> "<init>".equals(name) && descriptor.contains("Ljava/lang/String;") && throwables.isThrowable(owner)
             && !throwables.isClassified(owner))) {
-      if (site.key().startsWith("exception/") || site.key().endsWith("#<init>") && throwables.isThrowable(site.in().owner().name))
+      if (site.key().startsWith("exception/") || isDelegation(site, throwables))
         continue;
-      for (final AbstractInsnNode origin : site.argument(0)) {
-        final String text = textOf(origin);
-        if (matching == null || (text != null && matching.matcher(text).find()))
-          sites.computeIfAbsent(site.key(), k -> new TreeSet<>()).add(site.call().owner + ": " + text);
+      // the message is a String argument wherever it sits: Refusal(int code, String message) as well as Refusal(String message)
+      final Type[] arguments = Type.getArgumentTypes(site.call().desc);
+      for (int i = 0; i < arguments.length; i++) {
+        if (!"java.lang.String".equals(arguments[i].getClassName()))
+          continue;
+        for (final AbstractInsnNode origin : site.argument(i)) {
+          final String text = textOf(origin);
+          if (matching == null || (text != null && matching.matcher(text).find()))
+            sites.computeIfAbsent(site.key(), k -> new TreeSet<>()).add(site.call().owner + ": " + text);
+        }
       }
     }
     return sites;
+  }
+
+  /**
+   * A throwable constructor handing its message to {@code super(...)} or {@code this(...)}: the subclass passes on what its
+   * caller wrote, and the caller's construction is the site. A throwable a constructor builds of another type is a site of its own.
+   */
+  private static boolean isDelegation(final CallOperands.Site site, final Throwables throwables) {
+    if (!site.key().endsWith("#<init>"))
+      return false;
+    final String enclosing = site.in().owner().name;
+    return throwables.isThrowable(enclosing) && (site.call().owner.equals(enclosing) || site.call().owner.equals(
+        site.in().owner().superName));
   }
 
   /**

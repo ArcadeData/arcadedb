@@ -93,6 +93,9 @@ class Issue11773MoreLikeThisOrScoreTest extends TestHelper {
     final Map<String, List<Float>> more = scores(indexMore());
     final Map<String, List<Float>> pasta = scores("SEARCH_INDEX('Article[title,body]', 'pasta')");
     assertThat(pasta).containsOnlyKeys("cooking");
+    // the precondition of the best-of rule: a title both arms match, with different scores
+    assertThat(more).containsKey("cooking");
+    assertThat(more.get("cooking").get(0)).isNotEqualTo(pasta.get("cooking").get(0));
 
     final Map<String, Float> expected = new HashMap<>();
     more.forEach((title, s) -> expected.put(title, s.get(0)));
@@ -112,10 +115,13 @@ class Issue11773MoreLikeThisOrScoreTest extends TestHelper {
   @Test
   void aNonMatchingMoreLikeThisArmDoesNotResetTheSimilarity() {
     final Map<String, List<Float>> alone = scores(indexMore());
-    final String cooking = database.query("sql", "SELECT @rid AS rid FROM Article WHERE title = 'cooking'").next()
+    final String theory = database.query("sql", "SELECT @rid AS rid FROM Article WHERE title = 'graph theory'").next()
         .getProperty("rid").toString();
-    final String other = "SEARCH_INDEX_MORE('Article[title,body]', [" + cooking + "], " + CONFIG + ") = true";
+    final String other = "SEARCH_INDEX_MORE('Article[title,body]', [" + theory + "], " + CONFIG + ") = true";
     final Map<String, List<Float>> otherAlone = scores(other);
+    // the precondition of the best-of rule: a title both arms match, with different similarities
+    assertThat(alone.keySet()).anyMatch(title -> otherAlone.containsKey(title) && !alone.get(title).get(1)
+        .equals(otherAlone.get(title).get(1)));
 
     final Map<String, List<Float>> expected = new HashMap<>();
     expected.putAll(alone);
@@ -124,6 +130,23 @@ class Issue11773MoreLikeThisOrScoreTest extends TestHelper {
 
     assertThat(scores(indexMore() + " OR " + other)).isEqualTo(expected);
     assertThat(scores(other + " OR " + indexMore())).isEqualTo(expected);
+  }
+
+  /**
+   * An AND holding a more-like-this arm and a nested OR matched through its plain arm: the OR leaves 0 in {@code $similarity}, and
+   * the AND must keep the similarity of its more-like-this arm, as it keeps its score.
+   */
+  @Test
+  void aNestedOrMatchedThroughAPlainArmKeepsTheSimilarityOfTheAnd() {
+    final Map<String, List<Float>> alone = scores(indexMore());
+    final String cooking = database.query("sql", "SELECT @rid AS rid FROM Article WHERE title = 'cooking'").next()
+        .getProperty("rid").toString();
+    final String other = "SEARCH_INDEX_MORE('Article[title,body]', [" + cooking + "], " + CONFIG + ") = true";
+    assertThat(scores(other)).doesNotContainKey("graph engine");
+
+    final Map<String, List<Float>> actual = scores("(" + indexMore() + " AND (" + other + " OR title = 'graph engine')) OR " + other);
+    assertThat(actual).containsKey("graph engine");
+    assertThat(actual.get("graph engine")).isEqualTo(alone.get("graph engine"));
   }
 
   @Test

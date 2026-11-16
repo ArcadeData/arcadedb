@@ -30,11 +30,14 @@ import java.util.List;
 import java.util.Map;
 
 public class AndBlock extends BooleanExpression {
-  private static final boolean[] NO_SCORING_CHILD = new boolean[0];
+  private static final byte[] NO_SCORING_CHILD = new byte[0];
+  private static final byte   SETS_SCORE       = 1;
+  private static final byte   SETS_SIMILARITY  = 2;
 
   public final List<BooleanExpression> subBlocks;
-  // Which children set $score, worked out on the first evaluation
-  private boolean[] scoringChildren;
+  // What each child sets ($score, $similarity), worked out on the first evaluation: one array, so a concurrent execution sees
+  // either nothing or all of it
+  private byte[] scoringChildren;
 
   public AndBlock() {
     this.subBlocks = new ArrayList<>();
@@ -52,8 +55,9 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
-    final boolean[] scoring = scoringChildren(context);
+    final byte[] scoring = scoringChildren(context);
     Float kept = null;
+    Float keptSimilarity = null;
     Boolean hasNull = false;
     for (int i = 0; i < subBlocks.size(); i++) {
       final Boolean result = subBlocks.get(i).evaluate(currentRecord, context);
@@ -61,38 +65,47 @@ public class AndBlock extends BooleanExpression {
         hasNull = true;
       } else if (!result) {
         return false;
-      } else if (scoring != NO_SCORING_CHILD && scoring[i])
-        kept = keepScore(kept, context);
+      } else if (scoring != NO_SCORING_CHILD && scoring[i] != 0) {
+        kept = keep(kept, "$score", context);
+        if ((scoring[i] & SETS_SIMILARITY) != 0)
+          keptSimilarity = keep(keptSimilarity, "$similarity", context);
+      }
     }
     // If any operand was null and none were false, return null (SQL three-valued logic)
     return hasNull ? null : true;
   }
 
   /**
-   * A scoring child that matched through an arm that does not score (a nested OR) leaves 0 in {@code $score}: it must not
-   * wipe the score a sibling scoring child already set for the record.
+   * A scoring child that matched through an arm that does not score (a nested OR) leaves 0 in {@code $score}, and in
+   * {@code $similarity} when it holds a more-like-this arm: it must not wipe the value a sibling child already set for the
+   * record (issue #11773 for the similarity).
    *
-   * @return the score the record has after this child
+   * @return the value the record has after this child
    */
-  private static Float keepScore(final Float kept, final CommandContext context) {
-    if (!(context.getVariable("$score") instanceof Number score))
+  private static Float keep(final Float kept, final String variable, final CommandContext context) {
+    if (!(context.getVariable(variable) instanceof Number value))
       return kept;
-    final float current = score.floatValue();
+    final float current = value.floatValue();
     if (kept != null && current == 0f && kept > 0f) {
-      context.setVariable("$score", kept);
+      context.setVariable(variable, kept);
       return kept;
     }
     return current;
   }
 
-  /** Which children set {@code $score}, worked out once: {@link #NO_SCORING_CHILD} when none does. */
-  private boolean[] scoringChildren(final CommandContext context) {
-    boolean[] children = scoringChildren;
+  /** What each child sets, worked out once: {@link #NO_SCORING_CHILD} when no child sets {@code $score}. */
+  private byte[] scoringChildren(final CommandContext context) {
+    byte[] children = scoringChildren;
     if (children == null) {
-      children = new boolean[subBlocks.size()];
+      children = new byte[subBlocks.size()];
       boolean any = false;
-      for (int i = 0; i < children.length; i++)
-        any |= children[i] = subBlocks.get(i).setsScore(context);
+      for (int i = 0; i < children.length; i++) {
+        final BooleanExpression child = subBlocks.get(i);
+        if (child.setsScore(context)) {
+          children[i] = (byte) (SETS_SCORE | (child.setsSimilarity(context) ? SETS_SIMILARITY : 0));
+          any = true;
+        }
+      }
       // benign race: a concurrent execution computes the same value
       scoringChildren = children = any ? children : NO_SCORING_CHILD;
     }
@@ -105,8 +118,9 @@ public class AndBlock extends BooleanExpression {
       return true;
 
     // UNKNOWN AND FALSE is FALSE: a later false operand still decides the result (SQL three-valued logic)
-    final boolean[] scoring = scoringChildren(context);
+    final byte[] scoring = scoringChildren(context);
     Float kept = null;
+    Float keptSimilarity = null;
     boolean hasNull = false;
     for (int i = 0; i < subBlocks.size(); i++) {
       final Boolean result = subBlocks.get(i).evaluate(currentRecord, context);
@@ -114,8 +128,11 @@ public class AndBlock extends BooleanExpression {
         hasNull = true;
       else if (!result)
         return false;
-      else if (scoring != NO_SCORING_CHILD && scoring[i])
-        kept = keepScore(kept, context);
+      else if (scoring != NO_SCORING_CHILD && scoring[i] != 0) {
+        kept = keep(kept, "$score", context);
+        if ((scoring[i] & SETS_SIMILARITY) != 0)
+          keptSimilarity = keep(keptSimilarity, "$similarity", context);
+      }
     }
     return hasNull ? null : true;
   }

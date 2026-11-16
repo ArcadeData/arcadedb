@@ -200,6 +200,43 @@ class AlgoMaxFlowTest {
   }
 
   @Test
+  void aPathOfInfiniteCapacitiesMakesTheFlowInfinite() {
+    database.transaction(() -> {
+      final MutableVertex x = database.newVertex("Node").set("name", "IX").save();
+      final MutableVertex y = database.newVertex("Node").set("name", "IY").save();
+      final MutableVertex z = database.newVertex("Node").set("name", "IZ").save();
+      x.newEdge("PIPE", y, true, new Object[] { "capacity", Double.POSITIVE_INFINITY }).save();
+      y.newEdge("PIPE", z, true, new Object[] { "capacity", 4.0 }).save();
+    });
+    // used to read path[-2] once the augmentation saturated nothing
+    assertThat(flow("IX", "IY", null)).isEqualTo(Double.POSITIVE_INFINITY);
+    // a finite arc on the path bounds it
+    assertThat(flow("IX", "IZ", null)).isEqualTo(4.0);
+  }
+
+  @Test
+  void theResidualArcsAreNeededToReachTheMaximum() {
+    // whichever of A->C and A->D the search tries first, the maximum of 2 needs S->A->C->T to be partly undone when the first
+    // path through C was taken: S->A, S->B, A->C, A->D, B->C, C->T, D->T, every capacity 1
+    database.transaction(() -> {
+      final MutableVertex s = database.newVertex("Node").set("name", "RS").save();
+      final MutableVertex a = database.newVertex("Node").set("name", "RA").save();
+      final MutableVertex b = database.newVertex("Node").set("name", "RB").save();
+      final MutableVertex c = database.newVertex("Node").set("name", "RC").save();
+      final MutableVertex d = database.newVertex("Node").set("name", "RD").save();
+      final MutableVertex t = database.newVertex("Node").set("name", "RT").save();
+      s.newEdge("PIPE", a, true, new Object[] { "capacity", 1.0 }).save();
+      s.newEdge("PIPE", b, true, new Object[] { "capacity", 1.0 }).save();
+      a.newEdge("PIPE", c, true, new Object[] { "capacity", 1.0 }).save();
+      a.newEdge("PIPE", d, true, new Object[] { "capacity", 1.0 }).save();
+      b.newEdge("PIPE", c, true, new Object[] { "capacity", 1.0 }).save();
+      c.newEdge("PIPE", t, true, new Object[] { "capacity", 1.0 }).save();
+      d.newEdge("PIPE", t, true, new Object[] { "capacity", 1.0 }).save();
+    });
+    assertThat(flow("RS", "RT", null)).isEqualTo(2.0);
+  }
+
+  @Test
   void theFlowFromANodeToItselfIsZero() {
     // Used to augment the empty path forever, by Double.MAX_VALUE each round, until the command timed out.
     assertThat(flow("S", "S", null)).isEqualTo(0.0);
