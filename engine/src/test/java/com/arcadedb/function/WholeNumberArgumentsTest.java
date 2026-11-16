@@ -283,7 +283,7 @@ class WholeNumberArgumentsTest {
 
     @Test
     void textHexValueRefusesAFraction() {
-      assertThat(new TextHexValue().execute(new Object[] { 255.0 }, null)).isEqualTo("ff");
+      assertThat(new TextHexValue().execute(new Object[] { 255.0 }, null)).isEqualTo("00FF");
       assertThatThrownBy(() -> new TextHexValue().execute(new Object[] { 255.9 }, null))
           .isInstanceOf(CommandSemanticException.class).hasMessageContaining("<value>");
     }
@@ -570,6 +570,11 @@ class WholeNumberArgumentsTest {
         Map.entry("function/path/PathSlice#execute: l2i", 2),
         // the cardinality, refused above Integer.MAX_VALUE before the cast
         Map.entry("function/coll/RangeFunction#execute: l2i", 1),
+        // a code point read strictly as a long and tested to be in [0, 0x10FFFF] before the cast (issue #12104)
+        Map.entry("function/text/TextCode#execute: l2i", 1),
+        // a whole number tested to fit 16 or 32 bits before it is written as its 4 or 8 hex digits (issue #12104)
+        Map.entry("function/text/TextHexValue#execute: i2s", 1),
+        Map.entry("function/text/TextHexValue#execute: l2i", 2),
         // a length or a start read strictly as a long, clamped to the int range a string fits in (past it is past the end)
         Map.entry("function/text/LeftFunction#execute: l2i", 1),
         Map.entry("function/text/RightFunction#execute: l2i", 1),

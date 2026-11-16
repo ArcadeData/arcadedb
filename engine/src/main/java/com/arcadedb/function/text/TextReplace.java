@@ -18,11 +18,12 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * text.replace(string, search, replace) - Replace all occurrences of search with replace.
+ * text.replace(string, regex, replacement) - Replace every match of a regular expression, as {@code apoc.text.replace} does
+ * ({@code String.replaceAll}): the replacement refers to groups as {@code $1} or {@code ${name}}, and a null argument answers null
+ * (issue #12104).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -44,21 +45,27 @@ public class TextReplace extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Replace all occurrences of search string with replacement";
+    return "Replace every match of a regular expression with the replacement, which can refer to groups as $1 or ${name}";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
-    if (str == null)
+    final String regex = asString(args[1]);
+    final String replacement = asString(args[2]);
+    if (str == null || regex == null || replacement == null)
       return null;
 
-    final String search = asString(args[1]);
-    final String replacement = asString(args[2]);
-
-    if (search == null)
-      return str;
-
-    return CypherFunctionHelper.replaceLiteral(str, search, replacement == null ? "" : replacement);
+    // A match of no characters is never put between the two halves of a surrogate pair (issue #10485): '' puts the replacement
+    // before every character and after the last, an emoji being one character
+    return applyRegex(regex, str, context, (pattern, input) -> {
+      try {
+        return pattern.matcher(input)
+            .replaceAll(match -> match.start() == match.end() && insideSurrogatePair(str, match.start()) ? "" : replacement);
+      } catch (final IndexOutOfBoundsException | IllegalArgumentException e) {
+        // a group the pattern does not have ($2), or a lone '$' or '\' at the end of the replacement
+        throw new IllegalArgumentException("text.replace() cannot apply the replacement '" + replacement + "': " + e.getMessage(), e);
+      }
+    });
   }
 }

@@ -20,8 +20,11 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
- * text.upperCamelCase(string) - Convert to UpperCamelCase (PascalCase).
+ * text.upperCamelCase(string) - Convert to UpperCamelCase (PascalCase): text.camelCase() with the first character upper case, as
+ * {@code apoc.text.upperCamelCase} does (issue #12104).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,33 +46,21 @@ public class TextUpperCamelCase extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Convert string to UpperCamelCase (PascalCase)";
+    return "Convert string to UpperCamelCase (PascalCase): camelCase with the first character upper case";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
-    if (str == null || str.isEmpty())
-      return str;
+    if (str == null)
+      return null;
 
-    final StringBuilder result = new StringBuilder(str.length());
-    boolean capitalizeNext = true;
+    final String camelCase = TextCamelCase.camelCase(str);
+    if (camelCase.isEmpty())
+      return camelCase;
 
-    // By code point (issue #10484): a letter outside the BMP is two UTF-16 units, neither of which is a letter, so it used to be a
-    // word break
-    for (int i = 0; i < str.length(); ) {
-      final int c = str.codePointAt(i);
-      i += Character.charCount(c);
-      if (!Character.isLetterOrDigit(c)) {
-        capitalizeNext = true;
-      } else if (capitalizeNext) {
-        result.appendCodePoint(Character.toUpperCase(c));
-        capitalizeNext = false;
-      } else {
-        result.appendCodePoint(Character.toLowerCase(c));
-      }
-    }
-
-    return result.toString();
+    // the first character is a code point (issue #10484)
+    final int firstLength = Character.charCount(camelCase.codePointAt(0));
+    return camelCase.substring(0, firstLength).toUpperCase(Locale.ROOT) + camelCase.substring(firstLength);
   }
 }
