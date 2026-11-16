@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * can only re-notify another install - which recomputes the identical wrong term and gets stuck at the identical
  * index on every reformat, matching the chaos-test reproduction in the issue.
  *
- * @see ArcadeStateMachine#resolveInstalledSnapshotTerm(long, long, TermIndex)
+ * @see LeaderSnapshotInstall#resolveInstalledSnapshotTerm(long, long, TermIndex)
  */
 class Issue8360InstallSnapshotTermTest {
 
@@ -75,7 +75,7 @@ class Issue8360InstallSnapshotTermTest {
     // The exact bug shape: a term boundary lands right at the snapshot index, so the next entry's term (11, the
     // old approximation) differs from the real term of the snapshot boundary itself (10, what the leader reports).
     final TermIndex leaderReported = TermIndex.valueOf(10L, SNAPSHOT_INDEX);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, leaderReported))
+    assertThat(LeaderSnapshotInstall.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, leaderReported))
         .as("the leader's own answer for this exact index must win over the next-entry approximation")
         .isEqualTo(10L);
   }
@@ -83,7 +83,7 @@ class Issue8360InstallSnapshotTermTest {
   @Test
   void fallsBackToTheApproximationWhenTheLeaderReportedNothing() {
     // auto-acquire disabled, an unreachable leader, or an older leader build: no leader-reported value at all.
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, null))
+    assertThat(LeaderSnapshotInstall.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, null))
         .isEqualTo(11L);
   }
 
@@ -93,7 +93,7 @@ class Issue8360InstallSnapshotTermTest {
     // this node's bootstrap-state query. Trusting a term reported for a DIFFERENT index would be worse than the
     // approximation, so the fallback applies instead.
     final TermIndex leaderReportedForALaterIndex = TermIndex.valueOf(12L, SNAPSHOT_INDEX + 5_000L);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, leaderReportedForALaterIndex))
+    assertThat(LeaderSnapshotInstall.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, leaderReportedForALaterIndex))
         .isEqualTo(11L);
   }
 
@@ -102,7 +102,7 @@ class Issue8360InstallSnapshotTermTest {
     // The common case: no election happened right at the boundary, so both sources agree. Locks in that the fix
     // does not change behavior when there is nothing to fix.
     final TermIndex leaderReported = TermIndex.valueOf(11L, SNAPSHOT_INDEX);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, leaderReported))
+    assertThat(LeaderSnapshotInstall.resolveInstalledSnapshotTerm(SNAPSHOT_INDEX, 11L, leaderReported))
         .isEqualTo(11L);
   }
 
