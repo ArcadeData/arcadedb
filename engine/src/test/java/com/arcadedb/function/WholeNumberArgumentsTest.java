@@ -562,6 +562,12 @@ class WholeNumberArgumentsTest {
         // a list index computed from the size of the collected values and clamped to it; and a value known to be Long/Integer
         Map.entry("function/agg/PercentileDiscFunction#getAggregatedResult: d2i", 1),
         Map.entry("function/agg/PercentileDiscFunction#getAggregatedResult: java/lang/Number.longValue", 1),
+        // the APOC aggregates (#12102): longValue() of a value tested to be a Long/Integer/Short/Byte first, and a nearest-rank
+        // index computed from the number of collected values and clamped to it
+        Map.entry("function/agg/ApocAggregates#accumulate: java/lang/Number.longValue", 1),
+        Map.entry("function/agg/ApocAggregates#add: java/lang/Number.longValue", 1),
+        Map.entry("function/agg/ApocAggregates#percentile: d2l", 1),
+        Map.entry("function/agg/ApocAggregates#percentile: l2i", 1),
         // an index or a bound read strictly as a long, tested against or clamped to the size of the list before the cast
         Map.entry("function/agg/AggNth#execute: l2i", 1),
         Map.entry("function/agg/AggSlice#execute: l2i", 2),
