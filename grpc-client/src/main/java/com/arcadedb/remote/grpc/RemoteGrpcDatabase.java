@@ -64,6 +64,7 @@ import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
@@ -2187,11 +2188,58 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (record == null) {
 
       Map<String, Object> properties = new HashMap<>();
-      grpcRecord.getPropertiesMap().forEach((k, v) -> properties.put(k, grpcValueToObject(v)));
+      grpcRecord.getPropertiesMap().forEach((k, v) -> properties.put(k, columnRecords(grpcValueToObject(v))));
       return new ResultInternal(properties);
     }
 
     return new ResultInternal(record);
+  }
+
+  /**
+   * The record a projection column holds, or the list of records, for a column the server sent as a record's map (its
+   * {@code @rid} and {@code @type}, and {@code @cat} in the default JSON encoding): Cypher {@code RETURN a, r, b}, SQL
+   * {@code @this}. They reached the caller as raw maps (issue #12196). Any other value is returned as is.
+   */
+  private Object columnRecords(final Object value) {
+    if (value instanceof Map<?, ?> map) {
+      final Record record = mapToRecord(map);
+      return record != null ? record : value;
+    }
+    if (value instanceof List<?> list && !list.isEmpty() && list.getFirst() instanceof Map<?, ?> first
+        && first.containsKey(Property.RID_PROPERTY) && first.containsKey(Property.TYPE_PROPERTY)) {
+      final List<Object> converted = new ArrayList<>(list.size());
+      for (final Object item : list) {
+        final Record record = item instanceof Map<?, ?> itemMap ? mapToRecord(itemMap) : null;
+        converted.add(record != null ? record : item);
+      }
+      return converted;
+    }
+    return value;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Record mapToRecord(final Map<?, ?> map) {
+    final Object rid = map.get(Property.RID_PROPERTY);
+    if (rid == null || !(map.get(Property.TYPE_PROPERTY) instanceof String typeName) || !getSchema().existsType(typeName))
+      return null;
+
+    final String cat = map.get(Property.CAT_PROPERTY) instanceof String c ? c : mapRecordType(typeName);
+    if (cat == null)
+      return null;
+
+    // the record classes read the RIDs as text, whichever form the decoder gave them
+    final Map<String, Object> attributes = new HashMap<>((Map<String, Object>) map);
+    attributes.put(Property.RID_PROPERTY, rid.toString());
+    for (final String side : new String[] { Property.OUT_PROPERTY, Property.IN_PROPERTY })
+      if (attributes.get(side) != null)
+        attributes.put(side, attributes.get(side).toString());
+
+    return switch (cat) {
+      case "d" -> new RemoteImmutableDocument(this, attributes);
+      case "v" -> new RemoteImmutableVertex(this, attributes);
+      case "e" -> new RemoteImmutableEdge(this, attributes);
+      default -> null;
+    };
   }
 
   private Record grpcRecordToDBRecord(final GrpcRecord grpcRecord) {
