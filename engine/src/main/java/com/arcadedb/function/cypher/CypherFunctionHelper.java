@@ -756,7 +756,7 @@ public final class CypherFunctionHelper {
    * points of different systems in the order of their key counts (issue #12274).
    */
   public static int comparePoints(final Map<?, ?> a, final Map<?, ?> b) {
-    int cmp = Integer.compare(pointSrid(a), pointSrid(b));
+    int cmp = BinaryComparator.compareDoubles(pointSrid(a), pointSrid(b));
     if (cmp != 0)
       return cmp;
     cmp = BinaryComparator.compareDoubles(((Number) a.get("x")).doubleValue(), ((Number) b.get("x")).doubleValue());
@@ -772,11 +772,11 @@ public final class CypherFunctionHelper {
     return Boolean.compare(za instanceof Number, zb instanceof Number);
   }
 
-  private static int pointSrid(final Map<?, ?> point) {
+  private static double pointSrid(final Map<?, ?> point) {
     if (point.get("srid") instanceof Number srid)
-      return srid.intValue();
+      return srid.doubleValue();
     final Integer srid = point.get("crs") instanceof String crs ? CypherPointFunction.sridOfCrs(crs) : null;
-    return srid != null ? srid : Integer.MAX_VALUE;
+    return srid != null ? srid : Double.MAX_VALUE;
   }
 
   // The original keys sorted by their string form: a Java parameter map may hold non-String keys, and looking its values up by
