@@ -802,8 +802,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         // No external transaction - execute on current thread
         Database db = getDatabase(req.getDatabase(), req.getCredentials());
-        if (!req.hasTransaction())
-          // A TRANSACTION CONTROL OF ITS OWN ACTS ON THIS CALL'S TRANSACTION ALONE: REFUSED BEFORE ANYTHING RUNS (ISSUE #12202)
+        if (!req.hasTransaction() || !req.getTransaction().getBegin())
+          // A TRANSACTION CONTROL OF ITS OWN ACTS ON THIS CALL'S TRANSACTION ALONE: REFUSED BEFORE ANYTHING RUNS (ISSUE #12202). A
+          // transaction message that names no registered transaction and does not set begin opens none either
           StandaloneTransactionControl.refuse(db, langOrDefault(req.getLanguage()), req.getCommand());
         response = executeCommandWithRetries(req, t0, db);
       }
