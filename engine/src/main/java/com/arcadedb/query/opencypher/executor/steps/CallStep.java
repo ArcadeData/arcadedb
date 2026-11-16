@@ -411,11 +411,11 @@ public class CallStep extends AbstractExecutionStep {
       return callCustomFunction(namespace, simpleName, args, context);
 
     // Fall back to the ArcadeDB SQL function the CALL names in full ("vector.neighbors", or "abs" unqualified), or to the one the
-    // explicit "sql." prefix names, as in expression position. Never to the last segment of any other qualified name: CALL
-    // apoc.atomic.concat(n, 'p', 'x') ran the SQL concat() and answered no row without writing anything, and CALL nosuch.max(1, 2)
-    // answered 2, where Neo4j refuses both with ProcedureNotFound (issue #12110)
-    if (SQL_NAMESPACE.equalsIgnoreCase(namespace))
-      return callSQLFunction(simpleName, args, context);
+    // explicit "sql." prefix names ("sql.abs", "sql.geo.asText"), as in expression position. Never to the last segment of any other
+    // qualified name: CALL apoc.atomic.concat(n, 'p', 'x') ran the SQL concat() and answered no row without writing anything, and
+    // CALL nosuch.max(1, 2) answered 2, where Neo4j refuses both with ProcedureNotFound (issue #12110)
+    if (procedureName.regionMatches(true, 0, SQL_NAMESPACE + ".", 0, SQL_NAMESPACE.length() + 1))
+      return callSQLFunction(procedureName.substring(SQL_NAMESPACE.length() + 1), args, context);
     return callSQLFunction(procedureName, args, context);
   }
 

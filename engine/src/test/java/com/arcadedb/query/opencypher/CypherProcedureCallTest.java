@@ -956,6 +956,13 @@ class CypherProcedureCallTest {
       assertThat(single("CALL SQL.max(1, 7)")).isEqualTo(7);
     }
 
+    /** {@code sql.} before a dotted SQL function name ({@code geo.asText}), as expression position reads it. */
+    @Test
+    void theSqlPrefixAlsoNamesADottedSqlFunction() {
+      assertThat(singleText("CALL sql.geo.asText('POINT (1 2)')")).isEqualTo("POINT (1 2)");
+      assertThat(singleText("CALL SQL.geo.asText('POINT (3 4)')")).isEqualTo("POINT (3 4)");
+    }
+
     private void assertUnknownProcedure(final String query, final String writtenName) {
       assertThatThrownBy(() -> database.transaction(() -> {
         try (final ResultSet rs = database.command("opencypher", query)) {
@@ -968,6 +975,13 @@ class CypherProcedureCallTest {
       try (final ResultSet rs = database.query("opencypher", query)) {
         final Result row = rs.next();
         return ((Number) row.getProperty(row.getPropertyNames().iterator().next())).intValue();
+      }
+    }
+
+    private String singleText(final String query) {
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        final Result row = rs.next();
+        return row.getProperty(row.getPropertyNames().iterator().next());
       }
     }
   }
