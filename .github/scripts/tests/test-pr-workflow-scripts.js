@@ -81,6 +81,7 @@ const recorder = (opts = {}) => {
       issues: {
         listLabelsForRepo: async (args) => {
           record("listLabelsForRepo", args);
+          if (opts.repoLabelsFail) throw httpError(500, "server error");
           return { data: repoLabels.map((name) => ({ name })) };
         },
         listLabelsOnIssue: async (args) => {
@@ -264,8 +265,21 @@ const sanitizeCases = () => {
   check("sanitize: foreign 40-hex redacted", sanitizeReview(`see ${OTHER_SHA}`, shas), { text: "see [redacted]", redactions: 1 });
   const b64 = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFla";
   check("sanitize: long base64 run redacted", sanitizeReview(`blob ${b64}`, shas).text, "blob [redacted]");
-  const pathy = "engine/src/main/java/com/arcadedb/query/sql/executor/SelectExecutionPlanner.java";
-  check("sanitize: a source path is not a secret", sanitizeReview(pathy, shas), { text: pathy, redactions: 0 });
+  const aws = "wJalrXUtnFEMIbPxRfiCYzEXAMPLEKEYqTvBnMzW";
+  check("sanitize: AWS-style key is 40 chars with no digits", [aws.length, /[0-9]/.test(aws)], [40, false]);
+  check("sanitize: random mixed-case run without digits redacted", sanitizeReview(`aws ${aws}`, shas), { text: "aws [redacted]", redactions: 1 });
+  const paths = [
+    "engine/src/main/java/com/arcadedb/query/sql/executor/SelectExecutionPlanner.java",
+    "network/src/main/java/com/arcadedb/server/ha/message/TxRequestHandlerFactory.java",
+    "server/src/main/java/com/arcadedb/server/security/ServerSecurityUserAuthenticationFilter.java",
+    "testConcurrentInsertWithIndexRebuildAndCompaction",
+  ];
+  for (const p of paths)
+    check(`sanitize: not a secret: ${p.slice(0, 30)}…`, sanitizeReview(p, shas), { text: p, redactions: 0 });
+  const hex64 = "deadbeef".repeat(8);
+  check("sanitize: 0x-prefixed 64-hex redacted", sanitizeReview(`k 0x${hex64}`, shas), { text: "k 0x[redacted]", redactions: 1 });
+  check("sanitize: word-glued 48-hex redacted", sanitizeReview(`k_${"abc123".repeat(8)}`, shas), { text: "k_[redacted]", redactions: 1 });
+  check("sanitize: PR SHA glued to a word is kept", sanitizeReview(`sha_${H}`, shas), { text: `sha_${H}`, redactions: 0 });
 
   const long = sanitizeReview("x".repeat(70000), shas);
   check("sanitize: capped at 60 000", long.text.length, 60000);
@@ -351,6 +365,15 @@ const applyCases = async () => {
     const r = await runApply(decision(), { headSha: "not-a-sha" });
     check("apply bad HEAD_SHA: zero writes", writesOf(r.log), []);
     check("apply bad HEAD_SHA: errored", r.audit.endsWith("action=errored"), true);
+  }
+  {
+    const r = await runApply(decision({ verdict: "unsafe" }), { repoLabelsFail: true });
+    const comments = callsOf(r.log, "createComment");
+    check("apply labels unreadable: no label writes", writesOf(r.log).filter((c) => c.name !== "createComment"), []);
+    check("apply labels unreadable: one verdict=none comment", comments.map((c) => c.args.body.split("\n")[0]), [`<!-- classify-pr sha=${H} verdict=none -->`]);
+    check("apply labels unreadable: action=errored", [r.audit.includes("verdict=none"), r.audit.endsWith("action=errored"), r.auditCount], [true, true, 1]);
+    const dry = await runApply(decision(), { repoLabelsFail: true, dryRun: true });
+    check("apply labels unreadable, dry run: zero writes", writesOf(dry.log), []);
   }
   {
     const r = await runApply("", { prLabels: ["triage:lgtm"] });

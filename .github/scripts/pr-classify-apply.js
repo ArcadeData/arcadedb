@@ -101,7 +101,9 @@ const TOKEN_PATTERNS = [
   /\bsk-ant-[A-Za-z0-9_-]{10,}/g,
   /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g,
 ];
-const HEX_RUN = /\b[0-9a-fA-F]{40,}\b/g;
+// Bounded by non-hex rather than \b, so hex glued to a word character (`0x…`, `secret_…`) is
+// still one run.
+const HEX_RUN = /(?<![0-9a-fA-F])[0-9a-fA-F]{40,}(?![0-9a-fA-F])/g;
 const B64_RUN = /[A-Za-z0-9+/=_-]{40,}/g;
 // Private-use characters stand in for the commit SHAs that are kept, so the base64 pass cannot
 // swallow them into a longer run. Any already in the text are stripped first.
@@ -119,11 +121,12 @@ const entropy = (s) => {
   return h;
 };
 
-// A 40+ character run of base64 alphabet is redacted only when it looks random: digits, both
-// cases and high entropy. Source paths and long identifiers share the alphabet but not that
-// shape, and redacting every one of them would make reviews unreadable.
-const looksRandom = (run) =>
-  (run.match(/[0-9]/g) ?? []).length >= 3 && /[A-Z]/.test(run) && /[a-z]/.test(run) && entropy(run) >= 4.0;
+// A 40+ character run of base64 alphabet is redacted only when it looks random: both cases and
+// high entropy. Source paths and long identifiers share the alphabet but score lower (repo
+// paths measured 4.05-4.27); a random 40-char base64 string scores under 4.4 about 0.3% of the
+// time. Redacting every long path would make reviews unreadable.
+const MIN_ENTROPY = 4.4;
+const looksRandom = (run) => /[A-Z]/.test(run) && /[a-z]/.test(run) && entropy(run) >= MIN_ENTROPY;
 
 /**
  * The model's review text, made safe to publish: secrets redacted, HTML comment openers (and so
@@ -223,7 +226,26 @@ const apply = async ({ github, context, core }) => {
       per_page: 100,
     });
   } catch (err) {
+    // The head is still ours, so post a `verdict=none` marker without touching labels: the
+    // engines then report no verdict at once instead of waiting out their timeout.
     core.warning(`classify-pr: listing labels failed: ${logSafe(err.message, 200)}`);
+    state.verdict = "none";
+    state.severity = "-";
+    if (dryRun) {
+      audit("errored");
+      return;
+    }
+    const body = [
+      markerLine(headSha, "none"),
+      "**Triage**: no verdict",
+      "",
+      "Labels could not be read, so no labels were applied. This PR needs a manual review.",
+    ].join("\n");
+    try {
+      await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+    } catch (commentErr) {
+      core.warning(`classify-pr: createComment failed: ${logSafe(commentErr.message, 200)}`);
+    }
     audit("errored");
     return;
   }
