@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -139,7 +140,10 @@ class LSMTreeIndexRemoveMultiplicityIssue11935Test extends TestHelper {
   void aRemovalRepeatedAcrossTransactionsReinsertAndCompactionKeepTheirMeaning() throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE R BUCKETS 1");
     database.command("sql", "CREATE PROPERTY R.c STRING");
-    database.command("sql", "CREATE INDEX ON R (c) NOTUNIQUE");
+    // Small pages, so the records written after the history below fill the page holding it and the compaction has an immutable
+    // page to compact: a compaction of an index of one page does nothing
+    database.getSchema().buildTypeIndex("R", new String[] { "c" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
+        .withPageSize(2048).create();
     final List<RID> rids = new ArrayList<>();
     database.transaction(() -> {
       for (int i = 0; i < 3; i++)
@@ -172,11 +176,23 @@ class LSMTreeIndexRemoveMultiplicityIssue11935Test extends TestHelper {
     assertThat(lookup("R[c]", "k")).containsExactlyInAnyOrder(a, rids.get(2));
     assertThat(index.countEntries()).isEqualTo(2);
 
-    // the full compaction resolves the same history
+    // the compaction resolves the same history: more records with other keys fill the page holding it, which the compaction then
+    // merges into the compacted index
+    final int others = 400;
+    database.transaction(() -> {
+      for (int i = 0; i < others; i++)
+        database.newDocument("R").set("c", "other-%04d".formatted(i)).save();
+    });
+    final int pagesBefore = onBucket.getMutableIndex().getTotalPages();
+    assertThat(pagesBefore).as("pages of the mutable index before the compaction").isGreaterThanOrEqualTo(2);
+    assertThat(onBucket.getMutableIndex().getSubIndex()).as("compacted index before the compaction").isNull();
+
     onBucket.scheduleCompaction();
-    onBucket.compact();
+    assertThat(onBucket.compact()).as("the compaction ran").isTrue();
+    assertThat(onBucket.getMutableIndex().getSubIndex()).as("compacted index after the compaction").isNotNull();
+    assertThat(onBucket.getMutableIndex().getTotalPages()).as("pages left in the mutable index").isLessThan(pagesBefore);
     assertThat(lookup("R[c]", "k")).containsExactlyInAnyOrder(a, rids.get(2));
-    assertThat(index.countEntries()).isEqualTo(2);
+    assertThat(index.countEntries()).isEqualTo(2 + others);
 
     // and a key-wide removal followed by a per-RID one stays a removal of everything
     database.transaction(() -> index.remove(new Object[] { "k" }));
