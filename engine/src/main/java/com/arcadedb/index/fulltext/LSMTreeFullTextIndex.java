@@ -441,8 +441,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           // Field-specific search - look up the prefixed token
           rids = underlyingIndex.get(new String[] { term.fieldName + ":" + k });
         } else {
-          // Unqualified search - search without prefix
-          rids = underlyingIndex.get(new String[] { k });
+          // Unqualified search - search the unprefixed token, under the key it is stored with (issue #12162)
+          rids = underlyingIndex.get(new String[] { FullTextKeys.unqualifiedKey(getPropertyNames(), k) });
         }
 
         while (rids.hasNext()) {
@@ -656,7 +656,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final QueryTerm term : queryTerms) {
       final float boost = term.fieldName != null ? ftMetadata.getFieldBoost(term.fieldName) : 1.0f;
       for (final String k : analyzeText(queryAnalyzer, new Object[] { term.value })) {
-        final String storedKey = term.fieldName != null ? term.fieldName + ":" + k : k;
+        final String storedKey = term.fieldName != null ? term.fieldName + ":" + k : FullTextKeys.unqualifiedKey(getPropertyNames(), k);
         tokenBoosts.merge(storedKey, boost, Math::max);
       }
     }
@@ -1369,8 +1369,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         for (final String k : keywords) {
           // Store with field prefix for field-specific queries
           postings.accept(fieldName + ":" + k, rids);
-          // Also store without prefix for unqualified queries
-          postings.accept(k, rids);
+          // Also store without prefix for unqualified queries, escaped when it would read as a field-prefixed key (issue #12162)
+          postings.accept(FullTextKeys.unqualifiedKey(propertyNames, k), rids);
         }
       }
     }
@@ -1436,14 +1436,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       fieldTfs.add(fieldTf);
     }
 
-    // PASS 2: store field-prefixed postings (per-field tf) and unprefixed postings (global tf) now that docLen is known.
+    // PASS 2: store field-prefixed postings (per-field tf) and unprefixed postings (global tf) now that docLen is known. An unprefixed
+    // token that would read as a field-prefixed key is stored escaped (issue #12162).
     for (int f = 0; f < fieldNames.size(); f++) {
       final String fieldName = fieldNames.get(f);
       for (final Map.Entry<String, Integer> e : fieldTfs.get(f).entrySet())
         postings.accept(fieldName + ":" + e.getKey(), withStats(db, rids, e.getValue(), docLen));
     }
     for (final Map.Entry<String, Integer> e : globalTf.entrySet())
-      postings.accept(e.getKey(), withStats(db, rids, e.getValue(), docLen));
+      postings.accept(FullTextKeys.unqualifiedKey(propertyNames, e.getKey()), withStats(db, rids, e.getValue(), docLen));
     return docLen;
   }
 
@@ -1541,7 +1542,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
         for (final String k : keywords) {
           underlyingIndex.remove(new String[] { fieldName + ":" + k });
-          underlyingIndex.remove(new String[] { k });
+          underlyingIndex.remove(new String[] { FullTextKeys.unqualifiedKey(propertyNames, k) });
         }
       }
     }
@@ -1574,7 +1575,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         docLen += documentLength(keywords);
         for (final String k : keywords) {
           underlyingIndex.remove(new String[] { fieldName + ":" + k }, rid);
-          underlyingIndex.remove(new String[] { k }, rid);
+          final String unqualifiedKey = FullTextKeys.unqualifiedKey(propertyNames, k);
+          underlyingIndex.remove(new String[] { unqualifiedKey }, rid);
+          if (!unqualifiedKey.equals(k))
+            // an index written before issue #12162 stored this token unescaped: its posting goes with the record too
+            underlyingIndex.remove(new String[] { k }, rid);
         }
       }
     }
@@ -2073,7 +2078,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     int ticks = 0;
     for (final String term : termFreqs.keySet()) {
       int docCount = 0;
-      try (final IndexCursor termCursor = underlyingIndex.get(new String[] { term })) {
+      try (final IndexCursor termCursor = underlyingIndex.get(new String[] { FullTextKeys.unqualifiedKey(propertyNames, term) })) {
         while (termCursor.hasNext()) {
           guard.checkPeriodically(++ticks);
           termCursor.next();
@@ -2098,7 +2103,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // Step 5: Execute OR query and accumulate scores
     final Map<RID, Integer> scoreMap = new HashMap<>();
     for (final String term : topTerms) {
-      try (final IndexCursor termCursor = underlyingIndex.get(new String[] { term })) {
+      try (final IndexCursor termCursor = underlyingIndex.get(new String[] { FullTextKeys.unqualifiedKey(propertyNames, term) })) {
         while (termCursor.hasNext()) {
           guard.checkPeriodically(++ticks);
           final RID rid = termCursor.next().getIdentity();
