@@ -1514,11 +1514,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // Bottom-up merge sort: stable, O(n log n), no recursion
     int[] from = sorted;
     int[] to = new int[live];
-    for (int width = 1; width < live; width *= 2) {
-      for (int lo = 0; lo < live; lo += 2 * width) {
-        final int mid = Math.min(lo + width, live);
-        final int hi = Math.min(lo + 2 * width, live);
-        int i = lo, j = mid, k = lo;
+    // In long: at a billion candidates, lo + 2 * width passes Integer.MAX_VALUE before the sort is over
+    for (long width = 1; width < live; width *= 2) {
+      for (long lo = 0; lo < live; lo += 2 * width) {
+        final int mid = (int) Math.min(lo + width, live);
+        final int hi = (int) Math.min(lo + 2 * width, live);
+        int i = (int) lo, j = mid, k = (int) lo;
         while (i < mid && j < hi)
           to[k++] = neighbourhood.ridOf(from[j]).compareTo(neighbourhood.ridOf(from[i])) < 0 ? from[j++] : from[i++];
         while (i < mid)
