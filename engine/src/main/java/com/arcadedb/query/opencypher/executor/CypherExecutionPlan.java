@@ -28,7 +28,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
-import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -136,6 +135,7 @@ import com.arcadedb.query.opencypher.executor.steps.IndexMinMaxStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
+import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByIdStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByIndexStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
@@ -2550,7 +2550,7 @@ public class CypherExecutionPlan {
         }
 
         // OPTIMIZATION: Extract ID filter for this variable to avoid Cartesian product
-        final String idFilter = extractIdFilter(whereClause, variable);
+        final InListValues idFilter = extractIdFilter(whereClause, variable);
         // OPTIMIZATION: Extract WHERE predicates referencing only available variables for pushdown
         final BooleanExpression pushdownFilter = extractPushdownFilter(whereClause, variable,
             boundVariables, matchVariables, pushedConjuncts);
@@ -2605,7 +2605,7 @@ public class CypherExecutionPlan {
 
         // Source node matching (if not already bound)
         if (!boundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
-          final String sourceIdFilter = extractIdFilter(whereClause, sourceVar);
+          final InListValues sourceIdFilter = extractIdFilter(whereClause, sourceVar);
           final BooleanExpression sourcePushdown = extractPushdownFilter(whereClause, sourceVar,
               boundVariables, matchVariables, pushedConjuncts);
           final MatchNodeStep sourceStep = takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
@@ -2621,7 +2621,7 @@ public class CypherExecutionPlan {
 
         // Target node matching (if not already bound)
         if (!boundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
-          final String targetIdFilter = extractIdFilter(whereClause, targetVar);
+          final InListValues targetIdFilter = extractIdFilter(whereClause, targetVar);
           final BooleanExpression targetPushdown = extractPushdownFilter(whereClause, targetVar,
               boundVariables, matchVariables, pushedConjuncts);
           final MatchNodeStep targetStep = takePushdown(new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
@@ -2654,6 +2654,13 @@ public class CypherExecutionPlan {
         // path. Only attempted as the leading (seed) step of a non-optional MATCH whose WHERE clause is
         // re-applied above, so the index seek is always a safe prefilter.
         if (!isOptional && currentStep == null) {
+          // A relationship the WHERE clause pins by id is fetched by RID with its endpoints (issue #12134)
+          final MatchEdgeByIdStep edgeIdSeed = tryBuildEdgeIdSeed(matchClause, pathPatterns, patternIndex, boundVariables,
+              matchVariables, context);
+          if (edgeIdSeed != null) {
+            currentStep = edgeIdSeed;
+            continue;
+          }
           final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPatterns, patternIndex,
               boundVariables, matchVariables, context);
           if (edgeIndexSeed != null) {
@@ -2703,13 +2710,29 @@ public class CypherExecutionPlan {
           }
         }
 
+        // Issue #12134: a single hop whose target the WHERE clause pins by id, and whose source it does not, starts from the target:
+        // one lookup by RID and a walk of its edges, instead of a scan of every source vertex and a filter on what it reaches
+        if (!reversed && !sourceAlreadyBound && !isOptional && !pathPattern.hasPathVariable()
+            && pathPattern.getRelationshipCount() == 1 && !pathPattern.getRelationship(0).isVariableLength()
+            && !(pathPattern.getRelationship(0) instanceof QuantifiedPathPattern)) {
+          final NodePattern targetNode = pathPattern.getLastNode();
+          final String targetVar = targetNode.getVariable();
+          if (targetVar != null && !targetVar.equals(sourceVar) && !boundVariables.contains(targetVar)
+              && !matchVariables.contains(targetVar) && extractIdFilter(whereClause, targetVar) != null
+              && extractIdFilter(whereClause, sourceVar) == null) {
+            reversed = true;
+            sourceNode = targetNode;
+            sourceVar = targetVar;
+          }
+        }
+
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
         }
 
         // Always create MatchNodeStep even for bound variables - it handles them
         // correctly (uses bound vertex and validates labels/properties)
-        final String sourceIdFilter = sourceAlreadyBound ? null : extractIdFilter(whereClause, sourceVar);
+        final InListValues sourceIdFilter = sourceAlreadyBound ? null : extractIdFilter(whereClause, sourceVar);
         final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
             extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables, pushedConjuncts);
         final AbstractExecutionStep sourceStep;
@@ -2795,8 +2818,9 @@ public class CypherExecutionPlan {
 
           // When reversed, swap source/target variables and use the original source as target.
           // This mapping only holds for a single-relationship pattern: the written source is the
-          // end of the one reversed hop. Both entry points into `reversed` enforce that (the
-          // bound-target reversal below and shouldReverseVariableLengthPathFromIndexedAnchor);
+          // end of the one reversed hop. Every entry point into `reversed` enforces that (the
+          // bound-target reversal above, the id-pinned target one of issue #12134 and
+          // shouldReverseVariableLengthPathFromIndexedAnchor);
           // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
           final String effectiveTargetVar;
@@ -2981,6 +3005,62 @@ public class CypherExecutionPlan {
     final List<String> yieldFields = procedure.getYieldFields();
     if (yieldFields != null)
       boundVariables.addAll(yieldFields);
+  }
+
+  /**
+   * Builds a {@link MatchEdgeByIdStep} seed for a single-hop pattern whose named relationship the MATCH's {@code WHERE} clause pins
+   * by id, {@code elementId(r) = $id} or {@code id(r) IN $ids} (issue #12134): the edges are fetched by RID and bound with both
+   * endpoints, where the plan otherwise scanned every source vertex and walked its edges to filter on the id. Returns {@code null}
+   * - deferring to the index seed or the ordinary plan - when a precondition is not met: the same shapes
+   * {@link #tryBuildEdgeIndexScanSeed} takes, over relationship types that hold no lightweight edge (which no RID fetches). On
+   * success it registers the source, target and edge variables in {@code matchVariables}. The WHERE clause is re-applied above.
+   */
+  private MatchEdgeByIdStep tryBuildEdgeIdSeed(final MatchClause matchClause, final List<PathPattern> pathPatterns,
+      final int patternIndex, final Set<String> boundVariables, final Set<String> matchVariables, final CommandContext context) {
+    if (!matchClause.hasWhereClause() || matchClause.getWhereClause() == null)
+      return null;
+    final PathPattern pathPattern = pathPatterns.get(patternIndex);
+    if (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || rel.hasWhereExpression()
+        || rel.getPropertiesParameterName() != null)
+      return null;
+    final Direction dir = rel.getDirection();
+    if (dir != Direction.OUT && dir != Direction.IN)
+      return null;
+
+    final String edgeVar = rel.getVariable();
+    if (edgeVar == null || edgeVar.isEmpty() || boundVariables.contains(edgeVar) || matchVariables.contains(edgeVar))
+      return null;
+    final Map<String, Object> relProperties = rel.hasProperties() ? rel.getProperties() : null;
+    if (!EdgeIndexSeedPlanner.isRowIndependent(relProperties))
+      return null;
+
+    final BooleanExpression where = matchClause.getWhereClause().getConditionExpression();
+    final InListValues ids = IdSeekValues.find(where, edgeVar);
+    if (ids == null)
+      return null;
+    final List<String> types = rel.hasTypes() ? rel.getTypes() : List.of();
+    if (!IdSeekValues.relationshipsHaveRecords(context.getDatabase().getSchema(), types))
+      return null;
+
+    // One edge per id at most: an endpoint's inline map is checked on it, as an exact index seek checks it
+    final NodePattern srcNode = pathPattern.getFirstNode();
+    final NodePattern tgtNode = pathPattern.getLastNode();
+    if (!isSeedableEndpoint(srcNode, where, true, boundVariables, matchVariables)
+        || !isSeedableEndpoint(tgtNode, where, true, boundVariables, matchVariables))
+      return null;
+
+    final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable() : ("  src" + anonymousVarCounter++);
+    final String effectiveTargetVar = tgtNode.getVariable() != null ? tgtNode.getVariable() : ("  tgt" + anonymousVarCounter++);
+    matchVariables.add(effectiveSourceVar);
+    matchVariables.add(effectiveTargetVar);
+    matchVariables.add(edgeVar);
+
+    return new MatchEdgeByIdStep(ids, types, dir, effectiveSourceVar, edgeVar, effectiveTargetVar,
+        EdgeIndexSeedPlanner.EndpointFilter.of(srcNode), EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode), relProperties, context);
   }
 
   /**
@@ -3833,7 +3913,7 @@ public class CypherExecutionPlan {
               if (!legacyBoundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
-                final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+                final InListValues sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
                 final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
                     legacyBoundVariables, matchVariables, pushedConjuncts);
                 final MatchNodeStep sourceStep = takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
@@ -3851,7 +3931,7 @@ public class CypherExecutionPlan {
               if (!legacyBoundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
-                final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
+                final InListValues targetIdFilter = extractIdFilter(matchWhere, targetVar);
                 final BooleanExpression targetPushdown = extractPushdownFilter(matchWhere, targetVar,
                     legacyBoundVariables, matchVariables, pushedConjuncts);
                 final MatchNodeStep targetStep = takePushdown(new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
@@ -3894,7 +3974,7 @@ public class CypherExecutionPlan {
               // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
               final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                   statement.getWhereClause();
-              final String idFilter = extractIdFilter(matchWhere, variable);
+              final InListValues idFilter = extractIdFilter(matchWhere, variable);
               // OPTIMIZATION: Extract WHERE predicates for inline pushdown
               final BooleanExpression pushdownFilter = extractPushdownFilter(matchWhere, variable,
                   legacyBoundVariables, matchVariables, pushedConjuncts);
@@ -3934,7 +4014,7 @@ public class CypherExecutionPlan {
                 // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
-                final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
+                final InListValues sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
                 // OPTIMIZATION: Extract WHERE predicates for inline pushdown
                 final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
                     legacyBoundVariables, matchVariables, pushedConjuncts);
@@ -7410,6 +7490,14 @@ public class CypherExecutionPlan {
     // a lookup by id finds one record at most
     if (node.getVariable() != null && extractIdFilter(where, node.getVariable()) != null)
       return true;
+    // so does one of a single hop's target, which the pipeline then starts from, or of its relationship (issue #12134)
+    if (path.getRelationshipCount() == 1) {
+      final String target = path.getLastNode().getVariable();
+      final String relationship = path.getRelationship(0).getVariable();
+      if ((target != null && extractIdFilter(where, target) != null) || (relationship != null
+          && extractIdFilter(where, relationship) != null))
+        return true;
+    }
     // only a single static label lets the node step seek an index (MatchNodeStep.computeVertexIterator)
     if (node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
       return false;
@@ -7430,6 +7518,9 @@ public class CypherExecutionPlan {
   private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics) {
     if (anchor == null || !anchor.useIndex() || anchor.isRangeScan() || anchor.getNode() == null)
       return false;
+    // a lookup by id finds one record per id at most
+    if (anchor.isIdSeek())
+      return true;
     final long rows = Math.max(1L, anchor.getEstimatedCardinality());
     final IndexStatistics index = anchor.getIndex();
     if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
@@ -9600,104 +9691,13 @@ public class CypherExecutionPlan {
     return new DegreeProductOp.Arm(edgeTypes, directions, optional, endpointLabels, endpointPredicates);
   }
 
-  private String extractIdFilter(final WhereClause whereClause, final String variable) {
-    if (whereClause == null || whereClause.getConditionExpression() == null)
-      return null;
-
-    final BooleanExpression condition = whereClause.getConditionExpression();
-
-    // Try to extract ID filter from the condition expression
-    // The condition may be an AND expression containing multiple predicates
-    // We need to find the one that matches: ID(variable) = value
-    return extractIdFilterFromExpression(condition, variable);
-  }
-
   /**
-   * Recursively extracts ID filter from a boolean expression.
+   * The ids the WHERE clause pins {@code variable} to - {@code id(v) = x}, {@code elementId(v) = x} or the {@code IN} of either over
+   * literals and parameters - for the node step to fetch by RID instead of scanning (issues #3216, #12134), or null.
    */
-  private String extractIdFilterFromExpression(final BooleanExpression expr, final String variable) {
-    if (expr == null)
+  private static InListValues extractIdFilter(final WhereClause whereClause, final String variable) {
+    if (whereClause == null)
       return null;
-
-    // Check if this is a comparison expression (ID(var) = value)
-    if (expr instanceof ComparisonExpression) {
-      final ComparisonExpression compExpr = (ComparisonExpression) expr;
-
-      // Check if left side is ID(variable) or elementId(variable)
-      final Expression left = compExpr.getLeft();
-      if (left instanceof FunctionCallExpression) {
-        final FunctionCallExpression funcExpr = (FunctionCallExpression) left;
-        final String funcName = funcExpr.getFunctionName();
-        if (("id".equalsIgnoreCase(funcName) || "elementid".equalsIgnoreCase(funcName))
-            && funcExpr.getArguments().size() == 1) {
-          final Expression arg = funcExpr.getArguments().get(0);
-          if (arg instanceof VariableExpression) {
-            final VariableExpression varExpr = (VariableExpression) arg;
-            if (variable.equals(varExpr.getVariableName())) {
-              // Found ID(variable) - extract the value from right side
-              final Expression right = compExpr.getRight();
-              return evaluateIdValue(right);
-            }
-          }
-        }
-      }
-    }
-
-    // Check if this is a logical AND expression - recursively search both sides
-    if (expr instanceof LogicalExpression) {
-      final LogicalExpression logExpr = (LogicalExpression) expr;
-      if (logExpr.getOperator() == LogicalExpression.Operator.AND) {
-        final String leftResult = extractIdFilterFromExpression(logExpr.getLeft(), variable);
-        if (leftResult != null)
-          return leftResult;
-        return extractIdFilterFromExpression(logExpr.getRight(), variable);
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Evaluates an expression to extract the ID value (literal or parameter).
-   */
-  private String evaluateIdValue(final Expression expr) {
-    if (expr == null)
-      return null;
-
-    // Handle literal values: strings already have the RID format; numeric literals come from id()
-    // (Long-encoded RID, issue #4183) and must be decoded back to a #bucketId:offset string so the
-    // downstream MatchNodeStep can resolve the record via newRID.
-    if (expr instanceof LiteralExpression) {
-      final LiteralExpression litExpr = (LiteralExpression) expr;
-      final Object value = litExpr.getValue();
-      return toRidString(value);
-    }
-
-    // Handle parameter references
-    if (expr instanceof ParameterExpression) {
-      final ParameterExpression paramExpr = (ParameterExpression) expr;
-      final String paramName = paramExpr.getParameterName();
-      if (parameters != null && parameters.containsKey(paramName)) {
-        final Object value = parameters.get(paramName);
-        return toRidString(value);
-      }
-    }
-
-    // Handle property access for UNWIND scenarios (e.g., row.source_id)
-    if (expr instanceof PropertyAccessExpression) {
-      // Can't evaluate at plan time - would need runtime context
-      // This is handled differently via parameter substitution
-      return null;
-    }
-
-    return null;
-  }
-
-  private static String toRidString(final Object value) {
-    if (value == null)
-      return null;
-    if (value instanceof Number number)
-      return IdFunction.decodeLongToRidString(number.longValue());
-    return value.toString();
+    return IdSeekValues.find(whereClause.getConditionExpression(), variable);
   }
 }
