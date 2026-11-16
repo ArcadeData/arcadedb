@@ -133,6 +133,33 @@ class OperationHeapLimitSharedContainersTest {
     limit.release();
   }
 
+  /**
+   * Each row holds a large container of its own, and those containers all hold one large child: the child is charged once,
+   * not once more for every sample. Met first inside another container, it is part of the first sampled row's estimate until
+   * a later sample shares it, and must leave the average the rows not estimated are charged then, as a child held directly
+   * does.
+   */
+  @Test
+  void rowsWithContainersOfTheirOwnSharingALargeChildAreChargedForTheChildOnce() {
+    final List<Object> child = nulls(20_000);
+    final int rows = 2_000;
+    final OperationHeapLimit sampled = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    final OperationHeapLimit exact = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY").estimateEachElement();
+    for (int i = 1; i <= rows; i++) {
+      final List<Object> own = nulls(HeapEstimator.SAMPLED_ELEMENTS + 1);
+      own.set(0, child);
+      final ResultInternal row = row("l", own, "i", i);
+      sampled.add(i, row);
+      exact.add(i, row);
+    }
+
+    final long childBytes = HeapEstimator.estimate(child);
+    assertThat(sampled.getChargedBytes()).as("the child is charged once, as when every row is estimated")
+        .isBetween(exact.getChargedBytes() - childBytes, exact.getChargedBytes() + childBytes);
+    sampled.release();
+    exact.release();
+  }
+
   private static List<Object> nulls(final int size) {
     return new ArrayList<>(Collections.nCopies(size, null));
   }

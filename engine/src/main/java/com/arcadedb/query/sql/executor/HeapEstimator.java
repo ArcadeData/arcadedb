@@ -27,6 +27,7 @@ import com.arcadedb.database.RID;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.temporal.Temporal;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.IdentityHashMap;
@@ -101,8 +102,8 @@ public final class HeapEstimator {
     private long    sharedSampleBytes;
     private int     walk;
     private boolean sample;
-    // The containers met for the first time that the current walk is inside of
-    private int     firstSightDepth;
+    // The container met for the first time that the current walk is inside of, null at the top of the element
+    private Held    firstSighted;
     private boolean releasing;
     private long    releasedBytes;
 
@@ -148,7 +149,7 @@ public final class HeapEstimator {
     private long walk(final Object value, final boolean sample) {
       ++walk;
       this.sample = sample;
-      firstSightDepth = 0;
+      firstSighted = null;
       return estimate(value, 0, this);
     }
 
@@ -158,25 +159,42 @@ public final class HeapEstimator {
       final Held known = held.get(container);
       if (known != null) {
         ++known.holders;
-        if (sample && known.walk != walk) {
-          sharedSampleBytes += known.sampleBytes;
-          known.sampleBytes = 0L;
-        }
+        if (sample && known.walk != walk)
+          moveToShared(known);
         return REFERENCE_BYTES;
       }
       final Held entry = new Held(depth, walk);
       held.put(container, entry);
+      final Held parent = firstSighted;
+      if (parent != null)
+        parent.addNested(entry);
       final long before = heldBytes;
-      ++firstSightDepth;
+      firstSighted = entry;
       final long bytes = contents(container, depth, this);
-      --firstSightDepth;
+      firstSighted = parent;
       // The containers nested in this one met for the first time are charged on their own: this one is charged the rest
       final long charged = bytes - REFERENCE_BYTES;
       entry.bytes = charged - (heldBytes - before);
       heldBytes = before + charged;
-      if (sample && firstSightDepth == 0)
-        entry.sampleBytes = charged;
+      if (sample)
+        // Its own bytes only: a nested container met for the first time keeps its own, so a later sample that shares only that
+        // one moves it out of the sampled average as well (issue #11812)
+        entry.sampleBytes = entry.bytes;
       return bytes;
+    }
+
+    /**
+     * A container a sampled element met first is shared by a later sampled element: it, and the containers met for the first
+     * time inside it, which the later element holds through it, leave what the first element holds on its own. Once.
+     */
+    private void moveToShared(final Held container) {
+      sharedSampleBytes += container.sampleBytes;
+      container.sampleBytes = 0L;
+      if (container.nested != null) {
+        for (final Held nested : container.nested)
+          moveToShared(nested);
+        container.nested = null;
+      }
     }
 
     private long release(final Object container, final int depth) {
@@ -196,17 +214,27 @@ public final class HeapEstimator {
     }
   }
 
-  /** A large container a buffer holds, with the bytes charged to it alone and the number of holders. */
+  /**
+   * A large container a buffer holds, with the bytes charged to it alone, the number of holders, and the large containers met
+   * for the first time inside it.
+   */
   private static final class Held {
-    private final int  depth;
-    private final int  walk;
-    private int        holders = 1;
-    private long       bytes;
-    private long       sampleBytes;
+    private final int        depth;
+    private final int        walk;
+    private int              holders = 1;
+    private long             bytes;
+    private long             sampleBytes;
+    private List<Held>       nested;
 
     private Held(final int depth, final int walk) {
       this.depth = depth;
       this.walk = walk;
+    }
+
+    private void addNested(final Held container) {
+      if (nested == null)
+        nested = new ArrayList<>(2);
+      nested.add(container);
     }
   }
 
