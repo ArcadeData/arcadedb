@@ -43,6 +43,12 @@ public class ForwardThenFailTestPlugin implements ServerPlugin {
       super(httpServer);
     }
 
+    /** The body carries the command: it is read only on a worker thread. */
+    @Override
+    protected boolean mustExecuteOnWorkerThread() {
+      return true;
+    }
+
     /**
      * Outside a transaction, as {@code /query} runs: inside the one {@code requiresTransaction()} opens, a follower runs the
      * write locally in that transaction (issue #10040) instead of forwarding it, and the failure rolls it back.
