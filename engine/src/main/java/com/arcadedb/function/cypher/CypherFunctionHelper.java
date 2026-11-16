@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.CypherValues;
@@ -727,9 +728,11 @@ public final class CypherFunctionHelper {
 
   /**
    * The Cypher order of two maps, as Neo4j orders them: by size, then by their keys in ascending order, then by the values of
-   * those keys in that order, each compared by {@code values}.
+   * those keys in that order, each compared by {@code values}. Two points order as points, see {@link #comparePoints}.
    */
   public static int compareMaps(final Map<?, ?> a, final Map<?, ?> b, final Comparator<Object> values) {
+    if (CypherValues.isPointShaped(a) && CypherValues.isPointShaped(b))
+      return comparePoints(a, b);
     if (a.size() != b.size())
       return Integer.compare(a.size(), b.size());
     final List<Object> keysA = sortedKeys(a);
@@ -745,6 +748,35 @@ public final class CypherFunctionHelper {
         return cmp;
     }
     return 0;
+  }
+
+  /**
+   * The Cypher order of two points, as Neo4j orders them: by coordinate reference system (srid 4326, 4979, 7203, 9157), then
+   * by x, y and z. A point is a map in ArcadeDB, and the map order put a WGS-84 point's latitude before its longitude and
+   * points of different systems in the order of their key counts (issue #12274).
+   */
+  public static int comparePoints(final Map<?, ?> a, final Map<?, ?> b) {
+    int cmp = Integer.compare(pointSrid(a), pointSrid(b));
+    if (cmp != 0)
+      return cmp;
+    cmp = BinaryComparator.compareDoubles(((Number) a.get("x")).doubleValue(), ((Number) b.get("x")).doubleValue());
+    if (cmp != 0)
+      return cmp;
+    cmp = BinaryComparator.compareDoubles(((Number) a.get("y")).doubleValue(), ((Number) b.get("y")).doubleValue());
+    if (cmp != 0)
+      return cmp;
+    final Object za = a.get("z");
+    final Object zb = b.get("z");
+    if (za instanceof Number na && zb instanceof Number nb)
+      return BinaryComparator.compareDoubles(na.doubleValue(), nb.doubleValue());
+    return Boolean.compare(za instanceof Number, zb instanceof Number);
+  }
+
+  private static int pointSrid(final Map<?, ?> point) {
+    if (point.get("srid") instanceof Number srid)
+      return srid.intValue();
+    final Integer srid = point.get("crs") instanceof String crs ? CypherPointFunction.sridOfCrs(crs) : null;
+    return srid != null ? srid : Integer.MAX_VALUE;
   }
 
   // The original keys sorted by their string form: a Java parameter map may hold non-String keys, and looking its values up by
