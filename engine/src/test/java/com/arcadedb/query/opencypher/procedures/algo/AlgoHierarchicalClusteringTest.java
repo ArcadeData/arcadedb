@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
@@ -158,5 +159,39 @@ class AlgoHierarchicalClusteringTest {
 
     assertThat(rs.hasNext()).isFalse();
     emptyDb.drop();
+  }
+
+  /**
+   * Issue #12171: every merge rescanned every edge and intersected two n-bit neighbour sets per edge, over an n x n bit
+   * matrix (2 MB for this ring of 4,000 nodes). The similarity of an edge never changes, so the merges are Kruskal's over
+   * the edges sorted by it, with memory linear in the graph. The six nodes of the setup have no RING edge and stay
+   * singletons, so seven clusters leave the whole ring as one.
+   */
+  @Test
+  void sparseGraphRunsWithinABudgetSmallerThanTheBitMatrix() {
+    final int n = 4000;
+    database.getSchema().createEdgeType("RING");
+    database.transaction(() -> {
+      final List<MutableVertex> ring = new ArrayList<>(n);
+      for (int i = 0; i < n; i++)
+        ring.add(database.newVertex("Node").set("name", "r" + i).save());
+      for (int i = 0; i < n; i++)
+        ring.get(i).newEdge("RING", ring.get((i + 1) % n), (Object[]) null).save();
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1_500_000L);
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.hierarchicalClustering('RING', 7) YIELD nodeId, cluster RETURN nodeId.name AS name, cluster");
+    final Set<Object> ringClusters = new HashSet<>();
+    final Set<Object> otherClusters = new HashSet<>();
+    int rows = 0;
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      (row.<String>getProperty("name").startsWith("r") ? ringClusters : otherClusters).add(row.getProperty("cluster"));
+      rows++;
+    }
+    assertThat(rows).isEqualTo(n + 6);
+    assertThat(ringClusters).hasSize(1);
+    assertThat(otherClusters).hasSize(6).doesNotContainAnyElementsOf(ringClusters);
   }
 }

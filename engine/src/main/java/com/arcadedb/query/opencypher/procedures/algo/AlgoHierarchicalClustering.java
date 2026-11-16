@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -97,17 +97,46 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for Jaccard similarity: a nodeCount x nodeCount bit matrix, reserved before the
-    // first BitSet is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] neighborSets = new BitSet[n];
+    // The candidate merges are the edges (u, v) with u < v, in the order a scan of the adjacency meets them: by u, then
+    // by position in u's row
+    long entries = 0;
+    for (int u = 0; u < n; u++)
+      for (final int v : adj[u])
+        if (v > u)
+          entries++;
+    final int edgeCount = checkedEdgeCount(NAME, n, entries);
+    graph.memory().reserve(saturatingSum(saturatingProduct(edgeCount, 2 * INT_BYTES + LONG_BYTES),
+            saturatingProduct(n, MATRIX_ROW_OVERHEAD_BYTES + INT_BYTES)), "the candidate merges and the neighbour sets",
+        n + " nodes, " + edgeCount + " edges");
+    final int[] edgeU = new int[edgeCount];
+    final int[] edgeV = new int[edgeCount];
+    int e = 0;
+    for (int u = 0; u < n; u++) {
+      for (final int v : adj[u]) {
+        if (v > u) {
+          edgeU[e] = u;
+          edgeV[e] = v;
+          e++;
+        }
+      }
+    }
+
+    // The neighbour set of every node, the node itself included, as a sorted array of distinct ids
     for (int i = 0; i < n; i++) {
       guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      neighborSets[i].set(i); // include self for union calculation
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
+      adj[i] = closedNeighbourSet(adj[i], i);
     }
+
+    // Similarity = common neighbours (Jaccard numerator), by a sorted merge of the two sets. It depends on the edge
+    // alone, never on the clusters, so it is computed once: each merge used to rescan every edge and intersect two
+    // n-bit sets per edge (issue #12171). Sorted by similarity descending, then by scan order.
+    final long[] order = new long[edgeCount];
+    for (int k = 0; k < edgeCount; k++) {
+      guard.checkPeriodically(k);
+      final int sim = commonCount(adj[edgeU[k]], adj[edgeV[k]]);
+      order[k] = ((long) (Integer.MAX_VALUE - sim) << 32) | k;
+    }
+    Arrays.sort(order);
 
     // Union-Find
     final int[] parent = new int[n];
@@ -118,44 +147,18 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     int currentClusters = n;
     final int targetClusters = Math.max(1, Math.min(numClusters, n));
 
-    // Agglomerative: repeatedly merge until we have targetClusters
-    while (currentClusters > targetClusters) {
-      // One merge per round and a full scan of the graph to choose it: O(V x (V + E)) bit-set intersections,
-      // sized by the graph and by a cluster target that defaults to 2 (issue #6302).
-      guard.check();
-      // Find the two nodes (representing different clusters) with highest similarity
-      // Similarity = common neighbors (Jaccard numerator) — use BitSet AND cardinality
-      int bestU = -1;
-      int bestV = -1;
-      int bestSim = -1;
-
-      for (int u = 0; u < n; u++) {
-        guard.checkPeriodically(u);
-        final int rootU = find(parent, u);
-        for (final int v : adj[u]) {
-          if (v <= u)
-            continue;
-          final int rootV = find(parent, v);
-          if (rootU == rootV)
-            continue;
-
-          // Jaccard similarity: |N(u) ∩ N(v)| / |N(u) ∪ N(v)|
-          final BitSet intersection = (BitSet) neighborSets[u].clone();
-          intersection.and(neighborSets[v]);
-          final int sim = intersection.cardinality();
-
-          if (sim > bestSim) {
-            bestSim = sim;
-            bestU = rootU;
-            bestV = rootV;
-          }
-        }
-      }
-
-      if (bestU < 0 || bestV < 0)
-        break; // no connected clusters to merge
-
-      union(parent, rank, bestU, bestV);
+    // Agglomerative: each merge joins the two clusters of the most similar edge between two clusters, the first in scan
+    // order among equals. Clusters only grow, so an edge passed over, being inside a cluster, stays inside one: the
+    // next merge is always the next edge in the sorted order that still joins two clusters. That is Kruskal's
+    // algorithm, O(E log E) for the same merges in the same order.
+    for (int k = 0; k < edgeCount && currentClusters > targetClusters; k++) {
+      guard.checkPeriodically(k);
+      final int edge = (int) order[k];
+      final int rootU = find(parent, edgeU[edge]);
+      final int rootV = find(parent, edgeV[edge]);
+      if (rootU == rootV)
+        continue;
+      union(parent, rank, rootU, rootV);
       currentClusters--;
     }
 
@@ -199,5 +202,36 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       parent[rb] = ra;
       rank[ra]++;
     }
+  }
+
+  /** {@code row} and {@code self} as a sorted array of distinct ids. */
+  private static int[] closedNeighbourSet(final int[] row, final int self) {
+    final int[] set = Arrays.copyOf(row, row.length + 1);
+    set[row.length] = self;
+    Arrays.sort(set);
+    int write = 0;
+    for (int i = 0; i < set.length; i++)
+      if (i == 0 || set[i] != set[i - 1])
+        set[write++] = set[i];
+    return write == set.length ? set : Arrays.copyOf(set, write);
+  }
+
+  /** The number of ids two sorted arrays of distinct ids have in common. */
+  private static int commonCount(final int[] a, final int[] b) {
+    int count = 0;
+    int i = 0;
+    int j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] < b[j])
+        i++;
+      else if (a[i] > b[j])
+        j++;
+      else {
+        count++;
+        i++;
+        j++;
+      }
+    }
+    return count;
   }
 }
