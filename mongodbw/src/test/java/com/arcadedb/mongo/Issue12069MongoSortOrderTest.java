@@ -103,6 +103,17 @@ class Issue12069MongoSortOrderTest {
   }
 
   @Test
+  void aFractionalNumberAndALongSortByExactValueWithAndWithoutALimit() {
+    insert("Fractions", doc(1, 2147483648.5D), doc(2, 2147483648L), doc(3, new Decimal128(new BigDecimal("2147483648.25"))),
+        doc(4, 2147483649L));
+
+    assertThat(ids("Fractions", sort("v", 1), 0, 1)).containsExactly(2);
+    assertThat(ids("Fractions", sort("v", 1), 0, 0)).containsExactly(2, 3, 1, 4);
+    assertThat(ids("Fractions", sort("v", -1), 0, 2)).containsExactly(4, 1);
+    assertThat(ids("Fractions", sort("v", -1), 0, 0)).containsExactly(4, 1, 3, 2);
+  }
+
+  @Test
   void skipAndLimitPageTheMongoOrderWithAFilterAndWithout() {
     final List<Document> documents = new ArrayList<>();
     for (int i = 0; i < 20; i++)

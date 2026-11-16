@@ -22,10 +22,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -550,14 +552,49 @@ public class MongoDBToSqlTranslator {
 
   /**
    * The properties a sort reads of a stored record, as the client reads them ({@link #convertDocumentToMongoDB}): an ObjectId
-   * {@code _id} is an ObjectId, which sorts after every string (issue #12069).
+   * {@code _id} is an ObjectId, which sorts after every string (issue #12069). Every number is a {@link Decimal128}, see
+   * {@link #sortKey(Object)}.
    */
   static Document toSortDocument(final Map<String, Object> map, final Set<String> properties) {
     final Document result = new Document();
     for (final String p : properties)
       if (map.containsKey(p) && !isRecordMetadata(p))
-        result.put(p, "_id".equals(p) ? convertIdToMongoDB(map.get(p)) : toBsonValue(map.get(p)));
+        result.put(p, sortKey("_id".equals(p) ? convertIdToMongoDB(map.get(p)) : toBsonValue(map.get(p))));
     return result;
+  }
+
+  /**
+   * A value of a sort key with every number, in arrays and embedded documents too, as a {@link Decimal128}. The library's
+   * comparator compares two numbers of different types through {@code longValue()} as soon as one of them is a long (2147483648.5
+   * and 2147483648L are equal to it), while two Decimal128 compare exactly. A long is exact as a Decimal128; a double is rounded
+   * to 34 significant digits, more than a double or a long needs to stay distinct from a different double or long.
+   */
+  private static Object sortKey(final Object value) {
+    if (value instanceof Decimal128)
+      return value;
+    if (value instanceof Double || value instanceof Float) {
+      final double number = ((Number) value).doubleValue();
+      if (Double.isNaN(number))
+        return Decimal128.NaN;
+      if (Double.isInfinite(number))
+        return number > 0 ? Decimal128.POSITIVE_INFINITY : Decimal128.NEGATIVE_INFINITY;
+      return new Decimal128(new BigDecimal(number).round(MathContext.DECIMAL128));
+    }
+    if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return new Decimal128(BigDecimal.valueOf(((Number) value).longValue()));
+    if (value instanceof List<?> list) {
+      final List<Object> keys = new ArrayList<>(list.size());
+      for (final Object item : list)
+        keys.add(sortKey(item));
+      return keys;
+    }
+    if (value instanceof Document document) {
+      final Document keys = new Document();
+      for (final Map.Entry<String, Object> entry : document.entrySet())
+        keys.put(entry.getKey(), sortKey(entry.getValue()));
+      return keys;
+    }
+    return value;
   }
 
   static boolean isRecordMetadata(final String property) {
