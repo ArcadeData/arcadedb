@@ -129,29 +129,39 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     int electedCount = 0;
 
     // The next node to elect is the one of highest score, the lowest index among equals, which is the node a scan of
-    // every node picked: it comes from a heap of (score, index) entries with lazy deletion, one entry per score change
-    // (issue #12170).
-    graph.memory().reserve(saturatingProduct(n, DOUBLE_BYTES + 2 * INT_BYTES), "the election heap", n + " nodes");
+    // every node picked: it comes from a heap of (score, index) entries (issue #12170).
+    graph.memory().reserve(saturatingProduct(n, DOUBLE_BYTES + INT_BYTES + BOOLEAN_BYTES), "the election heap",
+        n + " nodes");
     final ScoreMaxHeap heap = new ScoreMaxHeap(n);
     for (int i = 0; i < n; i++)
       heap.push(voteScore[i], i);
-    // The round in which a node's score was last recomputed, so a node reached twice in one round is summed once
-    final int[] recomputedIn = new int[n];
-    Arrays.fill(recomputedIn, -1);
+    // An election lowers some scores. Their nodes are only marked here; a marked node's score is summed again when its
+    // entry reaches the top of the heap. A score never rises, so the entry of a marked node is an upper bound of its
+    // score, and a node popped unmarked is the one a scan of the exact scores would pick. A node is summed
+    // again once per time it surfaces, not once per election that touches it: many elections can lower the score of a
+    // node with a large fan-in before it is read again. Every node not elected has exactly one entry (a summed node's
+    // entry is popped before its new one is pushed), so the heap never holds more than n entries.
+    final boolean[] stale = new boolean[n];
 
     while (electedCount < limit) {
       guard.checkPeriodically(electedCount);
       // Find node with highest vote score among non-elected
       int best = -1;
       double bestScore = -1.0;
+      int step = 0;
       while (heap.size() > 0) {
+        guard.checkPeriodically(step++);
         final double score = heap.topScore();
         final int node = heap.pop();
-        if (!elected[node] && score == voteScore[node]) {
-          best = node;
-          bestScore = score;
-          break;
+        if (stale[node]) {
+          stale[node] = false;
+          voteScore[node] = sumVotes(node, adjIn, elected, votingAbility);
+          heap.push(voteScore[node], node);
+          continue;
         }
+        best = node;
+        bestScore = score;
+        break;
       }
 
       if (best == -1 || bestScore <= 0.0)
@@ -171,14 +181,13 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       }
 
       // Only two kinds of score changed: those best voted for, since best no longer votes, and those its out-neighbours
-      // vote for, since their voting ability dropped. Each is summed again from its in-neighbours: O(two-hop
-      // neighbourhood) per election instead of a pass over every edge (issue #12170).
-      final int round = electedCount;
+      // vote for, since their voting ability dropped. Marking them costs the two-hop neighbourhood of the elected node,
+      // instead of a pass over every edge (issue #12170).
       for (final int neighbor : adjOut[best]) {
-        recomputeScore(neighbor, round, adjIn, elected, votingAbility, voteScore, recomputedIn, heap);
+        stale[neighbor] = true;
         if (!elected[neighbor])
           for (final int w : adjOut[neighbor])
-            recomputeScore(w, round, adjIn, elected, votingAbility, voteScore, recomputedIn, heap);
+            stale[w] = true;
       }
     }
 
@@ -193,33 +202,31 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
   }
 
   /**
-   * Sums the vote score of a non-elected {@code node} again from its in-neighbours that are not elected, as the full
-   * recomputation did, and queues the new score when it changed.
+   * The vote score of {@code node}: the voting abilities of its in-neighbours that are not elected, added in ascending
+   * order and once per edge, which is the order a full recomputation over every node's out-list added them in, so the
+   * sum is the same double.
    */
-  private static void recomputeScore(final int node, final int round, final int[][] adjIn, final boolean[] elected,
-      final double[] votingAbility, final double[] voteScore, final int[] recomputedIn, final ScoreMaxHeap heap) {
-    if (elected[node] || recomputedIn[node] == round)
-      return;
-    recomputedIn[node] = round;
+  private static double sumVotes(final int node, final int[][] adjIn, final boolean[] elected,
+      final double[] votingAbility) {
     double score = 0.0;
     for (final int u : adjIn[node])
       if (!elected[u])
         score += votingAbility[u];
-    if (score != voteScore[node]) {
-      voteScore[node] = score;
-      heap.push(score, node);
-    }
+    return score;
   }
 
-  /** A binary heap of (score, node) entries, highest score first and the lowest node among equal scores, unboxed. */
+  /**
+   * A binary heap of (score, node) entries, highest score first and the lowest node among equal scores, unboxed. Sized
+   * once: it holds at most one entry per node.
+   */
   private static final class ScoreMaxHeap {
-    private double[] scores;
-    private int[]    nodes;
-    private int      size;
+    private final double[] scores;
+    private final int[]    nodes;
+    private int            size;
 
     ScoreMaxHeap(final int capacity) {
-      scores = new double[Math.max(16, capacity)];
-      nodes = new int[scores.length];
+      scores = new double[capacity];
+      nodes = new int[capacity];
     }
 
     int size() {
@@ -231,10 +238,6 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     }
 
     void push(final double score, final int node) {
-      if (size == scores.length) {
-        scores = Arrays.copyOf(scores, size * 2);
-        nodes = Arrays.copyOf(nodes, size * 2);
-      }
       int i = size++;
       while (i > 0) {
         final int parent = (i - 1) >>> 1;
