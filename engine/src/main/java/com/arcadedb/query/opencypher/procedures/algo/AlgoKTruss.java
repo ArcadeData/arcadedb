@@ -184,115 +184,142 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
       }
     }
 
-    // The edges ordered by support in bins: binStart[s] is the first position of support s
-    int maxSupport = 0;
-    for (int e = 0; e < m; e++)
-      if (support[e] > maxSupport)
-        maxSupport = support[e];
-    final int[] binStart = new int[maxSupport + 2];
-    for (int e = 0; e < m; e++)
-      binStart[support[e] + 1]++;
-    for (int s = 0; s <= maxSupport; s++)
-      binStart[s + 1] += binStart[s];
-    final int[] order = new int[m];
-    final int[] position = new int[m];
-    final int[] fill = Arrays.copyOf(binStart, maxSupport + 1);
-    for (int e = 0; e < m; e++) {
-      position[e] = fill[support[e]]++;
-      order[position[e]] = e;
-    }
-
-    final boolean[] removed = new boolean[m];
-    final int[] nodeTruss = new int[n];
-    for (int i = 0; i < m; i++) {
-      guard.checkPeriodically(i);
-      final int e = order[i];
-      final int s = support[e];
-      final int truss = s + 2;
-      removed[e] = true;
-      final int u = edgeU[e];
-      final int v = edgeV[e];
-      if (truss > nodeTruss[u])
-        nodeTruss[u] = truss;
-      if (truss > nodeTruss[v])
-        nodeTruss[v] = truss;
-
-      // Every triangle (u, v, w) still standing loses this edge: its other two edges lose one of support, down to s. A support of
-      // zero means no triangle is left (a support is never below the triangles still standing), so there is nothing to walk
-      if (s > 0)
-        lowerSupportOfTriangles(u, v, s, adj, offsets, arcEdge, removed, support, binStart, order, position);
-    }
-    return nodeTruss;
+    return new Peeling(adj, offsets, arcEdge, edgeU, edgeV, support).run(guard, n);
   }
 
   /**
-   * Lowers the support of the two other edges of every triangle (u, v, w) whose edges are all still standing. The common neighbours
-   * are found by a binary search per entry of the shorter row when the other is much longer (a hub), and by a merge otherwise, so the
-   * work is bounded by the shorter row whatever the node numbering.
+   * The bin-sorted peeling of the edges: the edges ordered by support in bins ({@code binStart[s]} is the first position of support
+   * s), the edge of least support removed at each step, and the support of the other two edges of each triangle it closed lowered in
+   * place, without a re-sort.
    */
-  private static void lowerSupportOfTriangles(final int u, final int v, final int floor, final int[][] adj, final int[] offsets,
-      final int[] arcEdge, final boolean[] removed, final int[] support, final int[] binStart, final int[] order, final int[] position) {
-    final int[] nu = adj[u];
-    final int[] nv = adj[v];
-    if ((long) nu.length * 8 < nv.length || (long) nv.length * 8 < nu.length) {
-      final boolean uShorter = nu.length <= nv.length;
-      final int[] shortRow = uShorter ? nu : nv;
-      final int[] longRow = uShorter ? nv : nu;
-      final int shortNode = uShorter ? u : v;
-      final int longNode = uShorter ? v : u;
-      for (int is = 0; is < shortRow.length; is++) {
-        final int il = Arrays.binarySearch(longRow, shortRow[is]);
-        if (il >= 0)
-          lowerSupportOfTriangle(arcEdge[offsets[shortNode] + is], arcEdge[offsets[longNode] + il], floor, removed, support, binStart,
-              order, position);
-      }
-      return;
-    }
-    int iu = 0;
-    int iv = 0;
-    while (iu < nu.length && iv < nv.length) {
-      final int a = nu[iu];
-      final int b = nv[iv];
-      if (a < b)
-        iu++;
-      else if (a > b)
-        iv++;
-      else {
-        lowerSupportOfTriangle(arcEdge[offsets[u] + iu], arcEdge[offsets[v] + iv], floor, removed, support, binStart, order,
-            position);
-        iu++;
-        iv++;
-      }
-    }
-  }
+  private static final class Peeling {
+    private final int[][]   adj;
+    private final int[]     offsets;
+    private final int[]     arcEdge;
+    private final int[]     edgeU;
+    private final int[]     edgeV;
+    private final int[]     support;
+    private final int[]     binStart;
+    private final int[]     order;
+    private final int[]     position;
+    private final boolean[] removed;
 
-  private static void lowerSupportOfTriangle(final int first, final int second, final int floor, final boolean[] removed,
-      final int[] support, final int[] binStart, final int[] order, final int[] position) {
-    if (!removed[first] && !removed[second]) {
-      lowerSupport(first, floor, support, binStart, order, position);
-      lowerSupport(second, floor, support, binStart, order, position);
+    private Peeling(final int[][] adj, final int[] offsets, final int[] arcEdge, final int[] edgeU, final int[] edgeV,
+        final int[] support) {
+      this.adj = adj;
+      this.offsets = offsets;
+      this.arcEdge = arcEdge;
+      this.edgeU = edgeU;
+      this.edgeV = edgeV;
+      this.support = support;
+      final int m = support.length;
+      int maxSupport = 0;
+      for (int e = 0; e < m; e++)
+        if (support[e] > maxSupport)
+          maxSupport = support[e];
+      this.binStart = new int[maxSupport + 2];
+      for (int e = 0; e < m; e++)
+        binStart[support[e] + 1]++;
+      for (int s = 0; s <= maxSupport; s++)
+        binStart[s + 1] += binStart[s];
+      this.order = new int[m];
+      this.position = new int[m];
+      final int[] fill = Arrays.copyOf(binStart, maxSupport + 1);
+      for (int e = 0; e < m; e++) {
+        position[e] = fill[support[e]]++;
+        order[position[e]] = e;
+      }
+      this.removed = new boolean[m];
     }
-  }
 
-  /**
-   * Lowers the support of edge {@code f} by one when it is above {@code floor}, moving it to the front of its bin and the bin's start
-   * past it, so the bins stay ordered without a re-sort.
-   */
-  private static void lowerSupport(final int f, final int floor, final int[] support, final int[] binStart, final int[] order,
-      final int[] position) {
-    final int s = support[f];
-    if (s <= floor)
-      return;
-    final int first = binStart[s];
-    final int g = order[first];
-    if (g != f) {
-      final int pf = position[f];
-      order[first] = f;
-      position[f] = first;
-      order[pf] = g;
-      position[g] = pf;
+    /** Peels every edge and returns the truss number of every node: the largest of its edges, 0 for a node with none. */
+    private int[] run(final WorkGuard guard, final int n) {
+      final int[] nodeTruss = new int[n];
+      for (int i = 0; i < order.length; i++) {
+        guard.checkPeriodically(i);
+        final int e = order[i];
+        final int s = support[e];
+        final int truss = s + 2;
+        removed[e] = true;
+        final int u = edgeU[e];
+        final int v = edgeV[e];
+        if (truss > nodeTruss[u])
+          nodeTruss[u] = truss;
+        if (truss > nodeTruss[v])
+          nodeTruss[v] = truss;
+
+        // Every triangle (u, v, w) still standing loses this edge: its other two edges lose one of support, down to s. A support of
+        // zero means no triangle is left (a support is never below the triangles still standing), so there is nothing to walk
+        if (s > 0)
+          lowerSupportOfTriangles(u, v, s);
+      }
+      return nodeTruss;
     }
-    binStart[s]++;
-    support[f] = s - 1;
+
+    /**
+     * Lowers the support of the two other edges of every triangle (u, v, w) whose edges are all still standing. The common neighbours
+     * are found by a binary search per entry of the shorter row when the other is much longer (a hub), and by a merge otherwise, so
+     * the work is bounded by the shorter row whatever the node numbering.
+     */
+    private void lowerSupportOfTriangles(final int u, final int v, final int floor) {
+      final int[] nu = adj[u];
+      final int[] nv = adj[v];
+      if ((long) nu.length * 8 < nv.length || (long) nv.length * 8 < nu.length) {
+        final boolean uShorter = nu.length <= nv.length;
+        final int[] shortRow = uShorter ? nu : nv;
+        final int[] longRow = uShorter ? nv : nu;
+        final int shortNode = uShorter ? u : v;
+        final int longNode = uShorter ? v : u;
+        for (int is = 0; is < shortRow.length; is++) {
+          final int il = Arrays.binarySearch(longRow, shortRow[is]);
+          if (il >= 0)
+            lowerSupportOfTriangle(arcEdge[offsets[shortNode] + is], arcEdge[offsets[longNode] + il], floor);
+        }
+        return;
+      }
+      int iu = 0;
+      int iv = 0;
+      while (iu < nu.length && iv < nv.length) {
+        final int a = nu[iu];
+        final int b = nv[iv];
+        if (a < b)
+          iu++;
+        else if (a > b)
+          iv++;
+        else {
+          lowerSupportOfTriangle(arcEdge[offsets[u] + iu], arcEdge[offsets[v] + iv], floor);
+          iu++;
+          iv++;
+        }
+      }
+    }
+
+    private void lowerSupportOfTriangle(final int first, final int second, final int floor) {
+      if (!removed[first] && !removed[second]) {
+        lowerSupport(first, floor);
+        lowerSupport(second, floor);
+      }
+    }
+
+    /**
+     * Lowers the support of edge {@code f} by one when it is above {@code floor}, moving it to the front of its bin and the bin's
+     * start past it, so the bins stay ordered without a re-sort.
+     */
+    private void lowerSupport(final int f, final int floor) {
+      final int s = support[f];
+      if (s <= floor)
+        return;
+      final int first = binStart[s];
+      final int g = order[first];
+      if (g != f) {
+        final int pf = position[f];
+        order[first] = f;
+        position[f] = first;
+        order[pf] = g;
+        position[g] = pf;
+      }
+      binStart[s]++;
+      support[f] = s - 1;
+    }
   }
 }
