@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -119,6 +120,40 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
     database.command("sql", "REBUILD INDEX `U[v]`");
     assertThat(ids(seek, Map.of("p", List.of(1.5, 2.0)))).containsExactly(0);
     assertThat(ids(seek, Map.of("p", List.of(1.5, 2)))).containsExactly(0);
+    assertThat(checkDatabaseErrors()).isZero();
+  }
+
+  /**
+   * A composite key: the old entry of a list next to a DECIMAL. The index compares 1.0 and 1.00 as one DECIMAL, so the holder of
+   * an old entry holds the key whatever scale the lookup gives it (PR #12166 review).
+   */
+  @Test
+  void legacyHolderOfACompositeKeyMatchesUnderTheIndexComparator() {
+    database.command("sql", "CREATE VERTEX TYPE C");
+    database.command("sql", "CREATE PROPERTY C.d DECIMAL");
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:C) REQUIRE (n.v, n.d) IS UNIQUE");
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newVertex("C").set("id", 0).set("v", List.of(1.5, 2.0))
+        .set("d", new BigDecimal("1.0")).save().getIdentity());
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("C[v,d]");
+    database.transaction(() -> {
+      for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+        if (bucketIndex.getAssociatedBucketId() == rid[0].getBucketId()) {
+          bucketIndex.remove(new Object[] { List.of(1.5, 2.0), new BigDecimal("1.0") }, rid[0]);
+          bucketIndex.put(new Object[] { "[1.5, 2.0]", new BigDecimal("1.0") }, new RID[] { rid[0] });
+        }
+    });
+
+    final List<RID> found = new ArrayList<>();
+    try (final IndexCursor cursor = typeIndex.get(new Object[] { List.of(1.5, 2.0), new BigDecimal("1.00") })) {
+      while (cursor.hasNext())
+        found.add(cursor.next().getIdentity());
+    }
+    assertThat(found).containsExactly(rid[0]);
+
+    assertThatThrownBy(() -> database.transaction(() -> database.newVertex("C").set("id", 1).set("v", List.of(1.5, 2.0))
+        .set("d", new BigDecimal("1.00")).save())).isInstanceOf(DuplicatedKeyException.class);
     assertThat(checkDatabaseErrors()).isZero();
   }
 

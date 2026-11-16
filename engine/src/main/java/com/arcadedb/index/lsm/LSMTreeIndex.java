@@ -763,12 +763,36 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     getDatabase().getIndexer().forEachIndexKey(this, document, keys -> {
       if (!holds[0])
         try {
-          holds[0] = Arrays.equals(convertKeys(keys), convertedKeys);
+          holds[0] = sameKey(convertKeys(keys), convertedKeys);
         } catch (final IllegalArgumentException e) {
           // a value the key type cannot read holds no key here
         }
     });
     return holds[0];
+  }
+
+  /**
+   * Whether two converted keys are one key under the index's comparator, which reads 1.0 and 1.00 as one DECIMAL where
+   * {@code equals} does not: a null component equals only a null one.
+   */
+  private boolean sameKey(final Object[] keys1, final Object[] keys2) {
+    if (keys1 == null || keys2 == null || keys1.length != keys2.length)
+      return false;
+    final byte[] keyTypes = mutable.binaryKeyTypes;
+    for (int i = 0; i < keys1.length; i++) {
+      if (keys1[i] == null || keys2[i] == null) {
+        if (keys1[i] != keys2[i])
+          return false;
+      } else
+        try {
+          if (mutable.comparator.compare(keys1[i], keyTypes[i], keys2[i], keyTypes[i]) != 0)
+            return false;
+        } catch (final RuntimeException e) {
+          // values the comparator cannot set side by side are not one key
+          return false;
+        }
+    }
+    return true;
   }
 
   /**
@@ -802,7 +826,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     getDatabase().getIndexer().forEachIndexKey(this, document, keys -> {
       if (legacyKeys[0] == null)
         try {
-          if (Arrays.equals(convertKeys(keys), convertedKeys))
+          if (sameKey(convertKeys(keys), convertedKeys))
             legacyKeys[0] = mutable.legacyListKeys(keys, convertedKeys);
         } catch (final IllegalArgumentException e) {
           // a value the key type cannot read holds no key here
@@ -938,8 +962,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     // #12160: the entry an older build wrote for this record's list goes too. Looked up first, so that a list no old entry stands
     // for leaves no removal in the index
     final Object[] legacyKeys = rid != null ? mutable.legacyListKeys(keys, convertedKeys) : null;
-    if (legacyKeys != null && legacyEntryHolders(legacyKeys).contains(rid.getIdentity()))
+    if (legacyKeys != null && holdsLegacyEntry(legacyKeys, rid.getIdentity()))
       removeConverted(legacyKeys, rid);
+  }
+
+  /** Whether an entry under {@code legacyKeys} belongs to {@code holder}: stops at the first match, with nothing collected. */
+  private boolean holdsLegacyEntry(final Object[] legacyKeys, final RID holder) {
+    try (final IndexCursor cursor = getConverted(legacyKeys, -1)) {
+      while (cursor.hasNext())
+        if (holder.equals(cursor.next().getIdentity()))
+          return true;
+    }
+    return false;
   }
 
   private List<RID> legacyEntryHolders(final Object[] legacyKeys) {
