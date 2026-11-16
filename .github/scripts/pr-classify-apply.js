@@ -392,3 +392,4 @@ module.exports = apply;
 module.exports.parseDecision = parseDecision;
 module.exports.sanitizeReview = sanitizeReview;
 module.exports.markerLine = markerLine;
+module.exports.isArea = isArea;
