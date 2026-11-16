@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -94,11 +95,25 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
 
-    // Compute in-degree for each node (votes received)
+    // The in-neighbours of every node, each listed once per edge in ascending order: summing a node's votes over them
+    // adds the same terms in the same order as a pass over the out-lists of every node, so a score recomputed for one
+    // node is the score a full recomputation would give it, to the last bit.
+    long entries = 0;
     final int[] inDegree = new int[n];
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+      entries += adjOut[i].length;
       for (final int j : adjOut[i])
         inDegree[j]++;
+    }
+    graph.memory().reserve(saturatingSum(saturatingProduct(n, MATRIX_ROW_OVERHEAD_BYTES), saturatingProduct(entries, INT_BYTES)),
+        "the incoming adjacency list", n + " nodes, " + entries + " edge entries");
+    final int[][] adjIn = new int[n][];
+    for (int i = 0; i < n; i++)
+      adjIn[i] = new int[inDegree[i]];
+    final int[] fill = new int[n];
+    for (int u = 0; u < n; u++)
+      for (final int v : adjOut[u])
+        adjIn[v][fill[v]++] = u;
 
     // voteScore[i] = initial votes = in-degree[i]
     final double[] voteScore    = new double[n];
@@ -113,17 +128,29 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     final int[] electedOrder = new int[limit];
     int electedCount = 0;
 
+    // The next node to elect is the one of highest score, the lowest index among equals, which is the node a scan of
+    // every node picked: it comes from a heap of (score, index) entries with lazy deletion, one entry per score change
+    // (issue #12170).
+    graph.memory().reserve(saturatingProduct(n, DOUBLE_BYTES + 2 * INT_BYTES), "the election heap", n + " nodes");
+    final ScoreMaxHeap heap = new ScoreMaxHeap(n);
+    for (int i = 0; i < n; i++)
+      heap.push(voteScore[i], i);
+    // The round in which a node's score was last recomputed, so a node reached twice in one round is summed once
+    final int[] recomputedIn = new int[n];
+    Arrays.fill(recomputedIn, -1);
+
     while (electedCount < limit) {
-      // One election per round, each a full scan of the nodes plus a two-hop walk from the winner: O(topK x
-      // (V + E)), and topK defaults to "every node" (issue #6302).
-      guard.check();
+      guard.checkPeriodically(electedCount);
       // Find node with highest vote score among non-elected
       int best = -1;
       double bestScore = -1.0;
-      for (int i = 0; i < n; i++) {
-        if (!elected[i] && voteScore[i] > bestScore) {
-          bestScore = voteScore[i];
-          best = i;
+      while (heap.size() > 0) {
+        final double score = heap.topScore();
+        final int node = heap.pop();
+        if (!elected[node] && score == voteScore[node]) {
+          best = node;
+          bestScore = score;
+          break;
         }
       }
 
@@ -138,45 +165,20 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       if (deg > 0) {
         final double reduction = 1.0 / deg;
         for (final int neighbor : adjOut[best]) {
-          if (!elected[neighbor]) {
+          if (!elected[neighbor])
             votingAbility[neighbor] = Math.max(0.0, votingAbility[neighbor] - reduction);
-            // Recompute voteScore for neighbor's in-neighbors
-          }
         }
       }
 
-      // Recompute vote scores: for each node, score = sum of votingAbility of its in-neighbors
-      // (only update nodes affected by the change — their out-neighbors of the elected node)
+      // Only two kinds of score changed: those best voted for, since best no longer votes, and those its out-neighbours
+      // vote for, since their voting ability dropped. Each is summed again from its in-neighbours: O(two-hop
+      // neighbourhood) per election instead of a pass over every edge (issue #12170).
+      final int round = electedCount;
       for (final int neighbor : adjOut[best]) {
-        if (!elected[neighbor]) {
-          // neighbor's voteScore changes because votingAbility[neighbor] changed — but
-          // voteScore[v] = sum_{u in inNeighbors(v)} votingAbility[u]
-          // We need to find all nodes v that have neighbor as in-neighbor, i.e., adjOut[neighbor] contains v
-          // Actually voteScore[v] depends on votingAbility of those who vote FOR v.
-          // votingAbility[neighbor] changed → affects voteScore[w] for all w in adjOut[neighbor]
-          for (final int w : adjOut[neighbor]) {
-            if (!elected[w]) {
-              // Recompute from scratch for w
-              double sum = 0.0;
-              // We need in-neighbors of w; use adjIn
-              // Since we only have adjOut, rebuild from scratch for w
-              // This is O(n*E) in worst case; use IN adjacency list instead
-              // Mark for full recompute below
-            }
-          }
-        }
-      }
-
-      // Rebuild all vote scores from scratch using votingAbility (simpler, correct approach)
-      // voteScore[v] = sum_{u: u->v in edges} votingAbility[u]
-      for (int v = 0; v < n; v++)
-        voteScore[v] = 0.0;
-      for (int u = 0; u < n; u++) {
-        if (!elected[u]) {
-          for (final int v : adjOut[u])
-            if (!elected[v])
-              voteScore[v] += votingAbility[u];
-        }
+        recomputeScore(neighbor, round, adjIn, elected, votingAbility, voteScore, recomputedIn, heap);
+        if (!elected[neighbor])
+          for (final int w : adjOut[neighbor])
+            recomputeScore(w, round, adjIn, elected, votingAbility, voteScore, recomputedIn, heap);
       }
     }
 
@@ -188,5 +190,91 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       results.add(r);
     }
     return results.stream();
+  }
+
+  /**
+   * Sums the vote score of a non-elected {@code node} again from its in-neighbours that are not elected, as the full
+   * recomputation did, and queues the new score when it changed.
+   */
+  private static void recomputeScore(final int node, final int round, final int[][] adjIn, final boolean[] elected,
+      final double[] votingAbility, final double[] voteScore, final int[] recomputedIn, final ScoreMaxHeap heap) {
+    if (elected[node] || recomputedIn[node] == round)
+      return;
+    recomputedIn[node] = round;
+    double score = 0.0;
+    for (final int u : adjIn[node])
+      if (!elected[u])
+        score += votingAbility[u];
+    if (score != voteScore[node]) {
+      voteScore[node] = score;
+      heap.push(score, node);
+    }
+  }
+
+  /** A binary heap of (score, node) entries, highest score first and the lowest node among equal scores, unboxed. */
+  private static final class ScoreMaxHeap {
+    private double[] scores;
+    private int[]    nodes;
+    private int      size;
+
+    ScoreMaxHeap(final int capacity) {
+      scores = new double[Math.max(16, capacity)];
+      nodes = new int[scores.length];
+    }
+
+    int size() {
+      return size;
+    }
+
+    double topScore() {
+      return scores[0];
+    }
+
+    void push(final double score, final int node) {
+      if (size == scores.length) {
+        scores = Arrays.copyOf(scores, size * 2);
+        nodes = Arrays.copyOf(nodes, size * 2);
+      }
+      int i = size++;
+      while (i > 0) {
+        final int parent = (i - 1) >>> 1;
+        if (!before(score, node, scores[parent], nodes[parent]))
+          break;
+        scores[i] = scores[parent];
+        nodes[i] = nodes[parent];
+        i = parent;
+      }
+      scores[i] = score;
+      nodes[i] = node;
+    }
+
+    /** Removes the first entry and returns its node. */
+    int pop() {
+      final int top = nodes[0];
+      final double lastScore = scores[--size];
+      final int lastNode = nodes[size];
+      int i = 0;
+      while (true) {
+        int child = 2 * i + 1;
+        if (child >= size)
+          break;
+        if (child + 1 < size && before(scores[child + 1], nodes[child + 1], scores[child], nodes[child]))
+          child++;
+        if (!before(scores[child], nodes[child], lastScore, lastNode))
+          break;
+        scores[i] = scores[child];
+        nodes[i] = nodes[child];
+        i = child;
+      }
+      if (size > 0) {
+        scores[i] = lastScore;
+        nodes[i] = lastNode;
+      }
+      return top;
+    }
+
+    private static boolean before(final double scoreA, final int nodeA, final double scoreB, final int nodeB) {
+      return scoreA > scoreB || (scoreA == scoreB && nodeA < nodeB);
+    }
   }
 }
