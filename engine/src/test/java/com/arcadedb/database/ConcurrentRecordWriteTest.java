@@ -2473,6 +2473,76 @@ public class ConcurrentRecordWriteTest {
     }
 
     /**
+     * A MERGE pattern's property map is the predicate that selected the record: an ON MATCH SET must not write a record that
+     * stopped matching it. The statement is refused with the retryable conflict, so a retry matches (or creates) what the
+     * pattern selects now.
+     */
+    @Test
+    void cypherMergeOnMatchSetWhosePatternStoppedMatchingInsideTheStatementWritesNothing() {
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MERGE (v:V {n: 0}) ON MATCH SET v.claimed = true").close());
+
+      assertThat(committed).as("the matched record no longer matches the MERGE pattern").isFalse();
+      assertThat(rid.asVertex().has("claimed")).isFalse();
+      assertThat(readN()).isEqualTo(5);
+    }
+
+    /**
+     * The WHERE selects the row on one alias and the SET writes another: the record the WHERE read changed after the
+     * match, so the row is no longer selected and the write to the other record must not land.
+     */
+    @Test
+    void cypherSetOnAnotherAliasWhoseWhereStoppedMatchingInsideTheStatementWritesNothing() {
+      final RID other = createOtherVertex();
+
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MATCH (v:V), (w:W) WHERE v.n = 0 SET w.claimed = true").close());
+
+      assertThat(committed).as("the row's guard record no longer matches the WHERE").isFalse();
+      assertThat(other.asVertex().has("claimed")).isFalse();
+      assertThat(readN()).isEqualTo(5);
+    }
+
+    /**
+     * The same with the guard in a MERGE pattern: the ON MATCH SET writes a record the MERGE did not select by content.
+     */
+    @Test
+    void cypherMergeOnMatchSetOnAnotherAliasWhosePatternStoppedMatchingInsideTheStatementWritesNothing() {
+      final RID other = createOtherVertex();
+
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MATCH (w:W) MERGE (v:V {n: 0}) ON MATCH SET w.claimed = true").close());
+
+      assertThat(committed).as("the matched record no longer matches the MERGE pattern").isFalse();
+      assertThat(other.asVertex().has("claimed")).isFalse();
+      assertThat(readN()).isEqualTo(5);
+    }
+
+    /**
+     * A guard record changed by a concurrent commit that still matches the MERGE pattern keeps the ON MATCH SET going.
+     */
+    @Test
+    void cypherMergeOnMatchSetOnAnotherAliasWhosePatternStillMatchesCommits() {
+      final RID other = createOtherVertex();
+      database.transaction(() -> rid.asVertex().modify().set("tag", "x").save());
+
+      final boolean committed = runWithConcurrentCommitAfterFirstRead(
+          () -> database.command("cypher", "MATCH (w:W) MERGE (v:V {tag: 'x'}) ON MATCH SET w.claimed = true").close());
+
+      assertThat(committed).isTrue();
+      assertThat(other.asVertex().getBoolean("claimed")).isTrue();
+      assertThat(readN()).isEqualTo(5);
+    }
+
+    /** A vertex of another type than V, whose reads do not trigger the concurrent commit. */
+    private RID createOtherVertex() {
+      database.getSchema().getOrCreateVertexType("W");
+      final AtomicReference<RID> created = new AtomicReference<>();
+      database.transaction(() -> created.set(database.newVertex("W").save().getIdentity()));
+      return created.get();
+    }
+
+    /**
      * An openCypher REMOVE writes no value computed from what the MATCH read, so a commit landing in between leaves
      * nothing to lose: it commits, on top of the concurrent write.
      */

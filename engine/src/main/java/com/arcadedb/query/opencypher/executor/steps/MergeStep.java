@@ -23,10 +23,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -107,7 +109,7 @@ public class MergeStep extends AbstractExecutionStep {
     super(context);
     this.mergeClause = mergeClause;
     this.evaluator = new ExpressionEvaluator(functionFactory);
-    this.setApplier = SetClauseApplier.forMergeAction(context, this.evaluator);
+    this.setApplier = SetClauseApplier.forMergeAction(context, this.evaluator, this::stillMatchesPattern);
   }
 
   @Override
@@ -286,6 +288,9 @@ public class MergeStep extends AbstractExecutionStep {
           ((ResultInternal) r).removeProperty(WAS_CREATED);
           ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
         }
+        // #11808: the records a path pattern matched, still matching it; a single node is checked as it is matched
+        if (!wasCreated && !pathPattern.isSingleNode())
+          refuseIfNoLongerMatched(r);
         // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
         if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
           applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
@@ -374,9 +379,68 @@ public class MergeStep extends AbstractExecutionStep {
         r.setProperty(variable, v);
       r.setProperty(WAS_CREATED, false);
       bindSingleNodePath(r, pathPattern, v);
+      // #11808: named or not, the node the pattern matched still matches it
+      if (v instanceof ImmutableDocument read)
+        refuseIfChanged(r, read, pathPattern.getFirstNode(), null);
       results.add(r);
     }
     return results;
+  }
+
+  /**
+   * Refuses, with the retryable conflict, a row whose records a concurrent commit changed after this MERGE matched them so
+   * that they no longer match its path pattern (issue #11808). The ON MATCH SET, an absorbed SET, or any later write of the
+   * statement would otherwise act on a match the pattern no longer selects, a compare-and-set two callers could both win;
+   * the retry matches, or creates, what the pattern selects now. A record changed in a way the pattern still matches stays
+   * matched. Only the elements the pattern names can be checked: an anonymous node or relationship of a path is not bound in
+   * the row.
+   */
+  private void refuseIfNoLongerMatched(final Result row) {
+    final PathPattern pathPattern = mergeClause.getPathPattern();
+    for (final NodePattern node : pathPattern.getNodes())
+      if (node.getVariable() != null && row.getProperty(node.getVariable()) instanceof ImmutableDocument read)
+        refuseIfChanged(row, read, node, null);
+    for (final RelationshipPattern rel : pathPattern.getRelationships())
+      if (rel.getVariable() != null && row.getProperty(rel.getVariable()) instanceof ImmutableDocument read)
+        refuseIfChanged(row, read, null, rel);
+  }
+
+  private void refuseIfChanged(final Result row, final ImmutableDocument read, final NodePattern node,
+      final RelationshipPattern rel) {
+    final ImmutableDocument latest = read.latestIfChangedSinceRead();
+    if (latest != null && (latest.getBuffer() == null || !matchesElement(latest, row, node, rel)))
+      throw new ConcurrentModificationException("Record " + read.getIdentity() + " was modified by a concurrent transaction "
+          + "after the MERGE matched it and no longer matches the pattern. Please retry the operation");
+  }
+
+  /**
+   * Whether {@code latest}, the newest content of a record {@code row} binds, still matches the element of the path pattern
+   * that binds it (issue #11808); true for a record the pattern does not name. Handed to the SET appliers, which check a
+   * write target that {@code modify()} reloaded over a concurrent commit.
+   */
+  private boolean stillMatchesPattern(final Result row, final Document latest) {
+    final RID rid = latest.getIdentity();
+    if (rid == null)
+      return true;
+    final PathPattern pathPattern = mergeClause.getPathPattern();
+    for (final NodePattern node : pathPattern.getNodes())
+      if (bindsRecord(row, node.getVariable(), rid) && !matchesElement(latest, row, node, null))
+        return false;
+    for (final RelationshipPattern rel : pathPattern.getRelationships())
+      if (bindsRecord(row, rel.getVariable(), rid) && !matchesElement(latest, row, null, rel))
+        return false;
+    return true;
+  }
+
+  private static boolean bindsRecord(final Result row, final String variable, final RID rid) {
+    return variable != null && row.getProperty(variable) instanceof Identifiable bound && rid.equals(bound.getIdentity());
+  }
+
+  /** Whether {@code record} matches {@code node}, or else the properties of {@code rel} (its type cannot change). */
+  private boolean matchesElement(final Document record, final Result row, final NodePattern node, final RelationshipPattern rel) {
+    if (node != null)
+      return !(record instanceof Vertex vertex) || matchesNodePattern(vertex, node, row);
+    return !rel.hasProperties() || matchesProperties(record, evaluateMatchProperties(rel.getProperties(), row));
   }
 
   /**
@@ -1455,7 +1519,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (mergeClause.hasOnCreateSet() && !isOnCreateSetFoldable(variable))
       return false;
     absorbedSet = setClause;
-    absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator);
+    absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator, this::stillMatchesPattern);
     return true;
   }
 

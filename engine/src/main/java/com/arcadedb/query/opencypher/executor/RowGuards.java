@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -25,6 +27,7 @@ import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 
 /**
  * Whether the rows a write clause receives were selected by a predicate on record content (issue #11808): a
@@ -55,6 +58,21 @@ public final class RowGuards {
    */
   public static boolean guardsRows(final CommandContext context) {
     return Boolean.TRUE.equals(context.getVariable(GUARDED_ROWS));
+  }
+
+  /**
+   * Refuses {@code row} with the retryable conflict when the statement selects its rows with a predicate and a concurrent
+   * commit changed a record of the row after the statement read it. The predicate may have read any record of the row, not
+   * only the one a write targets ({@code MATCH (a), (b) WHERE a.claimed IS NULL SET b.owner = 1}), and a record the write does
+   * not touch is checked by no save: without this the write would land on a row the predicate no longer selects.
+   */
+  public static void refuseIfRowChanged(final CommandContext context, final Result row) {
+    if (!guardsRows(context))
+      return;
+    for (final String name : row.getPropertyNames())
+      if (row.getProperty(name) instanceof ImmutableDocument record && record.latestIfChangedSinceRead() != null)
+        throw new ConcurrentModificationException("Record " + record.getIdentity() + " was modified by a concurrent "
+            + "transaction after the statement matched it. Please retry the operation");
   }
 
   static boolean hasRowPredicate(final CypherStatement statement) {
