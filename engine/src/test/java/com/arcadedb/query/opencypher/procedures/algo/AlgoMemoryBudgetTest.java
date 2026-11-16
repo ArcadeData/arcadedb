@@ -679,7 +679,8 @@ class AlgoMemoryBudgetTest {
    * <p>
    * {@code algo.triangleCount} was the fifth, and no longer builds one at all: since issue #10203 it intersects
    * sorted neighbour sets, so its working memory is the adjacency it already prices. {@code algo.hierarchicalClustering}
-   * followed with issue #12171: its working set is linear in the edges, and it prices that instead.
+   * (issue #12171), {@code algo.knn} (issue #12172), {@code algo.kTruss} and {@code algo.clique} (issue #12173) followed,
+   * and price the linear structures they build instead: no {@code algo.*} procedure builds a bit matrix any more.
    */
   @Nested
   class BitsetMatrixBudget {
@@ -726,24 +727,15 @@ class AlgoMemoryBudgetTest {
       }
     }
 
-    /** The procedures that still build one, each with a call that reaches its bit matrix. */
+    /**
+     * The procedures that built one until issues #12171 / #12172 / #12173 and now work from sorted neighbour sets or edge
+     * arrays: priced like the rest, and still served under the default budget and with the budget disabled.
+     */
     private static final String[][] CALLS = {
         { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
         { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
-        { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" } };
-
-    @Test
-    void everyBitsetMatrixIsRefusedWhenItDoesNotFitTheBudget() {
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
-          BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
-
-      for (final String[] call : CALLS)
-        assertThatThrownBy(() -> drain(call[1]))
-            .as("%s builds a nodeCount x nodeCount bit matrix and must price it", call[0])
-            .hasStackTraceContaining(call[0] + "(): the neighbour bitsets")
-            .hasStackTraceContaining("(4 x 4 nodes)")
-            .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
-    }
+        { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
+        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
 
     @Test
     void triangleCountNeedsNoMatrixAnyMore() {
@@ -772,21 +764,20 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void kTrussPricesItsSecondMatrixSeparately() {
-      // computeFullTrussDecomposition builds a second bit matrix while the first is still alive, so the peak is
-      // twice the shape - which is what a running total is for.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+    void kTrussPricesItsDecomposition() {
+      // 600 bytes admit the graph (384) and its adjacency (168), and refuse the edge arrays of the decomposition on top: linear in
+      // the edges since issue #12173, where it used to be two nodeCount x nodeCount bit matrices
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 600L);
 
       assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD node RETURN node"))
-          .hasStackTraceContaining("the neighbour bitsets of the truss decomposition")
-          .hasStackTraceContaining("(4 x 4 nodes)");
+          .hasStackTraceContaining("the truss decomposition would need 205 bytes (4 nodes, 5 edges)");
     }
 
     @Test
     void cliquePricesItsSearchStackAtThePeakDepth() {
-      // The Bron-Kerbosch frames are five bit sets each and the stack is as deep as the largest clique reached,
-      // so at its peak the stack is a second nodeCount x nodeCount structure.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+      // The live frames hold sorted candidate and excluded sets bounded by the starting node's neighbourhood (issue #12173), priced
+      // at their peak: 700 bytes admit the graph and its adjacency (552), the degeneracy order and ranks (96) and refuse the first frame
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
 
       assertThatThrownBy(() -> drain("CALL algo.clique() YIELD clique RETURN clique"))
           .hasStackTraceContaining("the clique search stack")
