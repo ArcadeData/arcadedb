@@ -157,9 +157,12 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     final int n = neighbors.length;
     final double[] nodeDegree = new double[n];
     double totalWeight = 0.0;
+    int work = 0; // adjacency entries walked: a vertex of high degree is many of them, so the checkpoint counts these
     for (int i = 0; i < n; i++) {
-      for (final double w : weights[i])
+      for (final double w : weights[i]) {
+        guard.checkPeriodically(work++);
         nodeDegree[i] += w;
+      }
       totalWeight += nodeDegree[i];
     }
     totalWeight /= 2.0; // every edge is listed from both of its ends
@@ -178,7 +181,6 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     final double[] candidateWeight = new double[n]; // all zero between two nodes
     final boolean[] touched = new boolean[n];
     final int[] candidates = new int[n];
-    int work = 0; // adjacency entries walked: a vertex of high degree is many of them, so the checkpoint counts these
 
     for (int iter = 0; iter < maxIterations; iter++) {
       // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the graph settles, so
@@ -206,6 +208,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         int bestCommunity = currentCommunity;
         double bestGain = 0.0;
         for (int k = 0; k < candidateCount; k++) {
+          guard.checkPeriodically(++work);
           final int c = candidates[k];
           if (c != currentCommunity) {
             final double gain = candidateWeight[c] - nodeDegree[i] * communityDegree[c] / (2.0 * totalWeight);

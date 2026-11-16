@@ -163,13 +163,14 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       ability[i] = 1.0;
     }
     final ScoreHeap heap = new ScoreHeap(n);
-    heap.rebuild(score, elected);
+    heap.rebuild(score, elected, guard);
 
     final int[] affectedStamp = new int[n];
     final int[] affected = cursor; // reused: the cursors are spent
     final int[] electedOrder = new int[limit];
     int electedCount = 0;
     int work = 0;
+    guard.check(); // an empty heap pops nothing, and the call must still observe a pending abort
 
     while (electedCount < limit) {
       // The winner: the top entry whose score is still current. A node whose score fell to zero is never pushed, so an
@@ -207,6 +208,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
       if (degree > 0) {
         final double reduction = 1.0 / degree;
         for (final int neighbor : adjOut[best]) {
+          guard.checkPeriodically(work++);
           if (elected[neighbor])
             continue;
           final double lowered = Math.max(0.0, ability[neighbor] - reduction);
@@ -236,7 +238,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
           score[w] = sum;
           if (sum > 0.0) {
             if (heap.isFull())
-              heap.rebuild(score, elected); // w included: its score is already the new one
+              heap.rebuild(score, elected, guard); // w included: its score is already the new one
             else
               heap.push(sum, w);
           }
@@ -280,15 +282,19 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     }
 
     /** Replaces the content with one entry per node not elected whose score is positive, heapified bottom-up in O(n). */
-    void rebuild(final double[] score, final boolean[] elected) {
+    void rebuild(final double[] score, final boolean[] elected, final WorkGuard guard) {
       size = 0;
-      for (int i = 0; i < score.length; i++)
+      for (int i = 0; i < score.length; i++) {
+        guard.checkPeriodically(i);
         if (!elected[i] && score[i] > 0.0) {
           scores[size] = score[i];
           nodes[size++] = i;
         }
-      for (int i = (size >>> 1) - 1; i >= 0; i--)
+      }
+      for (int i = (size >>> 1) - 1; i >= 0; i--) {
+        guard.checkPeriodically(i);
         siftDown(i, scores[i], nodes[i]);
+      }
     }
 
     private static boolean before(final double scoreA, final int nodeA, final double scoreB, final int nodeB) {
