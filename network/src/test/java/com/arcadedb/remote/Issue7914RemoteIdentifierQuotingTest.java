@@ -313,7 +313,10 @@ class Issue7914RemoteIdentifierQuotingTest {
         // the mocked command answers null; the statement is already captured
       }
 
-      final InsertStatement statement = (InsertStatement) parse(commandSent(db));
+      // THE CONTENT IS THE :content PARAMETER SINCE #12186, SO THE INSERT GOES THROUGH THE command() OVERLOAD WITH PARAMETERS
+      final ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+      verify(db, atLeastOnce()).command(anyString(), captor.capture(), any(Map.class));
+      final InsertStatement statement = (InsertStatement) parse(captor.getAllValues().getFirst());
       assertThat(statement.targetType.getStringValue()).isEqualTo(hostile);
       assertThat(statement.targetBucketName.getStringValue()).isEqualTo(hostile + "bucket");
     }
