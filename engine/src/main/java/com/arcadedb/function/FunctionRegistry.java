@@ -169,10 +169,20 @@ public final class FunctionRegistry {
    */
   public static String normalizeApocName(final String name) {
     final String lowerName = name.toLowerCase(Locale.ROOT);
-    if (lowerName.startsWith(APOC_PREFIX)) {
+    if (hasApocPrefix(lowerName)) {
       return lowerName.substring(APOC_PREFIX.length());
     }
     return lowerName;
+  }
+
+  /**
+   * Whether {@code name} starts with the "apoc." prefix (any case) that {@link #normalizeApocName} strips. The SQL parser asks
+   * it to read {@code apoc.text.indexOf(...)} as a function call and not as a property chain (issue #12086).
+   *
+   * @param name the function name, or a dotted prefix of it
+   */
+  public static boolean hasApocPrefix(final String name) {
+    return name.regionMatches(true, 0, APOC_PREFIX, 0, APOC_PREFIX.length());
   }
 
   /**
