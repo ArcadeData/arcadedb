@@ -20,6 +20,7 @@ package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -71,7 +72,7 @@ class PolyglotFunctionTest extends TestHelper {
   void notFound()
     throws Exception {
     registerFunctions();
-    assertThatThrownBy(() -> database.getSchema().getFunction("math", "NOT_found").execute(3, 5)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.getSchema().getFunction("math", "NOT_found").execute(3, 5)).isInstanceOf(UnknownFunctionException.class);
   }
 
   @Test

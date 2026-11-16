@@ -90,7 +90,7 @@ class ArcadeStateMachineTest {
     buf.putInt(segmentSize);
     buf.putLong(WALFile.MAGIC_NUMBER);
 
-    final WALFile.WALTransaction tx = ArcadeStateMachine.deserializeWalTransaction(buf.array());
+    final WALFile.WALTransaction tx = CommittedEntryDecoding.deserializeWalTransaction(buf.array());
 
     assertThat(tx.txId).isEqualTo(42L);
     assertThat(tx.timestamp).isEqualTo(1000L);
@@ -139,7 +139,7 @@ class ArcadeStateMachineTest {
     buf.putInt(segmentSize);
     buf.putLong(WALFile.MAGIC_NUMBER);
 
-    final WALFile.WALTransaction tx = ArcadeStateMachine.deserializeWalTransaction(buf.array());
+    final WALFile.WALTransaction tx = CommittedEntryDecoding.deserializeWalTransaction(buf.array());
 
     assertThat(tx.txId).isEqualTo(99L);
     assertThat(tx.timestamp).isEqualTo(2000L);
@@ -232,7 +232,7 @@ class ArcadeStateMachineTest {
     buf.putInt(segmentSize);
     buf.putLong(WALFile.MAGIC_NUMBER);
 
-    final WALFile.WALTransaction tx = ArcadeStateMachine.deserializeWalTransaction(buf.array());
+    final WALFile.WALTransaction tx = CommittedEntryDecoding.deserializeWalTransaction(buf.array());
 
     assertThat(tx.txId).isEqualTo(1L);
     assertThat(tx.timestamp).isEqualTo(500L);

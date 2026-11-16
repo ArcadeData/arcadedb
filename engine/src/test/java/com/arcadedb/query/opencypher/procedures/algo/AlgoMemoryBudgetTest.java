@@ -255,14 +255,16 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void maxFlowRejectsCapacityMatricesLargerThanTheBudget() {
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+    void maxFlowRejectsAResidualNetworkLargerThanTheBudget() {
+      // Since #11798 the residual network is sparse: 2 arcs per relationship (32 bytes each) and 6 ints per node, priced
+      // after the graph (384), its adjacency (144) and the unit capacities (160) - 688 bytes the budget admits.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 800L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
           CALL algo.maxFlow(a, c) YIELD maxFlow \
           RETURN maxFlow"""))
-          .hasStackTraceContaining("the capacity and residual matrices would need 512 bytes (2 matrices of 4 x 4 nodes)")
+          .hasStackTraceContaining("the residual network would need 376 bytes (4 nodes, 8 residual arcs)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
     }
 
@@ -676,8 +678,9 @@ class AlgoMemoryBudgetTest {
    * the {@code O(n²/64)} build ahead of them did not.
    * <p>
    * {@code algo.triangleCount} was the fifth, and no longer builds one at all: since issue #10203 it intersects
-   * sorted neighbour sets, so its working memory is the adjacency it already prices. {@code algo.knn} (issue #12172),
-   * {@code algo.kTruss} and {@code algo.clique} (issue #12173) followed, and price the linear structures they build instead.
+   * sorted neighbour sets, so its working memory is the adjacency it already prices. {@code algo.hierarchicalClustering}
+   * (issue #12171), {@code algo.knn} (issue #12172), {@code algo.kTruss} and {@code algo.clique} (issue #12173) followed,
+   * and price the linear structures they build instead: no {@code algo.*} procedure builds a bit matrix any more.
    */
   @Nested
   class BitsetMatrixBudget {
@@ -724,32 +727,15 @@ class AlgoMemoryBudgetTest {
       }
     }
 
-    /** The procedure that still builds a bit matrix, with a call that reaches it. */
-    private static final String[][] MATRIX_CALLS = {
-        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
-
     /**
-     * The procedures that built one until issue #12172 / #12173 and now work from sorted neighbour sets: priced like the rest, and
-     * still served under the default budget and with the budget disabled.
+     * The procedures that built one until issues #12171 / #12172 / #12173 and now work from sorted neighbour sets or edge
+     * arrays: priced like the rest, and still served under the default budget and with the budget disabled.
      */
     private static final String[][] CALLS = {
         { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
         { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
         { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
-        MATRIX_CALLS[0] };
-
-    @Test
-    void everyBitsetMatrixIsRefusedWhenItDoesNotFitTheBudget() {
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
-          BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
-
-      for (final String[] call : MATRIX_CALLS)
-        assertThatThrownBy(() -> drain(call[1]))
-            .as("%s builds a nodeCount x nodeCount bit matrix and must price it", call[0])
-            .hasStackTraceContaining(call[0] + "(): the neighbour bitsets")
-            .hasStackTraceContaining("(4 x 4 nodes)")
-            .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
-    }
+        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
 
     @Test
     void triangleCountNeedsNoMatrixAnyMore() {
@@ -759,6 +745,22 @@ class AlgoMemoryBudgetTest {
           BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
 
       assertThat(drain("CALL algo.triangleCount() YIELD node RETURN node")).hasSize(4);
+    }
+
+    @Test
+    void hierarchicalClusteringPricesItsEdgeSimilaritiesInsteadOfAMatrix() {
+      // Kruskal over similarities computed once holds a few ints per edge entry and per node, and no bit matrix at all
+      // (issue #12171): the refusal names that working set, sized by the edges
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+          BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
+
+      assertThatThrownBy(() -> drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node"))
+          .hasStackTraceContaining("algo.hierarchicalClustering(): the edge similarities")
+          .hasStackTraceContaining("(4 nodes, 10 edge entries)")
+          .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+      assertThat(drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node")).hasSize(4);
     }
 
     @Test

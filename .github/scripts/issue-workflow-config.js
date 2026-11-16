@@ -47,6 +47,41 @@ const SEVERITY_LEVELS = [
   },
 ];
 
+// The three verdicts of classify-pr.yml's PR triage, created on demand like the severity labels.
+// `verdict` is what the reviewer returns; `name` is the label that carries it.
+const TRIAGE_LEVELS = [
+  {
+    verdict: "lgtm",
+    name: "triage:lgtm",
+    color: "0E8A16",
+    description: "PR triage: nothing blocking, ready for a maintainer",
+  },
+  {
+    verdict: "needs-changes",
+    name: "triage:needs-changes",
+    color: "D93F0B",
+    description: "PR triage: the PR needs changes before it can merge",
+  },
+  {
+    verdict: "unsafe",
+    name: "triage:unsafe",
+    color: "B60205",
+    description: "PR triage: the diff looks malicious or unsafe to run",
+  },
+];
+
+// Whether a PR links the issue it resolves.
+const ISSUE_LINK_LABELS = {
+  has: { name: "has-issue", color: "0075CA", description: "The PR links an issue it resolves" },
+  none: { name: "no-issue", color: "C5DEF5", description: "The PR links no issue" },
+};
+
+// Prefix of the hidden marker that identifies classify-pr's own comment on a PR.
+const PR_MARKER_PREFIX = "<!-- classify-pr";
+
+// Cap on the PR diff text handed to the reviewer.
+const PR_REVIEW_LIMIT = 60000;
+
 // Owned by the sponsor job; the classifier may never apply it.
 const RESERVED_LABEL = "high_priority";
 
@@ -82,6 +117,7 @@ const NON_MODULE_LABELS = [
   "in progress", "do not merge", "waiting for user", "unable to reproduce",
   "workaround-provided", "bolt-compat-regression", "dependencies", "dependency_approved",
   "github_actions", "java", "javascript", "docker", "go", "pre_commit", "python:uv",
+  ...TRIAGE_LEVELS.map((l) => l.name), ISSUE_LINK_LABELS.has.name, ISSUE_LINK_LABELS.none.name,
 ];
 
 // Caps. Two runs a day means anything left over is picked up twelve hours later, so these are
@@ -116,6 +152,10 @@ module.exports = {
   logSafe,
   SEVERITY_LEVELS,
   SEVERITY_BY_NAME,
+  TRIAGE_LEVELS,
+  ISSUE_LINK_LABELS,
+  PR_MARKER_PREFIX,
+  PR_REVIEW_LIMIT,
   severityOf,
   highestSeverity,
   RESERVED_LABEL,
