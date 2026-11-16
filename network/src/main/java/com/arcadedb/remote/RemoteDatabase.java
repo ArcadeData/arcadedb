@@ -1872,24 +1872,55 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     // toMap() hands back a fresh LinkedHashMap nobody else holds, so the row is typed and stripped in place.
     final Map<String, Object> map = result.toMap();
-    if (map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
-      // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
-      // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
-      // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
-      // behavior of the gRPC client, which already routes the value through a typed channel.
-      final Map<String, ColumnTypeHint> propTypes = propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY));
-      // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
-      // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
-      // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
-      // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        final ColumnTypeHint hint = propTypes.get(entry.getKey());
-        final Object value = entry.getValue();
-        if (hint != null && value != null)
-          entry.setValue(convertWithHint(value, hint));
+    // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
+    // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
+    // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
+    // behavior of the gRPC client, which already routes the value through a typed channel.
+    final Map<String, ColumnTypeHint> propTypes = map.containsKey(Property.PROPERTY_TYPES_PROPERTY) ?
+        propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY)) :
+        Collections.emptyMap();
+    // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
+    // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
+    // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
+    // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object value = entry.getValue();
+      if (value == null)
+        continue;
+      // Issue #12184: a column holding a record (Cypher RETURN a, r, b; SQL @this, first(out())) arrives as the record's
+      // JSON with its @cat, and is rebuilt as the record a whole-row record is. Its LINK hint must not touch it: converting
+      // the map to an Identifiable kept the strings that parse as RIDs (@rid, @in, @out) and dropped every property.
+      final Object records = columnRecords(value);
+      if (records != value) {
+        entry.setValue(records);
+        continue;
       }
+      final ColumnTypeHint hint = propTypes.get(entry.getKey());
+      if (hint != null)
+        entry.setValue(convertWithHint(value, hint));
     }
     return new ResultInternal(map);
+  }
+
+  /**
+   * The record a projection column holds, or the list of records, for a column that holds a record's JSON (one carrying
+   * {@code @cat}) or a list of them; any other value is returned as is, the same instance (issue #12184).
+   */
+  private Object columnRecords(final Object value) {
+    if (value instanceof Map<?, ?> map) {
+      final Record record = map2Record(map);
+      return record != null ? record : value;
+    }
+    if (value instanceof List<?> list && !list.isEmpty() && list.getFirst() instanceof Map<?, ?> first
+        && first.containsKey(CAT_PROPERTY)) {
+      final List<Object> converted = new ArrayList<>(list.size());
+      for (final Object item : list) {
+        final Record record = item instanceof Map<?, ?> itemMap ? map2Record(itemMap) : null;
+        converted.add(record != null ? record : item);
+      }
+      return converted;
+    }
+    return value;
   }
 
   /**
@@ -2008,11 +2039,23 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (!result.has(CAT_PROPERTY))
       return null;
 
-    final String cat = result.getString(CAT_PROPERTY);
+    return map2Record(result.toMap());
+  }
+
+  /**
+   * Builds the record a parsed record JSON describes, or returns null when its {@code @cat} names no record category: the
+   * shared step of a whole-row record ({@link #json2Record}) and a record held by a projection column (issue #12184).
+   */
+  @SuppressWarnings("unchecked")
+  private Record map2Record(final Map<?, ?> map) {
+    if (!(map.get(CAT_PROPERTY) instanceof String cat))
+      return null;
+
+    final Map<String, Object> attributes = (Map<String, Object>) map;
     return switch (cat) {
-      case "d" -> new RemoteImmutableDocument(this, result.toMap());
-      case "v" -> new RemoteImmutableVertex(this, result.toMap());
-      case "e" -> new RemoteImmutableEdge(this, result.toMap());
+      case "d" -> new RemoteImmutableDocument(this, attributes);
+      case "v" -> new RemoteImmutableVertex(this, attributes);
+      case "e" -> new RemoteImmutableEdge(this, attributes);
       default -> null; // Or throw an exception for unknown category
     };
   }
