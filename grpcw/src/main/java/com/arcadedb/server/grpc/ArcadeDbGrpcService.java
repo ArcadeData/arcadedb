@@ -6367,23 +6367,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         Object value = doc.get(propertyName);
 
-        if (value != null) {
-
-          if (debug)
-            LogManager.instance()
-                .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
-                    , summarizeJava(value),
-                    value.getClass());
-
-          GrpcValue gv = toGrpcValue(value);
-
-          if (debug)
-            LogManager.instance()
-                .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
-                    summarizeGrpc(gv));
-
-          builder.putProperties(propertyName, gv);
+        // A property stored as null is still a property of the record: it is sent as an unset value, as
+        // convertResultToGrpcRecord sends a null projection, so the client's has() and getPropertyNames() see it as the
+        // embedded API and the HTTP serializer ({"key": null}) do (issue #12197)
+        if (value == null) {
+          builder.putProperties(propertyName, GrpcValue.getDefaultInstance());
+          continue;
         }
+
+        if (debug)
+          LogManager.instance()
+              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
+                  , summarizeJava(value),
+                  value.getClass());
+
+        GrpcValue gv = toGrpcValue(value);
+
+        if (debug)
+          LogManager.instance()
+              .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
+                  summarizeGrpc(gv));
+
+        builder.putProperties(propertyName, gv);
       }
 
       // If this is an Edge, include @out / @in for convenience (string rid or link)
