@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * lag-monitor tick aborted before the remaining followers were classified - exactly while membership churned.
  * <p>
  * Drives the exporter against a mocked {@link RaftHAServer} that answers with one degraded and one complete
- * follower entry, the shape {@link RaftHAServer#degradedFollowerStates} produces.
+ * follower entry, the shape {@link ReplicationStatistics#degradedFollowerStates} produces.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -123,20 +123,20 @@ class Issue7041DegradedFollowerStateTest {
   @Test
   void followerStateIndexReadsAbsentKeysAsUnknown() {
     final Map<String, Object> degraded = degradedState(DEGRADED, 5L);
-    assertThat(RaftHAServer.hasFollowerStateIndex(degraded, "matchIndex")).isFalse();
-    assertThat(RaftHAServer.followerStateIndex(degraded, "matchIndex")).isEqualTo(-1L);
-    assertThat(RaftHAServer.followerStateIndex(degraded, "lastRpcElapsedMs")).isEqualTo(5L);
+    assertThat(ReplicationStatistics.hasFollowerStateIndex(degraded, "matchIndex")).isFalse();
+    assertThat(ReplicationStatistics.followerStateIndex(degraded, "matchIndex")).isEqualTo(-1L);
+    assertThat(ReplicationStatistics.followerStateIndex(degraded, "lastRpcElapsedMs")).isEqualTo(5L);
 
     final Map<String, Object> complete = completeState(HEALTHY, 42L, 1L);
-    assertThat(RaftHAServer.hasFollowerStateIndex(complete, "matchIndex")).isTrue();
-    assertThat(RaftHAServer.followerStateIndex(complete, "matchIndex")).isEqualTo(42L);
+    assertThat(ReplicationStatistics.hasFollowerStateIndex(complete, "matchIndex")).isTrue();
+    assertThat(ReplicationStatistics.followerStateIndex(complete, "matchIndex")).isEqualTo(42L);
   }
 
   private static RaftPeer peer(final RaftPeerId id) {
     return RaftPeer.newBuilder().setId(id).setAddress(id + ":2434").build();
   }
 
-  /** Same shape as {@link RaftHAServer#degradedFollowerStates}: peer id and last-RPC elapsed only. */
+  /** Same shape as {@link ReplicationStatistics#degradedFollowerStates}: peer id and last-RPC elapsed only. */
   private static Map<String, Object> degradedState(final RaftPeerId id, final long lastRpcElapsedMs) {
     final Map<String, Object> state = new LinkedHashMap<>();
     state.put("peerId", id.toString());

@@ -49,10 +49,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <ul>
  *   <li>the decision: {@link ClusterMonitor} does not run a stall streak for an unreachable follower, and re-arms it
  *       from scratch when the follower reconnects;</li>
- *   <li>the send: {@link RaftHAServer#staleStalledResyncOrderReason} re-checks the leader's live view before each
+ *   <li>the send: {@link PeerChannelRecovery#staleStalledResyncOrderReason} re-checks the leader's live view before each
  *       database is requested;</li>
  *   <li>the drop: the follower checks the {@link StalledResyncOrder} the leader sent against its own term and applied
- *       index ({@link ArcadeStateMachine#checkStalledResyncOrder}, the last time holding the database's install lock),
+ *       index ({@link SnapshotResync#checkStalledResyncOrder}, the last time holding the database's install lock),
  *       and {@link PostResyncDatabaseHandler} answers 409 without touching the database when it is stale.</li>
  * </ul>
  */
@@ -249,18 +249,18 @@ class Issue8490StaleForcedResyncTest {
 
     @Test
     void anOrderWhoseStallIsStillCurrentIsSent() {
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 16, firedMonitor(), REPLICA, generation, order)).isNull();
+      assertThat(PeerChannelRecovery.staleStalledResyncOrderReason(true, 16, firedMonitor(), REPLICA, generation, order)).isNull();
     }
 
     @Test
     void anOrderIsNotSentByANodeThatLostLeadership() {
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(false, 16, firedMonitor(), REPLICA, generation, order))
+      assertThat(PeerChannelRecovery.staleStalledResyncOrderReason(false, 16, firedMonitor(), REPLICA, generation, order))
           .contains("no longer the leader");
     }
 
     @Test
     void anOrderIsNotSentInALaterTerm() {
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 17, firedMonitor(), REPLICA, generation, order))
+      assertThat(PeerChannelRecovery.staleStalledResyncOrderReason(true, 17, firedMonitor(), REPLICA, generation, order))
           .contains("term");
     }
 
@@ -268,7 +268,7 @@ class Issue8490StaleForcedResyncTest {
     void anOrderIsNotSentOnceTheFollowerWentDown() {
       final ClusterMonitor monitor = firedMonitor();
       tick(monitor, RESYNC_DURATION_MS + 6_000, 2_300, 100, UNREACHABLE_MS);
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 16, monitor, REPLICA, generation, order))
+      assertThat(PeerChannelRecovery.staleStalledResyncOrderReason(true, 16, monitor, REPLICA, generation, order))
           .contains("stall it was decided on is over");
     }
   }
@@ -340,7 +340,7 @@ class Issue8490StaleForcedResyncTest {
     /** The reported incident, at the follower: the order is refused and nothing is installed. */
     @Test
     void theReportedStaleOrderIsRefused() {
-      assertThatThrownBy(() -> ArcadeStateMachine.checkStalledResyncOrder(follower(16, 653_580), DB,
+      assertThatThrownBy(() -> SnapshotResync.checkStalledResyncOrder(follower(16, 653_580), DB,
           new StalledResyncOrder(16, -1, 643_581), -1))
           .isInstanceOf(StaleResyncOrderException.class)
           .hasMessageContaining("not behind")
@@ -349,7 +349,7 @@ class Issue8490StaleForcedResyncTest {
 
     @Test
     void anOrderThatStillHoldsPasses() {
-      assertThatCode(() -> ArcadeStateMachine.checkStalledResyncOrder(follower(16, 100), DB,
+      assertThatCode(() -> SnapshotResync.checkStalledResyncOrder(follower(16, 100), DB,
           new StalledResyncOrder(16, 100, 2_200), -1)).doesNotThrowAnyException();
     }
 
@@ -359,7 +359,7 @@ class Issue8490StaleForcedResyncTest {
      */
     @Test
     void entriesAppliedUnderTheInstallLockCount() {
-      assertThatThrownBy(() -> ArcadeStateMachine.checkStalledResyncOrder(follower(16, 100), DB,
+      assertThatThrownBy(() -> SnapshotResync.checkStalledResyncOrder(follower(16, 100), DB,
           new StalledResyncOrder(16, 100, 2_200), 2_200))
           .isInstanceOf(StaleResyncOrderException.class);
     }

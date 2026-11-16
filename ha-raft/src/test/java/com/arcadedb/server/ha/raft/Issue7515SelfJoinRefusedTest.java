@@ -51,7 +51,7 @@ class Issue7515SelfJoinRefusedTest {
   /** The reported case: the address an operator types is their own node's, and it is refused rather than accepted. */
   @Test
   void addingThisNodeToItsOwnClusterIsRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
         .isInstanceOf(SelfJoinNotSupportedException.class)
         // An IllegalArgumentException, because the shared mappers key HTTP 400 / gRPC INVALID_ARGUMENT on that
         // type - the same choice UnreachablePeerException made, and for the same reason: the request named
@@ -65,7 +65,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void theRefusalNamesBothWaysOfActuallyJoiningACluster() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
         .hasMessageContaining("127.0.0.1_2434")
         .hasMessageContaining("127.0.0.1:2434")
         .hasMessageContaining("this node itself")
@@ -80,7 +80,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void addingAnyOtherPeerIsUntouched() {
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
+    assertThatCode(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
         .doesNotThrowAnyException();
   }
 
@@ -90,14 +90,14 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void aNodeWithNoResolvedLocalIdRefusesNothing() {
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(null, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
+    assertThatCode(() -> PeerAdmission.ensureNotSelf(null, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
         .doesNotThrowAnyException();
   }
 
   /** The id is what identifies the node, not the spelling of the address the request happened to use. */
   @Test
   void theSameNodeUnderADifferentAddressSpellingIsStillRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "localhost:2434")))
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "localhost:2434")))
         .isInstanceOf(SelfJoinNotSupportedException.class)
         .hasMessageContaining("localhost:2434");
   }
@@ -108,7 +108,7 @@ class Issue7515SelfJoinRefusedTest {
     final RaftPeer derived = RaftPeerAddressResolver.parseJoinTarget("127.0.0.1:2434", 2434, "").peer();
 
     assertThat(derived.getId()).isEqualTo(LOCAL);
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, derived))
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS, derived))
         .isInstanceOf(SelfJoinNotSupportedException.class);
   }
 
@@ -121,7 +121,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void addingThisNodeUnderADifferentPeerIdIsRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
         peer(RaftPeerId.valueOf("a_second_identity"), LOCAL_ADDRESS)))
         .isInstanceOf(SelfJoinNotSupportedException.class)
         .hasMessageContaining("a_second_identity")
@@ -136,7 +136,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void aLoopbackSpellingOfThisNodesAddressIsStillThisNode() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
         peer(RaftPeerId.valueOf("localhost_2434"), "localhost:2434")))
         .isInstanceOf(SelfJoinNotSupportedException.class);
   }
@@ -147,11 +147,11 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void anotherNodeOnTheSameHostIsNotRefused() {
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+    assertThatCode(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
         peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
         .doesNotThrowAnyException();
 
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+    assertThatCode(() -> PeerAdmission.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
         peer(RaftPeerId.valueOf("otherhost_2434"), "otherhost:2434")))
         .doesNotThrowAnyException();
   }
@@ -159,11 +159,11 @@ class Issue7515SelfJoinRefusedTest {
   /** Before start() resolved a local address there is nothing to compare an address against. */
   @Test
   void aNodeWithNoResolvedLocalAddressRefusesOnlyByIdentity() {
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, null,
+    assertThatCode(() -> PeerAdmission.ensureNotSelf(LOCAL, null,
         peer(RaftPeerId.valueOf("a_second_identity"), LOCAL_ADDRESS)))
         .doesNotThrowAnyException();
 
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, null, peer(LOCAL, LOCAL_ADDRESS)))
+    assertThatThrownBy(() -> PeerAdmission.ensureNotSelf(LOCAL, null, peer(LOCAL, LOCAL_ADDRESS)))
         .isInstanceOf(SelfJoinNotSupportedException.class);
   }
 
@@ -178,7 +178,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void addingAnExistingMembersAddressUnderANewIdIsRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNoDuplicateAddress(
+    assertThatThrownBy(() -> PeerAdmission.ensureNoDuplicateAddress(
         List.of(peer(LOCAL, LOCAL_ADDRESS), peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
         peer(RaftPeerId.valueOf("a_third_identity"), "127.0.0.1:2435")))
         .isInstanceOf(DuplicatePeerAddressException.class)
@@ -191,7 +191,7 @@ class Issue7515SelfJoinRefusedTest {
   /** The loopback equivalence applies to every member, not only to this node. */
   @Test
   void aLoopbackSpellingOfAnExistingMembersAddressIsRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNoDuplicateAddress(
+    assertThatThrownBy(() -> PeerAdmission.ensureNoDuplicateAddress(
         List.of(peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
         peer(RaftPeerId.valueOf("localhost_2435"), "localhost:2435")))
         .isInstanceOf(DuplicatePeerAddressException.class);
@@ -203,7 +203,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void reAddingAnExistingMemberUnderItsOwnIdIsStillTheIdempotentNoOp() {
-    assertThatCode(() -> RaftHAServer.ensureNoDuplicateAddress(
+    assertThatCode(() -> PeerAdmission.ensureNoDuplicateAddress(
         List.of(peer(LOCAL, LOCAL_ADDRESS), peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
         peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
         .doesNotThrowAnyException();
@@ -217,7 +217,7 @@ class Issue7515SelfJoinRefusedTest {
   void theIdempotentReAddIsNotDecidedByIterationOrder() {
     final RaftPeer rejoining = peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435");
 
-    assertThatCode(() -> RaftHAServer.ensureNoDuplicateAddress(
+    assertThatCode(() -> PeerAdmission.ensureNoDuplicateAddress(
         List.of(peer(RaftPeerId.valueOf("localhost_2435"), "localhost:2435"), rejoining), rejoining))
         .doesNotThrowAnyException();
   }
@@ -225,7 +225,7 @@ class Issue7515SelfJoinRefusedTest {
   /** A genuinely new server is untouched: its own address, its own port. */
   @Test
   void aNewPeerOnItsOwnAddressIsAccepted() {
-    assertThatCode(() -> RaftHAServer.ensureNoDuplicateAddress(
+    assertThatCode(() -> PeerAdmission.ensureNoDuplicateAddress(
         List.of(peer(LOCAL, LOCAL_ADDRESS), peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
         peer(RaftPeerId.valueOf("127.0.0.1_2436"), "127.0.0.1:2436")))
         .doesNotThrowAnyException();

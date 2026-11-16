@@ -160,7 +160,7 @@ class Issue9308SoleVoterApplyErrorTest {
    */
   @Test
   void theNoPeerReportSaysASoleVoterIsTerminal() {
-    final String soleVoterReport = RaftHAServer.noHandoffPeerReport("quarantined database 'x'", true);
+    final String soleVoterReport = PeerChannelRecovery.noHandoffPeerReport("quarantined database 'x'", true);
     assertThat(soleVoterReport)
         .contains("only voter")
         .contains("terminal")
@@ -168,7 +168,7 @@ class Issue9308SoleVoterApplyErrorTest {
         .contains("checkpoint")
         .doesNotContain("retried as soon as a peer is eligible");
 
-    final String withPeersReport = RaftHAServer.noHandoffPeerReport("quarantined database 'x'", false);
+    final String withPeersReport = PeerChannelRecovery.noHandoffPeerReport("quarantined database 'x'", false);
     assertThat(withPeersReport).contains("retried as soon as a peer is eligible");
   }
 }

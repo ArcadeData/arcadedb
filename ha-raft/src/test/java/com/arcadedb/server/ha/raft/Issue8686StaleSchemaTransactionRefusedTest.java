@@ -173,16 +173,16 @@ class Issue8686StaleSchemaTransactionRefusedTest {
     final List<Map<Integer, Integer>> deltas = List.of(Collections.emptyMap());
 
     // A whole-document change.
-    assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
+    assertThat(SchemaChangeHistory.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
         "{\"schemaVersion\":5}", Collections.emptyMap(), Collections.emptyMap(), walEntries, deltas)))).isTrue();
     // A change of the file set alone, as an index compaction: frequent, and no schema a transaction could be stale against.
-    assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
+    assertThat(SchemaChangeHistory.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
         "", Map.of(7, "Counter_0.1.65536.v0.bucket"), Collections.emptyMap(), walEntries, deltas)))).isFalse();
     // WAL only, as a TimeSeries maintenance entry: prepared-against state is untouched.
-    assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
+    assertThat(SchemaChangeHistory.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
         "", Collections.emptyMap(), Collections.emptyMap(), walEntries, deltas)))).isFalse();
     // Not a schema entry at all.
-    assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(
+    assertThat(SchemaChangeHistory.changesSchema(RaftLogEntryCodec.decode(
         RaftLogEntryCodec.encodeTxEntry("db", wal, Collections.emptyMap())))).isFalse();
   }
 
