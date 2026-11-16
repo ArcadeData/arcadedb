@@ -170,17 +170,34 @@ public class BinarySerializer {
   }
 
   /**
+   * Asked before a float or double array is written in its fixed-width form, and when one is decoded: true once the database is
+   * labelled so that no build which cannot decode the form opens it (issue #12234). False keeps the varint form for that value.
+   * Always true by default: a serializer that is not a database's own has no files to label.
+   */
+  private volatile BooleanSupplier fixedWidthFloatArraysFence = ALWAYS;
+
+  /** Sets the rollback fence of {@link #fixedWidthFloatArraysFence}; {@code null} restores "always". */
+  public void setFixedWidthFloatArraysFence(final BooleanSupplier fence) {
+    this.fixedWidthFloatArraysFence = fence != null ? fence : ALWAYS;
+  }
+
+  /**
    * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
-   * array when {@link #fixedWidthFloatArrays} allows it, {@code type} itself otherwise. Only the record's own type bytes go
-   * through here; an index key is written under its declared type, so an index page never changes form.
+   * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFence} is in place, {@code type} itself
+   * otherwise. Only the record's own type bytes go through here; an index key is written under its declared type, so an index
+   * page never changes form.
    */
   private byte storageTypeOf(final byte type) {
     if (!fixedWidthFloatArraysEnabled)
       return type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
-      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
+      return fixedWidthFloatArrays.getAsBoolean() && fixedWidthFloatArraysFence.getAsBoolean() ?
+          BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED :
+          type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_DOUBLES)
-      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED : type;
+      return fixedWidthFloatArrays.getAsBoolean() && fixedWidthFloatArraysFence.getAsBoolean() ?
+          BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED :
+          type;
     return type;
   }
 
@@ -1299,9 +1316,12 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED:
+      // A RECORD WRITTEN BY 26.11.x, OR RECEIVED AS PAGES BY A REPLICA, HOLDS THE FORM UNDER AN UNLABELLED DICTIONARY (#12234)
+      fixedWidthFloatArraysFence.getAsBoolean();
       value = content.getFloatArray(checkDeserializedCount(content.getUnsignedNumber(), content));
       break;
     case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED:
+      fixedWidthFloatArraysFence.getAsBoolean();
       value = content.getDoubleArray(checkDeserializedCount(content.getUnsignedNumber(), content));
       break;
 

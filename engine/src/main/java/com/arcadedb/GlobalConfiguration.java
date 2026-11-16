@@ -209,7 +209,7 @@ public enum GlobalConfiguration {
       Class.class, LocalDate.class),
 
   SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS("arcadedb.serializer.fixedWidthFloatArrays", SCOPE.DATABASE,
-      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so set it to false to keep the files readable by such a build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
+      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form: before the first such value is written, the database's dictionary is relabelled format version 2, so builds from 26.8.1 to 26.11.x refuse to open the database from then on instead of reading those arrays as null. Set it to false to keep the varint form and the files openable by an older build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
       Boolean.class, true),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,

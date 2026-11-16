@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
@@ -244,7 +245,7 @@ public final class SnapshotManager {
 
       final Integer snapshotFileId = snapshotFileIds.get(name);
       if (snapshotFileId != null) {
-        checksums.put(name, snapshot.calculateChecksum(snapshotFileId));
+        checksums.put(Dictionary.comparableFileName(name), snapshot.calculateChecksum(snapshotFileId));
         continue;
       }
 
@@ -271,7 +272,8 @@ public final class SnapshotManager {
           unreadableFiles.add(name);
         continue;
       }
-      checksums.put(name, crc.getValue());
+      // A DICTIONARY IS KEYED WITHOUT ITS FORMAT LABEL, WHICH TWO NODES WITH THE SAME BYTES CAN DISAGREE ON (ISSUE #12234)
+      checksums.put(Dictionary.comparableFileName(name), crc.getValue());
     }
 
     return checksums;

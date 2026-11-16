@@ -26,6 +26,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -80,13 +81,24 @@ public class Dictionary extends PaginatedComponent {
   /**
    * v0 is single page, v1 rolls over. The reader handles both, the version only marks what wrote the file.
    * <br>
-   * It is stamped at creation and never changed, so a v0 database that later rolls over keeps saying v0. That is deliberate:
-   * this number lives in the FILE NAME, so bumping it at runtime means renaming a live component file, which
-   * {@link PaginatedComponent#rename} can only do behind a full flush barrier and which would race replication shipping pages
-   * by file id. It would also buy nothing, because a build old enough to be at risk does not validate this field at all - it
-   * would open a v1 file just as happily. The signal that a database has rolled over is the INFO logged when page 1 is created.
+   * It is stamped at creation, so a v0 database that later rolls over keeps saying v0: the rollover is not worth a rename, and
+   * the signal that a database has rolled over is the INFO logged when page 1 is created.
    */
   private static final int    CURRENT_VERSION        = 1;
+  /**
+   * Byte for byte the same file as version 1. The label marks a database that holds float or double arrays in the fixed-width
+   * form (binary types 36 and 37, issue #10856), which no build before 26.11.1 decodes: such a build read them as null and
+   * dropped them on the record's next update (issue #12234). Every build from 26.8.1 on refuses, at open, a dictionary labelled
+   * above 1, so {@link #fenceFixedWidthFloatArrays()} relabels the file before the first such value is written, and an older
+   * build refuses the database instead of losing data. That refusal includes 26.11.x, which decodes the form but checks the same
+   * label. Builds before 26.8.1 do not check the label at all.
+   * <br>
+   * Unlike a rollover, this label is changed at runtime. The file keeps its id, its component name and its content, so the rename
+   * needs no flush barrier: it runs under the file's channel write lock, which every page read and write of the file takes too.
+   */
+  public static final  int    FIXED_WIDTH_FLOAT_ARRAYS_VERSION = 2;
+  private static final int    LATEST_READABLE_VERSION          = FIXED_WIDTH_FLOAT_ARRAYS_VERSION;
+  private final        Object fenceLock                        = new Object();
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
   private static final int    DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
 
@@ -150,11 +162,11 @@ public class Dictionary extends PaginatedComponent {
       final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
-    if (version > CURRENT_VERSION)
+    if (version > LATEST_READABLE_VERSION)
       // A NEWER LAYOUT WOULD BE READ AS IF IT WERE THIS ONE, SILENTLY. REFUSE INSTEAD OF GUESSING
       throw new DatabaseMetadataException(
           "Dictionary '" + filePath + "' was written with format version " + version + ", which this version of ArcadeDB cannot "
-              + "read (latest known is " + CURRENT_VERSION + ")");
+              + "read (latest known is " + LATEST_READABLE_VERSION + ")");
     reload();
 
     if (pageCount.get() > 1)
@@ -165,6 +177,44 @@ public class Dictionary extends PaginatedComponent {
           "Database '%s' schema dictionary spans %d pages. It cannot be read by a build without multi-page dictionary support, "
               + "so replicas and any rollback target have to be on this version or newer", null, database.getName(),
           pageCount.get());
+  }
+
+  /** Whether the file is labelled {@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION} or above, so no build before this label opens it. */
+  public boolean isFixedWidthFloatArraysFenced() {
+    return file.getVersion() >= FIXED_WIDTH_FLOAT_ARRAYS_VERSION;
+  }
+
+  /**
+   * Relabels the file {@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION} if it is not already, and forces the directory entry to disk, so
+   * the label is durable before the caller writes the first fixed-width float or double array (issue #12234). Idempotent.
+   *
+   * @throws IOException when the rename fails; the file then keeps its previous label and name
+   */
+  public void fenceFixedWidthFloatArrays() throws IOException {
+    synchronized (fenceLock) {
+      if (isFixedWidthFloatArraysFenced())
+        return;
+      final String previous = file.getFilePath();
+      file.rename(file.getComponentName() + "." + file.getFileId() + "." + file.getPageSize() + ".v" + FIXED_WIDTH_FLOAT_ARRAYS_VERSION
+          + "." + file.getFileExtension());
+      FileUtils.forceDirectory(file.getOSFile().getAbsoluteFile().getParentFile().toPath());
+      LogManager.instance().log(this, Level.INFO,
+          "Database '%s' now holds float or double arrays in the fixed-width form: its dictionary '%s' is relabelled format version "
+              + "%d, so a build before this one refuses to open the database instead of reading those arrays as null (issue #12234). "
+              + "Set arcadedb.serializer.fixedWidthFloatArrays=false before the upgrade to keep a rollback possible", null,
+          database.getName(), previous, FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    }
+  }
+
+  /**
+   * The name under which nodes compare a database file. A dictionary's format label is changed at runtime by
+   * {@link #fenceFixedWidthFloatArrays()} on the node that writes or reads the fixed-width form first, so replicas can carry the
+   * same bytes under two labels for a while (issue #12234): a dictionary compares without its label, every other file as it is.
+   */
+  public static String comparableFileName(final String fileName) {
+    if (fileName == null || !fileName.endsWith("." + DICT_EXT))
+      return fileName;
+    return fileName.replaceFirst("\\.v\\d+\\." + DICT_EXT + "$", "." + DICT_EXT);
   }
 
   public int getIdByName(final String name, final boolean create) {
