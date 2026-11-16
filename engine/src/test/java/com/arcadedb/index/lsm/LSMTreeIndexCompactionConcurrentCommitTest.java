@@ -43,6 +43,8 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -150,6 +152,72 @@ class LSMTreeIndexCompactionConcurrentCommitTest extends TestHelper {
     assertThat(searchFullText("latecomer")).as("the word of the record committed during the compaction").hasSize(1);
     assertThat(searchFullText(key(7))).as("the word of the record deleted during the compaction").isEmpty();
     assertThat(searchFullText(key(8))).hasSize(1);
+  }
+
+  /** A compaction that fails while it holds the commit lock of the mutable file releases it: later commits are not held up. */
+  @Test
+  void aFailedCompactionReleasesTheCommitLock() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 3_000L);
+    final LSMTreeIndex index = createTypeAndIndex(Schema.INDEX_TYPE.LSM_TREE);
+    insertKeys(0, RECORDS);
+    compact(index);
+    assertOnlyTheOpenPageHoldsEntries(index);
+
+    LSMTreeIndexCompactor.setCompactionTestHook(compacted -> {
+      throw new IllegalStateException("compaction failure injected by the test");
+    });
+    assertThat(index.scheduleCompaction()).isTrue();
+    assertThatThrownBy(index::compact).isInstanceOf(RuntimeException.class);
+    LSMTreeIndexCompactor.setCompactionTestHook(null);
+
+    insertKeys(RECORDS, RECORDS + 1);
+    assertIndexMatchesRecords(RECORDS + 1);
+    assertThat(index.scheduleCompaction()).as("the index is available again").isTrue();
+  }
+
+  /** A commit holding the mutable file lock past COMMIT_LOCK_TIMEOUT makes the compaction give up and leave it to a later round. */
+  @Test
+  void aCompactionThatCannotTakeTheCommitLockGivesUpAndRetriesLater() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
+    final LSMTreeIndex index = createTypeAndIndex(Schema.INDEX_TYPE.LSM_TREE);
+    insertKeys(0, RECORDS);
+    compact(index);
+    assertOnlyTheOpenPageHoldsEntries(index);
+
+    final int fileId = index.getMutableIndex().getFileId();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final CountDownLatch locked = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicReference<Throwable> holderError = new AtomicReference<>();
+    final Thread holder = new Thread(() -> {
+      final Thread self = Thread.currentThread();
+      try {
+        db.getTransactionManager().tryLockFile(fileId, 5_000L, self);
+        locked.countDown();
+        release.await();
+      } catch (final Throwable e) {
+        holderError.set(e);
+      } finally {
+        db.getTransactionManager().unlockFile(fileId, self);
+        locked.countDown();
+      }
+    }, "issue-12206-lock-holder");
+    holder.start();
+    try {
+      assertThat(locked.await(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(index.scheduleCompaction()).isTrue();
+      assertThat(index.compact()).as("the compaction gave up on the lock").isFalse();
+    } finally {
+      release.countDown();
+      holder.join(60_000);
+    }
+    assertThat(holderError.get()).isNull();
+
+    assertIndexMatchesRecords(RECORDS);
+    assertOnlyTheOpenPageHoldsEntries(index);
+    assertThat(index.scheduleCompaction()).as("the index is available again").isTrue();
+    assertThat(index.compact()).as("a later round compacts").isTrue();
+    assertIndexMatchesRecords(RECORDS);
   }
 
   /**
