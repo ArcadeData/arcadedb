@@ -120,6 +120,9 @@ class CypherAggregatingMapGroupingIssue12316Test extends TestHelper {
     assertAmbiguous("UNWIND [{k: 1, v: 'a'}, {k: 1, v: 'b'}] AS p RETURN p.k AS p, {v: toUpper(p.v), n: count(*)} AS m");
     // A list next to an aggregate reading a non-grouping variable: group by it first
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN collect(f) + [p] AS m");
+    // The error names the variable and the way out
+    assertThatThrownBy(() -> values("MATCH (p:Person)-[:KNOWS]->(f) RETURN collect(f) + [p] AS m", "m"))
+        .hasMessageContaining("'p', which is not a grouping key").hasMessageContaining("WITH p, collect(...)");
     assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) WITH p, collect(f) AS fs RETURN size(fs + [p]) AS m ORDER BY m", "m"))
         .containsExactly(2L, 3L);
   }

@@ -424,7 +424,10 @@ final class AggregationValidator {
     collectFreeVariables(expr, Set.of(), scope.keyedProperties(), read);
     for (final String variable : read)
       if (!scope.bareVars().contains(variable))
-        throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+        throw new CommandParsingException(
+            "AmbiguousAggregationExpression: Ambiguous aggregation expression: '" + expr.getText() + "' reads '" + variable
+                + "', which is not a grouping key, next to an aggregate. Project it as a grouping key (RETURN " + variable
+                + ", ...) or aggregate it in a preceding WITH (WITH " + variable + ", collect(...) AS list ...)");
   }
 
   /**
