@@ -58,6 +58,14 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     final double[] point = extractCoordinates(args[0]);
     final double[] lowerLeft = extractCoordinates(args[1]);
     final double[] upperRight = extractCoordinates(args[2]);
+    // A 2D point against a 3D box (or the reverse) has no answer, as in Neo4j (issue #12273)
+    final Double pointZ = third(args[0]);
+    final Double lowerLeftZ = third(args[1]);
+    final Double upperRightZ = third(args[2]);
+    if ((pointZ == null) != (lowerLeftZ == null) || (lowerLeftZ == null) != (upperRightZ == null))
+      return null;
+    if (pointZ != null && (pointZ < lowerLeftZ || pointZ > upperRightZ))
+      return false;
     final boolean longitudeInRange;
     if (lowerLeftGeo && lowerLeft[0] > upperRight[0])
       // Crossmeridian bbox: lowerLeft.longitude > upperRight.longitude means the box wraps around ±180
@@ -80,6 +88,13 @@ public class PointWithinBBoxFunction implements StatelessFunction {
       throw new InvalidArgumentException("Point must have x/y or longitude/latitude properties");
     }
     throw new TypeMismatchException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
+  }
+
+  private static Double third(final Object value) {
+    final Map<?, ?> map = (Map<?, ?>) value;
+    if (map.get("z") instanceof Number z)
+      return z.doubleValue();
+    return map.get("height") instanceof Number h ? h.doubleValue() : null;
   }
 
   private static double[] pair(final Map<?, ?> map, final String first, final String second) {

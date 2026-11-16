@@ -31,7 +31,8 @@ import java.util.Map;
  * geographic points (result in meters), and Euclidean distance for Cartesian points.</p>
  */
 public class CypherPointDistanceFunction implements StatelessFunction {
-  private static final double EARTH_RADIUS_M = 6371000.0;
+  // Same mean Earth radius as Neo4j, so geographic distances agree with the reference implementation (issue #12273)
+  static final double EARTH_RADIUS_M = 6378140.0;
 
   @Override
   public String getName() {
@@ -75,7 +76,19 @@ public class CypherPointDistanceFunction implements StatelessFunction {
       final Number lat2n = coordinate(p2, "latitude", "y");
       if (lat1n == null || lon1n == null || lat2n == null || lon2n == null)
         return null;
-      return haversineDistance(lat1n.doubleValue(), lon1n.doubleValue(), lat2n.doubleValue(), lon2n.doubleValue());
+      final Number h1n = coordinate(p1, "height", "z");
+      final Number h2n = coordinate(p2, "height", "z");
+      // A 2D and a 3D WGS-84 point are not comparable, as for Cartesian points (issue #12273)
+      if ((h1n == null) != (h2n == null))
+        return null;
+      final double surface = haversineDistance(lat1n.doubleValue(), lon1n.doubleValue(), lat2n.doubleValue(), lon2n.doubleValue());
+      if (h1n == null)
+        return surface;
+      // 3D: the surface arc is taken at the mean height, the height difference is the other leg
+      final double h1 = h1n.doubleValue();
+      final double h2 = h2n.doubleValue();
+      final double arc = surface * (EARTH_RADIUS_M + (h1 + h2) / 2) / EARTH_RADIUS_M;
+      return Math.hypot(arc, h2 - h1);
     }
 
     // Cartesian: use Euclidean distance
