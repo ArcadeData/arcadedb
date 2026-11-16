@@ -26,6 +26,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -43,6 +44,7 @@ import de.bwaldvogel.mongo.backend.QueryParameters;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
+import de.bwaldvogel.mongo.exception.MongoServerError;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
@@ -194,6 +196,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
 
       orderBy = (Document) queryObject.remove("$orderBy");
+      // a legacy OP_QUERY carries its order in the query document: checked like the sort of a find command
+      if (orderBy != null)
+        checkSortSpecification(orderBy);
     }
 
     if (this.count() == 0)
@@ -618,7 +623,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
         final Iterator<?> rows = filter.isEmpty() ? rs : new FilteredIterator(rs, filter);
         if (hasOrderBy)
-          sortedPage(rows, orderBy, numberToSkip, numberToReturn, result);
+          sortedPage(rows, orderBy, numberToSkip, numberToReturn, result, OperationHeapLimit.of(database, "sort"));
         else
           MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rows);
       }
@@ -635,15 +640,30 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
+   * Refuses a sort direction other than 1 or -1, even when no document would be sorted, with mongod's codes: the plugin sorts with
+   * the library's comparator (issue #12069), which would take any other value as one of the two. Both the sort of a find command
+   * and the {@code $orderBy} of a legacy query come here.
+   */
+  static void checkSortSpecification(final Document sort) {
+    for (final Map.Entry<String, Object> entry : sort.entrySet()) {
+      if (!(entry.getValue() instanceof Number direction))
+        throw new MongoServerError(15974, "Location15974", "Illegal key in $sort specification: " + entry.getKey() + ": " + entry.getValue());
+      if (direction.doubleValue() != 1D && direction.doubleValue() != -1D)
+        throw new MongoServerError(15975, "Location15975", "$sort key ordering must be 1 (for ascending) or -1 (for descending)");
+    }
+  }
+
+  /**
    * Pages the rows in MongoDB's order (issue #12069): the BSON comparison order of the library's {@link DocumentComparator}, which
    * compares the type bracket first (null before numbers before strings before documents before arrays before ObjectIds before
    * booleans before dates), an array by its smallest element ascending and its largest descending, a path into an array of
    * documents by the values it reaches, and numbers of different types by value. SQL ORDER BY follows none of these. Only the
    * properties the sort reads are converted for the comparison, and only the rows of the page as a whole; with a limit, the
-   * first skip + limit rows are kept in a bounded heap rather than every match.
+   * first skip + limit rows are kept in a bounded heap rather than every match. Every row the buffer holds counts against
+   * {@code arcadedb.queryMaxHeapElementsAllowedPerOp}, as the rows SQL ORDER BY buffered did.
    */
   private static void sortedPage(final Iterator<?> rows, final Document orderBy, final int numberToSkip, final int numberToReturn,
-      final List<Document> result) {
+      final List<Document> result, final OperationHeapLimit limit) {
     final Set<String> properties = new HashSet<>();
     for (final String path : orderBy.keySet()) {
       final int dot = path.indexOf('.');
@@ -657,26 +677,35 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     final PriorityQueue<SortCandidate> heap = keep > 0 ? new PriorityQueue<>(order.reversed()) : null;
     final List<SortCandidate> candidates = new ArrayList<>();
 
-    int sequence = 0;
-    while (rows.hasNext()) {
-      final Object row = rows.next();
-      final SortCandidate candidate = new SortCandidate(row, MongoDBToSqlTranslator.toSortDocument(propertiesOf(row), properties), sequence++);
-      if (heap == null)
-        candidates.add(candidate);
-      else {
-        heap.add(candidate);
-        if (heap.size() > keep)
-          heap.poll();
+    try {
+      int sequence = 0;
+      while (rows.hasNext()) {
+        final Object row = rows.next();
+        final SortCandidate candidate = new SortCandidate(row, MongoDBToSqlTranslator.toSortDocument(propertiesOf(row), properties),
+            sequence++);
+        if (heap == null) {
+          candidates.add(candidate);
+          limit.add(candidates.size(), row);
+        } else if (heap.size() < keep) {
+          heap.add(candidate);
+          limit.add(heap.size(), row);
+        } else if (order.compare(candidate, heap.peek()) < 0) {
+          final SortCandidate evicted = heap.poll();
+          heap.add(candidate);
+          limit.replace(evicted.row(), row);
+        }
       }
-    }
-    if (heap != null)
-      candidates.addAll(heap);
-    candidates.sort(order);
+      if (heap != null)
+        candidates.addAll(heap);
+      candidates.sort(order);
 
-    final List<Object> page = new ArrayList<>();
-    for (int i = skip; i < candidates.size() && (numberToReturn <= 0 || page.size() < numberToReturn); i++)
-      page.add(candidates.get(i).row());
-    MongoDBToSqlTranslator.fillResultSet(0, 0, result, page.iterator());
+      final List<Object> page = new ArrayList<>();
+      for (int i = skip; i < candidates.size() && (numberToReturn <= 0 || page.size() < numberToReturn); i++)
+        page.add(candidates.get(i).row());
+      MongoDBToSqlTranslator.fillResultSet(0, 0, result, page.iterator());
+    } finally {
+      limit.release();
+    }
   }
 
   // com.arcadedb.database.Document is spelled out in full: its simple name is the one of the MongoDB Document imported here

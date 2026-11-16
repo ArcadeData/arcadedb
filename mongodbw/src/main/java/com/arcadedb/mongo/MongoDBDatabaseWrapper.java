@@ -606,7 +606,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // is otherwise never consulted. Thread it through using that same convention.
     final Document queryPayload;
     if (sort != null && !sort.isEmpty()) {
-      checkSortSpecification(sort);
+      MongoDBCollectionWrapper.checkSortSpecification(sort);
       queryPayload = new Document();
       queryPayload.put("$query", filter != null ? filter : new Document());
       queryPayload.put("$orderBy", sort);
@@ -629,19 +629,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);
-  }
-
-  /**
-   * Refuses a sort direction other than 1 or -1, even when no document would be sorted, with mongod's codes: the plugin sorts with
-   * the library's comparator (issue #12069), which would take any other value as one of the two.
-   */
-  private static void checkSortSpecification(final Document sort) {
-    for (final Map.Entry<String, Object> entry : sort.entrySet()) {
-      if (!(entry.getValue() instanceof Number direction))
-        throw new MongoServerError(15974, "Location15974", "Illegal key in $sort specification: " + entry.getKey() + ": " + entry.getValue());
-      if (direction.doubleValue() != 1D && direction.doubleValue() != -1D)
-        throw new MongoServerError(15975, "Location15975", "$sort key ordering must be 1 (for ascending) or -1 (for descending)");
-    }
   }
 
   private Document insertDocument(final Channel channel, final Document query) throws MongoServerException {

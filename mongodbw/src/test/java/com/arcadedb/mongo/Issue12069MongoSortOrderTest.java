@@ -18,6 +18,7 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -26,6 +27,7 @@ import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.MongoServerError;
+import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -126,6 +128,30 @@ class Issue12069MongoSortOrderTest {
         .satisfies(e -> assertThat(((MongoServerError) e).getCode()).isEqualTo(15975));
     assertThatThrownBy(() -> ids("Refused", new Document("v", "asc"), 0, 0)).isInstanceOf(MongoServerError.class)
         .satisfies(e -> assertThat(((MongoServerError) e).getCode()).isEqualTo(15974));
+  }
+
+  @Test
+  void aLegacyOrderByIsCheckedLikeASort() {
+    insert("Legacy", doc(1, 1));
+    final Document query = new Document("$query", new Document()).append("$orderBy", new Document("v", 0));
+    assertThatThrownBy(() -> wrapper.handleQuery(new MongoQuery(null, null, wrapper.getFullCollectionNamespace("Legacy"), 0, 0, query, null)))
+        .isInstanceOf(MongoServerError.class).satisfies(e -> assertThat(((MongoServerError) e).getCode()).isEqualTo(15975));
+  }
+
+  @Test
+  void theSortBufferCountsAgainstTheElementCapOfAnOperation() {
+    final List<Document> documents = new ArrayList<>();
+    for (int i = 0; i < 10; i++)
+      documents.add(doc(i, 10 - i));
+    insert("Capped", documents.toArray(new Document[0]));
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 5);
+
+    // every match is buffered without a limit, skip + limit of them with one
+    assertThatThrownBy(() -> ids("Capped", sort("v", 1), 0, 0)).hasStackTraceContaining(
+        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    assertThatThrownBy(() -> ids("Capped", sort("v", 1), 4, 3)).hasStackTraceContaining(
+        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    assertThat(ids("Capped", sort("v", 1), 1, 3)).containsExactly(8, 7, 6);
   }
 
   private static Document doc(final int id, final Object value) {
