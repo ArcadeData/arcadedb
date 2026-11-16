@@ -152,10 +152,15 @@ class Issue11960BindTemporalTypesTest {
   @Test
   void malformedScalarJsonIsRefused() {
     for (final int oid : new int[] { 114, 3802 })
-      for (final String malformed : new String[] { "not_json", "'s'", "1 2", "tru", "\"a\" x" })
-        assertThatThrownBy(() -> text(oid, malformed)).as("%d %s", oid, malformed).isInstanceOf(IllegalArgumentException.class);
+      for (final String malformed : new String[] { "not_json", "'s'", "1 2", "tru", "\"a\" x", "", "   ", "\n\t" })
+        assertThatThrownBy(() -> text(oid, malformed)).as("%d '%s'", oid, malformed).isInstanceOf(IllegalArgumentException.class);
     final byte[] versioned = ByteBuffer.allocate(9).put((byte) 1).put("not_json".getBytes(StandardCharsets.UTF_8)).array();
     assertThatThrownBy(() -> binary(3802, versioned)).isInstanceOf(IllegalArgumentException.class);
+    // a binary jsonb of the version byte alone, or of the version byte and blanks, holds no document
+    assertThatThrownBy(() -> binary(3802, new byte[] { 1 })).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> binary(3802, new byte[] { 1, ' ', ' ' })).isInstanceOf(IllegalArgumentException.class);
+    // binary json (114) is the text itself
+    assertThatThrownBy(() -> binary(114, new byte[] { ' ' })).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

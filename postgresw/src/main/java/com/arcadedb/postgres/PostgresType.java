@@ -395,10 +395,13 @@ public enum PostgresType {
 
   /**
    * A scalar json document, read strictly: the whole text must be one JSON value, so {@code not_json} (an unquoted string a
-   * lenient reader would take as one) is refused. Converted to its Java value by the same reader that converts a JSON array's
-   * elements, so a number has the type it would have inside an array.
+   * lenient reader would take as one) is refused, and so is an empty document, which PostgreSQL refuses too and which the parser
+   * would otherwise answer as a JSON null. Converted to its Java value by the same reader that converts a JSON array's elements, so
+   * a number has the type it would have inside an array.
    */
   private static Object parseJsonScalar(final String text) {
+    if (text.isEmpty())
+      throw new IllegalArgumentException("Invalid input syntax for type json: the document is empty");
     try {
       final JsonReader reader = new JsonReader(new StringReader(text));
       reader.setStrictness(Strictness.STRICT);
