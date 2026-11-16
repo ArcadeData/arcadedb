@@ -26,6 +26,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.parser.UpdateOperations;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -471,7 +472,7 @@ class MoveVertexStatementExecutionTest extends TestHelper {
       assertThat(stored.hasProperty("old")).isFalse();
       assertThat(rs.hasNext()).isFalse();
     }
-    assertThat(database.countType(typeA, true)).isEqualTo(0);
+    assertThat(countRecords(typeA)).isEqualTo(0);
   }
 
   /** Issue #12326: the positional form of the parameter payload is honoured too. */
@@ -537,8 +538,35 @@ class MoveVertexStatementExecutionTest extends TestHelper {
 
     assertThatThrownBy(() -> database.command("sql", "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " CONTENT :payload",
         Map.of("payload", "not a map")).close()).isInstanceOf(CommandExecutionException.class);
-    assertThat(database.countType(typeA, true)).as("the failed move left the source in place").isEqualTo(1);
-    assertThat(database.countType(typeB, true)).isEqualTo(0);
+    assertThat(countRecords(typeA)).as("the failed move left the source in place").isEqualTo(1);
+    assertThat(countRecords(typeB)).isEqualTo(0);
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + rid)) {
+      assertThat(rs.next().<Integer>getProperty("keep")).as("the source kept its content").isEqualTo(1);
+    }
+  }
+
+  /** Counts the records of a type by scanning them, not from the cached bucket counter {@code countType()} reads. */
+  private long countRecords(final String typeName) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM " + typeName)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  /**
+   * Issue #12326: a CONTENT operation that reaches the planner with no payload is refused, for UPDATE and MOVE VERTEX alike,
+   * instead of chaining no step (UPDATE used to drop it silently). The grammar never builds one, so it is built by hand.
+   */
+  @Test
+  void contentWithoutPayloadIsRefused() {
+    final UpdateOperations op = new UpdateOperations();
+    op.type = UpdateOperations.TYPE_CONTENT;
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    assertThatThrownBy(() -> UpdateContentStep.of(op, "UPDATE", context)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("Missing payload for UPDATE ... CONTENT");
+    assertThatThrownBy(() -> UpdateContentStep.of(op, "MOVE VERTEX", context)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("Missing payload for MOVE VERTEX ... CONTENT");
   }
 
   // ---- #7148: moving a vertex must not reverse incoming edges ----
