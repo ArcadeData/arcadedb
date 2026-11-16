@@ -60,6 +60,12 @@ final class AppliedIndexFile {
   // but every applyTransaction advances both to the same index, reconverging them.
   final Map<String, Long>         appliedIndexByDb     = new ConcurrentHashMap<>();
 
+  // The per-database positions as this instance found them on disk (issue #11946): how far the previous session of this node
+  // applied each database's entries, i.e. what the copies it left behind already hold. appliedIndexByDb moves on with every
+  // entry this session applies, the replay included, so it cannot tell a replayed entry from a new one. A database dropped or
+  // created in this session leaves the map: its copy is not the one the position describes.
+  private final Map<String, Long> appliedIndexByDbOfPreviousSession = new ConcurrentHashMap<>();
+
   volatile long                      globalAppliedIndex   = -1;
 
   private volatile boolean                   appliedIndexLoaded   = false;
@@ -112,6 +118,31 @@ final class AppliedIndexFile {
     ensureAppliedIndexLoaded();
     final Long v = appliedIndexByDb.get(dbName);
     return v != null ? v : -1;
+  }
+
+  /**
+   * Whether the entry at {@code entryIndex} of {@code dbName} was applied by the previous session of this node to the copy on
+   * disk (issue #11946): a restart replays the log from the snapshot marker, so every entry up to the position that session
+   * reached comes back. The copy already holds what such an entry did, and possibly more: a schema document it carries is OLDER
+   * than the one on disk. {@code -1} positions and databases this session dropped or created never match.
+   * <p>
+   * A targeted resync of a quarantined copy does not forget the position: the copy it installs is the leader's, which holds
+   * every entry up to the position and more, so an entry at or below it is still already applied.
+   */
+  boolean appliedByPreviousSession(final String dbName, final long entryIndex) {
+    if (dbName == null)
+      return false;
+    ensureAppliedIndexLoaded();
+    final Long applied = appliedIndexByDbOfPreviousSession.get(dbName);
+    return applied != null && entryIndex <= applied;
+  }
+
+  /** The copy of {@code dbName} is dropped or created by this session: the position the previous session reached is not its. */
+  void forgetPositionOfPreviousSession(final String dbName) {
+    if (dbName == null)
+      return;
+    ensureAppliedIndexLoaded();
+    appliedIndexByDbOfPreviousSession.remove(dbName);
   }
 
   /**
@@ -232,6 +263,11 @@ final class AppliedIndexFile {
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
               restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
               restorePersistedFloors(json.getJSONObject("floors", new JSONObject()));
+              // Not for a copy the previous session quarantined or left behind an install: its position says what the log
+              // reached, not what the copy holds
+              for (final Map.Entry<String, Long> entry : appliedIndexByDb.entrySet())
+                if (!sm.divergedDatabases.containsKey(entry.getKey()) && !sm.staleDatabaseAppliedFloors.containsKey(entry.getKey()))
+                  appliedIndexByDbOfPreviousSession.put(entry.getKey(), entry.getValue());
               // The write that clears what was restored must be durable, or a power loss brings it back (issue #11517)
               appliedIndexFileCarriesQuarantine = !sm.divergedDatabases.isEmpty() || !sm.staleDatabaseAppliedFloors.isEmpty();
             } else

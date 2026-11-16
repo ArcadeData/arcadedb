@@ -69,6 +69,8 @@ final class DropDatabaseApplier {
     sm.pageVersions.clear(databaseName);
     sm.schemaHistory.lastSchemaChangeIndex.remove(databaseName);
     sm.schemaHistory.recentSchemaChanges.remove(databaseName);
+    // Nor the position the previous session reached on it (issue #11946): a database recreated under the same name is a new copy
+    sm.appliedIndexes.forgetPositionOfPreviousSession(databaseName);
     // Nor a configuration held for the replay (issue #10086): the file it was to be written to is going away
     sm.configurationEntries.releaseHeldConfiguration(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
