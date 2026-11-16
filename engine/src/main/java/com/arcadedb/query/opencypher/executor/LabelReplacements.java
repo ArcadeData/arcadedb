@@ -78,7 +78,8 @@ import java.util.logging.Level;
  * also let two replacement chains form a cycle (issue #11764). A replacement therefore never takes the slot of a record
  * this map already knows ({@code newReplacementVertex}, {@code newReplacementEdge}). A separate insert of the statement,
  * outside a label write, can still take one, and an old binding of the replaced record would then resolve to its
- * replacement as it should, while a binding of the new record, read back by a later MATCH, would be redirected too.
+ * replacement as it should, while a binding of the new record, read back by a later MATCH, would be redirected too
+ * (issue #12336).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

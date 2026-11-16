@@ -98,9 +98,11 @@ public final class ImplicitGroupingKeys {
     }
     case ChainedPropertyAccessExpression chained -> variables = collect(chained.getBaseExpression(), variables);
     case BooleanWrapperExpression wrapper -> {
-      final List<String>[] holder = new List[] { variables };
-      BooleanWrapperExpression.forEachOperand(wrapper.getBooleanExpression(), operand -> holder[0] = collect(operand, holder[0]));
-      variables = holder[0];
+      // Planning-time only: the operands are gathered first, since the walk takes a callback and the list is rebuilt
+      final List<Expression> operands = new ArrayList<>(2);
+      BooleanWrapperExpression.forEachOperand(wrapper.getBooleanExpression(), operands::add);
+      for (final Expression operand : operands)
+        variables = collect(operand, variables);
     }
     case ComparisonExpressionWrapper wrapper -> {
       variables = collect(wrapper.getComparison().getLeft(), variables);
