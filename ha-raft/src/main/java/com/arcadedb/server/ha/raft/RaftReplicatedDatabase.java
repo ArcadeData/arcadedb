@@ -748,51 +748,66 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     }
 
+    // What a read-only commit owes once it has released the read lock (issue #12251), see the arm below
+    final Runnable[] readOnlyCallbacks = new Runnable[1];
+
     // --- PHASE 1 (read lock): capture WAL bytes and delta ---
-    final ReplicationPayload payload = proxied.executeInReadLock(() -> {
-      proxied.checkTransactionIsActive(false);
+    final ReplicationPayload payload;
+    try {
+      payload = proxied.executeInReadLock(() -> {
+        proxied.checkTransactionIsActive(false);
 
-      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
-      final TransactionContext tx = current.getLastTransaction();
-      try {
-        requireReplicationBuffer(tx);
-        final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
+        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+        final TransactionContext tx = current.getLastTransaction();
+        try {
+          requireReplicationBuffer(tx);
+          final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
-        if (phase1 != null) {
-          final byte[] walData = phase1.result.toByteArray();
-          final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
-          // Read before the commit concludes: the accumulator is released with the transaction
-          final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
-          final ReplicationPayload prepared = new ReplicationPayload(tx, phase1, walData, bucketDeltas,
-              corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
-          // Issue #10881: phase 1 checked the write refusal under this lock, and the rest of the commit - quorum, publication,
-          // acknowledgement - runs after it is released. Registered here, still under the lock, so a restore that refuses
-          // writes and then awaits the commits in flight waits for this one too, instead of swapping its target away after
-          // the client has been told the commit succeeded. The last statement of the arm: nothing below can throw past it
-          proxied.beginCommitInFlight();
-          return prepared;
+          if (phase1 != null) {
+            final byte[] walData = phase1.result.toByteArray();
+            final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
+            // Read before the commit concludes: the accumulator is released with the transaction
+            final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
+            final ReplicationPayload prepared = new ReplicationPayload(tx, phase1, walData, bucketDeltas,
+                corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
+            // Issue #10881: phase 1 checked the write refusal under this lock, and the rest of the commit - quorum, publication,
+            // acknowledgement - runs after it is released. Registered here, still under the lock, so a restore that refuses
+            // writes and then awaits the commits in flight waits for this one too, instead of swapping its target away after
+            // the client has been told the commit succeeded. The last statement of the arm: nothing below can throw past it
+            proxied.beginCommitInFlight();
+            return prepared;
+          }
+
+          // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
+          // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape. The callbacks
+          // run after the read lock is released (issue #12251): the refresh of a continuous aggregate one of them makes commits
+          // a transaction of its own, which waits for any schema session in progress, and the owner of that session waits for
+          // the write lock this read lock holds off. Every TIMESERIES insert into a type with an aggregate ends here (its
+          // samples commit in a transaction of their own), and the cycle cost each one the quorum timeout.
+          readOnlyCallbacks[0] = tx.concludeReadOnlyCommitDeferringCallbacks();
+          // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
+          // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
+          if (leader)
+            getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
+          current.popIfNotLastTransaction();
+          return null;
+        } catch (final ArcadeDBException e) {
+          rollbackRefusedCommit(tx, e);
+          current.popIfNotLastTransaction();
+          throw e;
+        } catch (final Exception e) {
+          final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
+          rollbackRefusedCommit(tx, refusal);
+          current.popIfNotLastTransaction();
+          throw refusal;
         }
-
-        // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
-        // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape.
-        tx.concludeCommitWithoutPublishing();
-        // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
-        // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
-        if (leader)
-          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
-        current.popIfNotLastTransaction();
-        return null;
-      } catch (final ArcadeDBException e) {
-        rollbackRefusedCommit(tx, e);
-        current.popIfNotLastTransaction();
-        throw e;
-      } catch (final Exception e) {
-        final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
-        rollbackRefusedCommit(tx, refusal);
-        current.popIfNotLastTransaction();
-        throw refusal;
-      }
-    });
+      });
+    } finally {
+      // Owed by the transaction that ended above, even when the schema save after it failed: they ran before that save until #12251
+      final Runnable owed = readOnlyCallbacks[0];
+      if (owed != null)
+        owed.run();
+    }
 
     // Read-only transaction: nothing more to do.
     if (payload == null)

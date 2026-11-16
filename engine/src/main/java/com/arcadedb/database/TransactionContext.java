@@ -1671,6 +1671,12 @@ public class TransactionContext implements Transaction {
         throw e;
       }
     }
+    fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+  }
+
+  /** Runs what a concluded commit owes: its after-commit callbacks in order, then its after-completion callbacks. */
+  private void fireCommitCallbacks(final List<Runnable> callbacks, final boolean commitPointWasReached,
+      final Map<String, Runnable> completion) {
     try {
       if (callbacks != null) {
         int next = 0;
@@ -4930,6 +4936,33 @@ public class TransactionContext implements Transaction {
   public void concludeCommitWithoutPublishing() {
     markModifiedRecordsClean();
     resetAndFireCallbacks();
+  }
+
+  /**
+   * {@link #concludeCommitWithoutPublishing()} for a transaction whose phase 1 found nothing to write, concluded under a database
+   * lock: the transaction ends here, its records marked clean and the commit counted, and what it owes (the after-commit callbacks,
+   * then the after-completion ones) is handed back instead of run, for the caller to run once it has released the lock (issue
+   * #12251). A callback is work of its own, the refresh of a continuous aggregate or a materialized view, with a transaction and a
+   * commit of its own: run under the read lock, the commit of that work waited for a schema session whose owner was waiting for the
+   * write lock that read lock held off, until the quorum timeout.
+   *
+   * @return the callbacks to run, or {@code null} when the transaction registered none
+   */
+  public Runnable concludeReadOnlyCommitDeferringCallbacks() {
+    // a transaction with nothing to write never took a WAL sync ticket, so nothing has to be awaited before its callbacks
+    assert deferredWALSyncTicket <= 0 : "a transaction with nothing to write has no WAL sync to wait for";
+    markModifiedRecordsClean();
+    ++commitCount;
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    afterCommitCallbacks = null;
+    final Map<String, Runnable> completion = afterCompletionCallbacks;
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
+    final boolean commitPointWasReached = commitPointReached;
+    reset();
+    if (callbacks == null && completion == null)
+      return null;
+    return () -> fireCommitCallbacks(callbacks, commitPointWasReached, completion);
   }
 
   private void markModifiedRecordsClean() {
