@@ -772,7 +772,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       // with a 500 (issue #12037)
       final DuplicatedKeyException duplicate = findDuplicatedKey(e);
       if (duplicate != null)
-        throw new DuplicatedKeyException(failure, duplicate);
+        throw new DuplicatedKeyException(failure, duplicate, e);
       throw new IndexException(failure + describeFailure(e), e);
     } finally {
       // A build that failed holds the deferral still (a finished one gave it back under the lock): the index it was filling is

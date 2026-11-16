@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ValidationException;
 import org.junit.jupiter.api.Test;
@@ -87,6 +88,27 @@ class StoredDataRefusalTest extends TestHelper {
         .satisfies(e -> assertThat(((DuplicatedKeyException) e).getKeys()).isEqualTo("[1]"));
 
     assertThat(database.getSchema().getType("T").getIndexByProperties("p")).isNull();
+  }
+
+  /**
+   * The build reports the duplicate it found inside its own failure, and that failure stays the cause: a cleanup that failed after
+   * the refusal is attached to it as a suppressed exception and must stay reachable from what the caller gets.
+   */
+  @Test
+  void aDuplicateReportedForAFailedBuildKeepsTheBuildFailureAndWhatWasAttachedToIt() {
+    final DuplicatedKeyException found = new DuplicatedKeyException("T[p]", "[1]", new RID(1, 0));
+    final RuntimeException buildFailure = new RuntimeException("batch failed", found);
+    final IllegalStateException cleanupFailure = new IllegalStateException("cleanup failed");
+    buildFailure.addSuppressed(cleanupFailure);
+
+    final DuplicatedKeyException reported = new DuplicatedKeyException("Error on creating index", found, buildFailure);
+
+    assertThat(reported.getCause()).isSameAs(buildFailure);
+    assertThat(reported.getCause().getSuppressed()).containsExactly(cleanupFailure);
+    assertThat(reported.getMessage()).isEqualTo("Error on creating index: " + found.getMessage());
+    assertThat(reported.getIndexName()).isEqualTo("T[p]");
+    assertThat(reported.getKeys()).isEqualTo("[1]");
+    assertThat(reported.getCurrentIndexedRID()).isEqualTo(new RID(1, 0));
   }
 
   @Test
