@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
@@ -107,8 +109,10 @@ final class TruncateRecordDeleter {
         } catch (final RecordNotFoundException e) {
           // A concurrent transaction deleted it after the scan found it and committed: it is gone, which is what the truncate is
           // for. Failing the statement here reported a record it never named as not found (issue #11731). Another record found
-          // missing during this delete (by a listener, a cascade) is a failure of the delete, which the scan must surface
-          if (!record.getIdentity().equals(e.getRID()))
+          // missing during this delete (by a listener, a cascade) is a failure of the delete, which the scan must surface, and
+          // so is this record's own RID named by a listener that refused the delete: the slot still holds the record then
+          final RID rid = record.getIdentity();
+          if (!rid.equals(e.getRID()) || isPresent(db, rid))
             throw e;
           return true;
         }
@@ -127,6 +131,15 @@ final class TruncateRecordDeleter {
       }
     });
     return failure[0];
+  }
+
+  /**
+   * Whether the slot of {@code rid} still holds a record, read through the current transaction and bypassing its record cache,
+   * which may still hold the instance the scan found.
+   */
+  private static boolean isPresent(final Database db, final RID rid) {
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketByIdIfExists(rid.getBucketId());
+    return bucket != null && bucket.isRecordPresent(rid);
   }
 
   /**

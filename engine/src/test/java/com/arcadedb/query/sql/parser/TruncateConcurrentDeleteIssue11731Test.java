@@ -77,6 +77,25 @@ class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
     assertThat(database.existsRecord(rids[1])).isTrue();
   }
 
+  @Test
+  void aListenerRefusingTheDeleteWithTheSameRidFailsTheTruncate() {
+    final RID[] rids = createThree();
+    database.getSchema().getType("T").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
+      if (record.getIdentity().equals(rids[1]))
+        throw new RecordNotFoundException("Record " + rids[1] + " not found", rids[1]);
+      return true;
+    });
+
+    database.begin();
+    final RuntimeException failure = deleteAll(scanAll());
+    database.rollback();
+
+    // THE RECORD IS STILL THERE: THE EXCEPTION CAME FROM THE LISTENER, NOT FROM A CONCURRENT DELETE
+    assertThat(failure).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) failure).getRID()).isEqualTo(rids[1]);
+    assertThat(database.existsRecord(rids[1])).isTrue();
+  }
+
   private RID[] createThree() {
     database.transaction(() -> database.getSchema().createDocumentType("T"));
     final RID[] rids = new RID[3];
