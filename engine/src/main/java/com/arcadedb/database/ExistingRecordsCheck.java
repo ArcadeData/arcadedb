@@ -198,11 +198,12 @@ public final class ExistingRecordsCheck {
           + "' could not be read to check it", e);
     }
     if (violation[1] != null)
-      // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342)
-      throw refusal(null, "Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
+      // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342). No kind: the reason is the
+      // one sentence TimeSeriesColumnConstraints gives for every constraint (issue #12037)
+      throw new ValidationException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
-          + "<value> ...], and insert them again if they are to be kept", null);
+          + "<value> ...], and insert them again if they are to be kept");
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,
