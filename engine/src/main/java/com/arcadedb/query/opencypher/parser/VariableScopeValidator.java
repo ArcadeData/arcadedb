@@ -320,9 +320,19 @@ final class VariableScopeValidator {
   private static void validateDeleteClauseScope(final DeleteClause deleteClause, final Set<String> scope) {
     if (deleteClause == null || deleteClause.isEmpty())
       return;
-    for (final String var : deleteClause.getVariables())
-      if (CypherSemanticValidator.isValidVariableName(var) && !scope.contains(var))
-        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+    final List<String> targets = deleteClause.getVariables();
+    final List<Expression> expressions = deleteClause.getExpressions();
+    for (int i = 0; i < targets.size(); i++) {
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      if (expression != null)
+        // every variable the target reads, wherever it sits in the expression ([a, missing], (missing), CASE ...), issue #12259
+        checkExpressionScope(expression, scope);
+      else {
+        final String var = targets.get(i);
+        if (CypherSemanticValidator.isValidVariableName(var) && !scope.contains(var))
+          throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+      }
+    }
   }
 
   /**

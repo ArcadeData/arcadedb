@@ -484,8 +484,8 @@ public class EdgeLinkedList {
       // would orphan the concurrent chunk (lost edges) - surface a retryable conflict instead.
       final MutableVertex modifiableV = vertex.modify();
       final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-          modifiableV.getOutEdgesHeadChunk() :
-          modifiableV.getInEdgesHeadChunk();
+          modifiableV.peekOutEdgesHeadChunk() :
+          modifiableV.peekInEdgesHeadChunk();
       if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
         throw new ConcurrentModificationException(
             "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -533,8 +533,8 @@ public class EdgeLinkedList {
         if (currentVertex == vertex) {
           // First flip of this batch: same stale-head guard as add() (modify() may have reloaded the record).
           final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-              modifiableV.getOutEdgesHeadChunk() :
-              modifiableV.getInEdgesHeadChunk();
+              modifiableV.peekOutEdgesHeadChunk() :
+              modifiableV.peekInEdgesHeadChunk();
           if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
             throw new ConcurrentModificationException(
                 "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -758,8 +758,8 @@ public class EdgeLinkedList {
     // stale-head guard as the flip path above) BEFORE creating the directory and stripe chunks.
     final MutableVertex modifiableV = vertex.modify();
     final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-        modifiableV.getOutEdgesHeadChunk() :
-        modifiableV.getInEdgesHeadChunk();
+        modifiableV.peekOutEdgesHeadChunk() :
+        modifiableV.peekInEdgesHeadChunk();
     if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
       throw new ConcurrentModificationException(
           "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");

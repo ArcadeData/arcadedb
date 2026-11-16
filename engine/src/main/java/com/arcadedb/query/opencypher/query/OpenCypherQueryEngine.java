@@ -34,6 +34,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
@@ -635,7 +636,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
       // request keeps running it.
       if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
-        throw new CommandExecutionException(
+        throw new ImplicitTransactionRequiredException(
             "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
       return executeWrite(plan, execDb, profile, timeExecution);
     }

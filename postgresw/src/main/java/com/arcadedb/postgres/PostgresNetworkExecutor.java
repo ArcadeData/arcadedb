@@ -39,6 +39,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
@@ -4752,6 +4753,8 @@ public class PostgresNetworkExecutor extends Thread {
       return "42804";                              // datatype_mismatch
     if (CauseChain.contains(error, ObjectInUseException.class))
       return "55006";                              // object_in_use: a non-empty type, an indexed property (issue #11803)
+    if (CauseChain.contains(error, ImplicitTransactionRequiredException.class))
+      return "25001";                              // active_sql_transaction: CALL { ... } IN TRANSACTIONS in a transaction (#12161)
     return "22023";                                // invalid_parameter_value
   }
 

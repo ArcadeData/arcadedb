@@ -1215,7 +1215,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final TransactionContext transaction = database.getTransaction();
         final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-        transaction.trackScanOfPage(page);
+        final boolean ownImage = transaction.trackScanOfPage(page);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -1238,7 +1238,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
                 final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
-                if (!callback.onRecord(rid, view))
+                if (!callback.onRecord(rid, view, ownImage))
                   return;
 
               } else if (recordSize == RECORD_PLACEHOLDER_POINTER) {
@@ -1246,14 +1246,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 final RID placeHolderPointer = new RID(fileId,
                         page.readLong(recordPositionInPage + recordHeaderSize));
                 final Binary view = getRecordInternal(placeHolderPointer, true, false);
-                if (view != null && !callback.onRecord(rid, view))
+                if (view != null && !callback.onRecord(rid, view, ownImage))
                   return;
               } else if (recordSize == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
                 // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
                 // through the pointer branch above, under the RID the user knows, and exactly once.
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize);
-                if (!callback.onRecord(rid, view))
+                if (!callback.onRecord(rid, view, ownImage))
                   return;
               }
 
