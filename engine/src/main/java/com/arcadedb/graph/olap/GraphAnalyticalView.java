@@ -446,6 +446,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
   // Set by the first commit that finds the queue full, cleared by the merge task that drops the queue for a rebuild
   private final AtomicBoolean                     asyncQueueOverflowed = new AtomicBoolean();
+  // Transactions that reached the covered buckets as pages, which no record listener hears (issue #12250): a follower applying the
+  // replicated log, the leader applying a commit a follower made in its own transaction. Only ever grows
+  private final AtomicLong                        replicatedCommits = new AtomicLong();
+  // replicatedCommits when the scan of the base being served started: a base whose value is behind lacks a change it cannot get by
+  // a delta, and the view reports STALE until a scan reads it. 0 for a CSR restored from disk, which predates this view instance
+  private volatile long                           replicatedCommitsInBase;
+  // One rebuild asked for by a query on a view behind on replicated commits at a time, and when the last one was asked for
+  private final AtomicBoolean                     replicatedRebuildRequested = new AtomicBoolean();
+  private volatile long                           lastReplicatedRebuildNanos = System.nanoTime() - TimeUnit.HOURS.toNanos(1);
+  // Rebuilds asked for in a row with no query finding the view current in between: the commits keep coming faster than a rebuild
+  // can serve, and each one doubles the wait before the next
+  private volatile int                            replicatedRebuildsInARow;
   // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
   // compaction swap or a build publication never waits behind a long backlog
   private static final int                        ASYNC_MERGE_BATCH = 64;
@@ -518,6 +530,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /** Maximum time shutdown() waits for an in-flight async build/compaction to settle. */
   private static final long      SHUTDOWN_AWAIT_MS  = 30_000L;
+  /**
+   * Least time between the starts of two rebuilds that queries ask for on a view behind on replicated commits (issue #12250). The
+   * wait is the longer of this and twice the last build's duration, so the rebuilds keep one build thread busy half of the time
+   * at most, and none run while nobody queries the view. It doubles with every rebuild a query finds overtaken by a newer commit,
+   * up to {@link #REPLICATED_REBUILD_MAX_INTERVAL_MS}, and drops back once a query finds the view current.
+   */
+  static final long              REPLICATED_REBUILD_MIN_INTERVAL_MS = 1_000L;
+  static final long              REPLICATED_REBUILD_MAX_INTERVAL_MS = 30_000L;
 
   /**
    * Creates a builder for configuring the analytical view.
@@ -618,6 +638,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     try {
       final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
+      // Before the scan, like the certificate: a replicated commit counted after this point may be missing from what it reads
+      final long replicatedMark = replicatedCommits.get();
       final long buildStart = System.currentTimeMillis();
       final Runnable beforeScan = beforeBuildScanForTest;
       if (beforeScan != null)
@@ -633,6 +655,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       synchronized (this) {
         if (myGeneration == generation) {
           // Atomic swap — readers see all-or-nothing
+          replicatedCommitsInBase = replicatedMark;
           publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
           this.notifyAll();
           committed = true;
@@ -915,6 +938,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
           final long asOfTransactionId = currentLastTransactionId();
+          // Before the scan, like the certificate: a replicated commit counted after this point may be missing from what it reads
+          final long replicatedMark = replicatedCommits.get();
           // The build thread needs its own read transaction for database iteration
           database.begin();
           try {
@@ -930,6 +955,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             boolean committed = false;
             synchronized (GraphAnalyticalView.this) {
               if (myGeneration == generation) {
+                replicatedCommitsInBase = replicatedMark;
                 publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
                 GraphAnalyticalView.this.notifyAll();
                 committed = true;
@@ -1004,16 +1030,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           currentStatus = status;
           latch = readyLatch;
           if (currentStatus == Status.READY) {
-            if (!hasUnmergedAsyncChanges())
+            final boolean behindReplicated = isBehindReplicatedCommits();
+            if (!hasUnmergedAsyncChanges() && !behindReplicated)
               return true;
-            // Shut down: what is still queued is never merged
-            if (shutDown)
+            // Shut down: what is still queued is never merged. OFF: a replicated commit leaves it STALE until it is rebuilt
+            if (shutDown || (behindReplicated && updateMode == UpdateMode.OFF))
               return false;
-            // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
             final long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0)
               return false;
-            TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
+            if (behindReplicated) {
+              // Waiting is asking for the view: the rebuild it needs (issue #12250), asked for again once the backoff allows
+              requestRebuildForReplicatedCommits();
+              TimeUnit.NANOSECONDS.timedWait(this, Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(100)));
+            } else
+              // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
+              TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
             continue;
           }
         }
@@ -3376,16 +3408,69 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * The view's status. An {@code ASYNCHRONOUS} view whose snapshot is READY but behind a commit not merged yet reports
-   * STALE (issue #10189).
+   * STALE (issue #10189), and so does a view whose base predates a commit that reached the node as pages (issue #12250).
    */
   public Status getStatus() {
     final Status s = status;
-    return s == Status.READY && hasUnmergedAsyncChanges() ? Status.STALE : s;
+    return s == Status.READY && (hasUnmergedAsyncChanges() || isBehindReplicatedCommits()) ? Status.STALE : s;
   }
 
   /** Whether a committed change is not in the view yet: queued for the merge, or dropped by an overflow for a rebuild. */
   private boolean hasUnmergedAsyncChanges() {
     return asyncDeltaLag.get() > 0 || asyncQueueOverflowed.get();
+  }
+
+  /** Whether a transaction applied as pages since the scan of the base may be missing from it (issue #12250). */
+  private boolean isBehindReplicatedCommits() {
+    return replicatedCommits.get() != replicatedCommitsInBase;
+  }
+
+  /**
+   * A transaction reached a bucket the view may read as pages, with no record event and no delta to merge (issue #12250): see
+   * {@link GraphAnalyticalViewRegistry#onTransactionApplied}. Called on the thread that applies the replicated log, so it only
+   * counts the commit: from now on the view reports STALE and queries take the record path, and an incremental view rebuilds
+   * when a query asks for it ({@link #requestRebuildForReplicatedCommits()}), never on this thread. A build in flight sampled
+   * the count before its scan, so it publishes behind the commit and the next query asks for one more. An OFF view stays STALE
+   * until it is rebuilt, as after a local commit.
+   */
+  void onReplicatedCommit() {
+    replicatedCommits.incrementAndGet();
+  }
+
+  /**
+   * Rebuilds, off the calling thread, an incremental view whose base is behind on replicated commits, at most once per interval
+   * (see {@link #REPLICATED_REBUILD_MIN_INTERVAL_MS}). Only from a READY view: a build in flight takes in what it can and the
+   * next query asks again, and a view STALE for another reason already has its rebuild on the way or waits for an explicit one.
+   * Takes no monitor: the caller may be a query holding the registry's lock.
+   */
+  private void requestRebuildForReplicatedCommits() {
+    if (updateMode == UpdateMode.OFF || shutDown || status != Status.READY)
+      return;
+    final Snapshot snap = snapshot;
+    final long backoffMs = Math.min(REPLICATED_REBUILD_MAX_INTERVAL_MS,
+        REPLICATED_REBUILD_MIN_INTERVAL_MS << Math.min(replicatedRebuildsInARow, 5));
+    final long intervalNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(backoffMs, snap != null ? 2 * snap.buildDurationMs : 0L));
+    final long now = System.nanoTime();
+    if (now - lastReplicatedRebuildNanos < intervalNanos || !replicatedRebuildRequested.compareAndSet(false, true))
+      return;
+    lastReplicatedRebuildNanos = now;
+    ++replicatedRebuildsInARow;
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          rebuildAfterPublication();
+        } finally {
+          replicatedRebuildRequested.set(false);
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          taskCompleted();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Shutting down: nothing left to serve
+      replicatedRebuildRequested.set(false);
+      taskCompleted();
+    }
   }
 
   /**
@@ -3477,6 +3562,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isReady() {
     triggerDeferredDiskRestoreIfPending();
+    // A query asking for a view behind on replicated commits is what rebuilds it (issue #12250); this one takes the record path
+    if (isBehindReplicatedCommits())
+      requestRebuildForReplicatedCommits();
+    else if (replicatedRebuildsInARow != 0)
+      replicatedRebuildsInARow = 0;
     final Status s = getStatus();
     if (s != Status.READY && (s != Status.STALE || !isUseWhenStale()))
       return false;
@@ -4113,7 +4203,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * exactly as it always has.
    */
   private void persistCsrIfPossible() {
-    if (name == null || status != Status.READY)
+    // Behind on a replicated commit (issue #12250): the certificate cannot tell, the transaction counter does not move for one
+    if (name == null || status != Status.READY || isBehindReplicatedCommits())
       return;
     // The certificate is only sound where TransactionManager.getLastTransactionId() reflects every commit that
     // could have touched the covered types. That holds for a standalone database or an HA leader (the only paths
@@ -4168,7 +4259,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * the next open just computes the order again.
    */
   private void persistContractionOrdersIfPossible() {
-    if (name == null || status != Status.READY || contractionHierarchies.length == 0)
+    if (name == null || status != Status.READY || isBehindReplicatedCommits() || contractionHierarchies.length == 0)
       return;
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
     if (dbInternal.isFollower())

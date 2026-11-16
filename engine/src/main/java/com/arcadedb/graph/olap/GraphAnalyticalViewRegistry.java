@@ -20,7 +20,13 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -217,6 +223,58 @@ public class GraphAnalyticalViewRegistry {
       REGISTRY.remove(unwrap(database));
       FAILURES.remove(unwrap(database));
     }
+  }
+
+  /**
+   * A transaction reached {@code database} as pages, with no record event (issue #12250): a follower applying the replicated log,
+   * the leader applying a commit a follower made in its own transaction, a reconciliation from the replicated payload. The change
+   * listeners of the views never hear of it, so each view of the database is told here when the entry wrote a bucket that can
+   * hold vertices, edges or edge lists. Telling a view costs a counter increment on the applying thread: the view reports STALE
+   * from then on and rebuilds when a query asks for it (see {@link GraphAnalyticalView#onReplicatedCommit()}).
+   * <p>
+   * Called after the pages are written. A view registered after the read of the registry below is built by a scan that starts
+   * after its registration, so it reads them.
+   */
+  public static void onTransactionApplied(final Database database, final WALFile.WALTransaction tx) {
+    final Database unwrapped = unwrap(database);
+    // Without the lock first: a database with no view, the common case, costs one lookup
+    if (!REGISTRY.containsKey(unwrapped))
+      return;
+    final GraphAnalyticalView[] views;
+    synchronized (REGISTRY) {
+      final HashMap<String, GraphAnalyticalView> registered = REGISTRY.get(unwrapped);
+      if (registered == null || registered.isEmpty())
+        return;
+      views = registered.values().toArray(new GraphAnalyticalView[0]);
+    }
+    if (!writesGraphBuckets(database.getSchema(), tx))
+      return;
+    for (final GraphAnalyticalView view : views)
+      view.onReplicatedCommit();
+  }
+
+  /**
+   * Whether the entry wrote a page of a bucket a view can read: one a vertex or edge type owns or involves (an edge list, the
+   * external values of a vertex), or one no type accounts for, which is not ruled out. A page of an index, of the dictionary or of
+   * a document type's bucket changes no view.
+   */
+  static boolean writesGraphBuckets(final Schema schema, final WALFile.WALTransaction tx) {
+    int previous = -1;
+    if (tx.pages == null)
+      return false;
+    for (final WALFile.WALPage page : tx.pages) {
+      final int fileId = page.fileId;
+      // The pages of a file are consecutive in an entry: one lookup per file, not per page
+      if (fileId == previous)
+        continue;
+      previous = fileId;
+      if (!(schema.getFileByIdIfExists(fileId) instanceof LocalBucket))
+        continue;
+      final DocumentType type = schema.getInvolvedTypeByBucketId(fileId);
+      if (type == null || type instanceof VertexType || type instanceof EdgeType)
+        return true;
+    }
+    return false;
   }
 
   private static Database unwrap(final Database database) {
