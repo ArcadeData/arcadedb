@@ -255,14 +255,16 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void maxFlowRejectsCapacityMatricesLargerThanTheBudget() {
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+    void maxFlowRejectsAResidualGraphLargerThanTheBudget() {
+      // 800 bytes admit the graph (384), its adjacency (144) and the unit capacities (160), and refuse the residual graph on
+      // top: linear in the arcs since issue #12175, where it used to be two nodeCount x nodeCount matrices
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 800L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
           CALL algo.maxFlow(a, c) YIELD maxFlow \
           RETURN maxFlow"""))
-          .hasStackTraceContaining("the capacity and residual matrices would need 512 bytes (2 matrices of 4 x 4 nodes)")
+          .hasStackTraceContaining("the residual graph would need 392 bytes (4 nodes, 8 arcs)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
     }
 
@@ -676,7 +678,8 @@ class AlgoMemoryBudgetTest {
    * the {@code O(n²/64)} build ahead of them did not.
    * <p>
    * {@code algo.triangleCount} was the fifth, and no longer builds one at all: since issue #10203 it intersects
-   * sorted neighbour sets, so its working memory is the adjacency it already prices.
+   * sorted neighbour sets, so its working memory is the adjacency it already prices. {@code algo.knn} (issue #12172),
+   * {@code algo.kTruss} and {@code algo.clique} (issue #12173) followed, and price the linear structures they build instead.
    */
   @Nested
   class BitsetMatrixBudget {
@@ -723,19 +726,26 @@ class AlgoMemoryBudgetTest {
       }
     }
 
-    /** The four procedures, each with a call that reaches its bit matrix. */
+    /** The procedure that still builds a bit matrix, with a call that reaches it. */
+    private static final String[][] MATRIX_CALLS = {
+        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
+
+    /**
+     * The procedures that built one until issue #12172 / #12173 and now work from sorted neighbour sets: priced like the rest, and
+     * still served under the default budget and with the budget disabled.
+     */
     private static final String[][] CALLS = {
         { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
         { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
         { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
-        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
+        MATRIX_CALLS[0] };
 
     @Test
     void everyBitsetMatrixIsRefusedWhenItDoesNotFitTheBudget() {
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
           BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
 
-      for (final String[] call : CALLS)
+      for (final String[] call : MATRIX_CALLS)
         assertThatThrownBy(() -> drain(call[1]))
             .as("%s builds a nodeCount x nodeCount bit matrix and must price it", call[0])
             .hasStackTraceContaining(call[0] + "(): the neighbour bitsets")
@@ -754,21 +764,20 @@ class AlgoMemoryBudgetTest {
     }
 
     @Test
-    void kTrussPricesItsSecondMatrixSeparately() {
-      // computeFullTrussDecomposition builds a second bit matrix while the first is still alive, so the peak is
-      // twice the shape - which is what a running total is for.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+    void kTrussPricesItsDecomposition() {
+      // 600 bytes admit the graph (384) and its adjacency (168), and refuse the edge arrays of the decomposition on top: linear in
+      // the edges since issue #12173, where it used to be two nodeCount x nodeCount bit matrices
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 600L);
 
       assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD node RETURN node"))
-          .hasStackTraceContaining("the neighbour bitsets of the truss decomposition")
-          .hasStackTraceContaining("(4 x 4 nodes)");
+          .hasStackTraceContaining("the truss decomposition would need 205 bytes (4 nodes, 5 edges)");
     }
 
     @Test
     void cliquePricesItsSearchStackAtThePeakDepth() {
-      // The Bron-Kerbosch frames are five bit sets each and the stack is as deep as the largest clique reached,
-      // so at its peak the stack is a second nodeCount x nodeCount structure.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+      // The live frames hold sorted candidate and excluded sets bounded by the starting node's neighbourhood (issue #12173), priced
+      // at their peak: 600 bytes admit the graph and its adjacency (552) and refuse the first frame
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 600L);
 
       assertThatThrownBy(() -> drain("CALL algo.clique() YIELD clique RETURN clique"))
           .hasStackTraceContaining("the clique search stack")

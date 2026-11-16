@@ -23,9 +23,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -35,7 +35,8 @@ import java.util.stream.Stream;
  * <p>
  * Counts the number of common neighbors between the given source node and every other
  * vertex in the graph. Only pairs with count &gt;= cutoff (default 1) are returned,
- * sorted by common neighbor count descending.
+ * sorted by common neighbor count descending, equal counts in RID order. Only the nodes two hops
+ * away can share a neighbour with the source, so only their rows are read (issue #12176).
  * </p>
  * <p>
  * Example:
@@ -87,36 +88,29 @@ public class AlgoCommonNeighbors extends AbstractAlgoProcedure {
     final int cutoff           = extractInt(optionalNumberArg(args, 3, "cutoff", 1), "cutoff");
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
+    // Only a node two hops away shares a neighbour with the source, so only those are read: no view, no loading of the whole
+    // graph (issue #12176)
+    final Neighbourhood graph = openNeighbourhood(db, relTypes, context, sourceVertex.getIdentity());
 
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    final int srcIdx = graph.nodeOf(sourceVertex.getIdentity());
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Build BitSet of source neighbors for O(1) membership checks
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
+    // count = the entries of v's row that name a neighbour of the source
+    final NodeScores shared = scoresThroughNeighbours(graph, srcIdx, dir, w -> 0.0, guard);
 
+    // A node sharing no neighbour counts 0, and is listed only when the cutoff admits 0
     final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx)
-        continue;
-      int count = 0;
-      for (final int w : adj[v])
-        if (srcNeighbors.get(w))
-          count++;
+    for (final int v : candidateNodes(db, graph, shared, srcIdx, cutoff <= 0)) {
+      guard.checkPeriodically(results.size());
+      final int slot = shared.slotOf(v);
+      final int count = slot >= 0 ? shared.count(slot) : 0;
       if (count >= cutoff) {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node1", sourceVertex.getIdentity());
-        r.setProperty("node2", graph.getRID(v));
+        r.setProperty("node2", graph.ridOf(v));
         r.setProperty("commonNeighbors", count);
         results.add(r);
       }
