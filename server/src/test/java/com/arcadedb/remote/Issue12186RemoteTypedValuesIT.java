@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
@@ -123,6 +124,29 @@ class Issue12186RemoteTypedValuesIT extends BaseGraphServerTest {
     for (final Map.Entry<String, Object> e : values.entrySet())
       assertThat(db.query("sql", "SELECT count(*) AS c FROM Doc WHERE " + e.getKey() + " = :v", Map.of("v", e.getValue())).next()
           .<Long>getProperty("c")).as(e.getKey()).isEqualTo(1L);
+  }
+
+  @Test
+  void collectionsNullsAndUnusualNamesKeepTheirShape() {
+    final RemoteDatabase db = database();
+    final MutableDocument doc = db.newDocument("Doc");
+    doc.set("numbers", List.of(1, 2, 3));
+    doc.set("words", List.of("a", "b"));
+    doc.set("nested", Map.of("inner", List.of(1, 2)));
+    doc.set("nothing", null);
+    doc.set("we\"ird \\ name\n", "x");
+    doc.save();
+
+    final Result row = db.query("sql", "SELECT numbers.type() AS n, words.type() AS w, nested.type() AS m, nested.inner.type() AS mi, "
+        + "(nothing IS DEFINED) AS d FROM " + doc.getIdentity()).next();
+    assertThat(row.<String>getProperty("n")).isEqualTo("LIST");
+    assertThat(row.<String>getProperty("w")).isEqualTo("LIST");
+    assertThat(row.<String>getProperty("m")).isEqualTo("MAP");
+    assertThat(row.<String>getProperty("mi")).isEqualTo("LIST");
+    assertThat(row.<Boolean>getProperty("d")).isTrue();
+    final Document read = db.lookupByRID(doc.getIdentity(), true).asDocument();
+    assertThat(read.getPropertyNames()).contains("we\"ird \\ name\n", "nothing");
+    assertThat(read.getString("we\"ird \\ name\n")).isEqualTo("x");
   }
 
   @Test
