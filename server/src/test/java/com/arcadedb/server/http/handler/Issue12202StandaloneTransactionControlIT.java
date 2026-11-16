@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12202: a SQL {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK} sent as a command of its own outside a session was answered
- * OK and did nothing. The server runs such a command in a transaction of that one request, so a {@code BEGIN} opened nothing the
+ * OK and did nothing; issue #12232: so was an openCypher {@code START TRANSACTION}, {@code COMMIT} or {@code ROLLBACK}. The server runs such a command in a transaction of that one request, so a {@code BEGIN} opened nothing the
  * next command joined and a later {@code ROLLBACK} undid nothing. It is refused now with a client error that names the
  * transaction API. A {@code sqlscript} holding the whole block, and a statement inside a session, run as before.
  *
@@ -54,6 +54,26 @@ class Issue12202StandaloneTransactionControlIT extends BaseGraphServerTest {
 
     assertThat(response.statusCode()).isEqualTo(400);
     assertThat(response.body()).contains("CommandSemanticException").contains("RemoteDatabase.begin()").contains("sqlscript");
+  }
+
+  /** The openCypher spelling has the same gap (issue #12232). */
+  @ParameterizedTest
+  @ValueSource(strings = { "START TRANSACTION", "start transaction isolation read_committed", "COMMIT", "rollback" })
+  void anOpenCypherTransactionControlOutsideASessionIsAClientError(final String statement) throws Exception {
+    final HttpResponse<String> response = command("opencypher", statement, null);
+
+    assertThat(response.statusCode()).isEqualTo(400);
+    assertThat(response.body()).contains("CommandSemanticException").contains("RemoteDatabase.begin()");
+  }
+
+  @Test
+  void anOpenCypherCommitInsideASessionRunsAsBefore() throws Exception {
+    final HttpResponse<String> begin = post("/api/v1/begin/" + getDatabaseName(), "", null);
+    assertThat(begin.statusCode()).isEqualTo(204);
+    final String session = begin.headers().firstValue(HttpSessionManager.ARCADEDB_SESSION_ID).orElseThrow();
+
+    assertThat(command("opencypher", "CREATE (:C12232 {k: 1})", session).statusCode()).isEqualTo(200);
+    assertThat(command("opencypher", "COMMIT", session).statusCode()).isEqualTo(200);
   }
 
   @Test

@@ -168,6 +168,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
           return statement instanceof CypherDDLStatement;
         }
 
+        /**
+         * START TRANSACTION, COMMIT and ROLLBACK (issue #12232). A level the engine cannot provide is left to the execution, which
+         * refuses it with its own words (issue #10386).
+         */
+        @Override
+        public boolean isTransactionControl() {
+          if (!(statement instanceof CypherTransactionStatement transaction))
+            return false;
+          if (transaction.getIsolationLevel() == null)
+            return true;
+          try {
+            IsolationLevels.parse(transaction.getIsolationLevel().toUpperCase(Locale.ENGLISH));
+            return true;
+          } catch (final IllegalArgumentException e) {
+            return false;
+          }
+        }
+
         @Override
         public Set<OperationType> getOperationTypes() {
           if (statement instanceof CypherAdminStatement)

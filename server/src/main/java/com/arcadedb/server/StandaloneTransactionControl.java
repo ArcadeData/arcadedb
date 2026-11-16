@@ -24,31 +24,37 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 
+import java.util.Locale;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
- * Refuses a SQL {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK} sent as a command of its own outside any transaction or session
- * of the caller (issue #12202). The server runs such a command in a transaction it opens around that one request, so the
+ * Refuses a SQL {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK} (issue #12202), or an openCypher {@code START TRANSACTION},
+ * {@code COMMIT} or {@code ROLLBACK} (issue #12232), sent as a command of its own outside any transaction or session of the caller. The server runs such a command in a transaction it opens around that one request, so the
  * statement acted on that wrapper and ended with it: a {@code BEGIN} opened nothing the next command joined, and a later
  * {@code ROLLBACK} was answered OK and undid nothing. A {@code sqlscript} that holds the whole block in one request, and a
  * statement inside the caller's own transaction or session, are not concerned.
  */
 public final class StandaloneTransactionControl {
 
+  /** The languages whose engines answer {@code isTransactionControl()}; a script language runs the whole block in one request. */
+  private static final Set<String> LANGUAGES = Set.of("sql", "opencypher", "cypher");
+
   private StandaloneTransactionControl() {
   }
 
   /**
-   * Throws a {@link CommandSemanticException} (a client error on every protocol) when {@code command}, in {@code language}, is a
-   * transaction control statement. Call it only for a request that runs outside a transaction or session of its caller.
+   * Throws a {@link CommandSemanticException} (a client error on every protocol) when {@code command}, in {@code language} (SQL or
+   * openCypher), is a transaction control statement. Call it only for a request that runs outside a transaction or session of its caller.
    */
   public static void refuse(final Database database, final String language, final String command) {
-    if (database == null || command == null || !"sql".equalsIgnoreCase(language) || !startsWithTransactionControl(command))
+    if (database == null || command == null || language == null || !LANGUAGES.contains(language.toLowerCase(Locale.ENGLISH))
+        || !startsWithTransactionControl(command))
       return;
 
     final boolean transactionControl;
     try {
-      transactionControl = database.getQueryEngine("sql").analyze(command.trim()).isTransactionControl();
+      transactionControl = database.getQueryEngine(language).analyze(command.trim()).isTransactionControl();
     } catch (final CommandParsingException e) {
       // NOT A SINGLE STATEMENT THE PARSER ACCEPTS (A SCRIPT SENT AS "sql", A TYPO): THE EXECUTION REPORTS OR RUNS IT AS BEFORE
       LogManager.instance().log(StandaloneTransactionControl.class, Level.FINE,
@@ -61,13 +67,13 @@ public final class StandaloneTransactionControl {
           + "' cannot run as a command of its own outside a transaction: each such request runs in its own transaction, which it "
           + "would begin, commit or roll back alone. Use the transaction API of the client (RemoteDatabase.begin(), commit(), "
           + "rollback() or transaction()), the HTTP /begin, /commit and /rollback endpoints with the arcadedb-session-id header, "
-          + "or send the whole block as one 'sqlscript' command");
+          + "or, in SQL, send the whole block as one 'sqlscript' command");
   }
 
-  /** A prefix test, so every other command pays no parse: the text starts with BEGIN, COMMIT or ROLLBACK. */
+  /** A prefix test, so every other command pays no parse: the text starts with BEGIN, START, COMMIT or ROLLBACK. */
   private static boolean startsWithTransactionControl(final String command) {
     final int start = PostCommandHandler.skipLeadingSpaceAndComments(command);
-    return command.regionMatches(true, start, "begin", 0, 5) || command.regionMatches(true, start, "commit", 0, 6)
-        || command.regionMatches(true, start, "rollback", 0, 8);
+    return command.regionMatches(true, start, "begin", 0, 5) || command.regionMatches(true, start, "start", 0, 5)
+        || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8);
   }
 }

@@ -77,6 +77,14 @@ public class Issue12202GrpcStandaloneTransactionControlIT extends BaseGrpcClient
     assertThat(count()).isEqualTo(1L);
   }
 
+  /** The openCypher spelling has the same gap (issue #12232). */
+  @Test
+  void anOpenCypherTransactionControlOutsideATransactionIsRefused() {
+    for (final String statement : new String[] { "START TRANSACTION", "COMMIT", "ROLLBACK" })
+      assertThatThrownBy(() -> grpc.command("opencypher", statement)).as(statement).isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("RemoteDatabase.begin()");
+  }
+
   @Test
   void theTransactionApiAndAScriptStillWork() {
     grpc.begin();
