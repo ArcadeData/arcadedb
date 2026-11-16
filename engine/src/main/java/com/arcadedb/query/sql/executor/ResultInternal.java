@@ -122,20 +122,53 @@ public class ResultInternal implements Result {
    * Asking for each name in turn reads a row backed by a stored record once per property, since
    * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a row of P
    * properties cost P walks. The values of a plain row come from {@link #toPropertyMap(boolean)} instead, which reads the
-   * record once (issue #10098), so the row costs two passes whatever its size: that one and the name list. The names still
-   * decide what the row holds: the single read leaves out a property whose value does not decode (a damaged record), which a
-   * read by name answers with {@code null}. A subclass may answer a name differently from the fields {@code toPropertyMap}
-   * reads, so it is read name by name, as {@link #copyBindings} draws the same line.
+   * record once (issue #10098), so the row costs two passes whatever its size: that one and the name list. A projection row
+   * (one that holds its own values) gets the map {@code toPropertyMap} built and nothing else: its names are that map's keys,
+   * so neither a name set nor a second map is built for it. The names still decide what a record row holds: the single read
+   * leaves out a property whose value does not decode (a damaged record), which a read by name answers with {@code null}.
+   * A subclass may answer a name differently from the fields {@code toPropertyMap} reads, so it is read name by name, as
+   * {@link #copyBindings} draws the same line.
    *
-   * @return a new map, in the order {@code getPropertyNames()} lists the names
+   * @return a map the caller may keep, in the order {@code getPropertyNames()} lists the names
    */
   public static Map<String, Object> propertiesOf(final Result row) {
-    final Set<String> names = row.getPropertyNames();
-    final Map<String, Object> read = row.getClass() == ResultInternal.class ? row.toPropertyMap(false) : null;
+    // EXACT CLASS ONLY, AS IN copyBindings(): A SUBCLASS MAY OVERRIDE getPropertyNames() OR getProperty() AND ANSWER A NAME
+    // DIFFERENTLY FROM THE content AND element FIELDS toPropertyMap() READS, SO ITS ROWS KEEP THE READ BY NAME
+    if (row.getClass() != ResultInternal.class) {
+      final Set<String> names = row.getPropertyNames();
+      final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+      for (final String name : names)
+        properties.put(name, row.getProperty(name));
+      return properties;
+    }
+
+    final ResultInternal plain = (ResultInternal) row;
+    final Map<String, Object> read = plain.toPropertyMap(false);
+    // A PROJECTION ROW (content PRESENT) OR A ROW WITHOUT A RECORD: ITS NAMES ARE EXACTLY THE content KEYS toPropertyMap()
+    // WALKED, IN THAT ORDER, SO ITS MAP IS THE ANSWER
+    if (plain.element == null || (plain.content != null && !plain.content.isEmpty()))
+      return read;
+
+    final Set<String> names = plain.getPropertyNames();
+    if (sameNamesInOrder(names, read))
+      return read;
+
+    // A DAMAGED RECORD: THE SINGLE READ LEFT OUT A VALUE THAT DOES NOT DECODE AND LOGGED IT. A READ BY NAME WOULD DECODE THE
+    // SAME BYTES, FAIL THE SAME WAY, LOG THE SAME PROPERTY A SECOND TIME AND ANSWER null, SO THE NAME TAKES null DIRECTLY
     final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
     for (final String name : names)
-      properties.put(name, read != null && read.containsKey(name) ? read.get(name) : row.getProperty(name));
+      properties.put(name, read.get(name));
     return properties;
+  }
+
+  private static boolean sameNamesInOrder(final Set<String> names, final Map<String, Object> read) {
+    if (names.size() != read.size())
+      return false;
+    final Iterator<String> readNames = read.keySet().iterator();
+    for (final String name : names)
+      if (!name.equals(readNames.next()))
+        return false;
+    return true;
   }
 
   /**
