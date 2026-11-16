@@ -163,7 +163,28 @@ public abstract class PaginatedComponent extends Component {
               + "appended to this file",
           null, name, file.getFilePath(), fileSize, pageSize, tailBytes, pageCount.get());
 
+    // The file lags a commit until the flush thread writes the page, so a component built on a live database (a full schema
+    // reload builds one on every file) also counts the committed pages the flush pipeline still holds past the end of the file
+    // (issue #12101). Counted from the file alone, the mutable file of an LSM index created just before the reload had no page,
+    // was taken for the header-less leftover of a compaction (#10046) and left out of the schema, and its index with it.
+    pageCount.set(withPagesAwaitingFlush(pageCount.get()));
+
     reservedPageCounter.set(pageCount.get());
+  }
+
+  /**
+   * {@code pagesOnDisk} raised by the committed pages that follow them in the flush pipeline (queued, deferred by a suspension,
+   * being written, or failed to write), probed one by one up to the first page the pipeline does not hold. The file is read
+   * again afterwards: a page leaves the pipeline only once its write reached the file, so a page written between the two reads
+   * is counted by the second. A page number reserved by a transaction that did not commit leaves a gap the probe stops at; the
+   * pages past it are counted as they were before, from the file once written and, on a schema reload, from the instance this
+   * one replaces at publication ({@link #carryOverFrom(PaginatedComponent)}).
+   */
+  private int withPagesAwaitingFlush(final int pagesOnDisk) throws IOException {
+    int pages = pagesOnDisk;
+    while (PageManager.INSTANCE.getPendingVersionOfPage(new PageId(database, fileId, pages)) >= 0)
+      ++pages;
+    return Math.max(pages, (int) (file.getSize() / pageSize));
   }
 
   public void rename(final String newComponentName) throws IOException {
