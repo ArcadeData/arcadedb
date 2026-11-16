@@ -255,6 +255,28 @@ public class LightEdgeRID extends DatabaseRID {
     }
   }
 
+  /**
+   * The element id of this edge, what openCypher's {@code elementId()} and the Bolt wire hand out (issue #12132):
+   * {@code #<type bucket>:-1/<out>/<in>}, and for a second or later twin of the triple {@code /<occurrence>} after it.
+   * <p>
+   * The {@code #bucket:-1} pair alone is shared by every lightweight edge of the type, so a lookup by it selects them
+   * all; the endpoints name the edge, and the occurrence tells twins apart the way {@link #distinctKey()} does (which
+   * of the twins an id names after one of them was deleted is not stable, but twins carry nothing to tell them apart,
+   * so deleting by the id still deletes exactly one). The string is deliberately not a RID ({@link RID#is(String)} is
+   * false for it), so no RID seek and no {@code id()}/RID-string coercion can take it for a record address.
+   * <p>
+   * Costs the occurrence: resolved once per edge, through the census of the iteration that read it when it has one.
+   */
+  public String toElementId() {
+    final StringBuilder buffer = new StringBuilder(32);
+    buffer.append('#').append(getBucketId()).append(':').append(getPosition());
+    buffer.append('/').append(out).append('/').append(in);
+    final int occurrenceOfTwin = getOccurrence();
+    if (occurrenceOfTwin > 0)
+      buffer.append('/').append(occurrenceOfTwin);
+    return buffer.toString();
+  }
+
   /** Receives the entries of an edge list, in the order the iterators read them. */
   @FunctionalInterface
   interface ListEntryVisitor {

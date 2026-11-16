@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.geo.CypherPointFunction;
+import com.arcadedb.function.graph.ElementIdFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -178,8 +179,9 @@ public class BoltStructureMapper {
    */
   public static BoltRelationship toRelationship(final Edge edge) {
     final RID rid = edge.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    // A lightweight edge's RID is shared by every lightweight edge of its type: the element id names the edge (issue #12132)
+    final String elementId = ElementIdFunction.of(rid);
+    final long id = relationshipId(rid, elementId);
 
     final RID outRid = edge.getOut();
     final RID inRid = edge.getIn();
@@ -200,13 +202,29 @@ public class BoltStructureMapper {
    */
   public static BoltUnboundRelationship toUnboundRelationship(final Edge edge) {
     final RID rid = edge.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final String elementId = ElementIdFunction.of(rid);
+    final long id = relationshipId(rid, elementId);
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
 
     return new BoltUnboundRelationship(id, type, properties, elementId);
+  }
+
+  /**
+   * The numeric id of a relationship. A lightweight edge has no record position to encode (its id() is null, and encoding its
+   * {@code #bucket:-1} marker throws): it gets a negative id hashed (FNV-1a, 64 bits) from the element id that names it, which
+   * no record id, never negative, can equal (issue #12132).
+   */
+  private static long relationshipId(final RID rid, final String elementId) {
+    if (rid.getPosition() >= 0)
+      return ridToId(rid);
+    long hash = 0xcbf29ce484222325L;
+    for (int i = 0; i < elementId.length(); i++) {
+      hash ^= elementId.charAt(i);
+      hash *= 0x100000001b3L;
+    }
+    return -1L - (hash & Long.MAX_VALUE);
   }
 
   /**

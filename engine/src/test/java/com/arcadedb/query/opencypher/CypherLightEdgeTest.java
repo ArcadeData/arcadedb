@@ -37,10 +37,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -969,6 +971,113 @@ class CypherLightEdgeTest {
       try (final ResultSet rs = database.query("opencypher", query)) {
         final Result row = rs.next();
         return ((Number) row.getProperty("n")).longValue();
+      }
+    }
+  }
+
+  /**
+   * Regression tests for #12132: every lightweight edge of a type answered the same {@code elementId()}, the shared
+   * {@code #<bucket>:-1} marker, so deleting by the element id read from one edge deleted every edge of the type.
+   */
+  @Nested
+  class Issue12132LightEdgeElementId extends TestHelper {
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE VERTEX TYPE A");
+      database.command("sql", "CREATE VERTEX TYPE B");
+      database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
+      database.command("sql", "CREATE EDGE TYPE H");
+      database.transaction(() -> database.command("opencypher",
+          "CREATE (a:A {k:'a'}), (b1:B {k:'b1'}), (b2:B {k:'b2'}), (b3:B {k:'b3'}) "
+              + "CREATE (a)-[:L]->(b1), (a)-[:L]->(b2), (a)-[:L]->(b3), (a)-[:H]->(b1), (a)-[:H]->(b2), (a)-[:H]->(b3)").close());
+    }
+
+    @Test
+    void everyLightweightEdgeHasItsOwnElementId() {
+      final List<String> ids = elementIds("MATCH (:A)-[r:L]->(:B) RETURN elementId(r) AS e");
+      assertThat(ids).hasSize(3).doesNotHaveDuplicates().doesNotContainNull();
+      // not a record address: no RID seek and no id()/RID-string coercion can take it for one
+      assertThat(ids).noneMatch(RID::is);
+      assertThat(single("MATCH (:A)-[r:L]->(:B) RETURN count(DISTINCT elementId(r)) AS n")).isEqualTo(3L);
+      // a record-backed edge keeps its RID as its element id
+      assertThat(elementIds("MATCH (:A)-[r:H]->(:B) RETURN elementId(r) AS e")).hasSize(3).allMatch(RID::is);
+    }
+
+    @Test
+    void theElementIdDoesNotDependOnTheSideTheEdgeWasReadFrom() {
+      final String fromOut = elementIds("MATCH (:A)-[r:L]->(:B {k:'b2'}) RETURN elementId(r) AS e").getFirst();
+      final String fromIn = elementIds("MATCH (:B {k:'b2'})<-[r:L]-(:A) RETURN elementId(r) AS e").getFirst();
+      final String undirected = elementIds("MATCH (:B {k:'b2'})-[r:L]-() RETURN elementId(r) AS e").getFirst();
+      assertThat(fromIn).isEqualTo(fromOut);
+      assertThat(undirected).isEqualTo(fromOut);
+    }
+
+    @Test
+    void deletingByTheElementIdOfOneEdgeDeletesThatEdgeOnly() {
+      final String id = elementIds("MATCH (:A)-[r:L]->(:B {k:'b1'}) RETURN elementId(r) AS e").getFirst();
+
+      database.transaction(
+          () -> database.command("opencypher", "MATCH ()-[r:L]->() WHERE elementId(r) = $id DELETE r", Map.of("id", id)).close());
+
+      assertThat(elementIds("MATCH (:A)-[r:L]->(b:B) RETURN b.k AS e ORDER BY e")).containsExactly("b2", "b3");
+      // the marker every lightweight edge used to answer names no edge
+      database.transaction(() -> database.command("opencypher", "MATCH ()-[r:L]->() WHERE elementId(r) = $id DELETE r",
+          Map.of("id", "#" + database.getSchema().getType("L").getFirstBucketId() + ":-1")).close());
+      assertThat(single("MATCH (:A)-[r:L]->(:B) RETURN count(r) AS n")).isEqualTo(2L);
+    }
+
+    @Test
+    void deletingByAnElementIdReadInTheSameStatementDeletesThatEdgeOnly() {
+      database.transaction(() -> database.command("opencypher",
+          "MATCH (:A)-[r:L]->(:B {k:'b3'}) WITH elementId(r) AS id MATCH ()-[x:L]->() WHERE elementId(x) = id DELETE x").close());
+
+      assertThat(elementIds("MATCH (:A)-[r:L]->(b:B) RETURN b.k AS e ORDER BY e")).containsExactly("b1", "b2");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = { true, false })
+    void parallelTwinsHaveTheirOwnElementIds(final boolean deleteTheFirst) {
+      database.transaction(() -> {
+        try (final ResultSet rs = database.query("opencypher", "MATCH (a:A), (b:B {k:'b1'}) RETURN a, b")) {
+          final Result row = rs.next();
+          ((Vertex) row.getProperty("a")).modify().newLightEdge("L", row.<Vertex>getProperty("b"));
+        }
+      });
+      final List<String> ids = elementIds("MATCH (:A)-[r:L]->(:B {k:'b1'}) RETURN elementId(r) AS e");
+      assertThat(ids).hasSize(2).doesNotHaveDuplicates();
+      // read from the other end, the twins answer the same two ids
+      assertThat(elementIds("MATCH (:B {k:'b1'})<-[r:L]-(:A) RETURN elementId(r) AS e")).containsExactlyInAnyOrderElementsOf(ids);
+
+      database.transaction(() -> database.command("opencypher", "MATCH ()-[r:L]->() WHERE elementId(r) = $id DELETE r",
+          Map.of("id", deleteTheFirst ? ids.getFirst() : ids.getLast())).close());
+
+      assertThat(single("MATCH (:A)-[r:L]->(:B {k:'b1'}) RETURN count(r) AS n")).isEqualTo(1L);
+      assertThat(single("MATCH (:A)-[r:L]->(:B) RETURN count(r) AS n")).isEqualTo(3L);
+    }
+
+    @Test
+    void sqlDistinctOverLightweightEdgesKeepsEveryEdge() {
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM (SELECT DISTINCT(@this) FROM L)")) {
+        assertThat(((Number) rs.next().getProperty("n")).longValue()).isEqualTo(3L);
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT DISTINCT @this FROM L")) {
+        assertThat(rs.stream().count()).isEqualTo(3L);
+      }
+    }
+
+    private List<String> elementIds(final String query) {
+      final List<String> ids = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        while (rs.hasNext())
+          ids.add(rs.next().getProperty("e"));
+      }
+      return ids;
+    }
+
+    private long single(final String query) {
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        return ((Number) rs.next().getProperty("n")).longValue();
       }
     }
   }
