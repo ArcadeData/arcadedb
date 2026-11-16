@@ -33,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -161,9 +162,13 @@ class ParallelScanSafetyTest extends TestHelper {
    * meaningfulness (the queue-full assertion catches that), never its liveness (the caller-runs guard does).
    */
   private static void awaitIdleQueryPool() throws InterruptedException {
+    awaitIdle(() -> QueryEngineManager.getInstance().getExecutorStats());
+  }
+
+  private static void awaitIdle(final Supplier<PoolStats> pool) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 10_000;
     while (System.currentTimeMillis() < deadline) {
-      final PoolStats stats = QueryEngineManager.getInstance().getExecutorStats();
+      final PoolStats stats = pool.get();
       if (stats.activeThreads() == 0 && stats.queueDepth() == 0)
         return;
       Thread.sleep(10);
@@ -171,29 +176,37 @@ class ParallelScanSafetyTest extends TestHelper {
   }
 
   @Test
-  void parallelScanRunsOnTheDedicatedProducerPool() {
+  void parallelScanRunsOnTheDedicatedProducerPool() throws InterruptedException {
     createAndPopulate();
 
-    final long before = ParallelScanProducerPool.getInstance().getPoolStats().completedTasks();
+    // The consumer scans a unit itself when no producer has taken it yet, and drops the producers still queued once
+    // every unit is over (#8594, #8591). On a pool still busy with the producers of an earlier test none of this scan's
+    // producers runs at all, which says nothing about the pool they were submitted to (issue #ISSUE). So the scan
+    // starts on an idle pool, and runs again if its consumer still got to every unit first.
+    long before = 0;
+    long after = 0;
+    for (int attempt = 0; attempt < 5 && after < before + 2; attempt++) {
+      awaitIdle(() -> ParallelScanProducerPool.getInstance().getPoolStats());
+      before = ParallelScanProducerPool.getInstance().getPoolStats().completedTasks();
 
-    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME);
-    long count = 0;
-    while (rs.hasNext()) {
-      rs.next();
-      count++;
+      final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME);
+      long count = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(RECORDS);
+
+      // One producer task per bucket must have run on the dedicated pool (#4950): blocking producers must
+      // never colonize the shared QueryEngineManager compute pool. Poll briefly: the executor bumps its
+      // completed-task count AFTER the FutureTask outcome is published, so the consumer can finish draining a
+      // moment before the bookkeeping lands.
+      final long deadline = System.currentTimeMillis() + 5_000;
+      while ((after = ParallelScanProducerPool.getInstance().getPoolStats().completedTasks()) < before + 2
+          && System.currentTimeMillis() < deadline)
+        Thread.onSpinWait();
     }
-    assertThat(count).isEqualTo(RECORDS);
-
-    // One producer task per bucket must have run on the dedicated pool (#4950): blocking producers must
-    // never colonize the shared QueryEngineManager compute pool. Poll briefly: the executor bumps its
-    // completed-task count AFTER the FutureTask outcome is published, so the consumer can finish draining a
-    // moment before the bookkeeping lands.
-    final long deadline = System.currentTimeMillis() + 5_000;
-    while (ParallelScanProducerPool.getInstance().getPoolStats().completedTasks() < before + 2
-        && System.currentTimeMillis() < deadline)
-      Thread.onSpinWait();
-    assertThat(ParallelScanProducerPool.getInstance().getPoolStats().completedTasks())
-        .as("scan producer tasks must run on the dedicated pool").isGreaterThanOrEqualTo(before + 2);
+    assertThat(after).as("scan producer tasks must run on the dedicated pool").isGreaterThanOrEqualTo(before + 2);
   }
 
   @Test
