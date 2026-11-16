@@ -163,10 +163,10 @@ class LocaleSensitivityTest {
     assertThat(fn.execute(new Object[]{2.1, 0, "CEILING"}, null)).isEqualTo(3.0);
   }
 
-  // ========= AbstractDateFunction.unitToMillis =========
+  // ========= AbstractDateFunction.timeUnit =========
 
   @Test
-  void unitToMillisUpperCaseUnderTurkishLocale() {
+  void timeUnitUpperCaseUnderTurkishLocale() {
     // "MILLISECONDS" contains 'I' -> toLowerCase(tr_TR) gives "mıllıseconds" != "milliseconds"
     // "MINUTES" contains 'I' -> gives "mınutes" != "minutes"
     final AbstractDateFunction fn = new AbstractDateFunction() {
@@ -187,7 +187,7 @@ class LocaleSensitivityTest {
 
       @Override
       public Object execute(final Object[] args, final CommandContext ctx) {
-        return unitToMillis(args[0] != null ? args[0].toString() : null);
+        return timeUnit(args[0]).toMillis(1);
       }
     };
 

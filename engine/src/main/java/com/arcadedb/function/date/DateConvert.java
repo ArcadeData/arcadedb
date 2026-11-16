@@ -22,7 +22,9 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * date.convert(timestamp, fromUnit, toUnit) - Convert timestamp between units.
+ * date.convert(time, unit, toUnit) - Convert a time from one unit to another, as APOC's apoc.date.convert does (issue
+ * #12106): {@link java.util.concurrent.TimeUnit#convert(long, java.util.concurrent.TimeUnit)}, truncating toward zero and
+ * saturating at {@link Long#MAX_VALUE} or {@link Long#MIN_VALUE} when the result is out of the long range.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -44,7 +46,7 @@ public class DateConvert extends AbstractDateFunction {
 
   @Override
   public String getDescription() {
-    return "Convert a timestamp from one unit to another";
+    return "Convert a time from one unit to another: date.convert(time, unit, toUnit), saturating at the long range";
   }
 
   @Override
@@ -54,16 +56,6 @@ public class DateConvert extends AbstractDateFunction {
 
     // Issue #10850: a whole number - longValue() read 1.5 seconds as 1
     final long value = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[0], getName(), "value");
-    final String fromUnit = args[1] != null ? args[1].toString() : UNIT_MS;
-    final String toUnit = args[2] != null ? args[2].toString() : UNIT_MS;
-
-    try {
-      // Use Math.multiplyExact to prevent silent integer overflow
-      // Convert to milliseconds first, then to target unit
-      final long millis = Math.multiplyExact(value, unitToMillis(fromUnit));
-      return millis / unitToMillis(toUnit);
-    } catch (final ArithmeticException e) {
-      throw new IllegalArgumentException("Date conversion overflow: " + e.getMessage(), e);
-    }
+    return timeUnit(args[2]).convert(value, timeUnit(args[1]));
   }
 }

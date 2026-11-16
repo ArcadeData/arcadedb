@@ -20,29 +20,38 @@ package com.arcadedb.function.date;
 
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.utility.DateUtils;
 
 import java.time.DateTimeException;
+import java.time.Instant;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.temporal.WeekFields;
-import java.util.HashMap;
+import java.time.format.TextStyle;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalQueries;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * date.fields(dateStr, format, timezone) - Extract all fields from date string.
- *
- * <p><b>Parameters:</b></p>
- * <ul>
- *   <li>dateStr: The date string to parse</li>
- *   <li>format: Optional date format pattern (defaults to ISO format)</li>
- *   <li>timezone: Optional timezone ID (e.g., "UTC", "America/New_York", defaults to system timezone)</li>
- * </ul>
+ * date.fields(text, pattern = 'yyyy-MM-dd HH:mm:ss' [, timezone]) - The fields of a date string, as APOC's
+ * apoc.date.fields answers them (issue #12106).
+ * <p>
+ * The text is parsed whole by a {@link DateTimeFormatter} pattern, and the map holds the fields the parsed text supports
+ * under APOC's keys: {@code years}, {@code months}, {@code weekdays} (1 = Monday), {@code days}, {@code hours},
+ * {@code minutes}, {@code seconds}, plus {@code zoneid}, the short name of the zone the text names or, when it names none
+ * (an offset is not a zone), UTC. The fields are the ones written in the text.
+ * <p>
+ * The {@code timezone} argument is an ArcadeDB extension APOC does not have: a text that names an instant (a date, a time
+ * and an offset or a zone) is expressed in that zone, one that names none is read in it, and {@code zoneid} is its name.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateFields extends AbstractDateFunction {
+  private static final String[]      KEYS   = { "years", "months", "weekdays", "days", "hours", "minutes", "seconds" };
+  private static final ChronoField[] FIELDS = { ChronoField.YEAR, ChronoField.MONTH_OF_YEAR, ChronoField.DAY_OF_WEEK,
+      ChronoField.DAY_OF_MONTH, ChronoField.HOUR_OF_DAY, ChronoField.MINUTE_OF_HOUR, ChronoField.SECOND_OF_MINUTE };
+
   @Override
   protected String getSimpleName() {
     return "fields";
@@ -60,61 +69,53 @@ public class DateFields extends AbstractDateFunction {
 
   @Override
   public String getDescription() {
-    return "Parse a date string and extract all fields as a map - year, month, day, hour, minute, second, "
-        + "millisecond, dayOfWeek, dayOfYear, weekOfYear (ISO-8601 week number), weekBasedYear and timezone "
-        + "(supports optional format and timezone parameters)";
+    return "Parse a date string and return its fields as a map - years, months, weekdays, days, hours, minutes, seconds "
+        + "and zoneid: date.fields(text, pattern = 'yyyy-MM-dd HH:mm:ss' [, timezone])";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    final Map<String, Object> fields = new LinkedHashMap<>();
     if (args[0] == null)
-      return null;
+      return fields;
 
-    final String dateStr = args[0].toString();
-    final String format = args.length > 1 && args[1] != null ? args[1].toString() : null;
-    final String timezoneStr = args.length > 2 && args[2] != null ? args[2].toString() : null;
+    final String text = args[0].toString();
+    final String pattern = patternArgument(args, 1);
+    final String timezone = args.length > 2 && args[2] != null ? args[2].toString() : null;
 
-    // Validate and parse timezone if provided
     final ZoneId zoneId;
-    if (timezoneStr != null) {
-      try {
-        zoneId = ZoneId.of(timezoneStr);
-      } catch (final DateTimeException e) {
-        throw new IllegalArgumentException("Invalid timezone ID: " + timezoneStr, e);
-      }
-    } else {
-      zoneId = ZoneId.systemDefault();
+    try {
+      zoneId = ZoneId.of(timezone != null ? timezone : UTC);
+    } catch (final DateTimeException e) {
+      throw new IllegalArgumentException("Invalid timezone ID: " + timezone, e);
     }
 
-    final DateTimeFormatter formatter = getFormatter(format);
-    // A text that names an offset or a zone is the instant it names (issue #10596): its own offset when no zone is asked for, the
-    // zone asked for otherwise. One that names none is read in `zoneId`, as it always was
-    final ZonedDateTime parsed;
+    final DateTimeFormatter formatter;
     try {
-      parsed = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, zoneId);
+      formatter = DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH).withZone(zoneId);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException("The pattern: " + pattern + " is not correct", e);
+    }
+
+    final TemporalAccessor read;
+    try {
+      read = formatter.parse(text);
     } catch (final DateTimeException e) {
       // issue #11589: a text the format cannot read is the caller's mistake, not a raw DateTimeParseException
-      throw new InvalidArgumentException(getName() + "(): '" + InvalidArgumentException.quote(dateStr) + "' cannot be parsed with the format '"
-          + InvalidArgumentException.quote(format) + "'", e);
+      throw new InvalidArgumentException(getName() + "(): '" + InvalidArgumentException.quote(text) + "' cannot be parsed with the format '"
+          + InvalidArgumentException.quote(pattern) + "'", e);
     }
-    final ZonedDateTime dateTime = timezoneStr != null ? parsed.withZoneSameInstant(zoneId) : parsed;
+    // the instant the text names, its own offset or zone first (issue #10596), expressed in the zone asked for
+    final TemporalAccessor parsed =
+        timezone != null && read.isSupported(ChronoField.INSTANT_SECONDS) ? Instant.from(read).atZone(zoneId) : read;
 
-    final Map<String, Object> fields = new HashMap<>();
-    fields.put("year", (long) dateTime.getYear());
-    fields.put("month", (long) dateTime.getMonthValue());
-    fields.put("day", (long) dateTime.getDayOfMonth());
-    fields.put("hour", (long) dateTime.getHour());
-    fields.put("minute", (long) dateTime.getMinute());
-    fields.put("second", (long) dateTime.getSecond());
-    fields.put("millisecond", (long) (dateTime.getNano() / 1_000_000));
-    fields.put("dayOfWeek", (long) dateTime.getDayOfWeek().getValue());
-    fields.put("dayOfYear", (long) dateTime.getDayOfYear());
-    // ISO-8601 week number: weekOfWeekBasedYear() (not weekOfYear(), which reports 0 for the partial
-    // week preceding the first full week of the calendar year). Paired with the week-based year, since
-    // an ISO week number read against the calendar "year" is wrong around a year boundary.
-    fields.put("weekOfYear", (long) dateTime.get(WeekFields.ISO.weekOfWeekBasedYear()));
-    fields.put("weekBasedYear", (long) dateTime.get(WeekFields.ISO.weekBasedYear()));
-    fields.put("timezone", dateTime.getZone().getId());
+    for (int i = 0; i < FIELDS.length; i++)
+      if (parsed.isSupported(FIELDS[i]))
+        fields.put(KEYS[i], parsed.getLong(FIELDS[i]));
+
+    final ZoneId zone = parsed.query(TemporalQueries.zone());
+    if (zone != null)
+      fields.put("zoneid", zone.getDisplayName(TextStyle.SHORT, Locale.ROOT));
 
     return fields;
   }

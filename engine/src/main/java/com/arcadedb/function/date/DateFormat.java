@@ -20,13 +20,12 @@ package com.arcadedb.function.date;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
+import java.util.Date;
 
 /**
- * date.format(timestamp, unit, format) - Format timestamp to string.
+ * date.format(time, unit = 'ms', format = 'yyyy-MM-dd HH:mm:ss', timezone = 'UTC') - Format a timestamp to a string, as
+ * APOC's apoc.date.format does (issue #12106): a {@link java.text.SimpleDateFormat} pattern, the timestamp read in
+ * {@code unit} (saturating at the long range), rendered in {@code timezone}.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,12 +42,12 @@ public class DateFormat extends AbstractDateFunction {
 
   @Override
   public int getMaxArgs() {
-    return 3;
+    return 4;
   }
 
   @Override
   public String getDescription() {
-    return "Format a timestamp to a string using the specified format pattern";
+    return "Format a timestamp to a string: date.format(time, unit = 'ms', format = 'yyyy-MM-dd HH:mm:ss', timezone = 'UTC')";
   }
 
   @Override
@@ -56,17 +55,7 @@ public class DateFormat extends AbstractDateFunction {
     if (args[0] == null)
       return null;
 
-    final long timestamp = toMillis(args[0]);
-    final String unit = args.length > 1 && args[1] != null ? args[1].toString() : UNIT_MS;
-    final String format = args.length > 2 && args[2] != null ? args[2].toString() : null;
-
-    // Convert timestamp based on unit
-    final long millis = timestamp * unitToMillis(unit);
-
-    // Format the timestamp
-    final ZonedDateTime dateTime = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault());
-    final DateTimeFormatter formatter = getFormatter(format);
-
-    return dateTime.format(formatter);
+    final long millis = timeUnit(args.length > 1 ? args[1] : null).toMillis(toMillis(args[0]));
+    return simpleDateFormat(patternArgument(args, 2), args.length > 3 ? args[3] : null).format(new Date(millis));
   }
 }

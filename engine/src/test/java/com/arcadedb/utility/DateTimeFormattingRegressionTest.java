@@ -294,9 +294,8 @@ class DateTimeFormattingRegressionTest {
     void sqlFormatFunctionsRenderInEnglish() {
       assertThat(new FormatFunction().execute(new Object[] { LocalDateTime.of(2026, 3, 4, 10, 20, 30), DATETIME_PATTERN }, null))
           .isEqualTo(ENGLISH_DATETIME);
-      // date.format() renders in the machine's own time zone, so only the textual field is asserted here
-      assertThat(new DateFormat().execute(new Object[] { 1772622030000L, "ms", DATE_PATTERN }, null).toString())
-          .contains("March");
+      // date.format() renders in UTC unless a time zone is given (issue #12106)
+      assertThat(new DateFormat().execute(new Object[] { 1772622030000L, "ms", DATE_PATTERN }, null)).isEqualTo("04 March 2026");
     }
 
     /** End to end: a record written with a textual schema pattern reads back the same under a foreign locale. */

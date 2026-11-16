@@ -19,7 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -28,40 +28,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issue #7044, a follow-up to #4554: {@code date.field(ts, 'weekofyear')} was corrected to use
- * {@code WeekFields.ISO.weekOfWeekBasedYear()}, but its sibling {@code date.fields(dateStr)} - registered
- * on the very next line of {@code CypherFunctionRegistry} - kept using {@code WeekFields.ISO.weekOfYear()},
- * which reports {@code 0} for the partial week that precedes the first full week of the calendar year.
- * The two functions therefore disagreed about the same instant under the same key name.
+ * {@code WeekFields.ISO.weekOfWeekBasedYear()}, but its sibling {@code date.fields(dateStr)} kept using
+ * {@code WeekFields.ISO.weekOfYear()}, which reports {@code 0} for the partial week that precedes the first full week of
+ * the calendar year.
  * <p>
- * Both functions are stateless registry entries, so they are reachable from openCypher <i>and</i> from SQL;
- * these tests pin the ISO-8601 answer on both surfaces.
+ * Since issue #12106 {@code date.fields} answers APOC's keys only (years, months, weekdays, days, hours, minutes, seconds,
+ * zoneid), so the ISO week is read through {@code date.field}. Both query engines reach the stateless registry, so these
+ * tests pin the ISO-8601 answer on both surfaces.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
 class CypherDateFieldsIsoWeekIssue7044Test extends TestHelper {
+  /** 2023-01-01 00:00:00 UTC, a Sunday: ISO week 52 of the week-based-year 2022, never week 0. */
+  private static final long JAN_1_2023 = 1672531200000L;
 
-  /** 2023-01-01 is a Sunday: ISO week 52 of the week-based-year 2022, never week 0. */
   @Test
-  void dateFieldsReportsIsoWeekOverCypher() {
-    final ResultSet rs = database.query("opencypher", "RETURN date.fields('2023-01-01T00:00:00') AS f");
-    assertThat(rs.hasNext()).isTrue();
-
-    final Map<String, Object> fields = rs.next().getProperty("f");
-    assertThat(fields).containsEntry("weekOfYear", 52L);
-    assertThat(fields).containsEntry("weekBasedYear", 2022L);
-    assertThat(fields).containsEntry("year", 2023L);
-    assertThat(fields).containsEntry("dayOfYear", 1L);
+  void dateFieldReportsIsoWeekOverCypher() {
+    final Result row = database.query("opencypher", "RETURN date.field($t, 'weekofyear') AS w, date.field($t, 'weekyear') AS y, "
+        + "date.field($t, 'years') AS year", Map.of("t", JAN_1_2023)).next();
+    assertThat(row.<Long>getProperty("w")).isEqualTo(52L);
+    assertThat(row.<Long>getProperty("y")).isEqualTo(2022L);
+    assertThat(row.<Long>getProperty("year")).isEqualTo(2023L);
   }
 
   /** The same function over SQL, since the stateless registry backs both query engines. */
   @Test
-  void dateFieldsReportsIsoWeekOverSql() {
-    final ResultSet rs = database.query("sql", "SELECT date.fields('2023-01-01T00:00:00') AS f");
-    assertThat(rs.hasNext()).isTrue();
-
-    final Map<String, Object> fields = rs.next().getProperty("f");
-    assertThat(fields).containsEntry("weekOfYear", 52L);
-    assertThat(fields).containsEntry("weekBasedYear", 2022L);
+  void dateFieldReportsIsoWeekOverSql() {
+    final Result row = database.query("sql", "SELECT date.field(?, 'weekofyear') AS w, date.field(?, 'weekyear') AS y", JAN_1_2023,
+        JAN_1_2023).next();
+    assertThat(row.<Long>getProperty("w")).isEqualTo(52L);
+    assertThat(row.<Long>getProperty("y")).isEqualTo(2022L);
   }
-
 }
