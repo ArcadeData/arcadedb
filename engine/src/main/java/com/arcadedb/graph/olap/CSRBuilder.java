@@ -691,8 +691,10 @@ public class CSRBuilder {
 
   private Map<String, Column.Type> detectEdgePropertyTypesFromSchema(final String[] edgeTypes) {
     final Map<String, Column.Type> result = new HashMap<>();
+    // A name whose types differ across two edge types stays out: a later type declaring it again must not bring it back
+    final Set<String> conflicting = new HashSet<>();
     for (final String typeName : concreteEdgeTypes(edgeTypes))
-      collectEdgeSchemaProperties(database.getSchema().getType(typeName), result);
+      collectEdgeSchemaProperties(database.getSchema().getType(typeName), result, conflicting);
     return result;
   }
 
@@ -719,9 +721,12 @@ public class CSRBuilder {
     return missing;
   }
 
-  private void collectEdgeSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
+  private void collectEdgeSchemaProperties(final DocumentType type, final Map<String, Column.Type> result,
+      final Set<String> conflicting) {
     for (final Property prop : type.getProperties()) {
       if (edgePropertyFilterSet != null && !edgePropertyFilterSet.contains(prop.getName()))
+        continue;
+      if (conflicting.contains(prop.getName()))
         continue;
       final Column.Type colType = schemaTypeToColumnType(prop.getType());
       if (colType == null)
@@ -735,6 +740,7 @@ public class CSRBuilder {
             "Edge property '%s' excluded from columnar storage: type conflict (%s vs %s) across edge types",
             prop.getName(), existing, colType);
         result.remove(prop.getName());
+        conflicting.add(prop.getName());
       }
     }
   }

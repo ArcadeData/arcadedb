@@ -82,6 +82,19 @@ class GavEdgePropertyDeclarationTest extends TestHelper {
     assertNoView();
   }
 
+  /** A third edge type declaring the first type again does not make the conflict with the second one go away. */
+  @Test
+  void aTypeConflictStaysAcrossALaterEdgeType() {
+    database.command("sql", "CREATE EDGE TYPE T");
+    database.command("sql", "CREATE PROPERTY R.w INTEGER");
+    database.command("sql", "CREATE PROPERTY S.w DOUBLE");
+    database.command("sql", "CREATE PROPERTY T.w INTEGER");
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE TYPES (R, S, T) EDGE PROPERTIES (w)"))
+        .hasMessageContaining("edge property 'w' is not declared on R, S, T");
+    assertNoView();
+  }
+
   /** The fix the issue measured: once declared, the view holds the column the weighted calls read. */
   @Test
   void aDeclaredEdgePropertyGetsItsColumn() throws Exception {
