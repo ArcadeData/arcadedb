@@ -19,23 +19,27 @@
 package com.arcadedb.query.opencypher.procedures.meta;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: meta.nodeTypeProperties()
+ * Procedure: meta.nodeTypeProperties([config])
  * <p>
- * Returns information about properties for each node label/type.
+ * Returns, as APOC's {@code apoc.meta.nodeTypeProperties}, one row per property of each label set found in the data:
+ * {@code nodeType} ({@code :`A`:`B`}), {@code nodeLabels}, {@code propertyName}, {@code propertyTypes} (the APOC names of
+ * the value types seen), {@code mandatory}, {@code propertyObservations} and {@code totalObservations}. The nodes are
+ * sampled label by label with APOC's {@code sample} (default 1000, -1 reads them all); a label set with no property gets
+ * one row with a null property. Properties the schema declares are reported too, with 0 observations when no examined
+ * node carried them; {@code mandatory} is the declaration's. The config also takes {@code includeLabels} and
+ * {@code excludeLabels}.
  * </p>
  * <p>
  * Example Cypher usage:
@@ -62,41 +66,43 @@ public class MetaNodeTypeProperties extends AbstractMetaProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 0;
+    return 1;
   }
 
   @Override
   public String getDescription() {
-    return "Returns information about properties for each node label/type";
+    return "Returns the properties found on each node label set, with their types and how often they occur";
   }
 
   @Override
   public List<String> getYieldFields() {
-    return List.of("nodeType", "propertyName", "propertyTypes", "mandatory");
+    return List.of("nodeType", "nodeLabels", "propertyName", "propertyTypes", "mandatory", "propertyObservations",
+        "totalObservations");
   }
 
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Database database = context.getDatabase();
+    final MetaConfig config = config(args);
+    final MetaLabels labels = new MetaLabels(database);
 
-    final List<Result> results = new ArrayList<>();
+    final Map<List<String>, MetaPropertyProfile> groups = new LinkedHashMap<>();
+    forEachSampledNode(database, labels, config,
+        (type, record) -> groups.computeIfAbsent(labels.labelsOf(type), k -> new MetaPropertyProfile()).observe(record.asDocument()));
 
-    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
-      if (type instanceof VertexType) {
-        for (final String propName : type.getPropertyNames()) {
-          final Property property = type.getProperty(propName);
-
-          final ResultInternal result = new ResultInternal();
-          result.setProperty("nodeType", type.getName());
-          result.setProperty("propertyName", propName);
-          result.setProperty("propertyTypes", List.of(mapPropertyType(property.getType())));
-          result.setProperty("mandatory", property.isMandatory());
-
-          results.add(result);
-        }
-      }
+    for (final VertexType type : labels.vertexTypes()) {
+      final List<String> typeLabels = labels.labelsOf(type);
+      if (!typeLabels.isEmpty() && !type.getPolymorphicPropertyNames().isEmpty() && typeLabels.stream().anyMatch(config::acceptsLabel))
+        groups.computeIfAbsent(typeLabels, k -> new MetaPropertyProfile()).declare(type);
     }
 
+    final List<Result> results = new ArrayList<>();
+    for (final Map.Entry<List<String>, MetaPropertyProfile> group : groups.entrySet()) {
+      final Map<String, Object> columns = new LinkedHashMap<>();
+      columns.put("nodeType", MetaLabels.pattern(group.getKey()));
+      columns.put("nodeLabels", group.getKey());
+      results.addAll(group.getValue().rows(columns));
+    }
     return results.stream();
   }
 }

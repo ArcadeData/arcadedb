@@ -26,6 +26,7 @@ import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -160,6 +161,9 @@ public final class Labels {
    * @return the vertex's labels, sorted alphabetically, empty for an unlabelled node
    */
   public static List<String> getLabels(final Vertex vertex) {
+    // A virtual node (create.vNode, meta.graph) has no schema type: its labels are its own list
+    if (vertex instanceof VirtualVertex virtual)
+      return virtual.getLabels();
     return getLabels(vertex.getType());
   }
 
@@ -391,6 +395,8 @@ public final class Labels {
    * @return true if the vertex has the specified label
    */
   public static boolean hasLabel(final Vertex vertex, final String label) {
+    if (vertex instanceof VirtualVertex virtual)
+      return virtual.getLabels().contains(label);
     return vertex.getType().instanceOf(label);
   }
 
@@ -412,6 +418,12 @@ public final class Labels {
    * @return true when the vertex satisfies the label constraint
    */
   public static boolean matches(final Vertex vertex, final List<String> labels, final boolean disjunction) {
+    if (vertex instanceof VirtualVertex virtual) {
+      if (labels == null || labels.isEmpty())
+        return true;
+      final List<String> own = virtual.getLabels();
+      return disjunction ? labels.stream().anyMatch(own::contains) : own.containsAll(labels);
+    }
     return matches(vertex.getType(), labels, disjunction);
   }
 

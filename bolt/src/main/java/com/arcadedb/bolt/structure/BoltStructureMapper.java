@@ -29,6 +29,8 @@ import com.arcadedb.function.graph.ElementIdFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualElement;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
@@ -158,9 +160,8 @@ public class BoltStructureMapper {
    * in the BOLT node. This provides Neo4j-compatible multi-label support.
    */
   public static BoltNode toNode(final Vertex vertex) {
-    final RID rid = vertex.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final long id = idOf(vertex);
+    final String elementId = elementIdOf(vertex);
 
     // Every label the node answers to: its own type and its ancestors', minus the synthetic composite names
     final List<String> labels = Labels.getLabels(vertex);
@@ -175,18 +176,27 @@ public class BoltStructureMapper {
    * Convert an ArcadeDB Edge to a BOLT Relationship.
    */
   public static BoltRelationship toRelationship(final Edge edge) {
-    final RID rid = edge.getIdentity();
-    // A lightweight edge's RID is shared by every lightweight edge of its type: the element id names the edge (issue #12132)
-    final String elementId = ElementIdFunction.of(rid);
-    final long id = relationshipId(rid, elementId);
+    final long id = idOf(edge);
+    final String elementId = elementIdOf(edge);
 
-    final RID outRid = edge.getOut();
-    final RID inRid = edge.getIn();
-
-    final long startNodeId = ridToId(outRid);
-    final long endNodeId = ridToId(inRid);
-    final String startNodeElementId = outRid.toString();
-    final String endNodeElementId = inRid.toString();
+    final long startNodeId;
+    final long endNodeId;
+    final String startNodeElementId;
+    final String endNodeElementId;
+    if (edge instanceof VirtualEdge virtualEdge) {
+      // Either endpoint may itself be virtual: its ids are its own, not ones derived from a RID
+      startNodeId = idOf(virtualEdge.getOutVertex());
+      endNodeId = idOf(virtualEdge.getInVertex());
+      startNodeElementId = elementIdOf(virtualEdge.getOutVertex());
+      endNodeElementId = elementIdOf(virtualEdge.getInVertex());
+    } else {
+      final RID outRid = edge.getOut();
+      final RID inRid = edge.getIn();
+      startNodeId = ridToId(outRid);
+      endNodeId = ridToId(inRid);
+      startNodeElementId = outRid.toString();
+      endNodeElementId = inRid.toString();
+    }
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
@@ -198,9 +208,8 @@ public class BoltStructureMapper {
    * Convert an ArcadeDB Edge to a BOLT UnboundRelationship (for paths).
    */
   public static BoltUnboundRelationship toUnboundRelationship(final Edge edge) {
-    final RID rid = edge.getIdentity();
-    final String elementId = ElementIdFunction.of(rid);
-    final long id = relationshipId(rid, elementId);
+    final long id = idOf(edge);
+    final String elementId = elementIdOf(edge);
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
@@ -399,6 +408,24 @@ public class BoltStructureMapper {
     if (rid == null)
       return -1;
     return IdFunction.encodeRidAsLong(rid);
+  }
+
+  /**
+   * The id {@code id()} answers for a node or relationship: a virtual one (create.vNode, meta.graph) carries its own
+   * negative id, as APOC's virtual entities do, a stored one the encoding of its RID.
+   */
+  private static long idOf(final Identifiable element) {
+    if (element instanceof VirtualElement virtual)
+      return virtual.getVirtualId();
+    final RID rid = element.getIdentity();
+    return relationshipId(rid, ElementIdFunction.of(rid));
+  }
+
+  /**
+   * The element id {@code elementId()} answers, with the same split as {@link #idOf}.
+   */
+  private static String elementIdOf(final Identifiable element) {
+    return element instanceof VirtualElement virtual ? virtual.getVirtualElementId() : ElementIdFunction.of(element.getIdentity());
   }
 
   // ---------------------------------------------------------------------------

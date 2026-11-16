@@ -31,6 +31,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualVertex;
 
 import org.junit.jupiter.api.Test;
 
@@ -644,5 +646,27 @@ class BoltStructureTest {
     final Map<String, Object> result = (Map<String, Object>) BoltStructureMapper.toPackStreamValue(nested);
     assertThat(result).containsKey("inner");
     assertThat(result).containsKey("list");
+  }
+
+  // Issue #12109: a virtual node / relationship (create.vNode, meta.graph) has no RID to encode: it goes out with its
+  // own negative id and labels, as APOC's virtual entities do, and a relationship names its endpoints by their ids
+  @Test
+  void mapperVirtualNodeAndRelationship() {
+    final VirtualVertex a = new VirtualVertex(null, List.of("B", "A"), Map.of("x", 1L));
+    final VirtualVertex b = new VirtualVertex(null, List.of(), Map.of());
+    final VirtualEdge r = new VirtualEdge(null, a, "V", Map.of("w", 2L), b);
+
+    final BoltNode node = (BoltNode) BoltStructureMapper.toPackStreamValue(a);
+    assertThat(node.getId()).isEqualTo(a.getVirtualId()).isNegative();
+    assertThat(node.getElementId()).isEqualTo(Long.toString(a.getVirtualId()));
+    assertThat(node.getLabels()).containsExactly("A", "B");
+    assertThat(node.getProperties()).containsEntry("x", 1L);
+
+    final BoltRelationship rel = (BoltRelationship) BoltStructureMapper.toPackStreamValue(r);
+    assertThat(rel.getId()).isEqualTo(r.getVirtualId()).isNegative();
+    assertThat(rel.getType()).isEqualTo("V");
+    assertThat(rel.getStartNodeId()).isEqualTo(a.getVirtualId());
+    assertThat(rel.getEndNodeId()).isEqualTo(b.getVirtualId());
+    assertThat(rel.getProperties()).containsEntry("w", 2L);
   }
 }
