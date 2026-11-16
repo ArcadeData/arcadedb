@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
@@ -130,5 +131,30 @@ class AlgoMaxFlowTest {
     final Result result = rs.next();
     final Object val = result.getProperty("maxFlow");
     assertThat(((Number) val).doubleValue()).isGreaterThan(0.0);
+  }
+
+  /**
+   * Issue #12175: Edmonds-Karp held two dense nodeCount x nodeCount double matrices (256 MB for this ring of 4,000 nodes)
+   * and scanned a whole row per node it searched. Over a residual graph of arcs the ring fits a 2 MB budget. The edges
+   * are read as undirected, so between two opposite nodes of the ring the flow is one unit along each half.
+   */
+  @Test
+  void sparseGraphRunsWithinABudgetSmallerThanTheMatrices() {
+    final int n = 4000;
+    database.getSchema().createEdgeType("RING");
+    database.transaction(() -> {
+      final List<MutableVertex> ring = new ArrayList<>(n);
+      for (int i = 0; i < n; i++)
+        ring.add(database.newVertex("Node").set("name", "r" + i).save());
+      for (int i = 0; i < n; i++)
+        ring.get(i).newEdge("RING", ring.get((i + 1) % n), (Object[]) null).save();
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 2_000_000L);
+
+    final ResultSet rs = database.query("opencypher", """
+        MATCH (s:Node {name: 'r0'}), (t:Node {name: 'r2000'})
+        CALL algo.maxFlow(s, t, 'RING') YIELD maxFlow
+        RETURN maxFlow""");
+    assertThat(rs.next().<Number>getProperty("maxFlow").doubleValue()).isEqualTo(2.0);
   }
 }

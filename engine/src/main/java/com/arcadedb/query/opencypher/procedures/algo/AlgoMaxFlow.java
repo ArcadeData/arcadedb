@@ -98,49 +98,98 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
     if (srcIdx < 0 || snkIdx < 0)
       return Stream.empty();
 
-    // Edmonds-Karp keeps a dense capacity matrix and a dense residual matrix, both nodeCount x nodeCount and
-    // both alive to the end: 1.6 GB at 10 000 nodes, with no knob involved. Reserved before the first is
-    // allocated so that a graph too large for the dense formulation is a client error naming the node count and
-    // the budget, rather than an OutOfMemoryError.
-    final MemoryBudget memory = graph.memory();
-    memory.reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)),
-        "the capacity and residual matrices", "2 matrices of " + n + " x " + n + " nodes");
-
-    // Build capacity matrix as n×n array. Capacity extraction goes through GraphData.weightedAdjacency (issue
-    // #6316), the same shared helper the other weighted algo.* procedures read edge weights through, rather
-    // than a hand-rolled getEdges() walk. A blank capacityProperty is normalised to null first so both mean
-    // "no property, every edge has capacity 1.0" exactly as before.
+    // Capacity extraction goes through GraphData.weightedAdjacency (issue #6316), the same shared helper the other
+    // weighted algo.* procedures read edge weights through, rather than a hand-rolled getEdges() walk. A blank
+    // capacityProperty is normalised to null first so both mean "no property, every edge has capacity 1.0" exactly as
+    // before.
     final String capacityProp = capacityProperty != null && !capacityProperty.isEmpty() ? capacityProperty : null;
     final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, capacityProp, relTypes);
     final int[][] neighbors = weighted.neighbors();
     final double[][] weights = weighted.weights();
 
-    final double[][] capacity = new double[n][n];
+    // The residual graph as arcs, one per direction of every pair of nodes an edge joins (issue #12175: it was two dense
+    // nodeCount x nodeCount matrices, 1.6 GB at 10 000 nodes, and the search scanned a whole row per node). The graph is
+    // read as undirected: an edge i -> j gives both i -> j and j -> i its capacity, summed over the edges of the pair in
+    // the order they are read, so the capacity of a pair is the one the matrix cell held. A self-loop is never on a path.
+    final int[] contributions = new int[n];
     for (int i = 0; i < n; i++) {
+      for (final int j : neighbors[i]) {
+        if (j != i) {
+          contributions[i]++;
+          contributions[j]++;
+        }
+      }
+    }
+    long total = 0;
+    for (final int c : contributions)
+      total += c;
+    final int contributionCount = checkedEdgeCount(NAME, n, total);
+    final MemoryBudget memory = graph.memory();
+    memory.reserve(saturatingSum(saturatingProduct(contributionCount, 2 * INT_BYTES + 2 * DOUBLE_BYTES + LONG_BYTES),
+            saturatingProduct(n + 1L, 5 * INT_BYTES)), "the residual graph", n + " nodes, " + contributionCount + " arcs");
+
+    final int[] arcStart = new int[n + 1];
+    for (int i = 0; i < n; i++)
+      arcStart[i + 1] = arcStart[i] + contributions[i];
+    final int[] contributionHead = new int[contributionCount];
+    final double[] contributionCapacity = new double[contributionCount];
+    final int[] fill = Arrays.copyOf(arcStart, n);
+    for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       final int[] row = neighbors[i];
       final double[] rowWeights = weights[i];
       for (int k = 0; k < row.length; k++) {
         final int j = row[k];
-        final double cap = rowWeights[k];
-        capacity[i][j] += cap;
-        // For undirected: also add reverse capacity
-        capacity[j][i] += cap;
+        if (j == i)
+          continue;
+        contributionHead[fill[i]] = j;
+        contributionCapacity[fill[i]++] = rowWeights[k];
+        contributionHead[fill[j]] = i;
+        contributionCapacity[fill[j]++] = rowWeights[k];
       }
     }
 
-    // Edmonds-Karp: BFS to find augmenting paths
-    final double[][] residual = new double[n][n];
-    for (int i = 0; i < n; i++)
-      residual[i] = Arrays.copyOf(capacity[i], n);
+    // Each node's arcs sorted by head, the contributions to one head summed in reading order: the breadth-first search
+    // then meets the heads in the ascending order the row scan met them in, and finds the same augmenting paths
+    final long[] sortKeys = new long[contributionCount];
+    final int[] arcHead = new int[contributionCount];
+    final double[] residual = new double[contributionCount];
+    int arcs = 0;
+    for (int u = 0; u < n; u++) {
+      guard.checkPeriodically(u);
+      final int from = arcStart[u];
+      final int to = arcStart[u + 1];
+      for (int c = from; c < to; c++)
+        sortKeys[c] = ((long) contributionHead[c] << 32) | (c - from);
+      Arrays.sort(sortKeys, from, to);
+      arcStart[u] = arcs;
+      for (int c = from; c < to; c++) {
+        final int head = (int) (sortKeys[c] >>> 32);
+        final double capacity = contributionCapacity[from + (int) sortKeys[c]];
+        if (arcs > arcStart[u] && arcHead[arcs - 1] == head)
+          residual[arcs - 1] += capacity;
+        else {
+          arcHead[arcs] = head;
+          residual[arcs++] = 0.0 + capacity;
+        }
+      }
+    }
+    arcStart[n] = arcs;
+    // The reverse of every arc: the pairs are symmetric, so v's sorted heads hold u
+    final int[] reverseArc = new int[arcs];
+    for (int u = 0; u < n; u++)
+      for (int a = arcStart[u]; a < arcStart[u + 1]; a++)
+        reverseArc[a] = Arrays.binarySearch(arcHead, arcStart[arcHead[a]], arcStart[arcHead[a] + 1], u);
 
-    final int[] queue  = new int[n];
+    final int[] queue = new int[n];
     final int[] parent = new int[n];
+    final int[] parentArc = new int[n];
     double maxFlow = 0.0;
 
     while (true) {
-      // Edmonds-Karp augments once per iteration and each augmentation is a BFS over the dense residual
-      // matrix, so the loop is O(V x E²) with the graph alone sizing it - no knob, and until issue #6302 no
-      // way for a thread interrupt or arcadedb.command.timeout to end it.
+      // Edmonds-Karp augments once per iteration and each augmentation is a BFS over the residual arcs, O(V + E), so
+      // the loop is O(V x E²) with the graph alone sizing it - no knob, and until issue #6302 no way for a thread
+      // interrupt or arcadedb.command.timeout to end it.
       guard.check();
       // BFS to find augmenting path from src to snk
       Arrays.fill(parent, -1);
@@ -150,13 +199,13 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
 
       bfs:
       while (head < tail) {
-        // Scanning one settled node's residual row is O(V), so a single BFS is O(V²) and needs a checkpoint of
-        // its own rather than one per augmentation.
-        guard.check();
+        guard.checkPeriodically(head);
         final int u = queue[head++];
-        for (int v = 0; v < n; v++) {
-          if (parent[v] == -1 && residual[u][v] > 0) {
+        for (int a = arcStart[u]; a < arcStart[u + 1]; a++) {
+          final int v = arcHead[a];
+          if (parent[v] == -1 && residual[a] > 0) {
             parent[v] = u;
+            parentArc[v] = a;
             if (v == snkIdx)
               break bfs;
             queue[tail++] = v;
@@ -171,19 +220,18 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
       double pathFlow = Double.MAX_VALUE;
       int v = snkIdx;
       while (v != srcIdx) {
-        final int u = parent[v];
-        if (residual[u][v] < pathFlow)
-          pathFlow = residual[u][v];
-        v = u;
+        if (residual[parentArc[v]] < pathFlow)
+          pathFlow = residual[parentArc[v]];
+        v = parent[v];
       }
 
       // Update residual capacities
       v = snkIdx;
       while (v != srcIdx) {
-        final int u = parent[v];
-        residual[u][v] -= pathFlow;
-        residual[v][u] += pathFlow;
-        v = u;
+        final int a = parentArc[v];
+        residual[a] -= pathFlow;
+        residual[reverseArc[a]] += pathFlow;
+        v = parent[v];
       }
 
       maxFlow += pathFlow;
