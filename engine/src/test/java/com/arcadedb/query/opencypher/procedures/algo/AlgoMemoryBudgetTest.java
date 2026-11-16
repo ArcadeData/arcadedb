@@ -723,9 +723,8 @@ class AlgoMemoryBudgetTest {
       }
     }
 
-    /** The four procedures, each with a call that reaches its bit matrix. */
+    /** The procedures that still build one, each with a call that reaches its bit matrix. */
     private static final String[][] CALLS = {
-        { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
         { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
         { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
         { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
