@@ -18,7 +18,10 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +30,7 @@ import java.util.List;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #11661: ORDER BY evaluated its expressions on every comparison, so ORDER BY rand() gave a row a new key each
@@ -71,6 +75,26 @@ class CypherOrderByRandIssue11661Test extends TestHelper {
       assertThat(values("UNWIND range(1, 100) AS i RETURN i AS v ORDER BY i % 7, rand() LIMIT 14"))
           .containsExactlyInAnyOrder(7L, 14L, 21L, 28L, 35L, 42L, 49L, 56L, 63L, 70L, 77L, 84L, 91L, 98L);
     }
+  }
+
+  /**
+   * The keys the sort holds are charged to the heap budget with their rows: an ORDER BY expression builds values the rows do not
+   * hold, here a list of 100,000 numbers per row, which the sort keeps until it ends (the whole input) or for the rows it keeps
+   * (with a LIMIT). Charged by the row alone, these 10 tiny rows fitted a budget their keys take many times over.
+   */
+  @Test
+  void theKeysTheSortHoldsAreChargedToTheHeapBudget() {
+    final String sortAll = "UNWIND range(1, 10) AS i RETURN i AS v ORDER BY [x IN range(1, 100000) | x * v] DESC";
+    final String topK = sortAll + " LIMIT 5";
+    final List<Long> descending = LongStream.rangeClosed(1, 10).map(i -> 11 - i).boxed().toList();
+    assertThat(values(sortAll)).containsExactlyElementsOf(descending);
+    assertThat(values(topK)).containsExactlyElementsOf(descending.subList(0, 5));
+
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(QueryHeapBudget.getReservedBytes() / (1024 * 1024) + 4);
+    for (final String query : List.of(sortAll, topK))
+      assertThatThrownBy(() -> values(query)).as(query)
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_RAM.getKey());
   }
 
   private List<Long> values(final String query) {
