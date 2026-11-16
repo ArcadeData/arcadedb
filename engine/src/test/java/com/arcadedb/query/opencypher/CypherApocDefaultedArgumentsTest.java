@@ -139,6 +139,12 @@ class CypherApocDefaultedArgumentsTest {
           "key 'z' is not one of the map's keys");
       assertThatThrownBy(() -> value("RETURN apoc.map.submap({a:1}, ['a','z'], [0]) AS r")).hasStackTraceContaining(
           "key 'z' is not one of the map's keys");
+      // A null default is no default, as in APOC: the missing key still fails, and with fail = false maps to null
+      assertThatThrownBy(() -> value("RETURN apoc.map.submap({}, ['x'], [null]) AS r")).hasStackTraceContaining(
+          "key 'x' is not one of the map's keys");
+      assertThatThrownBy(() -> value("RETURN apoc.map.submap({a:1}, ['a','x'], [5, null], true) AS r")).hasStackTraceContaining(
+          "key 'x' is not one of the map's keys");
+      assertThat(value("RETURN apoc.map.submap({}, ['x'], [null], false) AS r")).isEqualTo(map("x", null));
     }
 
     @Test
