@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -110,26 +110,61 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     final int k = Math.min(rawK, n);
     final int[][] adj = graph.adjacency(dir, relTypes);
 
-    // Build BitSets for O(1) intersection: a nodeCount x nodeCount bit matrix, reserved before the first BitSet
-    // is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] neighborSets = new BitSet[n];
+    // The Jaccard union is taken over the neighbour lists as read, repeated neighbours included, and the intersection
+    // over the distinct neighbours: the lengths are kept before the rows are reduced to sorted distinct sets.
+    final int[] degree = new int[n];
+    long distinctEntries = 0;
     for (int i = 0; i < n; i++) {
       guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
+      degree[i] = adj[i].length;
+      adj[i] = distinctSorted(adj[i]);
+      distinctEntries += adj[i].length;
     }
+
+    // Only nodes with a neighbour in common can score above zero, and those are the ones two hops away through it: who
+    // lists w as a neighbour is the reverse of the neighbour sets, listed in ascending node order (issue #12172).
+    graph.memory().reserve(saturatingSum(saturatingProduct(n, MATRIX_ROW_OVERHEAD_BYTES + 3 * INT_BYTES),
+            saturatingProduct(distinctEntries, INT_BYTES)), "the reverse neighbour sets and common-neighbour counters",
+        n + " nodes, " + distinctEntries + " edge entries");
+    final int[] listedBy = new int[n];
+    for (int i = 0; i < n; i++)
+      for (final int w : adj[i])
+        listedBy[w]++;
+    final int[][] reverse = new int[n][];
+    for (int w = 0; w < n; w++)
+      reverse[w] = new int[listedBy[w]];
+    Arrays.fill(listedBy, 0);
+    for (int v = 0; v < n; v++)
+      for (final int w : adj[v])
+        reverse[w][listedBy[w]++] = v;
+
+    // common[v] = |N(u) ∩ N(v)| for the current u, and the nodes it was raised for; both are reset after each u
+    final int[] common = listedBy;
+    Arrays.fill(common, 0);
+    int[] touched = new int[16];
 
     final List<Result> results = new ArrayList<>();
 
     for (int u = 0; u < n; u++) {
-      // Every node is compared against every other, so this is O(V²) bit-set intersections with nothing but the
-      // graph to size it (issue #6302). One u is already a full pass over the other n - 1 nodes, which is more
-      // than enough to swallow an unthrottled check.
-      guard.check();
-      if (adj[u].length == 0)
+      guard.checkPeriodically(u);
+      if (degree[u] == 0)
         continue;
+
+      int touchedCount = 0;
+      for (final int w : adj[u]) {
+        for (final int v : reverse[w]) {
+          if (v == u)
+            continue;
+          if (common[v]++ == 0) {
+            if (touchedCount == touched.length)
+              touched = Arrays.copyOf(touched, touchedCount * 2);
+            touched[touchedCount++] = v;
+          }
+        }
+      }
+      // The candidates in ascending order, the order the scan over every node met them in: among equal similarities
+      // the top-k keeps the same nodes
+      Arrays.sort(touched, 0, touchedCount);
 
       // Find top-k neighbours by Jaccard similarity (avoid duplicate pairs by requiring v > u)
       // We collect all candidates and pick top-k
@@ -138,17 +173,13 @@ public class AlgoKNN extends AbstractAlgoProcedure {
       int topCount = 0;
       double minTop = 0.0;
 
-      for (int v = 0; v < n; v++) {
-        if (v == u || adj[v].length == 0)
-          continue;
+      for (int c = 0; c < touchedCount; c++) {
+        final int v = touched[c];
 
         // Jaccard = |intersection| / |union|
-        final BitSet intersection = (BitSet) neighborSets[u].clone();
-        intersection.and(neighborSets[v]);
-        final int inter = intersection.cardinality();
-        if (inter == 0)
-          continue;
-        final int union = adj[u].length + adj[v].length - inter;
+        final int inter = common[v];
+        common[v] = 0;
+        final int union = degree[u] + degree[v] - inter;
         final double jaccard = union == 0 ? 0.0 : (double) inter / union;
 
         if (jaccard <= 0.0)
@@ -186,5 +217,15 @@ public class AlgoKNN extends AbstractAlgoProcedure {
       }
     }
     return results.stream();
+  }
+
+  /** The distinct ids of {@code row} in ascending order; the row itself when it has no repeated id. */
+  private static int[] distinctSorted(final int[] row) {
+    Arrays.sort(row);
+    int write = 0;
+    for (int i = 0; i < row.length; i++)
+      if (i == 0 || row[i] != row[i - 1])
+        row[write++] = row[i];
+    return write == row.length ? row : Arrays.copyOf(row, write);
   }
 }

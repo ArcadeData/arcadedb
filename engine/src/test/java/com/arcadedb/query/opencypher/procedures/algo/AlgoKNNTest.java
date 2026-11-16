@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
@@ -121,5 +122,42 @@ class AlgoKNNTest {
       results.add(rs.next());
 
     assertThat(results).isNotEmpty();
+  }
+
+  /**
+   * Issue #12172: knn held an n x n neighbour bit matrix (2 MB for this ring of 4,000 nodes) and compared every pair of
+   * nodes. Only nodes two hops apart can share a neighbour, so a sparse graph now needs memory linear in its size and
+   * runs under a budget the matrix alone exceeds. On the ring, node i shares one of its two neighbours with i - 2 and
+   * with i + 2 and none with anyone else: Jaccard 1 / 3, twice per node.
+   */
+  @Test
+  void sparseGraphRunsWithinABudgetSmallerThanTheBitMatrix() {
+    final int n = 4000;
+    database.getSchema().createEdgeType("RING");
+    database.transaction(() -> {
+      final List<MutableVertex> ring = new ArrayList<>(n);
+      for (int i = 0; i < n; i++)
+        ring.add(database.newVertex("Person").set("name", "r" + i).save());
+      for (int i = 0; i < n; i++)
+        ring.get(i).newEdge("RING", ring.get((i + 1) % n), (Object[]) null).save();
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1_500_000L);
+    try {
+      final ResultSet rs = database.query("opencypher",
+          "CALL algo.knn(10, 'RING') YIELD node1, node2, similarity RETURN node1.name AS a, node2.name AS b, similarity");
+      int rows = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final int a = Integer.parseInt(row.<String>getProperty("a").substring(1));
+        final int b = Integer.parseInt(row.<String>getProperty("b").substring(1));
+        assertThat(Math.floorMod(b - a, n)).isIn(2, n - 2);
+        assertThat(row.<Double>getProperty("similarity")).isEqualTo(1.0 / 3);
+        rows++;
+      }
+      assertThat(rows).isEqualTo(2 * n);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+          GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getDefValue());
+    }
   }
 }
