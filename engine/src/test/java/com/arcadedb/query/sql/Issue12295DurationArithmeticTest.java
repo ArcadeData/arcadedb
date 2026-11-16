@@ -158,6 +158,12 @@ class Issue12295DurationArithmeticTest extends TestHelper {
     final Result row = single("SELECT 'age: ' + duration(1, 'day') AS a, duration(1, 'day') + ' later' AS b");
     assertThat(row.<String>getProperty("a")).isEqualTo("age: PT24H");
     assertThat(row.<String>getProperty("b")).isEqualTo("PT24H later");
+
+    // a datetime or a duration minus a string has no meaning and answers null, as it did; plus a string concatenates
+    final Result dated = single("SELECT dt - 'abc' AS m, duration(1, 'day') - 'abc' AS dm, dt + ' later' AS p FROM DD WHERE k = 1");
+    assertThat(dated.<Object>getProperty("m")).isNull();
+    assertThat(dated.<Object>getProperty("dm")).isNull();
+    assertThat(dated.<String>getProperty("p")).endsWith(" later");
   }
 
   @Test
