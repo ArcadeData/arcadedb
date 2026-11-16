@@ -5804,8 +5804,11 @@ public class SelectExecutionPlanner {
         logSkippedIndex(index, e);
       }
     }
-    // A walk of the whole index also scans the type for the records the index does not hold, unless none can be returned
-    if (walk == null && (!leadingIndexFound || expandedLeadingIndex || !(nullsIndexed || cannotHoldNull(type, sortKey, info))))
+    // A walk of the whole index also scans the type for the records the index does not hold, unless none can be returned. Sorted
+    // descending, those records come last (handleClassWithIndexForSortOnly): the scan runs only once the walk has run out, and the
+    // walk that stops at the LIMIT never reaches it (issue #12283)
+    if (walk == null && (!leadingIndexFound || expandedLeadingIndex
+        || !(nullsIndexed || cannotHoldNull(type, sortKey, info) || OrderByItem.DESC.equals(info.orderBy.getItems().getFirst().getType()))))
       return null;
 
     // The choice reads the size of the data and the values bound to the statement: like rewriteDistinctAsGroupBy(), the plan is
@@ -5856,10 +5859,25 @@ public class SelectExecutionPlanner {
 
   /**
    * How many entries the index search reads, counted up to {@code cap}, or -1 when the statement does not tell: its key has to be
-   * made of equalities on literals and bound parameters, or of one IN on a literal list or a bound parameter.
+   * made of equalities on literals and bound parameters, of one IN on a literal list or a bound parameter, or of a range of the one
+   * property of the index (issue #12283).
    */
   private static long countMatchingEntries(final IndexSearchDescriptor search, final long cap, final CommandContext context) {
-    if (search.additionalRangeCondition != null || !(search.getIndex() instanceof TypeIndex index))
+    if (!(search.getIndex() instanceof TypeIndex index))
+      return -1;
+    if (isRangeSearch(search)) {
+      try {
+        return countRangeEntries(search, index, cap, context);
+      } catch (final IndexException e) {
+        // dropped or rebuilt while counting: no estimate
+        return -1;
+      } catch (final RuntimeException e) {
+        if (TypeIndex.isStaleRead(index, e))
+          return -1;
+        throw e;
+      }
+    }
+    if (search.additionalRangeCondition != null)
       return -1;
 
     final List<BooleanExpression> blocks = search.getSubBlocks();
@@ -5937,6 +5955,103 @@ public class SelectExecutionPlanner {
         return -1;
       throw e;
     }
+  }
+
+  /** Whether {@code search} reads a range of one property: a comparison or a BETWEEN, with the other bound when there is one. */
+  private static boolean isRangeSearch(final IndexSearchDescriptor search) {
+    final List<BooleanExpression> blocks = search.getSubBlocks();
+    return blocks.size() == 1 && (blocks.getFirst() instanceof BetweenCondition
+        || blocks.getFirst() instanceof BinaryCondition condition && condition.getOperator().isRangeOperator());
+  }
+
+  /**
+   * The entries between the bounds of a range search, counted up to {@code cap}, or -1 when they are not known at planning time:
+   * the index has to hold that one property, and every bound has to be a literal or a bound parameter of a type the index compares.
+   */
+  private static long countRangeEntries(final IndexSearchDescriptor search, final TypeIndex index, final long cap,
+      final CommandContext context) {
+    final List<String> properties = index.getPropertyNames();
+    if (properties.size() != 1 || hasExpandedProperty(properties))
+      return -1;
+
+    final List<BooleanExpression> conditions = new ArrayList<>(2);
+    conditions.add(search.getSubBlocks().getFirst());
+    if (search.additionalRangeCondition != null)
+      conditions.add(search.additionalRangeCondition);
+
+    Object lower = null;
+    Object upper = null;
+    boolean lowerInclusive = false;
+    boolean upperInclusive = false;
+    for (final BooleanExpression condition : conditions) {
+      if (condition instanceof BetweenCondition between) {
+        if (lower != null || upper != null)
+          return -1;
+        lower = rangeBoundValue(between.getSecond(), context);
+        upper = rangeBoundValue(between.getThird(), context);
+        lowerInclusive = upperInclusive = true;
+      } else if (condition instanceof BinaryCondition comparison) {
+        final Object value = rangeBoundValue(comparison.getRight(), context);
+        switch (comparison.getOperator()) {
+          case GtOperator ignored -> {
+            if (lower != null)
+              return -1;
+            lower = value;
+          }
+          case GeOperator ignored -> {
+            if (lower != null)
+              return -1;
+            lower = value;
+            lowerInclusive = true;
+          }
+          case LtOperator ignored -> {
+            if (upper != null)
+              return -1;
+            upper = value;
+          }
+          case LeOperator ignored -> {
+            if (upper != null)
+              return -1;
+            upper = value;
+            upperInclusive = true;
+          }
+          default -> {
+            return -1;
+          }
+        }
+      } else
+        return -1;
+      if (lower == NO_BOUND || upper == NO_BOUND)
+        return -1;
+    }
+
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    final byte[] keyTypes = index.getBinaryKeyTypes();
+    try {
+      final Object[] from = lower == null ? null : FetchFromIndexStep.normaliseToIndexKey(database, new Object[] { lower }, keyTypes,
+          index.getMetadata());
+      final Object[] to = upper == null ? null : FetchFromIndexStep.normaliseToIndexKey(database, new Object[] { upper }, keyTypes,
+          index.getMetadata());
+      if (from == null && to == null)
+        return countUpTo(index.iterator(true), cap);
+      if (to == null)
+        return countUpTo(index.iterator(true, from, lowerInclusive), cap);
+      return countUpTo(index.range(true, from, lowerInclusive, to, upperInclusive), cap);
+    } catch (final IllegalArgumentException | ClassCastException e) {
+      // a bound of a type the index cannot compare: no estimate
+      return -1;
+    }
+  }
+
+  /** What {@link #rangeBoundValue} answers for a bound not known at planning time. */
+  private static final Object NO_BOUND = new Object();
+
+  /** The value of a range bound written as a literal or a bound parameter, or {@link #NO_BOUND}. */
+  private static Object rangeBoundValue(final Expression bound, final CommandContext context) {
+    if (bound == null || !bound.isLiteral() && !isBareInputParameter(bound))
+      return NO_BOUND;
+    final Object value = bound.execute((Result) null, context);
+    return value == null || MultiValue.isMultiValue(value) ? NO_BOUND : value;
   }
 
   /** Whether an index property is a BY ITEM, BY KEY or BY VALUE expansion of a collection, which holds one entry per element. */
