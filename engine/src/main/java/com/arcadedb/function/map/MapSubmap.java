@@ -26,7 +26,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * map.submap(map, keys) - Extract a submap containing only specified keys.
+ * map.submap(map, keys, [values], [fail]) - Extract a submap containing only specified keys, as APOC's
+ * {@code apoc.map.submap}: a key the map lacks takes the value at the same position of {@code values}, and without one it is
+ * an error unless {@code fail} (default true) is false, in which case it maps to null (issue #12105).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,7 +45,7 @@ public class MapSubmap extends AbstractMapFunction {
 
   @Override
   public int getMaxArgs() {
-    return 2;
+    return 4;
   }
 
   @Override
@@ -57,21 +59,38 @@ public class MapSubmap extends AbstractMapFunction {
 
     // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, and is the same LIST to every list function (issue #11582)
     final List<Object> keys = CypherFunctionHelper.asListOrNull(args[1]);
-    if (keys == null) {
+    if (keys == null && args[1] != null) {
       throw new IllegalArgumentException("map.submap() second argument must be a list of keys");
     }
 
-    if (map == null)
-      return new LinkedHashMap<>();
+    final Object valuesArgument = args.length > 2 ? args[2] : null;
+    final List<Object> values = valuesArgument == null ? List.of() : CypherFunctionHelper.asListOrNull(valuesArgument);
+    if (values == null)
+      throw CypherFunctionHelper.typeMismatch(getName(), "a LIST of default values", valuesArgument);
+    final Object failArgument = args.length > 3 ? args[3] : null;
+    if (failArgument != null && !(failArgument instanceof Boolean))
+      throw CypherFunctionHelper.typeMismatch(getName(), "a BOOLEAN fail flag", failArgument);
+    final boolean fail = failArgument == null || (Boolean) failArgument;
+
+    // A null map or null keys answer null, as in APOC (issue #12105)
+    if (map == null || keys == null)
+      return null;
 
     final Map<String, Object> result = new LinkedHashMap<>();
-    for (final Object key : keys) {
-      if (key != null) {
-        final String keyStr = key.toString();
-        if (map.containsKey(keyStr)) {
-          result.put(keyStr, map.get(keyStr));
-        }
-      }
+    for (int i = 0; i < keys.size(); i++) {
+      final Object key = keys.get(i);
+      if (key == null)
+        continue;
+      final String keyStr = key.toString();
+      if (map.containsKey(keyStr))
+        result.put(keyStr, map.get(keyStr));
+      else if (i < values.size())
+        result.put(keyStr, values.get(i));
+      else if (fail)
+        throw new IllegalArgumentException(
+            getName() + "(): key '" + keyStr + "' is not one of the map's keys " + map.keySet() + " and has no default value");
+      else
+        result.put(keyStr, null);
     }
 
     return result;

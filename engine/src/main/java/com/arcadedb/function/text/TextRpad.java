@@ -22,7 +22,9 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * text.rpad(string, length, padChar) - Right pad string to specified length.
+ * text.rpad(string, length, [padChar]) - Right pad string to specified length. As APOC's {@code apoc.text.rpad}, the pad
+ * defaults to a space and a length the string already reaches, negative ones included, answers the string unchanged
+ * (issue #12105).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -34,7 +36,7 @@ public class TextRpad extends AbstractTextFunction {
 
   @Override
   public int getMinArgs() {
-    return 3;
+    return 2;
   }
 
   @Override
@@ -57,21 +59,17 @@ public class TextRpad extends AbstractTextFunction {
 
     final int length = asInt(args[1], 0, "length");
 
-    // Validate length parameter
-    if (length < 0) {
-      throw new IllegalArgumentException("Invalid length: " + length + " (must be non-negative)");
-    }
-
     if (length > MAX_STRING_LENGTH) {
       throw new IllegalArgumentException(
           "Padding length exceeds maximum allowed (" + MAX_STRING_LENGTH + "): " + length);
     }
 
-    final String padStr = asString(args[2]);
+    final String padStr = args.length > 2 ? asString(args[2]) : null;
     // The pad is a character, as the width is counted in them: a pad outside the BMP is one, not half a pair (issue #10378)
     final int padCodePoint = padStr != null && !padStr.isEmpty() ? padStr.codePointAt(0) : ' ';
 
     final int size = CypherFunctionHelper.codePointLength(str);
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
     if (size >= length)
       return str;
 

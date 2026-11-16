@@ -552,6 +552,8 @@ class WholeNumberArgumentsTest {
         Map.entry("function/sql/math/NumericSum#get: i2s", 1),
         // round(value) IS the rounding the function is asked for
         Map.entry("function/math/RoundFunction#execute: java/lang/Math.round", 1),
+        // APOC's flag reading (issue #12105): a number is true when its whole part is not 0, so {recursive: 0.5} is false as in APOC
+        Map.entry("function/map/MapRemoveKeys#recursive: java/lang/Number.longValue", 1),
         // a list index computed from the size of the collected values, never from an argument
         Map.entry("function/sql/math/SQLFunctionPercentile#evaluate: d2i", 2),
         Map.entry("function/sql/time/SQLFunctionTsPercentile#getResult: d2i", 2),
