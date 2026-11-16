@@ -47,9 +47,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * The keys are first looked up in one of {@link #STRIPES} stripes, the low bits of the key: each stripe holds the sequence of the
  * last commit of a key in it, and how many commits are writing one right now. A stripe that has not moved answers at once. A stripe
  * that has moved is decided on the key itself (issue #11782): by the keys committed since {@link #exactSince}, a table of at most
- * {@link #EXACT_KEYS} keys started over once full, and by the keys of the commits in flight. A stripe answered alone refused every
- * commit whose relationships shared a stripe with ANY relationship committed meanwhile, and with E relationships per transaction
- * the refusals grew with E squared: 70% of the commits of 4 writers creating 200 each, none of them twice.
+ * {@link #EXACT_KEYS} keys started over once full (a commit with more keys than that is not kept in it), and by the keys of the
+ * commits in flight. A stripe answered alone refused every commit whose relationships shared a stripe with ANY relationship
+ * committed meanwhile, and with E relationships per transaction the refusals grew with E squared: 70% of the commits of 4 writers
+ * creating 200 each, none of them twice.
  * <p>
  * Two keys per created relationship: its own, which the commit checks and marks, and the one of the same pair and type with NO
  * properties, which it only marks. A statement that matches by type alone finds any relationship of the type between the pair, so
@@ -143,16 +144,19 @@ public final class MergedEdgeRegistry {
    */
   public synchronized void committed(final long[] marked, final int markedCount) {
     final long committedAt = sequence.incrementAndGet();
+    final boolean kept = markedCount <= EXACT_KEYS;
     if (committedKeys.size() + markedCount > EXACT_KEYS) {
       // Started over: the table holds every key committed from this commit on, and a transaction that began before it decides a
-      // moved stripe alone
+      // moved stripe alone. A commit with more keys than the table holds is not kept in it either, so the table stays within
+      // EXACT_KEYS: it starts after that commit, which a transaction that began before it decides by the moved stripe alone too
       committedKeys = new LongLongHashMap();
-      exactSince = committedAt - 1;
+      exactSince = kept ? committedAt - 1 : committedAt;
     }
     for (int i = 0; i < markedCount; i++) {
       final long key = marked[i];
       lastCommit[stripeOf(key)] = committedAt;
-      committedKeys.put(storable(key), committedAt);
+      if (kept)
+        committedKeys.put(storable(key), committedAt);
     }
     unreserve(marked, markedCount);
   }
@@ -193,6 +197,11 @@ public final class MergedEdgeRegistry {
           --inFlight[stripeOf(marked[i])];
         return;
       }
+  }
+
+  /** How many committed keys the exact table holds, for the tests. */
+  synchronized int exactKeys() {
+    return committedKeys != null ? committedKeys.size() : 0;
   }
 
   /** How many commits are writing {@code key} now, for the tests. */

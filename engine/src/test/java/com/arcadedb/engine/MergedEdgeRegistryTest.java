@@ -220,6 +220,34 @@ class MergedEdgeRegistryTest {
     assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, afterTheRestart)).isTrue();
   }
 
+  @Test
+  void aCommitWithMoreKeysThanTheTableHoldsIsNotKeptInIt() {
+    final MergedEdgeRegistry registry = new MergedEdgeRegistry();
+    final long first = MergedEdgeRegistry.keyOf(A, B, "R", null);
+    final long sharingItsStripe = MergedEdgeRegistry.keyOf(A, ridSharingTheStripe(), "R", null);
+    final long beforeTheBulk = registry.getSequence();
+
+    // One bulk commit: the relationship of A and B, and more others than the table of committed keys holds
+    final long[] bulk = new long[MergedEdgeRegistry.EXACT_KEYS + 1];
+    bulk[0] = first;
+    for (int i = 1; i < bulk.length; i++)
+      bulk[i] = MergedEdgeRegistry.keyOf(new RID(7, i), A, "S", null);
+    assertThat(registry.reserve(bulk, bulk.length, bulk, bulk.length, beforeTheBulk)).isTrue();
+    registry.committed(bulk, bulk.length);
+    final long afterTheBulk = registry.getSequence();
+
+    assertThat(registry.exactKeys()).as("the table stays within its bound").isLessThanOrEqualTo(MergedEdgeRegistry.EXACT_KEYS);
+    // A transaction that began before the bulk commit decides by the moved stripe, one that began after it is not refused
+    assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, beforeTheBulk)).isFalse();
+    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, beforeTheBulk)).isFalse();
+    assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, afterTheBulk)).isTrue();
+    registry.committed(new long[] { first }, 1);
+    // And a key committed after the bulk is kept again: a transaction that began between the two is refused by that key alone
+    assertThat(registry.exactKeys()).isEqualTo(1);
+    assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, afterTheBulk)).isFalse();
+    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, afterTheBulk)).isTrue();
+  }
+
   /** A vertex whose relationship of type R with {@link #A} has a key other than the one of A and {@link #B}, in the same stripe. */
   private static RID ridSharingTheStripe() {
     final int stripe = MergedEdgeRegistry.stripeOf(A, B, "R", null);
