@@ -369,7 +369,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * Never an indeterminate failure ({@link ReplicationDispatchedTimeoutException}), whose entry may still commit.
      * <p>
      * Why a {@code NeedRetryException} from the broker is definite: {@code RaftGroupCommitter} raises one only for an
-     * entry the leader refused before appending ({@code refusedBeforeAppend}), one that never left its queue
+     * entry the leader refused before appending it ({@code refusedBeforeAppend}: a page conflict, or a leader stepping down
+     * for a leadership transfer, issue #11951, when no earlier attempt of the entry may have reached a log), one that never left its queue
      * ({@code QuorumNotReachedException} from {@code dispatchAware} on a PENDING or CANCELLED entry, from {@code stop()}
      * draining the queue, or from a send Ratis rejected synchronously) and one it never queued
      * ({@code ReplicationQueueFullException}). A dispatched entry with no answer is a {@code ReplicationDispatchedTimeoutException}.
@@ -5379,6 +5380,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // the two decisions are about the one destination the write is actually posted to.
     final boolean postsToItself = leaderHttpsAddress == null && raft.isOwnHttpAddress(leaderHttpAddress);
     if (!raft.isLeader() && postsToItself) {
+      // Issue #11951: the address is this node's own because the leader it was resolved for IS this node - Raft still
+      // named it the leader while it was handing leadership over (a leadership transfer, a step-down) - and not because
+      // another peer's address lands on this node, the misconfiguration described above. Leadership is moving: refused
+      // naming no leader, the retryable answer a write gets mid-election, so a retry (this node's own transaction retry
+      // included) re-resolves the leader once the move settles. It used to be the 400 below, which tells a client the
+      // request is malformed and sends its operator after the server list.
+      final RaftPeerId localPeerId = raft.getLocalPeerId();
+      if (localPeerId != null && localPeerId.equals(leaderIdBeforeDial))
+        throw new ServerIsNotTheLeaderException(
+            "Cannot forward the command: this node was still named the leader although it no longer is, so leadership is "
+                + "moving away from it (a leadership transfer or step-down). The write was not executed: retry it", null);
       if (selfForwardWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "The HTTP address resolved for the leader (%s) is this node's own, so a write forwarded to it would come "

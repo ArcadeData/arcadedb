@@ -6189,11 +6189,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         .setRaftGroup(group)
         .setProperties(properties)
         .setParameters(parameters != null ? parameters : new Parameters())
-        .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
+        .setRetryPolicy(DATA_CLIENT_RETRY_POLICY);
     if (knownLeaderId != null)
       builder.setLeaderId(knownLeaderId);
     return builder.build();
   }
+
+  /**
+   * The per-call retry policy of the shared {@link #raftClient}, the one every group-committed entry goes through:
+   * {@code RetryLimited(60, 1s)}, a data write waiting out an election, wrapped so the committer learns which entries an
+   * earlier attempt of may have reached a log. The refusal of a leader stepping down for a leadership transfer is a
+   * definite outcome only for an entry with no such attempt (issue #11951, see {@code RaftGroupCommitter.refusedBeforeAppend}).
+   * Stateless, so one instance serves every client this node builds.
+   */
+  static final RetryPolicy DATA_CLIENT_RETRY_POLICY = RaftGroupCommitter.recordingResends(
+      RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
 
   /**
    * The per-call retry policy of the membership-change client (issues #7539, #7561).
