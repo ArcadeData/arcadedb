@@ -183,9 +183,19 @@ The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with
 follower commits a client-managed transaction with its own registry (#10040), and they are asked on every commit, so the
 synchronous round of `peersMissingCapabilityNow` is the wrong remedy there. They read `allPeersSupportOnceAsked`: a peer
 `PeerCapabilityRegistry.neverAsked` (no answer, no failed probe, no refusal recorded) is a cold registry, not a "no", and
-one single-flight round runs before the verdict; a peer that answered without the capability or could not be reached is a
-settled "no" and costs nothing more. Treating the cold state as a "yes" is not an option, the cheap-failure rule below
-still holds. Do not move a section onto the plain cached read because it degrades on a "no": that is the reading above.
+one single-flight round runs before the verdict; a peer that answered without the capability is a settled "no" and costs
+nothing more. Treating the cold state as a "yes" is not an option, the cheap-failure rule below still holds. Do not move a
+section onto the plain cached read because it degrades on a "no": that is the reading above.
+
+**For the two FRAMED sections an unreachable peer is not a "no" (#12122).** `tx-prepared-at-index` and
+`tx-fulltext-corpus-deltas` read `PeerCapabilityRegistry.peersMissingFramedSection` (through `allPeersSupportOnceAsked(cap,
+true)`), which keeps the capabilities of a peer's last answer while it cannot be reached: otherwise one node's outage
+switched the #8686 refusal and the BM25 deltas off on every other node (#12119). The hold survives an `UNREACHABLE` probe,
+the TTL, and an `ADDRESS_REFUSED` dial for a peer the round still asks at a shared address (#7256); it ends on the peer's
+next answer, a 404 (on its own address or the shared one it sits behind), a refused address with nowhere else to ask,
+`retainOnly` and `clear()`. It is safe only because both sections are framed (#7138) and a downgrade below the framing
+halts loudly. `fixed-width-float-arrays` is a record-level form, not framed, so it passes `false` and stays strict, as does
+every other reader; do not widen the hold to anything that is not framed.
 
 Step 2 is where #7559 came from, and it is worth being precise about why, because the obvious reading of the
 paragraph below - "a degrading section may read the cache, only a refusing one must ask" - is the reading that

@@ -125,7 +125,7 @@ class Issue12122SectionCapabilityHeldThroughOutageTest {
 
     assertThat(raft.peersMissingFramedSection(PeerCapabilities.TX_PREPARED_AT_INDEX))
         .as("the address answered as a build without the capability route: nothing is held behind it")
-        .containsExactly(SHARED_PEER, UNIDENTIFIED_PEER);
+        .containsExactlyInAnyOrder(SHARED_PEER, UNIDENTIFIED_PEER);
   }
 
   @Test
