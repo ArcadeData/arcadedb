@@ -76,6 +76,44 @@ class CypherLabelWriteKeepsBoundGraphIssue11764Test extends TestHelper {
     assertThat(count("MATCH (n:__oracle_tmp) RETURN count(n) AS c")).isEqualTo(0L);
   }
 
+  /** A list holding the same node twice: the second iteration binds the record the first one produced. */
+  @Test
+  void aLaterIterationBindsTheRecordAnEarlierIterationReplaced() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Person {id: 1})-[:KNOWS]->(:Person {id: 2})"));
+    rows("""
+        MATCH (n:Person {id: 1})
+        FOREACH (x IN [n, n] | CREATE (:Seen {ls: labels(x)}) SET x:Tmp)""");
+    final List<Result> seen = rows("MATCH (s:Seen) RETURN s.ls AS ls ORDER BY size(s.ls)");
+    assertThat(seen).hasSize(2);
+    assertThat(seen.get(0).<List<String>>getProperty("ls")).containsExactly("Person");
+    assertThat(seen.get(1).<List<String>>getProperty("ls")).containsExactlyInAnyOrder("Person", "Tmp");
+  }
+
+  /**
+   * Several rows hold the same node, and each one's FOREACH replaces it again: a row buffered before a later row's
+   * replacement is served with the live record, not with the intermediate one the later row deleted.
+   */
+  @Test
+  void aRowServedAfterALaterRowsLabelWriteHoldsTheLiveRecord() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Person {id: 1})-[:KNOWS]->(:Person {id: 2})"));
+    final List<Result> rows = rows("""
+        MATCH (n:Person {id: 1})
+        UNWIND [1, 2, 3] AS i
+        WITH n, [n] AS held, i
+        FOREACH (x IN [n] | SET x:Tmp REMOVE x:Tmp)
+        WITH n, held, i
+        OPTIONAL MATCH (h)-[r:KNOWS]->(m) WHERE h = held[0]
+        RETURN i, n, held[0] AS h, r""");
+    assertThat(rows).hasSize(3);
+    final Object live = identity(rows.get(2), "n");
+    for (final Result row : rows) {
+      assertThat(identity(row, "n")).as("row %s", row).isEqualTo(live);
+      assertThat(identity(row, "h")).as("row %s", row).isEqualTo(live);
+      assertThat(row.<Object>getProperty("r")).as("row %s", row).isNotNull();
+    }
+    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isEqualTo(2L);
+  }
+
   /** The same through a direct SET/REMOVE, without FOREACH: the alias in the list follows the rewrite. */
   @Test
   void aDirectLabelRoundTripKeepsTheListBoundNodeConnected() {

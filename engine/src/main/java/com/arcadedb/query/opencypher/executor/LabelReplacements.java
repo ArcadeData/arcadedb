@@ -404,6 +404,10 @@ public final class LabelReplacements {
       }
 
     vertex.delete();
+    // A RID is a physical position: once a batch of CALL { ... } IN TRANSACTIONS committed the delete of a replaced vertex,
+    // a later replacement can take its freed slot. The RID then names this live record, so the stale entry keyed by it
+    // goes, or resolve() would follow it back to the vertex that replaced it - a cycle
+    vertices.remove(newVertex.getIdentity());
     vertices.put(originalRid, newVertex);
 
     // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
@@ -461,8 +465,14 @@ public final class LabelReplacements {
     // (type, out vertex, in vertex) triple and hashes on it, so it keys this map exactly like the address of a
     // heavy edge does, and the re-attached copy hanging off the replacement vertex is a different key rather than
     // the same one. Only the null is guarded: an edge that came out of getEdges() always has a bucket.
-    if (rid != null)
+    if (rid != null) {
+      // The replacement can take the slot of an edge an earlier, committed batch deleted: its RID names the live record
+      // now, and the stale entry keyed by it would turn resolveEdge() into a cycle (see the same guard in replace())
+      final RID replacementRid = replacement.getIdentity();
+      if (replacementRid != null)
+        edges.remove(replacementRid);
       edges.put(rid, replacement);
+    }
   }
 
   /**

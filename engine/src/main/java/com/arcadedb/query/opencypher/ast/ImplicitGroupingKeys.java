@@ -33,8 +33,9 @@ import java.util.List;
  * <p>
  * Only the map projections reached outside every aggregate call are collected, through the composite shapes that keep
  * their operands evaluated once per group: a map literal entry, a list element, a non-aggregating function argument, an
- * arithmetic operand, a {@code CASE} part. A map projection inside an aggregate's argument is evaluated per input row and
- * groups nothing.
+ * arithmetic operand, a comparison or predicate operand, an indexed, sliced or property-accessed operand
+ * ({@code [p{n: count(f)}][0]}), a {@code CASE} part. A map projection inside an aggregate's argument is evaluated per
+ * input row and groups nothing.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -85,6 +86,25 @@ public final class ImplicitGroupingKeys {
     case ArithmeticExpression arithmetic -> {
       variables = collect(arithmetic.getLeft(), variables);
       variables = collect(arithmetic.getRight(), variables);
+    }
+    case ListIndexExpression index -> {
+      variables = collect(index.getListExpression(), variables);
+      variables = collect(index.getIndexExpression(), variables);
+    }
+    case ListSliceExpression slice -> {
+      variables = collect(slice.getListExpression(), variables);
+      variables = collect(slice.getFromExpression(), variables);
+      variables = collect(slice.getToExpression(), variables);
+    }
+    case ChainedPropertyAccessExpression chained -> variables = collect(chained.getBaseExpression(), variables);
+    case BooleanWrapperExpression wrapper -> {
+      final List<String>[] holder = new List[] { variables };
+      BooleanWrapperExpression.forEachOperand(wrapper.getBooleanExpression(), operand -> holder[0] = collect(operand, holder[0]));
+      variables = holder[0];
+    }
+    case ComparisonExpressionWrapper wrapper -> {
+      variables = collect(wrapper.getComparison().getLeft(), variables);
+      variables = collect(wrapper.getComparison().getRight(), variables);
     }
     case CaseExpression caseExpression -> {
       if (caseExpression.getCaseExpression() != null)

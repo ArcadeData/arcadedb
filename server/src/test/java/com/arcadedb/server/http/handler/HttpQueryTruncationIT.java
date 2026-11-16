@@ -353,6 +353,12 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
         .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT 30 UNION ALL MATCH (n:" + TYPE_NAME
             + ") RETURN n.i AS i LIMIT 30")), TOTAL_ROWS, TOTAL_ROWS);
 
+    // LIMIT 0 bounds a branch to no rows: it does not unbound the union
+    assertCypherRows(query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT 0 UNION ALL MATCH (n:" + TYPE_NAME
+            + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS)), TOTAL_ROWS, TOTAL_ROWS);
+
     // A branch without a LIMIT bounds nothing, so the union does not either
     final JSONObject unbounded = query(new JSONObject()
         .put("language", "opencypher")

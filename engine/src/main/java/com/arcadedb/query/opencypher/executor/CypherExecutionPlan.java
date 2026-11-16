@@ -335,19 +335,24 @@ public class CypherExecutionPlan {
    * value can only raise that cap, so a LIMIT smaller than it changes nothing there.
    */
   int getStatementLimit() {
+    return Math.max(0, declaredLimit());
+  }
+
+  /** {@link #getStatementLimit()}, telling "no LIMIT" (-1) from a LIMIT 0, which bounds a UNION branch to no rows. */
+  private int declaredLimit() {
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
       long sum = 0;
       for (final CypherExecutionPlan branch : unionSubqueryPlans) {
-        final int branchLimit = branch.getStatementLimit();
-        if (branchLimit <= 0)
-          return 0;
+        final int branchLimit = branch.declaredLimit();
+        if (branchLimit < 0)
+          return -1;
         sum += branchLimit;
       }
       return (int) Math.min(sum, Integer.MAX_VALUE);
     }
 
     if (statement.getReturnClause() == null || statement.getLimit() == null)
-      return 0;
+      return -1;
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
@@ -358,7 +363,7 @@ public class CypherExecutionPlan {
       return new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context);
     } catch (final RuntimeException e) {
       // The LimitStep evaluates the same expression and fails the statement with the reason: nothing to raise a cap to here
-      return 0;
+      return -1;
     }
   }
 

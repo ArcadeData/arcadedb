@@ -154,6 +154,9 @@ public class ForeachStep extends AbstractExecutionStep {
         if (!hasNext())
           throw new NoSuchElementException();
         final Result result = buffer.get(bufferIndex++);
+        // A later row of the same batch may have replaced a record this one holds after it was buffered (a label write on
+        // the same node): served with the live records, not the deleted intermediates (issue #11764)
+        LabelReplacements.of(context).redirect(result);
         if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
           // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
           // SET OPEN
@@ -291,6 +294,9 @@ public class ForeachStep extends AbstractExecutionStep {
         for (final String prop : inputRow.getPropertyNames())
           iterationRow.setProperty(prop, inputRow.getProperty(prop));
         iterationRow.setProperty(variable, element);
+        // The list was evaluated once, before the first iteration: an element an earlier iteration replaced ([n, n] with a
+        // label write on x) is bound as its live record, not as the deleted original
+        labelReplacements.redirect(iterationRow);
 
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
         context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);

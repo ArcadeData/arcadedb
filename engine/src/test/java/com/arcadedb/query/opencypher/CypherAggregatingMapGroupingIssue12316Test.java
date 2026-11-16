@@ -66,6 +66,12 @@ class CypherAggregatingMapGroupingIssue12316Test extends TestHelper {
     assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) RETURN {who: p{.name, n: count(f)}} AS m ORDER BY m.who.name", "m"))
         .containsExactly(Map.of("who", Map.of("name", "a", "n", 2L)), Map.of("who", Map.of("name", "d", "n", 1L)));
 
+    // Under an index, a slice or a chained property access, the projection still groups
+    assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) RETURN [p{.name, n: count(f)}][0] AS m ORDER BY m.name", "m"))
+        .containsExactly(Map.of("name", "a", "n", 2L), Map.of("name", "d", "n", 1L));
+    assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) RETURN p{.name, n: count(f)}.n AS m ORDER BY m", "m"))
+        .containsExactly(1L, 2L);
+
     final List<Object> friends = values("MATCH (p:Person)-[:KNOWS]->(f) RETURN p{.name, friends: collect(f.name)} AS m ORDER BY m.name",
         "m");
     assertThat(friends).hasSize(2);
@@ -103,6 +109,15 @@ class CypherAggregatingMapGroupingIssue12316Test extends TestHelper {
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN p{.name, other: f.name, n: count(*)} AS m");
     // Another property of a variable whose property is the key is not a key (Neo4j 42I18)
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name, {old: p.age > 35, n: count(f)} AS m");
+    // A scalar function or a predicate mixing a non-grouping property with an aggregate
+    assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN {age: coalesce(p.age, count(f))} AS m");
+    assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN coalesce(p.age, count(f)) AS m");
+    assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS k, {isB: f.name IN ['b'], n: count(f)} AS m");
+    // Only the exact property projected is a key: p.v varies within the group of p.k
+    assertAmbiguous("UNWIND [{k: 1, v: 10}, {k: 1, v: 20}] AS p RETURN p.k AS k, {v: p.v, n: count(*)} AS m");
+    assertAmbiguous("UNWIND [{k: 1, v: 10}, {k: 1, v: 20}] AS p RETURN p.k, p.v + count(*) AS m");
+    // An output alias is not the incoming variable it shadows
+    assertAmbiguous("UNWIND [{k: 1, v: 'a'}, {k: 1, v: 'b'}] AS p RETURN p.k AS p, {v: toUpper(p.v), n: count(*)} AS m");
     // A list next to an aggregate reading a non-grouping variable: group by it first
     assertAmbiguous("MATCH (p:Person)-[:KNOWS]->(f) RETURN collect(f) + [p] AS m");
     assertThat(values("MATCH (p:Person)-[:KNOWS]->(f) WITH p, collect(f) AS fs RETURN size(fs + [p]) AS m ORDER BY m", "m"))
