@@ -4635,13 +4635,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     transactionManager.checkIntegrity();
 
-    // AN INDEX CREATED JUST BEFORE THE CRASH CAN HAVE ITS HEADER PAGE IN THE WAL ONLY: THE LOAD ABOVE, WHICH RUNS BEFORE THE
-    // REPLAY, FOUND ITS FILE EMPTY AND LEFT IT OUT (#10046), AND THE REPLAY HAS JUST WRITTEN THE HEADER. LOAD THE SCHEMA AGAIN
-    // SO THIS OPEN SERVES THE INDEX - A UNIQUE ONE WOULD OTHERWISE ENFORCE NOTHING UNTIL THE NEXT OPEN. THE RELOAD CARRIES THE
-    // BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE ARE SET AGAIN
-    if (mode == ComponentFile.MODE.READ_WRITE && schema.hasUnavailableIndexCompletedSinceLoad()) {
+    // THE LOAD ABOVE, WHICH RUNS BEFORE THE REPLAY, LEFT TO IT WHAT ONLY THE WAL CAN HOLD AND LOADS THE SCHEMA AGAIN NOW:
+    // - AN INDEX CREATED JUST BEFORE THE CRASH CAN HAVE ITS HEADER PAGE IN THE WAL ONLY: THE LOAD FOUND ITS FILE EMPTY AND LEFT
+    //   IT OUT (#10046), AND THE REPLAY HAS JUST WRITTEN THE HEADER. A UNIQUE ONE WOULD OTHERWISE ENFORCE NOTHING UNTIL THE NEXT OPEN
+    // - A PROPERTY NAME THE FLUSH HAD NOT WRITTEN TO THE DICTIONARY (ISSUE #12111): THE LOAD DID NOT REGISTER IT ITSELF, OR THE
+    //   REPLAY WOULD HAVE SKIPPED THE WAL'S DICTIONARY PAGES AS SUPERSEDED BY THAT NEWER VERSION
+    // THE RELOAD CARRIES THE BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE
+    // ARE SET AGAIN
+    final boolean nameLeftToTheReplay = schema.endWalReplay(!transactionManager.isLastRecoveryIncomplete());
+    if (mode == ComponentFile.MODE.READ_WRITE && (nameLeftToTheReplay || schema.hasUnavailableIndexCompletedSinceLoad())) {
       LogManager.instance().log(this, Level.WARNING,
-          "The WAL replay of database '%s' completed the file of an index the schema load found with no header page: reloading the schema",
+          "The WAL replay of database '%s' completed what the schema load found missing (a property name or the file of an index): reloading the schema",
           null, name);
       schema.load(mode, true, true);
       requireBM25Rescan();
@@ -4739,10 +4743,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
-        else
+        else {
           // THE TIMESERIES ENGINES READ THEIR PAGES WHEN THEY ARE BUILT, SO ON A CRASHED DATABASE THEY ARE BUILT AFTER
-          // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452)
+          // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452). AND NO PROPERTY NAME IS
+          // REGISTERED IN THE DICTIONARY BY THE LOAD WHEN A WAL REPLAY FOLLOWS: SEE LocalSchema.beginWalReplay()
+          if (recoveryPending)
+            schema.beginWalReplay();
           schema.load(mode, true, recoveryPending);
+        }
 
         serializer.readConfiguration(configuration);
 

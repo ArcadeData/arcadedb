@@ -633,4 +633,20 @@ public class Dictionary extends PaginatedComponent {
     if (previous != null && previous != this && previous.getFileId() == getFileId() && previous.headerPageRecreated)
       headerPageRecreated = true;
   }
+
+  /**
+   * Called once the WAL replay of a crashed database's open has applied every transaction (issue #12111). The load ahead of the
+   * replay writes the header page of a dictionary with no committed page, which is the image of the dictionary's creation
+   * (version 1, no name), and reports the header page recreated. A replay that then took page 0 past that version applied the
+   * page's chain from it, the creation or a version restored on that image: the names were in the WAL, not lost, and the fact
+   * {@link #wasHeaderPageRecreated()} reports no longer holds.
+   */
+  public void onWalReplayCompleted() throws IOException {
+    if (!headerPageRecreated)
+      return;
+    final ImmutablePage header = database.getPageManager()
+        .getImmutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, false);
+    if (header != null && header.getVersion() > 1)
+      headerPageRecreated = false;
+  }
 }
