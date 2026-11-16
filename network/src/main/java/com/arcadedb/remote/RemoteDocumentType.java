@@ -84,8 +84,12 @@ public class RemoteDocumentType implements DocumentType {
     if (properties == null)
       properties = new HashMap<>(propertiesMap.size());
 
+    // Issue #12188: the server's list is the whole set of properties, so a cached one it no longer lists was dropped or
+    // renamed and is forgotten here; kept, it answered existsProperty() and decoded record values for the rest of the session
+    final Set<String> listedNames = new HashSet<>(propertiesMap.size());
     for (Map<String, Object> entry : propertiesMap) {
       final String propertyName = (String) entry.get("name");
+      listedNames.add(propertyName);
 
       RemoteProperty p = properties.get(propertyName);
       if (p == null) {
@@ -94,6 +98,7 @@ public class RemoteDocumentType implements DocumentType {
       } else
         p.reload(entry);
     }
+    properties.keySet().retainAll(listedNames);
 
     if (record.hasProperty("custom"))
       custom = record.getProperty("custom");
