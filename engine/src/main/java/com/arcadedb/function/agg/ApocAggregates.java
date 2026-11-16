@@ -400,12 +400,13 @@ public final class ApocAggregates {
     }
 
     /**
-     * The nearest-rank percentile of the sorted numbers: the smallest value with at least {@code p} of them at or below it, the
-     * maximum for {@code p} past 1. APOC reads the same rank from an HdrHistogram, whose FLOAT buckets answer {@code 2.5000076}
-     * for 2.5; this answers the value itself.
+     * The percentile of the sorted numbers by APOC's rank, HdrHistogram's {@code valueAtPercentile}: the value at the rank
+     * {@code p * count} rounded half up, at least the first and at most the last ({@code [1, 2, 3]} answers 2 for 0.75). APOC reads
+     * it from the histogram's buckets, whose FLOAT values are approximations ({@code 2.5000076} for 2.5); this answers the value
+     * itself.
      */
     Object percentile(final double p) {
-      final int rank = (int) Math.min(size - 1, Math.max(0, (long) Math.ceil(p * size) - 1));
+      final int rank = (int) Math.min(size, Math.max(1L, (long) (p * size + 0.5))) - 1;
       return doubles == null ? (Object) longs[rank] : (Object) doubles[rank];
     }
   }

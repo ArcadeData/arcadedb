@@ -101,11 +101,13 @@ class CypherApocAggregatesTest {
     }
 
     @Test
-    void percentilesAndStatisticsUseApocsDefaultsAndNearestRank() {
+    void percentilesAndStatisticsUseApocsDefaultsAndRank() {
       assertThat(single("UNWIND range(1, 10) AS x RETURN apoc.agg.percentiles(x) AS r")).isEqualTo(List.of(5L, 8L, 9L, 10L, 10L));
       assertThat(single("UNWIND range(1, 10) AS x RETURN apoc.agg.percentiles(x, [0, 0.1, 0.25, 0.5, 1.0]) AS r"))
           .isEqualTo(List.of(1L, 1L, 3L, 5L, 10L));
       assertThat(single("UNWIND [1, 2.5] AS x RETURN apoc.agg.percentiles(x, [0.5]) AS r")).isEqualTo(List.of(1.0));
+      // the rank is p * count rounded half up: 0.75 of three values is the second one
+      assertThat(single("UNWIND [1, 2, 3] AS x RETURN apoc.agg.percentiles(x) AS r")).isEqualTo(List.of(2L, 2L, 3L, 3L, 3L));
 
       final Map<String, Object> stats = map("UNWIND range(1, 10) AS x RETURN apoc.agg.statistics(x) AS r");
       assertThat(stats).containsEntry("total", 10L).containsEntry("min", 1L).containsEntry("max", 10L).containsEntry("mean", 5.5)
