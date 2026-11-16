@@ -1499,25 +1499,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final List<String> result = new ArrayList<>(staticLabels.size() + pattern.getDynamicLabels().size());
     result.addAll(staticLabels);
     for (final Expression dynExpr : pattern.getDynamicLabels()) {
-      final Object resolved = evaluator.evaluate(dynExpr, currentInputResult, context);
-      appendResolvedLabels(result, resolved);
+      Labels.appendDynamicMatchLabels(result, evaluator.evaluate(dynExpr, currentInputResult, context));
     }
     return result;
-  }
-
-  private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
-    if (resolved == null)
-      return;
-    if (resolved instanceof String) {
-      labels.add((String) resolved);
-    } else if (resolved instanceof Iterable) {
-      for (final Object item : (Iterable<?>) resolved) {
-        if (item != null)
-          labels.add(item.toString());
-      }
-    } else {
-      labels.add(resolved.toString());
-    }
   }
 
   private boolean matchesProperties(final Vertex vertex) {

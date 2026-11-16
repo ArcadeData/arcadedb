@@ -133,6 +133,16 @@ final class ExpressionPatternParser {
     } else if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
+      // (b:$(expr)) in a pattern comprehension or predicate: checked as a predicate on the node (issue #11776)
+      final List<Expression> dynamicLabels = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressions::parseExpression);
+      if (dynamicLabels != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, labels, dynamicLabels, ctx.labelExpression());
+        // (n:A|$(expr)): the static labels alone are not a filter, the check above carries all of them
+        if (labelDisjunction)
+          labels = null;
+      }
     }
 
     String propertiesParameterName = null;
@@ -179,6 +189,14 @@ final class ExpressionPatternParser {
       labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
+      // [r:$(expr)]: the whole type list is checked per relationship, see the MATCH-side builder (issue #11776)
+      final List<Expression> dynamicTypes = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressions::parseExpression);
+      if (dynamicTypes != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, types, dynamicTypes, ctx.labelExpression());
+        types = null;
+      }
     }
 
     String propertiesParameterName = null;

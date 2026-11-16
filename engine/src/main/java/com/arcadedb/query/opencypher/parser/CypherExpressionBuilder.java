@@ -1220,7 +1220,9 @@ class CypherExpressionBuilder {
         LabelCheckExpression.LabelOperator.OR :
         LabelCheckExpression.LabelOperator.AND;
 
-    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels, operator, ctx.getText()));
+    // The dynamic $(expr) labels are evaluated per row with the static ones; dropped, the check was always true (issue #11776)
+    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels,
+        ParserUtils.parseDynamicLabels(labelExprCtx, this::parseExpression), operator, ctx.getText()));
   }
 
   // ============================================================================

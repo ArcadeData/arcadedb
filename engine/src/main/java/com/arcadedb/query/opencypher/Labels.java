@@ -639,6 +639,32 @@ public final class Labels {
   }
 
   /**
+   * Appends the label(s) a Cypher 25 dynamic label expression evaluated to on a READ path - a pattern
+   * {@code (n:$(expr))}, a relationship type {@code [:$(expr)]}, a predicate {@code n:$(expr)}. A string is one label, an
+   * iterable is one label per non-null entry, {@code null} contributes nothing. Nothing is validated: a label nobody
+   * carries matches nothing, which is the answer (see {@link #appendDynamicLabels} for the write side, which does validate).
+   * Every read consumer resolves through here so a dynamic label means the same thing to all of them (issue #11776).
+   *
+   * @param target the list to append to
+   * @param value  the value the dynamic label expression evaluated to
+   */
+  public static void appendDynamicMatchLabels(final List<String> target, final Object value) {
+    if (value == null)
+      return;
+    if (value instanceof String label) {
+      target.add(label);
+      return;
+    }
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (item != null)
+          target.add(item.toString());
+      return;
+    }
+    target.add(value.toString());
+  }
+
+  /**
    * Appends the label(s) a Cypher 25 dynamic label expression - {@code SET n:$(expr)}, {@code REMOVE n:$(expr)} -
    * evaluated to, validating each one as a name a type can actually be created under.
    * <p>

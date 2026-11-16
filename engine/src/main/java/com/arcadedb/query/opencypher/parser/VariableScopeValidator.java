@@ -805,8 +805,10 @@ final class VariableScopeValidator {
       }
     } else if (boolExpr instanceof IsNullExpression) {
       checkExpressionScope(((IsNullExpression) boolExpr).getExpression(), scope);
-    } else if (boolExpr instanceof LabelCheckExpression) {
-      checkExpressionScope(((LabelCheckExpression) boolExpr).getVariableExpression(), scope);
+    } else if (boolExpr instanceof LabelCheckExpression labelCheck) {
+      checkExpressionScope(labelCheck.getVariableExpression(), scope);
+      for (final Expression dynamicLabel : labelCheck.getDynamicLabels())
+        checkExpressionScope(dynamicLabel, scope);
     } else if (boolExpr instanceof BooleanCoercionExpression) {
       // A WHERE body that is a bare expression coerced to boolean (e.g. any()/all()/none()/single()
       // list predicates, a boolean-typed property, or a comprehension) is scope-checked as a plain
@@ -899,7 +901,10 @@ final class VariableScopeValidator {
       if (rel instanceof QuantifiedPathPattern group) {
         checkBooleanExpressionScope(group.getInnerWhere(), scope);
         checkGroupWhereScope(group.getInnerPattern(), scope);
-      }
+      } else if (rel.getWhereExpression() != null)
+        // A relationship's inline predicate, a dynamic type [r:$(expr)] included, is not hoisted into the clause WHERE:
+        // an undefined name in it would otherwise evaluate to null and match every relationship (issue #11776)
+        checkBooleanExpressionScope(rel.getWhereExpression(), scope);
   }
 
   private static void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
