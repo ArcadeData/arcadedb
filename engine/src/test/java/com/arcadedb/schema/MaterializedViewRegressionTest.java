@@ -3022,8 +3022,8 @@ class MaterializedViewRegressionTest {
       database.transaction(() -> database.getSchema().buildMaterializedView().withName("Manual").withQuery(QUERY)
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create());
 
-      // What a node that just took the leadership asks: the per-record view only, the manual one is not maintained on commit
-      assertThat(((LocalSchema) database.getSchema()).recoverPerRecordMaterializedViews()).isEqualTo(1);
+      // What a node that just took the leadership asks: the INCREMENTAL view only, the manual one is not maintained on commit
+      assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
 
       Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
           .until(() -> MaterializedViewStatus.VALID.name().equals(view().getStatus()) && !view().owesRecoveryPass());
@@ -3061,6 +3061,133 @@ class MaterializedViewRegressionTest {
         while (rs.hasNext()) {
           final Result row = rs.next();
           rows.add(row.getProperty("name") + "/" + row.getProperty("age"));
+        }
+      }
+      return rows;
+    }
+  }
+
+  /**
+   * Regression for #12220: an INCREMENTAL view refreshed as a whole (a GROUP BY) is brought up to date by an after-commit callback
+   * that runs once the source commit is durable. A process that died between the two left the view without the commit, reported
+   * VALID, until the next commit on a source type. The open that replays the WAL now hands every INCREMENTAL view the recovery full
+   * pass, as #11550 does for per-record views, and a view says STALE until that pass ends.
+   */
+  @Nested
+  class WholeViewSelfHeal extends TestHelper {
+    private static final String QUERY = "SELECT n, count(*) AS c FROM B GROUP BY n";
+
+    @Test
+    void aCommitWhoseRefreshDiedWithTheProcessReachesTheViewAfterTheReopen() {
+      createGroupedView();
+      database.transaction(() -> database.getSchema().buildMaterializedView().withName("Manual").withQuery(QUERY)
+          .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create());
+      final MaterializedViewImpl view = view("V");
+      assertThat(view.isPerRecord()).isFalse();
+
+      // Own the refresh, as a pass still running would: the commit's after-commit refresh only asks the owner for a further pass,
+      // which the crash takes down with it. The same state as a process killed after the commit and before its callback ran
+      assertThat(view.tryBeginRefresh()).isTrue();
+      database.transaction(() -> {
+        database.command("sql", "UPDATE B SET n = 10 WHERE k = 3");
+        database.newDocument("B").set("k", 1000).set("n", 11).save();
+      });
+      assertThat(groups("V")).as("the refresh of the commit has not run").doesNotContain("10/1", "11/1");
+      assertThat(view.getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
+
+      ((DatabaseInternal) database).kill();
+      database.close();
+      database = factory.open();
+
+      // Never VALID while the pass is owed: whenever the status reads VALID, the rows read after it are the query's
+      final String status = view("V").getStatus();
+      final List<String> rows = groups("V");
+      if (MaterializedViewStatus.VALID.name().equals(status))
+        assertThat(rows).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+
+      // No source commit and no REFRESH: the open handed the view its recovery full pass
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("11/1"));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+      assertThat(view("V").owesRecoveryPass()).isFalse();
+      assertThat(view("Manual").getRefreshCount()).as("a MANUAL view is not maintained on commit, nor recovered").isZero();
+
+      // And it keeps its maintenance on commit afterwards
+      database.transaction(() -> database.command("sql", "UPDATE B SET n = 12 WHERE k = 4"));
+      assertThat(groups("V")).contains("12/1").containsExactlyInAnyOrderElementsOf(groups(QUERY));
+    }
+
+    /** A whole-view refresh that a close dropped (issue #11464) or that failed leaves the view STALE, persisted: a clean open recovers it. */
+    @Test
+    void aViewPersistedStaleConvergesAtACleanReopenWithoutATrigger() {
+      createGroupedView();
+      final MaterializedViewImpl view = view("V");
+      assertThat(view.tryBeginRefresh()).isTrue();
+      database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
+      view.setStatus(MaterializedViewStatus.STALE);
+      MaterializedViewRefresher.persistStatus(database, view.getName(), view.getStatus());
+      view.endRefresh();
+      assertThat(groups("V")).doesNotContain("10/1");
+
+      reopenDatabase();
+
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+
+      // The VALID the recovery pass ended in was persisted
+      reopenDatabase();
+      assertThat(view("V").getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
+    }
+
+    @Test
+    void aCleanReopenOfAValidViewRunsNoPass() {
+      createGroupedView();
+      reopenDatabase();
+      assertThat(view("V").getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
+      assertThat(view("V").owesRecoveryPass()).isFalse();
+      assertThat(view("V").getRefreshCount()).isZero();
+    }
+
+    @Test
+    void theLeaderRecoveryAsksTheViewsRefreshedAsAWholeToo() {
+      createGroupedView();
+      assertThat(view("V").tryBeginRefresh()).isTrue();
+      database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
+      view("V").endRefresh();
+
+      // What a node that just took the leadership asks, the previous leader having died before its after-commit refresh
+      assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+    }
+
+    private void createGroupedView() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("B");
+        type.createProperty("k", Type.INTEGER);
+        type.createProperty("n", Type.INTEGER);
+      });
+      database.transaction(() -> {
+        for (int k = 0; k < 100; k++)
+          database.newDocument("B").set("k", k).set("n", k % 10).save();
+      });
+      database.transaction(() -> database.getSchema().buildMaterializedView().withName("V").withQuery(QUERY)
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create());
+    }
+
+    private MaterializedViewImpl view(final String name) {
+      return (MaterializedViewImpl) database.getSchema().getMaterializedView(name);
+    }
+
+    private List<String> groups(final String viewOrQuery) {
+      final String sql = viewOrQuery.startsWith("SELECT") ? viewOrQuery : "SELECT n, c FROM " + viewOrQuery;
+      final List<String> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", sql)) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          rows.add(row.getProperty("n") + "/" + row.getProperty("c"));
         }
       }
       return rows;
