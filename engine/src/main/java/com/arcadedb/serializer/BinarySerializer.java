@@ -294,7 +294,7 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    final RID outEdges = vertex.getOutEdgesHeadChunk();
+    final RID outEdges = vertex.peekOutEdgesHeadChunk();
     if (outEdges != null) {
       header.putInt(outEdges.getBucketId());
       header.putLong(outEdges.getPosition());
@@ -303,7 +303,7 @@ public class BinarySerializer {
       header.putLong(-1);
     }
 
-    final RID inEdges = vertex.getInEdgesHeadChunk();
+    final RID inEdges = vertex.peekInEdgesHeadChunk();
     if (inEdges != null) {
       header.putInt(inEdges.getBucketId());
       header.putLong(inEdges.getPosition());

@@ -594,6 +594,8 @@ final class CypherStepBuilder {
         // Track the UNWIND variable as bound so subsequent MATCH clauses can
         // push down WHERE predicates referencing it (e.g., WHERE a.uid = e.src)
         boundVariables.add(unwindClause.getVariable());
+        // An element of a list built of a tainted entity is that entity under a new name (issue #12323)
+        EagerBarriers.propagateTaintThroughUnwind(unwindClause, disconnectedTaintedVariables);
         break;
 
       case LOAD_CSV:
@@ -805,8 +807,7 @@ final class CypherStepBuilder {
         final ForeachClause foreachClause = entry.getTypedClause();
         final boolean foreachEagerMaterialize = foreachClause.containsDelete()
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
-                || EagerBarriers.deleteMayTargetTaintedVariable(EagerBarriers.collectForeachDeleteTargetVariables(foreachClause),
-                    disconnectedTaintedVariables));
+                || EagerBarriers.foreachDeleteMayTargetTaintedVariable(foreachClause, disconnectedTaintedVariables));
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && GraphReadAnalysis.graphReadFollows(clausesInOrder, entryIndex);

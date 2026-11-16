@@ -145,17 +145,48 @@ final class WriteClauseValidator {
       throw new CommandParsingException(CypherSemanticValidator.NULL_MERGE_PROPERTY);
   }
 
+  /**
+   * Refuses, before anything runs, a DELETE target that can never be a node, a relationship or a path: a label or type test
+   * ({@code DELETE n:Label}) and a value that is statically a scalar ({@code DELETE 1 + 1}, {@code DELETE a = b}). The
+   * decision is taken on the parsed expression, so a target that evaluates to an entity is accepted whatever it starts with
+   * ({@code [a][0]}, {@code (a)}, {@code CASE ... END}, issue #12259).
+   */
   private static void validateDeleteTargets(final DeleteClause deleteClause) {
-    for (final String target : deleteClause.getVariables()) {
+    final List<String> targets = deleteClause.getVariables();
+    final List<Expression> expressions = deleteClause.getExpressions();
+    for (int i = 0; i < targets.size(); i++) {
+      final String target = targets.get(i);
       if (target == null)
         continue;
-      // DELETE n:Label or DELETE r:TYPE is invalid (InvalidDelete)
-      if (target.contains(":"))
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      if (expression == null) {
+        if (target.contains(":"))
+          throw new CommandParsingException("InvalidDelete: Cannot delete a label or relationship type: " + target);
+        continue;
+      }
+      if ((expression instanceof BooleanWrapperExpression wrapper && wrapper.getBooleanExpression() instanceof LabelCheckExpression)
+          || (expression instanceof VariableExpression variable && variable.getVariableName().contains(":")))
         throw new CommandParsingException("InvalidDelete: Cannot delete a label or relationship type: " + target);
-      // DELETE <arithmetic expression> like DELETE 1+1 is invalid (InvalidArgumentType)
-      if (!CypherSemanticValidator.isValidVariableName(target) && !target.contains(".") && !target.contains("["))
+      if (isStaticallyScalar(expression))
         throw new CommandParsingException("InvalidArgumentType: DELETE requires a node, relationship, or path variable, got: " + target);
     }
+  }
+
+  /**
+   * True when the expression can only produce a value that is not a node, relationship, path or a collection of them: a
+   * boolean, a scalar literal, or arithmetic over those ({@code [a] + [b]} is a list of nodes, so arithmetic over a
+   * non-scalar operand is not).
+   */
+  private static boolean isStaticallyScalar(final Expression expression) {
+    return switch (expression) {
+      case BooleanWrapperExpression ignored -> true;
+      case ComparisonExpressionWrapper ignored -> true;
+      case LiteralExpression literal -> literal.getValue() != null && !(literal.getValue() instanceof Collection)
+          && !(literal.getValue() instanceof Map);
+      case ArithmeticExpression arithmetic -> arithmetic.getLeft() != null && arithmetic.getRight() != null
+          && isStaticallyScalar(arithmetic.getLeft()) && isStaticallyScalar(arithmetic.getRight());
+      default -> false;
+    };
   }
 
   // ============================================

@@ -31,7 +31,7 @@ import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnionStatement;
-import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -296,25 +297,37 @@ final class EagerBarriers {
   }
 
   /**
-   * Propagates taint through a {@code WITH ... AS alias} rename: a rename doesn't change how rows flow
-   * any more than a same-name passthrough does (see {@link #closeMatchSegment}), so if the item being
-   * renamed is a bare reference to an already-tainted variable, its new alias is tainted too - otherwise
-   * a later DELETE of the alias would find nothing tainted under that name, even though it is exactly as
-   * hazardous as deleting the original variable would have been.
+   * Propagates taint through a {@code WITH ... AS alias}: a rename doesn't change how rows flow any more than a same-name
+   * passthrough does (see {@link #closeMatchSegment}), so a later DELETE of the alias is exactly as hazardous as deleting the
+   * original variable would have been.
    * <p>
-   * Only a bare variable reference is recognised as "the same entity under a new name" ({@code WITH n AS
-   * m}); an item computed from a tainted variable by any other expression ({@code WITH n.id AS m}, {@code
-   * WITH count(n) AS m}) produces a value that is no longer that entity, so it carries no taint forward.
+   * The entity can also reach the alias inside a value built from it ({@code WITH [n] AS l}, {@code WITH {v: n} AS m},
+   * {@code WITH l[0] AS m}, issue #12323), so every alias of an expression that reads a tainted variable is tainted, not only
+   * a bare reference. An alias that is no longer an entity ({@code WITH n.id AS m}) is tainted as well; that costs nothing,
+   * since a DELETE of it finds no node or relationship to stream behind the MATCH.
    */
   static void propagateTaintThroughRenames(final WithClause withClause,
       final Set<String> disconnectedTaintedVariables) {
     if (disconnectedTaintedVariables.isEmpty())
       return;
+    final List<String> tainted = new ArrayList<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems())
       if (!item.isStar() && item.getAlias() != null
-          && item.getExpression() instanceof VariableExpression variableExpression
-          && disconnectedTaintedVariables.contains(variableExpression.getVariableName()))
-        disconnectedTaintedVariables.add(item.getAlias());
+          && CypherVariableUsage.expressionReferencesAnyVariable(item.getExpression(), disconnectedTaintedVariables))
+        tainted.add(item.getAlias());
+    // added after the scan: the items of one WITH all read the names in scope before it
+    disconnectedTaintedVariables.addAll(tainted);
+  }
+
+  /**
+   * Carries the taint onto the variable an {@code UNWIND} binds from a list that reads a tainted variable ({@code UNWIND [n] AS
+   * m}, {@code UNWIND l AS m} for a tainted {@code l}, issue #12323): its elements can be the entity itself.
+   */
+  static void propagateTaintThroughUnwind(final UnwindClause unwindClause,
+      final Set<String> disconnectedTaintedVariables) {
+    if (!disconnectedTaintedVariables.isEmpty()
+        && CypherVariableUsage.expressionReferencesAnyVariable(unwindClause.getListExpression(), disconnectedTaintedVariables))
+      disconnectedTaintedVariables.add(unwindClause.getVariable());
   }
 
   /**
@@ -373,25 +386,29 @@ final class EagerBarriers {
   }
 
   /**
-   * Collects the DELETE target variables of every DELETE clause in a FOREACH body, including nested
-   * FOREACH bodies - the same traversal as {@link ForeachClause#containsDelete()}, but gathering the
-   * targets instead of just checking for their presence.
+   * True when a DELETE of the FOREACH body, or of a FOREACH nested in it, may target a tainted entity. The FOREACH variable
+   * of a list that reads a tainted variable ({@code FOREACH (x IN [n] | DETACH DELETE x)}) is that entity under a new name, so
+   * it is tainted for the body it scopes, exactly as an {@code UNWIND} alias is (issue #12323).
    */
-  static List<String> collectForeachDeleteTargetVariables(final ForeachClause foreachClause) {
-    final List<String> targets = new ArrayList<>();
-    collectForeachDeleteTargetVariables(foreachClause, targets);
-    return targets;
-  }
-
-  static void collectForeachDeleteTargetVariables(final ForeachClause foreachClause, final List<String> targets) {
+  static boolean foreachDeleteMayTargetTaintedVariable(final ForeachClause foreachClause,
+      final Set<String> disconnectedTaintedVariables) {
+    if (disconnectedTaintedVariables.isEmpty())
+      return false;
+    Set<String> scope = disconnectedTaintedVariables;
+    if (foreachClause.getVariable() != null
+        && CypherVariableUsage.expressionReferencesAnyVariable(foreachClause.getListExpression(), disconnectedTaintedVariables)) {
+      scope = new HashSet<>(disconnectedTaintedVariables);
+      scope.add(foreachClause.getVariable());
+    }
     for (final ClauseEntry entry : foreachClause.getInnerClauses()) {
       if (entry.getType() == ClauseEntry.ClauseType.DELETE) {
-        final DeleteClause deleteClause = entry.getTypedClause();
-        if (deleteClause.getVariables() != null)
-          targets.addAll(deleteClause.getVariables());
+        if (deleteMayTargetTaintedVariable(((DeleteClause) entry.getTypedClause()).getVariables(), scope))
+          return true;
       } else if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
-        collectForeachDeleteTargetVariables((ForeachClause) entry.getTypedClause(), targets);
+        if (foreachDeleteMayTargetTaintedVariable(entry.getTypedClause(), scope))
+          return true;
       }
     }
+    return false;
   }
 }

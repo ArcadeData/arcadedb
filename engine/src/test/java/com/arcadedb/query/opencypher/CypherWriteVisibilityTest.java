@@ -1708,6 +1708,26 @@ class CypherWriteVisibilityTest {
           .isEqualTo(210L);
     }
 
+    /**
+     * Issue #12323: the entity reaches the DELETE under a name bound by UNWIND or by a FOREACH variable, from a list built of
+     * it. The taint follows every name bound from an expression that reads a tainted one, so the delete still waits for the
+     * disconnected MATCH to finish instead of streaming behind it.
+     */
+    @Test
+    void entityRenamedThroughUnwindOrForeachKeepsEveryRow() {
+      for (final String tail : List.of(
+          "WITH n0\nUNWIND [n0] AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
+          "WITH n0\nCALL (n0) { RETURN [n0] AS l }\nUNWIND l AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
+          "WITH n0\nFOREACH (x IN [n0] | DETACH DELETE x)\nRETURN count(*) AS rows",
+          "WITH n0\nFOREACH (l IN [[n0]] | FOREACH (x IN l | DETACH DELETE x))\nRETURN count(*) AS rows",
+          "WITH n0, {v: n0} AS m\nUNWIND [m.v] AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
+          "WITH [n0] AS l\nWITH l[0] AS n21\nDETACH DELETE n21\nRETURN count(*) AS rows",
+          "WITH n0\nDETACH DELETE [n0][0]\nRETURN count(*) AS rows")) {
+        createDeleteGraph();
+        assertThat(deleteRows(DELETE_MATCH + tail)).as(tail).isEqualTo(210L);
+      }
+    }
+
     private long number(final Object value) {
       return ((Number) value).longValue();
     }

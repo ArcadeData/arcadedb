@@ -403,12 +403,12 @@ public class DeleteStep extends AbstractExecutionStep {
     for (int i = 0; i < variables.size(); i++) {
       final String variable = variables.get(i);
       final Object obj;
-      if (expressions != null && i < expressions.size() && expressions.get(i) != null
-          && isFunctionLikeTarget(variable)) {
+      // Only a plain chain is read from the text; anything else ([a][0], [a, b], (a), l[i], CASE ...) has no variable name
+      // in front for the text resolver to start from, and is evaluated (issue #12259)
+      if (expressions != null && i < expressions.size() && expressions.get(i) != null && !isPlainChainTarget(variable))
         obj = expressions.get(i).evaluate(row, context);
-      } else {
+      else
         obj = resolveDeleteTarget(variable, row);
-      }
       if (obj == null)
         continue;
       collectDeleteTargets(obj, edges, other);
@@ -539,16 +539,39 @@ public class DeleteStep extends AbstractExecutionStep {
       other.add(obj);
   }
 
-  /** True when the textual target looks like a function call - needs Expression-based evaluation. */
-  private static boolean isFunctionLikeTarget(final String variable) {
-    final int paren = variable.indexOf('(');
-    if (paren <= 0)
+  /**
+   * True when the textual target is a chain {@link #resolveChainedAccess} reads in full: an identifier followed by any
+   * number of {@code .key}, {@code [digits]} and {@code [$param]} accesses. Every other target is evaluated from its parsed
+   * expression.
+   */
+  private static boolean isPlainChainTarget(final String target) {
+    final int length = target.length();
+    if (length == 0 || !Character.isJavaIdentifierStart(target.charAt(0)) || target.charAt(0) == '$')
       return false;
-    // Ensure the parenthesis is not preceded by a dot (e.g. a.b() would still be unusual).
-    // A leading identifier followed by '(' is the marker we care about.
-    for (int i = 0; i < paren; i++) {
-      final char c = variable.charAt(i);
-      if (!Character.isJavaIdentifierPart(c))
+    int pos = 1;
+    while (pos < length && Character.isJavaIdentifierPart(target.charAt(pos)))
+      pos++;
+    while (pos < length) {
+      final char c = target.charAt(pos);
+      if (c == '.') {
+        final int start = ++pos;
+        while (pos < length && Character.isJavaIdentifierPart(target.charAt(pos)))
+          pos++;
+        if (pos == start)
+          return false;
+      } else if (c == '[') {
+        int start = ++pos;
+        if (pos < length && target.charAt(pos) == '$') {
+          start = ++pos;
+          while (pos < length && Character.isJavaIdentifierPart(target.charAt(pos)))
+            pos++;
+        } else
+          while (pos < length && Character.isDigit(target.charAt(pos)))
+            pos++;
+        if (pos == start || pos >= length || target.charAt(pos) != ']')
+          return false;
+        pos++;
+      } else
         return false;
     }
     return true;

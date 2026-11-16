@@ -65,6 +65,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.StripeDirectory;
@@ -1275,11 +1276,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         final LocalBucket bucket = schema.getBucketById(rid.getBucketId(), false);
         if (bucket == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
+        final long ownImageReads = tx.getOwnImageReads();
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
         // #8610: recorded before the read events run, which may hand back another record
         if (record instanceof ImmutableDocument document)
           document.setReadInTransaction(tx.getBeginSequence());
+        // #12320: a vertex read from the transaction's own image of its page carries the heads of that image
+        if (record instanceof ImmutableVertex vertex && tx.getOwnImageReads() != ownImageReads)
+          vertex.markReadFromOwnImage();
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
