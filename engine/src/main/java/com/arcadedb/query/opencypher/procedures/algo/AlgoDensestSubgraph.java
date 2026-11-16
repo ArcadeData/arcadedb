@@ -104,42 +104,49 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
     totalEdges /= 2;
 
     final boolean[] removed = new boolean[n];
-    // bestSubgraph: snapshot of non-removed nodes at best density
-    final boolean[] bestSubgraph = new boolean[n];
-    Arrays.fill(bestSubgraph, true); // initially all nodes are in
+    // The peel order, and how many of its first vertices were peeled when the density peaked: the best set is rebuilt from
+    // them once at the end instead of being copied on every improvement (issue #12168)
+    final int[] peelOrder = new int[n];
+    int peeled = 0;
+    int bestPeeled = 0; // initially all nodes are in
     double bestDensity = n > 0 ? (double) totalEdges / n : 0.0;
     int remaining = n;
 
+    // The vertex to peel is the remaining one of lowest degree, the lowest index among equals, the vertex the linear scan
+    // this replaces picked: a heap of (degree, index) keys with lazy deletion, one entry per degree change, so the loop
+    // is O((V + E) log V) rather than a scan of every vertex per peeled vertex (issue #12168)
+    final LongMinHeap heap = new LongMinHeap(n);
+    for (int i = 0; i < n; i++)
+      heap.push(key(deg[i], i));
+
     while (remaining > 1) {
-      // One vertex peeled per round, chosen by a linear scan and snapshotted by another: O(V²) before the edge
-      // work, with the graph alone sizing it (issue #6302).
       guard.check();
       final double density = (double) totalEdges / remaining;
       if (density > bestDensity) {
         bestDensity = density;
-        // Snapshot current non-removed set
-        for (int i = 0; i < n; i++)
-          bestSubgraph[i] = !removed[i];
+        bestPeeled = peeled;
       }
 
-      // Find minimum-degree non-removed vertex (linear scan)
-      int minDeg = Integer.MAX_VALUE;
       int minV = -1;
-      for (int i = 0; i < n; i++) {
-        if (!removed[i] && deg[i] < minDeg) {
-          minDeg = deg[i];
-          minV = i;
+      while (heap.size() > 0) {
+        final long top = heap.pop();
+        final int v = (int) top;
+        if (!removed[v] && deg[v] == (int) (top >>> 32)) {
+          minV = v;
+          break;
         }
       }
       if (minV == -1)
         break;
 
       removed[minV] = true;
+      peelOrder[peeled++] = minV;
       remaining--;
       for (final int u : adj[minV]) {
         if (!removed[u]) {
           deg[u]--;
           totalEdges--;
+          heap.push(key(deg[u], u));
         }
       }
     }
@@ -149,10 +156,14 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
       final double density = totalEdges > 0 ? (double) totalEdges / remaining : 0.0;
       if (density > bestDensity) {
         bestDensity = density;
-        for (int i = 0; i < n; i++)
-          bestSubgraph[i] = !removed[i];
+        bestPeeled = peeled;
       }
     }
+
+    final boolean[] bestSubgraph = new boolean[n];
+    Arrays.fill(bestSubgraph, true);
+    for (int k = 0; k < bestPeeled; k++)
+      bestSubgraph[peelOrder[k]] = false;
 
     final double finalDensity = bestDensity;
 
@@ -163,5 +174,58 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
       r.setProperty("density", finalDensity);
       return (Result) r;
     });
+  }
+
+  /** Orders by degree, then by vertex index: a degree is never negative, so the unsigned shift keeps the order. */
+  private static long key(final int degree, final int vertex) {
+    return ((long) degree << 32) | vertex;
+  }
+
+  /** A binary min-heap of primitive longs, so the peel loop boxes nothing. */
+  private static final class LongMinHeap {
+    private long[] items;
+    private int    size;
+
+    LongMinHeap(final int capacity) {
+      items = new long[Math.max(16, capacity)];
+    }
+
+    int size() {
+      return size;
+    }
+
+    void push(final long value) {
+      if (size == items.length)
+        items = Arrays.copyOf(items, items.length * 2);
+      int i = size++;
+      while (i > 0) {
+        final int parent = (i - 1) >>> 1;
+        if (items[parent] <= value)
+          break;
+        items[i] = items[parent];
+        i = parent;
+      }
+      items[i] = value;
+    }
+
+    long pop() {
+      final long top = items[0];
+      final long last = items[--size];
+      int i = 0;
+      while (true) {
+        int child = 2 * i + 1;
+        if (child >= size)
+          break;
+        if (child + 1 < size && items[child + 1] < items[child])
+          child++;
+        if (items[child] >= last)
+          break;
+        items[i] = items[child];
+        i = child;
+      }
+      if (size > 0)
+        items[i] = last;
+      return top;
+    }
   }
 }

@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -151,5 +152,40 @@ class AlgoDensestSubgraphTest {
     assertThat(inSubgraphB).isTrue();
     assertThat(inSubgraphC).isTrue();
     assertThat(inSubgraphCount).isGreaterThanOrEqualTo(3);
+  }
+
+  /**
+   * Issue #12168: the best set is rebuilt at the end from the peel order rather than copied at every improvement. With
+   * E joined to A, B and C (a K4) and F hanging off D, peeling F (7 edges over 5 vertices) then D (6 over 4) reaches the
+   * best density 1.5, and the set it reports must be the four vertices left at that step, not the two peeled first.
+   */
+  @Test
+  void bestSetIsTheOneLeftWhenTheDensityPeaked() {
+    database.transaction(() -> {
+      final Vertex a = database.query("sql", "SELECT FROM Node WHERE name = 'A'").next().getVertex().orElseThrow();
+      final Vertex b = database.query("sql", "SELECT FROM Node WHERE name = 'B'").next().getVertex().orElseThrow();
+      final Vertex c = database.query("sql", "SELECT FROM Node WHERE name = 'C'").next().getVertex().orElseThrow();
+      final Vertex d = database.query("sql", "SELECT FROM Node WHERE name = 'D'").next().getVertex().orElseThrow();
+      final MutableVertex e = database.newVertex("Node").set("name", "E").save();
+      final MutableVertex f = database.newVertex("Node").set("name", "F").save();
+      e.newEdge("LINK", a, true, (Object[]) null).save();
+      e.newEdge("LINK", b, true, (Object[]) null).save();
+      e.newEdge("LINK", c, true, (Object[]) null).save();
+      f.newEdge("LINK", d, true, (Object[]) null).save();
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.densestSubgraph() YIELD node, inDenseSubgraph, density RETURN node.name AS name, inDenseSubgraph, density");
+    final List<String> in = new ArrayList<>();
+    double density = -1;
+    while (rs.hasNext()) {
+      final Result r = rs.next();
+      if (Boolean.TRUE.equals(r.getProperty("inDenseSubgraph")))
+        in.add(r.getProperty("name"));
+      density = ((Number) r.getProperty("density")).doubleValue();
+    }
+
+    assertThat(in).containsExactlyInAnyOrder("A", "B", "C", "E");
+    assertThat(density).isEqualTo(1.5);
   }
 }
