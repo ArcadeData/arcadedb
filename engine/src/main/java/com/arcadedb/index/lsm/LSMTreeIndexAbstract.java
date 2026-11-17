@@ -1064,6 +1064,57 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
               "Indexed key " + typeName + propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
   }
 
+  /**
+   * What a lookup of one key does with each page the read path hands it. The walk feeds the pages newest first at every level
+   * (mutable pages, then the compacted series, see {@code searchInNonCompactedIndex}), which is the order the deletion markers are
+   * resolved in.
+   */
+  @FunctionalInterface
+  protected interface KeyLookupSink {
+    /**
+     * @return false to stop the walk
+     */
+    boolean onPage(BasePage page, Binary pageBuffer, int count);
+  }
+
+  /** The sink of a {@code get()}: the live entries of the key, as {@link IndexCursorEntry} objects. */
+  protected KeyLookupSink resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
+      final Set<IndexCursorEntry> set) {
+    final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+    final RidHashSet deletedRIDs = new RidHashSet();
+    return (page, pageBuffer, count) -> lookupInPageAndAddInResultset(page, pageBuffer, count, originalKeys, convertedKeys, limit,
+        set, removedKeys, deletedRIDs);
+  }
+
+  /**
+   * The sink of {@link LSMTreeIndex#getPostings}: every value of the key, decoded into primitives in the order the walk meets them,
+   * deletion markers included, for {@link LSMTreeIndexPostings#resolve()} to apply them (issue #12458). It stops at a key-wide
+   * deletion marker, which removes every older value of the key.
+   */
+  protected KeyLookupSink postingsSink(final Object[] convertedKeys, final LSMTreeIndexPostings postings) {
+    return (page, pageBuffer, count) -> {
+      final LookupResult result = lookupInPage(page.getPageId().getPageNumber(), count, pageBuffer, convertedKeys, 1);
+      if (!result.found)
+        return true;
+      // The values of a page are read oldest first, which is how LSMTreeIndexPostings expects a page's values
+      postings.startPage();
+      for (int i = 0; i < result.valueBeginPositions.length; ++i) {
+        pageBuffer.position(result.valueBeginPositions[i]);
+        // through the serializer as readEntryValues reads it: with data encryption on, the count is encrypted, the RIDs are not
+        final int items = (int) serializer.deserializeValue(database, pageBuffer, BinaryTypes.TYPE_INT, null);
+        for (int v = 0; v < items; ++v) {
+          // the layout of readEntryValue: a compressed RID, then the posting's statistics when the index stores them
+          final int bucketId = (int) pageBuffer.getNumber();
+          final long position = pageBuffer.getNumber();
+          final int tf = storeTermFrequency ? (int) pageBuffer.getUnsignedNumber() : 0;
+          final int docLength = storeTermFrequency ? (int) pageBuffer.getUnsignedNumber() : 0;
+          postings.addRaw(bucketId, position, tf, docLength);
+        }
+      }
+      return postings.endPage();
+    };
+  }
+
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
       final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
       final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) {
