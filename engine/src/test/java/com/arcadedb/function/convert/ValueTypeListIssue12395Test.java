@@ -27,6 +27,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -126,9 +129,39 @@ class ValueTypeListIssue12395Test {
     assertThat(valueType("date()")).isEqualTo("DATE NOT NULL");
   }
 
+  /** An array, which asListOrNull reads as a list, is a list here too: the numeric-array parameter of issue #4284. */
+  @Test
+  void aPrimitiveArrayIsAListOfItsElementType() {
+    assertThat(valueTypeOf(new long[] { 1L, 2L })).isEqualTo("LIST<INTEGER NOT NULL> NOT NULL");
+    assertThat(valueTypeOf(new double[] { 1.5d })).isEqualTo("LIST<FLOAT NOT NULL> NOT NULL");
+    assertThat(valueTypeOf(new int[0])).isEqualTo("LIST<NOTHING> NOT NULL");
+    // and as an element of a list
+    assertThat(valueTypeOf(List.of(new long[] { 1L }, new long[] { 2L })))
+        .isEqualTo("LIST<LIST<INTEGER NOT NULL> NOT NULL> NOT NULL");
+  }
+
+  /** The union does not depend on the order the elements come in; the values are the ones Neo4j 5.26.33 answers. */
+  @Test
+  void theUnionOfNestedListsDoesNotDependOnTheOrderOfTheElements() {
+    final String expected = "LIST<LIST<LIST<INTEGER NOT NULL> NOT NULL> NOT NULL | LIST<LIST<INTEGER> NOT NULL> NOT NULL> NOT NULL";
+    assertThat(valueType("[[[1]], [[1, null]]]")).isEqualTo(expected);
+    assertThat(valueType("[[[1, null]], [[1]]]")).isEqualTo(expected);
+    // two members with the same key that differ only in the nullability of their elements
+    assertThat(valueType("[[1], [1, null]]")).isEqualTo(valueType("[[1, null], [1]]"));
+    // different element types are ordered by type, whatever the order of the elements
+    assertThat(valueType("[[1], [1.5, null]]")).isEqualTo("LIST<LIST<INTEGER NOT NULL> NOT NULL | LIST<FLOAT> NOT NULL> NOT NULL");
+    assertThat(valueType("[[1.5, null], [1]]")).isEqualTo("LIST<LIST<INTEGER NOT NULL> NOT NULL | LIST<FLOAT> NOT NULL> NOT NULL");
+  }
+
   private String valueType(final String expression) {
     final ResultSet rs = database.query("cypher", "RETURN valueType(" + expression + ") AS v");
     assertThat(rs.hasNext()).as("no row for: %s", expression).isTrue();
+    return (String) rs.next().getProperty("v");
+  }
+
+  private String valueTypeOf(final Object parameter) {
+    final ResultSet rs = database.query("cypher", "RETURN valueType($xs) AS v", Map.of("xs", parameter));
+    assertThat(rs.hasNext()).isTrue();
     return (String) rs.next().getProperty("v");
   }
 }

@@ -222,9 +222,21 @@ public final class CypherFunctionHelper {
   public static String cypherValueType(final Object value) {
     if (value == null)
       return "NULL";
-    if (value instanceof List<?> list)
+    final List<?> list = listOrNull(value);
+    if (list != null)
       return "LIST<" + listElementTypes(list).rendered + "> NOT NULL";
     return cypherTypeName(value) + " NOT NULL";
+  }
+
+  /**
+   * The value as the list valueType() reports on: a List, or an array, which {@link #asListOrNull} already reads as a list
+   * (primitive arrays reach the engine as the value of a numeric-array parameter, issue #4284) and which {@link #cypherTypeName}
+   * already names a list. A Set or another collection keeps the name it had.
+   */
+  private static List<?> listOrNull(final Object value) {
+    if (value instanceof List<?> list)
+      return list;
+    return value != null && value.getClass().isArray() ? asListOrNull(value) : null;
   }
 
   /**
@@ -259,7 +271,14 @@ public final class CypherFunctionHelper {
     for (final Member member : members)
       distinct.putIfAbsent(member.rendered, member);
     final List<Member> ordered = new ArrayList<>(distinct.values());
-    ordered.sort((first, second) -> compareKeys(first.key, second.key));
+    // Two members can share a key and differ in what they render - [1] and [1,null] are both a list of INTEGER, one with a nullable
+    // element type - so the key alone leaves their order to the order the elements came in, and the union would depend on it. The
+    // rendered text breaks the tie: ' ' sorts before '>', so the member with the NOT NULL element comes first, as Neo4j renders
+    // [[[1]],[[1,null]]] and [[[1,null]],[[1]]] alike
+    ordered.sort((first, second) -> {
+      final int byKey = compareKeys(first.key, second.key);
+      return byKey != 0 ? byKey : first.rendered.compareTo(second.rendered);
+    });
 
     final StringBuilder rendered = new StringBuilder();
     final List<Integer> key = new ArrayList<>();
@@ -282,7 +301,8 @@ public final class CypherFunctionHelper {
    * {@code [[1],['a']]} renders {@code "LIST<STRING NOT NULL> NOT NULL | LIST<INTEGER NOT NULL> NOT NULL"}.
    */
   private static Member elementMember(final Object element) {
-    if (element instanceof List<?> nested) {
+    final List<?> nested = listOrNull(element);
+    if (nested != null) {
       final ElementTypes inner = listElementTypes(nested);
       final List<Integer> key = new ArrayList<>();
       key.add(typeOrderIndex(CypherTypeName.LIST));
