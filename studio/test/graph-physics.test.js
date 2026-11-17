@@ -168,8 +168,17 @@ test("the room for a label grows with its longest line and its font", () => {
   assert.ok(long > short, long + " > " + short);
   assert.equal(physicsLabelGap("applies_to\nof", 16, 8), long);
   assert.ok(physicsLabelGap("applies_to", 32, 8) > long);
-  // never less than the text itself, so the nodes cannot cover it
-  assert.ok(long >= 10 * 16 * 0.5 + 2 * 8, "gap " + long);
+  // without a canvas to measure with, even a label of the widest glyphs (W is about 0.94em in Arial) fits
+  const wide = physicsLabelGap("W".repeat(20), 16, 8);
+  assert.ok(wide >= 20 * 16 * 0.95 + 2 * 8, "gap " + wide);
+});
+
+test("a measured label gets the room of its measured width, not of the estimate", () => {
+  const widths = { applies_to: 70, of: 15 };
+  const measure = (line) => widths[line];
+
+  // the longest line, its outline at both ends and one font size of margin for the arrow head
+  assert.equal(physicsLabelGap("applies_to\nof", 16, 8, measure), 70 + 2 * 8 + 16);
 });
 
 test("small nodes keep the edge length of the settings, big ones keep the label clear", () => {

@@ -146,20 +146,44 @@ function physicsLinkDistance(link, linkDistance) {
   return Math.max(linkDistance, link.source.r + link.target.r + link.labelGap);
 }
 
-/** Average glyph width of the graph font, as a fraction of the font size: generous, so a label is never clipped. */
-var PHYSICS_LABEL_CHAR_WIDTH = 0.6;
+/**
+ * Glyph width of the graph font, as a fraction of the font size, for when the text cannot be measured (no canvas, as
+ * in a headless graph): one em, the widest common glyphs (W, M, full-width characters), so no label is clipped.
+ */
+var PHYSICS_LABEL_CHAR_WIDTH = 1;
+
+/** The canvas context labels are measured with, made on first use; null when the page has no canvas. */
+var globalPhysicsMeasureContext = null;
+
+/**
+ * Returns a function that measures a line of text in the given CSS font, the way Cytoscape measures the label it
+ * draws, or null when there is no canvas to measure with.
+ */
+function physicsTextMeasurer(font) {
+  if (globalPhysicsMeasureContext == null) {
+    if (typeof document === "undefined") return null;
+    globalPhysicsMeasureContext = document.createElement("canvas").getContext("2d");
+    if (globalPhysicsMeasureContext == null) return null;
+  }
+  return line => {
+    globalPhysicsMeasureContext.font = font;
+    return globalPhysicsMeasureContext.measureText(line).width;
+  };
+}
 
 /**
  * The room the label of an edge needs between the two node borders. The label is rotated along the edge, so what it
- * takes is its text width, plus its outline at both ends and one font size of margin for the arrow head. An edge
- * without a label needs no room.
+ * takes is the width of its longest line, plus its outline at both ends and one font size of margin for the arrow
+ * head. The width is measured when a measurer is given, else estimated from the widest glyphs. An edge without a
+ * label needs no room.
  */
-function physicsLabelGap(label, fontSize, outlineWidth) {
+function physicsLabelGap(label, fontSize, outlineWidth, measure) {
   if (label == null || label === "") return 0;
   let lines = String(label).split("\n");
   let longest = 0;
-  for (let i = 0; i < lines.length; i++) longest = Math.max(longest, lines[i].length);
-  return longest * fontSize * PHYSICS_LABEL_CHAR_WIDTH + 2 * outlineWidth + fontSize;
+  for (let i = 0; i < lines.length; i++)
+    longest = Math.max(longest, measure != null ? measure(lines[i]) : lines[i].length * fontSize * PHYSICS_LABEL_CHAR_WIDTH);
+  return longest + 2 * outlineWidth + fontSize;
 }
 
 /** True when the element is drawn with a style that can be read back (not a headless graph, not a stand-in). */
@@ -185,7 +209,9 @@ function physicsFontSizePx(edge) {
  */
 function physicsEdgeLabelGap(edge) {
   if (!physicsStyled(edge)) return 0;
-  return physicsLabelGap(edge.style("label"), physicsFontSizePx(edge), edge.numericStyle("text-outline-width") || 0);
+  let fontSize = physicsFontSizePx(edge);
+  let font = edge.pstyle("font-style").strValue + " " + edge.pstyle("font-weight").strValue + " " + fontSize + "px " + edge.pstyle("font-family").strValue;
+  return physicsLabelGap(edge.style("label"), fontSize, edge.numericStyle("text-outline-width") || 0, physicsTextMeasurer(font));
 }
 
 /**
