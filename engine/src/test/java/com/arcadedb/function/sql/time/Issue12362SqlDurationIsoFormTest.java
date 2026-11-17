@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -117,10 +118,10 @@ class Issue12362SqlDurationIsoFormTest extends TestHelper {
 
   @Test
   void aWrongNumberOfArgumentsNamesTheAcceptedForms() {
+    // issue #11944: the count is the declared 1..2 arity, refused by the call-site gate in the uniform wording
     assertThatThrownBy(() -> duration("duration(1, 'hour', 2)"))
-        .isInstanceOf(InvalidArgumentException.class)
-        .hasMessageContaining("received 3 arguments")
-        .hasMessageContaining("'PT1H'");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expects 1-2 arguments but got 3");
   }
 
   private Duration duration(final String expression) {
