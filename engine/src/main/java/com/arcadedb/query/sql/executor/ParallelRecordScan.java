@@ -75,7 +75,9 @@ public final class ParallelRecordScan {
    */
   public static ParallelRecordScan plan(final CommandContext context, final String typeName, final Supplier<RowMapper> mapperPerUnit) {
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
-    final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().sorted().toArray();
+    // IN THE ORDER OF THE TYPE'S BUCKET LIST, AS THE SEQUENTIAL LABEL SCAN (iterateType) MEETS THEM, NOT SORTED BY ID: A ROW'S
+    // POSITION BREAKS THE TIES OF A PARALLEL TOP K, WHICH MUST KEEP THE ROWS THE SEQUENTIAL SCAN MEETS FIRST (ISSUE #11873)
+    final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().toArray();
     final List<ExecutionStep> steps = new ArrayList<>(bucketIds.length);
     for (final int bucketId : bucketIds)
       if (bucketId > 0) // as the SQL planner's scan steps do
@@ -85,7 +87,10 @@ public final class ParallelRecordScan {
     return scan == null ? null : new ParallelRecordScan(scan);
   }
 
-  /** The rows, in the order a sequential scan would return them. Closing the result set stops the workers. */
+  /**
+   * The rows, in the order the sequential openCypher label scan would return them: bucket by bucket in the order of the type's
+   * bucket list. Closing the result set stops the workers.
+   */
   public ResultSet pull(final CommandContext context) {
     return scan.pull(context, Integer.MAX_VALUE);
   }

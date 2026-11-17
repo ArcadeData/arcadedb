@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.Result;
@@ -231,6 +233,35 @@ class CypherParallelLabelScansIssue11873Test extends TestHelper {
     // Within the cap the parallel answer is the sequential one
     final String withinCap = "MATCH (n:T) WHERE n.h = 3 RETURN n.k AS k ORDER BY n.g DESC, n.k LIMIT 100";
     assertThat(column(withinCap)).hasSize(100).isEqualTo(sequential(withinCap));
+  }
+
+  /**
+   * The tie-break of a parallel top K follows the order the sequential label scan meets the buckets, which is the order of the
+   * type's bucket list, not the order of the bucket ids. Here the type's last bucket is older than its others (its id is
+   * lower): every row ties on the key, so the top K is the first K rows the scan meets, and the parallel answer must be the
+   * sequential one.
+   */
+  @Test
+  void aParallelTopKBreaksTiesInTheOrderOfTheTypesBucketList() {
+    final Bucket older = database.getSchema().createBucket("older");
+    final VertexType type = database.getSchema().createVertexType("U", 2);
+    type.addBucket(older);
+    assertThat(type.getBuckets(false).getLast().getFileId()).isLessThan(type.getBuckets(false).getFirst().getFileId());
+    database.transaction(() -> {
+      for (int i = 0; i < 6_000; i++) {
+        final MutableVertex vertex = database.newVertex("U").set("id", i, "t", 0, "pad", "p".repeat(64));
+        if (i % 3 == 0)
+          vertex.save("older");
+        else
+          vertex.save();
+      }
+    });
+
+    final String query = "MATCH (n:U) RETURN n.id AS id ORDER BY n.t LIMIT 20";
+    assertThat(profile(query)).contains("parallel: ");
+    final List<Object> expected = sequential(query);
+    assertThat(expected).hasSize(20);
+    assertThat(column(query)).isEqualTo(expected);
   }
 
   private List<Object> sequential(final String query) {
