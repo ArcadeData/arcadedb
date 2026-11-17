@@ -99,6 +99,14 @@ class Issue12245WithCollapsingWhereScopeTest extends TestHelper {
   }
 
   @Test
+  void aMapProjectionOfANameAnotherItemProjectsIsNotMappedToItsColumn() {
+    // After the WITH, n is the integer column: n {.b} projects that integer, not the node the map p was projected from, so
+    // no group equals {b: true} (Neo4j refuses the projection of an integer outright). Mapped to p, two groups would pass
+    assertThat(database.query("opencypher",
+        "MATCH (n:Node) WITH DISTINCT n.id AS n, n {.b} AS p WHERE n {.b} = {b: true} RETURN n, p").stream().toList()).isEmpty();
+  }
+
+  @Test
   void whereReadingAPropertyOfAProjectedVariableFollowsItsColumn() {
     final List<Object> ids = new ArrayList<>();
     database.query("opencypher", "MATCH (n:Node) WITH n AS m, count(*) AS c WHERE n.id > 1 RETURN m.id AS id ORDER BY id")

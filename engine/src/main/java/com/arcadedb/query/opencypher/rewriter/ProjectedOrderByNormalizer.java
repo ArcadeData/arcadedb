@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.rewriter;
 
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -225,24 +226,120 @@ public class ProjectedOrderByNormalizer {
       variables.add(expr.getVariableName());
       return expr;
     }
+
+    @Override
+    protected Expression visitMapProjection(final MapProjectionExpression expr) {
+      variables.add(expr.getVariableName());
+      return super.visitMapProjection(expr);
+    }
+  }
+
+  /**
+   * Builds a substituter that maps each projected expression onto the output column it is projected as, for an ORDER BY that
+   * follows a projection keeping its input rows (issue #12368). Such a projection keeps its input scope, so a property read of a
+   * projected variable is left alone: it reads the same record either way, and only a repeated expression saves a read. A
+   * projected expression that mentions a name another item's output shadows is left out (see {@link #shadowingOutputNames}).
+   */
+  public static ProjectedExpressionSubstituter newPlainProjectionSubstituter(final List<ReturnClause.ReturnItem> items) {
+    final Set<String> shadowing = shadowingOutputNames(items);
+    final Map<String, String> outputNameByExpressionText = new HashMap<>();
+    for (final ReturnClause.ReturnItem item : items) {
+      final Expression expression = item.getExpression();
+      if (expression == null || item.isStar())
+        continue;
+      final String text = expression.getText();
+      if (!mentionsAny(text, shadowing))
+        outputNameByExpressionText.putIfAbsent(text, item.getOutputName());
+    }
+    return new ProjectedExpressionSubstituter(outputNameByExpressionText, Map.of());
+  }
+
+  /**
+   * The output column of a projection keeping its input rows that holds the value of the whole ORDER BY expression, or null
+   * (issue #12368). As {@link #findProjectedOutputName}, and null also when the expression mentions a name another item's output
+   * shadows: after {@code RETURN n.y AS n, n.x AS x} the variable {@code n} of {@code ORDER BY n.x} is the column {@code n}, so
+   * the key is not the value the projection computed from the variable {@code n}.
+   */
+  public static String findPlainProjectedOutputName(final List<ReturnClause.ReturnItem> items, final String orderByExpressionText) {
+    final String outputName = findProjectedOutputName(items, orderByExpressionText);
+    return outputName == null || mentionsAny(orderByExpressionText, shadowingOutputNames(items)) ? null : outputName;
+  }
+
+  /**
+   * The output names of a projection that hide a variable of the same name from the clauses after it: every output name but the
+   * one of a variable projected as itself ({@code RETURN n} or {@code n AS n}). An expression that mentions one of them reads
+   * the column after the projection and the variable inside it, so it means two different things there.
+   */
+  private static Set<String> shadowingOutputNames(final List<ReturnClause.ReturnItem> items) {
+    Set<String> names = null;
+    for (final ReturnClause.ReturnItem item : items) {
+      if (item.isStar())
+        continue;
+      final String outputName = item.getOutputName();
+      if (item.getExpression() instanceof VariableExpression variable && variable.getVariableName().equals(outputName))
+        continue;
+      if (names == null)
+        names = new HashSet<>();
+      names.add(outputName);
+    }
+    return names == null ? Set.of() : names;
+  }
+
+  /**
+   * Whether the text mentions one of the names as an identifier: a coarse tokenization, which can only over-approximate (a name
+   * inside a string literal counts too), and the plain substring for a name that is not a simple identifier.
+   */
+  private static boolean mentionsAny(final String text, final Set<String> names) {
+    if (names.isEmpty() || text == null)
+      return false;
+    for (final String name : names) {
+      if (name == null || name.isEmpty())
+        continue;
+      if (!isSimpleIdentifier(name)) {
+        if (text.contains(name))
+          return true;
+        continue;
+      }
+      int from = 0;
+      while ((from = text.indexOf(name, from)) >= 0) {
+        final int end = from + name.length();
+        if ((from == 0 || !isIdentifierChar(text.charAt(from - 1))) && (end == text.length() || !isIdentifierChar(text.charAt(end))))
+          return true;
+        from = end;
+      }
+    }
+    return false;
+  }
+
+  private static boolean isSimpleIdentifier(final String name) {
+    for (int i = 0; i < name.length(); i++)
+      if (!isIdentifierChar(name.charAt(i)))
+        return false;
+    return true;
+  }
+
+  private static boolean isIdentifierChar(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_';
   }
 
   /**
    * Returns the output column name of the projected item whose expression is the same as the given
    * ORDER BY expression text, or null when no item projects it.
    */
-  private static String findProjectedOutputName(final List<ReturnClause.ReturnItem> items, final String orderByExpressionText) {
+  public static String findProjectedOutputName(final List<ReturnClause.ReturnItem> items, final String orderByExpressionText) {
     if (orderByExpressionText == null)
       return null;
 
-    for (final ReturnClause.ReturnItem item : items) {
-      // An item already referenced by its output name needs no rewrite: ORDER BY resolves it directly.
+    // An item already referenced by its output name needs no rewrite: ORDER BY resolves it directly. The output names are
+    // looked at first, all of them: a projected name shadows the variable it repeats, so in RETURN b AS x, a AS b ORDER BY b the
+    // key is the column b, not the column x the variable b was projected as
+    for (final ReturnClause.ReturnItem item : items)
       if (orderByExpressionText.equals(item.getOutputName()))
         return null;
 
-      if (orderByExpressionText.equals(item.getExpressionText()))
+    for (final ReturnClause.ReturnItem item : items)
+      if (!item.isStar() && orderByExpressionText.equals(item.getExpressionText()))
         return item.getOutputName();
-    }
     return null;
   }
 }

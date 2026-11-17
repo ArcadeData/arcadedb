@@ -23,13 +23,17 @@ import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
+import java.util.Map;
 
 /**
- * Returns a java.time.Duration.
+ * Returns a java.time.Duration, from an amount and a time unit ({@code duration(1, 'hour')}) or, as openCypher writes it, from one
+ * ISO-8601 text ({@code duration('PT1H')}) or one map of components ({@code duration({hours: 1, minutes: 30})}) (issue #12362). The
+ * one-argument forms share the openCypher parser, so both languages read the same text the same way.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  * @see {@link SQLFunctionSysdate}, {@link SQLFunctionDate}
@@ -46,8 +50,12 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
 
   public Object execute(final Object thisObject, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
+    if (params.length == 1)
+      return params[0] == null ? null : fromOneArgument(params[0]);
+
     if (params.length != 2)
-      throw new IllegalArgumentException("duration() function expected 2 parameters: amount and time-unit");
+      throw new InvalidArgumentException(NAME + "() expects an ISO-8601 duration ('PT1H'), a map of components ({hours: 1}) or an "
+          + "amount and a time unit (1, 'hour'), but received " + params.length + " arguments");
 
     if (params[0] == null || params[1] == null)
       return null;
@@ -86,6 +94,44 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     return Duration.of(amount, unit);
   }
 
+  /**
+   * The exact duration an ISO-8601 text or a map of components spells. A {@link Duration} is an exact amount of time, so a text or a
+   * map with years or months, whose length depends on the calendar, is refused as the two-argument form refuses those units.
+   */
+  @SuppressWarnings("unchecked")
+  private static Duration fromOneArgument(final Object value) {
+    final CypherDuration parsed;
+    try {
+      if (value instanceof Duration duration)
+        return duration;
+      else if (value instanceof CypherDuration cypherDuration)
+        parsed = cypherDuration;
+      else if (value instanceof String text)
+        parsed = CypherDuration.parse(text.trim());
+      else if (value instanceof Map<?, ?> map)
+        parsed = CypherDuration.fromMap((Map<String, Object>) map);
+      else
+        throw new InvalidArgumentException(
+            NAME + "() expects an ISO-8601 duration text or a map of components as its only argument, but received a "
+                + value.getClass().getSimpleName());
+    } catch (final IllegalArgumentException e) {
+      throw new InvalidArgumentException(NAME + "() cannot read '" + InvalidArgumentException.quote(value)
+          + "' as a duration: use an ISO-8601 duration such as 'PT1H30M' or 'P2DT3H', or a map such as {hours: 1, minutes: 30}", e);
+    }
+
+    if (parsed.getMonths() != 0)
+      throw new InvalidArgumentException(NAME + "() cannot build a duration of '" + InvalidArgumentException.quote(value)
+          + "': a duration is an exact amount of time and years and months have no fixed length. Use days, hours, minutes, "
+          + "seconds or smaller");
+
+    try {
+      return Duration.ofDays(parsed.getDays()).plusSeconds(parsed.getSeconds()).plusNanos(parsed.getNanosAdjustment());
+    } catch (final ArithmeticException e) {
+      throw new InvalidArgumentException(NAME + "() cannot build a duration of '" + InvalidArgumentException.quote(value)
+          + "': the amount overflows the range of a duration", e);
+    }
+  }
+
   private static long getAmount(final Object param) {
     if (param instanceof Number number)
       // issue #10850: longValue() read duration(2.5, 'hours') as 2 hours
@@ -101,6 +147,6 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
   }
 
   public String getSyntax() {
-    return "duration(<amount>, <time-unit>)";
+    return "duration(<amount>, <time-unit>) | duration(<iso-8601-text>) | duration(<map>)";
   }
 }

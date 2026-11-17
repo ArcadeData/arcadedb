@@ -31,7 +31,6 @@ import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -602,7 +601,13 @@ public enum Type {
   private static boolean isDateTimeTarget(final Class<?> targetClass) {
     return targetClass.equals(Date.class) || targetClass.equals(Calendar.class) || targetClass.equals(LocalDate.class)
         || targetClass.equals(LocalDateTime.class) || targetClass.equals(ZonedDateTime.class)
-        || targetClass.equals(Instant.class);
+        || targetClass.equals(Instant.class) || targetClass.equals(OffsetTime.class) || targetClass.equals(LocalTime.class)
+        || targetClass.equals(CypherDuration.class);
+  }
+
+  /** The time of day {@code time} names, read on the UTC clock: the reading a LOCAL_TIME gives a time that carries an offset. */
+  private static LocalTime utcWallClock(final OffsetTime time) {
+    return time.withOffsetSameInstant(ZoneOffset.UTC).toLocalTime();
   }
 
   /**
@@ -1096,14 +1101,82 @@ public enum Type {
               "Cannot convert object of type '" + value.getClass().getName() + "' into an EmbeddedDocument");
 
       } else if (targetClass.equals(OffsetTime.class)) {
-        if (value instanceof String text)
+        // A time of day keeps its offset; one without (a local time, a local datetime, the text with no offset) is at UTC, and a
+        // datetime keeps its time of day, as a DATE keeps the date of one. Anything else is refused below, never kept as it came
+        // (issue #12296)
+        final Object temporal = TemporalUtil.toCoreJavaType(value);
+        switch (temporal) {
+        case OffsetTime time -> {
+          return time;
+        }
+        case String text -> {
           return CypherTime.parse(text).getValue();
+        }
+        case LocalTime time -> {
+          return time.atOffset(ZoneOffset.UTC);
+        }
+        case OffsetDateTime offset -> {
+          return offset.toOffsetTime();
+        }
+        case ZonedDateTime zoned -> {
+          return zoned.toOffsetDateTime().toOffsetTime();
+        }
+        case LocalDateTime local -> {
+          return local.toLocalTime().atOffset(ZoneOffset.UTC);
+        }
+        case Instant instant -> {
+          return instant.atOffset(ZoneOffset.UTC).toOffsetTime();
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(LocalTime.class)) {
-        if (value instanceof String text)
-          return CypherLocalTime.parse(text).getValue();
+        // The UTC wall clock of a value that carries an offset, as a DATETIME reads one (issue #10489); a datetime keeps its time
+        // of day. Anything else is refused below, never kept as it came (issue #12296)
+        final Object temporal = TemporalUtil.toCoreJavaType(value);
+        switch (temporal) {
+        case LocalTime time -> {
+          return time;
+        }
+        case String text -> {
+          return utcWallClock(CypherTime.parse(text).getValue());
+        }
+        case OffsetTime time -> {
+          return utcWallClock(time);
+        }
+        case LocalDateTime local -> {
+          return local.toLocalTime();
+        }
+        case OffsetDateTime offset -> {
+          return offset.atZoneSameInstant(ZoneOffset.UTC).toLocalTime();
+        }
+        case ZonedDateTime zoned -> {
+          return zoned.withZoneSameInstant(ZoneOffset.UTC).toLocalTime();
+        }
+        case Instant instant -> {
+          return instant.atOffset(ZoneOffset.UTC).toLocalTime();
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(CypherDuration.class)) {
-        if (value instanceof String text)
+        // Only an amount of time is a duration: a point in time or a time of day is refused below (issue #12296)
+        switch (value) {
+        case CypherDuration duration -> {
+          return duration;
+        }
+        case String text -> {
           return CypherDuration.parse(text);
+        }
+        case Duration duration -> {
+          return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
+        }
+        case Period period -> {
+          return new CypherDuration(period.toTotalMonths(), period.getDays(), 0, 0);
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(Date.class)) {
         return convertToDate(database, value, property);
       } else if (targetClass.equals(Calendar.class)) {
@@ -1436,6 +1509,7 @@ public enum Type {
   private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
     return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class)
+        || targetClass.equals(OffsetTime.class) || targetClass.equals(LocalTime.class) || targetClass.equals(CypherDuration.class)
         || isArrayOfNumbers(targetClass);
   }
 

@@ -3693,7 +3693,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
-    boolean documentScanPerformed = false;
     if (metadata.associatedBucketId != -1) {
       try {
         final Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
@@ -3731,7 +3730,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
 
-          documentScanPerformed = true;
           LogManager.instance().log(this, Level.INFO,
               "After document scan fallback: %d active vectors for graph build (was %d from pages only)",
               ridToLatestVector.size(), activeVectorIds.length);
@@ -3748,26 +3746,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the in-memory vectorIndex, recover them. This catches cases where the document scan
     // fallback could not trigger (e.g., typeName is null, countType failed, or the type has
     // multiple buckets making the count comparison unreliable).
-    if (!documentScanPerformed) {
-      final VectorLocationIndex recoveryLocations = vectorIndex();
-      final int inMemorySize = recoveryLocations.size();
-      if (inMemorySize > ridToLatestVector.size()) {
-        final int pageParsedCount = ridToLatestVector.size();
-        // Recover entries from the in-memory vectorIndex that are missing from pages
-        recoveryLocations.getAllVectorIds().forEach(vectorId -> {
-          final long offsetAndFlag = recoveryLocations.getOffsetAndFlag(vectorId);
-          if (offsetAndFlag == VectorLocationIndex.ABSENT)
-            return;
-          final RID rid = recoveryLocations.getRid(vectorId);
-          if (rid != null && !ridToLatestVector.containsKey(rid))
-            ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid,
-                VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
-        });
-        if (ridToLatestVector.size() > pageParsedCount)
-          LogManager.instance().log(this, Level.WARNING,
-              "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
-              ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
-      }
+    // It runs after a document scan too: a commit still between its replay and its publication has its vector in the
+    // in-memory index only, and neither its pages nor its record are visible to the scan (issue #11962). Left out of the
+    // live set, the publish below would drop its location along with it.
+    final VectorLocationIndex recoveryLocations = vectorIndex();
+    final int inMemorySize = recoveryLocations.size();
+    if (inMemorySize > ridToLatestVector.size()) {
+      final int pageParsedCount = ridToLatestVector.size();
+      // Recover entries from the in-memory vectorIndex that are missing from pages
+      recoveryLocations.getAllVectorIds().forEach(vectorId -> {
+        final long offsetAndFlag = recoveryLocations.getOffsetAndFlag(vectorId);
+        if (offsetAndFlag == VectorLocationIndex.ABSENT)
+          return;
+        final RID rid = recoveryLocations.getRid(vectorId);
+        if (rid != null && !ridToLatestVector.containsKey(rid))
+          ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid,
+              VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
+      });
+      if (ridToLatestVector.size() > pageParsedCount)
+        LogManager.instance().log(this, Level.WARNING,
+            "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
+            ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
     }
 
     final boolean leftRecordsOut = collapseToWhatALoadKeeps(replay);
@@ -4528,10 +4527,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
 
-        // Keep only delta entries inserted DURING the rebuild (vectorId >= snapshot)
+        // Keep the delta entries this build did not incorporate: the ones inserted DURING it (vectorId >= snapshot), and
+        // the ones before its snapshot that it could not read but are still live (issue #11962). A commit replays its
+        // vectors into the location index and the delta before its pages and records are published - on a Raft leader for
+        // the whole quorum round trip - so a build in that window finds neither, and validation drops the vector like a
+        // deleted one. Trimmed here as well, it was in neither the graph nor the delta once its commit completed, and no
+        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay). A vector the
+        // build leaves out by its value - one this index cannot score, such as an all-zero placeholder under COSINE - is
+        // not kept: the delta scan would score it as NaN, which is why the graph leaves it out in the first place.
+        final VectorLocationIndex liveLocations = vectorIndex();
         final List<DeltaVectorEntry> remaining = new ArrayList<>();
         for (final DeltaVectorEntry e : deltaVectors)
-          if (e.vectorId >= deltaSnapshotId)
+          if (e.vectorId >= deltaSnapshotId || (e.vector != null && Arrays.binarySearch(finalActiveVectorIds, e.vectorId) < 0
+              && liveLocations.isLive(e.vectorId) && e.vector.length() == metadata.dimensions && !isUnscorable(e.vector)))
             remaining.add(e);
 
         // Entries inserted DURING the rebuild are genuinely pending: a later rebuild incorporates them, so they

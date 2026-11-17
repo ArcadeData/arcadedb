@@ -26,14 +26,17 @@ import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Replaces, anywhere inside an expression, references that a collapsing projection has resolved:
@@ -54,16 +57,21 @@ import java.util.Map;
  * synthesize from their children rather than storing the source slice, so it is a canonical rendering
  * on both sides and insensitive to how the query was spaced.
  * <p>
- * Reach is bounded by what {@link ExpressionRewriter} traverses: arithmetic, comparison and logical
- * spines, plus the function-call arguments handled below. An expression whose interesting part sits
- * under a node type the base rewriter does not descend into is simply left alone; the caller's scope
- * check then reports it rather than sorting on a value that is no longer well defined.
+ * Reach is bounded by what {@link ExpressionRewriter} traverses: every predicate and value node that holds
+ * expressions (label checks, IN, IS NULL, string and regex matches, CASE, list and map literals, indexing,
+ * slicing, NOT/AND/OR/XOR, map projections, issue #12337), the scoped ones (list comprehensions, list
+ * predicates, reduce) as far as their local variable allows, plus the function-call arguments handled below.
+ * An expression whose interesting part sits under a node type the base rewriter does not descend into (a
+ * pattern comprehension, a subquery) is simply left alone; the caller's scope check then reports it rather
+ * than sorting on a value that is no longer well defined.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ProjectedExpressionSubstituter extends ExpressionRewriter {
   private final Map<String, String> outputNameByExpressionText;
   private final Map<String, String> outputNameByVariable;
+  // Every name a substitution reads or writes, built on the first scoped child met; see rewriteInScope
+  private Set<String> namesInvolved;
 
   /**
    * @param outputNameByExpressionText canonical text of each projected expression, to the output column it is projected as
@@ -228,5 +236,59 @@ public class ProjectedExpressionSubstituter extends ExpressionRewriter {
       return expr;
 
     return new FunctionCallExpression(expr.getOriginalFunctionName(), rewritten, expr.isDistinct());
+  }
+
+  /**
+   * A projection of a projected variable ({@code n {.name}} after {@code RETURN n AS node}) reads the column the variable
+   * was projected as.
+   */
+  @Override
+  protected Expression visitMapProjection(final MapProjectionExpression expr) {
+    final MapProjectionExpression rewritten = (MapProjectionExpression) super.visitMapProjection(expr);
+    final String outputName = outputNameByVariable.get(rewritten.getVariableName());
+    if (outputName == null || outputName.equals(rewritten.getVariableName()))
+      return rewritten;
+    return new MapProjectionExpression(outputName, rewritten.getElements(), rewritten.getText());
+  }
+
+  /**
+   * Inside a scope that binds a local variable ({@code [x IN list | ...]}, {@code reduce(acc = 0, x IN list | ...)}) a
+   * substitution is only sound when the local neither shadows a name it rewrites nor captures the column it writes:
+   * {@code [n IN list | n.age]} reads the LOCAL {@code n}, and re-pointing {@code n.name} at a column {@code m} inside
+   * {@code [m IN list | n.name + m]} would read the local {@code m}. Such a child is left as written, so the scope check
+   * reports a reference that is really out of scope rather than the sort reading the wrong value.
+   */
+  @Override
+  protected Expression rewriteInScope(final Expression child, final String localVariable, final String secondLocalVariable) {
+    if (child == null)
+      return null;
+    final Set<String> names = namesInvolved();
+    if ((localVariable != null && names.contains(localVariable)) || (secondLocalVariable != null && names.contains(secondLocalVariable)))
+      return child;
+    return super.rewriteInScope(child, localVariable, secondLocalVariable);
+  }
+
+  private Set<String> namesInvolved() {
+    if (namesInvolved == null) {
+      final Set<String> names = new HashSet<>(outputNameByVariable.keySet());
+      names.addAll(outputNameByVariable.values());
+      names.addAll(outputNameByExpressionText.values());
+      // The identifiers a projected expression's text mentions: a coarse tokenization, which can only over-approximate
+      for (final String text : outputNameByExpressionText.keySet()) {
+        int start = -1;
+        for (int i = 0; i <= text.length(); i++) {
+          final boolean identifierChar = i < text.length() && (Character.isLetterOrDigit(text.charAt(i)) || text.charAt(i) == '_');
+          if (identifierChar) {
+            if (start < 0)
+              start = i;
+          } else if (start >= 0) {
+            names.add(text.substring(start, i));
+            start = -1;
+          }
+        }
+      }
+      namesInvolved = names;
+    }
+    return namesInvolved;
   }
 }

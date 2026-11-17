@@ -1208,7 +1208,7 @@ class CypherExpressionBuilder {
     TypePredicateBuilder.rejectDirectedPredicate(labelExprCtx);
 
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
-    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx, this::parseExpression);
     if (predicate != null)
       return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, predicate, ctx.getText()));
 
@@ -1220,7 +1220,9 @@ class CypherExpressionBuilder {
         LabelCheckExpression.LabelOperator.OR :
         LabelCheckExpression.LabelOperator.AND;
 
-    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels, operator, ctx.getText()));
+    // The dynamic $(expr) labels are evaluated per row with the static ones; dropped, the check was always true (issue #11776)
+    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels,
+        ParserUtils.parseDynamicLabels(labelExprCtx, this::parseExpression), operator, ctx.getText()));
   }
 
   // ============================================================================
@@ -1377,7 +1379,7 @@ class CypherExpressionBuilder {
    * Examples: [x IN [1,2,3] | x * 2], [x IN list WHERE x > 5 | x.name]
    */
   ListComprehensionExpression parseListComprehension(final Cypher25Parser.ListComprehensionContext ctx) {
-    final String variable = ctx.variable().getText();
+    final String variable = CypherASTBuilder.stripBackticks(ctx.variable().getText());
 
     // The main expression after IN - it's the first expression in the list
     final List<Cypher25Parser.ExpressionContext> expressions = ctx.expression();
@@ -1409,7 +1411,7 @@ class CypherExpressionBuilder {
     // Optional path variable
     String pathVariable = null;
     if (ctx.variable() != null)
-      pathVariable = ctx.variable().getText();
+      pathVariable = CypherASTBuilder.stripBackticks(ctx.variable().getText());
 
     // Parse the path pattern
     final PathPattern pathPattern = patterns.parsePathPatternNonEmpty(ctx.pathPatternNonEmpty());
@@ -1447,7 +1449,7 @@ class CypherExpressionBuilder {
     else
       throw new IllegalStateException("Unknown list predicate type: " + ctx.getText());
 
-    final String variable = ctx.variable().getText();
+    final String variable = CypherASTBuilder.stripBackticks(ctx.variable().getText());
     final Expression listExpression = parseExpression(ctx.inExp);
 
     Expression whereExpression = null;
@@ -1472,10 +1474,10 @@ class CypherExpressionBuilder {
     final List<Cypher25Parser.VariableContext> variables = ctx.variable();
     final List<Cypher25Parser.ExpressionContext> expressions = ctx.expression();
 
-    final String accumulatorVariable = variables.get(0).getText();
+    final String accumulatorVariable = CypherASTBuilder.stripBackticks(variables.get(0).getText());
     final Expression initialValue = parseExpression(expressions.get(0));
 
-    final String iteratorVariable = variables.get(1).getText();
+    final String iteratorVariable = CypherASTBuilder.stripBackticks(variables.get(1).getText());
     final Expression listExpression = parseExpression(expressions.get(1));
 
     final Expression reduceExpression = parseExpression(expressions.get(2));
@@ -1494,10 +1496,10 @@ class CypherExpressionBuilder {
       final List<Cypher25Parser.VariableContext> variables = validCtx.variable();
       final List<Cypher25Parser.ExpressionContext> expressions = validCtx.expression();
 
-      final String accumulatorVariable = variables.get(0).getText();
+      final String accumulatorVariable = CypherASTBuilder.stripBackticks(variables.get(0).getText());
       final Expression initialValue = parseExpression(expressions.get(0));
 
-      final String iteratorVariable = variables.get(1).getText();
+      final String iteratorVariable = CypherASTBuilder.stripBackticks(variables.get(1).getText());
       final Expression listExpression = parseExpression(expressions.get(1));
 
       final Expression reduceExpression = parseExpression(expressions.get(2));
@@ -1524,7 +1526,7 @@ class CypherExpressionBuilder {
    * Examples: n{.name, .age}, n{.*, totalAge: n.age * 2}
    */
   MapProjectionExpression parseMapProjection(final Cypher25Parser.MapProjectionContext ctx) {
-    final String variableName = ctx.variable().getText();
+    final String variableName = CypherASTBuilder.stripBackticks(ctx.variable().getText());
     final List<MapProjectionExpression.ProjectionElement> elements = new ArrayList<>();
 
     for (final Cypher25Parser.MapProjectionElementContext elemCtx : ctx.mapProjectionElement()) {
@@ -1539,7 +1541,7 @@ class CypherExpressionBuilder {
         elements.add(new MapProjectionExpression.ProjectionElement(propName));
       } else if (elemCtx.variable() != null) {
         // variable (include another variable's value)
-        final String varName = elemCtx.variable().getText();
+        final String varName = CypherASTBuilder.stripBackticks(elemCtx.variable().getText());
         elements.add(new MapProjectionExpression.ProjectionElement(varName, new VariableExpression(varName)));
       } else if (elemCtx.DOT() != null && elemCtx.TIMES() != null) {
         // .* (all properties)

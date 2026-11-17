@@ -367,6 +367,11 @@ public class LocalSchema implements Schema {
   // The file names, among unavailableIndexDefinitions, of the indexes the last load left out because it refused their persisted
   // definition (issue #11568), as opposed to a file with no header page (issue #10046)
   private volatile    Set<String>                            refusedIndexDefinitionFiles   = Set.of();
+  // Between beginWalReplay() and endWalReplay(): the load of a crashed database, ahead of its WAL replay (issue #12111). Only
+  // LocalDatabase.openInternal() opens and closes this window, so it is never set once the database is open
+  private volatile    boolean                                walReplayPending;
+  // A property name that load found missing from the dictionary and left to the replay, see dictionaryIdOfPropertyName()
+  private volatile    boolean                                namesLeftToTheReplay;
 
   /**
    * The index and bucket components an in-flight schema load has instantiated but whose {@code onAfterSchemaLoad()}
@@ -693,7 +698,11 @@ public class LocalSchema implements Schema {
             dictionary = loadedDictionary;
             // Only now can the dictionary write a missing header page: doing so commits a transaction
             // that has to resolve the dictionary's file id, which registerFile above has just made
-            // resolvable. Relevant when the database was killed before the page reached disk.
+            // resolvable. Relevant when the database was killed before the page reached disk. Ahead of a WAL replay
+            // too: the page it writes is the image of the dictionary's creation (version 1, no name), the lowest version
+            // a WAL entry of that page can carry, so an entry at that version is applied again over it and every later
+            // one follows. When the WAL no longer holds the creation, the replay needs this page to start from (issue
+            // #12111, see Dictionary.onWalReplayCompleted())
             if (mode == ComponentFile.MODE.READ_WRITE)
               loadedDictionary.createHeaderPageIfMissing();
             break;
@@ -1869,6 +1878,49 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Opens the window of a crashed database's open in which the schema is loaded ahead of the WAL replay (issue #12111). In it
+   * a property name the load does not find in the dictionary is left to the replay instead of being registered. Registering it
+   * committed a transaction of the open's own, which advanced the dictionary's page past the versions the WAL holds for it: the
+   * replay then skipped the dead process's dictionary pages as superseded, and the names its records reference were lost, or
+   * the replay of a later entry aborted the recovery on the misaligned page. Closed by {@link #endWalReplay(boolean)} once the
+   * replay is over.
+   */
+  public void beginWalReplay() {
+    namesLeftToTheReplay = false;
+    walReplayPending = true;
+  }
+
+  /**
+   * Closes the window {@link #beginWalReplay()} opened.
+   *
+   * @param replayCompleted whether the replay applied every transaction of the WAL
+   *
+   * @return whether the load left a property name to the replay, and the schema has to be loaded again now that the replay
+   *     restored it, or to register what the WAL did not hold either
+   */
+  public boolean endWalReplay(final boolean replayCompleted) throws IOException {
+    walReplayPending = false;
+    final Dictionary current = dictionary;
+    if (replayCompleted && current != null)
+      current.onWalReplayCompleted();
+    return namesLeftToTheReplay;
+  }
+
+  /**
+   * The dictionary id of a property's name, registered when the dictionary does not have it yet; within the WAL-replay window
+   * of an open the name is not registered (see {@link #beginWalReplay()}) and -1 comes back for it until the reload that follows
+   * the replay.
+   */
+  int dictionaryIdOfPropertyName(final String name) {
+    if (!walReplayPending)
+      return getDictionary().getIdByName(name, true);
+    final int id = getDictionary().getIdByName(name, false);
+    if (id < 0)
+      namesLeftToTheReplay = true;
+    return id;
+  }
+
+  /**
    * True when a bucket index the last load left out for a missing header page (issue #10046) now has a page in its file. The
    * schema of a crashed database is loaded before the WAL replay, so an index created just before the crash, whose header page
    * the WAL holds but the asynchronous flush never wrote, is found headerless by that load and completed by the replay.
@@ -1923,6 +1975,24 @@ public class LocalSchema implements Schema {
       }
     }
     return names;
+  }
+
+  /**
+   * The names of the UNIQUE bucket indexes served without the compacted sub-index their header names, because the load could not
+   * attach it ("File with id N was not found", issue #12348). Such an index answers from its mutable pages alone, so it refuses no
+   * duplicate of a key only the lost sub-index held: an HA node reads this, with {@link #getUnavailableUniqueIndexNames()}, to
+   * re-install the database from its cluster rather than serve, and lead with, a constraint it does not enforce. REBUILD INDEX
+   * replaces the index and empties the list.
+   */
+  public List<String> getPartiallyLoadedUniqueIndexNames() {
+    List<String> names = null;
+    for (final Index index : getIndexes())
+      if (index instanceof LSMTreeIndex lsm && lsm.isUnique() && lsm.getMutableIndex().getDetachedSubIndex() != null) {
+        if (names == null)
+          names = new ArrayList<>(2);
+        names.add(lsm.getName());
+      }
+    return names != null ? names : List.of();
   }
 
   private static boolean hasValidIndex(final List<TypeIndex> indexes) {

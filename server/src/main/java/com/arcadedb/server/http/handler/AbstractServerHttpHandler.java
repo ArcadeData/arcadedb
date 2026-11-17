@@ -1325,6 +1325,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (inUse != null)
       return new ErrorClassification(409, "Object in use", inUse, null, ErrorLogKind.USER);
 
+    // 409 Conflict: a statement that runs only in the implicit transaction of one request (CALL { ... } IN TRANSACTIONS), sent in
+    // the transaction the caller opened with /begin. The session's state is the cause, the same request outside the transaction
+    // runs, and it is refused again while the transaction is open (issue #12161). Before the generic CommandExecutionException
+    // arm, which it extends and which answers 500
+    final ImplicitTransactionRequiredException implicitOnly = firstOf(e, cause, ImplicitTransactionRequiredException.class);
+    if (implicitOnly != null)
+      return new ErrorClassification(409, "Cannot execute command in an explicit transaction", implicitOnly, null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
     // bad write. See issue #4350.
@@ -2519,9 +2527,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    final long lastApplied = haDb.getLastAppliedIndex();
-    if (lastApplied >= 0)
-      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(lastApplied));
+    // Not the bare applied index: a write this request forwarded to the leader may not be applied here yet (issue #11740)
+    final long bookmark = haDb.getCommitIndexBookmark();
+    if (bookmark >= 0)
+      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(bookmark));
   }
 
   /**
@@ -2563,21 +2572,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    exchange.addResponseCommitListener(ex -> {
-      if (ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
-        return;
-      try {
-        emitCommitIndexBookmark(ex, haDb);
-      } catch (final RuntimeException e) {
-        // This runs from inside Undertow's response-commit path, not from the handler, so it is outside the
-        // exception mapping in handleRequest: letting anything escape here would tear down a response that is
-        // otherwise complete and correct. A missing bookmark costs the client one stale follower read; a torn
-        // response costs it the answer.
-        LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
-            "Cannot read the last applied index while committing the response, the read-your-writes bookmark is "
-                + "not emitted for this request", e);
-      }
-    });
+    exchange.addResponseCommitListener(ex -> emitCommitIndexBookmarkIfAbsent(ex, haDb));
+  }
+
+  /**
+   * Emits the bookmark unless the response already carries one, and never throws. Called by the response-commit listener of
+   * {@link #emitCommitIndexBookmarkOnResponseCommit} and by {@link DatabaseAbstractHandler#execute} just before it clears the
+   * request's read-consistency context, which also holds the bookmark of any write the request forwarded to the leader (issue
+   * #11740): a request that leaves through an exception is answered after that, so the listener alone would answer it with
+   * this node's own applied index, below a write the leader had already committed.
+   */
+  protected static void emitCommitIndexBookmarkIfAbsent(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
+    if (exchange.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+      return;
+    try {
+      emitCommitIndexBookmark(exchange, haDb);
+    } catch (final RuntimeException e) {
+      // Run from inside Undertow's response-commit path, or from a finally block, so outside the exception mapping in
+      // handleRequest: letting anything escape would tear down a response that is otherwise complete and correct, or replace
+      // the request's own failure. A missing bookmark costs the client one stale follower read; a torn response costs it the
+      // answer.
+      LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
+          "Cannot read the last applied index while answering, the read-your-writes bookmark is not emitted for this request",
+          e);
+    }
   }
 
   /**

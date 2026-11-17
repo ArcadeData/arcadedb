@@ -130,8 +130,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * <li>the {@code limit} field of the request, when present: the caller stated the size of the page it
    * wants, and that statement wins over everything else (a value {@code <= 0} means unlimited);</li>
    * <li>otherwise the configured default, raised to the LIMIT the query itself carries when the engine
-   * exposes it on the execution plan: honoring it is what keeps the HTTP surface from silently returning
-   * fewer rows than the query asked for (issue #5711).</li>
+   * exposes it ({@link ResultSet#getStatementLimit()}: SQL from its execution plan, openCypher from its statement):
+   * honoring it is what keeps the HTTP surface from silently returning fewer rows than the query asked for (issues
+   * #5711, #12154).</li>
    * </ol>
    * The plan LIMIT can only raise the cap, never lower it. A LIMIT smaller than the default is already
    * enforced by the engine, so capping at it would be redundant - and the plan of a query whose LIMIT is a
@@ -167,10 +168,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * LIMIT carried by the execution plan of the given result set, or 0 when unavailable. SQL exposes it for
-   * both single statements and single-statement scripts; languages that do not build an
-   * {@link com.arcadedb.query.sql.executor.ExecutionPlan} (e.g. Cypher on the non-EXPLAIN path) return 0, and
-   * their results are capped by the configured default with {@code truncated} reported when it bites.
+   * LIMIT the statement of the given result set declares ({@link ResultSet#getStatementLimit()}), or 0 when
+   * unavailable. SQL exposes it on its execution plan for both single statements and single-statement scripts, and
+   * openCypher from the LIMIT of its RETURN (the sum of its branches' for a UNION, issue #12154); a language that
+   * exposes none returns 0, and its results are capped by the configured default with {@code truncated} reported when
+   * it bites.
    * <p>
    * A multi-statement script reports 0 today, but a value belonging to one of its statements would be
    * harmless anyway: {@link #resolveLimit} only ever raises the cap with it, so a wrong value can widen the
@@ -180,7 +182,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (qResult == null)
       return 0;
     try {
-      return qResult.getExecutionPlan().map(ExecutionPlan::getLimit).orElse(0);
+      return qResult.getStatementLimit();
     } catch (final Exception e) {
       // A language whose plan computes the limit lazily may fail here: fall back to "no limit exposed".
       LogManager.instance().log(this, Level.FINE, "Cannot read the LIMIT from the execution plan", e);
@@ -234,14 +236,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (!outcome.truncated() || requestLimit != null || planLimit >= limit)
       return;
 
-    // The advice deliberately leads with the request field: a LIMIT in the query text raises the cap only for a
-    // language that exposes it on the execution plan, so telling a Cypher caller to add one - it may well have
-    // one already - would send it after a fix that cannot work.
+    // The advice leads with the request field, which every language honors. A LIMIT in the query raises the cap for SQL
+    // and openCypher (issue #12154), which read it back from the statement; Gremlin, GraphQL and the other languages do
+    // not expose one.
     LogManager.instance().log(this, Level.WARNING,
         "Query on database '%s' returned more rows than the default HTTP limit of %d: the response has been truncated to %d rows. "
-            + "Set 'limit' in the request or raise '%s'; a LIMIT written in the query raises the cap only for a language that "
-            + "exposes it on the execution plan, which SQL does and Cypher does not. Query: %s", databaseName, limit,
-        outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(), abbreviateForLog(command));
+            + "Set 'limit' in the request, write a LIMIT in the query (honored for SQL and openCypher) or raise '%s'. Query: %s",
+        databaseName, limit, outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(),
+        abbreviateForLog(command));
   }
 
   /**

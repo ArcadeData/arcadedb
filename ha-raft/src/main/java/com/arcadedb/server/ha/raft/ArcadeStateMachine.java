@@ -1781,8 +1781,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
       criticalHalt.triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e, e);
-      return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
+      return CompletableFuture.failedFuture(appliedEntryFailure(index, e));
     }
+  }
+
+  /**
+   * What the future of a COMMITTED entry fails with, never a bare {@link NeedRetryException} (issue #12365). Ratis wraps the
+   * failure of {@link #applyTransaction} in a {@link StateMachineException} for the submitter, exactly as it wraps the refusal
+   * {@link #startTransaction} and {@link #preAppendTransaction} raise BEFORE the entry is appended, and
+   * {@link com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter#refusedBeforeAppend} reads a
+   * {@link StateMachineException} whose direct cause is a {@link NeedRetryException} as that refusal: the submitter withdraws
+   * its commit and answers the client a {@link ConcurrentModificationException} for an entry the log holds and every node
+   * applies, so a client that retries writes it twice. {@code applyWithRetry} keeps every {@link NeedRetryException} inside, so
+   * only an unexpected escape reaches here; it is carried one level down, inside a {@link ReplicationException}, where the
+   * refusal test does not look and the submitter answers the outcome it cannot know.
+   */
+  static Exception appliedEntryFailure(final long index, final Throwable e) {
+    if (e instanceof NeedRetryException)
+      return new ReplicationException("The committed Raft log entry at index " + index + " failed while being applied: " + e.getMessage(), e);
+    return e instanceof Exception ex ? ex : new RuntimeException(e);
   }
 
   // CriticalHaltHandler holds the implementation of these; they stay here for the callers outside this class.

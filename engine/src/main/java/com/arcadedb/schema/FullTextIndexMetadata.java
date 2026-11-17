@@ -762,6 +762,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Arms the once-per-session check of the counters against the live data again, without the unconditional rescan of
+   * {@link #requireRescan()}: the next search compares them with a live count and rescans only when the two differ. For counters
+   * set rather than measured, such as the empty pair of a new index (issue #12367).
+   */
+  public void armStaleCheck() {
+    staleChecked.set(false);
+  }
+
+  /**
    * Marks the persisted corpus counters as valid (or invalid).
    */
   public void setCountersValid(final boolean countersValid) {
