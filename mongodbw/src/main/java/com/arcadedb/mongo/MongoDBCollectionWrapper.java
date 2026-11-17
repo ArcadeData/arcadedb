@@ -523,15 +523,27 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     return null;
   }
 
+  /**
+   * The library's interface answers an int: the count is clamped to it, never wrapped (issue #11449). The {@code count} command reads
+   * {@link #countDocuments} instead, which answers the whole count.
+   */
   @Override
   public int count(final Document document, final int skip, final int limit) {
+    return clampToInt(countDocuments(document, skip, limit));
+  }
+
+  /**
+   * The documents {@code document} matches, past {@code skip} and up to {@code limit}, as a long: a type holds more documents than an
+   * int counts (issue #11449).
+   */
+  long countDocuments(final Document document, final long skip, final long limit) {
     // The count command's own default for an unspecified limit is -1 (MongoDBDatabaseWrapper#countCollection), so
     // limit <= 0 here means "no limit" - deliberately, not incidentally lining up with an explicit limit: 0.
     final MongoFilter filter = new MongoFilter(database, document);
     if (filter.isEmpty() && skip <= 0 && limit <= 0)
-      return (int) database.countType(collectionName, false);
+      return database.countType(collectionName, false);
 
-    int counted = 0;
+    long counted = 0;
 
     if (filter.isEmpty()) {
       // Push skip/limit into the query itself - @rid is enough to count a row, no need to materialize the record.
@@ -550,8 +562,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
     } else {
       // the documents are tested one by one: the skipped matches are not counted, the scan stops at the limit
-      final int[] skipped = { 0 };
-      final int[] matched = { 0 };
+      final long[] skipped = { 0L };
+      final long[] matched = { 0L };
       // every matching row, not only those with an identity: a sample of a TIMESERIES type has none (issue #10442)
       filter.scanMatchingRows(database, collectionName, row -> {
         if (skipped[0] < skip) {
@@ -574,7 +586,11 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public int count() {
-    return (int) database.countType(getCollectionName(), false);
+    return clampToInt(database.countType(getCollectionName(), false));
+  }
+
+  private static int clampToInt(final long count) {
+    return (int) Math.min(Integer.MAX_VALUE, count);
   }
 
   @Override

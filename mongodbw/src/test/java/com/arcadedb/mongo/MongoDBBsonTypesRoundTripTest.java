@@ -22,8 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
-import com.mongodb.MongoCommandException;
 import com.mongodb.MongoCredential;
+import com.mongodb.MongoWriteException;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.UpdateOptions;
@@ -176,7 +176,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void nanDecimalIsRefusedNotDropped() {
-    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 14).append("v", Decimal128.NaN))).isInstanceOf(MongoCommandException.class);
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 14).append("v", Decimal128.NaN))).isInstanceOf(MongoWriteException.class);
     assertThat(collection.find(eq("_id", 14)).first()).isNull();
   }
 
@@ -191,7 +191,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   @Test
   void refusalLeavesNoOpenTransaction() {
     assertThatThrownBy(() -> collection.insertOne(new Document("_id", 16).append("v", Decimal128.POSITIVE_INFINITY)))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class);
     collection.insertOne(new Document("_id", 17).append("v", 1));
     assertThat(collection.find(eq("_id", 17)).first()).isNotNull();
     assertThat(collection.find(eq("_id", 16)).first()).isNull();
@@ -201,7 +201,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   void reservedTagIsRefusedByUpdateToo() {
     collection.insertOne(new Document("_id", 18).append("x", 1));
     assertThatThrownBy(() -> collection.updateOne(eq("_id", 18), set("v", new Document("$bson", "timestamp").append("value", 5L))))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class);
     assertThat(collection.find(eq("_id", 18)).first().containsKey("v")).isFalse();
   }
 
@@ -290,7 +290,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   @Test
   void setWithNanDecimalIsRefused() {
     collection.insertOne(new Document("_id", 48).append("x", 1));
-    assertThatThrownBy(() -> collection.updateOne(eq("_id", 48), set("v", Decimal128.NaN))).isInstanceOf(MongoCommandException.class);
+    assertThatThrownBy(() -> collection.updateOne(eq("_id", 48), set("v", Decimal128.NaN))).isInstanceOf(MongoWriteException.class);
     assertThat(collection.find(eq("_id", 48)).first().containsKey("v")).isFalse();
   }
 
