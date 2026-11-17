@@ -53,7 +53,7 @@ import java.util.concurrent.TimeUnit;
  * DATE or DATETIME column also accepts the numbers and strings {@code DateUtils} converts, and a {@code Date} and a
  * {@code LocalDateTime} of the same instant merge into one long; a DOUBLE column keeps a double, so integers above 2^53 that GROUP BY
  * keeps apart can merge; a LocalDate in a DATETIME_NANOS column saturates; a Float NaN in an ORDINAL column is refused where GROUP BY
- * keys it. A DOUBLE column stores -0.0 as 0.0, as GROUP BY keys both as Long 0.
+ * keys it. A DOUBLE column preserves -0.0 (distinguished from 0.0 for MIN/MAX and STATS, while GROUP BY and facets key both as Long 0).
  * <p>
  * A sink must not call {@code extract} re-entrantly on the same thread: the ordinal buffer is per thread.
  * <p>

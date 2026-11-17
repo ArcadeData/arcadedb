@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetStats;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +50,9 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
       database.newDocument("DoubleItem").set("grp", "B").set("val", 0.0d).save();
       // Group C: only positive zero
       database.newDocument("DoubleItem").set("grp", "C").set("val", 0.0d).save();
+      // Group D: positive zero first, then negative zero
+      database.newDocument("DoubleItem").set("grp", "D").set("val", 0.0d).save();
+      database.newDocument("DoubleItem").set("grp", "D").set("val", -0.0d).save();
     });
     FacetOracle.awaitCaughtUp(database);
 
@@ -87,6 +91,17 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
         assertThat(Double.doubleToRawLongBits(maxC)).as("Group C max accelerated=" + accelerated)
             .isEqualTo(Double.doubleToRawLongBits(0.0d));
       }
+
+      // Group D: reverse insertion order {0.0, -0.0}.
+      // Because SQL min() uses BinaryComparator, where 0.0 and -0.0 compare equal, plain scan (which executes
+      // when a WHERE filter is present) keeps whichever zero was seen first in row order (here, 0.0d).
+      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal FROM DoubleItem WHERE grp = 'D' GROUP BY grp")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result res = rs.next();
+        final double minD = res.getProperty("minVal");
+        assertThat(Double.doubleToRawLongBits(minD)).as("Group D min accelerated=" + accelerated)
+            .isEqualTo(Double.doubleToRawLongBits(0.0d));
+      }
     }
   }
 
@@ -107,6 +122,9 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
       database.newDocument("FloatItem").set("grp", "B").set("val", 0.0f).save();
       // Group C: only positive zero
       database.newDocument("FloatItem").set("grp", "C").set("val", 0.0f).save();
+      // Group D: positive zero first, then negative zero
+      database.newDocument("FloatItem").set("grp", "D").set("val", 0.0f).save();
+      database.newDocument("FloatItem").set("grp", "D").set("val", -0.0f).save();
     });
     FacetOracle.awaitCaughtUp(database);
 
@@ -140,6 +158,17 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
         assertThat(Float.floatToRawIntBits(minC)).as("Float Group C min accelerated=" + accelerated)
             .isEqualTo(Float.floatToRawIntBits(0.0f));
         assertThat(Float.floatToRawIntBits(maxC)).as("Float Group C max accelerated=" + accelerated)
+            .isEqualTo(Float.floatToRawIntBits(0.0f));
+      }
+
+      // Group D: reverse insertion order {0.0f, -0.0f}
+      // Because SQL min() uses BinaryComparator, where 0.0f and -0.0f compare equal, plain scan (which executes
+      // when a WHERE filter is present) keeps whichever zero was seen first in row order (here, 0.0f).
+      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal FROM FloatItem WHERE grp = 'D' GROUP BY grp")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result res = rs.next();
+        final float minD = res.getProperty("minVal");
+        assertThat(Float.floatToRawIntBits(minD)).as("Float Group D min accelerated=" + accelerated)
             .isEqualTo(Float.floatToRawIntBits(0.0f));
       }
     }
@@ -211,6 +240,42 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
         assertThat(min).isEqualTo(-10.0d);
         assertThat(max).isEqualTo(5.0d);
       }
+    }
+  }
+
+  @Test
+  void groupByAndFacetsCollapseNegativeAndPositiveZeroIntoSingleKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE ZeroGroupItem");
+    database.command("sql", "CREATE PROPERTY ZeroGroupItem.val DOUBLE");
+    database.command("sql", "CREATE INDEX ON ZeroGroupItem (val) COLUMNAR");
+    FacetOracle.awaitCaughtUp(database);
+
+    database.transaction(() -> {
+      database.newDocument("ZeroGroupItem").set("val", -0.0d).save();
+      database.newDocument("ZeroGroupItem").set("val", 0.0d).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    for (final boolean accelerated : new boolean[] { false, true }) {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, accelerated);
+
+      try (final ResultSet rs = database.query("sql", "SELECT val, count(*) AS cnt FROM ZeroGroupItem GROUP BY val")) {
+        assertThat(rs.hasNext()).isTrue();
+        final Result res = rs.next();
+        assertThat(((Number) res.getProperty("cnt")).longValue()).isEqualTo(2L);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM ZeroGroupItem FACETS t: val TERMS")) {
+      final FacetResult facet = rs.getFacets().get("t");
+      assertThat(facet.buckets()).hasSize(1);
+      assertThat(facet.buckets().getFirst().count()).isEqualTo(2L);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM ZeroGroupItem FACETS d: val DISTINCT")) {
+      final FacetResult facet = rs.getFacets().get("d");
+      assertThat(facet.distinct().value()).isEqualTo(1L);
     }
   }
 }
