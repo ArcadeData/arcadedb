@@ -484,6 +484,28 @@ test("big nodes stay far enough apart to show the label of the edge between them
   }
 });
 
+test("an edge label that does not wrap needs the room of all its text on one line", () => {
+  // Edges keep Cytoscape's text-wrap: none, so the canvas draws the newline as a space and both halves side by side
+  const { sandbox } = buildPage(
+    [
+      { data: { id: "a", size: 25 } },
+      { data: { id: "b", size: 25 } },
+      { data: { id: "ab", source: "a", target: "b", label: "relationship\nrelationship" } },
+      { data: { id: "ba", source: "b", target: "a", label: "relationship relationship" } },
+    ],
+    {},
+    null,
+    true
+  );
+
+  try {
+    const links = sandbox.physicsLinks(sandbox.globalCy.edges(), { a: {}, b: {} });
+    assert.equal(links[0].labelGap, links[1].labelGap, "the newline takes the room of the space it is drawn as");
+  } finally {
+    sandbox.globalCy.destroy();
+  }
+});
+
 test("the settings of the graph keep the physics ones", () => {
   const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], {
     physicsRepulsion: 11,

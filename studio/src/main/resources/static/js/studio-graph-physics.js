@@ -174,8 +174,9 @@ function physicsTextMeasurer(font) {
 /**
  * The room the label of an edge needs between the two node borders. The label is rotated along the edge, so what it
  * takes is the width of its longest line, plus its outline at both ends and one font size of margin for the arrow
- * head. The width is measured when a measurer is given, else estimated from the widest glyphs. An edge without a
- * label needs no room.
+ * head. The lines are the ones the label is drawn in: a label that does not wrap is one line, newlines and all. The
+ * width is measured when a measurer is given, else estimated from the widest glyphs. An edge without a label needs
+ * no room.
  */
 function physicsLabelGap(label, fontSize, outlineWidth, measure) {
   if (label == null || label === "") return 0;
@@ -211,7 +212,10 @@ function physicsEdgeLabelGap(edge) {
   if (!physicsStyled(edge)) return 0;
   let fontSize = physicsFontSizePx(edge);
   let font = edge.pstyle("font-style").strValue + " " + edge.pstyle("font-weight").strValue + " " + fontSize + "px " + edge.pstyle("font-family").strValue;
-  return physicsLabelGap(edge.style("label"), fontSize, edge.numericStyle("text-outline-width") || 0, physicsTextMeasurer(font));
+  let label = edge.style("label");
+  // WITHOUT WRAPPING (THE EDGE DEFAULT) THE CANVAS DRAWS A NEWLINE AS A SPACE, ON THE SAME LINE
+  if (label != null && edge.pstyle("text-wrap").value === "none") label = String(label).replace(/\n/g, " ");
+  return physicsLabelGap(label, fontSize, edge.numericStyle("text-outline-width") || 0, physicsTextMeasurer(font));
 }
 
 /**
