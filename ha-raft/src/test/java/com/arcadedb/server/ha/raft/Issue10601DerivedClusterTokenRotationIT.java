@@ -76,7 +76,7 @@ class Issue10601DerivedClusterTokenRotationIT extends BaseRaftHATest {
   void aRewrittenPasswordFileRefusesTheRestartUntilTheRotationIsAllowed() throws Exception {
     final RaftHAServer raft = getRaftPlugin(0).getRaftHAServer();
     final String tokenBefore = raft.getClusterToken();
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(raft.getRaftStorageDir());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(raft.getRaftStorageDir());
     assertThat(fingerprint).as("a node whose token is derived from a file records it").exists();
     assertThat(Files.readString(fingerprint.toPath())).isEqualTo(ClusterTokenProvider.tokenFingerprint(tokenBefore));
 

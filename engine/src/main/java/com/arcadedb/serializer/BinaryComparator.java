@@ -29,6 +29,7 @@ import com.arcadedb.utility.DateUtils;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
@@ -237,6 +238,12 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_ZONED_DATETIME:
       if (type2 == BinaryTypes.TYPE_ZONED_DATETIME)
         return compareZoned(zonedOf(value1), zonedOf(value2));
+      throw unsupportedPair(type1, type2);
+
+    case BinaryTypes.TYPE_LOCAL_DATETIME:
+      // only held by a property nothing declares, whose index keys are STRING: an index never orders it against another kind
+      if (type2 == BinaryTypes.TYPE_LOCAL_DATETIME)
+        return ((LocalDateTime) value1).compareTo((LocalDateTime) value2);
       throw unsupportedPair(type1, type2);
 
     case BinaryTypes.TYPE_DURATION:

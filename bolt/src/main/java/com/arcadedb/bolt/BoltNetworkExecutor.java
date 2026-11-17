@@ -50,6 +50,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
@@ -2159,6 +2160,11 @@ public class BoltNetworkExecutor extends Thread {
 
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, TypeMismatchException.class))
       return BoltErrorCodes.TYPE_ERROR;
+
+    // CALL { ... } IN TRANSACTIONS in a BEGIN or managed transaction: Neo4j's TransactionStartFailed, where the category alone
+    // says ArgumentError (issue #12161)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ImplicitTransactionRequiredException.class))
+      return BoltErrorCodes.TRANSACTION_START_FAILED_ERROR;
 
     // A value a constraint the schema declares refuses - NOT NULL, a MIN, a REGEXP, a property type: what Neo4j answers for a
     // violated property existence or type constraint, where the category alone says ArgumentError (issue #11314)

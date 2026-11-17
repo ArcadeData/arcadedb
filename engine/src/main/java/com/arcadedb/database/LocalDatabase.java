@@ -27,6 +27,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.RawRecordCallback;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
@@ -65,6 +66,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.StripeDirectory;
@@ -1041,11 +1043,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // delete events and every getType() read are dispatched off it. Resolved once per bucket, not per record.
           final DocumentType bucketType = polymorphic ? schema.getTypeByBucketId(b.getFileId()) : type;
           final DocumentType recordType = bucketType != null ? bucketType : type;
-          b.scan((rid, view) -> {
-            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
-                view, null);
-            continueScan.set(callback.onRecord(record));
-            return continueScan.get();
+          b.scan(new RawRecordCallback() {
+            @Override
+            public boolean onRecord(final RID rid, final Binary view) {
+              return onRecord(rid, view, false);
+            }
+
+            @Override
+            public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+              final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
+                  view, null);
+              markReadFromOwnImage(record, fromOwnImage);
+              continueScan.set(callback.onRecord(record));
+              return continueScan.get();
+            }
           }, errorRecordCallback);
 
           if (!continueScan.get())
@@ -1082,8 +1093,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // NULL FOR A BUCKET NO TYPE OWNS ANY MORE, WHOSE RECORDS ARE STILL THERE TO READ (ISSUE #11335)
       final Bucket bucket = schema.getBucketByName(bucketName);
       final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());
-      bucket.scan((rid, view) -> callback.onRecord(recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null)),
-          errorRecordCallback);
+      bucket.scan(new RawRecordCallback() {
+        @Override
+        public boolean onRecord(final RID rid, final Binary view) {
+          return onRecord(rid, view, false);
+        }
+
+        @Override
+        public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+          final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
+          markReadFromOwnImage(record, fromOwnImage);
+          return callback.onRecord(record);
+        }
+      }, errorRecordCallback);
       return null;
     });
   }
@@ -1242,6 +1264,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
+  /** #12320: a vertex built from the transaction's own image of its page carries the heads of that image. */
+  private static void markReadFromOwnImage(final Record record, final boolean fromOwnImage) {
+    if (fromOwnImage && record instanceof ImmutableVertex vertex)
+      vertex.markReadFromOwnImage();
+  }
+
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     stats.readRecord.incrementAndGet();
@@ -1275,11 +1303,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         final LocalBucket bucket = schema.getBucketById(rid.getBucketId(), false);
         if (bucket == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
+        final long ownImageReads = tx.getOwnImageReads();
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
         // #8610: recorded before the read events run, which may hand back another record
         if (record instanceof ImmutableDocument document)
           document.setReadInTransaction(tx.getBeginSequence());
+        // #12320: a vertex read from the transaction's own image of its page carries the heads of that image
+        if (record instanceof ImmutableVertex vertex && tx.getOwnImageReads() != ownImageReads)
+          vertex.markReadFromOwnImage();
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -2716,9 +2748,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) sourceVertex).set(sourceVertexKeyNames[i], sourceVertexKeyValues[i]);
         ((MutableVertex) sourceVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source vertex with key " + Arrays.toString(sourceVertexKeyNames) + "=" + Arrays.toString(
-                sourceVertexKeyValues));
+                sourceVertexKeyValues), null);
     } else
       sourceVertex = v1Result.next().getIdentity().asVertex();
 
@@ -2732,9 +2764,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) destinationVertex).set(destinationVertexKeyNames[i], destinationVertexKeyValues[i]);
         ((MutableVertex) destinationVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
@@ -2778,9 +2810,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) destinationVertex).set(destinationVertexKeyNames[i], destinationVertexKeyValues[i]);
         ((MutableVertex) destinationVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 

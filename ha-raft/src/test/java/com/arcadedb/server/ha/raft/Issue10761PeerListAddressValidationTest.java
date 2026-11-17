@@ -111,7 +111,7 @@ class Issue10761PeerListAddressValidationTest {
         assertThat(parsed.peers()).as(entry).hasSize(1);
         final RaftPeer peer = parsed.peers().getFirst();
 
-        final String raftHost = RaftHAServer.extractHost(peer.getAddress());
+        final String raftHost = PeerEndpoints.extractHost(peer.getAddress());
         assertThat(raftHost).as("the host of the Raft address of '%s'", entry).isEqualTo(host);
         assertThat(PeerAddressAllowlistFilter.extractPeerHosts(entry)).as("the allowlist host of '%s'", entry)
             .containsExactly(RaftPeerAddressResolver.unbracketed(raftHost));

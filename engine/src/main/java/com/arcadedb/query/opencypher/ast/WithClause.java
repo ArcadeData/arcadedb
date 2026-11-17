@@ -118,7 +118,8 @@ public class WithClause {
   /**
    * Check if any WITH item is NOT an aggregation function.
    * Used to detect implicit GROUP BY (when WITH has both aggregations and non-aggregations).
-   * An expression is considered non-aggregation if it doesn't contain any aggregation.
+   * An expression is considered non-aggregation if it doesn't contain any aggregation. The variable an aggregating map
+   * projection groups by implicitly ({@link ImplicitGroupingKeys}) makes the projection grouping too.
    */
   public boolean hasNonAggregations() {
     for (final ReturnClause.ReturnItem item : items) {
@@ -126,6 +127,7 @@ public class WithClause {
         return true;
       }
     }
-    return false;
+    // An aggregating map projection groups by its variable without projecting it (issue #12316)
+    return !ImplicitGroupingKeys.of(items).isEmpty();
   }
 }

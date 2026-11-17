@@ -1220,7 +1220,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // A negation, the wildcard or a mix of '&' and '|': the pattern keeps the labels every match must carry, so the
     // planner can still pick a label scan, and the whole expression is checked as a predicate on the node (#8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       labels = labelPredicate.requiredLabels();
@@ -1231,11 +1231,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Label expression (static labels + Cypher 25 dynamic $(expression) labels)
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
-      final List<Cypher25Parser.ExpressionContext> dynCtxs = ParserUtils.collectDynamicLabelContexts(ctx.labelExpression());
-      if (!dynCtxs.isEmpty()) {
-        dynamicLabels = new ArrayList<>(dynCtxs.size());
-        for (final Cypher25Parser.ExpressionContext dynCtx : dynCtxs)
-          dynamicLabels.add(expressionBuilder.parseExpression(dynCtx));
+      dynamicLabels = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressionBuilder::parseExpression);
+      // A read pattern also checks the dynamic labels as a predicate on the node, which every consumer evaluates; the steps
+      // that read getDynamicLabels() (the anchor scan, the variable-length target) keep using them to narrow what they
+      // walk. A write clause resolves them itself (issue #11776)
+      if (dynamicLabels != null && writeClause == null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, labels, dynamicLabels, ctx.labelExpression());
+        // (n:A|$(expr)): the static labels alone are not a filter, so they join the dynamic list. Every consumer that
+        // reads the static list (hop target, pattern comprehension) would otherwise reject what $(expr) admits
+        if (labelDisjunction && labels != null && !labels.isEmpty()) {
+          dynamicLabels = ParserUtils.staticLabelsFirst(labels, dynamicLabels);
+          labels = null;
+        }
       }
     }
 
@@ -1276,7 +1285,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // variable-length relationship the predicate rides the inline WHERE, which every expansion evaluates per hop, so
     // each relationship of the path is checked (#9117).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();
@@ -1286,6 +1295,16 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
+      // [r:$(expr)] in a read pattern: no static type filter can say it, so the whole type list is checked per relationship
+      // through its inline predicate, which every hop kind evaluates. A write clause keeps refusing it (issue #11776)
+      final List<Expression> dynamicTypes = writeClause == null ?
+          ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressionBuilder::parseExpression) : null;
+      if (dynamicTypes != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, types, dynamicTypes, ctx.labelExpression());
+        types = null;
+      }
     }
 
     // Properties

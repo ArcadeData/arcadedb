@@ -178,7 +178,7 @@ class RaftClusterManager {
    * leader-election {@code priority}, and {@code connect cluster} (issue #7401) is the first caller
    * that can name one: it parses a whole {@code arcadedb.ha.serverList} entry, and both the object
    * form and the four-field positional form declare a priority. Dropping it is not cosmetic -
-   * {@link RaftHAServer#selectStepDownTargets} reads the live {@code getPriority()} of each peer and,
+   * {@link StepDownTargets#selectStepDownTargets} reads the live {@code getPriority()} of each peer and,
    * once any peer has a positive priority, skips the priority-0 ones as non-electable witnesses - so a
    * priority silently reset to the default changes which nodes can take leadership.
    * <p>
@@ -346,7 +346,7 @@ class RaftClusterManager {
    * predicate: two requests naming one address under two ids were both appended. With a precondition the leader
    * applies the change only if its configuration is still the one the address check below read, so of two racing
    * adds exactly one commits and the other fails, is retried, and is rebuilt against the configuration that now holds
-   * the winner - where {@link RaftHAServer#ensureNoDuplicateAddress} refuses it. The check therefore runs against the
+   * the winner - where {@link PeerAdmission#ensureNoDuplicateAddress} refuses it. The check therefore runs against the
    * state the change is applied to, whichever node served the request, which no lock on the serving node could
    * guarantee. Adds of different peers still both land: the loser of the race is simply rebuilt on top of the winner.
    *
@@ -360,7 +360,7 @@ class RaftClusterManager {
       return null; // already a member
     final List<RaftPeer> currentPeers = committed.peers();
 
-    RaftHAServer.ensureNoDuplicateAddress(currentPeers, newPeer);
+    PeerAdmission.ensureNoDuplicateAddress(currentPeers, newPeer);
 
     final List<RaftPeer> newPeers = new ArrayList<>(currentPeers.size() + 1);
     newPeers.addAll(currentPeers);
@@ -426,7 +426,7 @@ class RaftClusterManager {
   }
 
   /**
-   * Hands leadership to another peer of the cluster's choosing. The peers {@link RaftHAServer#selectStepDownTargets}
+   * Hands leadership to another peer of the cluster's choosing. The peers {@link StepDownTargets#selectStepDownTargets}
    * ranks, among those {@link RaftHAServer#handoffReachablePeers()} proves reachable, are tried in order with the
    * targeted transfer, all within one {@code timeoutMs} budget and each with at most a slice of it
    * ({@link #candidateTransferBudgetMs}); only when none is eligible, or all of them fail, does it fall back to
@@ -478,7 +478,7 @@ class RaftClusterManager {
     // once, so leadership settles on it within milliseconds and every follower learns the new leader from its first
     // heartbeat. The candidates and their order are the ones stepDown() uses.
     final long deadline = System.currentTimeMillis() + timeoutMs;
-    final List<RaftPeer> candidates = RaftHAServer.selectStepDownTargets(raftHAServer.getLivePeers(), selfId,
+    final List<RaftPeer> candidates = StepDownTargets.selectStepDownTargets(raftHAServer.getLivePeers(), selfId,
         raftHAServer.getClusterMonitor(), raftHAServer.handoffReachablePeers());
     for (final RaftPeer candidate : candidates) {
       final long remaining = deadline - System.currentTimeMillis();

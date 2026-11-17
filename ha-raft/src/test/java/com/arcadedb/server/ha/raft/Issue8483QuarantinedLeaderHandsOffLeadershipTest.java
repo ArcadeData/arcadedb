@@ -208,10 +208,10 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
     final AtomicLong last = new AtomicLong();
     final long now = 1_000_000L;
 
-    assertThat(RaftHAServer.admitQuarantineHandoff(last, now)).isTrue();
-    assertThat(RaftHAServer.admitQuarantineHandoff(last, now + 1)).isFalse();
-    assertThat(RaftHAServer.admitQuarantineHandoff(last, now + 9 * 60_000L)).isFalse();
-    assertThat(RaftHAServer.admitQuarantineHandoff(last, now + 10 * 60_000L)).isTrue();
+    assertThat(PeerChannelRecovery.admitQuarantineHandoff(last, now)).isTrue();
+    assertThat(PeerChannelRecovery.admitQuarantineHandoff(last, now + 1)).isFalse();
+    assertThat(PeerChannelRecovery.admitQuarantineHandoff(last, now + 9 * 60_000L)).isFalse();
+    assertThat(PeerChannelRecovery.admitQuarantineHandoff(last, now + 10 * 60_000L)).isTrue();
     assertThat(last.get()).isEqualTo(now + 10 * 60_000L);
   }
 
@@ -226,17 +226,17 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
     final AtomicLong lastNoPeerReport = new AtomicLong();
     final long t0 = 1_000_000L;
 
-    assertThat(RaftHAServer.decideQuarantineHandoff(false, true, lastHandoff, lastNoPeerReport, t0))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(false, true, lastHandoff, lastNoPeerReport, t0))
         .isEqualTo(RaftHAServer.QuarantineHandoff.NOT_LEADER);
-    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0))
         .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER_REPORT);
     assertThat(lastHandoff.get()).as("neither drop may take the handoff window").isZero();
 
     // A peer joins 30 s later: the handoff goes ahead at once.
-    assertThat(RaftHAServer.decideQuarantineHandoff(true, true, lastHandoff, lastNoPeerReport, t0 + 30_000L))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(true, true, lastHandoff, lastNoPeerReport, t0 + 30_000L))
         .isEqualTo(RaftHAServer.QuarantineHandoff.TRANSFER);
     // ...and the next tick is inside the window.
-    assertThat(RaftHAServer.decideQuarantineHandoff(true, true, lastHandoff, lastNoPeerReport, t0 + 33_000L))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(true, true, lastHandoff, lastNoPeerReport, t0 + 33_000L))
         .isEqualTo(RaftHAServer.QuarantineHandoff.COOLDOWN);
   }
 
@@ -247,11 +247,11 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
     final AtomicLong lastNoPeerReport = new AtomicLong();
     final long t0 = 1_000_000L;
 
-    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0))
         .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER_REPORT);
-    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0 + 3_000L))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0 + 3_000L))
         .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER);
-    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0 + 10 * 60_000L))
+    assertThat(PeerChannelRecovery.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0 + 10 * 60_000L))
         .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER_REPORT);
   }
 
@@ -259,9 +259,9 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
   void aSingleNodeClusterHasNoPeerToHandLeadershipTo() {
     final RaftPeerId self = RaftPeerId.valueOf("self");
 
-    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0)), self, null)).isFalse();
-    assertThat(RaftHAServer.hasHandoffTarget(List.of(), self, null)).isFalse();
-    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, null)).isTrue();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(List.of(peer("self", 0)), self, null)).isFalse();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(List.of(), self, null)).isFalse();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, null)).isTrue();
   }
 
   /**
@@ -275,10 +275,10 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
     monitor.updateLeaderCommitIndex(10_000L);
     monitor.updateReplicaMatchIndex("other", 0L, 0L); // lag 10000 > threshold 10
 
-    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, monitor)).isFalse();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, monitor)).isFalse();
 
     monitor.updateReplicaMatchIndex("other", 10_000L, 0L); // caught up
-    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, monitor)).isTrue();
+    assertThat(PeerChannelRecovery.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, monitor)).isTrue();
   }
 
   // ---------------------------------------------------------------------------------------------

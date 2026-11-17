@@ -252,7 +252,7 @@ class Issue7736CrashLoopEscalationSurvivesRestartTest {
 
     // A sibling of the peer's Raft storage directory, never inside it (issue #8380).
     final File[] records = root.toFile().listFiles(f -> f.isFile() && f.getName().endsWith(
-        "." + RaftHAServer.CRASH_LOOP_ESCALATION_MARKER));
+        "." + RaftStorageFiles.CRASH_LOOP_ESCALATION_MARKER));
     assertThat(records).as("the record next to the peer's own Raft storage directory").hasSize(1);
     final File marker = records[0];
     assertThat(marker).isFile();
