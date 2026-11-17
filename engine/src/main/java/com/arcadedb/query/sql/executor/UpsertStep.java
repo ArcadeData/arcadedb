@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.List;
 
@@ -49,6 +50,8 @@ public class UpsertStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (applied)
       return getPrev().syncPull(context, nRecords);
+
+    refuseEdgeType();
 
     boolean fetchFromIndexFound = false;
     ExecutionStepInternal p = prev;
@@ -90,22 +93,41 @@ public class UpsertStep extends AbstractExecutionStep {
     return step.index.isUnique() && step.isFullKeyEquality();
   }
 
-  private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
-    final DatabaseInternal database = context.getDatabase();
-    final DocumentType type;
+  /**
+   * An edge always needs its FROM and TO endpoints, which an UPSERT has no way to give, so the record it would create is an edge
+   * pointing at records that do not exist, one the engine cannot read back (#12418). The statement is refused before anything
+   * is looked up or written, whatever the edge type's indexes are.
+   */
+  private void refuseEdgeType() {
+    final DocumentType type = targetType(commandTarget);
+    if (type instanceof EdgeType)
+      throw new CommandSQLParsingException("UPSERT is not available on the edge type '" + type.getName()
+          + "': an edge always requires FROM and TO endpoints. Use CREATE EDGE ... IF NOT EXISTS to create an edge only when it"
+          + " does not exist yet");
+  }
 
+  /**
+   * @return the type the statement targets, or null when the target is neither a type nor a bucket
+   */
+  private DocumentType targetType(final FromClause commandTarget) {
+    final DatabaseInternal database = context.getDatabase();
     if (commandTarget.getItem().getBucket() != null) {
       // TARGET = BUCKET
       if (commandTarget.getItem().getBucket().getBucketNumber() != null) {
         // BUCKET ID
-        type = database.getSchema().getTypeByBucketId(commandTarget.getItem().getBucket().getBucketNumber());
-      } else {
-        // BUCKET NAME
-        type = database.getSchema().getTypeByBucketName(commandTarget.getItem().getBucket().getBucketName());
+        return database.getSchema().getTypeByBucketId(commandTarget.getItem().getBucket().getBucketNumber());
       }
-    } else if (commandTarget.getItem().getIdentifier() != null) {
-      type = database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
-    } else
+      // BUCKET NAME
+      return database.getSchema().getTypeByBucketName(commandTarget.getItem().getBucket().getBucketName());
+    }
+    if (commandTarget.getItem().getIdentifier() != null)
+      return database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
+    return null;
+  }
+
+  private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
+    final DocumentType type = targetType(commandTarget);
+    if (type == null)
       throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
 
     final MutableDocument doc = (MutableDocument) context.getDatabase().getRecordFactory()
