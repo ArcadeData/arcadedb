@@ -1925,6 +1925,24 @@ public class LocalSchema implements Schema {
     return names;
   }
 
+  /**
+   * The names of the UNIQUE bucket indexes served without the compacted sub-index their header names, because the load could not
+   * attach it ("File with id N was not found", issue #12348). Such an index answers from its mutable pages alone, so it refuses no
+   * duplicate of a key only the lost sub-index held: an HA node reads this, with {@link #getUnavailableUniqueIndexNames()}, to
+   * re-install the database from its cluster rather than serve, and lead with, a constraint it does not enforce. REBUILD INDEX
+   * replaces the index and empties the list.
+   */
+  public List<String> getPartiallyLoadedUniqueIndexNames() {
+    List<String> names = null;
+    for (final Index index : getIndexes())
+      if (index instanceof LSMTreeIndex lsm && lsm.isUnique() && lsm.getMutableIndex().getDetachedSubIndex() != null) {
+        if (names == null)
+          names = new ArrayList<>(2);
+        names.add(lsm.getName());
+      }
+    return names != null ? names : List.of();
+  }
+
   private static boolean hasValidIndex(final List<TypeIndex> indexes) {
     for (final TypeIndex index : indexes)
       if (index.isValid())

@@ -172,6 +172,11 @@ public class LSMTreeIndexCompactor {
     try {
       return compactInternal(mainIndex, mutableIndex, compactedIndex, lastPageToMerge);
     } catch (final Throwable e) {
+      if (mainIndex.getMutableIndex() != mutableIndex)
+        // Issue #12348: the swap is done, so the new mutable file already names this compacted file and its pages: rolling them
+        // back (dropping the file of a first compaction) left an index whose header names a file that is gone, which every
+        // later load reported as "File with id N was not found" and served without its sub-index
+        throw e;
       // Drain in-flight flushes of the orphan pages FIRST: the flush path's updatePageCount would otherwise
       // race this rollback and re-raise the count right after it was reset.
       mutableIndex.getDatabase().getPageManager().waitAllPagesOfDatabaseAreFlushed(mutableIndex.getDatabase());
@@ -432,6 +437,11 @@ public class LSMTreeIndexCompactor {
         if (iterator != null)
           iterator.close();
 
+      if (mainIndex.getMutableIndex() != mutableIndex)
+        // Issue #12348: past the swap the new mutable file names the new compacted file: dropping it would leave the index
+        // naming a file that is gone
+        throw e;
+
       // mirror the incremental failure handling (#4946): drain in-flight flushes, then drop the
       // aborted new file entirely so nothing of the failed merge survives
       database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
@@ -457,9 +467,9 @@ public class LSMTreeIndexCompactor {
     });
 
     LogManager.instance().log(mainIndex, Level.INFO,
-        "Index '%s' fully compacted in %dms (keys=%d values=%d droppedKeys=%d droppedValues=%d mergedSeries=%d newFile=%s(%d) threadId=%d)".formatted(
-            mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, droppedKeys, droppedValues,
-            seriesCount, newCompacted.getName(), newCompacted.getFileId(), Thread.currentThread().threadId()));
+        "Index '%s' fully compacted in %dms (keys=%d values=%d droppedKeys=%d droppedValues=%d mergedSeries=%d newFile=%s(%d) threadId=%d)",
+        null, mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, droppedKeys, droppedValues,
+        seriesCount, newCompacted.getName(), newCompacted.getFileId(), Thread.currentThread().threadId());
 
     return true;
   }
@@ -668,13 +678,13 @@ public class LSMTreeIndexCompactor {
     releaseMutableFileLock(database);
     compactedIndex.addEntries(streamWriter.getWrittenEntries());
 
+    // Formatted by the logger, only when FINE is on: an eager format allocated on every compaction, past the swap
     LogManager.instance().log(mainIndex, Level.FINE,
-        "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
-            mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, newIndex.getTotalPages(),
-            compactedIndex.getTotalPages(),
-            iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
-            mainIndex.getMutableIndex().getFileId(),
-            compactedIndex.getName(), compactedIndex.getFileId(), Thread.currentThread().threadId()));
+        "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)",
+        null, mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, newIndex.getTotalPages(),
+        compactedIndex.getTotalPages(), iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
+        mainIndex.getMutableIndex().getFileId(), compactedIndex.getName(), compactedIndex.getFileId(),
+        Thread.currentThread().threadId());
 
     if (debug) {
       System.out.println("AFTER COMPACTING:");

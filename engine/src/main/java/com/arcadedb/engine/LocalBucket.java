@@ -9884,7 +9884,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * somebody is already diagnosing, would be worse than no report at all.
    * <p>
    * <b>The repair is the invalidation {@code check(fix=true)} already makes</b>: the next {@code count()} rescans and
-   * republishes. A read-only run only reports, like every other finding here.
+   * republishes. A read-only run makes it too (issue #12347): the counter is a cache of this node alone, which no replication
+   * carries and a restart reloads as it was, so on a replica of a cluster, where a FIX is forwarded to the leader, a counter
+   * proven wrong had no repair at all. Dropping it changes no record, and a disagreement this method lets through costs at
+   * worst one recount.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -9925,13 +9928,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     ++totals.totalErrors;
     stats.put("staleRecordCounters", 1L);
-    if (fix)
+    // Under FIX check() dropped it already. A read-only run drops it here, only if nothing folded into it since it was read: a
+    // counter that moved is the commit the guard above refuses to judge
+    final boolean recomputed = fix || cachedRecordCount.compareAndSet(cachedRecordCountBefore, -1);
+    if (recomputed)
       stats.put("staleRecordCountersFixed", 1L);
 
     final String warning = ("cached record count of bucket '%s' is %d but the bucket holds %d records: count(*) on this"
             + " bucket %s by %d%s").formatted(componentName, cachedRecordCountBefore, scanned,
             cachedRecordCountBefore > scanned ? "over-reports" : "under-reports", Math.abs(cachedRecordCountBefore - scanned),
-            fix ? " - the counter is recomputed" : "; run CHECK DATABASE FIX to recompute the counter");
+            recomputed ? " - the counter is recomputed" : "; run CHECK DATABASE again to recompute the counter");
 
     totals.warnings.add(warning);
     if (verboseLevel > 0)
