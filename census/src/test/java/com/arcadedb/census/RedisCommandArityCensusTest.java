@@ -52,22 +52,25 @@ class RedisCommandArityCensusTest {
 
   /** The RESP wire surface, every method of it: its commands are checked by {@code RedisCommandArity.checkWire}. */
   private static final String WIRE_CLASS  = "redis/RedisNetworkExecutor";
-  /** The redis query language, every method of it: its commands are checked by {@code RedisCommandArity.checkRam}. */
+  /** The redis query language, every method of it: its commands are checked by {@code RedisCommandArity.checkQueryLanguage}. */
   private static final String QUERY_CLASS = "redis/query/RedisQueryEngine";
 
-  /** Wire commands dispatched before the table is consulted, each checking its own shape. */
+  /**
+   * Wire commands dispatched before the table is consulted, each checking its own shape, and the test that probes that it does: an
+   * exemption is a claim about behaviour, so it names where the behaviour is pinned (issue #11783 found three exemptions whose
+   * reason was not true).
+   */
   private static final Map<String, String> WIRE_EXEMPT = Map.of(//
-      "AUTH", "accepted before authentication, so before the table check; auth() takes 1 or 2 arguments and refuses any other count",
-      "HELLO", "accepted before authentication; a variable list of options, parsed and refused by hello() itself");
+      "AUTH", "accepted before authentication, so before the table check; auth() takes 1 or 2 arguments and refuses any other count"
+          + " (Issue11783RedisHelloAndHashArityTest.authRefusesAnyOtherCount)",
+      "HELLO", "accepted before authentication; a variable list of options, every word parsed and refused by hello() itself"
+          + " (Issue11783RedisHelloAndHashArityTest, the hello* probes)");
 
-  /** Query-language words that are commands of a shape the table does not hold, or no command at all, each with the reason. */
+  /**
+   * Query-language words that are no command of a shape the table holds, each with the reason. The hash commands, whose index and
+   * RID forms differ from the wire shape, are not here: the table holds both forms (issue #11783).
+   */
   private static final Map<String, String> QUERY_EXEMPT = Map.ofEntries(//
-      Map.entry("HSET", "names an index or a RID instead of a bucket and checks its own forms"),//
-      Map.entry("HMSET", "names an index or a RID instead of a bucket and checks its own forms"),//
-      Map.entry("HGET", "names an index or a RID instead of a bucket and checks its own forms"),//
-      Map.entry("HMGET", "names an index or a RID instead of a bucket and checks its own forms"),//
-      Map.entry("HEXISTS", "names an index or a RID instead of a bucket and checks its own forms"),//
-      Map.entry("HDEL", "names an index or a RID instead of a bucket and checks its own forms"),//
       Map.entry("MULTI", "batch structure keyword of executeMultipleCommands, matched as a whole line, so it takes no arguments"),//
       Map.entry("EXEC", "batch structure keyword of executeMultipleCommands, matched as a whole line, so it takes no arguments"),//
       Map.entry("DISCARD", "batch structure keyword of executeMultipleCommands, matched as a whole line, so it takes no arguments"));
@@ -79,7 +82,7 @@ class RedisCommandArityCensusTest {
   /** The words compared in the module that are not command names, by the method ({@code class#method}) that compares them. */
   private static final Map<String, NotCommands> NOT_COMMANDS = Map.of(//
       WIRE_CLASS + "#set", new NotCommands(Set.of("NX", "XX", "GET", "EX", "PX", "EXAT", "PXAT", "KEEPTTL"), "the options of SET"),//
-      WIRE_CLASS + "#hello", new NotCommands(Set.of("AUTH"), "the AUTH option of HELLO"),//
+      WIRE_CLASS + "#hello", new NotCommands(Set.of("AUTH", "SETNAME"), "the AUTH and SETNAME options of HELLO"),//
       WIRE_CLASS + "#parseInlineCommand", new NotCommands(Set.of("POST", "HOST:"),
           "the first words of an HTTP request sent to the port, refused as a cross-protocol request"),//
       "redis/RedisCounterOperations#isNonFiniteSpelling", new NotCommands(Set.of("nan", "inf", "infinity"),
@@ -105,11 +108,13 @@ class RedisCommandArityCensusTest {
     assertThat(dispatched).as("the census must reach the commands RedisQueryEngine dispatches, the batch-level ones included (#12024)")
         .contains("GET", "PING", "HGET", "MULTI", "EXEC", "DISCARD");
 
+    // the hash commands, whose index and RID forms differ from the wire shape, are in the table with both forms (issue #11783):
+    // only the batch keywords are exempt
     final Set<String> missing = new TreeSet<>(dispatched);
-    missing.removeAll(RedisCommandArity.ramCommands());
+    missing.removeAll(RedisCommandArity.queryLanguageCommands());
     missing.removeAll(QUERY_EXEMPT.keySet());
     assertThat(missing).as(
-        "a command the redis query language dispatches with no entry in RedisCommandArity accepts any argument count (issue #11450)")
+        "a command the redis query language dispatches with no entry in RedisCommandArity accepts any argument count (issues #11450, #11783)")
         .isEmpty();
   }
 

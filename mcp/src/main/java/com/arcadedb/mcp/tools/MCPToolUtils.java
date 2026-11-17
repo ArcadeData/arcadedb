@@ -268,6 +268,25 @@ public class MCPToolUtils {
   }
 
   /**
+   * Returns an optional array-of-strings argument, {@code null} when it is absent or null. A member that is not an array, or an
+   * element that is not a string, raises an {@link MCPToolArgumentException} with {@code refusal}: a bare {@code getString(i)} on
+   * the array raises the same concealed {@link JSONException} a bare read of the arguments does (issue #11622). The elements are
+   * not checked further, a blank one included: what a name must be is the tool's to say.
+   */
+  public static String[] optionalStringArray(final JSONObject args, final String field, final String refusal) {
+    final JSONArray array = optionalArray(args, field);
+    if (array == null)
+      return null;
+    final String[] values = new String[array.length()];
+    for (int i = 0; i < values.length; i++)
+      if (!(array.get(i) instanceof String value))
+        throw new MCPToolArgumentException(refusal);
+      else
+        values[i] = value;
+    return values;
+  }
+
+  /**
    * Returns a required object argument that must contain at least one property, throwing an
    * {@link MCPToolArgumentException} that names the field otherwise.
    */

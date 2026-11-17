@@ -1005,8 +1005,8 @@ final class CypherStepBuilder {
         currentStep = aggStep;
       }
 
-      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-      if (withClause.getWhereClause() != null) {
+      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING), or after the paging (issue #11762)
+      if (withClause.getWhereClause() != null && !withClause.isWhereAfterPaging()) {
         final FilterPropertiesStep filterStep =
             new FilterPropertiesStep(withClause.getWhereClause(), context);
         filterStep.setPrevious(currentStep);
@@ -1034,7 +1034,8 @@ final class CypherStepBuilder {
    * Chains the ORDER BY, SKIP and LIMIT of a WITH after the step that projects it. A plain {@link WithStep} pages its own
    * rows when there is no ORDER BY, but an aggregating WITH is projected by an aggregation step that knows nothing of SKIP
    * and LIMIT, so they are chained after it here: without them {@code WITH collect(x) AS q LIMIT 0} still passed its row on,
-   * and a CREATE behind it ran (issue #10892).
+   * and a CREATE behind it ran (issue #10892). A WHERE {@link WithClause#isWhereAfterPaging() after the paging} is chained after
+   * the LIMIT; a plain {@link WithStep} without ORDER BY applies it itself, after its own paging.
    */
   private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
       final CommandContext context, final CypherFunctionFactory functionFactory) {
@@ -1076,6 +1077,14 @@ final class CypherStepBuilder {
       currentStep = limitStep;
     }
 
+    // The WHERE filters the paged rows, before the strip: it reads the incoming scope as well (issue #11762)
+    if (withClause.isWhereAfterPaging()) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(withClause.getWhereClause(), context);
+      if (currentStep != null)
+        filterStep.setPrevious(currentStep);
+      currentStep = filterStep;
+    }
+
     // Strip non-projected variables that were kept for ORDER BY evaluation
     if (ordered)
       currentStep = plan.addWithProjection(withClause, currentStep, context);
@@ -1110,8 +1119,8 @@ final class CypherStepBuilder {
         currentStep = aggStep;
       }
 
-      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-      if (withClause.getWhereClause() != null) {
+      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING), or after the paging (issue #11762)
+      if (withClause.getWhereClause() != null && !withClause.isWhereAfterPaging()) {
         final FilterPropertiesStep filterStep =
             new FilterPropertiesStep(withClause.getWhereClause(), context);
         filterStep.setPrevious(currentStep);
@@ -1657,8 +1666,8 @@ final class CypherStepBuilder {
           currentStep = aggStep;
         }
 
-        // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-        if (withClause.getWhereClause() != null) {
+        // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING), or after the paging (issue #11762)
+        if (withClause.getWhereClause() != null && !withClause.isWhereAfterPaging()) {
           final FilterPropertiesStep filterStep =
               new FilterPropertiesStep(withClause.getWhereClause(), context);
           if (currentStep != null) {
