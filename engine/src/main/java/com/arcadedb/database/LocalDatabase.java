@@ -2211,10 +2211,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       if (record instanceof Document document) {
         try {
-          // #11733: the entries to remove are those of the record as it is now, which a concurrent commit may have changed
-          // since the caller read it
-          final Document current = currentImageForCleanup(bucket, document);
-          indexer.deleteDocument(current);
+          // #11733: the entries to remove are those the index holds for the record now, not those of the values the caller's
+          // object carries. A concurrent commit may have changed the record since it was read, and this transaction may have
+          // moved the index forward with an update saved before the delete, or assigned a property it never saved
+          final Document current = storedImageForCleanup(bucket, document);
+          final Document indexed = getTransaction().getLastIndexedSnapshot(document.getIdentity());
+          indexer.deleteDocument(indexed != null ? indexed : current);
           // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
           // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
           cascadeDeleteExternalValues(current);
@@ -2338,7 +2340,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
-   * The image of {@code document} whose index entries and EXTERNAL values its delete removes (issue #11733).
+   * The stored image of {@code document}, the one its delete removes the index entries and the EXTERNAL values of (issue
+   * #11733). Not the object the caller holds, for two reasons.
    * <p>
    * Under READ_COMMITTED a record read, then changed by a transaction that commits before the delete reaches it, still holds
    * the values it was read with. Cleaning up with those removes the entries the concurrent change already replaced and keeps
@@ -2348,8 +2351,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * The delete itself is unchanged: it removes the record by its RID, as before. The slot is read without the READ_RECORD check
    * a user read takes and without the before-read events: the delete was granted, and the image only tells the delete which
    * entries to remove, so a listener hiding the record must not send the cleanup back to the image the caller read.
+   * <p>
+   * And a {@link MutableDocument} answers a property with the value assigned to it, saved or not, while the index was written
+   * from what was saved: for one with a pending change the image is an immutable record over its buffer, which a deferred update
+   * leaves alone until the commit. The same resolution {@code GraphEngine.indexedImageOf} applies to a moved edge. The caller
+   * asks the transaction's last indexed snapshot first, for the index only: an update saved earlier in this transaction moved
+   * the index past the stored image.
+   * <p>
+   * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
+   * and one comparison in place: nothing is allocated for it.
    */
-  private Document currentImageForCleanup(final LocalBucket bucket, final Document document) {
+  private Document storedImageForCleanup(final LocalBucket bucket, final Document document) {
     final RID rid = document.getIdentity();
     if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
       return document;
@@ -2357,20 +2369,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (readImage == null)
       return document;
 
+    final boolean changedInSlot;
     try {
       final MutablePage page = bucket.fetchPageInTransaction(rid);
-      if (page == null || !bucket.hasRecordChangedSinceRead(rid, page, readImage))
-        return document;
+      changedInSlot = page != null && bucket.hasRecordChangedSinceRead(rid, page, readImage);
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on delete the record " + rid, e);
     }
 
-    final Binary current = bucket.getRecordInternal(rid, false, false);
-    if (current == null)
-      // A concurrent transaction deleted the record: the version check fails this delete at commit
+    final Binary stored;
+    if (changedInSlot) {
+      final Binary current = bucket.getRecordForDeleteCleanup(rid);
+      if (current == null)
+        // A concurrent transaction deleted the record: the version check fails this delete at commit
+        return document;
+      stored = current.copyOfContent();
+    } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
+      readImage.rewind();
+      stored = readImage;
+    } else
       return document;
+
     return (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getTypeByBucketId(rid.getBucketId()), rid,
-        current.copyOfContent(), null);
+        stored, null);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */

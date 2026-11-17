@@ -2917,13 +2917,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @param fireEvents {@code false} to read without the before-read events. For the content a placeholder points to: the
-   *                   before-read events are about the record the caller asked for, under the RID it knows, and already ran
-   *                   for it. Firing them again for the internal position of its content notified a listener twice, the second
-   *                   time with a RID no user ever sees (#8312). For the image a granted delete cleans its index entries up
-   *                   with (#11733): a listener hiding the record from users must not decide which entries the delete removes
+   * The record as its slot holds it now, for the delete that is about to remove it and has to know which index entries and
+   * EXTERNAL values go with it (#11733). Read without the before-read events: the delete was granted, the image is handed
+   * to no caller and to no listener, and a listener hiding the record from users must not decide which entries the delete
+   * removes. Not a way to read a record: {@link #getRecord(RID)} is.
+   *
+   * @return {@code null} when the slot holds no record
    */
-  public Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
+  public Binary getRecordForDeleteCleanup(final RID rid) {
+    return getRecordInternal(rid, false, false);
+  }
+
+  /**
+   * @param fireEvents {@code false} to read the content a placeholder points to: the before-read events are about the
+   *                   record the caller asked for, under the RID it knows, and already ran for it. Firing them again for
+   *                   the internal position of its content notified a listener twice, the second time with a RID no
+   *                   user ever sees (#8312). And for {@link #getRecordForDeleteCleanup(RID)}
+   */
+  Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
     // INVOKE EVENT CALLBACKS
     if (fireEvents && !fireBeforeReadEvents(rid))
       return null;

@@ -36,6 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * read. A record read, then changed by a concurrent transaction that committed, then deleted, used to keep the entry the
  * concurrent change added, pointing at a record that no longer exists: once the RID was reused, an indexed lookup returned
  * a record holding another value (issue #11733).
+ * <p>
+ * The same holds when the object deleted differs from the indexed state because of this transaction alone: a property assigned
+ * and never saved, or an update saved through another object of the same record.
  */
 class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
 
@@ -98,11 +101,75 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     database.transaction(() -> rid[0] = database.newDocument("D").set("v", 1).save().getIdentity());
 
     final BeforeRecordReadListener hide = record -> !record.equals(rid[0]);
-    deleteAfterAConcurrentUpdate(rid[0], () -> database.getEvents().registerListener(hide));
-    database.getEvents().unregisterListener(hide);
+    try {
+      deleteAfterAConcurrentUpdate(rid[0], () -> database.getEvents().registerListener(hide));
+    } finally {
+      database.getEvents().unregisterListener(hide);
+    }
 
     assertThat(entries("D[v]", 1)).isEmpty();
     assertThat(entries("D[v]", 2)).isEmpty();
+  }
+
+  /** A property assigned and never saved is not in the index: the delete removes the entry of the stored value. */
+  @Test
+  void aDocumentDeletedWithAnUnsavedChangeLeavesNoIndexEntry() {
+    final RID rid = newIndexedDocument();
+
+    database.transaction(() -> {
+      final MutableDocument changed = rid.asDocument(true).modify();
+      changed.set("v", 5);
+      changed.delete();
+    });
+
+    assertThat(database.existsRecord(rid)).isFalse();
+    assertThat(entries("D[v]", 1)).isEmpty();
+    assertThat(entries("D[v]", 5)).isEmpty();
+  }
+
+  /** The change is the transaction's own, saved through one handle, and the delete goes through the one read before it. */
+  @Test
+  void aDocumentUpdatedInTheSameTransactionAndDeletedThroughAnOlderHandleLeavesNoIndexEntry() {
+    final RID rid = newIndexedDocument();
+
+    database.transaction(() -> {
+      final Document readBefore = rid.asDocument(true);
+      readBefore.modify().set("v", 2).save();
+      readBefore.delete();
+    });
+
+    assertThat(database.existsRecord(rid)).isFalse();
+    assertThat(entries("D[v]", 1)).isEmpty();
+    assertThat(entries("D[v]", 2)).isEmpty();
+  }
+
+  /** As above, with the change saved and then another one assigned and left unsaved on the handle that is deleted. */
+  @Test
+  void aDocumentSavedThenChangedAgainAndDeletedLeavesNoIndexEntry() {
+    final RID rid = newIndexedDocument();
+
+    database.transaction(() -> {
+      final MutableDocument changed = rid.asDocument(true).modify();
+      changed.set("v", 2).save();
+      changed.set("v", 7);
+      changed.delete();
+    });
+
+    assertThat(database.existsRecord(rid)).isFalse();
+    assertThat(entries("D[v]", 1)).isEmpty();
+    assertThat(entries("D[v]", 2)).isEmpty();
+    assertThat(entries("D[v]", 7)).isEmpty();
+  }
+
+  private RID newIndexedDocument() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D");
+      database.command("sql", "CREATE PROPERTY D.v INTEGER");
+      database.command("sql", "CREATE INDEX ON D (v) NOTUNIQUE");
+    });
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("D").set("v", 1).save().getIdentity());
+    return rid[0];
   }
 
   /** Reads the record, lets another transaction set {@code v = 2} and commit, then deletes the record as it was read. */
