@@ -80,6 +80,9 @@ final class SubqueryExpressionParser {
    * a nested {@code CALL { }} is not the body's, and the text the body is run as must conclude with a RETURN (issue #12354).
    */
   private static boolean bodyReturns(final CypherStatement parsedBody, final String subquery) {
+    // A UNION body is run as one text, so a RETURN appended to it would land on the last branch only: the text check is kept
+    // for it, as for a body that did not parse into a statement. An EXISTS or COUNT UNION body without a RETURN in every branch
+    // is then refused by the conclusion check of the query it runs as, instead of answering a wrong count
     if (parsedBody == null || parsedBody instanceof UnionStatement)
       return subquery.toUpperCase(Locale.ROOT).contains("RETURN ");
     return parsedBody.getReturnClause() != null;
