@@ -101,6 +101,13 @@ class Issue12362SqlDurationIsoFormTest extends TestHelper {
   }
 
   @Test
+  void anAmountPastTheRangeOfADurationIsAClearArgumentError() {
+    assertThatThrownBy(() -> duration("duration({days: 200000000000000})"))
+        .isInstanceOf(InvalidArgumentException.class)
+        .hasMessageContaining("overflows the range of a duration");
+  }
+
+  @Test
   void aTextThatIsNotADurationIsAClearArgumentError() {
     assertThatThrownBy(() -> duration("duration('one hour')"))
         .isInstanceOf(InvalidArgumentException.class)

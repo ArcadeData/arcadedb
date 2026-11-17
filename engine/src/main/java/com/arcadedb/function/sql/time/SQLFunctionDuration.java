@@ -127,8 +127,8 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     try {
       return Duration.ofDays(parsed.getDays()).plusSeconds(parsed.getSeconds()).plusNanos(parsed.getNanosAdjustment());
     } catch (final ArithmeticException e) {
-      throw new IllegalArgumentException(
-          NAME + "() cannot build a duration of '" + value + "': the amount overflows the range of a duration", e);
+      throw new InvalidArgumentException(NAME + "() cannot build a duration of '" + InvalidArgumentException.quote(value)
+          + "': the amount overflows the range of a duration", e);
     }
   }
 
