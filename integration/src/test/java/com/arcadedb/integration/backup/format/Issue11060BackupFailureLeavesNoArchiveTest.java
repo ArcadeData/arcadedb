@@ -272,6 +272,52 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
     TestHelper.checkActiveDatabases();
   }
 
+  /** Issue #11736: another backup takes the final name after the claim, without {@code -o}: this one fails and leaves it alone. */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void aNamePublishedByAnotherBackupAfterTheClaimIsRefused(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      final byte[] other = "published by another backup".getBytes();
+      FullBackupFormat.beforeSealedStoreReadForTesting = file -> {
+        try {
+          Files.write(new File(BACKUP_FILE).toPath(), other);
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      };
+
+      assertThatThrownBy(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase())
+          .isInstanceOf(BackupException.class)
+          .hasStackTraceContaining("already exist");
+
+      assertThat(Files.readAllBytes(new File(BACKUP_FILE).toPath())).as("the other archive is left as it was").isEqualTo(other);
+      assertThat(new File(PARTIAL_FILE)).as("the partial archive must not be left behind").doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /** Issue #11736: with {@code -o}, a partial file left by a cut backup is overwritten and the backup completes. */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void aLeftoverPartialFileIsReplacedWithOverwrite(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      Files.write(new File(PARTIAL_FILE).toPath(), "left by a backup that was cut".getBytes());
+
+      overwritingBackup(database, new ConsoleLogger(0, message -> {
+      })).backupDatabase();
+
+      try (final ZipFile archive = new ZipFile(BACKUP_FILE)) {
+        assertThat(archive.getEntry("schema.json")).as("the published archive is the complete one").isNotNull();
+      }
+      assertThat(new File(PARTIAL_FILE)).doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
   private static FullBackupFormat overwritingBackup(final Database database, final ConsoleLogger logger) {
     final BackupSettings settings = new BackupSettings();
     settings.format = "full";
