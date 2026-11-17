@@ -81,4 +81,13 @@ class CypherPointDistance3dIssue12273Test extends TestHelper {
         "point.withinBBox(point({longitude:1,latitude:1,height:5}), point({longitude:0,latitude:0,height:0}), point({longitude:2,latitude:2,height:10}))"))
         .isEqualTo(true);
   }
+
+  // A raw map holding both height and z: withinBBox reads the same third coordinate point.distance() reads
+  @Test
+  void withinBBoxReadsTheThirdCoordinateLikeDistance() {
+    final String raw = "{crs:'wgs-84-3d', longitude:1, latitude:1, x:1, y:1, height:50, z:5}";
+    assertThat(distance("point.distance(" + raw + ", point({longitude:1,latitude:1,height:0}))")).isCloseTo(50.0, within(0.001));
+    assertThat(value("point.withinBBox(" + raw
+        + ", point({longitude:0,latitude:0,height:0}), point({longitude:2,latitude:2,height:10}))")).isEqualTo(false);
+  }
 }

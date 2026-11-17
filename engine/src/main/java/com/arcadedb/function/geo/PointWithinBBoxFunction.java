@@ -59,9 +59,9 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     final double[] lowerLeft = extractCoordinates(args[1]);
     final double[] upperRight = extractCoordinates(args[2]);
     // A 2D point against a 3D box (or the reverse) has no answer, as in Neo4j (issue #12273)
-    final Double pointZ = third(args[0]);
-    final Double lowerLeftZ = third(args[1]);
-    final Double upperRightZ = third(args[2]);
+    final Double pointZ = third(args[0], lowerLeftGeo);
+    final Double lowerLeftZ = third(args[1], lowerLeftGeo);
+    final Double upperRightZ = third(args[2], lowerLeftGeo);
     if ((pointZ == null) != (lowerLeftZ == null) || (lowerLeftZ == null) != (upperRightZ == null))
       return null;
     if (pointZ != null && (pointZ < lowerLeftZ || pointZ > upperRightZ))
@@ -90,11 +90,14 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     throw new TypeMismatchException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
   }
 
-  private static Double third(final Object value) {
+  // The third coordinate read the way point.distance() reads it: height first for a geographic point, z first otherwise, so a
+  // raw map holding both keys with different values answers both functions with the same coordinate
+  private static Double third(final Object value, final boolean geographic) {
     final Map<?, ?> map = (Map<?, ?>) value;
-    if (map.get("z") instanceof Number z)
-      return z.doubleValue();
-    return map.get("height") instanceof Number h ? h.doubleValue() : null;
+    final Object first = map.get(geographic ? "height" : "z");
+    if (first instanceof Number n)
+      return n.doubleValue();
+    return map.get(geographic ? "z" : "height") instanceof Number n ? n.doubleValue() : null;
   }
 
   private static double[] pair(final Map<?, ?> map, final String first, final String second) {
