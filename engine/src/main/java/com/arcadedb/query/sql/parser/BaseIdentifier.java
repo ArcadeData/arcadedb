@@ -180,6 +180,15 @@ public class BaseIdentifier extends SimpleNode {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    if (levelZero != null && levelZero.isIndexKeyResolvable(context))
+      return true;
+    return suffix != null && suffix.isIndexKeyResolvable(context);
+  }
+
+  /**
    * A suffix is a property or variable reference, never a literal.
    *
    * @see Expression#isLiteral(boolean)

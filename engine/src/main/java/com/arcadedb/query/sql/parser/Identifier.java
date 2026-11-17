@@ -275,13 +275,26 @@ public class Identifier extends SimpleNode {
     if (internalAlias)
       return true;
 
-    // $parent is the context of the statement that runs this one as a subquery: it is set before the subquery is planned and
-    // stays the same for one execution of its plan, so a key read from it ($parent.$current.id) is resolved when the fetch
-    // starts, as an input parameter is, and an index can serve it (issue #12286)
-    if (refersToParent() && ctx.getParent() != null)
-      return true;
-
     return ctx.isScriptVariableDeclared(plainValue); // context variable, for batch scripts
+  }
+
+  /**
+   * Whether this identifier can serve as an index key: its value is resolved when the fetch starts, so it needs no
+   * record of its own.
+   * <p>
+   * {@code $parent} qualifies, and only as an index key: it is the context of the statement that runs this one as a
+   * subquery, it is set before the subquery is planned and does not change during one execution of its plan, so a key
+   * read from it ({@code $parent.$current.id}) is resolved when the fetch starts, as an input parameter is (issue
+   * #12286). It is NOT a record-free value: it is a property of the outer record, and a comparison that reads it
+   * compares it as a record property does, without converting the other side to its type.
+   *
+   * @see Expression#isIndexKeyResolvable(CommandContext)
+   */
+  public boolean isIndexKeyResolvable(final CommandContext ctx) {
+    if (refersToParent())
+      return ctx.getParent() != null;
+
+    return isEarlyCalculated(ctx);
   }
 
   @Override

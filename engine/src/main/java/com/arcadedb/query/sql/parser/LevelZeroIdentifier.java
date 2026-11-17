@@ -193,6 +193,15 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   * <p>
+   * A level zero function call or a collection is never read from the parent, so the answer is the record-free one.
+   */
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    return isEarlyCalculated(context);
+  }
+
+  /**
    * A function call is never a literal, whatever its arguments are.
    *
    * @see Expression#isLiteral(boolean)

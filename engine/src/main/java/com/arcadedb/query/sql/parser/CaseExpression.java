@@ -218,6 +218,27 @@ public class CaseExpression extends MathExpression {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  @Override
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    // the branches sit outside childExpressions, so the inherited walker would answer for an empty list
+    if (caseExpression != null && !caseExpression.isIndexKeyResolvable(context))
+      return false;
+
+    for (final CaseAlternative alternative : alternatives) {
+      if (alternative.isSimpleForm())
+        return false;
+      if (alternative.getWhenExpression() == null || !alternative.getWhenExpression().isIndexKeyResolvable(context))
+        return false;
+      if (alternative.getThenExpression() == null || !alternative.getThenExpression().isIndexKeyResolvable(context))
+        return false;
+    }
+
+    return elseExpression == null || elseExpression.isIndexKeyResolvable(context);
+  }
+
+  /**
    * Same reason as above: the branches sit outside {@code childExpressions}, so the inherited walker would report
    * a CASE built entirely of literals as non-literal. A simple-form WHEN is a {@link WhereClause} and cannot be
    * read as a constant, so only the extended form can qualify.
