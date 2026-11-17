@@ -27,6 +27,7 @@ import org.apache.ratis.server.raftlog.RaftLog;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -72,6 +73,9 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
     final Database followerDb = getServerDatabase(follower, getDatabaseName());
 
     leaderDb.command("sql", "CREATE TIMESERIES TYPE " + TYPE + " TIMESTAMP ts FIELDS (v LONG) SHARDS 1");
+    // The maintenance scheduler compacts the type 5 s after it is created: it would empty the mutable bucket before the
+    // compaction below, which then returns at Phase 0 with nothing to publish and the race is never run
+    leaderDb.getSchema().getEmbedded().getTimeSeriesMaintenanceScheduler().cancel(TYPE);
     waitForAllServers();
     for (int i = 0; i < 20; i++)
       leaderDb.command("sql", "INSERT INTO " + TYPE + " SET ts = ?, v = ?", 1_000L + i, (long) i);
@@ -82,6 +86,17 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
     final RaftHAServer leaderRaft = getRaftPlugin(leader).getRaftHAServer();
     final ReentrantLock validationLock = validationLock(leaderRaft.getStateMachine());
     final long logBefore = lastRaftLogIndex(leaderRaft);
+
+    final int[] mutablePages = new int[1];
+    leaderDb.transaction(() -> {
+      try {
+        mutablePages[0] = ((LocalTimeSeriesType) leaderDb.getSchema().getType(TYPE)).getEngine().getShard(0).getMutableBucket()
+            .getDataPageCount();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
+    assertThat(mutablePages[0]).as("the compaction must have samples to publish, or it never reaches its version check").isPositive();
 
     final CountDownLatch phase0Published = new CountDownLatch(1);
     TimeSeriesShard.TEST_PRE_PHASE4C_HOOK = phase0Published::countDown;
@@ -103,15 +118,24 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
       }
     }, "issue11921-compaction");
 
-    boolean phase0Reached;
+    boolean phase0Reached = false;
+    boolean compactionQueued = false;
     validationLock.lock();
     try {
       appender.start();
-      assertThat(awaitValidationBlocked()).as("the leader's validation of the follower append must reach the monitor").isTrue();
+      assertThat(awaitValidationBlocked()).as("the leader's validation of the follower append must reach the lock").isTrue();
       compactor.start();
-      // Phase 0 published (the hook runs after it, before phase 4c). A compaction that has to take the monitor itself
-      // cannot get here while the test holds it: the wait then times out and the two race for the monitor below.
-      phase0Reached = phase0Published.await(3, TimeUnit.SECONDS);
+      // The compaction either publishes phase 0 (the hook runs after it, before phase 4c) without the validation lock, which
+      // is the race, or reaches its first version check and queues on the lock the test holds. Waiting for one of the two,
+      // not for a fixed time, keeps the outcome from depending on how long the compaction takes to get there.
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+      while (System.nanoTime() < deadline && compactor.isAlive()) {
+        phase0Reached = phase0Published.getCount() == 0;
+        compactionQueued = validationLock.hasQueuedThread(compactor);
+        if (phase0Reached || compactionQueued)
+          break;
+        Thread.sleep(5);
+      }
     } finally {
       validationLock.unlock();
     }
@@ -147,8 +171,12 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "TEST: phase 0 published while the validation waited=%s, append failure=%s, "
-        + "compaction failure=%s, claims=%s", phase0Reached, appendFailure, compactionFailure, claims);
+    LogManager.instance().log(this, Level.INFO, "TEST: phase 0 published while the validation waited=%s, compaction queued on "
+            + "the validation lock=%s, append failure=%s, compaction failure=%s, claims=%s", phase0Reached, compactionQueued,
+        appendFailure, compactionFailure, claims);
+    assertThat(phase0Reached).as("the compaction published phase 0 while the leader's validation lock was held").isFalse();
+    assertThat(compactionQueued).as("the compaction must reach its first version check and wait for the validation lock; "
+        + "compaction failure: %s", compactionFailure).isTrue();
     assertThat(duplicates).as("append failure: %s, compaction failure: %s", appendFailure, compactionFailure).isEmpty();
     assertClusterConsistency();
   }

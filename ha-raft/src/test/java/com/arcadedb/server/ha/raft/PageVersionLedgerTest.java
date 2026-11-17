@@ -391,13 +391,13 @@ class PageVersionLedgerTest {
       }
     }, "issue11921-validation");
 
-    final boolean validatedDuringPublication = ledger.publishOutsideTheLog(DB, () -> {
+    final boolean queuedDuringPublication = ledger.publishOutsideTheLog(DB, () -> {
       ledger.reservedVersion(DB, 3, 0);
       validation.start();
-      return validated.await(300, TimeUnit.MILLISECONDS);
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
     });
 
-    assertThat(validatedDuringPublication).as("a validation must not run between a publication's check and its return").isFalse();
+    assertThat(queuedDuringPublication).as("a validation must wait on the lock between a publication's check and its return").isTrue();
     assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
     validation.join(10_000);
   }
@@ -456,16 +456,122 @@ class PageVersionLedgerTest {
     }, "issue11921-validation-nested");
     validation.setDaemon(true);
 
-    final boolean validatedAfterInner = ledger.publishOutsideTheLog(DB, () -> {
+    final boolean queuedAfterInner = ledger.publishOutsideTheLog(DB, () -> {
       ledger.reservedVersion(DB, 3, 0);
       ledger.publishOutsideTheLog(DB, () -> ledger.reservedVersion(DB, 4, 0));
       validation.start();
-      return validated.await(300, TimeUnit.MILLISECONDS);
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
     });
 
-    assertThat(validatedAfterInner).as("the inner publication released the enclosing publication's lock").isFalse();
+    assertThat(queuedAfterInner).as("the inner publication released the enclosing publication's lock").isTrue();
     assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
     validation.join(10_000);
+  }
+
+  /**
+   * Issue #11921 review: a leadership change clears every ledger while a publication may hold one's lock. The clear used
+   * to drop the ledger, so a validation after it built a new one with a free lock and reserved the version the publication
+   * was about to write. The ledger is now kept and emptied under its lock, so the validation still waits.
+   */
+  @Test
+  void aLeadershipClearDuringAPublicationDoesNotFreeTheValidationLock() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-clear");
+    validation.setDaemon(true);
+    final Thread clear = new Thread(ledger::clearAll, "issue11921-leadership-clear");
+    clear.setDaemon(true);
+
+    final boolean queuedAfterClear = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.reservedVersion(DB, 3, 0);
+      clear.start();
+      // The clear either ran (the old removal) or waits for this publication: either way a validation must not get through
+      clear.join(200);
+      validation.start();
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
+    });
+
+    assertThat(queuedAfterClear).as("a validation after a leadership clear ran while a publication held the lock").isTrue();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+    clear.join(10_000);
+  }
+
+  /** Issue #11921 review: a clear between a publication's start and its first check must not let that check skip the lock. */
+  @Test
+  void aLeadershipClearBeforeThePublicationsFirstCheckStillLetsItTakeTheLock() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-early-clear");
+    validation.setDaemon(true);
+
+    final boolean queued = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.clearAll();
+      ledger.reservedVersion(DB, 3, 0);
+      validation.start();
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
+    });
+
+    assertThat(queued).as("the publication's first check after a clear did not take the validation lock").isTrue();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+  }
+
+  /** A leadership clear still drops every reservation, of every database. */
+  @Test
+  void aLeadershipClearDropsEveryReservation() throws IOException {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    ledger.validateAndReserve("other", PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), localVersions);
+
+    ledger.clearAll();
+
+    assertThat(ledger.reservedPages(DB)).isZero();
+    assertThat(ledger.reservedPages("other")).isZero();
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(-1);
+    // A fresh validation of the same base goes through: nothing reserved survived the clear
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
+  }
+
+  /**
+   * Waits until {@code thread} is queued on the validation lock of {@code database}, the state a validation excluded by a
+   * publication must reach. {@code false} once the thread ended without queueing, which is a validation that got through.
+   */
+  private static boolean awaitQueuedOnTheValidationLock(final PageVersionLedger ledger, final String database, final Thread thread)
+      throws Exception {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    while (System.nanoTime() < deadline) {
+      final ReentrantLock lock = validationLock(ledger, database);
+      if (lock != null && lock.hasQueuedThread(thread))
+        return true;
+      if (thread.getState() == Thread.State.TERMINATED)
+        return false;
+      Thread.sleep(1);
+    }
+    return false;
+  }
+
+  private static ReentrantLock validationLock(final PageVersionLedger ledger, final String database) throws Exception {
+    final Field byDatabase = PageVersionLedger.class.getDeclaredField("byDatabase");
+    byDatabase.setAccessible(true);
+    final Object databaseLedger = ((Map<?, ?>) byDatabase.get(ledger)).get(database);
+    if (databaseLedger == null)
+      return null;
+    final Field lock = databaseLedger.getClass().getDeclaredField("lock");
+    lock.setAccessible(true);
+    return (ReentrantLock) lock.get(databaseLedger);
   }
 
   /** Ages a reservation, since the staleness bound is measured on the wall clock. */

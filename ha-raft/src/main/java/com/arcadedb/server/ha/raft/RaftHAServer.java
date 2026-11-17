@@ -4052,17 +4052,42 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   private void replaceStateMachineBetweenPublications() throws IOException, InterruptedException {
     final Lock gate = publicationGate.writeLock();
-    final long waitMs = ratisCloseTimeoutMs();
-    if (waitMs <= 0)
-      gate.lockInterruptibly();
-    else if (!gate.tryLock(waitMs, TimeUnit.MILLISECONDS))
-      throw new IOException("A commit published outside the Raft log was still running after " + waitMs
-          + "ms; not replacing the state machine under it (issue #11921)");
+    lockPublicationGateForReplacement(gate, ratisCloseTimeoutMs());
     try {
       this.stateMachine = createStateMachine();
     } finally {
       gate.unlock();
     }
+  }
+
+  /**
+   * Takes the publication gate for a state machine replacement, waiting up to {@code waitMs} ({@code 0} or less: no bound).
+   *
+   * @throws IOException          when a publication is still running after {@code waitMs}
+   * @throws InterruptedException when the wait is interrupted, with the thread's interrupt flag set again
+   */
+  static void lockPublicationGateForReplacement(final Lock gate, final long waitMs) throws IOException, InterruptedException {
+    final boolean locked;
+    try {
+      if (waitMs <= 0) {
+        gate.lockInterruptibly();
+        locked = true;
+      } else
+        locked = gate.tryLock(waitMs, TimeUnit.MILLISECONDS);
+    } catch (final InterruptedException e) {
+      // The throw cleared the flag, and restartRatis reads the flag to tell an abandoned restart from a failed one: without
+      // it an interrupted restart would count toward arcadedb.ha.ratisRestartMaxRetries
+      Thread.currentThread().interrupt();
+      throw e;
+    }
+    if (!locked)
+      throw new IOException("A commit published outside the Raft log was still running after " + waitMs
+          + "ms; not replacing the state machine under it (issue #11921)");
+  }
+
+  /** Whether {@code thread} waits at the publication gate (issue #11921), for tests that must observe the restart there. */
+  boolean isWaitingAtThePublicationGate(final Thread thread) {
+    return publicationGate.hasQueuedThread(thread);
   }
 
   /**

@@ -83,7 +83,11 @@ final class PageVersionLedger {
 
   private final Map<String, DatabaseLedger> byDatabase = new ConcurrentHashMap<>();
 
-  /** The ledger whose validation lock the commit {@link #publishOutsideTheLog} runs on this thread takes at its first check. */
+  /**
+   * The ledger whose validation lock the commit {@link #publishOutsideTheLog} runs on this thread takes at its first check.
+   * Static because it holds the ledger itself, not a key: {@link #reservedVersion} compares it by identity with the ledger
+   * it resolves, so one per thread serves every instance, and {@link #publishOutsideTheLog} restores the enclosing value.
+   */
   private static final ThreadLocal<DatabaseLedger> PUBLISHING = new ThreadLocal<>();
 
   /** Resolves the version of a page on this node, {@code 0} for a page that does not exist yet. */
@@ -210,6 +214,9 @@ final class PageVersionLedger {
    * commit of this leader holds that file lock from its phase 1 until its own entry, validated under the lock, is
    * appended: each would wait for the other until the file-lock timeout. Every version check and the publication still
    * run under the lock, which is what the ordering needs; a commit with no page to check publishes no page.
+   * <p>
+   * The lock therefore also covers the commit's second phase, the local page writes of that one commit (not of the whole
+   * session): validations of other nodes' entries on this database wait for it, which is the price of the ordering.
    */
   <T> T publishOutsideTheLog(final String databaseName, final Callable<T> commit) throws Exception {
     final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
@@ -376,8 +383,23 @@ final class PageVersionLedger {
     byDatabase.remove(databaseName);
   }
 
+  /**
+   * Drops every reservation, on a leadership change. Each ledger is emptied in place under its lock rather than removed
+   * (issue #11921): a commit {@link #publishOutsideTheLog} runs may hold, or be about to take, the lock of the ledger it
+   * started on, and a validation after the clear must wait for that same lock, not for the free one of a new ledger. The
+   * wait is one validation or one published commit. {@code releases} is bumped too, so a validation that read a local
+   * version before the clear does not trust that read.
+   */
   void clearAll() {
-    byDatabase.clear();
+    for (final DatabaseLedger ledger : byDatabase.values()) {
+      ledger.lock.lock();
+      try {
+        ledger.pages.clear();
+        ledger.releases.incrementAndGet();
+      } finally {
+        ledger.lock.unlock();
+      }
+    }
   }
 
   /**

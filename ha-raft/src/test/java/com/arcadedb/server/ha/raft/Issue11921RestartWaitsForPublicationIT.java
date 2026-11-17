@@ -70,15 +70,20 @@ class Issue11921RestartWaitsForPublicationIT extends BaseRaftHATest {
     final Thread restart = new Thread(raft::restartRatisIfNeeded, "issue11921-restart");
     restart.start();
 
-    // The close of the old Ratis server takes milliseconds in-process: a restart that does not wait swaps well within this
+    // Wait for the restart to reach the replacement, whatever the close of the old server takes: it either queues at the
+    // publication gate or, without one, replaces the state machine under the publication
     boolean replacedDuringPublication = false;
-    final long deadline = System.currentTimeMillis() + 5_000;
-    while (System.currentTimeMillis() < deadline && !replacedDuringPublication) {
+    boolean waitingAtTheGate = false;
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+    while (System.nanoTime() < deadline && restart.isAlive()) {
       replacedDuringPublication = raft.getStateMachine() != before;
-      Thread.sleep(20);
+      waitingAtTheGate = raft.isWaitingAtThePublicationGate(restart);
+      if (replacedDuringPublication || waitingAtTheGate)
+        break;
+      Thread.sleep(5);
     }
-    LogManager.instance().log(this, Level.INFO, "TEST: state machine replaced while the publication was in flight=%s",
-        replacedDuringPublication);
+    LogManager.instance().log(this, Level.INFO, "TEST: state machine replaced while the publication was in flight=%s, "
+        + "restart waiting at the gate=%s", replacedDuringPublication, waitingAtTheGate);
 
     release.countDown();
     publication.join(30_000);
@@ -86,6 +91,7 @@ class Issue11921RestartWaitsForPublicationIT extends BaseRaftHATest {
 
     assertThat(replacedDuringPublication)
         .as("the restart replaced the state machine, and its ledger, while a publication was in flight").isFalse();
+    assertThat(waitingAtTheGate).as("the restart must reach the publication gate while the publication is in flight").isTrue();
     assertThat(publicationFailure.get()).isNull();
     assertThat(raft.getStateMachine()).as("the restart goes on once the publication returned").isNotSameAs(before);
 
