@@ -4643,10 +4643,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // THE RELOAD CARRIES THE BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE
     // ARE SET AGAIN
     final boolean nameLeftToTheReplay = schema.endWalReplay(!transactionManager.isLastRecoveryIncomplete());
-    if (mode == ComponentFile.MODE.READ_WRITE && (nameLeftToTheReplay || schema.hasUnavailableIndexCompletedSinceLoad())) {
+    final boolean indexCompleted = schema.hasUnavailableIndexCompletedSinceLoad();
+    if (mode == ComponentFile.MODE.READ_WRITE && (nameLeftToTheReplay || indexCompleted)) {
+      final String missing = nameLeftToTheReplay && indexCompleted ?
+          "a property name not yet in the dictionary and the file of an index with no header page" :
+          nameLeftToTheReplay ? "a property name not yet in the dictionary" : "the file of an index with no header page";
       LogManager.instance().log(this, Level.WARNING,
-          "The WAL replay of database '%s' completed what the schema load found missing (a property name or the file of an index): reloading the schema",
-          null, name);
+          "The WAL replay of database '%s' completed what the schema load found missing (%s): reloading the schema", null, name,
+          missing);
       schema.load(mode, true, true);
       requireBM25Rescan();
     }

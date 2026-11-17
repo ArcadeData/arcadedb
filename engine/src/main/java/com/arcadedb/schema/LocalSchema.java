@@ -366,7 +366,8 @@ public class LocalSchema implements Schema {
   // The file names, among unavailableIndexDefinitions, of the indexes the last load left out because it refused their persisted
   // definition (issue #11568), as opposed to a file with no header page (issue #10046)
   private volatile    Set<String>                            refusedIndexDefinitionFiles   = Set.of();
-  // Between beginWalReplay() and endWalReplay(): the load of a crashed database, ahead of its WAL replay (issue #12111)
+  // Between beginWalReplay() and endWalReplay(): the load of a crashed database, ahead of its WAL replay (issue #12111). Only
+  // LocalDatabase.openInternal() opens and closes this window, so it is never set once the database is open
   private volatile    boolean                                walReplayPending;
   // A property name that load found missing from the dictionary and left to the replay, see dictionaryIdOfPropertyName()
   private volatile    boolean                                namesLeftToTheReplay;
