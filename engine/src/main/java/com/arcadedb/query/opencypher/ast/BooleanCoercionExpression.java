@@ -62,6 +62,29 @@ public class BooleanCoercionExpression implements BooleanExpression {
    * any other value is a type error. Before issue #11760 the logical operators took every non-null value as true and a
    * WHERE took every non-Boolean as false, so the same integer was true under OR and false under WHERE.
    */
+  /**
+   * The kind of an operand whose value is known not to be a BOOLEAN before the statement runs - a non-Boolean, non-null literal,
+   * a list or map literal, an arithmetic expression - or {@code null} when the operand may be a predicate. The one rule both the
+   * parse-time refusal of such an operand under AND/OR/XOR/NOT and the boolean simplifier read: a simplifier that folded
+   * {@code 1 AND false} into {@code false} dropped the operand the refusal had to see (issue #11760).
+   */
+  public static String nonBooleanKindOf(final Expression operand) {
+    return switch (operand) {
+      case LiteralExpression literal -> literal.getValue() == null || literal.getValue() instanceof Boolean ?
+          null :
+          literal.getValue().getClass().getSimpleName();
+      case ListExpression ignored -> "List";
+      case MapExpression ignored -> "Map";
+      case ArithmeticExpression ignored -> "Number";
+      case null, default -> null;
+    };
+  }
+
+  /** {@link #nonBooleanKindOf(Expression)} of the value this predicate adapts, {@code null} for any other predicate form. */
+  public static String nonBooleanKindOf(final BooleanExpression operand) {
+    return operand instanceof BooleanCoercionExpression coercion ? nonBooleanKindOf(coercion.expression) : null;
+  }
+
   public static Boolean toPredicate(final Object value) {
     if (value instanceof Boolean bool)
       return bool;

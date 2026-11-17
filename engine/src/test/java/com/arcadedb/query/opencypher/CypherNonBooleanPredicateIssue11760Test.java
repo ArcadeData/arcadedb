@@ -71,7 +71,7 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     assertTypeError("UNWIND [{a: 1}] AS x WITH x WHERE x RETURN x", "MAP");
   }
 
-  /** Short-circuiting must not decide the type: Neo4j refuses {@code true OR 1} and {@code false AND 1} as well. */
+  /** Every operand that is evaluated is checked, whichever operator joins it. */
   @Test
   void everyLogicalOperatorChecksItsOperands() {
     assertTypeError("UNWIND [1] AS x RETURN x AND false AS r", "INTEGER");
@@ -79,7 +79,46 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     assertTypeError("UNWIND [1] AS x RETURN x XOR true AS r", "INTEGER");
     assertTypeError("MATCH (n:Node) WHERE n.v OR false RETURN n.id", "INTEGER");
     assertTypeError("MATCH (n:Node) WHERE NOT n.v RETURN n.id", "INTEGER");
+    // id 2 has b = false, so the AND reads n.v there
     assertTypeError("MATCH (n:Node) WHERE n.b AND n.v RETURN n.id", "INTEGER");
+  }
+
+  /**
+   * A literal operand is refused before anything runs, in either order and in WHERE as in RETURN, so the short-circuit cannot
+   * decide whether {@code false AND 1} fails (checked against Neo4j 2026.09, which refuses all of these at parse time).
+   */
+  @Test
+  void aLiteralOperandIsRefusedInEitherOrder() {
+    final List<String> notRefused = new ArrayList<>();
+    for (final String query : new String[] { "RETURN true OR 1 AS r", "RETURN false AND 1 AS r", "RETURN 1 AND false AS r",
+        "MATCH (n:Node) WHERE false AND 1 RETURN n.id", "MATCH (n:Node) WHERE true OR 1 RETURN n.id",
+        "MATCH (n:Node) WHERE 1 AND false RETURN n.id", "MATCH (n:Node) WHERE NOT 'a' RETURN n.id",
+        "MATCH (n:Node) WHERE n.b OR [1] RETURN n.id", "MATCH (n:Node) WHERE true OR {a: 1} RETURN n.id" }) {
+      try {
+        rows(query);
+        notRefused.add(query + " -> ran");
+      } catch (final CommandParsingException e) {
+        assertThat(e.getMessage()).as(query).contains("Expected Boolean");
+      } catch (final RuntimeException e) {
+        notRefused.add(query + " -> " + e);
+      }
+    }
+    assertThat(notRefused).as("literal operands not refused before running").isEmpty();
+    // a Boolean or null literal stays an operand
+    assertThat(ids("MATCH (n:Node) WHERE n.b AND true OR null RETURN n.id AS id ORDER BY id")).containsExactly(1L, 3L);
+  }
+
+  /**
+   * A variable operand the other operand already decided is not evaluated, so it is not checked: Neo4j answers
+   * {@code true OR n.v} with true and {@code false AND n.v} with false on every row as well. AND and OR keep their
+   * short-circuit, which saves the subquery of a costly operand (issue #9579).
+   */
+  @Test
+  void anOperandTheOtherAlreadyDecidedIsNotEvaluated() {
+    assertThat(ids("MATCH (n:Node) WHERE true OR n.v RETURN n.id AS id ORDER BY id")).containsExactly(1L, 2L, 3L);
+    assertThat(ids("MATCH (n:Node) WHERE false AND n.v RETURN n.id AS id")).isEmpty();
+    for (final Result row : rows("MATCH (n:Node) RETURN true OR n.v AS r"))
+      assertThat(row.<Boolean>getProperty("r")).isTrue();
   }
 
   @Test
