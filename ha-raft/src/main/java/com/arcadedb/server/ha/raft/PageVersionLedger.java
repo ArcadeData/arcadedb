@@ -84,9 +84,10 @@ final class PageVersionLedger {
   private final Map<String, DatabaseLedger> byDatabase = new ConcurrentHashMap<>();
 
   /**
-   * The ledger whose validation lock the commit {@link #publishOutsideTheLog} runs on this thread takes at its first check.
-   * Static because it holds the ledger itself, not a key: {@link #reservedVersion} compares it by identity with the ledger
-   * it resolves, so one per thread serves every instance, and {@link #publishOutsideTheLog} restores the enclosing value.
+   * The ledger whose validation lock the commit {@link #publishOutsideTheLog} runs on this thread takes before its version
+   * checks ({@link #lockForPublication}). Static because it holds the ledger itself, not a key: the lock taken is the one
+   * of the ledger the publication started on, whichever instance the hook is called on, so one per thread serves every
+   * instance, and {@link #publishOutsideTheLog} restores the enclosing value.
    */
   private static final ThreadLocal<DatabaseLedger> PUBLISHING = new ThreadLocal<>();
 
@@ -126,14 +127,19 @@ final class PageVersionLedger {
 
   /** The reservations of one database; validation is a check-then-act, so it runs under the instance's lock. */
   private static final class DatabaseLedger {
+    private final String                               name;
     private final ConcurrentHashMap<Long, Reservation> pages    = new ConcurrentHashMap<>();
     /** Bumped on every release: tells a validation whether a local copy read outside the lock may have moved. */
     private final AtomicLong                           releases = new AtomicLong();
     /**
-     * The validation lock. Not a monitor: {@link #publishOutsideTheLog} takes it in the middle of the commit it runs, after
-     * the commit's file locks (issue #11921), and releases it once the commit returns.
+     * The validation lock. Not a monitor: the commit {@link #publishOutsideTheLog} runs takes it in its middle, after its
+     * file locks ({@link #lockForPublication}, issue #11921), and it is released once the commit returns.
      */
     private final ReentrantLock                        lock     = new ReentrantLock();
+
+    private DatabaseLedger(final String name) {
+      this.name = name;
+    }
   }
 
   static long pageKey(final int fileId, final int pageNumber) {
@@ -149,7 +155,7 @@ final class PageVersionLedger {
    */
   void validateAndReserve(final String databaseName, final Pages pages, final EntryId entry, final LocalVersions local)
       throws IOException {
-    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
+    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, DatabaseLedger::new);
     final long now = System.currentTimeMillis();
 
     // The local version of a page is a cache lookup at best and a disk read at worst: it is read OUTSIDE the ledger
@@ -209,17 +215,18 @@ final class PageVersionLedger {
    * entry reserved before it is seen by the check (a retryable conflict for the commit), and one validated after it reads
    * the published version, because {@code releases} is bumped on the way out.
    * <p>
-   * The lock is taken at the commit's first version check ({@link #reservedVersion}), not here: by then the commit holds
-   * its file locks. Taken before them, the commit would wait for a file lock with the lock held, while an ordinary
-   * commit of this leader holds that file lock from its phase 1 until its own entry, validated under the lock, is
-   * appended: each would wait for the other until the file-lock timeout. Every version check and the publication still
-   * run under the lock, which is what the ordering needs; a commit with no page to check publishes no page.
+   * The lock is taken by {@link #lockForPublication}, which the commit's first phase calls once it holds its file locks
+   * and before it reads the version of its first page, not here. Taken before the file locks, the commit would wait for
+   * a file lock with the lock held, while an ordinary commit of this leader holds that file lock from its phase 1 until
+   * its own entry, validated under the lock, is appended: each would wait for the other until the file-lock timeout.
+   * Every version check and the publication still run under the lock, which is what the ordering needs; a commit with
+   * no page to check publishes no page.
    * <p>
    * The lock therefore also covers the commit's second phase, the local page writes of that one commit (not of the whole
    * session): validations of other nodes' entries on this database wait for it, which is the price of the ordering.
    */
   <T> T publishOutsideTheLog(final String databaseName, final Callable<T> commit) throws Exception {
-    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
+    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, DatabaseLedger::new);
     final DatabaseLedger enclosing = PUBLISHING.get();
     final boolean heldBefore = ledger.lock.isHeldByCurrentThread();
     PUBLISHING.set(ledger);
@@ -234,6 +241,28 @@ final class PageVersionLedger {
       if (!heldBefore && ledger.lock.isHeldByCurrentThread())
         ledger.lock.unlock();
     }
+  }
+
+  /**
+   * Takes the validation lock of the database for the commit {@link #publishOutsideTheLog} runs on this thread, and does
+   * nothing for any other commit (one thread-local read). Called through the engine's
+   * {@link com.arcadedb.engine.PageVersionReservations#beforeVersionChecks()}, so with the commit's file locks held and
+   * before the local version of any of its pages is read: a version read before the lock could be one an entry validated,
+   * appended and applied in between has moved, and the check would pass on it.
+   * <p>
+   * The lock is the one of the ledger the publication started on. A ledger this instance no longer holds for the database
+   * (dropped or installed under the publication, see {@link #clear}) orders nothing any more: the commit is refused as a
+   * retryable conflict rather than left to check and publish without the lock.
+   */
+  void lockForPublication(final String databaseName) {
+    final DatabaseLedger publishing = PUBLISHING.get();
+    if (publishing == null || !publishing.name.equals(databaseName) || publishing.lock.isHeldByCurrentThread())
+      return;
+    publishing.lock.lock();
+    if (byDatabase.get(databaseName) != publishing)
+      // publishOutsideTheLog releases the lock on the way out
+      throw new ConcurrentModificationException("The page versions of database '" + databaseName
+          + "' were reset while a commit published outside the Raft log was running. Please retry the operation");
   }
 
   /**
@@ -318,9 +347,6 @@ final class PageVersionLedger {
    */
   int reservedVersion(final String databaseName, final int fileId, final int pageNumber) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
-    // The first check of a commit publishOutsideTheLog runs takes the validation lock, after the commit's file locks
-    if (ledger != null && PUBLISHING.get() == ledger && !ledger.lock.isHeldByCurrentThread())
-      ledger.lock.lock();
     if (ledger == null || ledger.pages.isEmpty())
       return -1;
     final long key = pageKey(fileId, pageNumber);
@@ -377,6 +403,12 @@ final class PageVersionLedger {
   int reservedPages(final String databaseName) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     return ledger != null ? ledger.pages.size() : 0;
+  }
+
+  /** The validation lock of the database, {@code null} before anything created its ledger: for tests that hold or watch it. */
+  ReentrantLock validationLockForTesting(final String databaseName) {
+    final DatabaseLedger ledger = byDatabase.get(databaseName);
+    return ledger != null ? ledger.lock : null;
   }
 
   void clear(final String databaseName) {

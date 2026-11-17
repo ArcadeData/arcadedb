@@ -365,7 +365,7 @@ class PageVersionLedgerTest {
       if (!fileLock.tryLock(3, TimeUnit.SECONDS))
         return false;
       try {
-        ledger.reservedVersion(DB, 3, 0);
+        ledger.lockForPublication(DB);
         return true;
       } finally {
         fileLock.unlock();
@@ -392,7 +392,7 @@ class PageVersionLedgerTest {
     }, "issue11921-validation");
 
     final boolean queuedDuringPublication = ledger.publishOutsideTheLog(DB, () -> {
-      ledger.reservedVersion(DB, 3, 0);
+      ledger.lockForPublication(DB);
       validation.start();
       return awaitQueuedOnTheValidationLock(ledger, DB, validation);
     });
@@ -406,7 +406,7 @@ class PageVersionLedgerTest {
   @Test
   void aPublicationThatThrowsAfterItsCheckReleasesTheValidationLock() throws Exception {
     assertThatThrownBy(() -> ledger.publishOutsideTheLog(DB, () -> {
-      ledger.reservedVersion(DB, 3, 0);
+      ledger.lockForPublication(DB);
       throw new ConcurrentModificationException("commit refused after its check");
     })).isInstanceOf(ConcurrentModificationException.class);
 
@@ -426,7 +426,7 @@ class PageVersionLedgerTest {
     validation.join(10_000);
 
     // The thread-local is restored too: a check outside any publication takes no lock, so a later validation is not blocked.
-    ledger.reservedVersion(DB, 3, 0);
+    ledger.lockForPublication(DB);
     final CountDownLatch validatedAgain = new CountDownLatch(1);
     final Thread second = new Thread(() -> {
       try {
@@ -457,8 +457,11 @@ class PageVersionLedgerTest {
     validation.setDaemon(true);
 
     final boolean queuedAfterInner = ledger.publishOutsideTheLog(DB, () -> {
-      ledger.reservedVersion(DB, 3, 0);
-      ledger.publishOutsideTheLog(DB, () -> ledger.reservedVersion(DB, 4, 0));
+      ledger.lockForPublication(DB);
+      ledger.publishOutsideTheLog(DB, () -> {
+        ledger.lockForPublication(DB);
+        return null;
+      });
       validation.start();
       return awaitQueuedOnTheValidationLock(ledger, DB, validation);
     });
@@ -489,7 +492,7 @@ class PageVersionLedgerTest {
     clear.setDaemon(true);
 
     final boolean queuedAfterClear = ledger.publishOutsideTheLog(DB, () -> {
-      ledger.reservedVersion(DB, 3, 0);
+      ledger.lockForPublication(DB);
       clear.start();
       // The clear either ran (the old removal) or waits for this publication: either way a validation must not get through
       clear.join(200);
@@ -519,7 +522,7 @@ class PageVersionLedgerTest {
 
     final boolean queued = ledger.publishOutsideTheLog(DB, () -> {
       ledger.clearAll();
-      ledger.reservedVersion(DB, 3, 0);
+      ledger.lockForPublication(DB);
       validation.start();
       return awaitQueuedOnTheValidationLock(ledger, DB, validation);
     });
@@ -563,15 +566,58 @@ class PageVersionLedgerTest {
     return false;
   }
 
-  private static ReentrantLock validationLock(final PageVersionLedger ledger, final String database) throws Exception {
-    final Field byDatabase = PageVersionLedger.class.getDeclaredField("byDatabase");
-    byDatabase.setAccessible(true);
-    final Object databaseLedger = ((Map<?, ?>) byDatabase.get(ledger)).get(database);
-    if (databaseLedger == null)
+  private static ReentrantLock validationLock(final PageVersionLedger ledger, final String database) {
+    return ledger.validationLockForTesting(database);
+  }
+
+  /**
+   * Issue #11921: the lock is taken by the explicit call the commit makes before its version checks, not as a side effect
+   * of reading a reservation. A publication that only read reservations holds nothing, and an ordinary commit's call takes
+   * nothing.
+   */
+  @Test
+  void onlyThePublicationsCallBeforeItsChecksTakesTheValidationLock() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    final ReentrantLock lock = validationLock(ledger, DB);
+
+    ledger.lockForPublication(DB);
+    assertThat(lock.isHeldByCurrentThread()).as("a commit outside a publication takes no validation lock").isFalse();
+
+    final boolean[] held = new boolean[3];
+    ledger.publishOutsideTheLog(DB, () -> {
+      ledger.reservedVersion(DB, 3, 0);
+      held[0] = lock.isHeldByCurrentThread();
+      // The commit of another database on the publishing thread is not this publication's
+      ledger.lockForPublication("other");
+      held[1] = lock.isHeldByCurrentThread();
+      ledger.lockForPublication(DB);
+      held[2] = lock.isHeldByCurrentThread();
       return null;
-    final Field lock = databaseLedger.getClass().getDeclaredField("lock");
-    lock.setAccessible(true);
-    return (ReentrantLock) lock.get(databaseLedger);
+    });
+
+    assertThat(held[0]).as("reading a reservation must not take the lock").isFalse();
+    assertThat(held[1]).as("the checks of another database must not take this database's lock").isFalse();
+    assertThat(held[2]).as("the call before the version checks takes the lock").isTrue();
+    assertThat(lock.isLocked()).as("released when the publication returns").isFalse();
+  }
+
+  /**
+   * Issue #11921: a ledger dropped under a publication (the database was dropped or installed, see clear) orders nothing any
+   * more, since a validation after the drop uses a new ledger and its free lock. The commit is refused as a retryable
+   * conflict instead of checking and publishing unordered, and the lock it took is released.
+   */
+  @Test
+  void aPublicationWhoseLedgerWasDroppedIsRefusedBeforeItsChecks() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    final ReentrantLock dropped = validationLock(ledger, DB);
+
+    assertThatThrownBy(() -> ledger.publishOutsideTheLog(DB, () -> {
+      ledger.clear(DB);
+      ledger.lockForPublication(DB);
+      return null;
+    })).isInstanceOf(ConcurrentModificationException.class).hasMessageContaining("published outside the Raft log");
+
+    assertThat(dropped.isLocked()).as("the refused publication must release the lock it took").isFalse();
   }
 
   /** Ages a reservation, since the staleness bound is measured on the wall clock. */

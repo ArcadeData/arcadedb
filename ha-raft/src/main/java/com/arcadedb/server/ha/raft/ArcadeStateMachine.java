@@ -2743,7 +2743,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Runs a commit that publishes its pages here ahead of the log under the validation of the database, see
    * {@link PageVersionLedger#publishOutsideTheLog}. The ledger's reservation hook is installed on the database first: the
-   * commit takes the validation lock at its first version check, through that hook, and a database no entry was validated
+   * commit takes the validation lock before its version checks, through that hook, and a database no entry was validated
    * on yet has none, so the commit would check and publish without the lock (issue #11921).
    * <p>
    * Under the Raft server's publication gate, on the state machine current there: an in-place restart replaces the state
@@ -2787,6 +2787,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return (current != null ? current : fallback).pageVersions.reservedVersion(databaseName, pageId.getFileId(),
           pageId.getPageNumber());
     }
+
+    @Override
+    public void beforeVersionChecks() {
+      final ArcadeStateMachine current = raft != null ? raft.getStateMachine() : null;
+      (current != null ? current : fallback).pageVersions.lockForPublication(databaseName);
+    }
   }
 
   /** The database an entry targets, or {@code null} when it cannot be resolved here (the entry is then refused). */
@@ -2805,7 +2811,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Installs the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
    * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}), and a commit
-   * {@link #publishOutsideTheLog} runs takes the validation lock at its first version check.
+   * {@link #publishOutsideTheLog} runs takes the validation lock before its version checks.
    */
   private void installReservations(final DatabaseInternal db) {
     if (db.getEmbedded() instanceof LocalDatabase local && !(local.getPageVersionReservations() instanceof LedgerReservations))

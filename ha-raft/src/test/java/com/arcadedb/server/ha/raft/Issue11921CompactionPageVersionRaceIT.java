@@ -28,7 +28,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -186,16 +185,10 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
   }
 
   /** The leader ledger's per-database lock that {@code validateAndReserve} runs under. */
-  private ReentrantLock validationLock(final ArcadeStateMachine stateMachine) throws Exception {
-    final Field ledgerField = ArcadeStateMachine.class.getDeclaredField("pageVersions");
-    ledgerField.setAccessible(true);
-    final Field databases = PageVersionLedger.class.getDeclaredField("byDatabase");
-    databases.setAccessible(true);
-    final Object ledger = ((Map<?, ?>) databases.get(ledgerField.get(stateMachine))).get(getDatabaseName());
-    assertThat(ledger).as("the follower append above created the leader's ledger of the database").isNotNull();
-    final Field lock = ledger.getClass().getDeclaredField("lock");
-    lock.setAccessible(true);
-    return (ReentrantLock) lock.get(ledger);
+  private ReentrantLock validationLock(final ArcadeStateMachine stateMachine) {
+    final ReentrantLock lock = stateMachine.pageVersions.validationLockForTesting(getDatabaseName());
+    assertThat(lock).as("the follower append above created the leader's ledger of the database").isNotNull();
+    return lock;
   }
 
   private static boolean awaitValidationBlocked() throws InterruptedException {
