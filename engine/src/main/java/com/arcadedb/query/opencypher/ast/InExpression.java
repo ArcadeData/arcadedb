@@ -545,8 +545,15 @@ public class InExpression implements BooleanExpression {
     Boolean contains(final Object value) {
       if (members == null)
         return null;
-      if (value instanceof String text)
-        return hasNonText || hasIsolatedSurrogate(text) ? null : members.contains(value);
+      if (value instanceof String text) {
+        if (hasNonText)
+          return null;
+        // A text found is equal under the comparator too (identical units compare equal), so only a miss pays the scan
+        // for an isolated surrogate, where the comparator can equal two texts that String.equals tells apart
+        if (members.contains(value))
+          return Boolean.TRUE;
+        return hasIsolatedSurrogate(text) ? null : Boolean.FALSE;
+      }
       if (hasText)
         return null;
       final Object key = hashKey(value);
