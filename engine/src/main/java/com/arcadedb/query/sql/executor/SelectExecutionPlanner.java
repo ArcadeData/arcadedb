@@ -28,6 +28,7 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -2259,12 +2260,15 @@ public class SelectExecutionPlanner {
     case INDEX:
       BooleanExpression keyCondition = null;
       BooleanExpression ridCondition = null;
+      // A condition an index target cannot answer is the statement's error, not the server's: refused as such (a 400 over HTTP)
+      // and naming the condition, read here because the WHERE clause is cleared once it is handed to the index (issue #11850)
+      final String unsupportedCondition = "Index queries with this kind of condition are not supported yet: " + info.whereClause
+          + ". A query on the index " + indexName + " takes a condition on key (=, IN, BETWEEN, a range), optionally AND one on rid";
       if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0) {
-        if (!index.supportsOrderedIterations()) {
-          throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
-        }
+        if (!index.supportsOrderedIterations())
+          throw new CommandSemanticException("Index " + indexName + " does not allow iteration without a condition");
       } else if (info.flattenedWhereClause.size() > 1) {
-        throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
+        throw new CommandSemanticException(unsupportedCondition);
       } else {
         final AndBlock andBlock = info.flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
@@ -2272,23 +2276,17 @@ public class SelectExecutionPlanner {
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
           info.flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
-          if (keyCondition == null) {
-            throw new CommandExecutionException(
-                "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-          }
+          if (keyCondition == null)
+            throw new CommandSemanticException(unsupportedCondition);
         } else if (andBlock.getSubBlocks().size() == 2) {
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
           info.flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
           ridCondition = getRidCondition(andBlock);
-          if (keyCondition == null || ridCondition == null) {
-            throw new CommandExecutionException(
-                "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-          }
-        } else {
-          throw new CommandExecutionException(
-              "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-        }
+          if (keyCondition == null || ridCondition == null)
+            throw new CommandSemanticException(unsupportedCondition);
+        } else
+          throw new CommandSemanticException(unsupportedCondition);
       }
       result.chain(new FetchFromIndexStep(index, keyCondition, null, context));
       if (ridCondition != null) {

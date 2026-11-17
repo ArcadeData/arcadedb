@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.DurationArithmetic;
 import com.google.gson.JsonArray;
@@ -903,7 +904,8 @@ public class JSONObject implements Map<String, Object> {
       case Object[] objects -> new JSONArray(objects).getInternal();
       case Map map -> new JSONObject(map).getInternal();
       case TraversalPath path -> new JSONObject(path.toMap()).getInternal();
-      case Document document -> document.toJSON(false).getInternal();
+      // a record holding itself is written as its RID inside its own JSON (issue #11850)
+      case Document document -> objectToElement(JsonSerializer.nestedDocumentToJSON(document, false));
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
       case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);

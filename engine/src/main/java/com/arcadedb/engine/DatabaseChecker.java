@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentValidator;
+import com.arcadedb.database.OutsideCallerTransaction;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -184,7 +185,16 @@ public class DatabaseChecker {
     this.database = ((DatabaseInternal) database).getEmbedded().getWrappedDatabaseInstance();
   }
 
+  /**
+   * Runs the check. The check opens and commits transactions of its own (its repairs, COMPRESS), so with the caller's transaction
+   * open it runs outside it, leaving it untouched (issue #11781): it used to be rolled back, losing the writes made before the
+   * statement.
+   */
   public Map<String, Object> check() {
+    return OutsideCallerTransaction.execute(database, "CheckDatabase", this::checkOutsideAnyTransaction);
+  }
+
+  private Map<String, Object> checkOutsideAnyTransaction() {
     result.clear();
     missingReferences.clear();
     missingReferenceErrors.clear();
@@ -1184,10 +1194,18 @@ public class DatabaseChecker {
     }
   }
 
+  /**
+   * Compresses the pages of every bucket, committing a batch of pages at a time, outside the caller's transaction (issue #11781):
+   * it used to roll that transaction back.
+   */
   public void compress() {
-    if (database.isTransactionActive())
-      database.rollback();
+    OutsideCallerTransaction.execute(database, "CompressDatabase", () -> {
+      compressOutsideAnyTransaction();
+      return null;
+    });
+  }
 
+  private void compressOutsideAnyTransaction() {
     long totalPagesToCompress = 0;
     for (final Bucket b : database.getSchema().getBuckets())
       totalPagesToCompress += ((LocalBucket) b).getTotalPages();

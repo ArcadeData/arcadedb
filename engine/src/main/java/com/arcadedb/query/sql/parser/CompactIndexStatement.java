@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.OutsideCallerTransaction;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
@@ -38,8 +38,6 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.FutureTask;
 import java.util.logging.Level;
 
 /**
@@ -123,38 +121,12 @@ public class CompactIndexStatement extends DDLStatement {
    * the compaction runs on a thread of its own and this one waits for it, leaving the caller's transaction and everything in
    * it (pending changes, locks, read snapshot) untouched: its commit finds the index migrated exactly as it would after a
    * background compaction. Committing or rolling back the caller's transaction here instead would end work that is not this
-   * statement's to end. Without a transaction it runs inline, as it always has.
-   * <p>
-   * An interrupted wait gives up waiting, not the compaction: like a background one, it runs to its end.
+   * statement's to end. Without a transaction it runs inline, as it always has. The same rule as every maintenance statement,
+   * see {@link OutsideCallerTransaction}.
    */
   private static boolean compactOutsideCallerTransaction(final DatabaseInternal database, final IndexInternal idx)
       throws Exception {
-    if (!database.isTransactionActive())
-      return compactIndex(idx);
-
-    final FutureTask<Boolean> compaction = new FutureTask<>(() -> {
-      DatabaseContext.INSTANCE.init(database);
-      try {
-        return compactIndex(idx);
-      } finally {
-        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
-      }
-    });
-    new Thread(compaction, "ArcadeDB-CompactIndex-" + database.getName()).start();
-
-    try {
-      return compaction.get();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw e;
-    } catch (final ExecutionException e) {
-      final Throwable cause = e.getCause();
-      if (cause instanceof final Exception exception)
-        throw exception;
-      if (cause instanceof final Error error)
-        throw error;
-      throw e;
-    }
+    return OutsideCallerTransaction.call(database, "CompactIndex", () -> compactIndex(idx));
   }
 
   /**

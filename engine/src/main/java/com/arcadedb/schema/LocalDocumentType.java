@@ -2957,9 +2957,10 @@ public class LocalDocumentType implements DocumentType {
                   + "': it is already a primary bucket of another user type. The paired external bucket is named"
                   + " <primaryBucketName>_ext, so a primary bucket called '" + extName + "' (or one whose name"
                   + " ends in '_ext' that matches another type's primary bucket) collides with this convention."
-                  + " Resolve by renaming the conflicting primary bucket via 'ALTER BUCKET " + extName
-                  + " NAME ...' so its name no longer ends in '_ext' or no longer collides, then retry the EXTERNAL"
-                  + " property change.");
+                  + " A bucket cannot be renamed (issue #11796): resolve by moving the records of bucket '" + extName
+                  + "' to a bucket with another name (CREATE BUCKET, ALTER TYPE ... BUCKET +<new>, MOVE VERTEX or"
+                  + " INSERT ... SELECT, ALTER TYPE ... BUCKET -" + extName + ", DROP BUCKET " + extName
+                  + "), then retry the EXTERNAL property change.");
       } else {
         // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (256 vs 2048: file-format
         // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via

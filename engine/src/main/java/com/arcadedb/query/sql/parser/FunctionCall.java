@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.graph.SQLFunctionMove;
@@ -303,9 +304,9 @@ public class FunctionCall extends SimpleNode {
           }
         } else {
           for (final Expression param : params) {
-            if (param.isAggregate(context)) {
-              throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
-            }
+            if (param.isAggregate(context))
+              // the statement's error, answered like any other refusal of its text (issue #11850)
+              throw new CommandSemanticException("Cannot calculate an aggregate function of another aggregate function " + this);
             final Identifier nextAlias = aggregateProj.getNextAlias();
             final ProjectionItem paramItem = new ProjectionItem();
             paramItem.alias = nextAlias;
