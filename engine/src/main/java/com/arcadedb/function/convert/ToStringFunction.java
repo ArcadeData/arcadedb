@@ -70,7 +70,7 @@ public class ToStringFunction implements StatelessFunction {
         return CypherPointFunction.renderPoint(map);
       throw new CommandSemanticException("TypeError: InvalidArgumentValue - toString() cannot convert Map");
     }
-    // Unsupported types: List, Map, Node, Relationship, Path. This is a client-side type error (the
+    // Unsupported types: List, Node, Relationship, Path. This is a client-side type error (the
     // query passes the wrong value type to a scalar function), classified by the openCypher TCK as a
     // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer
     // reports it as a 400 client error with the descriptive message, not a 500 transaction-commit
