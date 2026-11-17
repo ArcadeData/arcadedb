@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.query.opencypher.InlineProperties;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -483,8 +484,8 @@ public class ComparisonExpression implements BooleanExpression {
         return operator == Operator.EQUALS;
       }
       // Points have no order under < and >, but two equal points are <= and >= each other, as in Neo4j (issue #12274)
-      if ((operator == Operator.LESS_THAN_OR_EQUAL || operator == Operator.GREATER_THAN_OR_EQUAL) && isPointShaped(leftMap)
-          && isPointShaped(rightMap) && Boolean.TRUE.equals(
+      if ((operator == Operator.LESS_THAN_OR_EQUAL || operator == Operator.GREATER_THAN_OR_EQUAL)
+          && CypherValues.isPointShaped(leftMap) && CypherValues.isPointShaped(rightMap) && Boolean.TRUE.equals(
           new ComparisonExpression(new LiteralExpression(left, ""), Operator.EQUALS, new LiteralExpression(right, ""))
               .evaluateTernary(null, null)))
         return true;

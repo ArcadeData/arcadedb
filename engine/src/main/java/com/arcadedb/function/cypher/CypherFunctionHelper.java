@@ -728,11 +728,17 @@ public final class CypherFunctionHelper {
 
   /**
    * The Cypher order of two maps, as Neo4j orders them: by size, then by their keys in ascending order, then by the values of
-   * those keys in that order, each compared by {@code values}. Two points order as points, see {@link #comparePoints}.
+   * those keys in that order, each compared by {@code values}. Two points order as points, see {@link #comparePoints}, and an
+   * ordinary map sorts before a point, as Neo4j orders MAP before POINT: comparing a point with a map by its keys made the
+   * order cyclic.
    */
   public static int compareMaps(final Map<?, ?> a, final Map<?, ?> b, final Comparator<Object> values) {
-    if (CypherValues.isPointShaped(a) && CypherValues.isPointShaped(b))
+    final boolean pointA = CypherValues.isPointShaped(a);
+    final boolean pointB = CypherValues.isPointShaped(b);
+    if (pointA && pointB)
       return comparePoints(a, b);
+    if (pointA != pointB)
+      return pointA ? 1 : -1;
     if (a.size() != b.size())
       return Integer.compare(a.size(), b.size());
     final List<Object> keysA = sortedKeys(a);

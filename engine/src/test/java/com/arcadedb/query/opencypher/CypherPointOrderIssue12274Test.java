@@ -71,4 +71,27 @@ class CypherPointOrderIssue12274Test extends TestHelper {
     assertThat(value("RETURN point({x:1,y:2}) <= point({x:1,y:3}) AS v")).isNull();
     assertThat(value("RETURN point({x:1,y:2}) < point({x:1,y:3}) AS v")).isNull();
   }
+
+  @Test
+  void ordinaryMapsAreNotPointsUnderInclusiveComparison() {
+    assertThat(value("RETURN {x:1,y:2} <= {x:1,y:2} AS v")).isNull();
+    assertThat(value("RETURN {x:1,y:2} >= {x:1,y:2} AS v")).isNull();
+  }
+
+  // A point and an ordinary map with the same keys: a map sorts before a point, so the order does not depend on the input order
+  @Test
+  void mapsSortBeforePointsWhateverTheInputOrder() {
+    final String a = "{crs:'wgs-84', srid:4326, x:0, y:0}";
+    final String b = "{crs:'cartesian', srid:7203, x:0, y:0}";
+    final String m = "{crs:'middle', srid:0, x:'text', y:0}";
+    for (final String list : List.of("[" + a + "," + b + "," + m + "]", "[" + b + "," + m + "," + a + "]",
+        "[" + m + "," + a + "," + b + "]")) {
+      assertThat(value("UNWIND " + list + " AS p WITH min(p) AS lo, max(p) AS hi RETURN [lo.crs, hi.crs] AS v"))
+          .isEqualTo(List.of("middle", "cartesian"));
+      assertThat(value("UNWIND " + list + " AS p WITH p ORDER BY p RETURN collect(p.crs) AS v"))
+          .isEqualTo(List.of("middle", "wgs-84", "cartesian"));
+    }
+    // Two ordinary maps keep the map order: size first
+    assertThat(value("UNWIND [{x:1, y:2, k:3}, {x:9}] AS p WITH p ORDER BY p RETURN collect(p.x) AS v")).isEqualTo(List.of(9L, 1L));
+  }
 }
