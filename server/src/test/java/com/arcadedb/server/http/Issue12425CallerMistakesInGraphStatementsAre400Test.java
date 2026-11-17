@@ -114,7 +114,7 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
   }
 
   private long edgeCount() throws Exception {
-    final Response response = command("sql", "SELECT count(*) AS n FROM Link12425");
+    final Response response = command("sql", "SELECT count(@rid) AS n FROM Link12425");
     assertThat(response.status).as(response.body).isEqualTo(200);
     return new JSONObject(response.body).getJSONArray("result").getJSONObject(0).getLong("n");
   }
