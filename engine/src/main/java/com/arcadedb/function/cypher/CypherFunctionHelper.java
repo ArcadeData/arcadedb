@@ -538,6 +538,74 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Splits {@code str} around every occurrence of any of the literal {@code delimiters}, as openCypher
+   * {@code split(original, splitDelimiters)} does (issue #12396): the text is cut at the leftmost place where any
+   * delimiter of the list is found and, when two of them are found at the same place, the first of the list wins. The
+   * delimiters are literals, never patterns, and the empty pieces are kept.
+   * <ul>
+   *   <li>An empty list of delimiters splits nothing: the text is the one piece.</li>
+   *   <li>An empty delimiter splits the text into its characters and the other delimiters of the list are cut out of
+   *   the text before that, as Neo4j 5 does: {@code split('abc', ['','a'])} is {@code ["b","c"]}.</li>
+   * </ul>
+   * As the single-delimiter split, a surrogate pair is never cut.
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final List<String> delimiters) {
+    if (delimiters.isEmpty())
+      return List.of(str);
+
+    boolean withEmptyDelimiter = false;
+    for (final String delimiter : delimiters)
+      if (delimiter.isEmpty()) {
+        withEmptyDelimiter = true;
+        break;
+      }
+
+    if (withEmptyDelimiter) {
+      String text = str;
+      for (final String delimiter : delimiters)
+        if (!delimiter.isEmpty())
+          text = replaceLiteral(text, delimiter, "");
+      return splitLiteral(text, "");
+    }
+
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = 0;
+    while (true) {
+      int foundAt = -1;
+      String found = null;
+      for (final String delimiter : delimiters) {
+        final int index = str.indexOf(delimiter, at);
+        if (index < 0)
+          continue;
+        if (foundAt < 0 || index < foundAt) {
+          foundAt = index;
+          found = delimiter;
+        } else if (index == foundAt && splitsSurrogatePair(str, foundAt, foundAt + found.length())
+            && !splitsSurrogatePair(str, index, index + delimiter.length()))
+          // the delimiter that comes first in the list would cut a surrogate pair, this one at the same place does not
+          found = delimiter;
+      }
+      if (foundAt < 0)
+        break;
+
+      final int end = foundAt + found.length();
+      if (splitsSurrogatePair(str, foundAt, end)) {
+        // no delimiter of the list can be used here: look for the next one
+        at = foundAt + 1;
+        continue;
+      }
+      pieces.add(str.substring(from, foundAt));
+      from = end;
+      at = end;
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
    * Replaces every occurrence of the literal {@code search} in {@code str}, as {@code String.replace(CharSequence, CharSequence)}
    * does, except that a surrogate pair is never cut (issue #10485, #10484): an empty {@code search} puts the replacement before
    * every character and after the last - {@code "-a-😀-"} for {@code ("a😀", "", "-")}, never between the two halves of the emoji -
