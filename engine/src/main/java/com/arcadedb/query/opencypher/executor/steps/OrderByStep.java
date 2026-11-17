@@ -390,6 +390,9 @@ public class OrderByStep extends AbstractExecutionStep {
           // KEPT, WHOSE KEYS ARE DROPPED
           for (final PartialTopK partial : partials)
             partial.handOverHeap(heapLimit);
+          // A WORKER CHECKED THE ELEMENT CAP ON ITS OWN HEAP ONLY: THE MERGED ANSWER HOLDS AS MANY ROWS AS THE SEQUENTIAL HEAP
+          // WOULD, SO IT IS CHECKED AGAINST THE SAME CAP
+          heapLimit.check(Math.min(k, kept.size()));
           final List<Result> results = sortedRows(kept, k, comparator);
           heapLimit.rechargeAll(results);
           parallelWorkers = scan.getWorkerCount();

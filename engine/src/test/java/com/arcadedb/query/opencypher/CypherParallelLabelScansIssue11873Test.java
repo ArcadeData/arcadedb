@@ -210,6 +210,29 @@ class CypherParallelLabelScansIssue11873Test extends TestHelper {
     assertThat(QueryHeapBudget.getReservedBytes()).isZero();
   }
 
+  /**
+   * The element cap holds for the merged answer of a parallel top K as it does for the sequential heap. Here about 200 rows
+   * match, spread over the workers so that each keeps fewer than the cap of 100, while the LIMIT of 150 has the sequential heap
+   * hold 150: the merge must be refused as the sequential heap is, not answer the 150 rows no single worker was refused for.
+   */
+  @Test
+  void aParallelTopKIsRefusedByTheElementCapAsTheSequentialOneIs() {
+    final String query = "MATCH (n:T) WHERE n.h = 3 RETURN n.k AS k ORDER BY n.g DESC, n.k LIMIT 150";
+    assertThat(profile(query)).contains("parallel: ");
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 100);
+    for (final boolean parallel : new boolean[] { false, true }) {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, parallel);
+      assertThatThrownBy(() -> column(query)).as("parallel scan " + parallel)
+          .isInstanceOf(HeapLimitExceededException.class)
+          .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    }
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+
+    // Within the cap the parallel answer is the sequential one
+    final String withinCap = "MATCH (n:T) WHERE n.h = 3 RETURN n.k AS k ORDER BY n.g DESC, n.k LIMIT 100";
+    assertThat(column(withinCap)).hasSize(100).isEqualTo(sequential(withinCap));
+  }
+
   private List<Object> sequential(final String query) {
     return sequential(query, Map.of());
   }
