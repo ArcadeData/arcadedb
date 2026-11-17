@@ -270,8 +270,16 @@ final class VariableScopeValidator {
                   final CypherStatement body = subqueryClause.getInnerStatement();
                   final Set<String> exported = ReturnScope.scopeAtReturn(
                       body instanceof UnionStatement union ? union.getQueries().getFirst() : body);
-                  if (exported != null)
+                  if (exported != null) {
+                    // The star cannot export an outer name the body declared afresh: one it did not import is a new
+                    // variable there, and exporting it would overwrite the outer one on the rows the body answers only
+                    // (issue #12387). Every UNION branch must have imported it, since each binds the column on its own
+                    for (final String exportedName : exported)
+                      if (outerScope.contains(exportedName) && !importedByEveryBranch(subqueryClause, exportedName, outerScope))
+                        throw new CommandParsingException(
+                            "VariableAlreadyBound: Variable '" + exportedName + "' already declared in outer scope");
                     scope.addAll(exported);
+                  }
                 } else {
                   final String exportedName = item.getAlias() != null ? item.getAlias()
                       : item.getExpression() instanceof VariableExpression variable ? variable.getVariableName() : null;
@@ -468,6 +476,74 @@ final class VariableScopeValidator {
     shadowed.removeAll(imported);
 
     validateVariableScope(branch, seed, shadowed);
+  }
+
+  /**
+   * Whether every branch of the subquery body still holds the imported outer {@code name} at its RETURN, so its {@code RETURN *}
+   * hands back the outer variable rather than a value of its own.
+   */
+  private static boolean importedByEveryBranch(final SubqueryClause clause, final String name, final Set<String> outerScope) {
+    final CypherStatement body = clause.getInnerStatement();
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (!keepsImportedBinding(branch, clause.getScopeVariables(), name, outerScope))
+          return false;
+      return true;
+    }
+    return keepsImportedBinding(body, clause.getScopeVariables(), name, outerScope);
+  }
+
+  /**
+   * Follows {@code name} through the clauses of one branch: it starts as the outer variable when the explicit scope list imports
+   * it, or when the branch opens with a {@code WITH} (the importing one, walked as the first clause). A {@code WITH} that does not
+   * forward it as itself ({@code WITH name}, {@code WITH name AS name}, {@code WITH *}) drops or replaces it, so {@code WITH 1 AS z}
+   * or {@code WITH b AS z} binds a value of the body's own, which is also what {@code SubqueryStep} imports at runtime. An
+   * {@code UNWIND}, a {@code LOAD CSV} or a procedure {@code YIELD} under that name re-binds it too (issue #12387).
+   */
+  private static boolean keepsImportedBinding(final CypherStatement branch, final List<String> scopeVariables, final String name,
+      final Set<String> outerScope) {
+    boolean live;
+    if (scopeVariables != null)
+      live = scopeVariables.size() == 1 && "*".equals(scopeVariables.get(0)) ? outerScope.contains(name) : scopeVariables.contains(name);
+    else
+      live = startsWithImportingWith(branch);
+    final List<ClauseEntry> clauses = branch.getClausesInOrder();
+    if (clauses == null)
+      return live;
+    for (final ClauseEntry entry : clauses) {
+      if (!live)
+        return false;
+      switch (entry.getType()) {
+        case WITH -> {
+          final WithClause with = entry.getTypedClause();
+          boolean forwarded = false;
+          for (final ReturnClause.ReturnItem item : with.getItems())
+            if (item.isStar() || (item.getExpression() instanceof VariableExpression variable && name.equals(variable.getVariableName())
+                && (item.getAlias() == null || name.equals(item.getAlias())))) {
+              forwarded = true;
+              break;
+            }
+          live = forwarded;
+        }
+        case UNWIND -> live = !name.equals(((UnwindClause) entry.getTypedClause()).getVariable());
+        case LOAD_CSV -> live = !name.equals(((LoadCSVClause) entry.getTypedClause()).getVariable());
+        case CALL -> {
+          final CallClause call = entry.getTypedClause();
+          if (call != null && call.hasYield()) {
+            if (call.isYieldAll()) {
+              final List<String> fields = CypherSemanticValidator.resolveYieldAllFieldNames(call);
+              live = fields == null || !fields.contains(name);
+            } else
+              for (final CallClause.YieldItem item : call.getYieldItems())
+                if (name.equals(item.getOutputName()))
+                  live = false;
+          }
+        }
+        default -> {
+        }
+      }
+    }
+    return live;
   }
 
   /**
