@@ -150,6 +150,10 @@ class CypherOrderByLabelCheckAfterProjectionIssue12337Test extends TestHelper {
     assertThat(column("RETURN any(`x` IN [1, 2] WHERE x = 2) AS v")).containsExactly(true);
     assertThat(column("RETURN reduce(`s` = 0, `x` IN [1, 2, 3] | s + x) AS v")).containsExactly(6L);
     assertThat(column("MATCH (`n` {name:'a'}) RETURN `n` {.kind}.kind AS v")).containsExactly("C");
+    assertThat(column("RETURN allReduce(`s` = 0, `x` IN [1, 2] | s + x, s < 10) AS v")).containsExactly(true);
+    assertThat(column("MATCH (n {name:'a'}) WITH n, 7 AS `k` RETURN n {`k`}.k AS v")).containsExactly(7L);
+    database.transaction(() -> database.command("opencypher", "MATCH (a {name:'a'}), (b {name:'b'}) CREATE (a)-[:R]->(b)").close());
+    assertThat(column("MATCH (a {name:'a'}) RETURN [`p` = (a)-[:R]->() | length(p)] AS v")).containsExactly(List.of(1L));
 
     // The local `n` shadows the projected n: the sort key is the constant 'z', so the rows keep the name order
     assertThat(names("MATCH (n) RETURN n.name AS name, n AS m, count(*) AS c ORDER BY [`n` IN [{kind:'z'}] | n.kind][0], name"))
