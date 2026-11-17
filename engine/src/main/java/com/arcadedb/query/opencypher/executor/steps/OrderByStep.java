@@ -73,6 +73,10 @@ public class OrderByStep extends AbstractExecutionStep {
   // STEP, NOT ON ITS RESULT SET: THE CLOSE() OF A QUERY REACHES THE STEPS
   private       OperationHeapLimit  heapLimit;
 
+  /** A row and its ORDER BY keys, evaluated once when the row enters the sort (issue #12341). */
+  private record KeyedRow(Result row, Object[] keys) {
+  }
+
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context) {
     this(orderByClause, context, null, null);
   }
@@ -157,6 +161,10 @@ public class OrderByStep extends AbstractExecutionStep {
             // projection - hold the whole input in its own batch while this step copied it, doubling the heap of the
             // sort out of sight of both limits on it (issue #8591)
             sortedResults = new ArrayList<>();
+            // Each row enters the sort with its keys, evaluated once: the comparator used to evaluate them at every
+            // comparison, about 2·log2(n) times per row, and a non-deterministic key such as rand() then broke its
+            // contract (issue #12341)
+            final List<KeyedRow> keyed = orderByClause.isEmpty() ? null : new ArrayList<>();
             final ResultSet prevResults = prev.syncPull(context, nRecords > 0 ? nRecords : 100);
             // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
             final WorkGuard guard = WorkGuard.forCommandDeadline(context);
@@ -164,16 +172,22 @@ public class OrderByStep extends AbstractExecutionStep {
             while (prevResults.hasNext()) {
               guard.checkPeriodically(++consumed);
               final Result row = prevResults.next();
-              sortedResults.add(row);
-              heapLimit.add(sortedResults.size(), row);
+              if (keyed != null)
+                keyed.add(keyed(row));
+              else
+                sortedResults.add(row);
+              heapLimit.add(consumed, row);
             }
             // PROFILE reports the rows the sort read, not the one call that read them (issue #11702)
             if (context.isProfiling())
               rowCount += consumed;
 
             // Sort results according to ORDER BY clause
-            if (!orderByClause.isEmpty()) {
-              sortedResults.sort(createComparator());
+            if (keyed != null) {
+              keyed.sort(createComparator());
+              sortedResults = new ArrayList<>(keyed.size());
+              for (final KeyedRow k : keyed)
+                sortedResults.add(k.row());
             }
           }
         } finally {
@@ -207,12 +221,14 @@ public class OrderByStep extends AbstractExecutionStep {
        * @return list of top K results in correct sort order
        */
       private List<Result> materializeTopK(final int k) {
-        final Comparator<Result> comparator = createComparator();
+        final Comparator<KeyedRow> comparator = createComparator();
         // Reverse comparator for max-heap behavior (worst elements at top)
-        final Comparator<Result> reversedComparator = comparator.reversed();
+        final Comparator<KeyedRow> reversedComparator = comparator.reversed();
 
-        // Priority queue with reversed comparator: worst elements bubble to top
-        final PriorityQueue<Result> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
+        // Priority queue with reversed comparator: worst elements bubble to top. A row's keys are evaluated once, when it
+        // is read: evaluated at each comparison, a rand() key was drawn again for the rows the heap already held, which
+        // favoured the rows read last (issue #12341)
+        final PriorityQueue<KeyedRow> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
 
         // Pull all results and maintain a top-K heap
         final int batchSize = Math.max(1000, k * 10);
@@ -222,21 +238,21 @@ public class OrderByStep extends AbstractExecutionStep {
 
         while (prevResults.hasNext()) {
           guard.checkPeriodically(++consumed);
-          final Result row = prevResults.next();
+          final KeyedRow candidate = keyed(prevResults.next());
 
           if (topK.size() < k) {
             // Haven't reached K elements yet, add unconditionally. Only a LIMIT larger than the cap can make the heap
             // outgrow it
-            topK.offer(row);
-            heapLimit.add(topK.size(), row);
+            topK.offer(candidate);
+            heapLimit.add(topK.size(), candidate.row());
           } else {
             // Heap is full, check if new element is better than worst element
-            final Result worst = topK.peek();
-            if (comparator.compare(row, worst) < 0) {
+            final KeyedRow worst = topK.peek();
+            if (comparator.compare(candidate, worst) < 0) {
               // New row is better than worst row, replace it
               topK.poll();  // Remove worst
-              topK.offer(row);  // Add new
-              heapLimit.replace(worst, row);
+              topK.offer(candidate);  // Add new
+              heapLimit.replace(worst.row(), candidate.row());
             }
             // Otherwise discard the row (it's worse than our current top K)
           }
@@ -244,15 +260,15 @@ public class OrderByStep extends AbstractExecutionStep {
         if (context.isProfiling())
           rowCount += consumed;
 
-        // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
-        // what the heap holds now
-        heapLimit.rechargeAll(topK);
-
         // Extract results from heap and reverse to get correct sort order
         final List<Result> results = new ArrayList<>(topK.size());
         while (!topK.isEmpty()) {
-          results.add(topK.poll());
+          results.add(topK.poll().row());
         }
+
+        // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
+        // what the heap held
+        heapLimit.rechargeAll(results);
 
         // Heap extracts in reverse order, so reverse the list to get correct order
         Collections.reverse(results);
@@ -260,19 +276,28 @@ public class OrderByStep extends AbstractExecutionStep {
         return results;
       }
 
-      /**
-       * Creates a comparator based on ORDER BY items.
-       */
-      private Comparator<Result> createComparator() {
-        return (r1, r2) -> {
-          for (final OrderByClause.OrderByItem item : orderByClause.getItems()) {
-            final Object v1 = extractValue(r1, item);
-            final Object v2 = extractValue(r2, item);
+      /** The row with its ORDER BY keys, each evaluated once. */
+      private KeyedRow keyed(final Result row) {
+        final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
+        final Object[] keys = new Object[items.size()];
+        for (int i = 0; i < keys.length; i++)
+          keys[i] = extractValue(row, items.get(i));
+        return new KeyedRow(row, keys);
+      }
 
-            final int comparison = compareValues(v1, v2);
-            if (comparison != 0) {
-              return item.isAscending() ? comparison : -comparison;
-            }
+      /**
+       * Creates a comparator of the keys the rows entered the sort with.
+       */
+      private Comparator<KeyedRow> createComparator() {
+        final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
+        final boolean[] ascending = new boolean[items.size()];
+        for (int i = 0; i < ascending.length; i++)
+          ascending[i] = items.get(i).isAscending();
+        return (r1, r2) -> {
+          for (int i = 0; i < ascending.length; i++) {
+            final int comparison = compareValues(r1.keys()[i], r2.keys()[i]);
+            if (comparison != 0)
+              return ascending[i] ? comparison : -comparison;
           }
           return 0;
         };
