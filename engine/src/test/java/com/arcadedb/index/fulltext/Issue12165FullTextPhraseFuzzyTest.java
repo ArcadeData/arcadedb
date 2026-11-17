@@ -21,12 +21,18 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.LowerCaseFilter;
+import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -153,6 +159,72 @@ class Issue12165FullTextPhraseFuzzyTest extends TestHelper {
       database.command("sql", "UPDATE Doc SET t = 'learning, then machine' WHERE k = 1");
       assertThat(search("Doc", "\"machine learning\"").keySet()).containsExactlyInAnyOrder(4, 5, 8);
     });
+  }
+
+  @Test
+  void fuzzyDistanceWithTranspositionsCountsASwapAsOneEdit() {
+    assertThat(FullTextQueryExecutor.fuzzyDistance("from", "form", true, 2)).isEqualTo(1);
+    assertThat(FullTextQueryExecutor.fuzzyDistance("abcd", "abcd", true, 2)).isZero();
+    assertThat(FullTextQueryExecutor.fuzzyDistance("kitten", "sitting", true, 3)).isEqualTo(3);
+  }
+
+  @Test
+  void fuzzyDistanceWithoutTranspositionsCountsASwapAsTwoEdits() {
+    assertThat(FullTextQueryExecutor.fuzzyDistance("from", "form", false, 2)).isEqualTo(2);
+    assertThat(FullTextQueryExecutor.fuzzyDistance("from", "form", false, 1)).isEqualTo(2);
+    assertThat(FullTextQueryExecutor.fuzzyDistance("kitten", "sitting", false, 3)).isEqualTo(3);
+  }
+
+  @Test
+  void fuzzyDistanceCountsCodePoints() {
+    // a surrogate pair is one character, so replacing it is one edit
+    assertThat(FullTextQueryExecutor.fuzzyDistance("a😀b", "a😁b", true, 2)).isEqualTo(1);
+    assertThat(FullTextQueryExecutor.fuzzyDistance("a😀b", "ab", true, 2)).isEqualTo(1);
+  }
+
+  @Test
+  void fuzzyDistanceGivesUpWhenTheLengthsDifferByMoreThanTheMaximum() {
+    assertThat(FullTextQueryExecutor.fuzzyDistance("a", "abcd", true, 1)).isEqualTo(2);
+    assertThat(FullTextQueryExecutor.fuzzyDistance("abcdef", "a", false, 2)).isEqualTo(3);
+  }
+
+  @Test
+  void tokenPositionsOfAListAreSeparatedByTheAnalyzerGap() {
+    final int gap = 100;
+    final Analyzer analyzer = new Analyzer() {
+      @Override
+      protected TokenStreamComponents createComponents(final String fieldName) {
+        final Tokenizer tokenizer = new StandardTokenizer();
+        return new TokenStreamComponents(tokenizer, new LowerCaseFilter(tokenizer));
+      }
+
+      @Override
+      public int getPositionIncrementGap(final String fieldName) {
+        return gap;
+      }
+    };
+    final Set<String> wanted = Set.of("machine", "learning", "deep");
+    // one element: adjacent tokens
+    Map<String, int[]> positions = LSMTreeFullTextIndex.tokenPositions(analyzer, "machine learning", wanted);
+    assertThat(positionsOf(positions, "machine")).containsExactly(0);
+    assertThat(positionsOf(positions, "learning")).containsExactly(1);
+
+    // two elements: the second sequence starts one gap after the first one ended, so a phrase does not cross them
+    positions = LSMTreeFullTextIndex.tokenPositions(analyzer, List.of("machine", "learning deep machine"), wanted);
+    assertThat(positionsOf(positions, "machine")).containsExactly(0, gap + 3);
+    assertThat(positionsOf(positions, "learning")).containsExactly(gap + 1);
+    assertThat(positionsOf(positions, "deep")).containsExactly(gap + 2);
+
+    // an array behaves as a list, a null element is skipped without a gap
+    positions = LSMTreeFullTextIndex.tokenPositions(analyzer, new Object[] { "machine", null, "learning" }, wanted);
+    assertThat(positionsOf(positions, "machine")).containsExactly(0);
+    assertThat(positionsOf(positions, "learning")).containsExactly(gap + 1);
+  }
+
+  private static int[] positionsOf(final Map<String, int[]> positions, final String token) {
+    final int[] list = positions.get(token);
+    assertThat(list).as(token).isNotNull();
+    return Arrays.copyOfRange(list, 1, 1 + list[0]);
   }
 
   private void insert(final String type, final int k, final String text) {
