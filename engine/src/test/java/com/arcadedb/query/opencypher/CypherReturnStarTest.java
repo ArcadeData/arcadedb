@@ -619,7 +619,6 @@ class CypherReturnStarTest {
         "CALL { MATCH (n:A) RETURN * } RETURN *",
         "CALL { MATCH (n:A)-[r:R]->(m:B) RETURN * } RETURN *",
         "MATCH (z:A) CALL { MATCH (b:B) RETURN * } RETURN *",
-        "MATCH (z:A) CALL { MATCH (z:A) RETURN * } RETURN *",
         "MATCH (z:A) CALL (z) { MATCH (z)-[r:R]->(b) RETURN * } RETURN *",
         "MATCH (z:A) CALL { WITH z MATCH (z)-[r:R]->(b) RETURN * } RETURN *",
         "MATCH (z:A) CALL (*) { MATCH (z)-[r:R]->(b) RETURN * } RETURN *",

@@ -6803,6 +6803,12 @@ public class SelectExecutionPlanner {
       if (!index.supportsOrderedIterations()) {
         return null;
       }
+      // A record whose BY ITEM / BY KEY / BY VALUE collection has no element has no entry at all, so a lookup that leaves such a
+      // column unbound would miss it although the conditions on the bound columns match it: `m1 CONTAINSKEY 'k'` on
+      // (m1 BY KEY, m2 BY VALUE) with an empty m2, `name = 'x'` on (name, tags BY ITEM) with no tags (issue #12444)
+      for (int i = indexKeyValue.getSubBlocks().size(); i < indexFields.size(); ++i)
+        if (!Index.basePropertyName(indexFields.get(i)).equals(indexFields.get(i)))
+          return null;
     }
 
     if (found) {

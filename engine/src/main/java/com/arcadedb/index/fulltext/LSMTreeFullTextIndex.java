@@ -60,6 +60,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -2014,6 +2015,67 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       } catch (final IOException e) {
         // IGNORE IT
       }
+    }
+  }
+
+  /**
+   * The positions the analyzer gives the {@code wanted} tokens in one indexed value, as Lucene would index it (issue #12165): each
+   * token one position increment after the previous one, so a removed stop word leaves its hole, and the elements of a list one
+   * sequence, the analyzer's position increment gap apart. Per token, its count is in the first cell and its positions follow in
+   * ascending order.
+   */
+  static Map<String, int[]> tokenPositions(final Analyzer analyzer, final Object value, final Set<String> wanted) {
+    final Map<String, int[]> positions = new HashMap<>();
+    final int[] position = { -1 };
+    if (value instanceof final Collection<?> collection) {
+      boolean first = true;
+      for (final Object element : collection)
+        if (element != null) {
+          if (!first)
+            position[0] += analyzer.getPositionIncrementGap(ANALYZED_FIELD);
+          first = false;
+          addPositions(analyzer, element, wanted, positions, position);
+        }
+    } else if (value instanceof final Object[] array) {
+      boolean first = true;
+      for (final Object element : array)
+        if (element != null) {
+          if (!first)
+            position[0] += analyzer.getPositionIncrementGap(ANALYZED_FIELD);
+          first = false;
+          addPositions(analyzer, element, wanted, positions, position);
+        }
+    } else
+      addPositions(analyzer, value, wanted, positions, position);
+    return positions;
+  }
+
+  private static void addPositions(final Analyzer analyzer, final Object value, final Set<String> wanted,
+      final Map<String, int[]> positions, final int[] position) {
+    try (final TokenStream stream = analyzer.tokenStream(ANALYZED_FIELD, value.toString())) {
+      final CharTermAttribute term = stream.addAttribute(CharTermAttribute.class);
+      final PositionIncrementAttribute increment = stream.addAttribute(PositionIncrementAttribute.class);
+      stream.reset();
+      while (stream.incrementToken()) {
+        position[0] += increment.getPositionIncrement();
+        final String token = term.toString();
+        if (!wanted.contains(token))
+          continue;
+        int[] list = positions.get(token);
+        if (list == null) {
+          list = new int[4];
+          positions.put(token, list);
+        } else if (list[0] + 1 == list.length) {
+          list = Arrays.copyOf(list, list.length * 2);
+          positions.put(token, list);
+        }
+        list[++list[0]] = position[0];
+      }
+      stream.end();
+      // the hole a trailing stop word leaves, as Lucene keeps it before the next value
+      position[0] += increment.getPositionIncrement();
+    } catch (final IOException e) {
+      throw new IndexException("Error on analyzing text", e);
     }
   }
 

@@ -1251,7 +1251,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final int txPageCount = getTotalPages();
+    final int txPageCount = getReadablePageCount();
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
@@ -1420,7 +1420,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private long placeholderContentFingerprint(final RID contentRID) {
     try {
       final int contentPageId = (int) (contentRID.getPosition() / maxRecordsInPage);
-      if (contentPageId >= getTotalPages())
+      if (contentPageId >= getReadablePageCount())
         return NO_OFF_PAGE_FINGERPRINT;
 
       final BasePage contentPage = database.getTransaction()
@@ -1515,7 +1515,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return EMPTY_OFF_PAGE_FINGERPRINT;
 
     long fingerprint = FNV_OFFSET_BASIS;
-    final int totalPages = getTotalPages();
+    final int totalPages = getReadablePageCount();
     // Exact loop detection, as in findBrokenChunkChain and for the same reason: a chain can legitimately hold more
     // chunks than the bucket has pages (chunks share pages after reuse), so any count-based bound either bails on a
     // valid chain or lets a corrupted one walk for a very long time first. Revisiting a pointer is the only certain
@@ -1839,7 +1839,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       long total = 0;
       int undecodableSlots = 0;
 
-      final int txPageCount = getTotalPages();
+      final int txPageCount = getReadablePageCount();
 
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final PageId pageIdToLoad = new PageId(database, file.getFileId(), pageId);
@@ -3089,7 +3089,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     final int pageId = (int) (position / maxRecordsInPage);
     final int positionInPage = (int) (position % maxRecordsInPage);
-    if (position < 0 || pageId >= getTotalPages())
+    if (position < 0 || pageId >= getReadablePageCount())
       return null;
 
     final PageId id = recentPageId != null && recentPageId.getPageNumber() == pageId && recentPageId.getFileId() == file.getFileId()
@@ -3123,7 +3123,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void forEachRecordPosition(final LongConsumer consumer) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final int txPageCount = getTotalPages();
+    final int txPageCount = getReadablePageCount();
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final TransactionContext transaction = database.getTransaction();
@@ -5616,7 +5616,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       BasePage chunkPage = firstPage;
       int chunkPositionInPage = firstRecordPositionInPage;
       long[] chunkHeader = firstPage.readNumberAndSize(firstRecordPositionInPage); // [FIRST_CHUNK, headerBytes]
-      final int totalPages = getTotalPages();
+      final int totalPages = getReadablePageCount();
 
       // Exact loop detection: a chain can legitimately hold more chunks than the bucket has pages (chunk slots can
       // share pages after chain reuse/fragmentation), so any count-based heuristic risks a false positive - fatal
@@ -5881,7 +5881,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // still has one.
             String chainProblem = null;
             try {
-              if (chunkPageId >= getTotalPages())
+              if (chunkPageId >= getReadablePageCount())
                 chainProblem = "next chunk pointer out of range";
               else {
                 chunkPage = database.getTransaction()
@@ -6750,7 +6750,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           // Every reason below names the chunk the failing HOP LEFT, which is the numbering findBrokenChunkChain
           // already uses - the two walks report the same break in the same words.
-          if (chunkPageId >= getTotalPages()) {
+          if (chunkPageId >= getReadablePageCount()) {
             brokenChainReason = "next chunk pointer out of range at chunk " + (chunks - 1);
             break;
           }
@@ -7311,7 +7311,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
-        if (chunkPageId >= getTotalPages())
+        if (chunkPageId >= getReadablePageCount())
           break;
         if (visitedChunks == null)
           visitedChunks = new LongHashSet();
@@ -7633,7 +7633,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private String findBrokenChunkChainInNewestCommitted(final RID rid, final ChunkChainWalk walk) throws IOException {
     final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-    if (pageNumber >= getTotalPages())
+    if (pageNumber >= getReadablePageCount())
       return null;
 
     final BasePage head = database.getPageManager()
