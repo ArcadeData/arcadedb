@@ -228,6 +228,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   static final int DEFAULT_SEARCH_BEAM_FLOOR = 100;
 
+  /**
+   * An allow-list longer than this many times a bucket's vectors is searched as it is, not narrowed to the bucket's own members
+   * first (issue #12355): spread over the buckets of a type, its share of one bucket is still too wide for the pre-filter plan
+   * but on types of very many buckets, and narrowing would add a pass over every member to the search of each bucket.
+   */
+  static final int NARROWED_ALLOW_LIST_FACTOR = 16;
+
   // Ceiling on how far findNeighborsFromVectorGrouped will resume a search that has not yet opened `limit` distinct
   // groups, expressed in beams (issue #5761). How far it *needs* to go is a property of the data - a group whose
   // members are all closer to the query than any other group's nearest member has to be walked past before a second
@@ -9202,14 +9209,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * vectors, a list spread over the type's buckets looks as many times wider than it is: it missed the pre-filter plan, the
    * filtered walk met almost none of its members, and the shortfall fallback scanned every vector of the bucket - in each
    * bucket, on every query - logging that the graph may need rebuilding. A {@link PredicateRidSet} decides its members one
-   * candidate at a time and is returned as it is.
+   * candidate at a time and is returned as it is, and so is a list longer than {@link #NARROWED_ALLOW_LIST_FACTOR} times this
+   * bucket's vectors, whose share of the bucket is too wide for the pre-filter plan anyway (a set that only answers membership
+   * reports such a size too).
    *
    * @return {@code allowedRIDs} itself when it has no member of another bucket (and when there is no allow-list), a new set
    * of the members of this bucket otherwise, empty when there is none
    */
   Set<RID> allowedInThisBucket(final Set<RID> allowedRIDs) {
     final int bucketId = metadata.associatedBucketId;
-    if (allowedRIDs == null || allowedRIDs.isEmpty() || allowedRIDs instanceof PredicateRidSet || bucketId < 0)
+    if (allowedRIDs == null || allowedRIDs.isEmpty() || allowedRIDs instanceof PredicateRidSet || bucketId < 0
+        || allowedRIDs.size() > (long) NARROWED_ALLOW_LIST_FACTOR * Math.max(vectorIndex().size(), 1))
       return allowedRIDs;
     int inBucket = 0;
     for (final RID rid : allowedRIDs)
