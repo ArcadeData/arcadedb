@@ -102,6 +102,16 @@ final class BooleanOperandValidator {
     }
   }
 
+  /**
+   * The operand check of a WHERE (or FILTER) condition, run on the condition as parsed, BEFORE the rewriters simplify it: the
+   * boolean simplifier folds {@code true OR x} into {@code true} and {@code x AND false} into {@code false}, at any depth, so
+   * checked after it {@code WHERE true OR (1 AND false)} lost the integer it had to refuse (issue #11760). The validation of the
+   * whole statement checks the simplified condition again, which finds nothing new.
+   */
+  static void validateConditionOperands(final BooleanExpression condition) {
+    checkBooleanOperandInBooleanExpression(condition);
+  }
+
   private static void checkBooleanOperandInBooleanExpression(final BooleanExpression boolExpr) {
     if (boolExpr == null)
       return;

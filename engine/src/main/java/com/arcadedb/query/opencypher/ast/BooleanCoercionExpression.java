@@ -57,16 +57,12 @@ public class BooleanCoercionExpression implements BooleanExpression {
   }
 
   /**
-   * The truth value of a value used as a predicate, as Neo4j's runtime takes it: a BOOLEAN is itself, null is unknown
-   * ({@code null}), a LIST is true when it is not empty (the coercion Cypher kept for a list read from a property), and
-   * any other value is a type error. Before issue #11760 the logical operators took every non-null value as true and a
-   * WHERE took every non-Boolean as false, so the same integer was true under OR and false under WHERE.
-   */
-  /**
-   * The kind of an operand whose value is known not to be a BOOLEAN before the statement runs - a non-Boolean, non-null literal,
-   * a list or map literal, an arithmetic expression - or {@code null} when the operand may be a predicate. The one rule both the
-   * parse-time refusal of such an operand under AND/OR/XOR/NOT and the boolean simplifier read: a simplifier that folded
-   * {@code 1 AND false} into {@code false} dropped the operand the refusal had to see (issue #11760).
+   * The kind of an operand whose value is known not to be a BOOLEAN before the statement runs, or {@code null} when the operand
+   * may be a predicate. Known: a non-Boolean, non-null literal, a list or map literal, an arithmetic expression other than
+   * {@code +} (a number, a temporal or a duration, never a list), and a {@code +} with a list literal on either side (a list). A
+   * {@code +} of operands whose types are known only at run time may be a list concatenation ({@code n.l + n.m}), which a
+   * predicate takes by whether it is empty, so it is left to the run: the same line Neo4j 2026.09 draws. The parse-time refusal
+   * of an operand under AND/OR/XOR/NOT reads this, in RETURN and WITH as in WHERE (issue #11760).
    */
   public static String nonBooleanKindOf(final Expression operand) {
     return switch (operand) {
@@ -75,7 +71,11 @@ public class BooleanCoercionExpression implements BooleanExpression {
           literal.getValue().getClass().getSimpleName();
       case ListExpression ignored -> "List";
       case MapExpression ignored -> "Map";
-      case ArithmeticExpression ignored -> "Number";
+      case ArithmeticExpression arithmetic -> {
+        if (arithmetic.getOperator() != ArithmeticExpression.Operator.ADD)
+          yield "Number";
+        yield arithmetic.getLeft() instanceof ListExpression || arithmetic.getRight() instanceof ListExpression ? "List" : null;
+      }
       case null, default -> null;
     };
   }
@@ -85,6 +85,12 @@ public class BooleanCoercionExpression implements BooleanExpression {
     return operand instanceof BooleanCoercionExpression coercion ? nonBooleanKindOf(coercion.expression) : null;
   }
 
+  /**
+   * The truth value of a value used as a predicate, as Neo4j's runtime takes it: a BOOLEAN is itself, null is unknown
+   * ({@code null}), a LIST is true when it is not empty (the coercion Cypher kept for a list read from a property), and
+   * any other value is a type error. Before issue #11760 the logical operators took every non-null value as true and a
+   * WHERE took every non-Boolean as false, so the same integer was true under OR and false under WHERE.
+   */
   public static Boolean toPredicate(final Object value) {
     if (value instanceof Boolean bool)
       return bool;

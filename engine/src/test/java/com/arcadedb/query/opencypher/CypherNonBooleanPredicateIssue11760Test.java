@@ -79,7 +79,7 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     assertTypeError("UNWIND [1] AS x RETURN x XOR true AS r", "INTEGER");
     assertTypeError("MATCH (n:Node) WHERE n.v OR false RETURN n.id", "INTEGER");
     assertTypeError("MATCH (n:Node) WHERE NOT n.v RETURN n.id", "INTEGER");
-    // id 2 has b = false, so the AND reads n.v there
+    // ids 1 and 3 have b = true, so the AND reads n.v there (id 2, b = false, decides it without n.v)
     assertTypeError("MATCH (n:Node) WHERE n.b AND n.v RETURN n.id", "INTEGER");
   }
 
@@ -93,7 +93,13 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     for (final String query : new String[] { "RETURN true OR 1 AS r", "RETURN false AND 1 AS r", "RETURN 1 AND false AS r",
         "MATCH (n:Node) WHERE false AND 1 RETURN n.id", "MATCH (n:Node) WHERE true OR 1 RETURN n.id",
         "MATCH (n:Node) WHERE 1 AND false RETURN n.id", "MATCH (n:Node) WHERE NOT 'a' RETURN n.id",
-        "MATCH (n:Node) WHERE n.b OR [1] RETURN n.id", "MATCH (n:Node) WHERE true OR {a: 1} RETURN n.id" }) {
+        "MATCH (n:Node) WHERE n.b OR [1] RETURN n.id", "MATCH (n:Node) WHERE true OR {a: 1} RETURN n.id",
+        // nested: the simplifier folds the outer OR to true, so the operands are checked before it runs
+        "MATCH (n:Node) WHERE true OR (1 AND false) RETURN n.id", "MATCH (n:Node) WHERE false AND (n.b OR 'a') RETURN n.id",
+        "MATCH (n:Node) WHERE true OR NOT (false AND 2.5) RETURN n.id",
+        // a + with a list literal is a list, any other arithmetic a number
+        "MATCH (n:Node) WHERE n.b AND [1] + [2] RETURN n.id", "MATCH (n:Node) WHERE n.b AND n.l + [1] RETURN n.id",
+        "MATCH (n:Node) WHERE n.b AND n.v * 2 RETURN n.id", "RETURN [1] + [2] OR false AS r" }) {
       try {
         rows(query);
         notRefused.add(query + " -> ran");
@@ -106,6 +112,17 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     assertThat(notRefused).as("literal operands not refused before running").isEmpty();
     // a Boolean or null literal stays an operand
     assertThat(ids("MATCH (n:Node) WHERE n.b AND true OR null RETURN n.id AS id ORDER BY id")).containsExactly(1L, 3L);
+  }
+
+  /**
+   * A {@code +} whose operand types are known only at run time may be a list concatenation, which a predicate takes by whether it
+   * is empty, as in Neo4j 2026.09 ({@code n.l + n.l} on the ids whose list is not empty); anything else it adds up to is refused
+   * when it runs.
+   */
+  @Test
+  void aConcatenationOfUnknownTypesIsLeftToTheRun() {
+    assertThat(ids("MATCH (n:Node) WHERE n.b AND n.l + n.l RETURN n.id AS id ORDER BY id")).containsExactly(1L, 3L);
+    assertTypeError("MATCH (n:Node) WHERE n.b AND n.s + n.s RETURN n.id", "STRING");
   }
 
   /**

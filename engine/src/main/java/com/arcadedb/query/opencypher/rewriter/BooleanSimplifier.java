@@ -49,12 +49,6 @@ public class BooleanSimplifier extends ExpressionRewriter {
 
     final LogicalExpression logical = (LogicalExpression) result;
 
-    // An operand known not to be a BOOLEAN is refused by the semantic validation, which runs after this: folding
-    // `1 AND false` into `false` would drop the operand it has to see (issue #11760)
-    if (BooleanCoercionExpression.nonBooleanKindOf(logical.getLeft()) != null
-        || BooleanCoercionExpression.nonBooleanKindOf(logical.getRight()) != null)
-      return logical;
-
     // Apply simplifications based on operator
     return switch (logical.getOperator()) {
       case NOT -> simplifyNot(logical);
