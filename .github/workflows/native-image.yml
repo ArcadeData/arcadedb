@@ -603,9 +603,14 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channels=$CHANNELS" >> "$GITHUB_OUTPUT"
           echo "[docker] event=$EVENT_NAME attach_to_release=$ATTACH_TO_RELEASE publish_nightly=$PUBLISH_NIGHTLY channels='${CHANNELS:-none (local only)}'"
+          # HEAD of the checked-out tree, not github.sha: a workflow_dispatch can build another ref.
+          REVISION="$(git rev-parse HEAD)"
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker buildx build --platform "linux/${{ matrix.arch }}" \
             -f "${{ matrix.dockerfile }}" \
             "${TAG_ARGS[@]}" \
+            --label "org.opencontainers.image.revision=${REVISION}" \
+            --label "org.opencontainers.image.created=${CREATED}" \
             --load ctx
 
       # The container is validated with the same Java e2e battery mvn-test.yml runs against the JVM image (e2e module,
