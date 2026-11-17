@@ -6686,12 +6686,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final Binary chunk = page.getImmutableView(
                   (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
                   chunkSize);
+          // Refused BEFORE the chunk is counted, so the record assembled after the walk holds exactly the chunks it registered:
+          // the partial record a broken chain is confirmed against, and never a size past 2GB cast to a negative int
+          if (recordSize + chunkSize > Integer.MAX_VALUE)
+            throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
           if (chunks == chunkViews.length)
             chunkViews = Arrays.copyOf(chunkViews, chunks * 2);
           chunkViews[chunks] = chunk;
           recordSize += chunkSize;
-          if (recordSize > Integer.MAX_VALUE)
-            throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
             chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
