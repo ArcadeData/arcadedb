@@ -1208,7 +1208,7 @@ class CypherExpressionBuilder {
     TypePredicateBuilder.rejectDirectedPredicate(labelExprCtx);
 
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
-    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx, this::parseExpression);
     if (predicate != null)
       return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, predicate, ctx.getText()));
 

@@ -497,9 +497,10 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       return pattern.getLabels();
 
     final List<String> labels = new ArrayList<>(pattern.getLabels());
-    for (final Expression dynamicLabel : pattern.getDynamicLabels()) {
-      Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, input, context));
-    }
+    for (final Expression dynamicLabel : pattern.getDynamicLabels())
+      // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338)
+      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, input, context)) && pattern.isLabelDisjunction())
+        return List.of();
     return labels;
   }
 

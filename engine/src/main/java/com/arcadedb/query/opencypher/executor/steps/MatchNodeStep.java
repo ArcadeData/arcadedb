@@ -361,7 +361,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
               // This happens in OPTIONAL MATCH when a variable from a previous MATCH
               // is reused (e.g., MATCH (a)...(c) OPTIONAL MATCH (a)-[r]->(c)).
               // In this case, use the bound vertex directly instead of scanning all vertices.
-              if (variable != null && currentInputResult.getPropertyNames().contains(variable)) {
+              if (variable != null && currentInputResult.listsProperty(variable)) {
                 final Object boundValue = currentInputResult.getProperty(variable);
                 if (boundValue instanceof Vertex) {
                   final Vertex boundVertex = (Vertex) boundValue;
@@ -1498,9 +1498,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     final List<String> result = new ArrayList<>(staticLabels.size() + pattern.getDynamicLabels().size());
     result.addAll(staticLabels);
-    for (final Expression dynExpr : pattern.getDynamicLabels()) {
-      Labels.appendDynamicMatchLabels(result, evaluator.evaluate(dynExpr, currentInputResult, context));
-    }
+    for (final Expression dynExpr : pattern.getDynamicLabels())
+      // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338)
+      if (!Labels.appendDynamicMatchLabels(result, evaluator.evaluate(dynExpr, currentInputResult, context)) && pattern.isLabelDisjunction())
+        return List.of();
     return result;
   }
 

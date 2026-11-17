@@ -19,6 +19,9 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
@@ -36,20 +39,27 @@ import java.util.List;
  * <p>
  * A node satisfies a label name when its type is, or inherits from, that label (the same test
  * {@link Labels#matches(DocumentType, List, boolean)} applies), and {@code %} when it carries at least one label. A
- * relationship has exactly one type, so a name holds when it is that type, {@code %} always holds, and a conjunction
- * of two different names never does.
+ * relationship has exactly one type, so a name holds when it is that type or a subtype of it, {@code %} always holds,
+ * and a conjunction holds when the type is an instance of every operand (issue #12339).
+ * <p>
+ * A Cypher 25 dynamic label {@code $(expr)}, {@code $all(expr)} or {@code $any(expr)} is a {@link Dynamic} operand, evaluated
+ * against the row being checked, so it combines with every other operator ({@code !$(expr)}, {@code A&$any(expr)},
+ * {@code (A|$(expr))&!B}) instead of being refused at parse time.
  */
 public abstract sealed class LabelPredicate {
 
-  /** True when the predicate holds for a node of the given type. */
-  public abstract boolean matchesVertexType(DocumentType type);
+  /**
+   * True when the predicate holds for a node of the given type. {@code row} and {@code context} are what a dynamic
+   * {@code $(expr)} operand is evaluated against; a static predicate ignores them.
+   */
+  public abstract boolean matchesVertexType(DocumentType type, Result row, CommandContext context);
 
   /**
    * True when the predicate holds for a relationship of the given type. A type name holds for a subtype too, the same
    * way a relationship pattern's type filter matches it ({@code MatchRelationshipStep} tests {@code instanceOf}), so
    * {@code [r:R&!S]} returns every relationship {@code [r:R]} returns that is not an {@code S}.
    */
-  public abstract boolean matchesEdgeType(DocumentType edgeType);
+  public abstract boolean matchesEdgeType(DocumentType edgeType, Result row, CommandContext context);
 
   /**
    * The label names every match must carry: the plain positive names among the top-level conjuncts. A node that
@@ -86,12 +96,12 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesVertexType(final DocumentType type) {
+    public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
       return type != null && type.instanceOf(label);
     }
 
     @Override
-    public boolean matchesEdgeType(final DocumentType edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
       return edgeType != null && edgeType.instanceOf(label);
     }
 
@@ -109,7 +119,7 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesVertexType(final DocumentType type) {
+    public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
       if (type == null)
         return false;
       // The common case - an ordinary type that extends nothing - is a label by itself; only the no-label sentinel
@@ -120,7 +130,7 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesEdgeType(final DocumentType edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
       return edgeType != null;
     }
 
@@ -139,13 +149,13 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesVertexType(final DocumentType type) {
-      return !operand.matchesVertexType(type);
+    public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
+      return !operand.matchesVertexType(type, row, context);
     }
 
     @Override
-    public boolean matchesEdgeType(final DocumentType edgeType) {
-      return !operand.matchesEdgeType(edgeType);
+    public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
+      return !operand.matchesEdgeType(edgeType, row, context);
     }
 
     @Override
@@ -163,17 +173,17 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesVertexType(final DocumentType type) {
+    public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
       for (final LabelPredicate operand : operands)
-        if (!operand.matchesVertexType(type))
+        if (!operand.matchesVertexType(type, row, context))
           return false;
       return true;
     }
 
     @Override
-    public boolean matchesEdgeType(final DocumentType edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
       for (final LabelPredicate operand : operands)
-        if (!operand.matchesEdgeType(edgeType))
+        if (!operand.matchesEdgeType(edgeType, row, context))
           return false;
       return true;
     }
@@ -194,6 +204,46 @@ public abstract sealed class LabelPredicate {
     }
   }
 
+  /**
+   * A Cypher 25 dynamic label {@code $(expr)} (the same as {@code $all(expr)}) or {@code $any(expr)}, evaluated per row. The
+   * value is read through {@link Labels#appendDynamicMatchLabels}, so it is the same type error there is on every other read
+   * path when it is not a string or a list of strings (issue #12338). {@code $all} of an empty list holds (no label is
+   * missing) and {@code $any} of one does not, as in Neo4j.
+   */
+  public static final class Dynamic extends LabelPredicate {
+    private final Expression expression;
+    private final boolean    any;
+
+    public Dynamic(final Expression expression, final boolean any) {
+      this.expression = expression;
+      this.any = any;
+    }
+
+    @Override
+    public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
+      return type != null && matches(type, row, context);
+    }
+
+    @Override
+    public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
+      return edgeType != null && matches(edgeType, row, context);
+    }
+
+    private boolean matches(final DocumentType type, final Result row, final CommandContext context) {
+      final List<String> labels = new ArrayList<>(2);
+      Labels.appendDynamicMatchLabels(labels, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, row, context));
+      for (int i = 0; i < labels.size(); i++)
+        if (type.instanceOf(labels.get(i)) == any)
+          return any;
+      return !any;
+    }
+
+    @Override
+    public String toString() {
+      return (any ? "$any(" : "$(") + expression.getText() + ")";
+    }
+  }
+
   /** {@code a | b | ...}. */
   public static final class Or extends LabelPredicate {
     private final LabelPredicate[] operands;
@@ -203,17 +253,17 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
-    public boolean matchesVertexType(final DocumentType type) {
+    public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
       for (final LabelPredicate operand : operands)
-        if (operand.matchesVertexType(type))
+        if (operand.matchesVertexType(type, row, context))
           return true;
       return false;
     }
 
     @Override
-    public boolean matchesEdgeType(final DocumentType edgeType) {
+    public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
       for (final LabelPredicate operand : operands)
-        if (operand.matchesEdgeType(edgeType))
+        if (operand.matchesEdgeType(edgeType, row, context))
           return true;
       return false;
     }

@@ -1220,7 +1220,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // A negation, the wildcard or a mix of '&' and '|': the pattern keeps the labels every match must carry, so the
     // planner can still pick a label scan, and the whole expression is checked as a predicate on the node (#8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       labels = labelPredicate.requiredLabels();
@@ -1285,7 +1285,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // variable-length relationship the predicate rides the inline WHERE, which every expansion evaluates per hop, so
     // each relationship of the path is checked (#9117).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();

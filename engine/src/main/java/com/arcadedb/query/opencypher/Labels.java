@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -640,28 +641,49 @@ public final class Labels {
 
   /**
    * Appends the label(s) a Cypher 25 dynamic label expression evaluated to on a READ path - a pattern
-   * {@code (n:$(expr))}, a relationship type {@code [:$(expr)]}, a predicate {@code n:$(expr)}. A string is one label, an
-   * iterable is one label per non-null entry, {@code null} contributes nothing. Nothing is validated: a label nobody
-   * carries matches nothing, which is the answer (see {@link #appendDynamicLabels} for the write side, which does validate).
-   * Every read consumer resolves through here so a dynamic label means the same thing to all of them (issue #11776).
+   * {@code (n:$(expr))}, a relationship type {@code [:$(expr)]}, a predicate {@code n:$(expr)}. Every read consumer resolves
+   * through here so a dynamic label means the same thing to all of them (issue #11776).
+   * <p>
+   * The value must be a {@code STRING NOT NULL} (one label) or a {@code LIST<STRING NOT NULL> NOT NULL} (that many labels,
+   * none for an empty list), as the Cypher manual states and Neo4j enforces. Anything else is a type error (issue #12338):
+   * {@code null} used to add no label, so a missing {@code $label} parameter turned {@code MATCH (n:$($label))} into a match of
+   * the whole graph (and a {@code DELETE} after it into a delete of it), and any other value was {@code toString()}-ed into a
+   * label name. The NAME is not validated: a label nobody carries matches nothing, which is the answer (see
+   * {@link #appendDynamicLabels} for the write side, which also checks that a type can be created under it).
    *
    * @param target the list to append to
    * @param value  the value the dynamic label expression evaluated to
+   *
+   * @return false when the value is an empty list, which appends nothing: an operand of a disjunction that is the empty
+   * conjunction, true for every element, so the disjunction places no constraint at all
+   *
+   * @throws TypeMismatchException when the value is not a string or a list of strings
    */
-  public static void appendDynamicMatchLabels(final List<String> target, final Object value) {
-    if (value == null)
-      return;
-    if (value instanceof String label) {
-      target.add(label);
-      return;
-    }
+  public static boolean appendDynamicMatchLabels(final List<String> target, final Object value) {
+    if (value instanceof String label)
+      return target.add(label);
+    final int before = target.size();
     if (value instanceof Iterable<?> iterable) {
       for (final Object item : iterable)
-        if (item != null)
-          target.add(item.toString());
-      return;
-    }
-    target.add(value.toString());
+        target.add(requireDynamicMatchLabel(item, value));
+    } else if (value instanceof Object[] array) {
+      for (final Object item : array)
+        target.add(requireDynamicMatchLabel(item, value));
+    } else
+      throw dynamicMatchLabelTypeError(value, value);
+    return target.size() > before;
+  }
+
+  private static String requireDynamicMatchLabel(final Object item, final Object value) {
+    if (item instanceof String label)
+      return label;
+    throw dynamicMatchLabelTypeError(item, value);
+  }
+
+  private static TypeMismatchException dynamicMatchLabelTypeError(final Object offender, final Object value) {
+    final String kind = offender == null ? "null" : offender.getClass().getSimpleName() + " (" + offender + ")";
+    return new TypeMismatchException("TypeError: a dynamic label or relationship type $(...) must evaluate to a STRING or a "
+        + "LIST<STRING> with no null element, but " + (offender == value ? "it evaluated to " : "the list contains ") + kind);
   }
 
   /**

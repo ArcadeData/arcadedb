@@ -454,7 +454,7 @@ final class BooleanExpressionBuilder {
       final Cypher25Parser.LabelExpressionContext labelExprCtx,
       final String text) {
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
-    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx, expressionBuilder::parseExpression);
     if (predicate != null)
       return new LabelCheckExpression(variableExpr, predicate, text);
     // Same extraction the node pattern uses, so `n:`Event Message`` in a WHERE resolves the very

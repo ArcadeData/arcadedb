@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
@@ -156,25 +157,41 @@ public class OrderByStep extends AbstractExecutionStep {
             // the aggregation steps do: Integer.MAX_VALUE made every streaming step upstream - the label scan, the
             // projection - hold the whole input in its own batch while this step copied it, doubling the heap of the
             // sort out of sight of both limits on it (issue #8591)
-            sortedResults = new ArrayList<>();
             final ResultSet prevResults = prev.syncPull(context, nRecords > 0 ? nRecords : 100);
             // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
             final WorkGuard guard = WorkGuard.forCommandDeadline(context);
             int consumed = 0;
-            while (prevResults.hasNext()) {
-              guard.checkPeriodically(++consumed);
-              final Result row = prevResults.next();
-              sortedResults.add(row);
-              heapLimit.add(sortedResults.size(), row);
+            if (orderByClause.isEmpty()) {
+              sortedResults = new ArrayList<>();
+              while (prevResults.hasNext()) {
+                guard.checkPeriodically(++consumed);
+                final Result row = prevResults.next();
+                sortedResults.add(row);
+                heapLimit.add(sortedResults.size(), row);
+              }
+            } else {
+              // Each row's keys are evaluated once, as it is read, and the sort compares them (issue #12341). The keys are
+              // charged with their row while the sort holds them: an ORDER BY expression can build a value the row does
+              // not hold, as large as it likes
+              final List<Keyed> keyed = new ArrayList<>();
+              long keyBytes = 0L;
+              while (prevResults.hasNext()) {
+                guard.checkPeriodically(++consumed);
+                final Keyed entry = withKeys(prevResults.next());
+                keyed.add(entry);
+                heapLimit.add(keyed.size(), entry.row);
+                heapLimit.charge(entry.keyBytes);
+                keyBytes += entry.keyBytes;
+              }
+              keyed.sort(createComparator());
+              sortedResults = new ArrayList<>(keyed.size());
+              for (int i = 0; i < keyed.size(); i++)
+                sortedResults.add(keyed.get(i).row);
+              heapLimit.release(keyBytes);
             }
             // PROFILE reports the rows the sort read, not the one call that read them (issue #11702)
             if (context.isProfiling())
               rowCount += consumed;
-
-            // Sort results according to ORDER BY clause
-            if (!orderByClause.isEmpty()) {
-              sortedResults.sort(createComparator());
-            }
           }
         } finally {
           if (context.isProfiling())
@@ -207,12 +224,14 @@ public class OrderByStep extends AbstractExecutionStep {
        * @return list of top K results in correct sort order
        */
       private List<Result> materializeTopK(final int k) {
-        final Comparator<Result> comparator = createComparator();
+        final Comparator<Keyed> comparator = createComparator();
         // Reverse comparator for max-heap behavior (worst elements at top)
-        final Comparator<Result> reversedComparator = comparator.reversed();
+        final Comparator<Keyed> reversedComparator = comparator.reversed();
 
-        // Priority queue with reversed comparator: worst elements bubble to top
-        final PriorityQueue<Result> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
+        // Priority queue with reversed comparator: worst elements bubble to top. Each entry carries the keys of its row,
+        // evaluated once when the row was read: re-evaluated at every offer, ORDER BY rand() LIMIT k drew new keys for the
+        // rows already kept, so the later rows won far more often than the earlier ones (issue #12341)
+        final PriorityQueue<Keyed> topK = new PriorityQueue<>(Math.min(k + 1, 1000), reversedComparator);
 
         // Pull all results and maintain a top-K heap
         final int batchSize = Math.max(1000, k * 10);
@@ -222,21 +241,26 @@ public class OrderByStep extends AbstractExecutionStep {
 
         while (prevResults.hasNext()) {
           guard.checkPeriodically(++consumed);
-          final Result row = prevResults.next();
+          final Keyed entry = withKeys(prevResults.next());
 
           if (topK.size() < k) {
             // Haven't reached K elements yet, add unconditionally. Only a LIMIT larger than the cap can make the heap
             // outgrow it
-            topK.offer(row);
-            heapLimit.add(topK.size(), row);
+            topK.offer(entry);
+            heapLimit.add(topK.size(), entry.row);
+            heapLimit.charge(entry.keyBytes);
           } else {
             // Heap is full, check if new element is better than worst element
-            final Result worst = topK.peek();
-            if (comparator.compare(row, worst) < 0) {
+            final Keyed worst = topK.peek();
+            if (comparator.compare(entry, worst) < 0) {
               // New row is better than worst row, replace it
               topK.poll();  // Remove worst
-              topK.offer(row);  // Add new
-              heapLimit.replace(worst, row);
+              topK.offer(entry);  // Add new
+              heapLimit.replace(worst.row, entry.row);
+              if (entry.keyBytes > worst.keyBytes)
+                heapLimit.charge(entry.keyBytes - worst.keyBytes);
+              else
+                heapLimit.release(worst.keyBytes - entry.keyBytes);
             }
             // Otherwise discard the row (it's worse than our current top K)
           }
@@ -244,50 +268,76 @@ public class OrderByStep extends AbstractExecutionStep {
         if (context.isProfiling())
           rowCount += consumed;
 
-        // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
-        // what the heap holds now
-        heapLimit.rechargeAll(topK);
-
         // Extract results from heap and reverse to get correct sort order
         final List<Result> results = new ArrayList<>(topK.size());
-        while (!topK.isEmpty()) {
-          results.add(topK.poll());
-        }
+        while (!topK.isEmpty())
+          results.add(topK.poll().row);
 
         // Heap extracts in reverse order, so reverse the list to get correct order
         Collections.reverse(results);
+
+        // The rows kept past the first ones were charged a sampled size and adjusted per replacement, and every kept row its
+        // keys, which are gone now: charge exactly the rows held
+        heapLimit.rechargeAll(results);
 
         return results;
       }
 
       /**
-       * Creates a comparator based on ORDER BY items.
+       * The ORDER BY keys of {@code row}, evaluated once, when the row enters the sort. Evaluated inside the comparator, every
+       * key cost about 2 * log2(n) evaluations per row instead of one, a column key built the row's whole name set at each of
+       * them, and a non-deterministic key ({@code rand()}) took a new value at every comparison: the sort failed with
+       * "Comparison method violates its general contract!" and the top-k heap of {@code ORDER BY rand() LIMIT k} was biased
+       * towards the last rows (issues #11661, #12340, #12341).
        */
-      private Comparator<Result> createComparator() {
-        return (r1, r2) -> {
-          for (final OrderByClause.OrderByItem item : orderByClause.getItems()) {
-            final Object v1 = extractValue(r1, item);
-            final Object v2 = extractValue(r2, item);
+      private Keyed withKeys(final Result row) {
+        final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
+        final boolean charging = heapLimit.isCharging();
+        final Object[] keys = new Object[items.size()];
+        long bytes = charging ? KEYED_BYTES + (long) keys.length * HeapEstimator.REFERENCE_BYTES : 0L;
+        for (int i = 0; i < keys.length; i++) {
+          final OrderByClause.OrderByItem item = items.get(i);
+          final String expression = item.getExpression();
+          // A projected column already holds what its Cypher expression evaluated to - a property read restored its
+          // temporal there - so a String in it IS a string: sniffing it again turned a declared STRING "P10D" (or a
+          // string literal) into a duration and sorted it as one (issue #8384). The column test does not build the
+          // row's name set (issue #12340)
+          if (expression != null && row.listsProperty(expression)) {
+            final Object stored = row.getProperty(expression);
+            keys[i] = convertFromStorage(stored);
+            // the very value of the column is charged with the row; a converted one is the sort's own memory
+            if (charging && keys[i] != stored)
+              bytes += HeapEstimator.estimate(keys[i]);
+          } else {
+            keys[i] = evaluateKey(row, item);
+            if (charging && keys[i] != null)
+              bytes += HeapEstimator.estimate(keys[i]);
+          }
+        }
+        return new Keyed(row, keys, bytes);
+      }
 
-            final int comparison = compareValues(v1, v2);
-            if (comparison != 0) {
-              return item.isAscending() ? comparison : -comparison;
-            }
+      /** Compares two rows by the keys {@link #withKeys} evaluated, item by item, in each item's direction. */
+      private Comparator<Keyed> createComparator() {
+        final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
+        final boolean[] ascending = new boolean[items.size()];
+        for (int i = 0; i < ascending.length; i++)
+          ascending[i] = items.get(i).isAscending();
+        return (r1, r2) -> {
+          final Object[] k1 = r1.keys;
+          final Object[] k2 = r2.keys;
+          for (int i = 0; i < ascending.length; i++) {
+            final int comparison = compareValues(k1[i], k2[i]);
+            if (comparison != 0)
+              return ascending[i] ? comparison : -comparison;
           }
           return 0;
         };
       }
 
-      private Object extractValue(final Result result, final OrderByClause.OrderByItem item) {
-        // First check if the expression text matches a property name in the result
-        // This handles ORDER BY on aliased/computed columns (e.g., count(*), n.division)
+      /** The value of an ORDER BY item that is not a column of the row: its expression, evaluated against the row. */
+      private Object evaluateKey(final Result result, final OrderByClause.OrderByItem item) {
         final String expression = item.getExpression();
-        // A projected column already holds what its Cypher expression evaluated to - a property read restored its
-        // temporal there - so a String in it IS a string: sniffing it again turned a declared STRING "P10D" (or a
-        // string literal) into a duration and sorted it as one (issue #8384)
-        if (expression != null && result.getPropertyNames().contains(expression))
-          return convertFromStorage(result.getProperty(expression));
-
         // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
         final Expression exprAST = item.getExpressionAST();
         if (exprAST != null && evaluator != null)
@@ -461,6 +511,16 @@ public class OrderByStep extends AbstractExecutionStep {
         OrderByStep.this.close();
       }
     };
+  }
+
+  /** The {@link Keyed} holder itself: its header and its three fields, without the key array. */
+  private static final long KEYED_BYTES = HeapEstimator.OBJECT_BYTES + 3L * HeapEstimator.REFERENCE_BYTES;
+
+  /**
+   * A row and the values of its ORDER BY items, evaluated once when the row enters the sort (issue #12341), with the estimated
+   * heap the keys add to the row, which the sort charges while it holds them.
+   */
+  private record Keyed(Result row, Object[] keys, long keyBytes) {
   }
 
   private void releaseHeap() {

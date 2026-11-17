@@ -124,7 +124,7 @@ final class ExpressionPatternParser {
     // A negation, the wildcard or a mix of '&' and '|' is checked as a predicate on the node, the way the MATCH-side
     // builder does it (issue #8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressions::parseExpression);
     if (labelPredicate != null) {
       labels = labelPredicate.requiredLabels();
       if (variable == null)
@@ -179,7 +179,7 @@ final class ExpressionPatternParser {
     }
 
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressions::parseExpression);
     if (labelPredicate != null) {
       // Evaluated per hop on a variable-length relationship too, through the inline WHERE it is ANDed into (#9117).
       final List<String> required = labelPredicate.requiredLabels();
