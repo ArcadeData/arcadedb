@@ -383,7 +383,7 @@ final class CypherStepBuilder {
       final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
 
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -935,7 +935,7 @@ final class CypherStepBuilder {
       final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
 
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -1024,6 +1024,12 @@ final class CypherStepBuilder {
     return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
   }
 
+  /** The items the RETURN projects, which the sort behind it reads its repeated keys from (issue #12368), or null. */
+  private static List<ReturnClause.ReturnItem> returnItemsOf(final CypherStatement statement) {
+    final ReturnClause returnClause = statement.getReturnClause();
+    return returnClause != null ? returnClause.getReturnItems() : null;
+  }
+
   /**
    * Chains the ORDER BY, SKIP and LIMIT of a WITH after the step that projects it. A plain {@link WithStep} pages its own
    * rows when there is no ORDER BY, but an aggregating WITH is projected by an aggregation step that knows nothing of SKIP
@@ -1049,7 +1055,8 @@ final class CypherStepBuilder {
         final long topK = (long) limitVal + (skipVal != null ? skipVal : 0);
         topKVal = topK <= Integer.MAX_VALUE ? (int) topK : null;
       }
-      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
+      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal)
+          .withProjection(withClause.getItems());
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
@@ -1803,7 +1810,7 @@ final class CypherStepBuilder {
       final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
 
       final OrderByStep orderByStep = new OrderByStep(
-          statement.getOrderByClause(), context, functionFactory, topKVal);
+          statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
