@@ -21,13 +21,13 @@ package com.arcadedb.server.ha.raft;
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 
-import static com.arcadedb.server.ha.raft.RaftHAServer.isDivisionLifecycleHealthy;
-import static com.arcadedb.server.ha.raft.RaftHAServer.isEmptyLogInMultiPeerCluster;
-import static com.arcadedb.server.ha.raft.RaftHAServer.isReadyForTrafficState;
+import static com.arcadedb.server.ha.raft.TrafficReadiness.isDivisionLifecycleHealthy;
+import static com.arcadedb.server.ha.raft.TrafficReadiness.isEmptyLogInMultiPeerCluster;
+import static com.arcadedb.server.ha.raft.TrafficReadiness.isReadyForTrafficState;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for the {@link RaftHAServer#isReadyForTrafficState} predicate behind the issue #4834 fix.
+ * Unit tests for the {@link TrafficReadiness#isReadyForTrafficState} predicate behind the issue #4834 fix.
  * The readiness probe relies on this gate so a node does not advertise Ready before it has (re)joined the
  * Raft configuration and replayed the committed log. Advertising Ready too early during a Kubernetes
  * StatefulSet rolling restart lets the orchestrator terminate the next pod and drop the write quorum.

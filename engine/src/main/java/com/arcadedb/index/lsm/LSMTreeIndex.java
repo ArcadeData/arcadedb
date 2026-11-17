@@ -452,6 +452,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return false;
 
     try {
+      if (mutable.getDetachedSubIndex() != null) {
+        // Issue #12348: a compaction merges what the index serves into a new sub-index and points a new mutable file at it, so on
+        // an index whose sub-index could not be attached it would write the partial index out as the whole one and drop the only
+        // trace of the loss. Held until REBUILD INDEX (or CHECK DATABASE FIX) replaces the index
+        LogManager.instance().log(this, Level.FINE, "Compaction of index '%s' skipped: %s", null, getName(), mutable.getDetachedSubIndex());
+        return false;
+      }
       return database.getWrappedDatabaseInstance().runWithCompactionReplication(
           () -> new LSMTreeIndexCompactor().compact(this));
     } catch (final TimeoutException e) {
@@ -879,6 +886,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return lock.executeInReadLock(() -> {
       final int maxProblems = 20;
 
+      // Issue #12348: a sub-index the load could not attach leaves the index answering from its mutable pages alone. It used to
+      // be reported by one log line at load, which the load of a replica, or of a restarted node, repeats and nobody reads, while
+      // the node went on serving (and a UNIQUE index enforcing) a partial index that CHECK DATABASE called healthy
+      final String detached = mutable.getDetachedSubIndex();
+      if (detached != null)
+        return List.of(detached + ", the index must be rebuilt");
+
       final List<String> problems = new ArrayList<>(mutable.checkKeyOrder(maxProblems));
 
       final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
@@ -1071,6 +1085,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           });
         return newMutableIndex;
       });
+
+      // Issue #12236: the new mutable file stays locked until the cluster knows it (an HA compaction publishes it later), so
+      // a commit that resolves this index from now on cannot ship its entries into it ahead of the entry creating it
+      if (database.getWrappedDatabaseInstance().keepLockedUntilCompactionIsPublished(lockedNewFileId.get()))
+        lockedNewFileId.set(-1);
 
       final Runnable afterSwapHook = AFTER_SWAP_TEST_HOOK.get();
       if (afterSwapHook != null)

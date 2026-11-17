@@ -34,6 +34,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
@@ -201,6 +202,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
           return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
         }
       };
+    } catch (final CommandParsingException e) {
+      // The parser's own exception carries its kind (a CommandSemanticException is an undefined variable, not a syntax error) and
+      // its reason: a wrapper would hide both from every caller that analyzes before executing (an HA follower, apoc.do.when), as
+      // the execution path does not (issue #11785). GremlinQueryEngine.analyze() rethrows it the same way
+      throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Error analyzing Cypher query: " + query, e);
     }
@@ -635,7 +641,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
       // request keeps running it.
       if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
-        throw new CommandExecutionException(
+        throw new ImplicitTransactionRequiredException(
             "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
       return executeWrite(plan, execDb, profile, timeExecution);
     }

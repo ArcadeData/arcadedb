@@ -2293,8 +2293,10 @@ public enum GlobalConfiguration {
   SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
       """
       Default maximum number of rows the HTTP query/command endpoints serialize into a single response when \
-      the caller states no limit of its own. A request that carries a `limit` field, and a query that carries \
-      its own LIMIT clause, are both honored as written and are never capped by this value. When this default \
+      the caller states no limit of its own. A request that carries a `limit` field, and a SQL or openCypher query \
+      that carries its own LIMIT clause (the LIMIT of the final RETURN, or of every branch of a UNION), are both \
+      honored as written and are never capped by this value. Other languages expose no LIMIT of their own and are \
+      capped unless the request carries `limit`. When this default \
       does cut a result short the response reports `"truncated": true` next to `returned` and `limit`, and the \
       server logs a warning: the truncation is never silent (issue #5711). Set to -1 or 0 for unlimited \
       (WARNING: removes the protection against materializing an unbounded result set in memory). A value above \
