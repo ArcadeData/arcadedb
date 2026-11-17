@@ -144,6 +144,39 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
   }
 
   @Test
+  void aVertexDeletedBeforeTheRefusedRecordIsTakenBackWithoutAnExplicitTransaction() {
+    // The vertex comes first in the target and is deleted before the document is refused: the implicit transaction of the
+    // statement rolls it back
+    database.setAutoTransaction(true);
+    try {
+      assertThatThrownBy(() -> database.command("sql", "DELETE VERTEX FROM [" + vertex1 + ", " + document + "]").close())//
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("is not a vertex");
+      assertThat(database.isTransactionActive()).isFalse();
+    } finally {
+      database.setAutoTransaction(false);
+    }
+    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(1L);
+  }
+
+  @Test
+  void insideATransactionThatGoesOnTheRefusedStatementIsTakenBackAlone() {
+    database.transaction(() -> {
+      database.newVertex("Person").set("name", "c").save();
+      // the statement fails after deleting vertex2: only the statement is taken back, the transaction goes on
+      assertThatThrownBy(() -> database.command("sql", "DELETE VERTEX FROM [" + vertex2 + ", " + document + "]").close())//
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("is not a vertex");
+      database.command("sql", "DELETE FROM Note").close();
+    });
+    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(0L);
+    assertThat(count("SELECT count(*) AS c FROM Person WHERE name = 'c'")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS c FROM Person WHERE name = 'b'")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(3L);
+    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(1L);
+  }
+
+  @Test
   void anIndexTargetIsRefused() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "DELETE VERTEX FROM INDEX:`Person[name]` WHERE key = 'a'").close()))//
