@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * value of the key held by the last page, newest first, only to decide whether the removal marker about to be appended would
  * repeat one already there. Removing all n records of a shared key read O(n^2) values: a bulk UPDATE or DELETE of 40,000
  * records sharing a value took 20 s. The removal now reads at most the newest entry of the key. The cost is measured by the
- * values the removals deserialize ({@link LSMTreeIndexMutable#getRemoveValuesReadForTesting()}), never by the clock, at n and
+ * single values the removals read ({@link LSMTreeIndexMutable#getRemoveValuesReadForTesting()}), never by the clock, at n and
  * 4n records: linear work grows about 4x, the old scan about 16x. The perturbation this catches is any return to reading the
  * key's older entries (the values of the multi-value put, or the markers of earlier removals) for each removal.
  *
@@ -63,8 +63,8 @@ class LSMTreeIndexRemoveMultiplicityIssue11935Test extends TestHelper {
     return (LSMTreeIndex) onBuckets[0];
   }
 
-  /** Values the removals deserialized while every one of {@code records} records sharing one key was deleted. */
-  private long valuesReadDeletingAllOf(final String type, final int records, final String statement) {
+  /** Values the removals read while {@code statement} removed every one of {@code records} records sharing one key from the index. */
+  private long valuesReadRemovingAllOf(final String type, final int records, final String statement) {
     database.command("sql", "CREATE DOCUMENT TYPE " + type + " BUCKETS 1");
     database.command("sql", "CREATE PROPERTY " + type + ".c STRING");
     database.command("sql", "CREATE INDEX ON " + type + " (c) NOTUNIQUE");
@@ -81,8 +81,8 @@ class LSMTreeIndexRemoveMultiplicityIssue11935Test extends TestHelper {
 
   @Test
   void deletingEveryRecordOfASharedKeyReadsLinearlyManyValues() {
-    final long small = valuesReadDeletingAllOf("D1", N, "DELETE FROM $type");
-    final long large = valuesReadDeletingAllOf("D4", 4 * N, "DELETE FROM $type");
+    final long small = valuesReadRemovingAllOf("D1", N, "DELETE FROM $type");
+    final long large = valuesReadRemovingAllOf("D4", 4 * N, "DELETE FROM $type");
 
     // ~4x for a removal that costs the same whatever the key's multiplicity, ~16x for one that reads the key's values
     assertThat(large).as("growth from %d (%d values) to %d records", N, small, 4 * N).isLessThan(8L * Math.max(small, 1));
@@ -93,8 +93,8 @@ class LSMTreeIndexRemoveMultiplicityIssue11935Test extends TestHelper {
 
   @Test
   void updatingEveryRecordOfASharedKeyReadsLinearlyManyValues() {
-    final long small = valuesReadDeletingAllOf("U1", N, "UPDATE $type SET c = 'other'");
-    final long large = valuesReadDeletingAllOf("U4", 4 * N, "UPDATE $type SET c = 'other'");
+    final long small = valuesReadRemovingAllOf("U1", N, "UPDATE $type SET c = 'other'");
+    final long large = valuesReadRemovingAllOf("U4", 4 * N, "UPDATE $type SET c = 'other'");
 
     assertThat(large).as("growth from %d (%d values) to %d records", N, small, 4 * N).isLessThan(8L * Math.max(small, 1));
     assertThat(large).as("values read removing %d records of one key", 4 * N).isLessThanOrEqualTo(4L * N);

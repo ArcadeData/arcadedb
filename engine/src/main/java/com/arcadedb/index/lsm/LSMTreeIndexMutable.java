@@ -44,7 +44,6 @@ import com.arcadedb.utility.RidHashSet;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
@@ -58,9 +57,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
   private final       PageIdCache           pageIds             = new PageIdCache(this);
-  // how many index values the removals of this index deserialized: lets a test pin that removing one (key, RID) does not
-  // read the other values of the key (#11935)
-  private final       AtomicLong            removeValuesRead    = new AtomicLong();
+  // how many single values the removals of this index read to decide whether to skip a repeated marker: lets a test pin that
+  // removing one (key, RID) does not read the other values of the key (#11935). A plain long on purpose: it is bumped on every
+  // removal, and only a single-threaded test reads it, so an increment lost to a concurrent removal costs nothing
+  private             long                  removeValuesRead    = 0;
 
   // Why the last onAfterLoad() of a schema load could not attach the sub-index, reported once the schema entries are read
   private String subIndexLoadError;
@@ -408,9 +408,12 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return currentMutablePages;
   }
 
-  /** How many index values the removals of this index deserialized since it was opened (#11935). Package-private: for tests only. */
+  /**
+   * How many single values the removals of this index read since it was opened (#11935): one per removal whose key's newest
+   * entry holds exactly one value. Package-private: for tests only, and exact only when the removals ran on one thread.
+   */
   long getRemoveValuesReadForTesting() {
-    return removeValuesRead.get();
+    return removeValuesRead;
   }
 
   protected MutablePage createNewPage() throws IOException {
@@ -657,7 +660,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         currentPageBuffer.position(entryPosition + getSerializedKeySize(currentPageBuffer, convertedKeys.length));
         final RID newest = readSoleEntryValue(currentPageBuffer);
         if (newest != null) {
-          removeValuesRead.incrementAndGet();
+          ++removeValuesRead;
           if (newest.equals(removedRID) || (newest.getBucketId() == REMOVED_ENTRY_RID.getBucketId()
               && newest.getPosition() == REMOVED_ENTRY_RID.getPosition()))
             // ALREADY DELETED BY THE NEWEST ENTRY OF THE KEY
