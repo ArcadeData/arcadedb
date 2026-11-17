@@ -43,6 +43,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdge;
@@ -726,6 +727,22 @@ public class BinarySerializer {
     }
   }
 
+  /**
+   * Refuses a link to a position in a bucket that is no record (issue #11850). The only way to get one is a record that holds
+   * itself while it is being created ({@code INSERT INTO D SET me = @this}, {@code doc.set("me", doc)} before its first save):
+   * it is serialized under the provisional identity the bucket gives it ({@code #<bucket>:-1}) before its position exists, so
+   * the stored link pointed nowhere. Its RID exists once it is saved, so the link is written by an update of it. A RID with no
+   * bucket ({@code #-1:-1}, the null link of an edge segment) and a bare RID (an edge list's entries) are written as they are.
+   */
+  private static void checkLinkTarget(final Object value, final RID rid) {
+    // only a record OBJECT held by a property: the graph engine writes the RIDs of its edge lists as RIDs, the provisional one
+    // of an edge being created included, and resolves them itself
+    if (value instanceof Document && rid.getBucketId() > -1 && rid.getPosition() < 0)
+      throw new ValidationException(
+          "Cannot store a link to record " + rid + ": the record is being created and has no position yet. A record cannot hold "
+              + "a link to itself before it is saved: save it first, then set the link with an update");
+  }
+
   public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
     serializeValue(database, serialized, type, value, true);
   }
@@ -861,12 +878,14 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_COMPRESSED_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
+      checkLinkTarget(value, rid);
       serialized.putNumber(rid.getBucketId());
       serialized.putNumber(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
+      checkLinkTarget(value, rid);
       serialized.putInt(rid.getBucketId());
       serialized.putLong(rid.getPosition());
       break;

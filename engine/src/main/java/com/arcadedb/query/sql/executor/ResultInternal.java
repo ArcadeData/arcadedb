@@ -700,7 +700,8 @@ public class ResultInternal implements Result {
   @Override
   public Optional<RID> getIdentity() {
     if (element != null)
-      return Optional.of(element.getIdentity());
+      // a record not saved yet has no identity: @rid read while an INSERT builds it is null, like a row with no record (#11850)
+      return Optional.ofNullable(element.getIdentity());
 
     if (hasProperty(RID_PROPERTY)) {
       final Object rid = getProperty(RID_PROPERTY);

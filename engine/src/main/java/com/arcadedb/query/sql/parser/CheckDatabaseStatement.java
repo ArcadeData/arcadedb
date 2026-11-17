@@ -127,9 +127,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "check database");
 
-    if (context.getDatabase().isTransactionActive())
-      context.getDatabase().rollback();
-
+    // No rollback of the caller's transaction (issue #11781): DatabaseChecker.check() runs outside it when one is open
     if (!records.isEmpty() && (!types.isEmpty() || !buckets.isEmpty()))
       // Checked HERE, before the RIDs are resolved, even though DatabaseChecker.check() guards it too: resolving
       // first means a scope whose RIDs do not resolve reports "none of them resolves to a RID" for a statement
