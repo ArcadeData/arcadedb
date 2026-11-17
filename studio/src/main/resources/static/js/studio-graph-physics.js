@@ -162,13 +162,39 @@ function physicsLabelGap(label, fontSize, outlineWidth) {
   return longest * fontSize * PHYSICS_LABEL_CHAR_WIDTH + 2 * outlineWidth + fontSize;
 }
 
+/** True when the element is drawn with a style that can be read back (not a headless graph, not a stand-in). */
+function physicsStyled(ele) {
+  return typeof ele.cy === "function" && ele.cy().styleEnabled();
+}
+
+/**
+ * The font size of an edge label in pixels. The graph settings give it in em (labelSize, 0.7em by default), which the
+ * canvas resolves against the font of the graph container; Cytoscape hands the bare em number back.
+ */
+function physicsFontSizePx(edge) {
+  let fontSize = edge.pstyle("font-size");
+  if (fontSize.units !== "em") return fontSize.pfValue || 0;
+  let container = edge.cy().container();
+  let base = container != null && typeof getComputedStyle === "function" ? parseFloat(getComputedStyle(container).fontSize) : NaN;
+  return fontSize.value * (base > 0 ? base : 16);
+}
+
 /**
  * The room the label of a graph edge needs, read from the style the edge is drawn with. Without a style (a headless
  * graph) there is no label on screen to keep clear.
  */
 function physicsEdgeLabelGap(edge) {
-  if (typeof edge.cy !== "function" || !edge.cy().styleEnabled()) return 0;
-  return physicsLabelGap(edge.style("label"), edge.numericStyle("font-size") || 0, edge.numericStyle("text-outline-width") || 0);
+  if (!physicsStyled(edge)) return 0;
+  return physicsLabelGap(edge.style("label"), physicsFontSizePx(edge), edge.numericStyle("text-outline-width") || 0);
+}
+
+/**
+ * The radius a node is drawn with: the style width and height (a vertex type can set its own size in the graph
+ * settings, which overrides data(size)), or the size the graph gave it when there is no style to read.
+ */
+function physicsNodeRadius(ele) {
+  if (physicsStyled(ele)) return Math.max(ele.numericStyle("width") || 0, ele.numericStyle("height") || 0) / 2 || 12.5;
+  return (ele.data("size") || 25) / 2;
 }
 
 /** How much of the missing label room is made up in one tick: stiff, but short of overshooting into a bounce. */
@@ -239,12 +265,12 @@ function physicsBuildNodes(eles, previousById) {
     let pos = ele.position();
     let node = previousById[ele.id()];
     if (node == null) {
-      node = { id: ele.id(), x: pos.x, y: pos.y, r: (ele.data("size") || 25) / 2 };
+      node = { id: ele.id(), x: pos.x, y: pos.y, r: physicsNodeRadius(ele) };
     } else {
       // THE POSITION COMES FROM THE GRAPH (A LAYOUT MAY HAVE MOVED IT), THE MOTION FROM THE SIMULATION
       node.x = pos.x;
       node.y = pos.y;
-      node.r = (ele.data("size") || 25) / 2;
+      node.r = physicsNodeRadius(ele);
     }
     nodes.push(node);
     byId[node.id] = node;

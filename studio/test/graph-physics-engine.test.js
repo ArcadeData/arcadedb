@@ -116,8 +116,10 @@ function buildPage(elements, settings, stored, styled) {
     styleEnabled: styled === true,
     elements: elements,
     style: [
-      { selector: "node", style: { width: 10, height: 10 } },
-      { selector: "edge[label]", style: { label: "data(label)", "font-size": 16, "text-outline-width": 8 } },
+      { selector: "node", style: { width: "data(size)", height: "data(size)" } },
+      // what the graph widget writes: an em label size, and a vertex type with a size of its own
+      { selector: "node.Sized", style: { width: 500, height: 500 } },
+      { selector: "edge[label]", style: { label: "data(label)", "font-size": "0.7em", "text-outline-width": 8 } },
     ],
   });
 
@@ -453,7 +455,8 @@ test("the edge length slider reaches the running simulation", () => {
 
 test("big nodes stay far enough apart to show the label of the edge between them", () => {
   // A hub with big neighbours, the shape of the reported graph: the gravity and the springs pull them all inwards
-  const elements = [{ data: { id: "hub", size: 400 } }];
+  // The hub's type sets its own size in the graph settings, so it is drawn far bigger than data(size) says
+  const elements = [{ data: { id: "hub", size: 40 }, classes: "Sized" }];
   for (let i = 0; i < 6; i++) {
     elements.push({ data: { id: "n" + i, size: 300 } });
     elements.push({ data: { id: "e" + i, source: "hub", target: "n" + i, label: "applies_to" } });
@@ -465,8 +468,10 @@ test("big nodes stay far enough apart to show the label of the edge between them
     settle(sandbox, 500);
 
     const nodes = sandbox.globalPhysics.byId;
+    assert.equal(nodes.hub.r, 250, "the hub is as big as it is drawn, not as data(size) says");
     const labelGap = sandbox.globalPhysics.sim.force("link").links()[0].labelGap;
-    assert.ok(labelGap > 100, "the label needs room: " + labelGap);
+    // 0.7em of a 16px font: the ten characters of the label alone take more than 10 * 11.2 * 0.5 pixels
+    assert.ok(labelGap > 10 * 11.2 * 0.5 + 2 * 8, "the label needs room: " + labelGap);
     for (let i = 0; i < 6; i++) {
       const hub = nodes.hub;
       const leaf = nodes["n" + i];
