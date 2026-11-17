@@ -571,7 +571,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
   /**
    * Records one file's checksum in both shapes the response carries: the flat map peers compare, and the detail list. A dictionary
-   * is recorded without its format label, which two nodes holding the same bytes can disagree on (issue #12234).
+   * is recorded under the format label every build knows: two nodes holding the same bytes can disagree on it (issue #12234).
    */
   private static void collectFileInfo(final JSONObject checksums, final JSONArray files, final String fileName, final long crc,
       final long size) {

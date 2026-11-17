@@ -170,48 +170,30 @@ public class BinarySerializer {
   }
 
   /**
-   * Asked before a float or double array is written in its fixed-width form, and when one is decoded: true once the database is
-   * labelled so that no build which cannot decode the form opens it (issue #12234). False keeps the varint form for that value.
-   * Always true by default: a serializer that is not a database's own has no files to label.
+   * Whether the database is labelled so that no build which cannot decode the fixed-width form opens it (issue #12234). False
+   * keeps the varint form. True by default: a serializer that is not a database's own has no files to label. The database sets
+   * it when it opens and when its configuration changes, so writing an array costs one more volatile read and never a rename.
    */
-  private volatile BooleanSupplier fixedWidthFloatArraysFence = ALWAYS;
+  private volatile boolean fixedWidthFloatArraysFenced = true;
 
-  /** Sets the rollback fence of {@link #fixedWidthFloatArraysFence}; {@code null} restores "always". */
-  public void setFixedWidthFloatArraysFence(final BooleanSupplier fence) {
-    this.fixedWidthFloatArraysFence = fence != null ? fence : ALWAYS;
-  }
-
-  /**
-   * Run when a fixed-width float or double array is decoded: a record written by 26.11.x, or received as pages by a replica, can
-   * hold the form under a dictionary not labelled yet, and the first such read labels it (issue #12234). Whether the label could
-   * be written does not matter to the read, which decodes the value either way; a failure is the fence's to report.
-   * <br>
-   * The relabel takes only the dictionary's fence monitor and its file's channel write lock. A decoding thread holds neither: the
-   * channel lock is held inside a single page read or write of that file, which never decodes a record, and the fence monitor
-   * only around the rename. So a read cannot deadlock against the relabel it triggers, whatever page, transaction or database
-   * lock it holds.
-   */
-  private void ensureFixedWidthFloatArraysFenced() {
-    fixedWidthFloatArraysFence.getAsBoolean();
+  /** Tells the serializer whether its database carries the rollback fence of {@link #fixedWidthFloatArraysFenced}. */
+  public void setFixedWidthFloatArraysFenced(final boolean fenced) {
+    this.fixedWidthFloatArraysFenced = fenced;
   }
 
   /**
    * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
-   * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFence} is in place, {@code type} itself
+   * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFenced} is set, {@code type} itself
    * otherwise. Only the record's own type bytes go through here; an index key is written under its declared type, so an index
    * page never changes form.
    */
   private byte storageTypeOf(final byte type) {
-    if (!fixedWidthFloatArraysEnabled)
+    if (!fixedWidthFloatArraysEnabled || !fixedWidthFloatArraysFenced)
       return type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
-      return fixedWidthFloatArrays.getAsBoolean() && fixedWidthFloatArraysFence.getAsBoolean() ?
-          BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED :
-          type;
+      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_DOUBLES)
-      return fixedWidthFloatArrays.getAsBoolean() && fixedWidthFloatArraysFence.getAsBoolean() ?
-          BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED :
-          type;
+      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED : type;
     return type;
   }
 
@@ -1330,11 +1312,9 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED:
-      ensureFixedWidthFloatArraysFenced();
       value = content.getFloatArray(checkDeserializedCount(content.getUnsignedNumber(), content));
       break;
     case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED:
-      ensureFixedWidthFloatArraysFenced();
       value = content.getDoubleArray(checkDeserializedCount(content.getUnsignedNumber(), content));
       break;
 

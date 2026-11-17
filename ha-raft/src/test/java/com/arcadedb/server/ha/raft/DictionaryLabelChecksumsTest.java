@@ -18,12 +18,15 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -52,7 +55,8 @@ class DictionaryLabelChecksumsTest {
     final Map<String, Long> onFollower = SnapshotManager.computeFileChecksums(follower);
 
     assertThat(onLeader).isEqualTo(onFollower);
-    assertThat(onLeader).containsOnlyKeys("dictionary.0.65536.dict", "Doc_0.1.65536.v0.bucket");
+    // UNDER THE LABEL A PEER OF A BUILD WITHOUT THE RELABEL REPORTS, SO A MIXED-VERSION CLUSTER COMPARES EQUAL TOO
+    assertThat(onLeader).containsOnlyKeys("dictionary.0.65536.v1.dict", "Doc_0.1.65536.v0.bucket");
   }
 
   @Test
@@ -64,14 +68,17 @@ class DictionaryLabelChecksumsTest {
   }
 
   /**
-   * The relabel can land while a point-in-time window is open: the window knows the dictionary under its old name, the directory
-   * lists it under the new one. Matched by file name, the dictionary was taken for a page file created after t0 and left out of
-   * the checksums, which a peer then reports as a missing file.
+   * The relabel can land while a point-in-time window is open, when the setting is turned on: the window knows the dictionary
+   * under its old name, the directory lists it under the new one. Matched by file name, the dictionary was taken for a page
+   * file created after t0 and left out of the checksums, which a peer then reports as a missing file.
    */
   @Test
   void aDictionaryRelabelledWhileASnapshotIsOpenIsStillChecksummed(@TempDir final File root) throws Exception {
     final File dbDir = new File(root, "relabel-under-snapshot");
-    try (final Database database = new DatabaseFactory(dbDir.getPath()).create()) {
+    final DatabaseFactory factory = new DatabaseFactory(dbDir.getPath());
+    // A DATABASE KEPT OPENABLE BY AN OLDER BUILD: CREATED WITH THE SETTING OFF, SO ITS DICTIONARY IS LABELLED 1
+    factory.getContextConfiguration().setValue(GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS, false);
+    try (final Database database = factory.create()) {
       final DatabaseInternal db = (DatabaseInternal) database;
       database.transaction(() -> database.getSchema().createDocumentType("Doc").createProperty("emb", Type.ARRAY_OF_FLOATS));
       db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
@@ -80,14 +87,19 @@ class DictionaryLabelChecksumsTest {
       try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
         final Map<String, Long> t0 = SnapshotManager.computeFileChecksums(dbDir, snapshot);
 
-        // THE FIRST FIXED-WIDTH ARRAY RELABELS THE DICTIONARY AFTER t0
-        database.transaction(() -> database.newDocument("Doc").set("emb", new float[] { 1F, 2F }).save());
+        // TURNING THE SETTING ON RELABELS THE DICTIONARY AFTER t0
+        database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` true");
         assertThat(db.getSchema().getDictionary().isFixedWidthFloatArraysFenced()).isTrue();
 
         final Map<String, Long> afterRelabel = SnapshotManager.computeFileChecksums(dbDir, snapshot);
         assertThat(t0.keySet()).anyMatch(name -> name.endsWith("." + Dictionary.DICT_EXT));
+        // configuration.json IS NOT A PAGE FILE: THE ALTER REWROTE IT, AND THE WINDOW DOES NOT ANSWER FOR IT
+        t0.remove(LocalDatabase.CONFIGURATION_FILE_NAME);
+        afterRelabel.remove(LocalDatabase.CONFIGURATION_FILE_NAME);
         assertThat(afterRelabel).as("the window answers for the relabelled dictionary as it did at t0").isEqualTo(t0);
       }
+    } finally {
+      FileUtils.deleteRecursively(dbDir);
     }
   }
 }

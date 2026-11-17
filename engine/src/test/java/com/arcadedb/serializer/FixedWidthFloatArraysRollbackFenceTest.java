@@ -23,10 +23,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,11 +45,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #12234: a build before 26.11.1 cannot decode the fixed-width float and double arrays (binary types 36 and 37) and,
  * opening a database that holds them, reads them as null and drops them on the record's next update. Every build since 26.8.1
- * refuses at open a dictionary whose file is labelled with a format version above 1, so the first fixed-width value a database
- * holds relabels its dictionary to {@link Dictionary#FIXED_WIDTH_FLOAT_ARRAYS_VERSION} first: such a build then refuses the
- * database instead of losing data.
+ * refuses at open a dictionary whose file is labelled with a format version above 1, so a database that may hold the form
+ * carries the label {@link Dictionary#FIXED_WIDTH_FLOAT_ARRAYS_VERSION}: such a build then refuses the database instead of
+ * losing data.
+ * <br>
+ * The label follows the setting {@code arcadedb.serializer.fixedWidthFloatArrays}, not the values: it is there from the moment
+ * a read-write database opens with the setting on, whatever the database goes on to write or read.
  */
 class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
+  private static final int DIM = 64;
 
   @BeforeEach
   void createType() {
@@ -59,101 +63,133 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
     });
   }
 
+  /** The reproduction of the issue: a database this build writes fixed-width arrays into is one an older build refuses. */
   @Test
-  void aDatabaseWithoutFloatArraysKeepsDictionaryVersion1() {
-    database.transaction(() -> database.newDocument("Doc").set("name", "plain").save());
-    assertThat(dictionaryFileVersion()).isEqualTo(1);
+  void aNewDatabaseIsBornWithTheLabelBeforeItHoldsAnyArray() {
+    assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
 
-    reopenDatabase();
-    assertThat(dictionaryFileVersion()).isEqualTo(1);
-  }
-
-  @Test
-  void theFirstFixedWidthArrayRelabelsTheDictionaryBeforeTheRecordIsCommitted() {
-    final RID[] rid = new RID[1];
-    database.transaction(() -> {
-      final MutableDocument doc = database.newDocument("Doc").set("emb", new float[] { 1F, 2.5F, -3F }).set("dbl",
-          new double[] { 0.1, 0.2 });
-      doc.save();
-      rid[0] = doc.getIdentity();
-      // THE LABEL IS ON DISK BEFORE THE COMMIT THAT WRITES THE VALUE: A CRASH RIGHT AFTER THE COMMIT CANNOT LEAVE THE NEW FORM
-      // IN A DATABASE AN OLDER BUILD WOULD STILL OPEN
-      assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
-    });
+    final float[] vector = vector(DIM, 1F);
+    final RID rid = saveInTransaction(() -> database.newDocument("Doc").set("emb", vector).set("dbl", new double[] { 0.1, 0.2 }));
+    assertThat(storedSize(rid)).as("the fixed-width form, 4 bytes per float").isLessThan(4 * DIM + 64);
 
     reopenDatabase();
     assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
-    final Document read = database.lookupByRID(rid[0], true).asDocument();
-    assertThat((float[]) read.get("emb")).containsExactly(1F, 2.5F, -3F);
+    final Document read = database.lookupByRID(rid, true).asDocument();
+    assertThat((float[]) read.get("emb")).containsExactly(vector);
     assertThat((double[]) read.get("dbl")).containsExactly(0.1, 0.2);
 
-    // THE RELABELLED DICTIONARY KEEPS WORKING: NEW NAMES, AND A REOPEN AFTER THEM
+    // THE LABELLED DICTIONARY KEEPS WORKING: NEW NAMES, AND A REOPEN AFTER THEM
     database.transaction(() -> database.newDocument("Doc").set("anotherName", 1).set("emb", new float[] { 4F }).save());
     reopenDatabase();
     assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc WHERE anotherName = 1").nextIfAvailable().<Long>getProperty("c"))
         .isEqualTo(1L);
   }
 
+  /**
+   * A database written by 26.11.x holds the fixed-width form under a version 1 dictionary, as does a replica whose files came
+   * from such a node. It is relabelled when it opens, before anything is read or written: a node that only applies replicated
+   * pages, or only answers vector searches, never decodes a value through the serializer and must be fenced all the same.
+   */
   @Test
-  void withTheFixedWidthFormDisabledTheDictionaryStaysVersion1() {
-    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` false");
-    database.transaction(() -> database.newDocument("Doc").set("emb", new float[] { 1F, 2F }).save());
+  void aDatabaseWrittenBy26_11_xIsRelabelledWhenItOpens() {
+    final RID rid = saveInTransaction(new float[] { 7F, 8F });
+
+    closeAndLabelTheDictionaryAs26_11_1();
     assertThat(dictionaryFileVersion()).isEqualTo(1);
+    database = factory.open();
+    assertThat(dictionaryFileVersion()).as("relabelled by the open alone").isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+
+    assertThat((float[]) database.lookupByRID(rid, true).asDocument().get("emb")).containsExactly(7F, 8F);
+    reopenDatabase();
+    assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    assertThat((float[]) database.lookupByRID(rid, true).asDocument().get("emb")).containsExactly(7F, 8F);
+  }
+
+  /** The way to keep a rollback possible: with the setting off the label stays 1 and every array is written as a varint. */
+  @Test
+  void withTheSettingOffTheDictionaryStaysVersion1AndArraysStayVarint() {
+    openAsADatabaseKeptOpenableByOlderBuilds();
+    assertThat(dictionaryFileVersion()).isEqualTo(1);
+
+    final float[] vector = vector(DIM, 1F);
+    final RID rid = saveInTransaction(vector);
+    assertThat(dictionaryFileVersion()).isEqualTo(1);
+    assertThat(storedSize(rid)).as("the varint form, 5 bytes per float").isGreaterThanOrEqualTo(5 * DIM);
 
     reopenDatabase();
     assertThat(dictionaryFileVersion()).isEqualTo(1);
-    assertThat((float[]) database.query("sql", "SELECT emb FROM Doc").nextIfAvailable().getProperty("emb")).containsExactly(1F, 2F);
+    assertThat((float[]) database.lookupByRID(rid, true).asDocument().get("emb")).containsExactly(vector);
   }
 
-  /**
-   * A database written by 26.11.x holds the fixed-width form under a version 1 dictionary, as does a replica that received the
-   * records as pages. The first read of such a value relabels the dictionary too.
-   */
+  /** Turning the setting on labels the database at once, before the first array written under it. */
   @Test
-  void readingAFixedWidthArrayRelabelsADictionaryStillAtVersion1() {
-    database.transaction(() -> database.newDocument("Doc").set("emb", new float[] { 7F, 8F }).save());
+  void turningTheSettingOnRelabelsBeforeTheNextArrayIsWritten() {
+    openAsADatabaseKeptOpenableByOlderBuilds();
+    final float[] vector = vector(DIM, 1F);
+    final RID varint = saveInTransaction(vector);
+
+    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` true");
     assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
 
-    // TURN THE CLOCK BACK: THE SAME FILES WITH THE DICTIONARY LABELLED AS 26.11.1 LEFT IT
-    database.close();
-    final File current = dictionaryFile();
-    assertThat(current.renameTo(new File(current.getParentFile(), current.getName().replaceFirst("\\.v\\d+\\.", ".v1.")))).isTrue();
-    database = factory.open();
-    assertThat(dictionaryFileVersion()).isEqualTo(1);
+    final RID fixed = saveInTransaction(vector);
+    assertThat(storedSize(fixed)).as("the fixed-width form once labelled").isLessThan(4 * DIM + 64);
 
-    assertThat((float[]) database.query("sql", "SELECT emb FROM Doc").nextIfAvailable().getProperty("emb")).containsExactly(7F, 8F);
+    reopenDatabase();
     assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    assertThat((float[]) database.lookupByRID(varint, true).asDocument().get("emb")).containsExactly(vector);
+    assertThat((float[]) database.lookupByRID(fixed, true).asDocument().get("emb")).containsExactly(vector);
+  }
+
+  /** The label is never taken back: the arrays already stored are still in a form an older build cannot read. */
+  @Test
+  void turningTheSettingOffKeepsTheLabel() {
+    final float[] vector = vector(DIM, 1F);
+    final RID fixed = saveInTransaction(vector);
+
+    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` false");
+    assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    final RID varint = saveInTransaction(vector);
+    assertThat(storedSize(varint)).as("the varint form with the setting off").isGreaterThanOrEqualTo(5 * DIM);
+
+    reopenDatabase();
+    assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    assertThat((float[]) database.lookupByRID(fixed, true).asDocument().get("emb")).containsExactly(vector);
+    assertThat((float[]) database.lookupByRID(varint, true).asDocument().get("emb")).containsExactly(vector);
   }
 
   /**
-   * The fence never fails a write: when the dictionary cannot be relabelled, the value is written in the varint form every build
-   * reads, the label stays 1, and later writes do not retry the rename on every value until the database is reopened.
+   * The fence never fails an open or a write: when the dictionary cannot be relabelled, arrays are written in the varint form
+   * every build reads and the label stays 1, with no further attempt per value, until the database is reopened.
    */
   @Test
   void aRelabelThatFailsWritesTheVarintFormAndKeepsVersion1() {
-    // A DIRECTORY UNDER THE NAME THE RELABEL MOVES THE FILE TO MAKES THE RENAME FAIL
+    closeAndLabelTheDictionaryAs26_11_1();
+    // A NON-EMPTY DIRECTORY UNDER THE NAME THE RELABEL MOVES THE FILE TO MAKES THE RENAME FAIL
     final File obstruction = new File(dictionaryFile().getParentFile(), dictionaryFile().getName().replaceFirst("\\.v1\\.", ".v2."));
     assertThat(obstruction.mkdir()).isTrue();
     assertThat(new File(obstruction, "occupied").mkdir()).isTrue();
     try {
+      database = factory.open();
+      assertThat(dictionaryFileVersion()).isEqualTo(1);
+
       final float[] vector = vector(DIM, 1F);
       final RID first = saveInTransaction(vector);
       assertThat(dictionaryFileVersion()).isEqualTo(1);
       assertThat(storedSize(first)).as("the varint form, 5 bytes per float").isGreaterThanOrEqualTo(5 * DIM);
 
-      // THE OBSTRUCTION IS GONE, BUT THE FAILURE IS LATCHED UNTIL THE NEXT OPEN: STILL THE VARINT FORM, STILL VERSION 1
+      // THE OBSTRUCTION IS GONE, BUT A WRITE DOES NOT RETRY THE RENAME: STILL THE VARINT FORM, STILL VERSION 1
       FileUtils.deleteRecursively(obstruction);
       final RID second = saveInTransaction(vector);
       assertThat(dictionaryFileVersion()).isEqualTo(1);
-      assertThat(storedSize(second)).as("the varint form after the latched failure").isGreaterThanOrEqualTo(5 * DIM);
+      assertThat(storedSize(second)).as("the varint form until the next open").isGreaterThanOrEqualTo(5 * DIM);
 
       assertThat((float[]) database.lookupByRID(first, true).asDocument().get("emb")).containsExactly(vector);
       assertThat((float[]) database.lookupByRID(second, true).asDocument().get("emb")).containsExactly(vector);
 
       // A REOPEN TRIES AGAIN, AND NOW THE RELABEL SUCCEEDS BEFORE THE FIXED-WIDTH FORM IS WRITTEN
       reopenDatabase();
-      final RID third = saveInTransaction(vector);
       assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+      final RID third = saveInTransaction(vector);
       assertThat(storedSize(third)).as("the fixed-width form once relabelled").isLessThan(4 * DIM + 64);
       assertThat((float[]) database.lookupByRID(first, true).asDocument().get("emb")).containsExactly(vector);
     } finally {
@@ -161,13 +197,13 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
     }
   }
 
-  /** A read-only open never relabels its files, even when it decodes the fixed-width form under a version 1 dictionary. */
+  /** A read-only open never relabels its files, and still decodes the fixed-width form under a version 1 dictionary. */
   @Test
   void aReadOnlyOpenDecodesTheFixedWidthFormWithoutRelabelling() {
     final RID rid = saveInTransaction(new float[] { 7F, 8F });
-    labelTheDictionaryAs26_11_1();
+    closeAndLabelTheDictionaryAs26_11_1();
 
-    reopenDatabaseInReadOnlyMode();
+    database = factory.open(ComponentFile.MODE.READ_ONLY);
     assertThat(dictionaryFileVersion()).isEqualTo(1);
     assertThat((float[]) database.lookupByRID(rid, true).asDocument().get("emb")).containsExactly(7F, 8F);
     assertThat((float[]) database.query("sql", "SELECT emb FROM Doc").nextIfAvailable().getProperty("emb")).containsExactly(7F, 8F);
@@ -175,60 +211,26 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
 
     // BACK TO READ-WRITE, FOR THE INTEGRITY CHECK THAT RUNS AFTER EVERY TEST
     reopenDatabase();
-  }
-
-  /**
-   * An existing 26.11.x database, with an index: a lookup through the index inside an open transaction decodes the fixed-width
-   * form, relabels the dictionary under that transaction, and the transaction then commits and the database reopens as usual.
-   */
-  @Test
-  void anIndexedReadInsideATransactionRelabelsAnExistingDatabase() {
-    database.transaction(() -> {
-      database.getSchema().getType("Doc").createProperty("name", Type.STRING);
-      database.getSchema().getType("Doc").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
-      for (int i = 0; i < 10; i++)
-        database.newDocument("Doc").set("name", "n" + i).set("emb", new float[] { i, i + 0.5F }).save();
-    });
-    labelTheDictionaryAs26_11_1();
-    assertThat(dictionaryFileVersion()).isEqualTo(1);
-
-    database.transaction(() -> {
-      try (final ResultSet rs = database.query("sql", "SELECT emb FROM Doc WHERE name = 'n3'")) {
-        assertThat(rs.nextIfAvailable().<float[]>getProperty("emb")).containsExactly(3F, 3.5F);
-      }
-      assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
-      database.newDocument("Doc").set("name", "n10").set("emb", new float[] { 10F }).save();
-    });
-
-    reopenDatabase();
     assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
-    for (int i = 0; i < 10; i++)
-      try (final ResultSet rs = database.query("sql", "SELECT emb FROM Doc WHERE name = ?", "n" + i)) {
-        assertThat(rs.nextIfAvailable().<float[]>getProperty("emb")).containsExactly(i, i + 0.5F);
-      }
-    try (final ResultSet rs = database.query("sql", "SELECT emb FROM Doc WHERE name = 'n10'")) {
-      assertThat(rs.nextIfAvailable().<float[]>getProperty("emb")).containsExactly(10F);
-    }
-    assertThat(database.getSchema().getIndexByName("Doc[name]").countEntries()).isEqualTo(11L);
   }
 
   /**
-   * Writers committing their first fixed-width value at the same time, and readers decoding the form under the version 1 label
-   * while it is changed: one relabel, every value written and read back, and no error on either side.
+   * The relabel of a live database, with writers committing arrays and readers decoding the fixed-width form meanwhile: one
+   * relabel, every value written and read back, and no error on either side.
    */
   @Test
-  void concurrentFirstWritesAndReadsRelabelOnce() throws Exception {
+  void aLiveRelabelUnderConcurrentWritesAndReads() throws Exception {
     database.transaction(() -> {
       for (int i = 0; i < 50; i++)
         database.newDocument("Doc").set("seed", i).set("emb", new float[] { i, -i }).save();
     });
-    labelTheDictionaryAs26_11_1();
+    openAsADatabaseKeptOpenableByOlderBuilds();
     assertThat(dictionaryFileVersion()).isEqualTo(1);
 
     final int writers = 4;
     final int readers = 4;
     final int perWriter = 25;
-    final CyclicBarrier start = new CyclicBarrier(writers + readers);
+    final CyclicBarrier start = new CyclicBarrier(writers + readers + 1);
     final ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
     final List<Thread> threads = new ArrayList<>();
     for (int w = 0; w < writers; w++) {
@@ -268,6 +270,8 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
 
     for (final Thread t : threads)
       t.start();
+    start.await(30, TimeUnit.SECONDS);
+    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` true");
     for (final Thread t : threads)
       t.join(TimeUnit.MINUTES.toMillis(2));
 
@@ -292,19 +296,19 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
   }
 
   /**
-   * The likeliest first write after an upgrade: a record that brings a new property name and an embedding. The name's dictionary
-   * page is committed, and still queued for the flush, when the embedding relabels the dictionary. The rename used to report the
-   * file closed for an instant, the flush thread dropped the page, and after a reopen the name was gone and its id was handed to
-   * the next new name, so every record holding it decoded under the wrong name. Repeated because the page has to be in the
-   * flush queue at that instant.
+   * A record brings a new property name, and the database is relabelled right after: the name's dictionary page is committed,
+   * and still queued for the flush, when the file is renamed. The rename used to report the file closed for an instant, the
+   * flush thread dropped the page, and after a reopen the name was gone and its id was handed to the next new name, so every
+   * record holding it decoded under the wrong name. Repeated because the page has to be in the flush queue at that instant.
    */
   @Test
-  void aNameRegisteredRightBeforeTheRelabelSurvivesAReopen() {
+  void aNameRegisteredRightBeforeALiveRelabelSurvivesAReopen() {
     for (int i = 0; i < 20; i++) {
-      labelTheDictionaryAs26_11_1();
+      openAsADatabaseKeptOpenableByOlderBuilds();
       final String name = "fresh" + i;
       final int n = i;
       final RID rid = saveInTransaction(() -> database.newDocument("Doc").set(name, n).set("emb", new float[] { n }));
+      database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` true");
       assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
 
       reopenDatabase();
@@ -317,21 +321,35 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
     }
   }
 
-  /** Nodes compare a dictionary without its label, and every other file, or a name that is not labelled, as it is. */
+  /**
+   * Nodes compare a dictionary relabelled by this fence under the label it is created with, which a build without the fence
+   * still reports; a dictionary not relabelled, every other file, and a name that is not labelled, as they are.
+   */
   @Test
-  void comparableFileNameDropsOnlyADictionaryLabel() {
-    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v1.dict")).isEqualTo("dictionary.0.65536.dict");
-    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v2.dict")).isEqualTo("dictionary.0.65536.dict");
-    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v12.dict")).isEqualTo("dictionary.0.65536.dict");
+  void comparableFileNameFoldsOnlyTheFenceLabelBack() {
+    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v2.dict")).isEqualTo("dictionary.0.65536.v1.dict");
+    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v12.dict")).isEqualTo("dictionary.0.65536.v1.dict");
+    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v1.dict")).isEqualTo("dictionary.0.65536.v1.dict");
+    assertThat(Dictionary.comparableFileName("dictionary.0.65536.v0.dict")).isEqualTo("dictionary.0.65536.v0.dict");
     assertThat(Dictionary.comparableFileName("dictionary.0.65536.dict")).isEqualTo("dictionary.0.65536.dict");
     assertThat(Dictionary.comparableFileName("dictionary.0.65536.v.dict")).isEqualTo("dictionary.0.65536.v.dict");
     assertThat(Dictionary.comparableFileName("dictionary.0.65536.vx.dict")).isEqualTo("dictionary.0.65536.vx.dict");
-    assertThat(Dictionary.comparableFileName("Doc_0.1.65536.v0.bucket")).isEqualTo("Doc_0.1.65536.v0.bucket");
+    assertThat(Dictionary.comparableFileName("Doc_0.1.65536.v2.bucket")).isEqualTo("Doc_0.1.65536.v2.bucket");
     assertThat(Dictionary.comparableFileName(".dict")).isEqualTo(".dict");
     assertThat(Dictionary.comparableFileName(null)).isNull();
   }
 
-  private static final int DIM = 64;
+  /** One node matches its own dictionary across a relabel whatever label it had: the name without the label. */
+  @Test
+  void unlabelledFileNameDropsOnlyADictionaryLabel() {
+    assertThat(Dictionary.unlabelledFileName("dictionary.0.65536.v0.dict")).isEqualTo("dictionary.0.65536.dict");
+    assertThat(Dictionary.unlabelledFileName("dictionary.0.65536.v1.dict")).isEqualTo("dictionary.0.65536.dict");
+    assertThat(Dictionary.unlabelledFileName("dictionary.0.65536.v2.dict")).isEqualTo("dictionary.0.65536.dict");
+    assertThat(Dictionary.unlabelledFileName("dictionary.0.65536.dict")).isEqualTo("dictionary.0.65536.dict");
+    assertThat(Dictionary.unlabelledFileName("dictionary.0.65536.vx.dict")).isEqualTo("dictionary.0.65536.vx.dict");
+    assertThat(Dictionary.unlabelledFileName("Doc_0.1.65536.v0.bucket")).isEqualTo("Doc_0.1.65536.v0.bucket");
+    assertThat(Dictionary.unlabelledFileName(null)).isNull();
+  }
 
   private RID saveInTransaction(final float[] emb) {
     return saveInTransaction(() -> database.newDocument("Doc").set("emb", emb));
@@ -354,14 +372,23 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
     return v;
   }
 
+  /**
+   * Leaves the database open as one an operator kept openable by an older build: the setting turned off, and the dictionary
+   * under the label 1 it had before this build first opened it.
+   */
+  private void openAsADatabaseKeptOpenableByOlderBuilds() {
+    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` false");
+    closeAndLabelTheDictionaryAs26_11_1();
+    database = factory.open();
+  }
+
   /** Closes the database and puts the dictionary back under the label 26.11.1 left on files holding the fixed-width form. */
-  private void labelTheDictionaryAs26_11_1() {
+  private void closeAndLabelTheDictionaryAs26_11_1() {
     database.close();
     final File current = dictionaryFile();
     final File v1 = new File(current.getParentFile(), current.getName().replaceFirst("\\.v\\d+\\.", ".v1."));
     if (!current.equals(v1))
       assertThat(current.renameTo(v1)).isTrue();
-    database = factory.open();
   }
 
   private File dictionaryFile() {

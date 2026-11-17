@@ -232,12 +232,12 @@ public final class SnapshotManager {
     if (files == null)
       return checksums;
 
-    // KEYED BY THE COMPARABLE NAME: THE DICTIONARY CAN BE RELABELLED AFTER t0 (ISSUE #12234), AND LOOKED UP UNDER ITS NEW NAME IT
-    // WOULD PASS FOR A PAGE FILE CREATED AFTER t0 AND BE LEFT OUT. THE FILE ID, WHICH THE WINDOW READS BY, NEVER CHANGES
+    // KEYED WITHOUT THE DICTIONARY'S LABEL: THE DICTIONARY CAN BE RELABELLED AFTER t0 (ISSUE #12234), AND LOOKED UP UNDER ITS NEW
+    // NAME IT WOULD PASS FOR A PAGE FILE CREATED AFTER t0 AND BE LEFT OUT. THE FILE ID, WHICH THE WINDOW READS BY, NEVER CHANGES
     final Map<String, Integer> snapshotFileIds = new HashMap<>();
     if (snapshot != null)
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        snapshotFileIds.put(Dictionary.comparableFileName(file.fileName()), file.fileId());
+        snapshotFileIds.put(Dictionary.unlabelledFileName(file.fileName()), file.fileId());
 
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
@@ -245,8 +245,9 @@ public final class SnapshotManager {
       if (isNodeLocalFileName(name))
         continue;
 
+      // A DICTIONARY IS REPORTED UNDER THE LABEL EVERY BUILD KNOWS, WHICH TWO NODES WITH THE SAME BYTES CAN DISAGREE ON (ISSUE #12234)
       final String comparableName = Dictionary.comparableFileName(name);
-      final Integer snapshotFileId = snapshotFileIds.get(comparableName);
+      final Integer snapshotFileId = snapshotFileIds.get(Dictionary.unlabelledFileName(name));
       if (snapshotFileId != null) {
         checksums.put(comparableName, snapshot.calculateChecksum(snapshotFileId));
         continue;
@@ -275,7 +276,6 @@ public final class SnapshotManager {
           unreadableFiles.add(name);
         continue;
       }
-      // A DICTIONARY IS KEYED WITHOUT ITS FORMAT LABEL, WHICH TWO NODES WITH THE SAME BYTES CAN DISAGREE ON (ISSUE #12234)
       checksums.put(comparableName, crc.getValue());
     }
 
