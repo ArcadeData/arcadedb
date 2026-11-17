@@ -60,6 +60,69 @@ class CypherCallSubqueryExportShadowIssue11689Test extends TestHelper {
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("'k' already declared in outer scope");
   }
 
+  /** The WHERE of a WITH was never scope-walked, so a CALL subquery inside an EXISTS there escaped the export check. */
+  @Test
+  void clashInsideAWithWhereSubqueryIsRejected() {
+    for (final String query : List.of(//
+        "UNWIND [1, 2] AS i WITH i WHERE EXISTS { CALL { RETURN 5 AS i } RETURN 1 } RETURN i",//
+        "UNWIND [1, 2] AS i WITH * WHERE EXISTS { CALL { RETURN 5 AS i } RETURN 1 } RETURN i",//
+        "UNWIND [1, 2] AS i WITH i AS j WHERE COUNT { CALL { RETURN 5 AS j } RETURN 1 } > 0 RETURN j"))
+      assertThatThrownBy(() -> database.query("opencypher", query).close()).as(query)
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("already declared in outer scope");
+  }
+
+  /**
+   * A WITH WHERE sees the projected names, and the incoming ones unless the WITH aggregates or is DISTINCT: a name outside
+   * that scope filtered every row out instead of being refused.
+   */
+  @Test
+  void withWhereReadsTheProjectedAndIncomingNames() {
+    for (final String query : List.of(//
+        "UNWIND [1, 2] AS i WITH i WHERE zz > 1 RETURN i",//
+        "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE i > 1 RETURN j"))
+      assertThatThrownBy(() -> database.query("opencypher", query).close()).as(query)
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("not defined");
+    for (final String query : List.of(//
+        "UNWIND [1, 2] AS i WITH i AS j WHERE i > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH i AS j WHERE j > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE j > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH *, i * 10 AS t WHERE i > 1 AND t > 10 RETURN i AS j"))
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        assertThat(rs.stream().map(r -> ((Number) r.getProperty("j")).longValue()).toList()).as(query).containsExactly(2L);
+      }
+  }
+
+  /** A COLLECT body in a WITH WHERE is walked like EXISTS and COUNT, so its CALL export clash is refused too. */
+  @Test
+  void clashInsideAWithWhereCollectSubqueryIsRejected() {
+    assertThatThrownBy(() -> database.query("opencypher",
+        "UNWIND [1, 2] AS i WITH i WHERE size(COLLECT { CALL { RETURN 5 AS i } RETURN i }) > 0 RETURN i").close())
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("already declared in outer scope");
+  }
+
+  /**
+   * The WITH WHERE scope check must not refuse the names a pattern predicate, a subquery body or a list predicate binds
+   * locally, nor a property projected under an alias.
+   */
+  @Test
+  void withWhereAcceptsLocallyBoundAndAliasedNames() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:P11930 {name: 'a'})-[:R11930]->(:P11930 {name: 'b'}), (:P11930 {name: 'c'})"));
+    for (final String query : List.of(//
+        "MATCH (n:P11930) WITH n.name AS x WHERE x = 'a' RETURN x AS name",//
+        "MATCH (n:P11930) WITH n WHERE (n)-[:R11930]->() RETURN n.name AS name",//
+        "MATCH (n:P11930) WITH n WHERE (n)-[:R11930]->(:P11930 {name: 'b'}) RETURN n.name AS name",//
+        "MATCH (n:P11930) WITH n WHERE EXISTS { MATCH (n)-[:R11930]->(m) WHERE m.name = 'b' } RETURN n.name AS name",//
+        "MATCH (n:P11930) WITH n WHERE COUNT { (n)-[:R11930]->(m) WHERE m.name = 'b' } > 0 RETURN n.name AS name",//
+        "MATCH (n:P11930) WITH n WHERE 'b' IN COLLECT { MATCH (n)-[:R11930]->(m) RETURN m.name } RETURN n.name AS name",//
+        "MATCH (n:P11930) WITH n WHERE EXISTS { CALL { RETURN 5 AS k } WITH n, k MATCH (n)-[:R11930]->() RETURN k } RETURN n.name AS name",//
+        "MATCH (n:P11930) WITH n WHERE any(x IN [n.name] WHERE x = 'a') RETURN n.name AS name"))
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        assertThat(rs.stream().map(r -> (String) r.getProperty("name")).toList()).as(query).containsExactly("a");
+      }
+  }
+
   @Test
   void distinctExportNameWorks() {
     final List<Long> js = new ArrayList<>();
