@@ -908,7 +908,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       if (payload.tx().getStatus() == TransactionContext.STATUS.INACTIVE)
         return;
-      if (local != null && (local.isClaimed() || !stateMachine.withdrawLocalCommit(local) && local.isClaimed()))
+      if (local != null && !local.isClaimed()) {
+        // The withdrawal is the point: rolled back, the transaction must not be claimable by the apply thread any more. It fails
+        // when the apply thread claimed it in between (the commit is then concluded below), or when an arm of
+        // replicateAndConclude had already withdrawn it (and isClaimed() stays false)
+        stateMachine.withdrawLocalCommit(local);
+      }
+      if (local != null && local.isClaimed())
         concludeLocalCommit(local, payload);
       else if (payload.tx().getStatus() == TransactionContext.STATUS.COMMIT_1ST_PHASE)
         rollback();

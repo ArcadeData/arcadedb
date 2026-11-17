@@ -398,10 +398,10 @@ final class DatabaseQuarantine {
   }
 
   /**
-   * The decision for one database that opened with a unique index it could not load, for a file with no header page (issue
-   * #11258): the index enforces nothing on this node, and the load cannot tell a half-arrived compaction file from one a power
-   * loss emptied. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines the database and re-installs it from the
-   * leader, unless this node is the only voter.
+   * The decision for one database that opened with a unique index it could not load whole: a file with no header page (issue
+   * #11258), or a compacted sub-index the load could not attach (issue #12348). The index enforces nothing on this node, or only on
+   * part of the keys, and the load cannot tell how its files got there. Like {@link #quarantineAfterIncompleteRecovery}, it
+   * quarantines the database and re-installs it from the leader, unless this node is the only voter.
    *
    * @return {@code true} when this call quarantined the database
    */
