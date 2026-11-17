@@ -74,7 +74,8 @@ public class CypherSplitFunction implements StatelessFunction {
 
     // Neo4j 5 also accepts split(original :: STRING, splitDelimiters :: LIST<STRING>), which splits the text on any
     // of the delimiters of the list (issue #12396).
-    if (delimiter instanceof List<?> list) {
+    final List<Object> list = CypherFunctionHelper.asListOrNull(delimiter);
+    if (list != null) {
       final List<String> delimiters = new ArrayList<>(list.size());
       for (final Object element : list) {
         // a null delimiter makes the whole answer null, as in Neo4j
