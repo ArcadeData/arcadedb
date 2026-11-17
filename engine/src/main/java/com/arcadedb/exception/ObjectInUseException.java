@@ -21,7 +21,9 @@ package com.arcadedb.exception;
 /**
  * A statement that is well formed and names objects that exist, refused because of what the database holds now: a vertex or
  * edge type or bucket that still has records ({@code TRUNCATE TYPE}, {@code TRUNCATE BUCKET}, {@code DROP TYPE} without
- * {@code UNSAFE}), a property an index is built on ({@code DROP PROPERTY} without {@code FORCE}). The caller's to resolve - the
+ * {@code UNSAFE}), a property an index is built on ({@code DROP PROPERTY} without {@code FORCE}), a bucket a type owns
+ * ({@code DROP BUCKET}), stored records that break a constraint the statement would declare ({@code CREATE PROPERTY ... (mandatory
+ * true)}, {@code ALTER PROPERTY ... MAX}, issue #12436). The caller's to resolve - the
  * message says how - and never retryable: the same statement is refused again until the state changes.
  * <p>
  * A {@link CommandExecutionException}, which these refusals were raised as, so every caller that catches them keeps catching
@@ -34,5 +36,9 @@ package com.arcadedb.exception;
 public class ObjectInUseException extends CommandExecutionException {
   public ObjectInUseException(final String message) {
     super(message);
+  }
+
+  public ObjectInUseException(final String message, final Throwable cause) {
+    super(message, cause);
   }
 }

@@ -21,7 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -87,7 +87,7 @@ public class DropBucketStatement extends DDLStatement {
 
     final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
     if (type != null)
-      throw new CommandExecutionException("Cannot drop bucket '" + bucketName + "' because used by type '" + type.getName() + "'");
+      throw new ObjectInUseException("Cannot drop bucket '" + bucketName + "' because used by type '" + type.getName() + "'");
 
     // REMOVE CACHE OF COMMAND RESULTS IF ACTIVE
     database.getSchema().dropBucket(bucketName);
