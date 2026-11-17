@@ -1,0 +1,135 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph.olap;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+
+import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression for #11794: a graph analytical view kept the changes of a transaction per THREAD, so a transaction whose
+ * statements ran on different threads (an HTTP session: one request per statement, each on whichever worker is free) handed
+ * the view only the changes of the thread that made the first one. The records were committed and the view never learnt
+ * of the others. The changes now belong to the transaction, whichever thread makes them.
+ * <p>
+ * Each statement here runs on its own thread with the transaction handed over through {@link DatabaseContext}, the way
+ * the HTTP server attaches a session transaction to the worker that serves a request, and the commit runs on yet another.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue11794GavDeltaAcrossThreadsTest extends TestHelper {
+  private static final int VERTICES = 6;
+
+  private RID[]           sources;
+  private RID[]           targets;
+  private ExecutorService workers;
+
+  @BeforeEach
+  void setupGraph() {
+    database.getSchema().createVertexType("A");
+    database.getSchema().createVertexType("B");
+    database.getSchema().createEdgeType("R");
+    sources = new RID[VERTICES];
+    targets = new RID[VERTICES];
+    database.transaction(() -> {
+      for (int i = 0; i < VERTICES; i++) {
+        sources[i] = database.newVertex("A").set("id", i).save().getIdentity();
+        targets[i] = database.newVertex("B").set("id", i).save().getIdentity();
+      }
+    });
+    // a thread per task: the pool creates a new one for every submission up to its core size
+    workers = Executors.newFixedThreadPool(VERTICES + 2);
+  }
+
+  @AfterEach
+  void stopWorkers() throws InterruptedException {
+    workers.shutdownNow();
+    assertThat(workers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS", "ASYNCHRONOUS" })
+  void everyThreadOfOneTransactionReachesTheView(final GraphAnalyticalView.UpdateMode mode) throws Exception {
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("gv").withVertexTypes("A", "B")
+        .withEdgeTypes("R").withUpdateMode(mode).build();
+    try {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      database.begin();
+      final TransactionContext tx = db.getTransaction();
+      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+
+      // one statement per thread, one after the other, as the requests of one session
+      for (int i = 0; i < VERTICES; i++) {
+        final int index = i;
+        workers.submit(() -> runInTransaction(db, tx, () -> {
+          final MutableVertex source = sources[index].asVertex().modify();
+          source.newEdge("R", targets[index].asVertex());
+        })).get(30, TimeUnit.SECONDS);
+      }
+      // ... and a vertex created on yet another thread
+      final RID[] created = new RID[1];
+      workers.submit(() -> runInTransaction(db, tx, () -> created[0] = database.newVertex("A").set("id", 99).save().getIdentity()))
+          .get(30, TimeUnit.SECONDS);
+
+      // the commit on a thread that made no change at all
+      workers.submit(() -> runInTransaction(db, tx, database::commit)).get(30, TimeUnit.SECONDS);
+
+      assertThat(database.countType("R", false)).isEqualTo(VERTICES);
+
+      Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
+        assertThat(view.isStale()).as("the view caught up with the commit").isFalse();
+        for (int i = 0; i < VERTICES; i++) {
+          final int nodeId = view.getNodeId(sources[i]);
+          assertThat(nodeId).isGreaterThanOrEqualTo(0);
+          assertThat(view.countEdges(nodeId, Vertex.DIRECTION.OUT, "R"))
+              .as("edge %d, created on its own thread, is in the view", i).isEqualTo(1L);
+        }
+        assertThat(view.getNodeId(created[0])).as("the vertex created on another thread is in the view")
+            .isGreaterThanOrEqualTo(0);
+      });
+    } finally {
+      view.drop();
+    }
+  }
+
+  private void runInTransaction(final DatabaseInternal db, final TransactionContext tx, final Runnable work) {
+    DatabaseContext.INSTANCE.init(db, tx);
+    try {
+      work.run();
+    } finally {
+      DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
+    }
+  }
+}
