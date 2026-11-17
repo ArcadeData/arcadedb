@@ -102,8 +102,8 @@ public class UpsertStep extends AbstractExecutionStep {
     final DocumentType type = targetType(commandTarget);
     if (type instanceof EdgeType)
       throw new CommandSQLParsingException("UPSERT is not available on the edge type '" + type.getName()
-          + "': an edge always requires FROM and TO endpoints. Use CREATE EDGE ... IF NOT EXISTS to create an edge only when it"
-          + " does not exist yet");
+          + "': an edge always requires FROM and TO endpoints. Use CREATE EDGE ... IF NOT EXISTS to create an edge only when none"
+          + " matches yet");
   }
 
   /**
