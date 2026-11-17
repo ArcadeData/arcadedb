@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.TypeMismatchException;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.verification.VerificationException;
 
+import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
@@ -87,19 +88,22 @@ public final class GremlinTraversalErrors {
 
   /** Whether the first frame of the stack that is not the JDK's belongs to TinkerPop. */
   static boolean raisedByTinkerPop(final Throwable error) {
-    for (final StackTraceElement frame : error.getStackTrace()) {
-      final String className = frame.getClassName();
-      if (className.startsWith("java.") || className.startsWith("jdk.") || className.startsWith("sun."))
-        continue;
-      return className.startsWith(TINKERPOP_PACKAGE);
-    }
-    return false;
+    final StackTraceElement[] frames = error.getStackTrace();
+    int first = 0;
+    while (first < frames.length && isJdkClass(frames[first].getClassName()))
+      first++;
+    return first < frames.length && frames[first].getClassName().startsWith(TINKERPOP_PACKAGE);
+  }
+
+  private static boolean isJdkClass(final String className) {
+    return className.startsWith("java.") || className.startsWith("jdk.") || className.startsWith("sun.");
   }
 
   private static Throwable rootCause(final Throwable error) {
     Throwable root = error;
-    // BOUNDED: A CAUSE CHAIN CAN LOOP BACK ON ITSELF
-    for (int depth = 0; depth < 32 && root.getCause() != null && root.getCause() != root; depth++)
+    // BOUNDED: A CAUSE CHAIN CAN LOOP BACK ON ITSELF. Objects.equals(), as the cycle guard of ArcadeGremlin: a throwable can be its
+    // own cause, and Throwable does not override equals(), so this is the same reference test
+    for (int depth = 0; depth < 32 && root.getCause() != null && !Objects.equals(root.getCause(), root); depth++)
       root = root.getCause();
     return root;
   }
