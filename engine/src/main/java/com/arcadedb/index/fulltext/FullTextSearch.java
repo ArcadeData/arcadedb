@@ -161,6 +161,11 @@ public class FullTextSearch {
    * still pushed down after each bucket's candidates are scored; a global top-K is contained in the union of those
    * now-comparable per-bucket top-K sets, so callers still sort and truncate a union of at most {@code buckets * limit}
    * entries.
+   * <p>
+   * A query that is a disjunction of terms - the common shape of a keyword search - takes {@link FullTextTopKSearch} instead
+   * (issue #12458): the postings are read once into primitive arrays, and MaxScore keeps the best {@code limit} against one
+   * threshold shared by every bucket, so the answer holds exactly {@code limit} entries (fewer when there are fewer matches), with
+   * the scores the general path computes.
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit) {
     return search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(null));
@@ -200,6 +205,22 @@ public class FullTextSearch {
     if (bucketIndexes.isEmpty() || (ridFilter != null && ridFilter.acceptsNothing()))
       return Map.of();
 
+    // A disjunction of terms is answered from the postings alone, read once, with one top-k threshold shared by the buckets
+    // (issue #12458); every other query shape matches first and scores after
+    final Map<RID, Float> disjunction = FullTextTopKSearch.search(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields,
+        ridFilter);
+    if (disjunction != null)
+      return disjunction;
+
+    return searchMatchingFirst(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter);
+  }
+
+  /**
+   * The general path of {@link #search(TypeIndex, String, int, WorkGuard, List, RIDFilter)}, for any query shape: every bucket is
+   * matched, then its matches scored. Package-private so a test can hold {@link FullTextTopKSearch} to it.
+   */
+  static Map<RID, Float> searchMatchingFirst(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
+      final int effectiveLimit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
     if (bucketIndexes.size() > 1 && bucketIndexes.getFirst().isBM25())
       return searchBM25(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter);
 

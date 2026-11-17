@@ -48,6 +48,7 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.WildcardQuery;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -400,6 +401,41 @@ public class FullTextQueryExecutor {
   }
 
   /**
+   * The scoring tokens of a query that is a disjunction of terms, each with its boost, in the order the BM25 pass sums them; or null
+   * for any other query (issue #12458). Such a query - terms, caret boosts and OR groups of them, which is also what a restriction to
+   * some fields turns an unqualified term into - matches exactly the documents holding one of its tokens and scores each with the
+   * tokens it holds, so {@link FullTextTopKSearch} can answer it from the postings alone. A required, prohibited, phrase, prefix,
+   * wildcard, fuzzy or regexp clause, or more tokens than {@link #MAX_EXPANDED_SCORING_TERMS} (beyond which a token matches but does
+   * not score), keep the general path.
+   */
+  LinkedHashMap<String, Float> termDisjunction(final String queryText) {
+    resetState();
+    final Query query = parseQuery(queryText);
+    if (!isTermDisjunction(query))
+      return null;
+    collectTokensOnly(query);
+    if (scoringTokens.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS)
+      return null;
+    return new LinkedHashMap<>(scoringTokens);
+  }
+
+  private static boolean isTermDisjunction(final Query query) {
+    if (query instanceof TermQuery)
+      return true;
+    if (query instanceof final BoostQuery bq)
+      return isTermDisjunction(bq.getQuery());
+    if (query instanceof final BooleanQuery bq) {
+      if (bq.clauses().isEmpty() || bq.getMinimumNumberShouldMatch() > 0)
+        return false;
+      for (final BooleanClause clause : bq.clauses())
+        if (clause.occur() != BooleanClause.Occur.SHOULD || !isTermDisjunction(clause.query()))
+          return false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Returns the bucket-local candidate set without applying bucket-local BM25 statistics. Used by type-wide search so matching
    * remains bucket-local while scoring uses one comparable corpus scope across every bucket.
    */
@@ -410,7 +446,10 @@ public class FullTextQueryExecutor {
     guard.check();
     resetState();
     final Map<RID, AtomicInteger> matches = collectQueryMatches(parseQuery(queryString));
-    return new BM25QueryMatch(Set.copyOf(matches.keySet()), Map.copyOf(scoringTokens), Map.copyOf(documentFrequencies));
+    // The tokens keep this executor's order rather than Map.copyOf's, which is salted per JVM: it is the order every bucket sums
+    // a document's contributions in, so a score does not move in its last bit from one run to the next (issue #12458)
+    return new BM25QueryMatch(Set.copyOf(matches.keySet()), Collections.unmodifiableMap(new LinkedHashMap<>(scoringTokens)),
+        Map.copyOf(documentFrequencies));
   }
 
   private Query parseQuery(final String queryString) {

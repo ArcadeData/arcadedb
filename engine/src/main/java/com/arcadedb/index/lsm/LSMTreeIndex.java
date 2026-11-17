@@ -780,6 +780,45 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
+   * The live values of a key as primitive arrays sorted by RID, with the posting statistics a full-text index stores beside them:
+   * what {@link #get(Object[])} answers for the key, without an object per value (issue #12458). When the current transaction holds
+   * changes to the key that it has not committed, they come from {@link #get(Object[])}, the one place that merges them.
+   */
+  public LSMTreeIndexPostings getPostings(final Object[] keys) {
+    checkIsValid();
+    final Object[] convertedKeys;
+    try {
+      convertedKeys = convertKeys(keys);
+    } catch (final IllegalArgumentException e) {
+      // as get(): a key the declared type cannot read equals no indexed key
+      return new LSMTreeIndexPostings();
+    }
+    if (!areReadAsKeys(keys, convertedKeys))
+      return new LSMTreeIndexPostings();
+
+    if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
+      final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
+          getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
+      if (indexChanges != null && indexChanges.containsKey(new TransactionIndexContext.ComparableKey(convertedKeys))) {
+        final LSMTreeIndexPostings postings = new LSMTreeIndexPostings();
+        try (final IndexCursor cursor = get(keys)) {
+          while (cursor.hasNext()) {
+            final RID rid = cursor.next().getIdentity();
+            if (rid instanceof final FullTextPostingRID posting)
+              postings.addRaw(rid.getBucketId(), rid.getPosition(), posting.getTf(), posting.getDocLength());
+            else
+              postings.addRaw(rid.getBucketId(), rid.getPosition(), 0, 0);
+          }
+        }
+        postings.resolve();
+        return postings;
+      }
+    }
+
+    return lock.executeInReadLock(() -> mutable.getPostings(convertedKeys));
+  }
+
+  /**
    * Enables or disables BM25 per-posting statistics storage (term frequency + document length). Propagates to the mutable index
    * and, through it, to the compacted sub-index. Used by the full-text index when configured with BM25 similarity.
    */
