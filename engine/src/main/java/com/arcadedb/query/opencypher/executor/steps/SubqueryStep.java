@@ -223,7 +223,7 @@ public class SubqueryStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return buffer.get(bufferIndex++);
+        return liveRow(buffer.get(bufferIndex++), context);
       }
 
       private void fetchMore(final int n) {
@@ -373,7 +373,7 @@ public class SubqueryStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return buffer.get(bufferIndex++);
+        return liveRow(buffer.get(bufferIndex++), context);
       }
 
       private void fetchMore() {
@@ -625,6 +625,18 @@ public class SubqueryStep extends AbstractExecutionStep {
     // gone one (issue #6977).
     LabelReplacements.of(context).redirect(outerRow);
     refreshDocumentBindings(outerRow);
+  }
+
+  /**
+   * A buffered row as it is served: the body of a LATER row of the same batch may have replaced, by a label write, a node
+   * this row holds, after {@link #refreshOuterBindings} pointed it at the then-live record. It is served with the live one,
+   * not the record that later body deleted (issue #11764). Only a body that can write replaces anything, and
+   * {@code redirect} returns at once while the statement replaced nothing.
+   */
+  private Result liveRow(final Result row, final CommandContext context) {
+    if (innerMayWrite)
+      LabelReplacements.of(context).redirect(row);
+    return row;
   }
 
   /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */

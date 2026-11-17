@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -28,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -227,5 +229,91 @@ class LabelReplacementsTest {
     for (final Edge edge : vertex.getEdges(direction))
       weights.add(edge.get("w"));
     return weights;
+  }
+
+  /**
+   * Batches of {@code CALL { ... } IN TRANSACTIONS} commit on their own, and the engine hands the slot a committed delete
+   * freed to a later insert. A replacement created on the slot of a record replaced earlier in the statement would make
+   * that RID name two records: an old binding of the replaced one and the new record could not be told apart, and either
+   * resolve answered the wrong one or the two chains formed a cycle. A replacement never takes such a slot.
+   */
+  @Test
+  // A hang detector: a RID naming two records let resolve() follow a cycle forever
+  @Timeout(60)
+  void aReplacementNeverTakesTheSlotOfARecordReplacedEarlierInTheStatement() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] original = new Vertex[1];
+    database.transaction(() -> original[0] = database.newVertex("A").set("name", "old").save());
+    final RID freed = original[0].getIdentity();
+
+    // Batch 1 relabels it A -> B and commits: the original's slot in A's bucket is free
+    final Vertex[] firstReplacement = new Vertex[1];
+    database.transaction(() -> firstReplacement[0] = replacements.replace(original[0], "B"));
+
+    // The precondition the guard exists for: the engine does hand that slot out again
+    database.begin();
+    final RID probe = database.newVertex("A").save().getIdentity();
+    database.rollback();
+    assertThat(probe).as("a new A vertex takes the freed slot").isEqualTo(freed);
+
+    // Batch 2 relabels another vertex B -> A: its replacement is created in A's bucket, where the freed slot is
+    final Vertex[] other = new Vertex[1];
+    database.transaction(() -> other[0] = database.newVertex("B").set("name", "other").save());
+    final Vertex[] secondReplacement = new Vertex[1];
+    database.transaction(() -> secondReplacement[0] = replacements.replace(other[0], "A"));
+
+    assertThat(secondReplacement[0].getIdentity()).isNotEqualTo(freed);
+    assertThat(replacements.resolve(original[0])).isSameAs(firstReplacement[0]);
+    assertThat(replacements.resolve(other[0])).isSameAs(secondReplacement[0]);
+    assertThat(replacements.resolve(secondReplacement[0])).isSameAs(secondReplacement[0]);
+    // The record created and dropped to step over the freed slot leaves nothing behind
+    assertThat(database.countType("A", false)).isEqualTo(1);
+    assertThat(database.countType("B", false)).isEqualTo(1);
+  }
+
+  /**
+   * The edge side of {@link #aReplacementNeverTakesTheSlotOfARecordReplacedEarlierInTheStatement}: an edge re-attached
+   * once per relabelled endpoint, across committed batches, never lands on the slot a replaced edge freed, so an edge
+   * bound before the first batch still resolves - and terminates - on the live copy incident to both live endpoints.
+   */
+  @Test
+  // A hang detector: a RID naming two edges let resolveEdge() follow a cycle forever
+  @Timeout(60)
+  void aReattachedEdgeNeverTakesTheSlotOfAnEdgeReplacedEarlierInTheStatement() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] source = new Vertex[1];
+    final Vertex[] target = new Vertex[1];
+    final Edge[] bound = new Edge[1];
+    database.transaction(() -> {
+      source[0] = database.newVertex("A").set("name", "s").save();
+      target[0] = database.newVertex("B").set("name", "t").save();
+      bound[0] = ((MutableVertex) source[0]).newEdge("E", target[0], "w", 7);
+    });
+    final RID freed = bound[0].getIdentity();
+
+    // Batch 1 relabels the source and commits: the bound edge is re-created and its slot in E's bucket is free
+    final Vertex[] newSource = new Vertex[1];
+    database.transaction(() -> newSource[0] = replacements.replace(source[0], "C"));
+    final Edge firstCopy = replacements.resolveEdge(bound[0]);
+    assertThat(firstCopy.getIdentity()).isNotEqualTo(freed);
+
+    // The precondition the guard exists for: the engine does hand the freed edge slot out again
+    database.begin();
+    final RID probe = database.newVertex("A").save().newEdge("E", database.newVertex("B").save()).getIdentity();
+    database.rollback();
+    assertThat(probe).as("a new E edge takes the freed slot").isEqualTo(freed);
+
+    // Batch 2 relabels the target: the copy is re-attached again, in E's bucket, where the freed slot is
+    final Vertex[] newTarget = new Vertex[1];
+    database.transaction(() -> newTarget[0] = replacements.replace(target[0], "C"));
+
+    final Edge live = replacements.resolveEdge(bound[0]);
+    assertThat(live.getIdentity()).isNotEqualTo(freed);
+    assertThat(replacements.resolveEdge(firstCopy)).isSameAs(live);
+    assertThat(replacements.resolveEdge(live)).isSameAs(live);
+    assertThat(live.getOut()).isEqualTo(newSource[0].getIdentity());
+    assertThat(live.getIn()).isEqualTo(newTarget[0].getIdentity());
+    assertThat(live.<Integer>get("w")).isEqualTo(7);
+    assertThat(database.countType("E", false)).isEqualTo(1);
   }
 }

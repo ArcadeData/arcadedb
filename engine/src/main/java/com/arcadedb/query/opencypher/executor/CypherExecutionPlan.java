@@ -31,6 +31,7 @@ import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
@@ -300,11 +301,124 @@ public class CypherExecutionPlan {
    * @return result set
    */
   public ResultSet execute(final CommandContext outerContext, final boolean profiling) {
-    if (!profiling)
-      return executeStreaming(outerContext, null);
+    if (!profiling) {
+      final ResultSet rows = executeStreaming(outerContext, null);
+      // Only a top-level statement answers a caller that reads the LIMIT back, and only one that declares a LIMIT pays the
+      // wrapper (issue #12154)
+      return outerContext == null && declaresStatementLimit() ? new StatementLimitResultSet(rows) : rows;
+    }
 
     final StreamingProfile profile = new StreamingProfile();
     return profile.attach(executeStreaming(outerContext, profile));
+  }
+
+  /**
+   * Whether the rows this statement answers are bounded by a LIMIT it declares: the LIMIT of its {@code RETURN}, or of every
+   * branch of a {@code UNION}. A LIMIT of a {@code WITH} bounds the rows of a later clause, not the answer.
+   */
+  private boolean declaresStatementLimit() {
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+      for (final CypherExecutionPlan branch : unionSubqueryPlans)
+        if (!branch.declaresStatementLimit())
+          return false;
+      return true;
+    }
+    return statement.getReturnClause() != null && statement.getLimit() != null;
+  }
+
+  /**
+   * The LIMIT this statement declares on the rows it answers, evaluated against its parameters, or 0 when it declares none
+   * or it cannot be evaluated here (the execution reports that error itself). A {@code UNION} answers at most the sum of the
+   * LIMITs of its branches, and is unbounded when one branch is.
+   * <p>
+   * What the HTTP endpoints raise their default row cap to, as they do with the LIMIT of a SQL plan (issue #12154): the
+   * value can only raise that cap, so a LIMIT smaller than it changes nothing there.
+   */
+  int getStatementLimit() {
+    return Math.max(0, declaredLimit());
+  }
+
+  /** {@link #getStatementLimit()}, telling "no LIMIT" (-1) from a LIMIT 0, which bounds a UNION branch to no rows. */
+  private int declaredLimit() {
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+      long sum = 0;
+      for (final CypherExecutionPlan branch : unionSubqueryPlans) {
+        final int branchLimit = branch.declaredLimit();
+        if (branchLimit < 0)
+          return -1;
+        sum += branchLimit;
+      }
+      return (int) Math.min(sum, Integer.MAX_VALUE);
+    }
+
+    if (statement.getReturnClause() == null || statement.getLimit() == null)
+      return -1;
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    setupFunctionResolver(context);
+    try {
+      final CypherFunctionFactory functionFactory = expressionEvaluator != null ? expressionEvaluator.getFunctionFactory() : null;
+      return new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context);
+    } catch (final RuntimeException e) {
+      // The LimitStep evaluates the same expression and fails the statement with the reason: nothing to raise a cap to here
+      return -1;
+    }
+  }
+
+  /**
+   * The rows of a top-level statement that declares a LIMIT, answering {@link ResultSet#getStatementLimit()} with it. A
+   * Cypher statement builds no {@link ExecutionPlan} for its rows, which is where SQL keeps the value, and a plan made up
+   * only to carry it would reach every consumer that reads plans (the server profiler, the HTTP explain) as one.
+   * Evaluated on demand: a caller that never asks pays nothing but the delegation.
+   */
+  private final class StatementLimitResultSet implements ResultSet {
+    private final ResultSet delegate;
+
+    private StatementLimitResultSet(final ResultSet delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public boolean hasNext() {
+      return delegate.hasNext();
+    }
+
+    @Override
+    public Result next() {
+      return delegate.next();
+    }
+
+    @Override
+    public void close() {
+      delegate.close();
+    }
+
+    @Override
+    public void reset() {
+      delegate.reset();
+    }
+
+    @Override
+    public Optional<ExecutionPlan> getExecutionPlan() {
+      return delegate.getExecutionPlan();
+    }
+
+    @Override
+    public Optional<QueryStatistics> getStatistics() {
+      return delegate.getStatistics();
+    }
+
+    @Override
+    public FacetResults getFacets() {
+      return delegate.getFacets();
+    }
+
+    @Override
+    public int getStatementLimit() {
+      return CypherExecutionPlan.this.getStatementLimit();
+    }
   }
 
   /**
@@ -1208,7 +1322,8 @@ public class CypherExecutionPlan {
         profileOutput.append("No execution steps generated\n");
     }
 
-    return new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, elapsedNanos);
+    // The plan of the profiled rows carries the statement's LIMIT, where a SQL plan carries it (issue #12154)
+    return new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, elapsedNanos, getStatementLimit());
   }
 
   /**
@@ -1278,6 +1393,12 @@ public class CypherExecutionPlan {
       // Reading the clock rather than stopping it: a caller that inspects progress mid-stream and asks again at
       // the end must get the elapsed of the whole run the second time, not the reading frozen by the first ask.
       return Optional.of(buildProfilePlan(context, rootStep, countPushedDown, elapsedSoFar(), rowCount));
+    }
+
+    /** Without building the profile the plan would carry it in (issue #12154). */
+    @Override
+    public int getStatementLimit() {
+      return CypherExecutionPlan.this.getStatementLimit();
     }
 
     /** The run's elapsed: final once the run has ended, and how long it has been going otherwise. */
