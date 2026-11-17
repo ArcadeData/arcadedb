@@ -20,6 +20,7 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -56,7 +58,9 @@ class RetiredIndexFileReadTest extends TestHelper {
     db.getFileManager().dropFile(fileId);
     try {
       assertThatThrownBy(() -> index.get(new Object[] { "name-7" })).isInstanceOf(IndexException.class)
-          .hasMessageContaining("Doc").hasMessageContaining("retired");
+          .hasMessageContaining("Doc").hasMessageContaining("retired")
+          // what every wire answers: retry, not the bad request of the IllegalArgumentException it carries as its cause
+          .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.RETRY));
       assertThatThrownBy(() -> index.iterator(true)).isInstanceOf(IndexException.class);
       assertThatThrownBy(() -> index.range(true, new Object[] { "name-1" }, true, new Object[] { "name-3" }, true))
           .isInstanceOf(IndexException.class);

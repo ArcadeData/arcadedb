@@ -42,6 +42,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplacedException;
 import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TempIndexCursor;
@@ -620,9 +621,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   /**
    * {@code read} under the index read lock. A read that cannot reach the index's files because they were retired reads an
    * index that a newer schema generation has replaced, as on an HA replica that applied a compaction while a query still held
-   * this instance (issue #12358). That is an {@link IndexException}, as for an index dropped or rebuilt under a statement,
-   * which plans the statement again on the current generation; not the {@link IllegalArgumentException} a missing or closed
-   * file is reported with, which a client takes for a bad request.
+   * this instance (issue #12358). That is an {@link IndexReplacedException}, an {@link IndexException} as for an index dropped
+   * or rebuilt under a statement, which plans the statement again on the current generation, and retryable on every wire; not
+   * the {@link IllegalArgumentException} a missing or closed file is reported with, which a client takes for a bad request.
    */
   private IndexCursor readLive(final Callable<IndexCursor> read) {
     try {
@@ -632,7 +633,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       final LSMTreeIndexCompacted subIndex = current.getSubIndex();
       if (!isRetired(current.getFileId()) && (subIndex == null || !isRetired(subIndex.getFileId())))
         throw e;
-      throw new IndexException("Index '" + getName() + "' was replaced while it was read: its file is retired", e);
+      throw new IndexReplacedException("Index '" + getName() + "' was replaced while it was read: its file is retired", e);
     }
   }
 
