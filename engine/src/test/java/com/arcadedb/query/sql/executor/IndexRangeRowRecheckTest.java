@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.schema.Schema;
@@ -130,6 +131,7 @@ class IndexRangeRowRecheckTest extends TestHelper {
       final RangeRun run = runWithAMoveAtTheFirstLoad();
       assertThat(run.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.PHYSICAL_ORDER);
       assertRowsInRange(run, RECORDS / 5);
+      assertOnlyTheFirstLoadedRemains(run);
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
     }
@@ -145,6 +147,7 @@ class IndexRangeRowRecheckTest extends TestHelper {
       final RangeRun run = runWithAMoveAtTheFirstLoad();
       assertThat(run.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.PHYSICAL_ORDER_CHUNKED);
       assertRowsInRange(run, RECORDS / 5);
+      assertOnlyTheFirstLoadedRemains(run);
     } finally {
       PhysicalOrderRidFetcher.maxBufferedRids = 1 << 20;
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
@@ -175,7 +178,8 @@ class IndexRangeRowRecheckTest extends TestHelper {
     }
   }
 
-  private record RangeRun(List<Object> values, GetValueFromIndexEntryStep.Strategy strategy, String plan) {
+  private record RangeRun(List<Object> values, List<Object> keys, Object firstLoadedKey, GetValueFromIndexEntryStep.Strategy strategy,
+                          String plan) {
   }
 
   /**
@@ -199,8 +203,10 @@ class IndexRangeRowRecheckTest extends TestHelper {
    */
   private RangeRun runWithAMoveAtTheFirstLoad() {
     final AtomicBoolean moved = new AtomicBoolean();
+    final Object[] firstLoadedKey = new Object[1];
     final AfterRecordReadListener moveOnce = record -> {
       if (moved.compareAndSet(false, true)) {
+        firstLoadedKey[0] = ((Document) record).get("k");
         final FutureTask<Void> move = new FutureTask<>(() -> {
           database.transaction(() -> database.command("sql", "UPDATE T SET v = 100 WHERE v >= 3 AND v < 5 AND @rid <> ?",
               record.getIdentity()));
@@ -216,21 +222,34 @@ class IndexRangeRowRecheckTest extends TestHelper {
       return record;
     };
     final List<Object> values = new ArrayList<>();
+    final List<Object> keys = new ArrayList<>();
     database.getEvents().registerListener(moveOnce);
     try (final ResultSet rows = database.query("sql", "SELECT k, v FROM T WHERE v >= 3 AND v < 5 ORDER BY k")) {
-      while (rows.hasNext())
-        values.add(rows.next().getProperty("v"));
+      while (rows.hasNext()) {
+        final Result row = rows.next();
+        values.add(row.getProperty("v"));
+        keys.add(row.getProperty("k"));
+      }
       final ExecutionPlan plan = rows.getExecutionPlan().get();
       GetValueFromIndexEntryStep step = null;
       for (final ExecutionStep candidate : plan.getSteps())
         if (candidate instanceof GetValueFromIndexEntryStep found)
           step = found;
       assertThat(step).as(plan.prettyPrint(0, 2)).isNotNull();
-      return new RangeRun(values, step.getStrategy(), plan.prettyPrint(0, 2));
+      return new RangeRun(values, keys, firstLoadedKey[0], step.getStrategy(), plan.prettyPrint(0, 2));
     } finally {
       database.getEvents().unregisterListener(moveOnce);
       assertThat(moved.get()).as("the commit landed while the range was loaded").isTrue();
     }
+  }
+
+  /**
+   * The record read first is never moved by the commit (and records the load had already read stay in the range too), so a check
+   * that drops every row, or the one still in the range, is caught here.
+   */
+  private static void assertOnlyTheFirstLoadedRemains(final RangeRun run) {
+    assertThat(run.keys()).as("the records still in the range are returned").isNotEmpty();
+    assertThat(run.keys()).as("the record loaded first is still in the range, so it is returned").contains(run.firstLoadedKey());
   }
 
   private static void assertRowsInRange(final RangeRun run, final int rangeRows) {
