@@ -239,8 +239,12 @@ class BenchMainTest {
 
   @Test
   void uploadWithUnreachableServerExits1AndNamesTheFile() throws Exception {
-    Files.copy(Path.of("src/test/resources/run-sample.json"), tmp.resolve("b.json"));
-    Files.copy(Path.of("src/test/resources/run-sample.json"), tmp.resolve("a.json"));
+    // from the classpath: CI runs this shard with -Pfork-isolation, whose working directory is not the module
+    try (final InputStream in = BenchMainTest.class.getResourceAsStream("/run-sample.json")) {
+      final byte[] sample = in.readAllBytes();
+      Files.write(tmp.resolve("b.json"), sample);
+      Files.write(tmp.resolve("a.json"), sample);
+    }
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     final PrintStream savedErr = System.err;
     final ByteArrayOutputStream err = new ByteArrayOutputStream();
