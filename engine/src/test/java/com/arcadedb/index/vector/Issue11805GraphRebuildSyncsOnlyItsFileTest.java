@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -56,14 +57,16 @@ class Issue11805GraphRebuildSyncsOnlyItsFileTest extends TestHelper {
     });
     assertThat(search(vector(random))).isEqualTo(10);
 
-    // SETTLE EVERY FILE, THEN WRITE THE OTHER TYPE AND ONE MORE VECTOR: THE NEXT SEARCH REBUILDS THE SMALL GRAPH
+    // SETTLE EVERY FILE, THEN WRITE THE OTHER TYPE AND ENOUGH VECTORS TO REACH THE MUTATION THRESHOLD: THE NEXT SEARCH REBUILDS
+    // THE SMALL GRAPH (below the threshold it searches the new vectors through the delta buffer and does not rebuild)
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
     assertThat(db.getFileManager().syncFiles()).isTrue();
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)
         database.newDocument("W").set("name", "w" + i).save();
-      database.newVertex("E").set("emb", vector(random)).save();
+      for (int i = 0; i < GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD.getValueAsInteger(); i++)
+        database.newVertex("E").set("emb", vector(random)).save();
     });
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
