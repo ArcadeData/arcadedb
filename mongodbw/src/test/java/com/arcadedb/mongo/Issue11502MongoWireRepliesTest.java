@@ -33,6 +33,7 @@ import com.mongodb.MongoWriteException;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.InsertManyOptions;
 import com.mongodb.client.model.UpdateOptions;
 import org.bson.Document;
@@ -147,12 +148,13 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
 
     @Test
     void aSkipOrLimitThatIsNoNumberIsRefused() {
-      for (final String option : List.of("skip", "limit")) {
-        final MongoCommandException e = catchThrowableOfType(MongoCommandException.class,
-            () -> mongoDatabase.runCommand(new Document("count", "doc").append(option, "1")));
-        assertThat(e).as(option).isNotNull();
-        assertThat(e.getErrorCode()).as(option).isEqualTo(14);
-      }
+      for (final String collectionName : List.of("doc", "nosuch"))
+        for (final String option : List.of("skip", "limit")) {
+          final MongoCommandException e = catchThrowableOfType(MongoCommandException.class,
+              () -> mongoDatabase.runCommand(new Document("count", collectionName).append(option, "1")));
+          assertThat(e).as("%s on %s", option, collectionName).isNotNull();
+          assertThat(e.getErrorCode()).as("%s on %s", option, collectionName).isEqualTo(14);
+        }
     }
 
     private Object count(final Document options) {
@@ -430,6 +432,34 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
       assertThat(collection.find(eq("_id", 1)).first().getInteger("a")).isEqualTo(7);
       assertThat(collection.find(eq("_id", 2)).first().getInteger("a")).isEqualTo(9);
       assertThat(collection.countDocuments()).isEqualTo(3L);
+    }
+
+    /**
+     * An upsert refused when its statement's transaction commits (a key a unique index already holds) is no upsert: the replay drops
+     * the entry it had added, and keeps the upserts of the statements around it.
+     */
+    @Test
+    void anUpsertRefusedAtCommitIsNotReportedAsUpserted() {
+      collection.createIndex(new Document("k", 1), new IndexOptions().unique(true));
+      collection.updateOne(eq("_id", 1), new Document("$set", new Document("k", "taken")));
+
+      final Document reply = mongoDatabase.runCommand(new Document("update", "doc").append("ordered", false).append("updates", List.of(
+          upsert(300, "free"), upsert(301, "taken"), upsert(302, "other"))));
+
+      final List<Document> upserted = reply.getList("upserted", Document.class);
+      assertThat(upserted).extracting(u -> u.get("index", Number.class).intValue()).containsExactly(0, 2);
+      assertThat(upserted).extracting(u -> u.get("_id")).containsExactly(300, 302);
+      assertThat(reply.get("n", Number.class).intValue()).isEqualTo(2);
+      final List<Document> errors = reply.getList("writeErrors", Document.class);
+      assertThat(errors).hasSize(1);
+      assertThat(errors.getFirst().get("index", Number.class).intValue()).isEqualTo(1);
+      assertThat(errors.getFirst().get("code", Number.class).intValue()).isEqualTo(11000);
+      assertThat(collection.countDocuments(eq("_id", 301))).isZero();
+      assertThat(collection.countDocuments()).isEqualTo(5L);
+    }
+
+    private Document upsert(final int id, final String k) {
+      return new Document("q", new Document("_id", id)).append("u", new Document("$set", new Document("k", k))).append("upsert", true);
     }
 
     /** The text of a refusal reaches the client in production mode too: it names the kind of the stored value, never the value. */

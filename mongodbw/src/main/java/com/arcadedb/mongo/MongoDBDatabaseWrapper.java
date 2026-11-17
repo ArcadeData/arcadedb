@@ -662,13 +662,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document countCollection(final Document document) throws MongoServerException {
     final String collectionName = document.get("count").toString();
     final Document queryObject = (Document) document.get("query");
+    // read first: an invalid option is an error whether or not the collection exists
+    final long limit = getOptionalLong(document, "limit", -1L);
+    final long skip = getOptionalLong(document, "skip", 0L);
 
     final Document response = responseOk();
-    if (getCollection(collectionName) instanceof MongoDBCollectionWrapper collection) {
-      final long limit = getOptionalLong(document, "limit", -1L);
-      final long skip = getOptionalLong(document, "skip", 0L);
+    if (getCollection(collectionName) instanceof MongoDBCollectionWrapper collection)
       response.put("n", wireNumber(collection.countDocuments(queryObject, skip, limit)));
-    } else {
+    else {
       // nothing to count, but an invalid filter is an error whether or not the collection exists
       new MongoFilter(database, queryObject);
       response.put("n", 0);
