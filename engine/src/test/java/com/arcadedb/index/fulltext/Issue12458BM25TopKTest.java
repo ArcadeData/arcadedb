@@ -240,6 +240,13 @@ class Issue12458BM25TopKTest extends TestHelper {
     assertThat(ranked(top, 10)).isEqualTo(ranked(general(index, q.toString(), 10, null), 10));
     assertThat(matches).isGreaterThan(3_000);
     assertThat(scored).as("documents scored exactly for the best 10 of %d matches", matches).isLessThan(matches / 2);
+
+    // without a limit no list is probed: every score is the token-order sum of the walk, with no lookup per document and token
+    final long[] unboundedLookups = new long[1];
+    final Map<RID, Float> all = FullTextTopKSearch.search(FullTextSearch.getBucketIndexes(index), q.toString(), -1,
+        WorkGuard.forCommandDeadline(null), null, null, unboundedLookups);
+    assertThat(all).hasSize(matches).isEqualTo(general(index, q.toString(), -1, null));
+    assertThat(unboundedLookups[0]).as("documents looked up token by token without a limit").isZero();
   }
 
   @Test

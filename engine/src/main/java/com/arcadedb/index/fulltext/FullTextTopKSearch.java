@@ -251,6 +251,11 @@ final class FullTextTopKSearch {
       for (int i = 0; i < lists; ++i)
         boundBelow[i + 1] = boundBelow[i] + Math.max(0.0, maxima[order[i]]);
 
+      // the place of each list in that order: a list is walked when its place is not below the count of probed lists
+      final int[] rank = new int[lists];
+      for (int i = 0; i < lists; ++i)
+        rank[order[i]] = i;
+
       final int[] cursors = new int[lists];
       int nonEssential = nonEssentialLists(boundBelow, lists);
 
@@ -266,8 +271,11 @@ final class FullTextTopKSearch {
           break;
         final long end = start + WINDOW;
 
-        for (int i = nonEssential; i < lists; ++i) {
-          final int list = order[i];
+        // The walked lists in token order (lists are numbered in token order), so a position's sum adds the contributions in the
+        // order the general path adds them: with no probed list, which is always the case without a limit, it is the exact score
+        for (int list = 0; list < lists; ++list) {
+          if (rank[list] < nonEssential)
+            continue;
           final int t = token[list];
           final long[] listPositions = positions[list];
           final int size = sizes[list];
@@ -280,7 +288,8 @@ final class FullTextTopKSearch {
             final long bit = 1L << slot;
             if ((windowDocuments[word] & bit) == 0) {
               windowDocuments[word] |= bit;
-              windowScores[slot] = contribution;
+              // 0.0 + c rather than c, as the general path starts each document's sum from 0.0: the two differ for -0.0 only
+              windowScores[slot] = 0.0 + contribution;
             } else
               windowScores[slot] += contribution;
           }
@@ -311,7 +320,8 @@ final class FullTextTopKSearch {
             if (!reachable)
               continue;
 
-            final float score = (float) exactScore(document);
+            // probed lists add their contributions out of token order: such a document is scored again, in order
+            final float score = (float) (nonEssential == 0 ? partial : exactScore(document));
             if (!top.beats(score, bucketId, document))
               continue;
             if (ridFilter != null && !ridFilter.accepts(new DatabaseRID(ftIndex.getDatabase(), bucketId, document)))
@@ -327,6 +337,7 @@ final class FullTextTopKSearch {
 
     /**
      * The score of a document as the general path computes it: the contributions of the tokens it holds, summed in token order.
+     * Only for the few documents that probed lists completed and that may still enter the heap: it looks every token up.
      */
     private double exactScore(final long document) {
       ++exactScores;
@@ -361,12 +372,15 @@ final class FullTextTopKSearch {
       double max = Double.NEGATIVE_INFINITY;
       if (tokenIdf < 0 || boost < 0 || b < 0 || b > 1 || k1 < 0) {
         // the monotony does not hold: every posting
-        for (int i = 0; i < size; ++i)
+        for (int i = 0; i < size; ++i) {
+          guard.checkPeriodically(++ticks);
           max = Math.max(max, contribution(t, listTfs[i], listDocLengths[i]));
+        }
         return max;
       }
       Arrays.fill(shortestByFrequency, Integer.MAX_VALUE);
       for (int i = 0; i < size; ++i) {
+        guard.checkPeriodically(++ticks);
         final int tf = listTfs[i];
         if (tf < shortestByFrequency.length) {
           if (listDocLengths[i] < shortestByFrequency[tf])
