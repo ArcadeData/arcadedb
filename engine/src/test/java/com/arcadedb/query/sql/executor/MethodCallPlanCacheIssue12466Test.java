@@ -179,7 +179,8 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
         final String fresh = answer(sql, name);
         final String again = answer(sql, name);
         final String cached = answer(sql, name);
-        assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql)).as(sql).isTrue();
+        // by the parsed statement: the cache is keyed by the text with its literals turned into parameters, not by this one
+        assertThat(((DatabaseInternal) database).getStatementCache().get(sql).executionPlanCanBeCached()).as(sql).isTrue();
         assertThat(again).as(sql + " [" + name + "]").isEqualTo(fresh);
         assertThat(cached).as(sql + " [" + name + "]").isEqualTo(fresh);
       }
