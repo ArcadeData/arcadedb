@@ -340,6 +340,14 @@ public class OrderByStep extends AbstractExecutionStep {
        * their sort keys and keeps its own top K; the heaps are merged here. A row remembers where in the sequential scan it
        * was, and a worker meets its rows in ascending position, so among equal keys the row the sequential scan meets first
        * wins, as in {@link #materializeTopK}: the answer, rows and order, is the sequential one.
+       * <p>
+       * Thread safety: the workers share this step's {@link ExpressionEvaluator}, the parsed ORDER BY items, the projection and
+       * {@code projectedColumns} / {@code keyExpressions}, all read-only once the step runs. The expressions they evaluate are
+       * the ones {@link ParallelSafeExpressions} admits, which keep no plain mutable state of their own
+       * ({@code ParallelSafeExpressionsStateTest}), and each worker evaluates them against its own command context. Each worker
+       * fills its own {@link PartialTopK} and charges its own heap limit; this thread reads the partials only after
+       * {@link ParallelRecordScan#aggregate} has returned, and a worker a failure cancelled stops charging under the partial's
+       * monitor.
        *
        * @return the rows, or {@code null} when this execution sorts on this thread
        */
