@@ -60,8 +60,10 @@ public class ToBooleanFunction implements StatelessFunction {
       return ((Number) args[0]).longValue() != 0L;
     if (args[0] instanceof String s) {
       // Neo4j 5 trims a boolean text before reading it (issue #12400): ' true ' is true there, while
-      // toInteger() reads a text as it is written, so ' 12 ' is not a number.
-      final String str = s.trim().toLowerCase(Locale.ROOT);
+      // toInteger() reads a text as it is written, so ' 12 ' is not a number. It trims by Character.isWhitespace, which is what
+      // strip() does: a NUL or other control character around the text is not whitespace (null), where trim() removes every
+      // character up to U+0020 (true), and a no-break space is not whitespace but an em space is
+      final String str = s.strip().toLowerCase(Locale.ROOT);
       if ("true".equals(str))
         return Boolean.TRUE;
       else if ("false".equals(str))

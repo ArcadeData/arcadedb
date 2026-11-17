@@ -23,10 +23,12 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Regression test for issue #12400: the text parsing of {@code toInteger()} and {@code toBoolean()} differed from
@@ -103,6 +105,15 @@ class CypherToIntegerToBooleanParsingIssue12400Test extends TestHelper {
     assertThat(single("RETURN toInteger('1e-30') AS r")).isEqualTo(0L);
   }
 
+  /** The text is short, the divisor a plain truncation would build is 10^1000000000: the answer must come back at once. */
+  @Test
+  void aTinyFractionIsZeroWithoutBuildingAHugeDivisor() {
+    assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+      assertThat(single("RETURN toInteger('1e-1000000000') AS r")).isEqualTo(0L);
+      assertThat(single("RETURN toInteger('-1e-1000000000') AS r")).isEqualTo(0L);
+    });
+  }
+
   @Test
   void theOrNullAndListFormsAnswerNullForATextOutOfRange() {
     assertThat(single("RETURN toIntegerOrNull('9223372036854775808') AS r")).isNull();
@@ -126,6 +137,15 @@ class CypherToIntegerToBooleanParsingIssue12400Test extends TestHelper {
     assertThat(single("RETURN toBoolean('yes') AS r")).isNull();
     assertThat(single("RETURN toBoolean('1') AS r")).isNull();
     assertThat(single("RETURN toBoolean('  ') AS r")).isNull();
+  }
+
+  /** Neo4j 5.26.33: the text is stripped by Character.isWhitespace, so a NUL or a no-break space around it is not stripped. */
+  @Test
+  void aBooleanTextIsStrippedByCharacterIsWhitespace() {
+    assertThat(single("RETURN toBoolean('\\u0000true\\u0000') AS r")).isNull();
+    assertThat(single("RETURN toBoolean('\\u00a0true\\u00a0') AS r")).isNull();
+    assertThat(single("RETURN toBoolean('\\u2003true\\u2003') AS r")).isEqualTo(Boolean.TRUE);
+    assertThat(single("RETURN toBoolean('\\ttrue\\n') AS r")).isEqualTo(Boolean.TRUE);
   }
 
   @Test

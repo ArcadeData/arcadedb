@@ -86,6 +86,9 @@ public class ToIntegerFunction implements StatelessFunction {
     if (value.compareTo(LONG_MAX) > 0 || value.compareTo(LONG_MIN) < 0)
       throw new CommandSemanticException("TypeError: integer, " + text + ", is too large");
 
-    return value.toBigInteger().longValue();
+    // longValue(), not toBigInteger().longValue(): a text like '1e-1000000000' passes the range check above, and toBigInteger()
+    // would build 10^1000000000 to divide by. longValue() truncates towards zero as well and answers 0 for a fraction-only value
+    // without building it
+    return value.longValue();
   }
 }
