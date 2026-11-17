@@ -9187,6 +9187,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } else if (pageNumber > 0 || !multiPageRecord) {
       // FIRST RECORD, START RIGHT AFTER THE HEADER
       result.availablePositionIndex = 0;
+      // A page a commit emptied while a statement holds its first slot (#12336): every allocation reaches here, a continuation
+      // chunk included, which never goes through the reservation that refuses a held slot to an ordinary insert
+      if (isAppendSlotHeld(result, ((long) pageNumber) * maxRecordsInPage))
+        return result;
       result.newRecordPositionInPage = contentHeaderSize;
       result.spaceAvailableInCurrentPage = result.page.getMaxContentSize() - result.newRecordPositionInPage;
     } else {

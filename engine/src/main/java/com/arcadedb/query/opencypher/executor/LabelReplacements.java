@@ -81,7 +81,9 @@ import java.util.logging.Level;
  * every key is held in its bucket ({@link LocalBucket#holdPosition}) from the moment it is recorded until the statement
  * ends ({@link #endOfStatement}), and no insert of any transaction takes a held slot. The old bindings keep resolving
  * through the map and a record created later always has a RID of its own, so the map needs no fencing, and the outer
- * rows of a batch no refresh.
+ * rows of a batch no refresh. The holds cost what the map already costs: one entry per replaced record (and per
+ * re-attached heavy edge) in its bucket, for the length of the statement, and a page whose next append slot is held is
+ * passed over until the statement ends.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

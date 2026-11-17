@@ -102,6 +102,19 @@ class CypherLabelWriteSlotReuseIssue12336Test extends TestHelper {
     assertThat(next[0]).as("the next A vertex takes the slot the statement released").isEqualTo(freed);
   }
 
+  /** PROFILE runs the statement through its own entry point, which ends the replacement map the same way. */
+  @Test
+  void aProfiledStatementReleasesTheSlotsItHeld() {
+    final RID freed = createOriginal();
+
+    run("PROFILE " + STATEMENT);
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(freed.getBucketId());
+    assertThat(bucket.isPositionHeld(freed.getPosition())).isFalse();
+    assertThat(run("MATCH (x:A) RETURN x.touched AS touched")).singleElement()
+        .satisfies(row -> assertThat(row.<Boolean>getProperty("touched")).isTrue());
+  }
+
   /** A statement that fails still gives the slots back. */
   @Test
   void aFailedStatementReleasesTheSlotsItHeld() {
