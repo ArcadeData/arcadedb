@@ -72,18 +72,23 @@ class CypherCallSubqueryExportShadowIssue11689Test extends TestHelper {
   }
 
   /**
-   * A WITH WHERE sees the projected names, and the incoming ones unless the WITH aggregates or is DISTINCT: a name outside
-   * that scope filtered every row out instead of being refused.
+   * A WITH WHERE sees the projected names, and the incoming ones unless the WITH aggregates or is DISTINCT, where only what
+   * repeats a grouping key is read, from its column (issue #12245): a name outside that scope filtered every row out instead
+   * of being refused.
    */
   @Test
   void withWhereReadsTheProjectedAndIncomingNames() {
     for (final String query : List.of(//
         "UNWIND [1, 2] AS i WITH i WHERE zz > 1 RETURN i",//
-        "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j",//
-        "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE i > 1 RETURN j"))
+        // A collapsing WITH hides an incoming variable no grouping key projects as itself, as in Neo4j
+        "UNWIND [1, 2] AS i WITH i + 0 AS j, count(*) AS c WHERE i > 1 RETURN j"))
       assertThatThrownBy(() -> database.query("opencypher", query).close()).as(query)
           .isInstanceOf(CommandParsingException.class).hasMessageContaining("not defined");
     for (final String query : List.of(//
+        // A grouping key repeated in the WHERE reads its column, as in Neo4j 5.26 (issue #12245)
+        "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE i > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE i > 1 RETURN j",//
+        "UNWIND [1, 2] AS i WITH i AS j, count(*) AS c WHERE i + 0 > 1 RETURN j",//
         "UNWIND [1, 2] AS i WITH i AS j WHERE i > 1 RETURN j",//
         "UNWIND [1, 2] AS i WITH i AS j WHERE j > 1 RETURN j",//
         "UNWIND [1, 2] AS i WITH DISTINCT i AS j WHERE j > 1 RETURN j",//

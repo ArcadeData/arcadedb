@@ -141,7 +141,8 @@ final class VariableScopeValidator {
           // The WHERE of a WITH filters the projected rows. It sees the projected names and, unless the WITH collapses
           // rows (aggregation, DISTINCT), the incoming variables too, the same rule ORDER BY follows. It was never
           // walked, so a name no clause bound filtered every row out, and a CALL subquery inside an EXISTS / COUNT /
-          // COLLECT body escaped the export check of issue #11689
+          // COLLECT body escaped the export check of issue #11689. In a collapsing WITH, what repeats a grouping key was
+          // rewritten to read its column first (ProjectedOrderByNormalizer#normalizeWhere, issue #12245)
           if (withClause.getWhereClause() != null)
             checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(),
                 withWhereScope(withClause, scope, hasWildcard));

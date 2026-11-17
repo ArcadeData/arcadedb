@@ -849,25 +849,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse DISTINCT flag
     final boolean distinct = body.DISTINCT() != null;
 
-    // Parse WHERE clause (applied after projection)
+    boolean aggregating = false;
+    for (final ReturnClause.ReturnItem item : items)
+      if (!item.isStar() && item.getExpression().containsAggregation()) {
+        aggregating = true;
+        break;
+      }
+
+    // Parse WHERE clause (applied after projection). A WHERE that repeats a grouping key reads the projected column
+    // (issue #12245), as ORDER BY does below
+    // The rewrite runs on the predicate as written, before the canonicalization that may reorder it (1 < n.id becomes
+    // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
     if (ctx.whereClause() != null) {
-      whereClause = visitWhereClause(ctx.whereClause());
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+          items, distinct || aggregating);
+      whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
     }
 
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;
-    if (body.orderBy() != null) {
+    if (body.orderBy() != null)
       // An ORDER BY item that repeats a projected expression sorts on the projected column
       // (#5283 for DISTINCT, #5286 for aggregation)
-      boolean aggregating = false;
-      for (final ReturnClause.ReturnItem item : items)
-        if (item.getExpression().containsAggregation()) {
-          aggregating = true;
-          break;
-        }
       orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct || aggregating);
-    }
 
     Expression skip = null;
     if (body.skip() != null) {

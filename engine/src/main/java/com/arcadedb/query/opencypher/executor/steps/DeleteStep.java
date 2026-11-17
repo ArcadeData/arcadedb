@@ -20,10 +20,13 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -535,8 +538,10 @@ public class DeleteStep extends AbstractExecutionStep {
     } else if (obj instanceof Map) {
       for (final Object value : ((Map<?, ?>) obj).values())
         collectDeleteTargets(value, edges, other);
-    } else
+    } else {
+      requireDeletable(obj);
       other.add(obj);
+    }
   }
 
   private Object resolveDeleteTarget(final String variable, final Result result) {
@@ -669,7 +674,20 @@ public class DeleteStep extends AbstractExecutionStep {
       // Delete each value in the map
       for (final Object value : ((Map<?, ?>) obj).values())
         deleteObject(value);
-    }
+    } else
+      requireDeletable(obj);
+  }
+
+  /**
+   * Refuses a DELETE target that is no entity - a number, a string, a boolean, a temporal (issue #11975): the statement used
+   * to run and delete nothing. A node, a relationship, a path, a record, null and an entity an earlier DELETE of the
+   * statement already removed are deletable, and so are the lists and maps holding them, which are unwrapped before this.
+   */
+  private static void requireDeletable(final Object obj) {
+    if (obj == null || obj instanceof Identifiable || obj instanceof Result || obj instanceof DeletedEntityMarker)
+      return;
+    throw new TypeMismatchException(
+        "Type mismatch: DELETE expects a node, a relationship or a path, but was " + CypherFunctionHelper.cypherTypeName(obj));
   }
 
   private static boolean hasEdges(final Vertex vertex) {
