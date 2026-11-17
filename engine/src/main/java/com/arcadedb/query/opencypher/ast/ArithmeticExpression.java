@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -32,6 +34,7 @@ import java.time.OffsetTime;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Expression representing an arithmetic operation.
@@ -148,8 +151,16 @@ public class ArithmeticExpression implements Expression {
     }
 
     // String concatenation for + operator
-    if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String))
+    if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String)) {
+      // A map has no string form a query can rely on: Neo4j refuses to concatenate one, and ArcadeDB used to answer
+      // the Java Map.toString() form, which prints the internal keys of a point (srid included) in a shape no point
+      // constructor or toString() accepts (issue #12397).
+      final Object other = leftValue instanceof String ? rightValue : leftValue;
+      if (other instanceof Map<?, ?> map)
+        throw new TypeMismatchException(
+            "Type mismatch: expected Float, Integer, String or List<T> but was " + (CypherValues.isPointShaped(map) ? "Point" : "Map"));
       return leftValue.toString() + rightValue.toString();
+    }
 
     // Numeric operations. Temporal arithmetic - date/time ± duration, duration ± duration, duration * number -
     // is tried first, but only when an operand is not a Number: no temporal type is a Number, so every temporal
