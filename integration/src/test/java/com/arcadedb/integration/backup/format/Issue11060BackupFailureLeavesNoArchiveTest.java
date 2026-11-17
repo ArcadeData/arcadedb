@@ -250,6 +250,28 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
     TestHelper.checkActiveDatabases();
   }
 
+  /** Issue #11736: without {@code -o}, a partial file left by a cut backup refuses the backup and is left untouched. */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void aLeftoverPartialFileRefusesTheBackupWithoutOverwrite(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      final byte[] leftover = "left by a backup that was cut".getBytes();
+      Files.write(new File(PARTIAL_FILE).toPath(), leftover);
+
+      assertThatThrownBy(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase())
+          .isInstanceOf(BackupException.class)
+          .hasStackTraceContaining("being written by another backup")
+          .hasStackTraceContaining("delete it to retry");
+
+      assertThat(new File(PARTIAL_FILE)).as("the partial file is not ours to delete").exists();
+      assertThat(Files.readAllBytes(new File(PARTIAL_FILE).toPath())).isEqualTo(leftover);
+      assertThat(new File(BACKUP_FILE)).as("no archive at the final name").doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
   private static FullBackupFormat overwritingBackup(final Database database, final ConsoleLogger logger) {
     final BackupSettings settings = new BackupSettings();
     settings.format = "full";

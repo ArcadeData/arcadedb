@@ -123,6 +123,26 @@ class BackupRetentionManagerTest {
     assertThat(retentionManager.getBackupCount(DATABASE_NAME)).isEqualTo(2);
   }
 
+  /** Issue #11736: stale partial archives are pruned even when the database has no retention policy. */
+  @Test
+  void stalePartialArchivesAreDeletedWithoutRetentionPolicy() throws Exception {
+    final List<File> files = createBackupFiles(3, LocalDateTime.now().minusDays(1));
+    final File stale = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().minusDays(2).format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+    assertThat(stale.setLastModified(System.currentTimeMillis() - BackupRetentionManager.STALE_PARTIAL_MILLIS - 60_000)).isTrue();
+    final File running = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+
+    final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
+
+    assertThat(retentionManager.applyRetention(DATABASE_NAME, config)).isZero();
+
+    assertThat(stale).as("left by a backup that was cut").doesNotExist();
+    assertThat(running).as("a backup may still be writing it").exists();
+    for (final File file : files)
+      assertThat(file).exists();
+  }
+
   @Test
   void tieredRetentionHourly() throws Exception {
     // Create backups for the last 48 hours (one per hour)
