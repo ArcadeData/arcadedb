@@ -68,6 +68,10 @@ public class CypherSemanticValidator {
     NODE, RELATIONSHIP, RELATIONSHIP_LIST, PATH, SCALAR
   }
 
+  /** What a query may conclude with, as Neo4j words it in "Query cannot conclude with X" (issue #12354). */
+  private static final String CONCLUSION_RULE =
+      "(must be a RETURN clause, a FINISH clause, an update clause, a unit subquery call, or a procedure call with no YIELD)";
+
   private final Map<String, VarType> varTypes = new HashMap<>();
 
   private CypherSemanticValidator() {
@@ -533,9 +537,6 @@ public class CypherSemanticValidator {
   // ================================================
   // Phase 10c: Query Conclusion Validation
   // ================================================
-
-  private static final String CONCLUSION_RULE =
-      "(must be a RETURN clause, a FINISH clause, an update clause, a unit subquery call, or a procedure call with no YIELD)";
 
   /**
    * Rejects a query that concludes with a reading clause, mirroring Neo4j's {@code "Query cannot conclude with X"} compile-time
