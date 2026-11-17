@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code ConcurrentModificationException}, and only the Bolt classifier turns that into a transient status. The
  * defects behind it are pinned in the engine module -
  * {@link com.arcadedb.query.opencypher.CypherVarLengthDetachDeleteIssue7149Test} and
- * {@link com.arcadedb.database.Issue7149UpdateAfterDeleteInSameTxTest}.
+ * {@link com.arcadedb.database.TransactionRetryAndRollbackTest.UpdateAfterDeleteInSameTx}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

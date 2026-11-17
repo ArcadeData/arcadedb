@@ -435,7 +435,7 @@ public class DeferredExistenceChecks {
    * property was assigned, both read when the update STARTED, before it wrote anything (a page write that keeps the instance resets
    * the flags, and the write-now arm of {@code LocalDatabase.applyUpdate} makes it before it counts), and never inferred from the
    * absence of an assignment, which a list or map changed in place shares (issue #11024,
-   * {@code Issue11024PropertyWriteClassificationTest}); a record created
+   * {@code StatementGuardTest.PropertyWriteClassification}); a record created
    * by the statement is given back only when it is deleted in the transaction or is an edge segment with no edge; and whatever
    * cannot be shown is kept, which only ever refuses a commit that could have been allowed.
    */
@@ -725,7 +725,7 @@ public class DeferredExistenceChecks {
         final Integer updates = deferredUpdates != null ? deferredUpdates.remove(rid) : null;
         // The two writes every provisional record counted besides its tallied updates: its creation, counted when LocalDatabase
         // created it (createRecordNoLock), and the delete just made, counted by deleteRecordInternal. The test
-        // Issue10379FailedStatementInCallerTransactionTest pins that the counter is where it was after the take-back.
+        // StatementGuardTest.FailedStatementInCallerTransaction pins that the counter is where it was after the take-back.
         // Never below what the transaction had counted when the statement started. In another transaction than the statement started
         // in nothing is given back: the commit is refused, as for any half-applied statement
         final TransactionContext tx = database.getTransaction();

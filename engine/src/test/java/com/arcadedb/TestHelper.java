@@ -45,6 +45,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
@@ -222,6 +223,15 @@ public abstract class TestHelper {
     }
   }
 
+  /**
+   * For a test that writes index entries no record stands for, using a type's index as a plain key-value map (raw RIDs, key-wide
+   * removes): rebuilds every index from the records, so the integrity check at the end, which compares the entries of an index
+   * with the records (issue #11734), judges the database and not the fixture.
+   */
+  protected void rebuildIndexesFromRecords() {
+    database.command("sql", "REBUILD INDEX *").close();
+  }
+
   protected void checkDatabaseIntegrity() {
     final ResultSet result = database.command("sql", "check database");
     while (result.hasNext()) {
@@ -331,6 +341,7 @@ public abstract class TestHelper {
     private final long                        holdMillis;
     public final  CountDownLatch              lockAcquired = new CountDownLatch(1);
     public final  AtomicReference<Throwable>  error        = new AtomicReference<>();
+    private final CountDownLatch              released     = new CountDownLatch(1);
 
     public LockHoldingThread(final DatabaseInternal db, final List<Integer> fileIds, final long holdMillis) {
       super("lock-holder");
@@ -345,13 +356,21 @@ public abstract class TestHelper {
       try {
         db.executeLockingFiles(fileIds, () -> {
           lockAcquired.countDown();
-          Thread.sleep(holdMillis);
+          released.await(holdMillis, TimeUnit.MILLISECONDS);
           return null;
         });
       } catch (final Throwable t) {
         error.set(t);
         lockAcquired.countDown();
       }
+    }
+
+    /**
+     * Releases the lock before {@code holdMillis} is over: a test that only needs it held while one call runs releases it right
+     * after, so its outcome does not depend on how long the passes before the contended step took.
+     */
+    public void release() {
+      released.countDown();
     }
   }
 }

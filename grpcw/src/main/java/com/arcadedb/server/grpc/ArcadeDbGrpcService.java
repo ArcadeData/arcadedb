@@ -22,10 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.MatchStatement;
-import com.arcadedb.query.sql.parser.OrderBy;
-import com.arcadedb.query.sql.parser.SelectStatement;
-import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
@@ -157,9 +153,6 @@ import java.util.logging.Level;
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
   /** The {@code protocol} tag every query this service runs is metered under. */
   private static final String GRPC_PROTOCOL = GrpcProtocolContextInterceptor.GRPC_PROTOCOL;
-
-  /** The refusal of a PAGED stream over a FACETS query: every page would recompute the facets of the whole match set. */
-  static final String PAGED_FACETS_MESSAGE = "PAGED retrieval cannot carry FACETS: use CURSOR or MATERIALIZE_ALL";
 
   // Pick serializer once
   private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
@@ -588,6 +581,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // transaction's thread, so the slot goes with it there, where a forward to the leader or a wait on an explicit lock
     // gives it back (issue #10140). Left behind, those releases read an empty thread and hold the slot for the whole wait
     final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+    // The call's read consistency, read here for the same reason, and applied on the transaction's thread, where the
+    // statement reads (issue #11948)
+    final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -597,12 +593,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // where GrpcProtocolContextInterceptor tags the work, and RaftReplicatedDatabase tells a client from the
         // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
         ProtocolContext.set(GRPC_PROTOCOL);
+        if (readConsistency != null)
+          readConsistency.applyTo(txCtx.db);
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
         final QueryAdmissionGate.Adoption adoption = admission.adopt();
         try {
           return task.call();
         } finally {
           adoption.close();
+          if (readConsistency != null)
+            readConsistency.clear();
           if (binding != null)
             binding.close();
           if (runningQuery != null && runningQuery.isTerminated())
@@ -855,7 +855,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // contending writers from colliding again in lock step, the same call the HTTP handler makes
     final int retries = Math.max(1, serverConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
     final AtomicReference<ExecuteCommandResponse> response = new AtomicReference<>();
-    ((DatabaseInternal) db).transaction(() -> response.set(executeCommandInternal(req, t0, db, false)), false, retries);
+    ((DatabaseInternal) db).transaction(() -> {
+      // Opened by this server around one request: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs (issue #11588)
+      ((DatabaseInternal) db).getTransaction().setImplicit(true);
+      response.set(executeCommandInternal(req, t0, db, false));
+    }, false, retries);
     return response.get();
   }
 
@@ -1191,9 +1195,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       throw new IllegalArgumentException("targetClass is required");
 
     final Schema schema = db.getSchema();
+    // getType refuses a missing type with a SchemaException, answered as one by every protocol (issue #11633)
     final DocumentType dt = schema.getType(cls);
-    if (dt == null)
-      throw new IllegalArgumentException("Class not found: " + cls);
 
     // All properties from the request (proto map) — nested under "record"
     final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
@@ -2116,6 +2119,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
       // submitToActiveTransaction
       final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+      // The response carries the read-your-writes bookmark of this commit (issue #11948). Bound only, not applied: a
+      // commit reads nothing, and the statements of the transaction had the consistency applied on its thread by
+      // submitToActiveTransaction. Nothing is set on a thread here, so there is nothing for this call to clear
+      final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+      if (readConsistency != null)
+        readConsistency.bind(txCtx.db);
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
         // A statement of this transaction was terminated while this commit waited behind it: what it wrote was rolled
@@ -2423,21 +2432,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /**
    * Dispatches a stream to the retrieval-mode-specific helper. The helpers do NOT manage transactions; the
    * caller owns begin/commit/rollback (or, for an externally-managed transaction, leaves the lifecycle to the
-   * Begin/Commit/Rollback RPCs). PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so it falls back to CURSOR
-   * for non-SQL languages.
+   * Begin/Commit/Rollback RPCs).
+   * <p>
+   * PAGED is CURSOR (issue #11800): the query runs once and its rows leave in batches of {@code batch_size}. It used to
+   * re-run a SQL query for every page, wrapped in {@code SKIP n LIMIT batch}, so each page paid for every row before it
+   * and a stream of N rows cost O(N^2 / batch), while the other languages already went through the cursor. A stream is
+   * one call inside one transaction, so re-running the query released nothing a cursor holds, and without an
+   * {@code ORDER BY} over a unique key the pages of a re-run were not even guaranteed to partition the rows.
    */
   private void dispatchStream(final Database db, final StreamQueryRequest request, final int batchSize,
       final ServerCallStreamObserver<QueryResult> scso, final AtomicBoolean cancelled,
       final AtomicBoolean serverTimedOut, final ProjectionConfig projectionConfig, final String language) {
     switch (request.getRetrievalMode()) {
       case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-      case PAGED -> {
-        if (!"sql".equalsIgnoreCase(language))
-          streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-        else
-          streamPaged(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
-      }
-      case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
       default -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
     }
   }
@@ -2616,111 +2623,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  /**
-   * Mode 3: only fetch one page's worth of rows per emission via LIMIT/SKIP.
-   *
-   * @param projectionConfig
-   */
-  private void streamPaged(Database db, StreamQueryRequest request, int batchSize,
-                           ServerCallStreamObserver<QueryResult> scso,
-                           AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
-
-    // PERF-3: convert the request parameters once - only the per-page _skip/_limit change between pages, so
-    // rebuilding convertParameters() and a wrapping map on every page is wasted work.
-    final Map<String, Object> baseParams = GrpcTypeConverter.convertParameters(request.getParametersMap());
-
-    // PAGED wraps the query with reserved :_skip / :_limit bind parameters. If the caller already binds those
-    // names, the wrapper would silently overwrite them and corrupt paging: reject with a clear error instead.
-    if (baseParams.containsKey("_skip") || baseParams.containsKey("_limit"))
-      throw Status.INVALID_ARGUMENT
-          .withDescription(
-              "PAGED retrieval mode reserves the parameter names '_skip' and '_limit'; rename the conflicting query parameter or use CURSOR retrieval mode")
-          .asRuntimeException();
-
-    // One parse serves both checks below; it goes through the statement cache, so it costs one parse per distinct query text
-    final Statement statement = parseForPaging(db, request.getQuery());
-    // PAGED re-runs the query per page: the facets would be recomputed on every page, and the wrapper would nest the FACETS clause
-    if (statement instanceof SelectStatement select && select.getFacets() != null)
-      throw Status.INVALID_ARGUMENT.withDescription(PAGED_FACETS_MESSAGE).asRuntimeException();
-
-    final String pagedSql = wrapWithSkipLimit(statement, request.getQuery()); // see helper below
-    int offset = 0;
-    long running = 0L;
-    // A full page is held back one step so the terminal page carries is_last_batch=true even when the total
-    // row count is an exact multiple of batchSize (previously the last full page went out with
-    // is_last_batch=false and the empty probe page returned without a terminal). Mirrors streamCursor.
-    QueryResult pending = null;
-
-    while (true) {
-      if (cancelled.get())
-        return;
-      waitUntilReady(scso, cancelled, serverTimedOut);
-      // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
-      // running/emitting another page against an aborted stream.
-      if (cancelled.get())
-        return;
-
-      final Map<String, Object> params = new HashMap<>(baseParams);
-      params.put("_skip", offset);
-      params.put("_limit", batchSize);
-
-      int count = 0;
-      QueryResult.Builder b = QueryResult.newBuilder();
-
-      try (ResultSet rs = db.query(language, pagedSql, params)) {
-        while (rs.hasNext()) {
-          if (cancelled.get())
-            return;
-
-          Result r = rs.next();
-
-          if (r.isElement()) {
-
-            b.addRecords(convertToGrpcRecord(r.getElement().get(), db));
-            count++;
-          } else {
-
-            GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-
-            for (String p : r.getPropertyNames()) {
-              rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
-            }
-
-            b.addRecords(rb.build());
-            count++;
-          }
-        }
-      }
-
-      if (count == 0) {
-        // No more rows. A held-back full page (exact-multiple boundary) is the terminal page.
-        if (pending != null)
-          safeOnNext(scso, cancelled, pending.toBuilder().setIsLastBatch(true).build());
-        return; // no more rows
-      }
-
-      // This page has rows, so any held-back full page is definitely not the last: flush it now.
-      if (pending != null) {
-        safeOnNext(scso, cancelled, pending);
-        pending = null;
-      }
-
-      running += count;
-      final boolean last = count < batchSize;
-      final QueryResult page = b.setTotalRecordsInBatch(count).setRunningTotalEmitted(running).setIsLastBatch(last).build();
-
-      if (last) {
-        // Partial page - definitely the last one.
-        safeOnNext(scso, cancelled, page);
-        return;
-      }
-
-      // Full page - might be terminal if the next page turns out to be empty; hold it back.
-      pending = page;
-      offset += batchSize;
-    }
-  }
-
   private ProjectionConfig getProjectionConfigFromRequest(StreamQueryRequest request) {
 
     ProjectionConfig projectionConfig = null;
@@ -2742,64 +2644,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
 
     return projectionConfig;
-  }
-
-  /**
-   * Wraps arbitrary SQL so the per-page SKIP/LIMIT can be injected outside it, without disturbing any SKIP/LIMIT the
-   * caller wrote.
-   * <p>
-   * Paging is only sound over a deterministic order, so the wrapper adds {@code ORDER BY @rid} - but only when the
-   * caller expressed no order of its own. A caller-supplied {@code ORDER BY} lives inside the sub-query, which emits
-   * its rows already sorted, and the wrapper preserves that order precisely by adding no {@code ORDER BY} of its own:
-   * re-sorting on the outside used to discard the requested order silently, and could not be repaired by re-stating
-   * the caller's terms outside either, because a projection ({@code SELECT name FROM Doc ORDER BY createdAt}) leaves
-   * neither the sort key nor {@code @rid} visible to the outer statement (issue #7029).
-   * <p>
-   * When the caller orders by a key that is not unique, rows that tie may still move between pages from one page
-   * query to the next; adding a unique tie-break such as {@code @rid} to the query's own ORDER BY is the caller's
-   * call to make, exactly as it would be against any other paged API.
-   */
-  private static String wrapWithSkipLimit(final Statement statement, final String originalSql) {
-    final String outerOrderBy = hasOrderBy(statement) ? "" : " ORDER BY @rid";
-    return "SELECT FROM (" + originalSql + ")" + outerOrderBy + " SKIP :_skip LIMIT :_limit";
-  }
-
-  /**
-   * Parses the SQL of a PAGED stream once, for the checks {@link #streamPaged} makes before the first page (FACETS, ORDER BY).
-   * Parsing goes through the database statement cache, so it costs one parse per distinct query text rather than one per
-   * page. It is not free: the cache is keyed by the exact SQL string, and the pages execute the *wrapped* statement, so that
-   * is a second entry and a second parse. One extra parse per distinct PAGED query is the price of not silently discarding
-   * the caller's ordering.
-   * <p>
-   * A statement that does not parse is returned as null, which is reported as unordered and gets the {@code @rid} wrapper:
-   * the page query would fail on execution anyway, and the caller gets the same error it would have got without the wrapper.
-   */
-  private Statement parseForPaging(final Database db, final String sql) {
-    try {
-      // the parameterized lookup (issue #8307): neither check depends on the literal values
-      return ((DatabaseInternal) db).getStatementCache().getParameterized(sql).statement();
-    } catch (final Exception e) {
-      LogManager.instance()
-          .log(this, Level.FINE, "Could not parse the query to look for an ORDER BY, paging by @rid: %s", e, sql);
-      return null;
-    }
-  }
-
-  /**
-   * Reports whether a statement carries its own ORDER BY. SELECT and MATCH are the two statement shapes in this dialect
-   * that can carry one, and they do not share an accessor for it, so both are asked. A null statement (it did not parse),
-   * or one that is neither of those, is reported as unordered.
-   */
-  private static boolean hasOrderBy(final Statement statement) {
-    final OrderBy orderBy;
-    if (statement instanceof SelectStatement select)
-      orderBy = select.getOrderBy();
-    else if (statement instanceof MatchStatement match)
-      orderBy = match.getOrderBy();
-    else
-      orderBy = null;
-
-    return orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty();
   }
 
   private void safeOnNext(ServerCallStreamObserver<QueryResult> scso, AtomicBoolean cancelled, QueryResult payload) {
@@ -5026,7 +4870,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // racing cancel shut the executor down between the cancelled check above and this submit
         // (onCompleted already guards this).
         try {
-          streamExecutor.submit(grpcContext.wrap(task));
+          // START resolves the database on this stream's own thread, which sets the call's read consistency there
+          // (issue #11948): no listener callback runs on that thread to clear it, so the task does
+          streamExecutor.submit(grpcContext.wrap(GrpcReadConsistencyInterceptor.clearingAfter(task)));
         } catch (final RejectedExecutionException ignore) {
           // a racing cancel shut the executor down; drop the message instead of throwing out of the callback
         }
@@ -6244,6 +6090,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         DatabaseContext.INSTANCE.init((DatabaseInternal) db);
 
         bindPrincipalToCurrentThread(db, resolvedUsername(credentials));
+
+        // The call's read consistency, on the thread that runs its statements, and the database whose applied index
+        // its response carries (issue #11948). GrpcReadConsistencyInterceptor clears it when the callback ends
+        final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+        if (readConsistency != null)
+          readConsistency.applyTo(db);
 
         return db;
       }

@@ -37,6 +37,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.DatabaseAlreadyExistsException;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -91,9 +92,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
-import java.util.IdentityHashMap;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -634,6 +633,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // catch/finally still runs: the observation is stopped (not leaked) and the request is answered
     // with an error rather than propagating an uncaught exception.
     Observation.Scope observationScope = null;
+    // What reached the request boundary, recorded on the span of a 5xx answer (issue #11638)
+    Throwable failure = null;
 
     // Idempotency reservation bookkeeping, visible to the finally block: when this request owns a PENDING
     // marker and execution throws, the finally clears exactly that marker so a concurrent identical retry
@@ -1020,6 +1021,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       clientKeyReservation = null;
 
     } catch (final Throwable e) {
+      failure = e;
       sendMappedErrorResponse(exchange, e);
     } finally {
       // Drop any principal this request bound onto the thread's DatabaseContext in
@@ -1061,7 +1063,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // tracing layer can never skip the core cleanup or the RED timer below; closing the scope is
       // attempted independently to avoid thread-local context leaking across pooled worker threads.
       try {
-        observation.lowCardinalityKeyValue("status", Integer.toString(exchange.getStatusCode()));
+        final int status = exchange.getStatusCode();
+        observation.lowCardinalityKeyValue("status", Integer.toString(status));
+        // Issue #11638: a server error is the ERROR status of the span, and the exception its event, or every tracing backend
+        // shows it as a success. A 4xx is the client's mistake and leaves the status unset (OpenTelemetry HTTP server spans).
+        if (status >= 500)
+          observation.error(failure != null ? failure : new ServerErrorResponse(status));
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.WARNING, "Error tagging tracing observation", t);
       }
@@ -1309,10 +1316,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, schemaObjectExists.getLabel(), schemaObjectExists,
           schemaObjectExists.getKind() != null ? schemaObjectExists.getKind().name() : null, ErrorLogKind.USER);
 
+    // 409 Conflict: the statement names objects that exist and is refused for what the database holds now - a TRUNCATE or DROP
+    // of a type that still has records, a DROP of a property an index uses (issue #11803). The message says how to resolve it,
+    // and the same request is refused again until the state changes, so it is neither a server fault nor retryable. Before the
+    // generic CommandExecutionException arm, which it extends and which answers 500
+    final ObjectInUseException inUse = firstOf(e, cause, ObjectInUseException.class);
+    if (inUse != null)
+      return new ErrorClassification(409, "Object in use", inUse, null, ErrorLogKind.USER);
+
+    // 409 Conflict: a statement that runs only in the implicit transaction of one request (CALL { ... } IN TRANSACTIONS), sent in
+    // the transaction the caller opened with /begin. The session's state is the cause, the same request outside the transaction
+    // runs, and it is refused again while the transaction is open (issue #12161). Before the generic CommandExecutionException
+    // arm, which it extends and which answers 500
+    final ImplicitTransactionRequiredException implicitOnly = firstOf(e, cause, ImplicitTransactionRequiredException.class);
+    if (implicitOnly != null)
+      return new ErrorClassification(409, "Cannot execute command in an explicit transaction", implicitOnly, null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
-    // bad write. See issue #4350.
-    final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    // bad write. See issue #4350. Searched down the whole chain when the classifier finds one there (issue #11973): a unique
+    // index built over values that are not unique fails with the duplicated key under two IndexException wrappers, and the
+    // statement wrapper on top, so a look at the first two links answered 500 for a CREATE CONSTRAINT ... IS UNIQUE
+    DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    if (dup == null && ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      dup = CauseChain.find(e, DuplicatedKeyException.class);
     if (dup != null) {
       return new ErrorClassification(409, "Found duplicate key in index", dup,
               dup.getIndexName() + "|" + (isProductionMode() ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : dup.getKeys()) + "|"
@@ -1456,6 +1483,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TypeMismatchException typeMismatch = typeMismatch(e);
     if (typeMismatch != null) {
       return new ErrorClassification(400, "Cannot execute command", typeMismatch, null, ErrorLogKind.USER);
+    }
+
+    // A function or procedure called with an argument value it is not defined for - a null where it needs a value, text that
+    // does not parse, a number out of range (issue #11589). The same reasoning and the same chain-wide search as the type
+    // mismatch above, and for the same reason ahead of the generic CommandExecutionException arm, which it extends
+    final InvalidArgumentException invalidArgument = CauseChain.find(e, InvalidArgumentException.class);
+    if (invalidArgument != null) {
+      return new ErrorClassification(400, "Cannot execute command", invalidArgument, null, ErrorLogKind.USER);
     }
 
     // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
@@ -2495,9 +2530,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    final long lastApplied = haDb.getLastAppliedIndex();
-    if (lastApplied >= 0)
-      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(lastApplied));
+    // Not the bare applied index: a write this request forwarded to the leader may not be applied here yet (issue #11740)
+    final long bookmark = haDb.getCommitIndexBookmark();
+    if (bookmark >= 0)
+      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(bookmark));
   }
 
   /**
@@ -2539,21 +2575,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    exchange.addResponseCommitListener(ex -> {
-      if (ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
-        return;
-      try {
-        emitCommitIndexBookmark(ex, haDb);
-      } catch (final RuntimeException e) {
-        // This runs from inside Undertow's response-commit path, not from the handler, so it is outside the
-        // exception mapping in handleRequest: letting anything escape here would tear down a response that is
-        // otherwise complete and correct. A missing bookmark costs the client one stale follower read; a torn
-        // response costs it the answer.
-        LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
-            "Cannot read the last applied index while committing the response, the read-your-writes bookmark is "
-                + "not emitted for this request", e);
-      }
-    });
+    exchange.addResponseCommitListener(ex -> emitCommitIndexBookmarkIfAbsent(ex, haDb));
+  }
+
+  /**
+   * Emits the bookmark unless the response already carries one, and never throws. Called by the response-commit listener of
+   * {@link #emitCommitIndexBookmarkOnResponseCommit} and by {@link DatabaseAbstractHandler#execute} just before it clears the
+   * request's read-consistency context, which also holds the bookmark of any write the request forwarded to the leader (issue
+   * #11740): a request that leaves through an exception is answered after that, so the listener alone would answer it with
+   * this node's own applied index, below a write the leader had already committed.
+   */
+  protected static void emitCommitIndexBookmarkIfAbsent(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
+    if (exchange.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+      return;
+    try {
+      emitCommitIndexBookmark(exchange, haDb);
+    } catch (final RuntimeException e) {
+      // Run from inside Undertow's response-commit path, or from a finally block, so outside the exception mapping in
+      // handleRequest: letting anything escape would tear down a response that is otherwise complete and correct, or replace
+      // the request's own failure. A missing bookmark costs the client one stale follower read; a torn response costs it the
+      // answer.
+      LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
+          "Cannot read the last applied index while answering, the read-your-writes bookmark is not emitted for this request",
+          e);
+    }
   }
 
   /**
@@ -2845,7 +2890,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // The cause chain is the only free-form field: conceal it outside development/test to avoid leaking
     // internal file paths and engine errors to a client probing endpoints.
     if (verbose && e != null)
-      json.put("detail", encodeError(buildDetailChain(e)));
+      json.put("detail", encodeError(ErrorConcealment.detailChain(e)));
 
     return json.toString();
   }
@@ -2874,26 +2919,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping when a cause
-   * has already been seen to avoid an infinite loop on cyclic chains. Uses identity comparison so distinct exceptions
-   * with equal {@code equals}/{@code hashCode} are still walked. Package-private for direct unit testing.
-   */
-  static String buildDetailChain(final Throwable e) {
-    final StringBuilder buffer = new StringBuilder();
-    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
-
-    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    visited.add(e);
-    Throwable current = e.getCause();
-    while (current != null && visited.add(current)) {
-      buffer.append(" -> ");
-      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
-      current = current.getCause();
-    }
-    return buffer.toString();
-  }
-
-  /**
    * Appends a TimeSeries value to a JSON response array, emitting JSON {@code null} for a non-finite one.
    * <p>
    * NaN is the absent marker of the time-series stack (see {@code TimeSeriesNaN}): a MIN/MAX over a window with
@@ -2909,5 +2934,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final boolean absent = (value instanceof Double d && !Double.isFinite(d))
         || (value instanceof Float f && !Float.isFinite(f));
     array.put(absent ? JSONObject.NULL : value);
+  }
+
+  /**
+   * The failure recorded on the span of a 5xx answer that no exception reached the request boundary for: a handler answered the
+   * error itself (issue #11638). No stack trace, which would only point at the handler's finally block.
+   */
+  static final class ServerErrorResponse extends RuntimeException {
+    ServerErrorResponse(final int status) {
+      super("The request was answered with HTTP status " + status, null, false, false);
+    }
   }
 }

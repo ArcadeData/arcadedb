@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.date;
 
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.DateUtils;
 
@@ -92,8 +93,9 @@ public class DateFields extends AbstractDateFunction {
     try {
       parsed = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, zoneId);
     } catch (final DateTimeException e) {
-      // A text the format does not read is the caller's argument, not a server fault (issue #11589)
-      throw new IllegalArgumentException("Cannot read '" + dateStr + "' as a date: " + e.getMessage(), e);
+      // issue #11589: a text the format cannot read is the caller's mistake, not a raw DateTimeParseException
+      throw new InvalidArgumentException(getName() + "(): '" + InvalidArgumentException.quote(dateStr) + "' cannot be parsed with the format '"
+          + InvalidArgumentException.quote(format) + "'", e);
     }
     final ZonedDateTime dateTime = timezoneStr != null ? parsed.withZoneSameInstant(zoneId) : parsed;
 

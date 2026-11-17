@@ -29,6 +29,7 @@ import com.arcadedb.utility.DateUtils;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
@@ -239,6 +240,12 @@ public class BinaryComparator {
         return compareZoned(zonedOf(value1), zonedOf(value2));
       throw unsupportedPair(type1, type2);
 
+    case BinaryTypes.TYPE_LOCAL_DATETIME:
+      // only held by a property nothing declares, whose index keys are STRING: an index never orders it against another kind
+      if (type2 == BinaryTypes.TYPE_LOCAL_DATETIME)
+        return ((LocalDateTime) value1).compareTo((LocalDateTime) value2);
+      throw unsupportedPair(type1, type2);
+
     case BinaryTypes.TYPE_DURATION:
       if (type2 == BinaryTypes.TYPE_DURATION) {
         final CypherDuration d1 = (CypherDuration) value1;
@@ -327,8 +334,21 @@ public class BinaryComparator {
 
         return CollectionUtils.compare(v1, v2);
       }
+      if (isArrayOfType(type2))
+        return compareSequences(value1, value2);
       break;
     }
+
+    case BinaryTypes.TYPE_ARRAY_OF_SHORTS:
+    case BinaryTypes.TYPE_ARRAY_OF_INTEGERS:
+    case BinaryTypes.TYPE_ARRAY_OF_LONGS:
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS:
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES:
+      // Element by element, a shorter array that is a prefix of a longer one first, as compareTo() orders them: an
+      // LSM_TREE index on such a property compares its keys here, and had no order for them (issue #11596)
+      if (isArrayOfType(type2) || type2 == BinaryTypes.TYPE_LIST)
+        return compareSequences(value1, value2);
+      break;
 
     case BinaryTypes.TYPE_MAP: {
       switch (type2) {
@@ -885,6 +905,12 @@ public class BinaryComparator {
     // a is not even a Comparable: the same class-name tiebreak CollectionUtils.compareKeys() uses for a
     // heterogeneous key set, so the order stays total and antisymmetric instead of throwing (issue #7879).
     return a.getClass().getName().compareTo(b.getClass().getName());
+  }
+
+  private static boolean isArrayOfType(final byte type) {
+    return type == BinaryTypes.TYPE_ARRAY_OF_SHORTS || type == BinaryTypes.TYPE_ARRAY_OF_INTEGERS
+        || type == BinaryTypes.TYPE_ARRAY_OF_LONGS || type == BinaryTypes.TYPE_ARRAY_OF_FLOATS
+        || type == BinaryTypes.TYPE_ARRAY_OF_DOUBLES;
   }
 
   /** Any Java array but a {@code byte[]}, which is the BINARY scalar. */

@@ -20,36 +20,22 @@ package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
-import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CreateClause;
-import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
-import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
-import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
-import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
-import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
-import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FinishClause;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
-import com.arcadedb.query.opencypher.ast.InExpression;
-import com.arcadedb.query.opencypher.ast.IsNullExpression;
-import com.arcadedb.query.opencypher.ast.IsNormalizedExpression;
-import com.arcadedb.query.opencypher.ast.IsTypedExpression;
-import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.LabelPredicate;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
-import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -57,17 +43,12 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.PathPattern;
-import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
-import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
-import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
-import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SearchCallClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
-import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
@@ -89,14 +70,11 @@ import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
-import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -109,6 +87,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   // Delegate expression parsing to a dedicated builder
   private final CypherExpressionBuilder expressionBuilder = new CypherExpressionBuilder();
+
+  // The statements that are commands rather than queries: schema, users, transactions, session settings
+  private final CypherCommandBuilder commands = new CypherCommandBuilder(expressionBuilder);
+
+  // The boolean expression of a WHERE, descended through OR, XOR, AND, NOT and the comparisons
+  private final BooleanExpressionBuilder booleans = new BooleanExpressionBuilder(this, expressionBuilder);
+
+  // A parenthesized path pattern, spliced into the pattern around it or lowered to a variable-length relationship
+  private final ParenthesizedPathLowering parenthesizedPaths = new ParenthesizedPathLowering(this, booleans);
 
   // The write clause (CREATE or MERGE) whose pattern is being visited, null in every other position. A label
   // expression beyond a plain conjunction says which labels a node MAY have, which only a read can answer.
@@ -126,582 +113,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (ctx.queryWithLocalDefinitions() != null)
       return (CypherStatement) visit(ctx.queryWithLocalDefinitions());
     if (ctx.command() != null)
-      return handleCommand(ctx.command());
+      return commands.handleCommand(ctx.command());
     throw new CommandParsingException("Unsupported statement type");
-  }
-
-  private CypherStatement handleCommand(final Cypher25Parser.CommandContext ctx) {
-    if (ctx.createCommand() != null)
-      return handleCreateCommand(ctx.createCommand());
-    if (ctx.dropCommand() != null)
-      return handleDropCommand(ctx.dropCommand());
-    if (ctx.showCommand() != null)
-      return handleShowCommand(ctx.showCommand());
-    if (ctx.terminateCommand() != null)
-      return handleTerminateTransactions(ctx.terminateCommand().terminateTransactions());
-    if (ctx.alterCommand() != null)
-      return handleAlterCommand(ctx.alterCommand());
-    if (ctx.transactionCommand() != null)
-      return handleTransactionCommand(ctx.transactionCommand());
-    if (ctx.sessionCommand() != null)
-      return handleSessionCommand(ctx.sessionCommand());
-    throw new CommandParsingException("Unsupported command type");
-  }
-
-  private CypherSessionStatement handleSessionCommand(final Cypher25Parser.SessionCommandContext ctx) {
-    if (ctx.SET() != null) {
-      final String parameterName = stripBackticks(ctx.parameter().parameterName().getText());
-      final Expression value = expressionBuilder.parseExpression(ctx.expression());
-      return new CypherSessionStatement(CypherSessionStatement.Kind.SET, parameterName, value);
-    }
-    if (ctx.RESET() != null)
-      return new CypherSessionStatement(CypherSessionStatement.Kind.RESET);
-    if (ctx.CLOSE() != null)
-      return new CypherSessionStatement(CypherSessionStatement.Kind.CLOSE);
-    throw new CommandParsingException("Unsupported session command");
-  }
-
-  private CypherTransactionStatement handleTransactionCommand(final Cypher25Parser.TransactionCommandContext ctx) {
-    if (ctx.START() != null) {
-      final String isolationLevel = ctx.symbolicNameString() != null ?
-          stripBackticks(ctx.symbolicNameString().getText()) : null;
-      return new CypherTransactionStatement(CypherTransactionStatement.Kind.BEGIN, isolationLevel);
-    }
-    if (ctx.COMMIT() != null)
-      return new CypherTransactionStatement(CypherTransactionStatement.Kind.COMMIT);
-    if (ctx.ROLLBACK() != null)
-      return new CypherTransactionStatement(CypherTransactionStatement.Kind.ROLLBACK);
-    throw new CommandParsingException("Unsupported transaction command");
-  }
-
-  private CypherStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
-    if (ctx.createConstraint() != null)
-      return handleCreateConstraint(ctx.createConstraint());
-    if (ctx.createIndex() != null)
-      return handleCreateIndex(ctx.createIndex());
-    if (ctx.createUser() != null)
-      return handleCreateUser(ctx.createUser());
-    throw new CommandParsingException("Only CREATE CONSTRAINT, CREATE INDEX and CREATE USER are currently supported");
-  }
-
-  private CypherStatement handleDropCommand(final Cypher25Parser.DropCommandContext ctx) {
-    if (ctx.dropConstraint() != null)
-      return handleDropConstraint(ctx.dropConstraint());
-    if (ctx.dropIndex() != null)
-      return handleDropIndex(ctx.dropIndex());
-    if (ctx.dropUser() != null)
-      return handleDropUser(ctx.dropUser());
-    throw new CommandParsingException("Only DROP CONSTRAINT, DROP INDEX and DROP USER are currently supported");
-  }
-
-  private CypherStatement handleShowCommand(final Cypher25Parser.ShowCommandContext ctx) {
-    if (ctx.showConstraintCommand() != null)
-      return handleShowConstraints(ctx.showConstraintCommand());
-    if (ctx.showIndexCommand() != null)
-      return handleShowIndexes(ctx.showIndexCommand());
-    if (ctx.showUsers() != null)
-      return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_USERS, null, null, false, false);
-    if (ctx.showCurrentUser() != null)
-      return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_CURRENT_USER, null, null, false, false);
-    if (ctx.showTransactions() != null)
-      return handleShowTransactions(ctx.showTransactions());
-    throw new CommandParsingException(
-        "Only SHOW USERS, SHOW CURRENT USER, SHOW TRANSACTIONS, SHOW CONSTRAINTS and SHOW INDEXES are currently supported");
-  }
-
-  /** {@code SHOW [ALL | [NODE | RELATIONSHIP] (UNIQUE | EXIST | KEY | PROPERTY TYPE)] CONSTRAINTS} (#9706). */
-  private CypherShowSchemaStatement handleShowConstraints(final Cypher25Parser.ShowConstraintCommandContext ctx) {
-    final CypherShowSchemaStatement.ConstraintFilter filter;
-    Cypher25Parser.ShowConstraintEntityContext entity = null;
-    final Cypher25Parser.ShowConstraintsEndContext end;
-    switch (ctx) {
-    case Cypher25Parser.ShowConstraintUniqueContext unique -> {
-      filter = CypherShowSchemaStatement.ConstraintFilter.UNIQUENESS;
-      entity = unique.showConstraintEntity();
-      end = unique.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintExistContext exist -> {
-      filter = CypherShowSchemaStatement.ConstraintFilter.EXISTENCE;
-      entity = exist.showConstraintEntity();
-      end = exist.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintKeyContext key -> {
-      filter = CypherShowSchemaStatement.ConstraintFilter.KEY;
-      entity = key.showConstraintEntity();
-      end = key.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintPropTypeContext propType -> {
-      filter = CypherShowSchemaStatement.ConstraintFilter.PROPERTY_TYPE;
-      entity = propType.showConstraintEntity();
-      end = propType.showConstraintsEnd();
-    }
-    case Cypher25Parser.ShowConstraintAllContext all -> {
-      filter = CypherShowSchemaStatement.ConstraintFilter.ALL;
-      end = all.showConstraintsEnd();
-    }
-    default -> throw new CommandParsingException("Unsupported SHOW CONSTRAINTS form: " + ctx.getText());
-    }
-    if (end.composableCommandClauses() != null)
-      throw new CommandParsingException("SHOW CONSTRAINTS cannot be followed by another command");
-
-    final CypherShowSchemaStatement.EntityFilter entityFilter = entity == null ?
-        CypherShowSchemaStatement.EntityFilter.ALL :
-        entity instanceof Cypher25Parser.NodeEntityContext ?
-            CypherShowSchemaStatement.EntityFilter.NODE :
-            CypherShowSchemaStatement.EntityFilter.RELATIONSHIP;
-    return new CypherShowSchemaStatement(CypherShowSchemaStatement.Kind.CONSTRAINTS, filter, entityFilter, null);
-  }
-
-  /** {@code SHOW [ALL | RANGE | TEXT | POINT | VECTOR | FULLTEXT | LOOKUP] INDEXES} (#9706). */
-  private CypherShowSchemaStatement handleShowIndexes(final Cypher25Parser.ShowIndexCommandContext ctx) {
-    if (ctx.showIndexesEnd().composableCommandClauses() != null)
-      throw new CommandParsingException("SHOW INDEXES cannot be followed by another command");
-    final Cypher25Parser.ShowIndexTypeContext type = ctx.showIndexType();
-    final String indexType = type == null || type.ALL() != null ? null : type.getText().toUpperCase(Locale.ROOT);
-    return new CypherShowSchemaStatement(CypherShowSchemaStatement.Kind.INDEXES, CypherShowSchemaStatement.ConstraintFilter.ALL,
-        CypherShowSchemaStatement.EntityFilter.ALL, indexType);
-  }
-
-  /**
-   * {@code SHOW TRANSACTIONS [ids] [YIELD ...|WHERE ...] [TERMINATE TRANSACTIONS ...]} (issue #9689). The tail is applied
-   * to the rows at execution, from the statement text, as on every other {@code SHOW}.
-   */
-  private CypherAdminStatement handleShowTransactions(final Cypher25Parser.ShowTransactionsContext ctx) {
-    final Cypher25Parser.NamesAndClausesContext clauses = ctx.namesAndClauses();
-    CypherAdminStatement composedTerminate = null;
-    if (clauses.composableCommandClauses() != null) {
-      if (clauses.composableCommandClauses().terminateCommand() == null)
-        throw new CommandParsingException("SHOW TRANSACTIONS can only be followed by TERMINATE TRANSACTIONS");
-      composedTerminate = handleTerminateTransactions(clauses.composableCommandClauses().terminateCommand().terminateTransactions());
-    }
-    final Cypher25Parser.StringsOrExpressionContext ids = clauses.stringsOrExpression();
-    return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_TRANSACTIONS, ids != null ? transactionIdLiterals(ids) : null,
-        ids != null ? transactionIdExpression(ids) : null, composedTerminate);
-  }
-
-  /** {@code TERMINATE TRANSACTIONS ids [YIELD ...|WHERE ...]} (issue #9689). */
-  private CypherAdminStatement handleTerminateTransactions(final Cypher25Parser.TerminateTransactionsContext ctx) {
-    if (ctx.composableCommandClauses() != null)
-      throw new CommandParsingException("TERMINATE TRANSACTIONS cannot be followed by another command");
-    return new CypherAdminStatement(CypherAdminStatement.Kind.TERMINATE_TRANSACTIONS, transactionIdLiterals(ctx.stringsOrExpression()),
-        transactionIdExpression(ctx.stringsOrExpression()), null);
-  }
-
-  private List<String> transactionIdLiterals(final Cypher25Parser.StringsOrExpressionContext ctx) {
-    if (ctx.stringList() == null)
-      return null;
-    final List<String> ids = new ArrayList<>();
-    for (final Cypher25Parser.StringLiteralContext literal : ctx.stringList().stringLiteral()) {
-      final String raw = literal.getText();
-      ids.add(decodeStringLiteral(raw.substring(1, raw.length() - 1)));
-    }
-    return ids;
-  }
-
-  private Expression transactionIdExpression(final Cypher25Parser.StringsOrExpressionContext ctx) {
-    return ctx.expression() != null ? expressionBuilder.parseExpression(ctx.expression()) : null;
-  }
-
-  private CypherAdminStatement handleAlterCommand(final Cypher25Parser.AlterCommandContext ctx) {
-    if (ctx.alterUser() != null)
-      return handleAlterUser(ctx.alterUser());
-    throw new CommandParsingException("Only ALTER USER is currently supported");
-  }
-
-  private CypherAdminStatement handleCreateUser(final Cypher25Parser.CreateUserContext ctx) {
-    final String userName = stripBackticks(ctx.commandNameExpression().getText());
-    final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
-
-    String password = null;
-    if (ctx.password() != null && !ctx.password().isEmpty()) {
-      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
-      password = extractPasswordValue(pwdCtx.passwordExpression());
-    }
-    if (password == null)
-      throw new CommandParsingException("CREATE USER requires SET PASSWORD");
-
-    return new CypherAdminStatement(CypherAdminStatement.Kind.CREATE_USER, userName, password, ifNotExists, false);
-  }
-
-  private CypherAdminStatement handleDropUser(final Cypher25Parser.DropUserContext ctx) {
-    final String userName = stripBackticks(ctx.commandNameExpression().getText());
-    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
-    return new CypherAdminStatement(CypherAdminStatement.Kind.DROP_USER, userName, null, false, ifExists);
-  }
-
-  private CypherAdminStatement handleAlterUser(final Cypher25Parser.AlterUserContext ctx) {
-    final String userName = stripBackticks(ctx.commandNameExpression().getText());
-
-    String password = null;
-    if (ctx.password() != null && !ctx.password().isEmpty()) {
-      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
-      password = extractPasswordValue(pwdCtx.passwordExpression());
-    }
-    if (password == null)
-      throw new CommandParsingException("ALTER USER requires SET PASSWORD");
-
-    return new CypherAdminStatement(CypherAdminStatement.Kind.ALTER_USER, userName, password, false, false);
-  }
-
-  private String extractPasswordValue(final Cypher25Parser.PasswordExpressionContext ctx) {
-    if (ctx.stringLiteral() != null) {
-      final String raw = ctx.stringLiteral().getText();
-      return decodeStringLiteral(raw.substring(1, raw.length() - 1));
-    }
-    throw new CommandParsingException("Password must be a string literal");
-  }
-
-  private CypherDDLStatement handleCreateConstraint(final Cypher25Parser.CreateConstraintContext ctx) {
-    // Extract optional constraint name
-    final String constraintName = ctx.symbolicNameOrStringParameter() != null
-        ? stripBackticks(ctx.symbolicNameOrStringParameter().getText()) : null;
-
-    // IF NOT EXISTS
-    final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
-
-    // Extract label name and determine if it's a node or relationship constraint
-    final boolean forRelationship;
-    final String labelName;
-    if (ctx.commandNodePattern() != null) {
-      forRelationship = false;
-      labelName = stripBackticks(ctx.commandNodePattern().labelType().symbolicNameString().getText());
-    } else if (ctx.commandRelPattern() != null) {
-      forRelationship = true;
-      labelName = stripBackticks(ctx.commandRelPattern().relType().symbolicNameString().getText());
-    } else {
-      throw new CommandParsingException("CREATE CONSTRAINT requires a node or relationship pattern");
-    }
-
-    // Extract property names from constraintType
-    final Cypher25Parser.ConstraintTypeContext constraintType = ctx.constraintType();
-    final List<String> propertyNames = extractPropertyNames(constraintType);
-
-    // Determine constraint kind
-    final CypherDDLStatement.ConstraintKind constraintKind;
-    CypherTypeName typedName = null;
-    if (constraintType instanceof Cypher25Parser.ConstraintIsUniqueContext)
-      constraintKind = CypherDDLStatement.ConstraintKind.UNIQUE;
-    else if (constraintType instanceof Cypher25Parser.ConstraintIsNotNullContext)
-      constraintKind = CypherDDLStatement.ConstraintKind.NOT_NULL;
-    else if (constraintType instanceof Cypher25Parser.ConstraintKeyContext)
-      constraintKind = CypherDDLStatement.ConstraintKind.KEY;
-    else if (constraintType instanceof Cypher25Parser.ConstraintTypedContext) {
-      constraintKind = CypherDDLStatement.ConstraintKind.TYPED;
-      typedName = parseTypeName(((Cypher25Parser.ConstraintTypedContext) constraintType).type(), "a property type constraint");
-    } else
-      throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
-
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_CONSTRAINT, constraintKind,
-        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship, typedName);
-  }
-
-  private CypherDDLStatement handleDropConstraint(final Cypher25Parser.DropConstraintContext ctx) {
-    final String constraintName = stripBackticks(ctx.symbolicNameOrStringParameter().getText());
-    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
-    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_CONSTRAINT, null,
-        constraintName, null, null, false, ifExists, false);
-  }
-
-  private CypherDDLStatement handleCreateIndex(final Cypher25Parser.CreateIndexContext ctx) {
-    // The grammar supports: INDEX, RANGE INDEX, TEXT INDEX, POINT INDEX, VECTOR INDEX, LOOKUP INDEX, FULLTEXT INDEX.
-    // ArcadeDB maps the standard, RANGE, TEXT and POINT indexes to LSM_TREE, VECTOR to LSM_VECTOR and FULLTEXT to FULL_TEXT
-    if (ctx.createVectorIndex() != null)
-      return handleCreateVectorIndex(ctx.createVectorIndex());
-    if (ctx.createFulltextIndex() != null)
-      return handleCreateFulltextIndex(ctx.createFulltextIndex());
-
-    final Cypher25Parser.CreateIndex_Context indexCtx;
-    if (ctx.createIndex_() != null)
-      indexCtx = ctx.createIndex_();
-    else
-      throw new CommandParsingException("Only standard, RANGE, TEXT, VECTOR and FULLTEXT index types are supported");
-
-    // Extract optional index name
-    final String indexName = indexCtx.symbolicNameOrStringParameter() != null
-        ? stripBackticks(indexCtx.symbolicNameOrStringParameter().getText()) : null;
-
-    // IF NOT EXISTS
-    final boolean ifNotExists = indexCtx.IF() != null && indexCtx.NOT() != null && indexCtx.EXISTS() != null;
-
-    // Extract label name and determine if it's for a node or relationship
-    final boolean forRelationship;
-    final String labelName;
-    if (indexCtx.commandNodePattern() != null) {
-      forRelationship = false;
-      labelName = stripBackticks(indexCtx.commandNodePattern().labelType().symbolicNameString().getText());
-    } else if (indexCtx.commandRelPattern() != null) {
-      forRelationship = true;
-      labelName = stripBackticks(indexCtx.commandRelPattern().relType().symbolicNameString().getText());
-    } else {
-      throw new CommandParsingException("CREATE INDEX requires a node or relationship pattern");
-    }
-
-    // Extract property names from propertyList
-    final List<String> propertyNames = extractIndexPropertyNames(indexCtx.propertyList());
-
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null,
-        indexName, labelName, propertyNames, ifNotExists, false, forRelationship);
-  }
-
-  /**
-   * {@code CREATE VECTOR INDEX [name] [IF NOT EXISTS] FOR (n:Label) ON n.prop [OPTIONS {...}]}, Neo4j 5 syntax, issue #10678.
-   * The {@code indexConfig} in the options is read when the statement runs, so it may be a parameter.
-   * <p>
-   * {@code WITH [n.a, n.b]}, the additional filtering properties of Neo4j 2025's vector index, is accepted and builds the same
-   * index as without it (issue #10863). Neo4j stores those properties in the index so that the {@code WHERE} of a Cypher 25
-   * {@code SEARCH} clause can filter on them, and refuses a {@code WHERE} on any other property. ArcadeDB's {@code SEARCH}
-   * filters on the record itself while the index is searched (issue #10782), so its {@code WHERE} may read every property
-   * with or without the declaration: the statements a Neo4j script runs against the index answer the same.
-   */
-  private CypherDDLStatement handleCreateVectorIndex(final Cypher25Parser.CreateVectorIndexContext ctx) {
-    final List<String> propertyNames = extractIndexPropertyNames(ctx.propertyList());
-    if (propertyNames.size() != 1)
-      throw new CommandParsingException("A vector index is on exactly one property, found " + propertyNames.size());
-
-    return createIndexStatement(CypherDDLStatement.IndexKind.VECTOR, "CREATE VECTOR INDEX", ctx.symbolicNameOrStringParameter(),
-        ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null, ctx.multiLabelNodePattern(), ctx.multiRelTypeRelPattern(),
-        propertyNames, ctx.commandOptions());
-  }
-
-  /**
-   * {@code CREATE FULLTEXT INDEX [name] [IF NOT EXISTS] FOR (n:Label) ON EACH [n.a, n.b] [OPTIONS {...}]}, Neo4j 5 syntax, issue
-   * #10678.
-   */
-  private CypherDDLStatement handleCreateFulltextIndex(final Cypher25Parser.CreateFulltextIndexContext ctx) {
-    final List<String> propertyNames = new ArrayList<>();
-    for (final Cypher25Parser.PropertyContext prop : ctx.enclosedPropertyList().property())
-      propertyNames.add(stripBackticks(prop.propertyKeyName().getText()));
-
-    return createIndexStatement(CypherDDLStatement.IndexKind.FULLTEXT, "CREATE FULLTEXT INDEX", ctx.symbolicNameOrStringParameter(),
-        ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null, ctx.multiLabelNodePattern(), ctx.multiRelTypeRelPattern(),
-        propertyNames, ctx.commandOptions());
-  }
-
-  /**
-   * The statement of a {@code CREATE VECTOR INDEX} or {@code CREATE FULLTEXT INDEX}. Neo4j lets either span several labels
-   * ({@code (n:A|B)}); an ArcadeDB index belongs to one type, so the statement builds one index per label and records the name
-   * that ties them together (issue #10914).
-   */
-  private CypherDDLStatement createIndexStatement(final CypherDDLStatement.IndexKind indexKind, final String statement,
-      final Cypher25Parser.SymbolicNameOrStringParameterContext nameCtx, final boolean ifNotExists,
-      final Cypher25Parser.MultiLabelNodePatternContext nodePattern, final Cypher25Parser.MultiRelTypeRelPatternContext relPattern,
-      final List<String> propertyNames, final Cypher25Parser.CommandOptionsContext optionsCtx) {
-    final String indexName = nameCtx != null ? stripBackticks(nameCtx.getText()) : null;
-
-    final boolean forRelationship = relPattern != null;
-    final List<Cypher25Parser.SymbolicNameStringContext> labels = forRelationship ?
-        relPattern.symbolicNameString() :
-        nodePattern.symbolicNameString();
-    final List<String> labelNames = new ArrayList<>(labels.size());
-    for (final Cypher25Parser.SymbolicNameStringContext label : labels) {
-      final String labelName = stripBackticks(label.getText());
-      if (!labelNames.contains(labelName))
-        labelNames.add(labelName);
-    }
-
-    Expression options = null;
-    if (optionsCtx != null) {
-      final Cypher25Parser.MapOrParameterContext mapOrParam = optionsCtx.mapOrParameter();
-      if (mapOrParam.map() != null)
-        options = expressionBuilder.parseMapLiteralExpression(mapOrParam.map());
-      else
-        options = new ParameterExpression(stripBackticks(mapOrParam.parameter().parameterName().getText()),
-            mapOrParam.parameter().getText());
-    }
-
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, indexName, labelNames, propertyNames, ifNotExists,
-        false, forRelationship, null, indexKind, options);
-  }
-
-  private CypherDDLStatement handleDropIndex(final Cypher25Parser.DropIndexContext ctx) {
-    final String indexName = stripBackticks(ctx.symbolicNameOrStringParameter().getText());
-    final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
-    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_INDEX, null,
-        indexName, null, null, false, ifExists, false);
-  }
-
-  /**
-   * Extracts property names from a propertyList context (used by CREATE INDEX).
-   * Handles both single property (n.id) and property list ((n.first, n.last)).
-   */
-  private List<String> extractIndexPropertyNames(final Cypher25Parser.PropertyListContext propList) {
-    final List<String> names = new ArrayList<>();
-    if (propList.enclosedPropertyList() != null) {
-      final Cypher25Parser.EnclosedPropertyListContext enclosed = propList.enclosedPropertyList();
-      for (final Cypher25Parser.PropertyContext prop : enclosed.property())
-        names.add(stripBackticks(prop.propertyKeyName().getText()));
-    } else {
-      names.add(stripBackticks(propList.property().propertyKeyName().getText()));
-    }
-    return names;
-  }
-
-  /**
-   * Extracts property names from a constraintType context.
-   * Handles both single property (p.id) and property list ((p.first, p.last)).
-   */
-  private List<String> extractPropertyNames(final Cypher25Parser.ConstraintTypeContext ctx) {
-    // propertyList() is defined on each specific subclass, not on the base ConstraintTypeContext
-    final Cypher25Parser.PropertyListContext propList;
-    if (ctx instanceof Cypher25Parser.ConstraintIsUniqueContext)
-      propList = ((Cypher25Parser.ConstraintIsUniqueContext) ctx).propertyList();
-    else if (ctx instanceof Cypher25Parser.ConstraintIsNotNullContext)
-      propList = ((Cypher25Parser.ConstraintIsNotNullContext) ctx).propertyList();
-    else if (ctx instanceof Cypher25Parser.ConstraintKeyContext)
-      propList = ((Cypher25Parser.ConstraintKeyContext) ctx).propertyList();
-    else if (ctx instanceof Cypher25Parser.ConstraintTypedContext)
-      propList = ((Cypher25Parser.ConstraintTypedContext) ctx).propertyList();
-    else
-      throw new CommandParsingException("Unsupported constraint type for property extraction");
-
-    final List<String> names = new ArrayList<>();
-    if (propList.enclosedPropertyList() != null) {
-      // Parenthesized list: (p.first, p.last)
-      final Cypher25Parser.EnclosedPropertyListContext enclosed = propList.enclosedPropertyList();
-      for (final Cypher25Parser.PropertyContext prop : enclosed.property())
-        names.add(stripBackticks(prop.propertyKeyName().getText()));
-    } else {
-      // Single property: p.id
-      names.add(stripBackticks(propList.property().propertyKeyName().getText()));
-    }
-    return names;
-  }
-
-  /**
-   * Builds an {@link IsTypedExpression} from a parsed {@code IS [NOT] TYPED type} or
-   * {@code :: type} comparison (issue #3365 section 3.3). Static so both
-   * {@link CypherASTBuilder} (boolean path) and {@link CypherExpressionBuilder}
-   * (expression path) can share a single implementation.
-   */
-  static IsTypedExpression buildIsTypedExpression(final Expression leftExpr,
-      final Cypher25Parser.TypeComparisonContext typeCtx) {
-    return new IsTypedExpression(leftExpr, parseTypeName(typeCtx.type(), "IS TYPED"), typeCtx.NOT() != null);
-  }
-
-  /**
-   * Builds an {@link IsNormalizedExpression} from a parsed {@code IS [NOT] [form] NORMALIZED} comparison (issue #9940). Shared by
-   * the boolean and the expression path, like {@link #buildIsTypedExpression}.
-   */
-  static IsNormalizedExpression buildIsNormalizedExpression(final Expression leftExpr,
-      final Cypher25Parser.NormalFormComparisonContext ctx) {
-    final Cypher25Parser.NormalFormContext formCtx = ctx.normalForm();
-    final Normalizer.Form form;
-    if (formCtx == null || formCtx.NFC() != null)
-      form = Normalizer.Form.NFC;
-    else if (formCtx.NFD() != null)
-      form = Normalizer.Form.NFD;
-    else if (formCtx.NFKC() != null)
-      form = Normalizer.Form.NFKC;
-    else
-      form = Normalizer.Form.NFKD;
-    return new IsNormalizedExpression(leftExpr, form, ctx.NOT() != null);
-  }
-
-  /**
-   * {@code x IS DIRECTED} is the GQL directed predicate, but the Cypher 25 grammar has no rule for it and reads it as a test
-   * for a label named DIRECTED, which answered false for every relationship (issue #9940). It is refused; a label that
-   * really is called DIRECTED stays reachable as {@code x:DIRECTED} or {@code x IS `DIRECTED`}.
-   */
-  static void rejectDirectedPredicate(final Cypher25Parser.LabelExpressionContext ctx) {
-    if (ctx != null && ctx.IS() != null && "DIRECTED".equalsIgnoreCase(ctx.labelExpression4().getText()))
-      throw new FeatureNotImplementedException("the directed predicate 'IS DIRECTED' is not supported (every "
-          + "relationship is directed); to test a label named DIRECTED write ':DIRECTED' or 'IS `DIRECTED`'");
-  }
-
-  /**
-   * Parses a Cypher type into its canonical {@link CypherTypeName}, shared by the {@code IS ::} predicate and the property
-   * type constraint so the two cannot read one spelling two ways (#9709). {@code LIST<T>}, {@code ARRAY<T>} and the postfix
-   * {@code T LIST} are all the list of {@code T}; {@code ANY<T>} with a single {@code T} is {@code T}. {@code VECTOR<T>(n)} and
-   * {@code VECTOR(n, T)} are the vector of coordinate type {@code T} and dimension {@code n} (#10862). A union of types, a list
-   * of lists and a list of vectors are refused: neither the predicate nor the schema can express them.
-   *
-   * @param where the construct being parsed, for the refusal message
-   */
-  static CypherTypeName parseTypeName(final Cypher25Parser.TypeContext typeCtx, final String where) {
-    if (typeCtx.typePart().size() != 1)
-      throw new CommandParsingException("UnsupportedFeature: union types are not supported in " + where);
-    final Cypher25Parser.TypePartContext typePart = typeCtx.typePart(0);
-    final Cypher25Parser.TypeNameContext nameCtx = typePart.typeName();
-    final boolean nonNull = isNonNull(typePart.typeNullability());
-
-    if (nameCtx.VECTOR() != null)
-      return wrapInListSuffixes(parseVectorTypeName(nameCtx, nonNull, where), typePart, where);
-
-    if (nameCtx.type() != null) {
-      // LIST<T> / ARRAY<T>, or ANY<T> (ANY VALUE<T>), which is T itself when T is a single type
-      final CypherTypeName inner = parseTypeName(nameCtx.type(), where);
-      if (nameCtx.ANY() != null)
-        return wrapInListSuffixes(inner.withNonNull(inner.nonNull() || nonNull), typePart, where);
-      if (inner.isList())
-        throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
-      if (inner.isVector())
-        throw new CommandParsingException("UnsupportedFeature: a list of vectors is not supported in " + where);
-      return wrapInListSuffixes(new CypherTypeName(CypherTypeName.LIST, inner.name(), nonNull, inner.nonNull()), typePart, where);
-    }
-
-    final StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < nameCtx.getChildCount(); i++) {
-      if (i > 0)
-        sb.append(' ');
-      sb.append(nameCtx.getChild(i).getText().toUpperCase(Locale.ROOT));
-    }
-    return wrapInListSuffixes(new CypherTypeName(CypherTypeName.canonical(sb.toString()), null, nonNull, false), typePart, where);
-  }
-
-  /** {@code T LIST} / {@code T ARRAY}: the postfix spelling of {@code LIST<T>}, with its own nullability. */
-  private static CypherTypeName wrapInListSuffixes(final CypherTypeName type, final Cypher25Parser.TypePartContext typePart,
-      final String where) {
-    final List<Cypher25Parser.TypeListSuffixContext> suffixes = typePart.typeListSuffix();
-    if (suffixes.isEmpty())
-      return type;
-    if (suffixes.size() > 1 || type.isList())
-      throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
-    if (type.isVector())
-      throw new CommandParsingException("UnsupportedFeature: a list of vectors is not supported in " + where);
-    return new CypherTypeName(CypherTypeName.LIST, type.name(), isNonNull(suffixes.getFirst().typeNullability()), type.nonNull());
-  }
-
-  /**
-   * {@code VECTOR}, {@code VECTOR<T>}, {@code VECTOR(n)}, {@code VECTOR<T>(n)} or {@code VECTOR(n, T)}: the coordinate type is
-   * reduced to its canonical name like any other numeric type ({@code INT64} is {@code INTEGER}, {@code FLOAT64} is
-   * {@code FLOAT}), and the dimension must be a positive int.
-   */
-  private static CypherTypeName parseVectorTypeName(final Cypher25Parser.TypeNameContext nameCtx, final boolean nonNull,
-      final String where) {
-    final Cypher25Parser.VectorCoordinateTypeContext coordinateCtx = nameCtx.vectorCoordinateType();
-    String coordinate = null;
-    boolean coordinateNonNull = false;
-    if (coordinateCtx != null) {
-      final StringBuilder sb = new StringBuilder();
-      for (int i = 0; i < coordinateCtx.getChildCount(); i++) {
-        if (coordinateCtx.getChild(i) instanceof Cypher25Parser.TypeNullabilityContext)
-          continue;
-        if (!sb.isEmpty())
-          sb.append(' ');
-        sb.append(coordinateCtx.getChild(i).getText().toUpperCase(Locale.ROOT));
-      }
-      coordinate = CypherTypeName.canonical(sb.toString());
-      coordinateNonNull = isNonNull(coordinateCtx.typeNullability());
-    }
-
-    int dimension = CypherTypeName.NO_DIMENSION;
-    if (nameCtx.signedIntegerLiteral() != null) {
-      final String text = nameCtx.signedIntegerLiteral().getText();
-      long value;
-      try {
-        value = Long.parseLong(text.replace("_", ""));
-      } catch (final NumberFormatException e) {
-        value = -1;
-      }
-      if (value < 1 || value > Integer.MAX_VALUE)
-        throw new CommandParsingException("The dimension of a VECTOR type in " + where + " must be a positive integer, found: " + text);
-      dimension = (int) value;
-    }
-    return new CypherTypeName(CypherTypeName.VECTOR, coordinate, nonNull, coordinateNonNull, dimension);
-  }
-
-  private static boolean isNonNull(final Cypher25Parser.TypeNullabilityContext nullability) {
-    return nullability != null && (nullability.NOT() != null || nullability.EXCLAMATION_MARK() != null);
   }
 
   @Override
@@ -820,7 +233,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public List<WithClause> visitLetClause(final Cypher25Parser.LetClauseContext ctx) {
     final List<WithClause> clauses = new ArrayList<>(ctx.letItem().size());
     for (final Cypher25Parser.LetItemContext item : ctx.letItem()) {
-      if (findPatternExpressionRecursive(item.expression()) != null)
+      if (booleans.findPatternExpressionRecursive(item.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in LET");
       final Expression expression = expressionBuilder.parseExpression(item.expression());
       final String variable = stripBackticks(item.variable().getText());
@@ -1104,7 +517,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (final Cypher25Parser.SetItemContext itemCtx : ctx.setItem()) {
       if (itemCtx instanceof Cypher25Parser.SetPropContext propCtx) {
         // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
-        if (findPatternExpressionRecursive(propCtx.expression()) != null)
+        if (booleans.findPatternExpressionRecursive(propCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
@@ -1137,7 +550,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         }
       } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
         // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
-        if (findPatternExpressionRecursive(dynCtx.expression()) != null)
+        if (booleans.findPatternExpressionRecursive(dynCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
@@ -1364,6 +777,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse IN TRANSACTIONS parameters
     boolean inTransactions = false;
     Expression batchSize = null;
+    SubqueryClause.OnError onError = SubqueryClause.OnError.FAIL;
+    String reportStatusVariable = null;
     final Cypher25Parser.SubqueryInTransactionsParametersContext txParams = ctx.subqueryInTransactionsParameters();
     if (txParams != null) {
       inTransactions = true;
@@ -1373,9 +788,36 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (batchCtx.expression() != null)
           batchSize = expressionBuilder.parseExpression(batchCtx.expression());
       }
+      // ON ERROR CONTINUE | BREAK | FAIL (issue #11595)
+      if (txParams.subqueryInTransactionsErrorParameters() != null && !txParams.subqueryInTransactionsErrorParameters().isEmpty()) {
+        final Cypher25Parser.SubqueryInTransactionsErrorParametersContext errorCtx =
+            txParams.subqueryInTransactionsErrorParameters(0);
+        // ON ERROR RETRY runs a batch that failed with a transient error again before its THEN mode applies. The retries are not
+        // implemented, and the THEN mode alone would skip under THEN CONTINUE, at the first transient error, a batch the statement
+        // asked to be retried: refused rather than answered with what it did not ask for
+        if (errorCtx.RETRY() != null)
+          throw new FeatureNotImplementedException(
+              "ON ERROR RETRY in CALL { ... } IN TRANSACTIONS is not supported: use ON ERROR CONTINUE, BREAK or FAIL");
+        if (errorCtx.CONTINUE() != null)
+          onError = SubqueryClause.OnError.CONTINUE;
+        else if (errorCtx.BREAK() != null)
+          onError = SubqueryClause.OnError.BREAK;
+      }
+      if (txParams.subqueryInTransactionsReportParameters() != null && !txParams.subqueryInTransactionsReportParameters().isEmpty()) {
+        reportStatusVariable = stripBackticks(txParams.subqueryInTransactionsReportParameters(0).variable().getText());
+        if (onError == SubqueryClause.OnError.FAIL)
+          throw new CommandParsingException(
+              "REPORT STATUS can only be used when specifying ON ERROR CONTINUE or ON ERROR BREAK");
+      }
     }
 
-    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize);
+    // A nested IN TRANSACTIONS fails as ON ERROR FAIL does, rolling back every level, the caller's transaction included: an outer
+    // CONTINUE or BREAK could not take that back, and would carry on without the caller's writes
+    if (onError != SubqueryClause.OnError.FAIL && innerStatement.hasSubqueryInTransactions())
+      throw new CommandParsingException(
+          "A CALL { ... } IN TRANSACTIONS with ON ERROR CONTINUE or BREAK cannot contain another CALL { ... } IN TRANSACTIONS");
+
+    return new SubqueryClause(innerStatement, scopeVariables, optional, inTransactions, batchSize, onError, reportStatusVariable);
   }
 
   @Override
@@ -1391,7 +833,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Always process explicit return items (handles both "WITH expr" and "WITH *, expr AS alias")
     for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
       // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
-      if (findPatternExpressionRecursive(itemCtx.expression()) != null)
+      if (booleans.findPatternExpressionRecursive(itemCtx.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in WITH projections");
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
       final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
@@ -1407,25 +849,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse DISTINCT flag
     final boolean distinct = body.DISTINCT() != null;
 
-    // Parse WHERE clause (applied after projection)
+    boolean aggregating = false;
+    for (final ReturnClause.ReturnItem item : items)
+      if (!item.isStar() && item.getExpression().containsAggregation()) {
+        aggregating = true;
+        break;
+      }
+
+    // Parse WHERE clause (applied after projection). A WHERE that repeats a grouping key reads the projected column
+    // (issue #12245), as ORDER BY does below
+    // The rewrite runs on the predicate as written, before the canonicalization that may reorder it (1 < n.id becomes
+    // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
     if (ctx.whereClause() != null) {
-      whereClause = visitWhereClause(ctx.whereClause());
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+          items, distinct || aggregating);
+      whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
     }
 
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;
-    if (body.orderBy() != null) {
+    if (body.orderBy() != null)
       // An ORDER BY item that repeats a projected expression sorts on the projected column
       // (#5283 for DISTINCT, #5286 for aggregation)
-      boolean aggregating = false;
-      for (final ReturnClause.ReturnItem item : items)
-        if (item.getExpression().containsAggregation()) {
-          aggregating = true;
-          break;
-        }
       orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct || aggregating);
-    }
 
     Expression skip = null;
     if (body.skip() != null) {
@@ -1528,8 +975,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
       // A pattern nested inside a function-style exists(pattern) predicate is allowed: it evaluates
       // to a boolean, not a projected path (issue #4993).
-      final Cypher25Parser.PatternExpressionContext patternInReturn = findPatternExpressionRecursive(itemCtx.expression());
-      if (patternInReturn != null && !isArgumentOfExistsFunction(patternInReturn))
+      final Cypher25Parser.PatternExpressionContext patternInReturn = booleans.findPatternExpressionRecursive(itemCtx.expression());
+      if (patternInReturn != null && !booleans.isArgumentOfExistsFunction(patternInReturn))
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
       final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
@@ -1574,7 +1021,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
     // Parse the WHERE condition as a boolean expression, then simplify boolean constants
-    final BooleanExpression parsed = parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
   }
@@ -1587,92 +1034,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
     // Grammar: FILTER WHERE? expression
-    final BooleanExpression parsed = parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
-  }
-
-  /**
-   * Parse an expression context into a BooleanExpression for WHERE clauses.
-   * Handles logical operators (AND, OR, NOT), comparisons, IS NULL, IN, regex, etc.
-   */
-  private BooleanExpression parseBooleanExpression(final Cypher25Parser.ExpressionContext ctx) {
-    // Traverse the expression tree to find boolean operations
-    // The grammar has: expression: expression11 (OR expression11)*
-
-    // Parse all expression11 children and combine with OR if needed
-    final List<Cypher25Parser.Expression11Context> expr11List = ctx.expression11();
-
-    if (expr11List.size() == 1) {
-      // No OR operator, just delegate to expression11
-      return parseBooleanFromExpression11(expr11List.get(0));
-    } else if (expr11List.size() > 1) {
-      // Multiple expression11 connected with OR
-      BooleanExpression result = parseBooleanFromExpression11(expr11List.get(0));
-      for (int i = 1; i < expr11List.size(); i++) {
-        final BooleanExpression right = parseBooleanFromExpression11(expr11List.get(i));
-        result = new LogicalExpression(LogicalExpression.Operator.OR, result, right);
-      }
-      return result;
-    }
-
-    // Fallback: create a comparison from the expression text (legacy mode)
-    // This handles cases we haven't explicitly parsed yet
-    return createFallbackComparison(ctx);
-  }
-
-  private Cypher25Parser.Expression11Context findExpression11(final ParseTree node) {
-    if (node instanceof Cypher25Parser.Expression11Context) {
-      return (Cypher25Parser.Expression11Context) node;
-    }
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression11Context found = findExpression11(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  private Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpressionRecursive(final ParseTree node) {
-    if (node instanceof Cypher25Parser.ParenthesizedExpressionContext) {
-      return (Cypher25Parser.ParenthesizedExpressionContext) node;
-    }
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ParenthesizedExpressionContext found =
-          findParenthesizedExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /**
-   * Recursively find a PatternExpressionContext in the parse tree.
-   * Pattern expressions are used for pattern predicates in WHERE clauses.
-   */
-  private Cypher25Parser.PatternExpressionContext findPatternExpressionRecursive(final ParseTree node) {
-    if (node instanceof Cypher25Parser.PatternExpressionContext) {
-      return (Cypher25Parser.PatternExpressionContext) node;
-    }
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.PatternExpressionContext found = findPatternExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /**
-   * Returns true when the given pattern expression is the argument of a function-style
-   * {@code exists(pattern)} predicate. Such a pattern is a boolean existence check, not a projected
-   * path, so it is permitted in contexts (e.g. RETURN) where a bare pattern would be rejected.
-   */
-  private boolean isArgumentOfExistsFunction(final ParseTree node) {
-    for (ParseTree p = node.getParent(); p != null; p = p.getParent()) {
-      if (p instanceof Cypher25Parser.FunctionInvocationContext funcCtx)
-        return "exists".equalsIgnoreCase(ParserUtils.qualifiedName(funcCtx.functionName().namespace(), funcCtx.functionName().symbolicNameString()));
-    }
-    return false;
   }
 
   /**
@@ -1713,337 +1077,6 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new PathPattern(nodes, relationships, null);
-  }
-
-  private BooleanExpression parseBooleanFromExpression11(final Cypher25Parser.Expression11Context ctx) {
-    // expression11: expression10 (XOR expression10)*
-    final List<Cypher25Parser.Expression10Context> expr10List = ctx.expression10();
-
-    if (expr10List.size() == 1)
-      return parseBooleanFromExpression10(expr10List.get(0));
-
-    // Multiple expression10 connected with XOR
-    BooleanExpression result = parseBooleanFromExpression10(expr10List.get(0));
-    for (int i = 1; i < expr10List.size(); i++) {
-      final BooleanExpression right = parseBooleanFromExpression10(expr10List.get(i));
-      result = new LogicalExpression(LogicalExpression.Operator.XOR, result, right);
-    }
-    return result;
-  }
-
-  private BooleanExpression parseBooleanFromExpression10(final Cypher25Parser.Expression10Context ctx) {
-    // expression10: expression9 (AND expression9)*
-    final List<Cypher25Parser.Expression9Context> expr9List = ctx.expression9();
-
-    if (expr9List.size() == 1) {
-      // No AND operator, just delegate
-      return parseBooleanFromExpression9(expr9List.get(0));
-    } else if (expr9List.size() > 1) {
-      // Multiple expression9 connected with AND
-      BooleanExpression result = parseBooleanFromExpression9(expr9List.get(0));
-      for (int i = 1; i < expr9List.size(); i++) {
-        final BooleanExpression right = parseBooleanFromExpression9(expr9List.get(i));
-        result = new LogicalExpression(LogicalExpression.Operator.AND, result, right);
-      }
-      return result;
-    }
-
-    return createFallbackComparison(ctx);
-  }
-
-  private BooleanExpression parseBooleanFromExpression9(final Cypher25Parser.Expression9Context ctx) {
-    // expression9: NOT* expression8
-    BooleanExpression result = parseBooleanFromExpression8(ctx.expression8());
-
-    // Apply one NOT per matched token: a bare chain such as `NOT NOT p` must keep both negations
-    // (issue #5360), exactly like the parenthesized form `NOT (NOT p)`.
-    final int notCount = ctx.NOT() == null ? 0 : ctx.NOT().size();
-    for (int i = 0; i < notCount; i++)
-      result = new LogicalExpression(LogicalExpression.Operator.NOT, result);
-
-    return result;
-  }
-
-  private BooleanExpression parseBooleanFromExpression8(final Cypher25Parser.Expression8Context ctx) {
-    // expression8 handles comparisons (=, !=, <, >, <=, >=)
-    // expression8: expression7 ((EQ | NEQ | LT | GT | LE | GE) expression7)*
-
-    // Try to find comparison operator
-    final Cypher25Parser.Expression7Context expr7 = ctx.expression7(0);
-
-    // Check for comparison operators in expression8
-    final int expr7Count = ctx.expression7().size();
-    if (expr7Count > 1) {
-      // Collect all operators and operands for chained comparisons (e.g., 1 < n.num < 3)
-      final List<ComparisonExpression.Operator> operators = new ArrayList<>();
-      for (int i = 0; i < ctx.getChildCount(); i++) {
-        if (ctx.getChild(i) instanceof TerminalNode) {
-          final TerminalNode terminal = (TerminalNode) ctx.getChild(i);
-          final int type = terminal.getSymbol().getType();
-          ComparisonExpression.Operator op = null;
-          if (type == Cypher25Parser.EQ)
-            op = ComparisonExpression.Operator.EQUALS;
-          else if (type == Cypher25Parser.NEQ || type == Cypher25Parser.INVALID_NEQ)
-            op = ComparisonExpression.Operator.NOT_EQUALS;
-          else if (type == Cypher25Parser.LT)
-            op = ComparisonExpression.Operator.LESS_THAN;
-          else if (type == Cypher25Parser.GT)
-            op = ComparisonExpression.Operator.GREATER_THAN;
-          else if (type == Cypher25Parser.LE)
-            op = ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-          else if (type == Cypher25Parser.GE)
-            op = ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-          if (op != null)
-            operators.add(op);
-        }
-      }
-
-      if (!operators.isEmpty()) {
-        if (operators.size() == 1) {
-          // Simple two-operand comparison
-          final Expression left = expressionBuilder.parseExpressionFromText(ctx.expression7(0));
-          final Expression right = expressionBuilder.parseExpressionFromText(ctx.expression7(1));
-          return new ComparisonExpression(left, operators.get(0), right);
-        }
-        // Chained comparison: a < b < c becomes (a < b) AND (b < c)
-        BooleanExpression result = null;
-        for (int i = 0; i < operators.size(); i++) {
-          final Expression left = expressionBuilder.parseExpressionFromText(ctx.expression7(i));
-          final Expression right = expressionBuilder.parseExpressionFromText(ctx.expression7(i + 1));
-          final ComparisonExpression comp = new ComparisonExpression(left, operators.get(i), right);
-          if (result == null)
-            result = comp;
-          else
-            result = new LogicalExpression(LogicalExpression.Operator.AND, result, comp);
-        }
-        return result;
-      }
-    }
-
-    // Delegate to expression7 which handles IS NULL, IN, REGEX, etc.
-    return parseBooleanFromExpression7(expr7);
-  }
-
-  private BooleanExpression parseBooleanFromExpression7(final Cypher25Parser.Expression7Context ctx) {
-    // expression7: expression6 comparisonExpression6?
-    final Cypher25Parser.ComparisonExpression6Context compCtx = ctx.comparisonExpression6();
-
-    // Check if expression6 contains an EXISTS expression
-    // This handles cases like: WHERE EXISTS { (p)-[:WORKS_AT]->(:Company) }
-    // Require the EXISTS to span the entire expression6 text (allowing for whitespace),
-    // otherwise an inner EXISTS inside a parenthesized OR/AND would be returned alone
-    // and silently drop the surrounding boolean operators (issue #4126).
-    final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
-    final Cypher25Parser.ExistsExpressionContext existsExpr = expressionBuilder.findExistsExpressionRecursive(expr6);
-    if (existsExpr != null && compCtx == null
-        && existsExpr.getText().length() >= expr6.getText().length() - 2) {
-      // ExistsExpression implements Expression, so it has to be adapted to be returned as a BooleanExpression.
-      // Wrap via BooleanCoercionExpression (rather than an anonymous adapter, which the walk of
-      // CypherExpressionWalker could only treat as a leaf) so that the parse-time checks reach the subquery body
-      // inside it - it was the anonymous adapter that hid an EXISTS written in a WHERE (issue #5626).
-      return new BooleanCoercionExpression(expressionBuilder.parseExistsExpression(existsExpr));
-    }
-
-    // Check if expression6 contains a parenthesized expression
-    // This handles cases like: (p.age < 26 OR p.age > 35)
-    // IMPORTANT: Check parentheses BEFORE patterns to handle cases like (NOT (pattern))
-    // where the NOT operator should be preserved during recursive parsing
-    final Cypher25Parser.ParenthesizedExpressionContext parenExpr = findParenthesizedExpressionRecursive(expr6);
-    // Only treat this as a parenthesized boolean predicate when the parentheses wrap the WHOLE
-    // expression (e.g. "(a = 1 OR b = 2)"). The recursive finder also matches parentheses nested
-    // deep inside a larger expression - notably the inner predicate of a list quantifier such as
-    // all(a IN list WHERE (a = false)) - and returning parseBooleanExpression on that inner node
-    // would silently discard the enclosing all()/any()/none()/single() and evaluate the bare inner
-    // predicate against unbound iteration variables, filtering out every row (issue #5145). The span
-    // check mirrors the EXISTS guard above (issue #4126): parenExpr is a descendant of expr6, so its
-    // original text length equals expr6's only when it spans the entire expression.
-    final boolean parenSpansWholeExpression = parenExpr != null
-        && getOriginalText(parenExpr).trim().length() >= getOriginalText(expr6).trim().length();
-    if (parenExpr != null && compCtx == null && parenSpansWholeExpression) {
-      // Check if the parenthesized expression contains just a bare variable (e.g., WHERE (n)).
-      // It is kept as a single-node pattern because the grammar cannot tell a node from a Boolean variable: the
-      // validator refuses it when the variable is a graph entity, and the predicate reads the value otherwise (#9542).
-      // Use getOriginalText (whitespace-preserving) rather than getText(): getText() strips all
-      // whitespace, so a genuine predicate such as (friend IN inactive_nodes) collapses to
-      // "friendINinactive_nodes" and spuriously matches the bare-identifier regex, getting
-      // misparsed as an invalid single-node pattern (issue #5138).
-      final String innerText = getOriginalText(parenExpr.expression()).trim();
-      // true/false/null are literals, not variables: "(true)" is a parenthesized boolean (issue #8994).
-      if (innerText.matches("^[a-zA-Z_`][a-zA-Z0-9_`]*$") && !isBooleanOrNullKeyword(innerText)) {
-        final NodePattern nodePattern = new NodePattern(stripBackticks(innerText), null, null);
-        final PathPattern singleNodePath = new PathPattern(List.of(nodePattern), List.of(), null);
-        return new PatternPredicateExpression(singleNodePath, false);
-      }
-      // Recursively parse the inner expression
-      return parseBooleanExpression(parenExpr.expression());
-    }
-
-    // Check if expression6 contains a pattern expression (pattern predicate)
-    // This handles cases like: WHERE (n)-[:KNOWS]->()
-    final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpressionRecursive(expr6);
-    if (patternExpr != null && compCtx == null) {
-      // Parse the pattern and create a pattern predicate expression
-      final PathPattern pathPattern = visitPatternExpression(patternExpr);
-      return new PatternPredicateExpression(pathPattern, false, getOriginalText(patternExpr));
-    }
-
-    if (compCtx != null) {
-      final Expression leftExpr = expressionBuilder.parseExpressionFromText(ctx.expression6());
-
-      // Check which alternative of comparisonExpression6 was matched
-      // NullComparison: IS NOT? NULL
-      if (compCtx instanceof Cypher25Parser.NullComparisonContext) {
-        final Cypher25Parser.NullComparisonContext nullCtx = (Cypher25Parser.NullComparisonContext) compCtx;
-        final boolean isNot = nullCtx.NOT() != null;
-        return new IsNullExpression(leftExpr, isNot);
-      }
-
-      // StringAndListComparison: (REGEQ | STARTS WITH | ENDS WITH | CONTAINS | IN) expression6
-      if (compCtx instanceof Cypher25Parser.StringAndListComparisonContext) {
-        final Cypher25Parser.StringAndListComparisonContext strListCtx =
-            (Cypher25Parser.StringAndListComparisonContext) compCtx;
-
-        // Check for IN operator
-        if (strListCtx.IN() != null) {
-          // Parse the right side as a single expression so that complex expressions like [3]+4 work correctly
-          final Expression rhsExpr = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
-          final List<Expression> listItems = new ArrayList<>();
-          listItems.add(rhsExpr);
-          return new InExpression(leftExpr, listItems);
-        }
-
-        // Check for REGEX (=~)
-        if (strListCtx.REGEQ() != null) {
-          final Expression pattern = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
-          return new RegexExpression(leftExpr, pattern);
-        }
-
-        // Check for STARTS WITH
-        if (strListCtx.STARTS() != null && strListCtx.WITH() != null) {
-          final Expression pattern = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
-          return new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.STARTS_WITH);
-        }
-
-        // Check for ENDS WITH
-        if (strListCtx.ENDS() != null && strListCtx.WITH() != null) {
-          final Expression pattern = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
-          return new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.ENDS_WITH);
-        }
-
-        // Check for CONTAINS
-        if (strListCtx.CONTAINS() != null) {
-          final Expression pattern = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
-          return new StringMatchExpression(leftExpr, pattern, StringMatchExpression.MatchType.CONTAINS);
-        }
-
-        // Fallback for any unhandled operators
-        return createFallbackComparison(ctx);
-      }
-
-      // LabelComparison: labelExpression (e.g., n:Person, n:Person|Developer)
-      if (compCtx instanceof Cypher25Parser.LabelComparisonContext) {
-        final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) compCtx;
-        rejectDirectedPredicate(labelCtx.labelExpression());
-        return parseLabelCheckExpression(leftExpr, labelCtx.labelExpression(), ctx.getText());
-      }
-
-      // TypeComparison: <expr> IS [NOT] TYPED <type>  or  <expr> :: <type>  (issue #3365 section 3.3)
-      if (compCtx instanceof Cypher25Parser.TypeComparisonContext) {
-        return buildIsTypedExpression(leftExpr, (Cypher25Parser.TypeComparisonContext) compCtx);
-      }
-
-      // NormalFormComparison: <expr> IS [NOT] [NFC|NFD|NFKC|NFKD] NORMALIZED (issue #9940)
-      if (compCtx instanceof Cypher25Parser.NormalFormComparisonContext normalForm)
-        return buildIsNormalizedExpression(leftExpr, normalForm);
-
-      return createFallbackComparison(ctx);
-    }
-
-    // Check if the expression is a list predicate (any/all/none/single) used as a boolean
-    final Cypher25Parser.ListItemsPredicateContext listPredCtx = expressionBuilder.findListItemsPredicateRecursive(expr6);
-    if (listPredCtx != null) {
-      final Expression listPredExpr = expressionBuilder.parseListItemsPredicate(listPredCtx);
-      // Wrap via BooleanCoercionExpression (rather than an anonymous adapter) so the semantic
-      // validator can reach the underlying predicate and scope-check its WHERE body. This catches
-      // variables that leak out of a pattern/list comprehension into the outer predicate (issue #5179).
-      return new BooleanCoercionExpression(listPredExpr);
-    }
-
-    // No special boolean form matched. Parse as a generic expression and adapt
-    // it to a boolean predicate. Covers bare boolean literals (WHERE true /
-    // WHERE false), boolean-typed properties, parameters, and a function call used as a predicate
-    // (isEmpty(x), exists(x), ...) - that last one used to get an anonymous adapter of its own here, byte-for-byte
-    // equivalent to BooleanCoercionExpression except that CypherExpressionWalker could only treat it as a leaf, so
-    // the call inside it escaped the parse-time checks (issue #5626).
-    final Expression parsedExpr = expressionBuilder.parseExpressionFromText(expr6);
-    if (parsedExpr != null)
-      return new BooleanCoercionExpression(parsedExpr);
-
-    return createFallbackComparison(ctx);
-  }
-
-  private BooleanExpression createFallbackComparison(final ParseTree ctx) {
-    // Legacy fallback: parse simple comparisons from text
-    // This handles cases we haven't explicitly parsed yet
-    final String text = ctx.getText();
-
-    // Try to parse as "variable.property operator value"
-    final Pattern pattern = Pattern.compile("(\\w+)\\.(\\w+)\\s*([><=!]+)\\s*(\\w+|'[^']*'|\"[^\"]*\"|\\d+(?:\\.\\d+)?)");
-    final Matcher matcher = pattern.matcher(text);
-
-    if (matcher.find()) {
-      final String variable = matcher.group(1);
-      final String property = matcher.group(2);
-      final String operatorStr = matcher.group(3);
-      final String valueStr = matcher.group(4);
-
-      final Expression left = new PropertyAccessExpression(variable, property);
-      final Expression right = new LiteralExpression(parseValueString(valueStr), valueStr);
-      final ComparisonExpression.Operator op = ComparisonExpression.Operator.fromString(operatorStr);
-
-      return new ComparisonExpression(left, op, right);
-    }
-
-    // Ultimate fallback: create a dummy true expression
-    // This should rarely happen in practice
-    return new ComparisonExpression(
-        new LiteralExpression(true, "true"),
-        ComparisonExpression.Operator.EQUALS,
-        new LiteralExpression(true, "true")
-    );
-  }
-
-  /**
-   * Parse a label check expression from WHERE clause (e.g., n:Person, n:Person|Developer).
-   * The grammar for labelExpression is:
-   * labelExpression : (COLON | IS) labelExpression4
-   * labelExpression4 : labelExpression3 (BAR COLON? labelExpression3)*  # OR
-   * labelExpression3 : labelExpression2 ((AMPERSAND | COLON) labelExpression2)*  # AND
-   * labelExpression2 : EXCLAMATION_MARK* labelExpression1
-   * labelExpression1 : symbolicNameString  # label name
-   */
-  private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
-      final Cypher25Parser.LabelExpressionContext labelExprCtx,
-      final String text) {
-    // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
-    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
-    if (predicate != null)
-      return new LabelCheckExpression(variableExpr, predicate, text);
-    // Same extraction the node pattern uses, so `n:`Event Message`` in a WHERE resolves the very
-    // label that (n:`Event Message`) resolves in a pattern - backticks stripped, quoted names kept
-    // whole. Reading them off the text instead left the backticks on the label, which made the
-    // predicate unsatisfiable and its negation a silent no-op.
-    final List<String> labels = ParserUtils.extractLabels(labelExprCtx);
-    final LabelCheckExpression.LabelOperator operator = ParserUtils.isLabelDisjunction(labelExprCtx) ?
-        LabelCheckExpression.LabelOperator.OR :
-        LabelCheckExpression.LabelOperator.AND;
-
-    return new LabelCheckExpression(variableExpr, labels, operator, text);
-  }
-
-  private Object parseValueString(final String value) {
-    // Delegate to ParserUtils for value parsing
-    return ParserUtils.parseValueString(value);
   }
 
   public List<PathPattern> visitPatternList(final Cypher25Parser.PatternListContext ctx) {
@@ -2143,8 +1176,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final NodePattern node = visitNodePattern((Cypher25Parser.NodePatternContext) child);
         // A node pattern written right after an unquantified parenthesized path is that path's last node (GQL
         // juxtaposition): the two are one node, not two consecutive ones
-        if (i > 0 && isUnquantifiedParenthesizedPath(ctx.getChild(i - 1)))
-          nodes.set(nodes.size() - 1, mergeJuxtaposedNodes(nodes.getLast(), node));
+        if (i > 0 && ParenthesizedPathLowering.isUnquantifiedParenthesizedPath(ctx.getChild(i - 1)))
+          nodes.set(nodes.size() - 1, ParenthesizedPathLowering.mergeJuxtaposedNodes(nodes.getLast(), node));
         else
           nodes.add(node);
       } else if (child instanceof Cypher25Parser.RelationshipPatternContext) {
@@ -2153,16 +1186,16 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (relationships.isEmpty())
           throw new CommandParsingException("InvalidSyntax: Quantifier has no preceding relationship");
         final int last = relationships.size() - 1;
-        relationships.set(last, applyQuantifier(relationships.get(last), (Cypher25Parser.QuantifierContext) child));
-      } else if (isUnquantifiedParenthesizedPath(child)) {
-        spliceParenthesizedPath((Cypher25Parser.ParenthesizedPathContext) child, nodes, relationships);
+        relationships.set(last, parenthesizedPaths.applyQuantifier(relationships.get(last), (Cypher25Parser.QuantifierContext) child));
+      } else if (ParenthesizedPathLowering.isUnquantifiedParenthesizedPath(child)) {
+        parenthesizedPaths.spliceParenthesizedPath((Cypher25Parser.ParenthesizedPathContext) child, nodes, relationships);
       } else if (child instanceof Cypher25Parser.ParenthesizedPathContext) {
         // GQL Quantified Path Pattern (issue #3365 sections 1.4 and 1.5).
         // Phase A: lower a single-relationship grouped pattern to a variable-length
         // relationship that the existing executor already handles.
         final boolean nextIsOuterNode = (i + 1) < childCount
             && ctx.getChild(i + 1) instanceof Cypher25Parser.NodePatternContext;
-        absorbParenthesizedPath((Cypher25Parser.ParenthesizedPathContext) child, nodes, relationships, nextIsOuterNode);
+        parenthesizedPaths.absorbParenthesizedPath((Cypher25Parser.ParenthesizedPathContext) child, nodes, relationships, nextIsOuterNode);
       }
     }
 
@@ -2174,312 +1207,6 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Path with relationships
       return new PathPattern(nodes, relationships);
     }
-  }
-
-  /**
-   * Absorbs a GQL Quantified Path Pattern (parenthesized inner pattern + optional quantifier) into the
-   * surrounding node/relationship lists (ISO/IEC 39075:2024 §15.4).
-   *
-   * <p>Two lowerings exist, and the shape of the inner pattern picks between them:
-   * <ul>
-   *   <li><b>Phase A</b> (issue #3365) - a single-relationship inner pattern with anonymous endpoints
-   *       and no inner {@code WHERE} is rewritten to a plain variable-length relationship, which the
-   *       existing traversal machinery executes. A one-edge group is functionally identical to
-   *       {@code -[:R*]->}, so this loses nothing and keeps the faster path.</li>
-   *   <li><b>Phase B</b> (issue #4531) - everything else becomes a {@link QuantifiedPathPattern}
-   *       occupying one hop of the outer chain, executed by {@code QuantifiedPathStep}: multi-hop
-   *       inner patterns, inner {@code WHERE} predicates evaluated per repetition, and inner
-   *       variables that surface outside the group as {@code LIST<NODE>} / {@code LIST<RELATIONSHIP>}
-   *       group variables.</li>
-   * </ul>
-   *
-   * <p>Quantifier bounds are validated identically for both: an upper bound of zero, or a lower bound
-   * above the upper bound, is a syntax error.
-   */
-  private void absorbParenthesizedPath(final Cypher25Parser.ParenthesizedPathContext pCtx,
-      final List<NodePattern> outerNodes, final List<RelationshipPattern> outerRels, final boolean nextIsOuterNode) {
-    final PathPattern inner = visitPattern(pCtx.pattern());
-    if (inner.getRelationshipCount() < 1)
-      throw new CommandParsingException(
-          "InvalidSyntax: a quantified path pattern must contain at least one relationship");
-
-    final BooleanExpression innerWhere = pCtx.WHERE() != null ? parseBooleanExpression(pCtx.expression()) : null;
-
-    // Determine quantifier (defaults to 1..1 when absent, which collapses to a plain triplet)
-    final Integer min;
-    final Integer max;
-    if (pCtx.quantifier() != null) {
-      final RelationshipPattern dummy = new RelationshipPattern(null, null, Direction.BOTH, null, null, null);
-      final RelationshipPattern quantified = applyQuantifier(dummy, pCtx.quantifier());
-      min = quantified.getMinHops();
-      max = quantified.getMaxHops();
-      if (max != null && max == 0)
-        throw new CommandParsingException(
-            "InvalidSyntax: quantifier upper bound must be greater than zero in quantified path pattern");
-      if (min != null && min == 0 && max != null && max == 0)
-        throw new CommandParsingException(
-            "InvalidSyntax: zero quantifier is not allowed in quantified path pattern");
-      if (min != null && max != null && min > max)
-        throw new CommandParsingException(
-            "InvalidSyntax: quantifier lower bound exceeds upper bound in quantified path pattern");
-    } else {
-      min = null;
-      max = null;
-    }
-
-    final NodePattern innerStart = inner.getFirstNode();
-    final NodePattern innerEnd = inner.getLastNode();
-
-    if (canLowerToVariableLengthRelationship(inner, innerWhere)) {
-      final RelationshipPattern innerRel = inner.getRelationship(0);
-
-      // Splice the inner endpoints into the outer chain. When this is the first child in the
-      // pattern, the inner start becomes the leading boundary; otherwise the previous outer
-      // node already serves that role.
-      if (outerNodes.isEmpty())
-        outerNodes.add(innerStart);
-
-      // Build a new variable-length relationship pattern that subsumes the grouped repetition.
-      outerRels.add(new RelationshipPattern(
-          innerRel.getVariable(),
-          innerRel.getTypes(),
-          innerRel.getDirection(),
-          innerRel.getProperties().isEmpty() ? null : innerRel.getProperties(),
-          innerRel.getPropertiesParameterName(),
-          min,
-          max,
-          innerRel.getWhereExpression()));
-
-      // Append the inner end node only when no outer nodePattern follows. If an outer
-      // nodePattern comes next, it will play the role of the trailing boundary itself,
-      // keeping the (nodes.size == relationships.size + 1) invariant intact.
-      if (!nextIsOuterNode)
-        outerNodes.add(innerEnd);
-      return;
-    }
-
-    rejectUnsupportedInnerPattern(inner);
-
-    // Phase B. The group becomes one hop; its boundary nodes carry the inner endpoints' label and
-    // property constraints so the enclosing scan stays selective, but never their variables - those
-    // bind to per-repetition lists inside the group, not to a single boundary vertex. The executor
-    // re-checks the inner endpoint constraints for every repetition regardless.
-    if (outerNodes.isEmpty())
-      outerNodes.add(toBoundaryNode(innerStart));
-
-    outerRels.add(new QuantifiedPathPattern(inner, innerWhere, min, max));
-
-    if (!nextIsOuterNode)
-      outerNodes.add(toBoundaryNode(innerEnd));
-  }
-
-  private static boolean isUnquantifiedParenthesizedPath(final ParseTree child) {
-    return child instanceof Cypher25Parser.ParenthesizedPathContext parenthesized && parenthesized.quantifier() == null;
-  }
-
-  /**
-   * Splices a parenthesized path pattern that carries no quantifier into the enclosing chain (issue #9940). With no
-   * quantifier there is exactly one repetition, so the group is the very path it wraps: its variables bind single elements,
-   * not the per-repetition lists of a quantified group, and its {@code WHERE} is an ordinary predicate on them. The
-   * predicate rides on the group's last node as an inline {@code WHERE}, which {@link InlineNodeWhereHoister} moves into the
-   * clause {@code WHERE} like any other. The group's first node is the node written before it, when there is one
-   * (juxtaposition), and {@link #visitPatternElement} merges the node written after it into its last node.
-   */
-  private void spliceParenthesizedPath(final Cypher25Parser.ParenthesizedPathContext pCtx, final List<NodePattern> outerNodes,
-      final List<RelationshipPattern> outerRels) {
-    final PathPattern inner = visitPattern(pCtx.pattern());
-    if (inner instanceof ShortestPathPattern)
-      throw new FeatureNotImplementedException(
-          "shortestPath() / allShortestPaths() inside a parenthesized path pattern is not supported");
-    if (inner.hasPathVariable())
-      throw new FeatureNotImplementedException("a path variable inside a parenthesized path pattern is not supported");
-    if (inner.getPathMode() != null)
-      throw new FeatureNotImplementedException("a path mode inside a parenthesized path pattern is not supported");
-
-    final List<NodePattern> innerNodes = new ArrayList<>(inner.getNodes());
-    if (pCtx.WHERE() != null) {
-      final int last = innerNodes.size() - 1;
-      final NodePattern lastNode = innerNodes.get(last);
-      innerNodes.set(last, withWhere(lastNode, and(lastNode.getWhereExpression(), parseBooleanExpression(pCtx.expression()))));
-    }
-
-    if (outerNodes.size() == outerRels.size() + 1)
-      outerNodes.set(outerNodes.size() - 1, mergeJuxtaposedNodes(outerNodes.getLast(), innerNodes.getFirst()));
-    else
-      outerNodes.add(innerNodes.getFirst());
-    for (int i = 0; i < inner.getRelationshipCount(); i++) {
-      outerRels.add(inner.getRelationship(i));
-      outerNodes.add(innerNodes.get(i + 1));
-    }
-  }
-
-  /**
-   * Two node patterns written next to each other, {@code (a)(b)}, are one node that must satisfy both. Their constraints are
-   * combined; a shape that cannot be expressed as a single node pattern - two different variables, which would each have to
-   * bind it, or a dynamic label, a property-map parameter or a label disjunction next to another constraint - is refused
-   * rather than half applied.
-   */
-  private static NodePattern mergeJuxtaposedNodes(final NodePattern left, final NodePattern right) {
-    if (isUnconstrained(left) && left.getVariable() == null)
-      return right;
-    if (isUnconstrained(right) && right.getVariable() == null)
-      return left;
-
-    final String variable = left.getVariable() != null ? left.getVariable() : right.getVariable();
-    if (left.getVariable() != null && right.getVariable() != null && !left.getVariable().equals(right.getVariable()))
-      throw new FeatureNotImplementedException("the node patterns (" + left.getVariable() + ") and ("
-          + right.getVariable() + ") written next to each other around a parenthesized path are the same node under two "
-          + "variables, which is not supported; use one variable for both");
-    if (left.hasDynamicLabels() || right.hasDynamicLabels() || left.getPropertiesParameterName() != null
-        || right.getPropertiesParameterName() != null || left.isLabelDisjunction() || right.isLabelDisjunction())
-      throw new FeatureNotImplementedException("combining a dynamic label, a property-map parameter or a "
-          + "label disjunction with the constraints of the adjacent node of a parenthesized path is not supported");
-
-    final List<String> labels = new ArrayList<>(left.getLabels());
-    for (final String label : right.getLabels())
-      if (!labels.contains(label))
-        labels.add(label);
-
-    final Map<String, Object> properties = new LinkedHashMap<>(left.getProperties());
-    for (final Map.Entry<String, Object> entry : right.getProperties().entrySet())
-      if (properties.putIfAbsent(entry.getKey(), entry.getValue()) != null)
-        throw new FeatureNotImplementedException("the property '" + entry.getKey()
-            + "' is constrained by both node patterns written next to each other around a parenthesized path, which is not "
-            + "supported; constrain it once");
-
-    return new NodePattern(variable, labels, null,
-        left.hasExplicitProperties() || right.hasExplicitProperties() ? properties : null, null, false,
-        and(left.getWhereExpression(), right.getWhereExpression()));
-  }
-
-  private static boolean isUnconstrained(final NodePattern node) {
-    return !node.hasLabels() && !node.hasDynamicLabels() && !node.hasProperties() && !node.hasWhereExpression();
-  }
-
-  private static NodePattern withWhere(final NodePattern node, final BooleanExpression where) {
-    return new NodePattern(node.getVariable(), node.getLabels(), node.getDynamicLabels(),
-        node.hasExplicitProperties() ? node.getProperties() : null, node.getPropertiesParameterName(),
-        node.isLabelDisjunction(), where);
-  }
-
-  private static BooleanExpression and(final BooleanExpression left, final BooleanExpression right) {
-    if (left == null)
-      return right;
-    if (right == null)
-      return left;
-    return new LogicalExpression(LogicalExpression.Operator.AND, left, right);
-  }
-
-  /**
-   * Returns true when the group is the Phase A shape that a plain variable-length relationship
-   * already expresses exactly: one relationship, no inner {@code WHERE}, and endpoints that bind
-   * nothing and constrain nothing at all.
-   * <p>
-   * Every endpoint attribute forces Phase B, each for its own reason:
-   * <ul>
-   *   <li>a <b>variable</b> - GQL binds it to one list element per repetition, which a variable-length
-   *       relationship has no way to express;</li>
-   *   <li>a <b>label, dynamic label or property map</b> - the constraint holds for every repetition,
-   *       including the vertices <i>between</i> two repetitions, and a variable-length relationship
-   *       constrains only its two ends. Lowering {@code ((:P)-[:R]->(:P))+} to {@code -[:R*]->} does not
-   *       weaken the constraint, it <i>deletes</i> it: the outer boundary nodes take over both ends and
-   *       the inner labels are never spliced into the chain at all;</li>
-   *   <li>an inline <b>{@code WHERE}</b> - same reasoning as a property map.</li>
-   * </ul>
-   * What is left for Phase A is the genuinely unconstrained spelling, {@code (()-[:R]->())+}, for which
-   * the two forms are interchangeable.
-   */
-  private static boolean canLowerToVariableLengthRelationship(final PathPattern inner, final BooleanExpression innerWhere) {
-    if (innerWhere != null || inner.getRelationshipCount() != 1)
-      return false;
-    // A group, or a variable-length relationship, is not one hop: lowering it would overwrite its own bounds with the outer
-    // quantifier's and drop the inner repetition, so it goes to Phase B, which refuses both shapes (issue #9940)
-    final RelationshipPattern relationship = inner.getRelationship(0);
-    if (relationship instanceof QuantifiedPathPattern || relationship.isVariableLength())
-      return false;
-    for (int i = 0; i < inner.getNodeCount(); i++) {
-      final NodePattern node = inner.getNode(i);
-      if (node.getVariable() != null && !node.getVariable().isEmpty())
-        return false;
-      if (node.hasWhereExpression())
-        return false;
-      if (node.hasLabels() || node.hasDynamicLabels() || node.hasProperties())
-        return false;
-    }
-    return true;
-  }
-
-  /**
-   * Rejects the inner shapes the repeated-subpattern executor cannot run. Both would otherwise be
-   * silently mis-executed rather than reported, so they fail at parse time with the feature named.
-   */
-  private static void rejectUnsupportedInnerPattern(final PathPattern inner) {
-    for (int i = 0; i < inner.getRelationshipCount(); i++) {
-      final RelationshipPattern rel = inner.getRelationship(i);
-      if (rel instanceof QuantifiedPathPattern)
-        throw new FeatureNotImplementedException(
-            "nesting a quantified path pattern inside another one is not supported (issue #4531)");
-      if (rel.isVariableLength())
-        throw new FeatureNotImplementedException(
-            "a variable-length relationship inside a quantified path pattern is not supported (issue #4531)");
-    }
-    if (inner.hasPathVariable())
-      throw new FeatureNotImplementedException(
-          "a path variable inside a quantified path pattern is not supported (issue #4531)");
-    // A whole-map parameter, (n $props), is not a set of equality predicates the per-repetition matcher
-    // can check, and a dynamic $(expression) label resolves per row rather than per repetition. Both
-    // would be silently dropped rather than applied, so name them instead.
-    for (int i = 0; i < inner.getNodeCount(); i++) {
-      final NodePattern node = inner.getNode(i);
-      if (node.getPropertiesParameterName() != null)
-        throw new FeatureNotImplementedException(
-            "a parameterised property map on a node inside a quantified path pattern is not supported (issue #4531)");
-      if (node.hasDynamicLabels())
-        throw new FeatureNotImplementedException(
-            "dynamic labels on a node inside a quantified path pattern are not supported (issue #4531)");
-    }
-    for (int i = 0; i < inner.getRelationshipCount(); i++)
-      if (inner.getRelationship(i).getPropertiesParameterName() != null)
-        throw new FeatureNotImplementedException(
-            "a parameterised property map on a relationship inside a quantified path pattern is not supported (issue #4531)");
-  }
-
-  /**
-   * Derives the outer boundary node for a group endpoint: the endpoint's labels and inline properties
-   * are kept so the enclosing scan can use them, its variable and inline {@code WHERE} are dropped so
-   * the group variable is not also bound to a single vertex.
-   */
-  private static NodePattern toBoundaryNode(final NodePattern innerEndpoint) {
-    if (innerEndpoint.getVariable() == null && !innerEndpoint.hasWhereExpression())
-      return innerEndpoint;
-    return new NodePattern(null, innerEndpoint.getLabels(), innerEndpoint.getDynamicLabels(),
-        innerEndpoint.hasExplicitProperties() ? innerEndpoint.getProperties() : null,
-        innerEndpoint.getPropertiesParameterName(), innerEndpoint.isLabelDisjunction(), null);
-  }
-
-  /**
-   * Apply a Cypher 25 quantifier ({@code +}, {@code *}, {@code {n}}, {@code {n,m}}) to a
-   * relationship pattern, returning a new pattern with minHops/maxHops populated.
-   */
-  private RelationshipPattern applyQuantifier(final RelationshipPattern rel, final Cypher25Parser.QuantifierContext q) {
-    final Integer min;
-    final Integer max;
-    if (q.PLUS() != null) {
-      min = 1;
-      max = null;
-    } else if (q.TIMES() != null) {
-      min = 0;
-      max = null;
-    } else if (q.from != null || q.to != null) {
-      min = q.from != null ? Integer.parseInt(q.from.getText()) : 0;
-      max = q.to != null ? Integer.parseInt(q.to.getText()) : null;
-    } else {
-      final int exact = Integer.parseInt(q.UNSIGNED_DECIMAL_INTEGER(0).getText());
-      min = exact;
-      max = exact;
-    }
-    return new RelationshipPattern(rel.getVariable(), rel.getTypes().isEmpty() ? null : rel.getTypes(), rel.getDirection(),
-        rel.getProperties().isEmpty() ? null : rel.getProperties(), rel.getPropertiesParameterName(), min, max);
   }
 
   public NodePattern visitNodePattern(final Cypher25Parser.NodePatternContext ctx) {
@@ -2498,7 +1225,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // A negation, the wildcard or a mix of '&' and '|': the pattern keeps the labels every match must carry, so the
     // planner can still pick a label scan, and the whole expression is checked as a predicate on the node (#8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       labels = labelPredicate.requiredLabels();
@@ -2509,11 +1236,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Label expression (static labels + Cypher 25 dynamic $(expression) labels)
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
-      final List<Cypher25Parser.ExpressionContext> dynCtxs = ParserUtils.collectDynamicLabelContexts(ctx.labelExpression());
-      if (!dynCtxs.isEmpty()) {
-        dynamicLabels = new ArrayList<>(dynCtxs.size());
-        for (final Cypher25Parser.ExpressionContext dynCtx : dynCtxs)
-          dynamicLabels.add(expressionBuilder.parseExpression(dynCtx));
+      dynamicLabels = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressionBuilder::parseExpression);
+      // A read pattern also checks the dynamic labels as a predicate on the node, which every consumer evaluates; the steps
+      // that read getDynamicLabels() (the anchor scan, the variable-length target) keep using them to narrow what they
+      // walk. A write clause resolves them itself (issue #11776)
+      if (dynamicLabels != null && writeClause == null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, labels, dynamicLabels, ctx.labelExpression());
+        // (n:A|$(expr)): the static labels alone are not a filter, so they join the dynamic list. Every consumer that
+        // reads the static list (hop target, pattern comprehension) would otherwise reject what $(expr) admits
+        if (labelDisjunction && labels != null && !labels.isEmpty()) {
+          dynamicLabels = ParserUtils.staticLabelsFirst(labels, dynamicLabels);
+          labels = null;
+        }
       }
     }
 
@@ -2530,7 +1266,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // by the grammar but silently discarded, so the predicate never filtered anything.
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = parseBooleanExpression(ctx.expression());
+      whereExpression = booleans.parseBooleanExpression(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction,
@@ -2554,7 +1290,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // variable-length relationship the predicate rides the inline WHERE, which every expansion evaluates per hop, so
     // each relationship of the path is checked (#9117).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();
@@ -2564,6 +1300,16 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
+      // [r:$(expr)] in a read pattern: no static type filter can say it, so the whole type list is checked per relationship
+      // through its inline predicate, which every hop kind evaluates. A write clause keeps refusing it (issue #11776)
+      final List<Expression> dynamicTypes = writeClause == null ?
+          ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressionBuilder::parseExpression) : null;
+      if (dynamicTypes != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, types, dynamicTypes, ctx.labelExpression());
+        types = null;
+      }
     }
 
     // Properties
@@ -2598,7 +1344,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Inline WHERE predicate (e.g., [r:KNOWS WHERE r.since < 2019])
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = parseBooleanExpression(ctx.expression());
+      whereExpression = booleans.parseBooleanExpression(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
@@ -2702,7 +1448,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   private Object evaluateExpression(final Cypher25Parser.ExpressionContext ctx) {
     // Check for list literals first
-    final Cypher25Parser.ListLiteralContext listCtx = expressionBuilder.findListLiteralRecursive(ctx);
+    final Cypher25Parser.ListLiteralContext listCtx = ParseTreeSearch.findListLiteralRecursive(ctx);
     if (listCtx != null) {
       // Parse list literal into actual Java List
       final List<Object> list = new ArrayList<>();
@@ -2812,7 +1558,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return ParserUtils.decodeStringLiteral(input);
   }
 
-  private static boolean isBooleanOrNullKeyword(final String text) {
+  static boolean isBooleanOrNullKeyword(final String text) {
     return "true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text) || "null".equalsIgnoreCase(text);
   }
 }

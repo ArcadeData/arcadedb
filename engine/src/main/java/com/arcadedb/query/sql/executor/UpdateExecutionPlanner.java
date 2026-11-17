@@ -205,13 +205,7 @@ public class UpdateExecutionPlanner {
             throw new CommandExecutionException("Missing payload for UPDATE MERGE: " + op);
           break;
         case UpdateOperations.TYPE_CONTENT:
-          if (op.getJson() != null) {
-            plan.chain(new UpdateContentStep(op.getJson(), context));
-          } else if (op.getJsonArray() != null) {
-            plan.chain(new UpdateContentStep(op.getJsonArray(), context));
-          } else if (op.getInputParam() != null) {
-            plan.chain(new UpdateContentStep(op.getInputParam(), context));
-          }
+          plan.chain(UpdateContentStep.of(op, "UPDATE", context));
           break;
         case UpdateOperations.TYPE_PUT:
         case UpdateOperations.TYPE_INCREMENT:

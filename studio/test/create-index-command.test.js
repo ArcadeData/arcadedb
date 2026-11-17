@@ -25,7 +25,7 @@
 //
 // The SQL assembly lives in the pure buildCreateIndexCommand()/validateCreateIndexOptions() pair so
 // it can be exercised without a DOM. The engine side of the same contract is pinned by
-// engine/src/test/java/com/arcadedb/index/vector/Issue5607VectorIndexMetadataTest.java. Run with:
+// engine/src/test/java/com/arcadedb/index/vector/VectorIndexSchemaTest.java. Run with:
 //
 //     node --test studio/test/create-index-command.test.js
 

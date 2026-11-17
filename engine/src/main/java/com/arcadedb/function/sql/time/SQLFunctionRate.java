@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.DateUtils;
@@ -133,8 +134,8 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
     try {
       millis = DateUtils.dateTimeToTimestamp(ts, ChronoUnit.MILLIS);
     } catch (final DateTimeException e) {
-      // A text that reads as no timestamp is the caller's argument, not a server fault (issue #11589)
-      throw new IllegalArgumentException("Unsupported timestamp '" + ts + "': " + e.getMessage(), e);
+      // issue #11589: a text that is no timestamp is the caller's mistake, not a raw DateTimeParseException
+      throw new InvalidArgumentException("Invalid timestamp: '" + InvalidArgumentException.quote(ts) + "'", e);
     }
     if (millis == null)
       throw new IllegalArgumentException("Unsupported timestamp type: " + ts.getClass().getName());

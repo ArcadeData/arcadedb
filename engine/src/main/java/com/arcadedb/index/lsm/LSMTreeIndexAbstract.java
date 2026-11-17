@@ -448,12 +448,41 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     // The run cannot extend past the matched entry on the side the scan is LEAVING, so only the other side is searched,
     // and only as far as the bracket the caller narrowed.
-    final int step = purpose == 2 ? -1 : 1;
-    final int limit = purpose == 2 ? low : high;
+    final int boundary = purpose == 2 ?
+        runEdge(currentPageBuffer, startIndexArray, convertedKeys, count, matched, -1, low) :
+        runEdge(currentPageBuffer, startIndexArray, convertedKeys, count, matched, 1, high);
+    if (boundary == matched)
+      return match;
 
+    statsAdjacentSteps.addAndGet(Math.abs(boundary - matched));
+
+    // Re-read the entry the scan will actually start from, so the reported position describes IT and not whichever
+    // entry the search above compared last.
+    compareKey(currentPageBuffer, startIndexArray, convertedKeys, boundary, count);
+
+    return new LookupResult(true, false, boundary, new int[] { currentPageBuffer.position() });
+  }
+
+  /**
+   * The index of the LAST entry of the run of entries that compare equal to {@code convertedKeys}, given {@code matched},
+   * any entry of that run. This is where a write appends its entry for the key, after every older one. Galloping, as
+   * {@link #seekRunBoundary} does, so it costs {@code O(log k)} key comparisons for a run of {@code k} entries instead of
+   * the walk of {@link #findLastEntryOfSameKey} (issue #11935).
+   */
+  protected int lastEntryOfRun(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
+      final int count, final int matched) {
+    return runEdge(currentPageBuffer, startIndexArray, convertedKeys, count, matched, 1, count - 1);
+  }
+
+  /**
+   * The furthest entry, in direction {@code step} (-1 or 1) and no further than {@code limit}, of the run of entries that
+   * compare equal to {@code convertedKeys} and contain {@code matched}.
+   */
+  private int runEdge(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, final int count,
+      final int matched, final int step, final int limit) {
     if (matched == limit)
       // already at the edge of the bracket: there is nowhere for the run to extend to
-      return match;
+      return matched;
 
     // GALLOP outward in doubling strides. `good` is an index known to compare equal, `bad` one known not to - or, when
     // the gallop reaches the bracket's edge without finding a mismatch, the virtual index one past it, which the
@@ -485,18 +514,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       else
         bad = probe;
     }
-
-    final int boundary = good;
-    if (boundary == matched)
-      return match;
-
-    statsAdjacentSteps.addAndGet(Math.abs(boundary - matched));
-
-    // Re-read the entry the scan will actually start from, so the reported position describes IT and not whichever
-    // entry the search above compared last.
-    compareKey(currentPageBuffer, startIndexArray, convertedKeys, boundary, count);
-
-    return new LookupResult(true, false, boundary, new int[] { currentPageBuffer.position() });
+    return good;
   }
 
   protected void writeEntrySingleValue(final Binary buffer, final Object[] keys, final Object rid, final int pageUsableSpace) {
@@ -687,12 +705,17 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       // record fail CREATE INDEX outright (issue #8090, which made convert() itself strict). NOT convertOrNull():
       // that would extend the same mercy to every other mismatch, silently indexing a non-numeric string under a
       // null LONG key where it has always failed the build.
-      if (keyTypes[i] == BinaryTypes.TYPE_STRING && (keys[i] instanceof Double || keys[i] instanceof Float || keys[i] instanceof BigDecimal)
+      final Object key = keys[i];
+      if (keyTypes[i] == BinaryTypes.TYPE_STRING && (key instanceof Double || key instanceof Float || key instanceof BigDecimal)
           && isUndeclaredProperty(i))
         // one number is one key whatever type it was written with, on a property whose values keep their own types (issue #8993)
-        convertedKeys[i] = Type.canonicalNumberKey(keys[i]);
+        convertedKeys[i] = Type.canonicalNumberKey(key);
+      else if (keyTypes[i] == BinaryTypes.TYPE_STRING && (key instanceof Collection || key.getClass().isArray())
+          && isUndeclaredProperty(i))
+        // the same for the numbers in a list or an array, nested ones too: [1.0] and [1] are one key (issue #11578)
+        convertedKeys[i] = Type.canonicalListKey(key);
       else
-        convertedKeys[i] = Type.convertIndexKeyOrNull(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+        convertedKeys[i] = Type.convertIndexKeyOrNull(database, key, BinaryTypes.getClassFromType(keyTypes[i]));
 
       if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])
@@ -867,6 +890,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       rids[i] = readEntryValue(buffer);
 
     return rids;
+  }
+
+  /**
+   * The value of an entry that holds exactly one, or null when it holds several. Reads the value count and, only for a
+   * single-value entry, that one value: a removal marker is always written alone ({@link #writeEntrySingleValue}), so this
+   * tells whether an entry is a marker without deserializing the values of a multi-value put (issue #11935).
+   */
+  protected RID readSoleEntryValue(final Binary buffer) {
+    final int items = (int) serializer.deserializeValue(database, buffer, BinaryTypes.TYPE_INT, null);
+    return items == 1 ? readEntryValue(buffer) : null;
   }
 
   private void readEntryValues(final Binary buffer, final List<RID> list) {

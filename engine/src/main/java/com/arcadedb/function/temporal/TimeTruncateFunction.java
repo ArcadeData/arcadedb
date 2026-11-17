@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.time.LocalTime;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.DateTimeException;
 import java.util.Map;
 
 /**
@@ -56,7 +57,8 @@ public class TimeTruncateFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    // A null unit or time truncates to null, as every temporal function answers a null argument (issue #11589)
+    // issue #11589: a null unit or a null temporal value is a null answer, as Cypher propagates a null argument, not a
+    // NullPointerException or a type error
     if (args[0] == null || args[1] == null)
       return null;
     final String unit = args[0].toString();
@@ -82,9 +84,17 @@ public class TimeTruncateFunction implements StatelessFunction {
       return null;
     if (args.length >= 3 && args[2] instanceof Map) {
       final Map<String, Object> adjustMap = (Map<String, Object>) args[2];
-      truncated = CypherFunctionHelper.applyTimeMap(truncated, adjustMap);
-      if (adjustMap.containsKey("timezone"))
-        offset = TemporalUtil.parseOffset(adjustMap.get("timezone").toString());
+      truncated = CypherFunctionHelper.applyTimeMap(truncated, adjustMap, true);
+      final Object timezone = adjustMap.get("timezone");
+      // A null timezone names no zone: refused as Neo4j refuses it, as an invalid zone is
+      if (timezone == null && adjustMap.containsKey("timezone"))
+        throw new CommandSemanticException("time.truncate() timezone cannot be null");
+      if (timezone != null)
+        try {
+          offset = TemporalUtil.parseOffset(timezone.toString());
+        } catch (final DateTimeException e) {
+          throw new CommandSemanticException("time.truncate() timezone is not a valid offset or zone: " + timezone);
+        }
     }
     return new CypherTime(OffsetTime.of(truncated, offset));
   }

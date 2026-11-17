@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * entry on the ordinary arm, and its size ({@code arcadedb.index.buildChunkSizeMB}, 50MB of ESTIMATED vector bytes) was
  * not bounded by the replicated entry cap. The chunk is now clamped below the cap when the build replicates. Finding 1
  * is covered by {@code Issue8905BuildWithUnloadedGraphHATest}, the engine side by
- * {@code Issue8905VectorBuildCommitsReachTheWrapperTest}.
+ * {@code VectorGraphPersistTest.VectorBuildCommitsReachTheWrapper}.
  */
 class Issue8905VectorBuildHATest extends BaseRaftHATest {
 

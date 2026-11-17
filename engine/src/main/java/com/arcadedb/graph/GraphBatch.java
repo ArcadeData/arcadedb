@@ -34,6 +34,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexMaintenanceSuspension;
@@ -953,8 +954,12 @@ public class GraphBatch implements AutoCloseable {
 
   /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
   private EdgeType edgeType(final String name) {
-    if (!(database.getSchema().getTypeOrNull(name) instanceof EdgeType edgeType))
-      throw new IllegalArgumentException("Edge type '" + name + "' not found");
+    final DocumentType type = database.getSchema().getTypeOrNull(name);
+    // a missing type is a schema refusal, answered as such by every protocol (issue #11633)
+    if (type == null)
+      throw new SchemaException("Edge type '" + name + "' not found");
+    if (!(type instanceof EdgeType edgeType))
+      throw new IllegalArgumentException("Type '" + name + "' is not an edge type");
     return edgeType;
   }
 
@@ -2111,7 +2116,7 @@ public class GraphBatch implements AutoCloseable {
         // EdgeLinkedList.add could have tracked one. That last condition is load-bearing: a segment carrying tracked
         // appends is declared as a whole, rewrites included (#10375), so a bulk write that could reach one must go
         // through EdgeLinkedList.updateRewrittenSegment instead. The refusal is pinned by
-        // Issue9242GraphBatchCallerTransactionTest. See docs/supernode.md §3.
+        // GraphBatchEdgeTest.GraphBatchCallerTransaction. See docs/supernode.md §3.
         if (lastSegmentPromoted) {
           // #5667: the vertex is already a promoted super-node - route this group through the standard,
           // MVCC-safe StripedEdgeList write path instead of the bulk segment path.
@@ -2616,7 +2621,7 @@ public class GraphBatch implements AutoCloseable {
         // #5667: check for an already-promoted super-node BEFORE assuming a plain segment, with purely
         // local variables - this method runs concurrently across async-executor threads (one per task slot),
         // so signalling through a shared instance field (as the single-threaded sequential path does) would race.
-        final RID dstHeadChunk = dstVertex.getInEdgesHeadChunk();
+        final RID dstHeadChunk = dstVertex.peekInEdgesHeadChunk();
         if (dstHeadChunk != null) {
           segmentHeadReads.increment();
           final Record head = database.lookupByRID(dstHeadChunk, true);
@@ -2806,7 +2811,7 @@ public class GraphBatch implements AutoCloseable {
    */
   private boolean hintHolds(final int bucketId, final long position, final boolean out) {
     final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
-    final RID head = out ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    final RID head = out ? vertex.peekOutEdgesHeadChunk() : vertex.peekInEdgesHeadChunk();
     if (head != null)
       throw new AssertionError("Vertex " + vertex.getIdentity() + " was hinted to have no " + (out ? "outgoing" : "incoming")
           + " edges, but its edge list starts at " + head);
@@ -2852,7 +2857,7 @@ public class GraphBatch implements AutoCloseable {
     if (!hasNoOutEdges && !knownNewVertexKeys.contains(vertexKey)) {
       vertexHeadReads.increment();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
-      final RID headChunk = vertex.getOutEdgesHeadChunk();
+      final RID headChunk = vertex.peekOutEdgesHeadChunk();
       if (headChunk != null) {
         segmentHeadReads.increment();
         final Record head = database.lookupByRID(headChunk, true);
@@ -2906,7 +2911,7 @@ public class GraphBatch implements AutoCloseable {
     if (!hasNoInEdges && !knownNewVertexKeys.contains(vertexKey)) {
       vertexHeadReads.increment();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
-      final RID headChunk = vertex.getInEdgesHeadChunk();
+      final RID headChunk = vertex.peekInEdgesHeadChunk();
       if (headChunk != null) {
         segmentHeadReads.increment();
         final Record head = database.lookupByRID(headChunk, true);
@@ -2999,7 +3004,7 @@ public class GraphBatch implements AutoCloseable {
     if (cachedRID != null)
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
 
-    final RID headChunk = vertex.getOutEdgesHeadChunk();
+    final RID headChunk = vertex.peekOutEdgesHeadChunk();
     if (headChunk != null) {
       outChunkRIDCache.put(key, headChunk);
       return (EdgeSegment) database.lookupByRID(headChunk, true);
@@ -3024,7 +3029,7 @@ public class GraphBatch implements AutoCloseable {
     if (cachedRID != null)
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
 
-    final RID headChunk = vertex.getInEdgesHeadChunk();
+    final RID headChunk = vertex.peekInEdgesHeadChunk();
     if (headChunk != null) {
       inChunkRIDCache.put(key, headChunk);
       return (EdgeSegment) database.lookupByRID(headChunk, true);
@@ -3051,7 +3056,7 @@ public class GraphBatch implements AutoCloseable {
     if (cachedRID != null)
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
 
-    final RID headChunk = vertex.getOutEdgesHeadChunk();
+    final RID headChunk = vertex.peekOutEdgesHeadChunk();
     if (headChunk != null) {
       outChunkRIDCache.put(key, headChunk);
       return (EdgeSegment) database.lookupByRID(headChunk, true);
@@ -3078,7 +3083,7 @@ public class GraphBatch implements AutoCloseable {
     if (cachedRID != null)
       return (EdgeSegment) database.lookupByRID(cachedRID, true);
 
-    final RID headChunk = vertex.getInEdgesHeadChunk();
+    final RID headChunk = vertex.peekInEdgesHeadChunk();
     if (headChunk != null) {
       inChunkRIDCache.put(key, headChunk);
       return (EdgeSegment) database.lookupByRID(headChunk, true);
@@ -3648,7 +3653,7 @@ public class GraphBatch implements AutoCloseable {
         final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
         // #5667: check locally for an already-promoted super-node BEFORE assuming a plain segment; this
         // method runs concurrently across async-executor threads, so a shared instance field would race.
-        final RID srcHeadChunk = srcVertex.getOutEdgesHeadChunk();
+        final RID srcHeadChunk = srcVertex.peekOutEdgesHeadChunk();
         if (srcHeadChunk != null) {
           segmentHeadReads.increment();
           final Record head = database.lookupByRID(srcHeadChunk, true);

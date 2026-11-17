@@ -208,9 +208,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
     if (metadata != null && metadata.isBM25()) {
       underlyingIndex.setStoreTermFrequency(true);
-      // A brand-new index starts empty: the corpus counters are trivially valid (0 docs, 0 tokens).
-      if (!metadata.isCountersValid())
+      // A brand-new index starts empty: the corpus counters are trivially valid (0 docs, 0 tokens). The once-per-session check of
+      // them against the live data stays armed, as on every node that loads the index: consumed here, the node that created the
+      // index was the one node of a cluster whose counters never met the live count, and a drift of them was never repaired there
+      // while the replicas, which load the index from the schema, repaired theirs at their first search (issue #12367)
+      if (!metadata.isCountersValid()) {
         metadata.setCounters(0L, 0L);
+        metadata.armStaleCheck();
+      }
     }
   }
 
@@ -788,6 +793,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   double getTypeWideAverageDocumentLength() {
     return resolveAvgDocLength();
+  }
+
+  /**
+   * The statistics {@link #computeBM25Scores} scores this bucket with when no type-wide context is handed to it: the bucket's own
+   * document count and the given document frequencies, which a search of this bucket alone counts on its postings.
+   */
+  BM25ScoringContext bucketScoringContext(final Map<String, Long> documentFrequencies) {
+    ensureCounters();
+    return new BM25ScoringContext(resolveTotalDocs(), resolveAvgDocLength(), documentFrequencies);
   }
 
   /**

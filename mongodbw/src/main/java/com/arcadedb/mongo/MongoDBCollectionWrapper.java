@@ -192,10 +192,12 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       orderBy = (Document) queryObject.remove("$orderBy");
     }
 
+    // built first: building it refuses a malformed filter, as mongod does whether or not the collection holds a document (#12074)
+    final MongoFilter filter = new MongoFilter(database, query);
     if (this.count() == 0)
       return new QueryResult();
 
-    final Iterable<Document> objs = this.queryDocuments(query, orderBy, numberToSkip, numberToReturn);
+    final Iterable<Document> objs = this.queryDocuments(filter, orderBy, numberToSkip, numberToReturn);
 
     return new QueryResult(objs);
   }
@@ -591,10 +593,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     forgetIdIndex(database, collectionName);
   }
 
-  private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
+  private Iterable<Document> queryDocuments(final MongoFilter filter, final Document orderBy, final int numberToSkip,
+      final int numberToReturn) {
     final List<Document> result = new ArrayList<>();
 
-    final MongoFilter filter = new MongoFilter(database, query);
     final boolean hasOrderBy = orderBy != null && !orderBy.isEmpty();
 
     // a TIMESERIES type keeps its samples in its own engine, not in its buckets: the scan would answer no document while the

@@ -262,6 +262,16 @@ public class EdgeLinkedList {
   }
 
   /**
+   * Every entry of the list, one per step and in no particular order, no record read: for a caller that decides from how
+   * long the list is. Null when a part of the list cannot be loaded, where a read walk would skip it and the list would
+   * look shorter than it is (see {@code StripedEdgeList.addChain}). On the classic layout the list is one chain, and a
+   * chunk of it that cannot be loaded escapes as it does from every walk.
+   */
+  Iterator<RID> wholeEntryRidIterator() {
+    return entryRidIterator();
+  }
+
+  /**
    * True if the list already holds a lightweight edge of the given type reaching the given vertex. Backs the
    * {@link com.arcadedb.schema.EdgeType#isUnique()} check, which has no index to consult and therefore walks the
    * whole chain: O(degree).
@@ -474,8 +484,8 @@ public class EdgeLinkedList {
       // would orphan the concurrent chunk (lost edges) - surface a retryable conflict instead.
       final MutableVertex modifiableV = vertex.modify();
       final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-          modifiableV.getOutEdgesHeadChunk() :
-          modifiableV.getInEdgesHeadChunk();
+          modifiableV.peekOutEdgesHeadChunk() :
+          modifiableV.peekInEdgesHeadChunk();
       if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
         throw new ConcurrentModificationException(
             "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -523,8 +533,8 @@ public class EdgeLinkedList {
         if (currentVertex == vertex) {
           // First flip of this batch: same stale-head guard as add() (modify() may have reloaded the record).
           final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-              modifiableV.getOutEdgesHeadChunk() :
-              modifiableV.getInEdgesHeadChunk();
+              modifiableV.peekOutEdgesHeadChunk() :
+              modifiableV.peekInEdgesHeadChunk();
           if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
             throw new ConcurrentModificationException(
                 "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -547,12 +557,17 @@ public class EdgeLinkedList {
     // addAll batches its updateRecord calls and does not register individual appends: every touched segment is
     // written as a rewrite, excluding its page from the append-merge so a concurrent-append rebase can never lose these
     // edges.
+    final TransactionContext tx = database.getTransactionIfExists();
     for (final Record r : recordsToUpdate) {
       // A vertex is in the set for its head pointer only: its own bookkeeping, which no listener hears (issue #10207)
       if (r instanceof MutableVertex)
         database.updateRecordWithoutEvents(r);
-      else if (r instanceof EdgeSegment segment)
+      else if (r instanceof EdgeSegment segment) {
         updateRewrittenSegment(database, segment);
+        // #11590: the batch read this chunk to append to it, which is not a read of the application
+        if (tx != null && segment.getIdentity() != null)
+          tx.noteChunkAppendedInWindow(segment.getIdentity());
+      }
       else
         // THE SET HOLDS NOTHING BUT THE VERTEX AND THE SEGMENTS THE BATCH WROTE TO
         throw new IllegalStateException("Unexpected record " + r.getIdentity() + " in the batch of edge list " + direction
@@ -743,8 +758,8 @@ public class EdgeLinkedList {
     // stale-head guard as the flip path above) BEFORE creating the directory and stripe chunks.
     final MutableVertex modifiableV = vertex.modify();
     final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-        modifiableV.getOutEdgesHeadChunk() :
-        modifiableV.getInEdgesHeadChunk();
+        modifiableV.peekOutEdgesHeadChunk() :
+        modifiableV.peekInEdgesHeadChunk();
     if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
       throw new ConcurrentModificationException(
           "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");

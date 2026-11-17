@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 
@@ -29,6 +31,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -40,22 +44,35 @@ import java.util.logging.Level;
  * twice, or answer another key's record. The same holds across the keys of an {@code IN} list read one after the other: a
  * slot freed by one key's record and taken by another's is served for both. The entries of every key are read and every
  * record loaded between two samples of the page manager's publication sequence that are equal and even, which no commit
- * can have interleaved with; otherwise the lookup starts again, and after {@link #MAX_ATTEMPTS} attempts runs under the
- * publication lock, which keeps every commit out. Costs two volatile reads when no commit overlaps.
+ * can have interleaved with; otherwise the lookup starts again, and after {@link #MAX_ATTEMPTS} attempts runs once more with the
+ * publications held off ({@link #readAgainstOneCommit}). Costs two volatile reads when no commit overlaps.
+ * <p>
+ * A publication is waited out with {@link PageManager#awaitPublicationEnd} and kept off with
+ * {@link PageManager#callWithPublicationsHeld}, never with the page-manager lock: the replicated apply of a replica publishes
+ * without that lock (#10941), so a wait on it returned at once and a read under it could still pair the entries and the records
+ * of two commits (#11755).
  * <p>
  * The records are held until all are loaded, so a lookup with more than {@link #MAX_ENTRIES} entries is not served here:
  * {@link #lookup} returns {@code null} and the caller streams the cursors as it did before.
  * <p>
- * The last-resort lock cannot deadlock: it is the page-manager lock, which is reentrant and which a committer takes last,
- * inside the file locks, only to publish pages (see the same argument in {@code GetValueFromIndexEntryStep}).
+ * The last resort cannot deadlock: a publication held off waits for the hold with the page-manager lock and its file locks
+ * taken, and the read under the hold takes neither (it loads pages, which takes no lock); the reader holds no hold while it
+ * waits for one.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class ConsistentKeyLookup {
   /** More entries than this in one lookup are streamed by the caller instead of held. */
   public static final int MAX_ENTRIES  = 256;
-  /** Attempts made without a lock before the lookup runs under the publication lock. */
+  /** Attempts made before the lookup runs once more with the publications held off ({@link #readAgainstOneCommit}). */
   public static final int MAX_ATTEMPTS = 8;
+  /**
+   * How long an attempt waits for an open publication to end before it is spent, as the readers of {@code LocalBucket} wait
+   * (#11505): a replica under write load has one open almost all the time, so an attempt that did not wait would be spent at once.
+   */
+  public static final long PUBLICATION_WAIT_NANOS      = TimeUnit.MILLISECONDS.toNanos(20);
+  /** How long the last attempt waits for the publications in flight to end before it holds the next one off. */
+  public static final long PUBLICATION_HOLD_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
 
   // for tests: called on the thread of a lookup once it has settled on the state it returns, to interleave a commit after it
   private static volatile Runnable afterLookupObserver;
@@ -77,12 +94,12 @@ public final class ConsistentKeyLookup {
    * the state that was read is dropped as dangling. {@code null} when there are more than {@link #MAX_ENTRIES} entries
    */
   public static List<IndexCursorEntry> lookup(final DatabaseInternal database, final Index index, final List<Object[]> keys) {
-    return lookup(database, index, keys, false);
+    return lookup(database, index, keys, false, false);
   }
 
   private static List<IndexCursorEntry> lookup(final DatabaseInternal database, final Index index, final List<Object[]> keys,
-      final boolean forQuery) {
-    final List<IndexCursorEntry> entries = lookupConsistently(database, index, keys, forQuery);
+      final boolean forQuery, final boolean prefix) {
+    final List<IndexCursorEntry> entries = lookupConsistently(database, index, keys, forQuery, prefix);
     final Runnable observer = afterLookupObserver;
     if (observer != null && entries != null)
       observer.run();
@@ -90,22 +107,19 @@ public final class ConsistentKeyLookup {
   }
 
   private static List<IndexCursorEntry> lookupConsistently(final DatabaseInternal database, final Index index,
-      final List<Object[]> keys, final boolean forQuery) {
+      final List<Object[]> keys, final boolean forQuery, final boolean prefix) {
     final PageManager pageManager = database.getPageManager();
     boolean unpinnedForDangling = false;
     Set<Integer> lastBucketIds = Set.of();
     for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      if ((pageManager.getPublicationSequence() & 1) != 0)
-        // a commit is publishing: wait for it to let go of the lock instead of spending an attempt inside its window
-        pageManager.executeInLock(() -> null);
-
-      final long before = pageManager.getPublicationSequence();
+      // a commit or a replicated apply is publishing: wait for it to end instead of spending an attempt inside its window (#11755)
+      final long before = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
       if ((before & 1) != 0)
-        // another commit started publishing right after the wait: this attempt did no work, and a sequence odd on every
-        // attempt ends in the lock below
+        // still publishing after the wait, or another one started: this attempt did no work, and a sequence odd on every attempt
+        // ends in the read against one commit below
         continue;
 
-      final Read read = readAndLoad(database, index, keys, forQuery);
+      final Read read = readAndLoad(database, index, keys, forQuery, prefix);
       if (read == null)
         return null;
       lastBucketIds = read.bucketIds;
@@ -121,10 +135,12 @@ public final class ConsistentKeyLookup {
     }
 
     LogManager.instance().log(ConsistentKeyLookup.class, Level.FINE,
-        "Lookup on index '%s' overlapped a commit %d times, reading it under the publication lock", null, index.getName(), MAX_ATTEMPTS);
-    // the pages pinned by the attempts that overlapped a commit must not serve the locked read either
+        "Lookup on index '%s' overlapped a commit %d times, reading it with the publications held off", null, index.getName(),
+        MAX_ATTEMPTS);
+    // the pages pinned by the attempts that overlapped a commit must not serve the last read either
     unpinRepeatableRead(database, index, lastBucketIds);
-    final Read read = (Read) pageManager.executeInLock(() -> readAndLoad(database, index, keys, forQuery));
+    final Read read = readAgainstOneCommit(pageManager, () -> readAndLoad(database, index, keys, forQuery, prefix),
+        "Lookup on index '" + index.getName() + "'");
     return read == null ? null : read.entries;
   }
 
@@ -158,22 +174,97 @@ public final class ConsistentKeyLookup {
    */
   public static IndexCursor getForQuery(final Database database, final TypeIndex index, final Object[] key) {
     if (database instanceof DatabaseInternal internal) {
-      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(key), true);
+      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(key), true, false);
       if (entries != null)
         return new TempIndexCursor(entries);
     }
     return index.getForQuery(key);
   }
 
+  /**
+   * {@link #getForQuery} for the entries whose leading key columns equal {@code prefix}, a key shorter than the index's (issue
+   * #11576), read through {@link TypeIndex#prefixForQuery}: against one committed state when there are at most
+   * {@link #MAX_ENTRIES} of them, otherwise whole but without that guarantee, as {@link #getForQuery} answers a key too wide to be
+   * held. A reader that must not miss an entry, a MERGE deciding whether to create, reads a prefix this way.
+   */
+  public static IndexCursor prefixForQuery(final Database database, final TypeIndex index, final Object[] prefix) {
+    if (database instanceof DatabaseInternal internal) {
+      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(prefix), true, true);
+      if (entries != null)
+        return new TempIndexCursor(entries);
+    }
+    return index.prefixForQuery(prefix);
+  }
+
+  /**
+   * The last attempt of a read that must see one committed state (#11755): runs {@code read} with no publication open and the next
+   * one held off ({@link PageManager#callWithPublicationsHeld}), which excludes the local commits and the replicated apply of a
+   * replica alike, and takes what it read only when the publication sequence stayed even and did not move under it.
+   * <p>
+   * When no moment without a publication came within {@link #PUBLICATION_HOLD_WAIT_NANOS} (one commit publishing for longer than
+   * that, or a replica applying one entry for longer), the read runs under the page-manager lock, which waits for the local commit
+   * and keeps every other local commit out: on a database no replicated entry is applied to that is every publisher, so the read
+   * is served as it always was. It is taken only when the sequence stayed even and still under the lock; otherwise a replicated
+   * apply overlapped it and the read is refused with a retryable {@link ConcurrentModificationException}, never answered from two
+   * commits.
+   * <p>
+   * {@code read} must be short, must not publish and must not wait for anything a publication holds: it delays every commit and
+   * apply of the JVM while it runs. It may run twice, so it must start from scratch every time. A {@code null} it returns is taken
+   * as it is: it is the caller's "not held here", which promises no one state.
+   *
+   * @param what names the read in the message of the conflict
+   */
+  @SuppressWarnings("unchecked")
+  public static <T> T readAgainstOneCommit(final PageManager pageManager, final Supplier<T> read, final String what) {
+    final Object[] result = { NOT_READ };
+    final Boolean held;
+    try {
+      held = pageManager.callWithPublicationsHeld(PUBLICATION_HOLD_WAIT_NANOS, () -> readIfOneCommit(pageManager, read, result));
+    } catch (final RuntimeException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new DatabaseOperationException("Error reading against one committed state: " + what, e);
+    }
+    // a null read is the caller's "not held here", which claims no one state: taken whenever the read ran
+    if (Boolean.TRUE.equals(held) || (held != null && result[0] == null))
+      return (T) result[0];
+
+    final Boolean locked = (Boolean) pageManager.executeInLock(() -> readIfOneCommit(pageManager, read, result));
+    if (locked || result[0] == null)
+      return (T) result[0];
+    throw new ConcurrentModificationException(what + " could not be read against one committed state: a replicated apply kept "
+        + "publishing through the whole wait. Please retry the operation");
+  }
+
+  /** What {@link #readIfOneCommit} leaves when a publication was open and it did not run the read. */
+  private static final Object NOT_READ = new Object();
+
+  /**
+   * Runs {@code read} into {@code result}[0], and tells whether no publication was open or started meanwhile; leaves
+   * {@link #NOT_READ} there without running it when one was open.
+   */
+  private static <T> Boolean readIfOneCommit(final PageManager pageManager, final Supplier<T> read, final Object[] result) {
+    result[0] = NOT_READ;
+    final long sequence = pageManager.getPublicationSequence();
+    if ((sequence & 1) != 0)
+      return Boolean.FALSE;
+    result[0] = read.get();
+    return pageManager.getPublicationSequence() == sequence;
+  }
+
   private record Read(List<IndexCursorEntry> entries, Set<Integer> bucketIds, boolean dangling) {
   }
 
   private static Read readAndLoad(final DatabaseInternal database, final Index index, final List<Object[]> keys,
-      final boolean forQuery) {
+      final boolean forQuery, final boolean prefix) {
     final List<Object[]> entryKeys = new ArrayList<>(keys.size());
     final List<RID> rids = new ArrayList<>(keys.size());
     for (final Object[] key : keys) {
-      final IndexCursor cursor = forQuery && index instanceof TypeIndex typeIndex ? typeIndex.getForQuery(key) : index.get(key);
+      final IndexCursor cursor;
+      if (prefix)
+        cursor = ((TypeIndex) index).prefixForQuery(key);
+      else
+        cursor = forQuery && index instanceof TypeIndex typeIndex ? typeIndex.getForQuery(key) : index.get(key);
       try {
         while (cursor.hasNext()) {
           if (rids.size() >= MAX_ENTRIES)

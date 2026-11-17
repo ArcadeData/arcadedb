@@ -105,7 +105,7 @@ class Issue10051ReconcileAppliesDeltasOnceTest {
     entry.tx().commit2ndPhase(entry.phase1());
     assertThat(metadata().getTotalDocs()).isEqualTo(SEED + 3L);
 
-    final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(entry.walData());
+    final WALFile.WALTransaction walTx = CommittedEntryDecoding.deserializeWalTransaction(entry.walData());
     database.getTransactionManager().applyChanges(walTx, entry.bucketDeltas(), entry.corpusDeltas(), true);
 
     assertThat(metadata().getTotalDocs()).as("the entry's pages were already published").isEqualTo(SEED + 3L);
@@ -119,7 +119,7 @@ class Issue10051ReconcileAppliesDeltasOnceTest {
     entry.tx().rollback();
     assertThat(metadata().getTotalDocs()).as("a transaction that published nothing counted nothing").isEqualTo(SEED);
 
-    final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(entry.walData());
+    final WALFile.WALTransaction walTx = CommittedEntryDecoding.deserializeWalTransaction(entry.walData());
     database.getTransactionManager().applyChanges(walTx, entry.bucketDeltas(), entry.corpusDeltas(), true);
 
     assertThat(metadata().getTotalDocs()).isEqualTo(SEED + 3L);

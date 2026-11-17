@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -110,7 +110,7 @@ public class DropPropertyStatement extends DDLStatement {
           indexNames.append(index.getName());
         }
 
-        throw new CommandExecutionException(
+        throw new ObjectInUseException(
             "Property used in indexes (" + indexNames
                 + "). Please drop these indexes before removing property or use FORCE parameter.");
       }

@@ -259,6 +259,26 @@ public class RecordEventsRegistry implements RecordEvents {
     return !afterReadListeners.isEmpty();
   }
 
+  /** See {@link #hasBeforeReadListeners()}. */
+  public boolean hasBeforeCreateListeners() {
+    return !beforeCreateListeners.isEmpty();
+  }
+
+  /** See {@link #hasBeforeReadListeners()}. */
+  public boolean hasAfterCreateListeners() {
+    return !afterCreateListeners.isEmpty();
+  }
+
+  /** See {@link #hasBeforeReadListeners()}. */
+  public boolean hasBeforeUpdateListeners() {
+    return !beforeUpdateListeners.isEmpty();
+  }
+
+  /** See {@link #hasBeforeReadListeners()}. */
+  public boolean hasAfterUpdateListeners() {
+    return !afterUpdateListeners.isEmpty();
+  }
+
   public boolean onBeforeRead(final RID rid) {
     if (beforeReadListeners.isEmpty())
       return true;

@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * every other node, while the same peer declared in {@code arcadedb.ha.serverList} was not.
  * <p>
  * The last test is the one that says why this is not cosmetic: it drives the peer the handler really builds
- * through {@link RaftHAServer#selectStepDownTargets}, which is where a priority-0 peer stops being a candidate.
+ * through {@link StepDownTargets#selectStepDownTargets}, which is where a priority-0 peer stops being a candidate.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -141,7 +141,7 @@ class Issue7523AddPeerPriorityTest {
         new JSONObject().put("priority", 10));
     final RaftPeer local = PostAddPeerHandler.peerFromPayload("local_2434", "local:2434", new JSONObject());
 
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(List.of(local, voter, witness),
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(List.of(local, voter, witness),
         local.getId(), null);
 
     assertThat(targets).extracting(p -> p.getId().toString()).containsExactly("voter_2435");
@@ -157,7 +157,7 @@ class Issue7523AddPeerPriorityTest {
     final RaftPeer voter = PostAddPeerHandler.peerFromPayload("voter_2435", "voter:2435", new JSONObject());
     final RaftPeer local = PostAddPeerHandler.peerFromPayload("local_2434", "local:2434", new JSONObject());
 
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(List.of(local, voter, witness),
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(List.of(local, voter, witness),
         local.getId(), null);
 
     assertThat(targets).extracting(p -> p.getId().toString())

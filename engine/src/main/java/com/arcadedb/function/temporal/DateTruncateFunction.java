@@ -54,7 +54,8 @@ public class DateTruncateFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    // A null unit or date truncates to null, as every temporal function answers a null argument (issue #11589)
+    // issue #11589: a null unit or a null temporal value is a null answer, as Cypher propagates a null argument, not a
+    // NullPointerException or a type error
     if (args[0] == null || args[1] == null)
       return null;
     final String unit = args[0].toString();

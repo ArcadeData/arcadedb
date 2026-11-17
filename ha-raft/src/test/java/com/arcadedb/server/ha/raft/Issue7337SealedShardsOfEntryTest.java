@@ -44,7 +44,7 @@ class Issue7337SealedShardsOfEntryTest {
 
   @Test
   void anInlineBlobNamesItsShard() {
-    assertThat(ArcadeStateMachine.sealedShardsOf(entry(
+    assertThat(SchemaEntryApplier.sealedShardsOf(entry(
         List.of(blob("Reading", 0), blob("Reading", 1)), List.of())))
         .containsExactly(
             new TimeSeriesSealedInstallLock.ShardRef("Reading", 0),
@@ -53,14 +53,14 @@ class Issue7337SealedShardsOfEntryTest {
 
   @Test
   void aSlicedStoreNamesItsShardToo() {
-    assertThat(ArcadeStateMachine.sealedShardsOf(entry(List.of(), List.of(chunk("Metrics", 3)))))
+    assertThat(SchemaEntryApplier.sealedShardsOf(entry(List.of(), List.of(chunk("Metrics", 3)))))
         .as("a sealed store too large for one entry is the case a tear costs most on")
         .containsExactly(new TimeSeriesSealedInstallLock.ShardRef("Metrics", 3));
   }
 
   @Test
   void bothCarriersInOneEntryAreCovered() {
-    assertThat(ArcadeStateMachine.sealedShardsOf(entry(List.of(blob("Reading", 0)), List.of(chunk("Metrics", 1)))))
+    assertThat(SchemaEntryApplier.sealedShardsOf(entry(List.of(blob("Reading", 0)), List.of(chunk("Metrics", 1)))))
         .containsExactlyInAnyOrder(
             new TimeSeriesSealedInstallLock.ShardRef("Reading", 0),
             new TimeSeriesSealedInstallLock.ShardRef("Metrics", 1));
@@ -69,8 +69,8 @@ class Issue7337SealedShardsOfEntryTest {
   /** An entry with no sealed section locks nothing, so ordinary DDL pays nothing for this guard. */
   @Test
   void anEntryWithNoSealedSectionNamesNoShard() {
-    assertThat(ArcadeStateMachine.sealedShardsOf(entry(List.of(), List.of()))).isEmpty();
-    assertThat(ArcadeStateMachine.sealedShardsOf(entry(null, null))).isEmpty();
+    assertThat(SchemaEntryApplier.sealedShardsOf(entry(List.of(), List.of()))).isEmpty();
+    assertThat(SchemaEntryApplier.sealedShardsOf(entry(null, null))).isEmpty();
   }
 
   private static RaftLogEntryCodec.TsSealedBlob blob(final String typeName, final int shardIndex) {

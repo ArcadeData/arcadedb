@@ -373,11 +373,10 @@ public class RedisNetworkExecutor extends Thread {
       // NullPointerException it wasn't written to expect - e.g. defaultBucket is a ConcurrentHashMap, whose
       // put/get reject a null key or value outright, so "SET key $-1" or "GET $-1" would otherwise NPE deep
       // inside setVariable/getVariable instead of getting a clear, single reply.
-      // Deliberately checks only top-level (depth-1) arguments: a $-1 nested inside a multibulk argument
-      // (e.g. "SET key *1\r\n$-1\r\n") still reaches a handler as a null inside a List and would surface as a
-      // raw ClassCastException from the generic catch-all instead of this message. No handler actually
-      // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
-      // than a gap worth a recursive check for.
+      // Every argument must be a bulk string, as the command name must (issue #10845): an integer (':') or a nested array ('*'),
+      // even one holding a $-1, reached the handler's (String) cast and was answered with the ClassCastException text (issue
+      // #11450). Inside an array parseNext yields only a String, an Integer, a List or null, so the reply names the marker the
+      // same way the command-name check does.
       // A key and a stored value keep their bytes (issues #9057, #10752); every other argument is parsed as text, where an escaped
       // byte would be a lone surrogate, so it gets the replacement character instead. RedisArguments is the table that says which
       // is which: sanitizing a key made two binary keys that differ only in an invalid byte one key
@@ -389,7 +388,12 @@ public class RedisNetworkExecutor extends Thread {
           appendCrLf();
           return;
         }
-        if (arg instanceof String str && !RedisArguments.isOpaque(opaque, i))
+        if (!(arg instanceof String str)) {
+          value.append("-ERR Protocol error: expected '$', got '").append(arg instanceof List ? '*' : ':').append('\'');
+          appendCrLf();
+          return;
+        }
+        if (!RedisArguments.isOpaque(opaque, i))
           list.set(i, RedisBinaryCodec.sanitize(str));
       }
 
@@ -405,8 +409,8 @@ public class RedisNetworkExecutor extends Thread {
 
       QueryAdmissionGate.Ticket admission = null;
       RunningQuery runningQuery = null;
-      try (final QueryTracer.Span span = QueryTracer.Holder.begin(
-          selectedDatabaseName, null, "command", cmdString)) {
+      final QueryTracer.Span span = QueryTracer.Holder.begin(selectedDatabaseName, null, "command", cmdString);
+      try {
 
         // AUTH and HELLO are the only commands accepted before authentication (HELLO must still carry a
         // valid AUTH option, otherwise it is rejected with NOAUTH). Every other command is rejected with
@@ -527,11 +531,14 @@ public class RedisNetworkExecutor extends Thread {
         }
 
       } catch (final Exception e) {
+        // the span is failed (issue #11638) before it is closed below: the client gets its error reply, the trace the error status
+        span.error(e);
         value.append('-');
         value.append(respErrorPrefix(e));
         value.append(' ');
         value.append(respClientMessage(e));
       } finally {
+        span.close();
         try {
           if (admission != null)
             admission.close();

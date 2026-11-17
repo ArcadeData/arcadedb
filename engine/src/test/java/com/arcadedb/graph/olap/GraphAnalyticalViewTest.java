@@ -1868,7 +1868,7 @@ class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.wcc() YIELD nodeId, componentId RETURN nodeId, componentId");
+        "CALL algo.wcc() YIELD node, componentId RETURN node, componentId");
 
     final List<Integer> componentIds = new ArrayList<>();
     while (rs.hasNext())
@@ -1902,7 +1902,7 @@ class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.triangleCount() YIELD nodeId, triangles RETURN nodeId, triangles");
+        "CALL algo.triangleCount() YIELD node, triangles RETURN node, triangles");
 
     int totalTriangles = 0;
     int nodeCount = 0;
@@ -3403,7 +3403,7 @@ class GraphAnalyticalViewTest extends TestHelper {
   /**
    * A view of the database that only differs in being replicated, and in whether this node leads. Avoids pulling a
    * mocking framework into the engine module just to flip two flags (same approach used by
-   * LSMVectorIndexAutoCompactionTest/Issue5470ReplicatedCommitEveryTest).
+   * LSMVectorIndexAutoCompactionTest/GraphBatchRegressionTest.ReplicatedCommitEvery).
    */
   private static DatabaseInternal nodeView(final DatabaseInternal delegate, final boolean leader) {
     return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),

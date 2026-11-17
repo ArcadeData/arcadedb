@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.HeapEstimator;
@@ -197,10 +198,41 @@ public class ProjectReturnStep extends AbstractExecutionStep {
   }
 
   /**
+   * Whether the workers of a parallel scan binding only {@code variable} can run this projection on their rows, as an
+   * ORDER BY with a LIMIT above it does (issue #11873): no DISTINCT, whose keys are the step's, and every item an expression
+   * {@link ParallelSafeExpressions} accepts.
+   */
+  boolean isParallelSafe(final String variable) {
+    if (returnClause == null || returnClause.isDistinct() || evaluator.getFunctionFactory() == null)
+      return false;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (!item.isStar() && !ParallelSafeExpressions.isParallelSafe(item.getExpression(), variable))
+        return false;
+    return true;
+  }
+
+  /** The columns a projected row holds besides the input row's own: the output name of every item but a star. */
+  Set<String> projectedColumns() {
+    final Set<String> columns = new HashSet<>();
+    if (returnClause != null)
+      for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+        if (!item.isStar())
+          columns.add(item.getOutputName());
+    return columns;
+  }
+
+  private ResultInternal projectResult(final Result inputResult) {
+    return projectResult(inputResult, context);
+  }
+
+  /**
    * Projects a result according to the RETURN clause.
    * Note: Preserves original variables for ORDER BY access.
+   *
+   * @param evaluationContext the context the items are evaluated in: a worker's, when the workers of a parallel scan project
+   *                          their rows
    */
-  private ResultInternal projectResult(final Result inputResult) {
+  ResultInternal projectResult(final Result inputResult, final CommandContext evaluationContext) {
     final ResultInternal result = new ResultInternal();
 
     // IMPORTANT: Copy all original properties first
@@ -225,7 +257,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
         final String outputName = item.getOutputName();
 
         // Evaluate expression
-        final Object value = evaluator.evaluate(expr, inputResult, context);
+        final Object value = evaluator.evaluate(expr, inputResult, evaluationContext);
         result.setProperty(outputName, value);
       }
       return result;

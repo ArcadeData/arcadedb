@@ -19,6 +19,7 @@
 package com.arcadedb.function;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -31,8 +32,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 /**
  * Regression tests for #11589: functions given an argument of the wrong kind, or a null where they need a value, leaked a raw
  * JDK exception ({@code NullPointerException}, {@code ClassCastException}, {@code DateTimeParseException}), which the HTTP
- * API answers with 500. A wrong argument is the caller's mistake: it is now refused with an
- * {@link IllegalArgumentException}, which the API answers with 400, or answered the way the function answers a null.
+ * API answers with 500. A wrong argument is the caller's mistake: it is now refused as a {@link ErrorCategory#VALIDATION}
+ * error, which the API answers with 400, or answered the way the function answers a null.
  */
 class FunctionArgumentErrorsIssue11589Test extends TestHelper {
 
@@ -60,7 +61,7 @@ class FunctionArgumentErrorsIssue11589Test extends TestHelper {
   }
 
   @Test
-  void wrongArgumentsAreRefusedAsIllegalArguments() {
+  void wrongArgumentsAreRefusedAsValidationErrors() {
     final String[][] statements = {
         { "sql", "SELECT geo.lineString(1) AS v FROM V WHERE id = 1" },
         { "sql", "SELECT geo.polygon(@rid) AS v FROM V WHERE id = 1" },
@@ -75,7 +76,7 @@ class FunctionArgumentErrorsIssue11589Test extends TestHelper {
         }
       });
       assertThat(thrown).as(statement[1]).isNotNull();
-      assertThat(causeChainHas(thrown, IllegalArgumentException.class)).as("%s: %s", statement[1], thrown).isTrue();
+      assertThat(ErrorCategory.of(thrown)).as("%s: %s", statement[1], thrown).isEqualTo(ErrorCategory.VALIDATION);
     }
   }
 
@@ -100,13 +101,6 @@ class FunctionArgumentErrorsIssue11589Test extends TestHelper {
       for (final String name : new String[] { "a", "b", "c", "d", "e", "f", "g", "h" })
         assertThat(row.<Object>getProperty(name)).as(name).isNull();
     }
-  }
-
-  private static boolean causeChainHas(final Throwable thrown, final Class<? extends Throwable> type) {
-    for (Throwable t = thrown; t != null; t = t.getCause())
-      if (type.isInstance(t))
-        return true;
-    return false;
   }
 
   private List<Integer> ids(final String query) {

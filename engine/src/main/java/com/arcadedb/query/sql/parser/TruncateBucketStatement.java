@@ -24,6 +24,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -87,10 +88,10 @@ public class TruncateBucketStatement extends DDLStatement {
       final long recordCount = db.countBucket(resolvedBucketName);
       if (recordCount > 0) {
         if (type instanceof VertexType) {
-          throw new CommandExecutionException(
+          throw new ObjectInUseException(
               "'TRUNCATE BUCKET' command cannot be used on not empty vertex bucket. Apply the 'UNSAFE' keyword to force it (at your own risk)");
         } else if (type instanceof EdgeType) {
-          throw new CommandExecutionException(
+          throw new ObjectInUseException(
               "'TRUNCATE BUCKET' command cannot be used on not empty edge bucket. Apply the 'UNSAFE' keyword to force it (at your own risk)");
         }
       }

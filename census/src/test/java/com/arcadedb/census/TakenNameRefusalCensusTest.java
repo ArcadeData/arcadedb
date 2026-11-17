@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Bolt's generic DatabaseError - or, for the {@code SchemaException} ones, the opposite of what happened: the {@code SCHEMA}
  * category ("the schema does not define this"). The refusals raised two bare types with no conflict arm anywhere. They raise
  * {@code AlreadyExistsException} now, which every wire maps to its own conflict code; the per-statement behaviour is pinned by
- * {@code Issue10153AlreadyExistsTest}, and three earlier fixes (#10073, #10074, #10075) each landed one name and left the others.
+ * {@code ExceptionCategoryTest.AlreadyExistsCategory}, and three earlier fixes (#10073, #10074, #10075) each landed one name and left the others.
  * <p>
  * The census ranges over the authority (#11288): every construction of a {@code Throwable} whose message words a taken name - a
  * constant, or the constant parts of a string concatenation, saying "already exists", "already registered" or "already defined" -
@@ -75,10 +75,10 @@ class TakenNameRefusalCensusTest {
       Map.entry("schema/IndexBuilder#conflictWithExistingIndex", ANOTHER_DEFINITION),//
       Map.entry("schema/ManualIndexBuilder#conflictWithExistingManualIndex", ANOTHER_DEFINITION),//
       // A CYPHER VARIABLE BOUND TWICE, OR WITH TWO TYPES, IN ONE STATEMENT: A PARSE ERROR, NOT A SCHEMA OBJECT NAME
-      Map.entry("query/opencypher/parser/CypherSemanticValidator#checkCreateBinding", VARIABLE),//
-      Map.entry("query/opencypher/parser/CypherSemanticValidator#checkMergeBinding", VARIABLE),//
+      Map.entry("query/opencypher/parser/VariableBindingValidator#checkCreateBinding", VARIABLE),//
+      Map.entry("query/opencypher/parser/VariableBindingValidator#checkMergeBinding", VARIABLE),//
       Map.entry("query/opencypher/parser/CypherSemanticValidator#declareVar", VARIABLE),//
-      Map.entry("query/opencypher/parser/CypherSemanticValidator$FunctionArgumentChecks#checkUsedAs", VARIABLE),//
+      Map.entry("query/opencypher/parser/FunctionArgumentValidator$FunctionArgumentChecks#checkUsedAs", VARIABLE),//
       Map.entry("query/opencypher/procedures/db/VectorSearchClauseProcedure#execute", "SEARCH ... SCORE AS naming a variable an "
           + "earlier clause bound: a semantic error of the statement, not a schema object name"),//
       // A TIMESERIES TYPE RENAMED OR CREATED ONTO A SEALED FILE LEFT IN THE DIRECTORY: A FILE NO SCHEMA OBJECT HOLDS (#10796, #10925)
