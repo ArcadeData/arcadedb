@@ -103,6 +103,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private static final int          DOCUMENT_VALIDATION_FAILURE     = 121;
   private static final int          NOT_IMPLEMENTED                 = 238;
+  private static final int          COMMAND_NOT_FOUND               = 59;
+  private static final int          TYPE_MISMATCH                   = 14;
+  private static final int          PATH_NOT_VIABLE                 = 28;
+  private static final int          IMMUTABLE_FIELD                 = 66;
+  /** What the query matcher answers a {@code $and}/{@code $or}/{@code $nor} whose elements are not documents. */
+  private static final int          MALFORMED_LOGICAL_OPERATOR      = 14817;
   /** The update operators this plugin applies. */
   private static final Set<String>  SUPPORTED_UPDATE_OPERATORS      = Set.of("$set", "$unset", "$inc");
   private static final String       SUPPORTED_UPDATE_OPERATORS_TEXT = "the supported ones are $set, $unset and $inc";
@@ -115,7 +121,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * PathNotViable, ImmutableField, DocumentValidationFailure, NotImplemented, DuplicateKey, a malformed {@code $and}/{@code $or}).
    */
   private static final Set<Integer> STATEMENT_ERROR_CODES           = Set.of(ErrorCode.BadValue.getValue(), ErrorCode.FailedToParse.getValue(),
-      14, 28, 66, DOCUMENT_VALIDATION_FAILURE, NOT_IMPLEMENTED, ErrorCode.DuplicateKey.getValue(), 14817);
+      TYPE_MISMATCH, PATH_NOT_VIABLE, IMMUTABLE_FIELD, DOCUMENT_VALIDATION_FAILURE, NOT_IMPLEMENTED, ErrorCode.DuplicateKey.getValue(),
+      MALFORMED_LOGICAL_OPERATOR);
 
   // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
   protected volatile Database                        database;
@@ -215,7 +222,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         // carry stored data
         LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, command);
         // what mongod answers a command it does not have, and what drivers detect a command missing from a server by (issue #11449)
-        throw new MongoServerError(59, "CommandNotFound", "no such command: '" + command + "'");
+        throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + command + "'");
       }
     } catch (final Exception e) {
       throw wireException("Error on executing MongoDB '" + command + "' command", e);
@@ -1186,7 +1193,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       if (!(op.getValue() instanceof Document fields) || !fields.containsKey("_id"))
         continue;
       if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, idValue(fields.get("_id")))))
-        throw new MongoServerError(66, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
+        throw new MongoServerError(IMMUTABLE_FIELD, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
     }
   }
 
@@ -1267,6 +1274,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * is never missed: at worst a document left as it was is written and counted.
    */
   static boolean sameValue(final Object a, final Object b) {
+    // identity on purpose, not equals(): a dotted $set copies only the maps on its path and shares every other value by reference, so a
+    // no-op must not walk a large sibling list element by element to find it unchanged
+    if (a == b)
+      return true;
     // maps and lists first: Map.equals() ignores the order of the fields, which mongod does not, and a list compares its elements with it
     if (a instanceof Map<?, ?> mapA && b instanceof Map<?, ?> mapB) {
       if (mapA.size() != mapB.size())
@@ -1303,7 +1314,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Object storedId = record.get("_id");
     final Object newId = replacement.containsKey("_id") ? idValue(replacement.get("_id")) : storedId;
     if (storedId != null && !sameId(storedId, newId))
-      throw new MongoServerError(66, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
+      throw new MongoServerError(IMMUTABLE_FIELD, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
 
     for (final String name : new ArrayList<>(record.getPropertyNames()))
       if (!"_id".equals(name))
@@ -1553,7 +1564,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    */
   private static void requireEmbedded(final Object container, final String field) {
     if (container != null && !isEmbedded(container))
-      throw new MongoServerError(28, "PathNotViable",
+      throw new MongoServerError(PATH_NOT_VIABLE, "PathNotViable",
           "Cannot create field '" + field + "' in an element of type " + (container instanceof List ? "array" : container.getClass().getSimpleName()));
   }
 
@@ -1569,7 +1580,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private static Number numberOf(final Object value) {
     if (value == null || value instanceof Number)
       return (Number) value;
-    throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
+    throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
   }
 
   private static boolean isEmbedded(final Object value) {
@@ -1706,7 +1717,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return defaultValue;
     if (value instanceof Number number)
       return number.longValue();
-    throw new MongoServerError(14, "TypeMismatch",
+    throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
         "BSON field '" + fieldName + "' is the wrong type '" + value.getClass().getSimpleName() + "', expected a number");
   }
 
