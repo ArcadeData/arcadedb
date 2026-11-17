@@ -208,6 +208,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private final ThreadLocal<List<CallableNoReturn>> compactionPersistence = new ThreadLocal<>();
   /**
+   * The commit locks of the files the compaction running on this thread created, held until the entry publishing it is
+   * accepted or the compaction fails (issue #12236). Non-null only inside {@link #runWithCompactionReplication}, like
+   * {@link #compactionPersistence}.
+   */
+  private final ThreadLocal<List<Integer>> compactionHeldLocks = new ThreadLocal<>();
+  /**
    * Leader commits that passed the recording-session gate of {@link #commit()} and have not ended, and how many of them the
    * current thread accounts for (issue #12098). A schema session waits for them before it asks for the exclusive lock, see
    * {@link #awaitCommitsPastRecordingSessionGate()}.
@@ -705,7 +711,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // silently skips pages whose fileId does not exist - dropping the writes and surfacing
     // later as missing index entries (issue #4083). The schema-commit thread itself uses the
     // schemaWalBuffer below and must not wait on its own session. A commit that passes is counted until it ends, so a
-    // schema session can wait for it before asking for the exclusive lock (issue #12098).
+    // schema session can wait for it before asking for the exclusive lock (issue #12098). A commit that passes this check
+    // just before a compaction opens its session is ordered by the lock the compaction keeps on the files it creates until
+    // its entry is accepted (issue #12236, keepLockedUntilCompactionIsPublished).
     final boolean gated = leader && !Boolean.TRUE.equals(isSchemaCommitThread.get());
     if (gated)
       passRecordingSessionGate();
@@ -4207,6 +4215,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the layout every other node holds
       final List<CallableNoReturn> persistence = new ArrayList<>();
       compactionPersistence.set(persistence);
+      // Issue #12236: the files the compaction creates stay locked until its entry is in the log (see
+      // keepLockedUntilCompactionIsPublished)
+      compactionHeldLocks.set(new ArrayList<>(1));
 
       final boolean result;
       try {
@@ -4286,6 +4297,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
       }
     } finally {
+      releaseCompactionLocks();
       compactionPersistence.remove();
       // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
       // thread and defers (returns false above) whenever a session is already open, so it never nests
@@ -4428,6 +4440,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         sealedBlobs, finalSealedChunks);
     // Published: nothing below may send the caller into a quarantine for a change every node now holds.
     published[0] = true;
+    // The entry creating the new files is in the log: a commit waiting on one of them dispatches after it, so the locks need
+    // not stay held through the deferred persistence (issue #12236). The outer finally releases whatever is left.
+    releaseCompactionLocks();
     // And whatever held this database's compactions off is over (issue #9558). Only HERE, not on the early return of a
     // compaction that had nothing to publish: that one proves nothing about the payload that was too large to ship.
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
@@ -4461,6 +4476,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (droppedFileId > -1)
       proxied.getFileManager().recordDeferredDrop(droppedFileId);
     persistence.add(action);
+  }
+
+  /**
+   * Takes over the commit lock of a file the compaction running on this thread created, until the entry publishing the
+   * compaction is accepted (released right then, before the deferred persistence) or the compaction fails (issue #12236). A commit that passed {@link #waitForActiveRecordingSession}
+   * before the compaction opened its session, and reached its file locks only after the swap, used to lock the new mutable
+   * file the swap had just released and dispatch its entry while the compaction was still building the one that creates the
+   * file: the followers skipped its pages, the file did not exist there yet, then created the file one version behind and
+   * refused the next commit on it as a WAL version gap. Waiting for this lock, the commit dispatches after that entry.
+   */
+  @Override
+  public boolean keepLockedUntilCompactionIsPublished(final int fileId) {
+    final List<Integer> held = compactionHeldLocks.get();
+    if (held == null)
+      return proxied.keepLockedUntilCompactionIsPublished(fileId);
+    held.add(fileId);
+    return true;
+  }
+
+  /** Releases the locks {@link #keepLockedUntilCompactionIsPublished} took over, on every way out of the session. */
+  private void releaseCompactionLocks() {
+    final List<Integer> held = compactionHeldLocks.get();
+    if (held == null)
+      return;
+    compactionHeldLocks.remove();
+    for (final int fileId : held)
+      proxied.getTransactionManager().unlockFile(fileId, Thread.currentThread());
   }
 
   /**
