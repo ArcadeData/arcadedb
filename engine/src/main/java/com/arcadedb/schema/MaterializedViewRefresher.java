@@ -175,13 +175,16 @@ public class MaterializedViewRefresher {
       if (view.isPerRecord())
         view.requestFullPass(true);
       view.setStatus(MaterializedViewStatus.ERROR);
-      // An ALTER that replaced this instance while the pass ran copied only what was still pending, not what the pass had drained:
-      // the full pass is owed by the registered view too, or its next delta pass ends VALID over the records this one failed to
-      // write. Only its flags are touched, never its ownership; a pass of it running now is asked to make one more, which drains
-      // the request. Set before the save below, so the status stored is the registered view's
+      // An ALTER that replaced this instance while the pass ran copied the status the pass started from, and only what was still
+      // pending, not what the pass had drained. The registered view holds the rows from before this pass whatever its kind, so it
+      // is STALE (a VALID copied before the failure stayed VALID, issue #12252 review); a per-record one also owes the full pass,
+      // or its next delta pass ends VALID over the records this one failed to write. Only its flags are touched, never its
+      // ownership; a pass of it running now is asked to make one more, which drains the request and settles the status. Set
+      // before the save below, so the status stored is the registered view's
       final MaterializedViewImpl current = view.current();
-      if (current != view && current.isPerRecord()) {
-        current.requestFullPass(true);
+      if (current != view) {
+        if (current.isPerRecord())
+          current.requestFullPass(true);
         current.setStatus(MaterializedViewStatus.STALE);
         current.markRefreshPendingIfRunning();
       }
