@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
@@ -56,7 +57,7 @@ class ParallelSafeExpressionsStateTest {
     for (final Class<?> type : new Class<?>[] { ArithmeticExpression.class, BooleanCoercionExpression.class,
         BooleanWrapperExpression.class, ComparisonExpression.class, ComparisonExpressionWrapper.class, InExpression.class,
         IsNullExpression.class, ListExpression.class, LiteralExpression.class, LogicalExpression.class,
-        ParameterExpression.class, PropertyAccessExpression.class, StringMatchExpression.class,
+        ParameterExpression.class, PropertyAccessExpression.class, StarExpression.class, StringMatchExpression.class,
         TernaryLogicalExpression.class, VariableExpression.class })
       for (final Field field : type.getDeclaredFields()) {
         final int modifiers = field.getModifiers();
