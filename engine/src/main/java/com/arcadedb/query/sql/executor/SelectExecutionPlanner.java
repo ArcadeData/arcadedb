@@ -1346,17 +1346,34 @@ public class SelectExecutionPlanner {
       return;
 
     final OrderBy newOrderBy = info.orderBy.copy();
-    final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(info.projection.getAllAliases(),
-        newOrderBy);
+    // an excluded item (`!secret`) does not project its alias: sorting on it needs a generated alias like any other
+    // non-projected key, or the sort reads the excluded column as null on every row (#12453)
+    final List<String> projectedAliases = new ArrayList<>();
+    for (final ProjectionItem item : info.projection.getItems())
+      if (!item.exclude)
+        projectedAliases.add(item.getProjectionAliasAsString());
+    final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(projectedAliases, newOrderBy);
     if (additionalOrderByProjections.size() > 0) {
       info.orderBy = newOrderBy;//the ORDER BY has changed
     }
     if (additionalOrderByProjections.size() > 0) {
       info.projectionAfterOrderBy = new Projection();
       info.projectionAfterOrderBy.setItems(new ArrayList<>());
-      for (final String alias : info.projection.getAllAliases()) {
-        info.projectionAfterOrderBy.getItems().add(projectionFromAlias(new Identifier(alias)));
+      boolean keepsAll = false;
+      for (final ProjectionItem item : info.projection.getItems()) {
+        final ProjectionItem after = projectionFromAlias(new Identifier(item.getProjectionAliasAsString()));
+        // an excluded column stays excluded, rather than coming back as a null column (#12453)
+        after.exclude = item.exclude;
+        keepsAll |= item.isAll();
+        info.projectionAfterOrderBy.getItems().add(after);
       }
+      if (keepsAll)
+        // `*` copies every column of the row, so the columns generated for the ORDER BY are excluded by name (#12453)
+        for (final ProjectionItem item : additionalOrderByProjections) {
+          final ProjectionItem excluded = projectionFromAlias(item.getAlias());
+          excluded.exclude = true;
+          info.projectionAfterOrderBy.getItems().add(excluded);
+        }
 
       for (final ProjectionItem item : additionalOrderByProjections) {
         if (info.aggregateProjection != null && isAggregate(item, context)) {
