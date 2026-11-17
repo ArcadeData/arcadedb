@@ -59,7 +59,11 @@ public abstract class LiteralParameterizer<S> {
   public static final byte LANGUAGE   = 4;
 
   private static final byte[] KEEP_ALL     = new byte[0];
-  /** Beyond this many literals a text is keyed as written: the shape records literal positions in one character each. */
+  /**
+   * Beyond this many literals a text is keyed as written: the shape records literal positions in one character each. Such a
+   * text is the data of a bulk write written in, and only an exact resend would share its entry, so it is not cached either: its
+   * parse tree holds a node chain per literal, 17 to 34 times the text, for as long as the entry lives (issue #12350).
+   */
   private static final int    MAX_LITERALS = 4096;
 
   private final SegmentedLRUCache<String, Lookup<S>> statements;
@@ -180,8 +184,10 @@ public abstract class LiteralParameterizer<S> {
       return parseAsWritten(text);
 
     final LiteralScan scan = scan(text);
-    if (scan == null || scan.size() == 0 || scan.size() > MAX_LITERALS)
+    if (scan == null || scan.size() == 0)
       return parseAsWritten(text);
+    if (scan.size() > MAX_LITERALS)
+      return new Lookup<>(parse(text), text, null);
 
     final String shape = scan.getShape();
     byte[] policy;
