@@ -166,7 +166,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          return statement instanceof CypherDDLStatement;
+          // A CALL of a schema-changing procedure is the Cypher spelling of a SQL DDL statement (issue #11438)
+          return statement instanceof CypherDDLStatement || statement.hasSchemaProcedureCall();
         }
 
         @Override
@@ -187,6 +188,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
             return CollectionUtils.singletonSet(OperationType.READ);
 
           final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
+          // A schema-changing procedure is a SCHEMA operation as its SQL statement is, not the CREATE/UPDATE/DELETE fallback
+          // below; data writes next to it keep their own types (issue #11438)
+          final boolean schemaProcedureCall = statement.hasSchemaProcedureCall();
+          if (schemaProcedureCall)
+            ops.add(OperationType.SCHEMA);
           if (statement.hasCreate())
             ops.add(OperationType.CREATE);
           if (statement.hasMerge()) {
@@ -199,7 +205,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
             ops.add(OperationType.UPDATE);
           if (statement.hasRemove())
             ops.add(OperationType.UPDATE);
-          return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
+          if (ops.isEmpty())
+            return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+          return schemaProcedureCall && ops.size() == 1 ? CollectionUtils.singletonSet(OperationType.SCHEMA) : Set.copyOf(ops);
         }
       };
     } catch (final CommandParsingException e) {
