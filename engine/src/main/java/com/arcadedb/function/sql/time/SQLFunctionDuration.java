@@ -47,14 +47,22 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
   public Object execute(final Object thisObject, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
+    checkArity(params);
+
     if (params.length == 1)
       return params[0] == null ? null : fromOneArgument(params[0]);
-
-    if (params.length != 2)
-      throw new InvalidArgumentException(NAME + "() expects an ISO-8601 duration ('PT1H'), a map of components ({hours: 1}) or an "
-          + "amount and a time unit (1, 'hour'), but received " + params.length + " arguments");
 
     if (params[0] == null || params[1] == null)
       return null;

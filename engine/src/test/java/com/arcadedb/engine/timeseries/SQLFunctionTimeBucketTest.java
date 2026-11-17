@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -132,8 +133,9 @@ class SQLFunctionTimeBucketTest extends TestHelper {
 
   @Test
   void missingParams() {
+    // issue #11944: the declared arity (2..3), checked by checkArity in the uniform wording
     assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { "1h" }, null))
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("expects 2-3 arguments but got 1");
   }
 
   // ---- #8798 ----
