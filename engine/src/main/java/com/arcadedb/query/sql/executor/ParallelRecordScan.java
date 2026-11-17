@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
@@ -123,11 +122,14 @@ public final class ParallelRecordScan {
   }
 
   /**
-   * How many workers a parallel scan of the buckets {@code bucketIds}, planned now, would run on: 1 when it would stay
-   * sequential. What an index range weighs a scan of the type by (issues #8333, #11873).
+   * How many workers a parallel scan of the buckets {@code bucketIds}, planned now for the command {@code context} belongs to,
+   * would run on: 1 when it would stay sequential, under a row of an enclosing statement included, as {@link #plan} decides.
+   * What an index range weighs a scan of the type by (issues #8333, #11873).
    */
-  public static int plannedWorkers(final DatabaseInternal database, final List<Integer> bucketIds) {
-    return ParallelTypeScan.plannedWorkers(database, bucketIds);
+  public static int plannedWorkers(final CommandContext context, final List<Integer> bucketIds) {
+    if (!ParallelTypeScan.isAllowed(context))
+      return 1;
+    return ParallelTypeScan.plannedWorkers(context.getDatabase(), bucketIds);
   }
 
   static void warnSkipped(final int bucketId, final long skipped) {

@@ -589,7 +589,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
           bucketIds.add(bucket.getFileId());
-        final int scanWorkers = parallelFilter ? ParallelRecordScan.plannedWorkers(context.getDatabase(), bucketIds) : 1;
+        final int scanWorkers = parallelFilter ? ParallelRecordScan.plannedWorkers(context, bucketIds) : 1;
         final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, scanWorkers);
         if (scanThreshold < 0)
           return null;

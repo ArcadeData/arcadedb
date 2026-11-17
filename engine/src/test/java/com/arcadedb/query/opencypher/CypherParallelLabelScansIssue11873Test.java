@@ -23,6 +23,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.ParallelScanProducerPool;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.Result;
@@ -262,6 +265,31 @@ class CypherParallelLabelScansIssue11873Test extends TestHelper {
     final List<Object> expected = sequential(query);
     assertThat(expected).hasSize(20);
     assertThat(column(query)).isEqualTo(expected);
+  }
+
+  /**
+   * The workers an index range weighs a label scan by are the ones the scan would run on: none under a row of an enclosing
+   * statement, where {@link ParallelRecordScan#plan} keeps the scan sequential (issue #10609). Counting them there lowered the
+   * share of the label above which the range gives way to a label scan that then ran on one thread.
+   */
+  @Test
+  void theWorkersARangeWeighsAScanByAreNoneUnderAnEnclosingRow() {
+    final List<Integer> bucketIds = database.getSchema().getType("T").getBuckets(true).stream().map(b -> b.getFileId()).toList();
+    final BasicCommandContext statement = new BasicCommandContext();
+    statement.setDatabase(database);
+    if (ParallelScanProducerPool.getInstance().getMaxParallelism() > 1)
+      assertThat(ParallelRecordScan.plannedWorkers(statement, bucketIds)).isGreaterThan(1);
+
+    // a correlated subquery: the enclosing statement's row is its context's "current"
+    final BasicCommandContext enclosing = new BasicCommandContext();
+    enclosing.setDatabase(database);
+    enclosing.setVariable("current", database.iterateType("T", false).next());
+    final BasicCommandContext underRow = new BasicCommandContext();
+    underRow.setDatabase(database);
+    underRow.setParent(enclosing);
+    assertThat(underRow.isUnderEnclosingRow()).isTrue();
+    assertThat(ParallelRecordScan.plan(underRow, "T", () -> (record, workerContext) -> null)).isNull();
+    assertThat(ParallelRecordScan.plannedWorkers(underRow, bucketIds)).isEqualTo(1);
   }
 
   private List<Object> sequential(final String query) {
