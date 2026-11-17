@@ -98,6 +98,17 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Sets the most indexed terms a fuzzy clause expands to (issue #12462), 50 by default as in Lucene's FuzzyQuery.
+   *
+   * @param maxExpansions a positive number of terms
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withFuzzyMaxExpansions(final int maxExpansions) {
+    ftMetadata().setFuzzyMaxExpansions(maxExpansions);
+    return this;
+  }
+
+  /**
    * Sets an analyzer for a specific field.
    *
    * @param fieldName     the field name
@@ -127,6 +138,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    *   <li>query_analyzer - analyzer class for querying</li>
    *   <li>allowLeadingWildcard - whether to allow leading wildcards</li>
    *   <li>defaultOperator - "AND" or "OR"</li>
+   *   <li>fuzzyMaxExpansions - the most indexed terms a fuzzy clause expands to (50 by default)</li>
    *   <li>similarity - "BM25" (default) or "CLASSIC"</li>
    *   <li>bm25_k1 / bm25_b - BM25 tuning parameters</li>
    *   <li>[fieldName]_analyzer - per-field analyzer class</li>

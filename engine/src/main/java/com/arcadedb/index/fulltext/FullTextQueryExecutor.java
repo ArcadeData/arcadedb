@@ -53,12 +53,15 @@ import org.apache.lucene.search.WildcardQuery;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -126,6 +129,11 @@ public class FullTextQueryExecutor {
   private final String[]               restrictedFields;
   /** Decides the matches on their RIDs before they are scored, or null to keep every match (issue #9909). */
   private final RIDFilter              ridFilter;
+  /**
+   * Per fuzzy clause, the stored keys it expands to, chosen across every bucket of the type by {@link #selectFuzzyExpansions}; or
+   * null, and for a clause the map does not hold, the clause chooses them in this bucket alone (issue #12462).
+   */
+  private       Map<FuzzyQuery, Set<String>> chosenFuzzyExpansions;
 
   // BM25 scoring (issue #4687): the positive scoring tokens collected during matching, mapped to their field boost. Populated
   // only when the index uses BM25 similarity and only for positive clauses (never for MUST_NOT exclusion). A new executor is
@@ -193,6 +201,18 @@ public class FullTextQueryExecutor {
     this.propertyNames = index.getPropertyNames();
     this.restrictedFields = restrictedFields != null ? restrictedFields.toArray(new String[0]) : null;
     this.ridFilter = ridFilter;
+  }
+
+  /**
+   * Makes each fuzzy clause expand to the terms chosen for it across the buckets of the type (see {@link #selectFuzzyExpansions}),
+   * rather than to the best ones of this bucket alone: the cap on the expansions is the type's, as it is the whole index's in
+   * Lucene (issue #12462).
+   *
+   * @param expansions per fuzzy clause the stored keys it expands to, or null to choose them in this bucket
+   */
+  FullTextQueryExecutor withFuzzyExpansions(final Map<FuzzyQuery, Set<String>> expansions) {
+    this.chosenFuzzyExpansions = expansions;
+    return this;
   }
 
   /**
@@ -1045,26 +1065,185 @@ public class FullTextQueryExecutor {
     }
   }
 
+  /**
+   * Matches the terms a fuzzy clause expands to: at most {@link FullTextIndexMetadata#getFuzzyMaxExpansions()} of them, the best
+   * ones as Lucene's FuzzyQuery ranks them (see {@link #BEST_EXPANSION_FIRST}), chosen across the type when the coordinator chose
+   * them (see {@link #withFuzzyExpansions}) and in this bucket otherwise (issue #12462).
+   */
   private void collectFuzzyMatches(final FuzzyQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    final String field = query.getTerm().field();
-    final String term = normalizeText(query.getTerm().text());
-    if (term.isEmpty())
+    Set<String> expansions = chosenFuzzyExpansions != null ? chosenFuzzyExpansions.get(query) : null;
+    if (expansions == null)
+      expansions = keysOf(fuzzyExpansions(query, maxExpansions()));
+    if (expansions.isEmpty())
       return;
 
-    final int maxEdits = query.getMaxEdits();
-    final int prefixLen = Math.min(query.getPrefixLength(), term.length());
-    final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = fieldPrefix(field);
-    final String searchPrefix = fieldPrefix + requiredPrefix;
+    // The walk spans the chosen keys only, and decides each posting with one lookup rather than one edit distance. The span is
+    // bounded in the index's own key order (unsigned UTF-8 bytes, i.e. code points), not in String's UTF-16 order
+    final TreeSet<String> sorted = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
+    sorted.addAll(expansions);
+    iterateAndMatch(sorted.first(), sorted.last(), expansions::contains, scoreMap, boostFor(query.getTerm().field()));
+  }
 
-    iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
-      if (!key.startsWith(searchPrefix))
-        return false;
-      final String token = key.substring(fieldPrefix.length());
-      if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
-        return false;
-      return fuzzyDistance(token, term, query.getTranspositions(), maxEdits) <= maxEdits;
-    }, scoreMap, boostFor(field));
+  /** The most terms a fuzzy clause expands to (issue #12462): Lucene's FuzzyQuery default unless the index sets its own. */
+  private int maxExpansions() {
+    return metadata != null ? metadata.getFuzzyMaxExpansions() : FuzzyQuery.defaultMaxExpansions;
+  }
+
+  /**
+   * One indexed term a fuzzy clause matches: its stored key, the token the edit distance was measured on (the key without its field
+   * prefix), and the boost Lucene's FuzzyTermsEnum gives it, which is what ranks the expansions.
+   */
+  record FuzzyExpansion(String key, String token, float boost) {
+  }
+
+  /**
+   * The order Lucene's FuzzyQuery keeps its expansions in (TopTermsRewrite over FuzzyTermsEnum): the higher boost first, and of two
+   * terms with the same boost the lower one in term order, which for the UTF-8 bytes Lucene compares is code point order.
+   */
+  static final Comparator<FuzzyExpansion> BEST_EXPANSION_FIRST = (a, b) -> {
+    final int byBoost = Float.compare(b.boost(), a.boost());
+    return byBoost != 0 ? byBoost : compareCodePoints(a.token(), b.token());
+  };
+
+  /**
+   * The boost FuzzyTermsEnum gives a term {@code distance} edits away from a query term of {@code termLength} code points: 1 for
+   * the term itself, else {@code 1 - distance / min(token length, termLength)}, so an edit costs more in a shorter term.
+   */
+  static float fuzzyBoost(final String token, final int distance, final int termLength) {
+    if (distance == 0)
+      return 1.0f;
+    final int minTermLength = Math.min(token.codePointCount(0, token.length()), termLength);
+    return 1.0f - (float) distance / (float) minTermLength;
+  }
+
+  /** Code point order, which is the order of the UTF-8 bytes both Lucene's terms and the index's keys are sorted by. */
+  static int compareCodePoints(final String a, final String b) {
+    int i = 0;
+    int j = 0;
+    while (i < a.length() && j < b.length()) {
+      final int ca = a.codePointAt(i);
+      final int cb = b.codePointAt(j);
+      if (ca != cb)
+        return Integer.compare(ca, cb);
+      i += Character.charCount(ca);
+      j += Character.charCount(cb);
+    }
+    return Integer.compare(a.length() - i, b.length() - j);
+  }
+
+  private static Set<String> keysOf(final List<FuzzyExpansion> expansions) {
+    final Set<String> keys = new HashSet<>(expansions.size() * 2);
+    for (final FuzzyExpansion expansion : expansions)
+      keys.add(expansion.key());
+    return keys;
+  }
+
+  /**
+   * The best {@code max} terms of this bucket a fuzzy clause expands to, best first (see {@link #BEST_EXPANSION_FIRST}). A term
+   * counts once it has a live posting here: a deletion marker alone does not make it an expansion. Each distinct key is measured
+   * once, however many postings it has.
+   */
+  List<FuzzyExpansion> fuzzyExpansions(final FuzzyQuery query, final int max) {
+    final String term = normalizeText(query.getTerm().text());
+    if (term.isEmpty())
+      return List.of();
+
+    final int maxEdits = query.getMaxEdits();
+    final boolean transpositions = query.getTranspositions();
+    final int termLength = term.codePointCount(0, term.length());
+    final int prefixLen = Math.min(query.getPrefixLength(), term.length());
+    final String fieldPrefix = fieldPrefix(query.getTerm().field());
+    final String searchPrefix = fieldPrefix + term.substring(0, prefixLen);
+    final boolean rangeScan = !searchPrefix.isEmpty();
+
+    // The worst of the best kept so far at the head, so a better term replaces it
+    final PriorityQueue<FuzzyExpansion> best = new PriorityQueue<>(Math.min(max, 1024) + 1, BEST_EXPANSION_FIRST.reversed());
+    final IndexCursor cursor = index.iterateUnderlying(true, rangeScan ? new String[] { searchPrefix } : null, true);
+    String lastKey = null;
+    try {
+      while (cursor.hasNext()) {
+        tick();
+        final RID rid = cursor.next().getIdentity();
+        final Object[] keys = cursor.getKeys();
+        if (keys == null || keys.length == 0 || keys[0] == null || rid.getBucketId() < 0)
+          continue;
+        final String key = keys[0].toString();
+        if (key.equals(lastKey))
+          continue;
+        lastKey = key;
+        if (!key.startsWith(searchPrefix)) {
+          if (rangeScan && key.compareTo(searchPrefix) > 0)
+            break;
+          continue;
+        }
+        final String token = key.substring(fieldPrefix.length());
+        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+          continue;
+        final int distance = fuzzyDistance(token, term, transpositions, maxEdits);
+        if (distance > maxEdits)
+          continue;
+        final FuzzyExpansion expansion = new FuzzyExpansion(key, token, fuzzyBoost(token, distance, termLength));
+        if (best.size() < max)
+          best.add(expansion);
+        else if (BEST_EXPANSION_FIRST.compare(expansion, best.peek()) < 0) {
+          best.poll();
+          best.add(expansion);
+        }
+      }
+    } finally {
+      cursor.close();
+    }
+
+    final List<FuzzyExpansion> result = new ArrayList<>(best);
+    result.sort(BEST_EXPANSION_FIRST);
+    return result;
+  }
+
+  /**
+   * Chooses, for every fuzzy clause of a query, the terms it expands to across all the given buckets of one type (issue #12462).
+   * Lucene's FuzzyQuery keeps the best {@code maxExpansions} terms of the whole index; a bucket choosing its own best ones would let
+   * a type of n buckets expand to n times as many. The ranking depends on the term alone, so the best ones of the type are among
+   * the best ones of each bucket. Answers null when there is nothing to choose across buckets: a single bucket, or no fuzzy clause.
+   */
+  static Map<FuzzyQuery, Set<String>> selectFuzzyExpansions(final List<LSMTreeFullTextIndex> bucketIndexes,
+      final String queryText, final WorkGuard guard, final List<String> restrictedFields) {
+    if (bucketIndexes.size() < 2)
+      return null;
+    final List<FuzzyQuery> fuzzyQueries = new ArrayList<>();
+    collectFuzzyQueries(
+        new FullTextQueryExecutor(bucketIndexes.getFirst(), guard, restrictedFields, null).parseQuery(queryText), fuzzyQueries);
+    if (fuzzyQueries.isEmpty())
+      return null;
+
+    final List<FullTextQueryExecutor> executors = new ArrayList<>(bucketIndexes.size());
+    for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
+      executors.add(new FullTextQueryExecutor(ftIndex, guard, restrictedFields, null));
+    final int max = executors.getFirst().maxExpansions();
+
+    final Map<FuzzyQuery, Set<String>> selected = new HashMap<>();
+    for (final FuzzyQuery fuzzy : fuzzyQueries) {
+      if (selected.containsKey(fuzzy))
+        continue;
+      final Map<String, FuzzyExpansion> union = new HashMap<>();
+      for (final FullTextQueryExecutor executor : executors)
+        for (final FuzzyExpansion expansion : executor.fuzzyExpansions(fuzzy, max))
+          union.putIfAbsent(expansion.key(), expansion);
+      final List<FuzzyExpansion> ranked = new ArrayList<>(union.values());
+      ranked.sort(BEST_EXPANSION_FIRST);
+      selected.put(fuzzy, keysOf(ranked.size() > max ? ranked.subList(0, max) : ranked));
+    }
+    return selected;
+  }
+
+  /** Every fuzzy clause of a query, wherever {@link #collectMatches} reaches it, a prohibited one included. */
+  private static void collectFuzzyQueries(final Query query, final List<FuzzyQuery> fuzzyQueries) {
+    if (query instanceof final BooleanQuery bq) {
+      for (final BooleanClause clause : bq.clauses())
+        collectFuzzyQueries(clause.query(), fuzzyQueries);
+    } else if (query instanceof final BoostQuery bq)
+      collectFuzzyQueries(bq.getQuery(), fuzzyQueries);
+    else if (query instanceof final FuzzyQuery fq)
+      fuzzyQueries.add(fq);
   }
 
   /**
@@ -1136,6 +1315,15 @@ public class FullTextQueryExecutor {
    */
   private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap,
       final float boost) {
+    iterateAndMatch(startKey, null, matcher, scoreMap, boost);
+  }
+
+  /**
+   * {@link #iterateAndMatch(String, KeyMatcher, Map, float)} that, given a {@code lastKey}, stops past that key rather than past
+   * the keys starting with {@code startKey}.
+   */
+  private void iterateAndMatch(final String startKey, final String lastKey, final KeyMatcher matcher,
+      final Map<RID, AtomicInteger> scoreMap, final float boost) {
     final boolean rangeScan = startKey != null;
     final IndexCursor cursor = index.iterateUnderlying(true,
         rangeScan ? new String[] { startKey } : null, true);
@@ -1157,7 +1345,8 @@ public class FullTextQueryExecutor {
             ++walkFrequencies.computeIfAbsent(key, k -> new long[1])[0];
           if (!tokensOnly)
             scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-        } else if (rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
+        } else if (lastKey != null ? compareCodePoints(key, lastKey) > 0 :
+            rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
           break;
         }
       }
