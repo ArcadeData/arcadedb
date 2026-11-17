@@ -606,9 +606,12 @@ class WholeNumberArgumentsTest {
         // a value already known to be Long/Integer/Short/Byte: widening, nothing to lose
         Map.entry("function/math/AbsFunction#execute: java/lang/Number.longValue", 1),
         Map.entry("function/number/NumberFormat#execute: java/lang/Number.longValue", 1),
-        // toInteger()/convert.toInteger(): truncating a FLOAT IS the conversion (toInteger(2.9) is 2 in Neo4j too)
-        Map.entry("function/convert/ToIntegerFunction#execute: d2l", 1),
+        // toInteger()/convert.toInteger(): truncating a FLOAT IS the conversion (toInteger(2.9) is 2 in Neo4j too). The text parser
+        // no longer narrows a double (it reads a BigDecimal, #12400), so the d2l of the old String branch is gone
         Map.entry("function/convert/ToIntegerFunction#execute: java/lang/Number.longValue", 1),
+        // toInteger() of a text: the number is range-checked against the long limits just before, so nothing wraps, and truncating
+        // a fraction towards zero IS the conversion (toInteger('12.5') is 12 in Neo4j too)
+        Map.entry("function/convert/ToIntegerFunction#parseInteger: java/math/BigDecimal.longValue", 1),
         Map.entry("function/convert/ConvertToInteger#execute: d2l", 1),
         Map.entry("function/convert/ConvertToInteger#execute: java/lang/Number.longValue", 1),
         // toBoolean(): FLOAT and DOUBLE are refused before it, the integral value is tested against zero
