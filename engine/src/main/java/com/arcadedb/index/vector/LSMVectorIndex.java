@@ -209,6 +209,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Floor for the automatically sized search cache (issue #5412). At 768 dimensions this is ~25MB, small
   // enough to never matter and large enough that a small index is fully resident from the first query.
   private static final int MIN_SEARCH_CACHE_SIZE = 8_192;
+  // Taken by every search cache that grows, in every index (issue #12391): the budget its size is read from is shared by the
+  // caches of all the database's vector indexes, so it is read and taken in one step. Sizing is rare - a cache grows
+  // O(log n) times over its index's life - and searches on a cache that covers its range never take it.
+  private static final Object SEARCH_CACHE_SIZING_LOCK = new Object();
 
   // DOT_PRODUCT is the fast path for cosine on already-normalized data, and JVector documents unit length as its
   // precondition. How many ordinals a rebuild samples to notice that the precondition is not met, and how far a
@@ -421,7 +425,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // read (or quantized page read) per hop even when repeating the very same query. Flat storage scored in place
   // (issue #11003): no object per vector, and a walk asks it for a similarity rather than for a vector.
   private volatile FlatVectorCache searchVectorCache;
-  private final    Object          searchVectorCacheLock = new Object();
   // The one-bit codes a BINARY index scores its searches on (issue #10968), keyed by vector id like searchVectorCache
   // and cleared, evicted and released wherever that one is. Null for every other quantization.
   private volatile BinaryCodeCache searchBinaryCodes;
@@ -14432,22 +14435,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the shared cache, or {@code null} when caching is disabled by configuration
    */
   FlatVectorCache getSearchVectorCache() {
-    FlatVectorCache cache = searchVectorCache;
+    final FlatVectorCache cache = searchVectorCache;
     final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), FlatVectorCache.MAX_CAPACITY,
-        cache != null ? cache.capacity() : 0);
+        cache != null ? cache.capacity() : 0, false);
     if (wanted <= 0)
       return null;
 
     if (cache != null && cache.capacity() >= wanted)
       return cache;
 
-    synchronized (searchVectorCacheLock) {
-      cache = searchVectorCache;
-      if (cache == null || cache.capacity() < wanted) {
-        cache = new FlatVectorCache(metadata.dimensions, wanted);
-        searchVectorCache = cache;
-      }
-      return cache;
+    // Decided again under the lock every sizing takes (issue #12391): two indexes growing at once each read a budget the
+    // other was about to take, and both caches went past it
+    synchronized (SEARCH_CACHE_SIZING_LOCK) {
+      final FlatVectorCache current = searchVectorCache;
+      final int decided = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions),
+          FlatVectorCache.MAX_CAPACITY, current != null ? current.capacity() : 0, false);
+      if (decided <= 0)
+        return current;
+      if (current != null && current.capacity() >= decided)
+        return current;
+      final FlatVectorCache grown = new FlatVectorCache(metadata.dimensions, decided);
+      searchVectorCache = grown;
+      return grown;
     }
   }
 
@@ -14474,22 +14483,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
   BinaryCodeCache getSearchBinaryCodes() {
     if (metadata.quantizationType != VectorQuantizationType.BINARY)
       return null;
-    BinaryCodeCache codes = searchBinaryCodes;
+    final BinaryCodeCache codes = searchBinaryCodes;
     final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
-        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0);
+        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0, true);
     if (wanted <= 0)
       return null;
 
     if (codes != null && codes.capacity() >= wanted)
       return codes;
 
-    synchronized (searchVectorCacheLock) {
-      codes = searchBinaryCodes;
-      if (codes == null || codes.capacity() < wanted) {
-        codes = new BinaryCodeCache(metadata.dimensions, wanted);
-        searchBinaryCodes = codes;
-      }
-      return codes;
+    synchronized (SEARCH_CACHE_SIZING_LOCK) {
+      final BinaryCodeCache current = searchBinaryCodes;
+      final int decided = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
+          BinaryCodeCache.maxCapacity(metadata.dimensions), current != null ? current.capacity() : 0, true);
+      if (decided <= 0)
+        return current;
+      if (current != null && current.capacity() >= decided)
+        return current;
+      final BinaryCodeCache grown = new BinaryCodeCache(metadata.dimensions, decided);
+      searchBinaryCodes = grown;
+      return grown;
     }
   }
 
@@ -14505,7 +14518,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * <b>The share is the database's, not the index's (issue #12391).</b> A type has one vector index per bucket, and each
    * of them used to plan on the whole percent of what was free when it grew: 48 caches of a 3 GB heap held 2.1 GB and had
-   * planned on 3.4 GB, and the heap ran out. See {@link #affordableSearchCacheEntries(int, long, long)} for the rule.
+   * planned on 3.4 GB, and the heap ran out. See {@link #affordableSearchCacheEntries(int, long, long, boolean)} for the
+   * rule. A cache grows only under one JVM-wide lock, where the budget is read again: sizing happens O(log n) times over an
+   * index's life, and two indexes deciding at once each took the room the other was about to.
    * <p>
    * The corpus is the vector ID range rather than the live count: both caches are direct-mapped by id (issues #10968 and
    * #11003), so a capacity at least the range is what keeps every vector in a slot of its own, and a deleted id keeps its
@@ -14518,10 +14533,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param maxCapacity     the most entries the cache can hold: a capacity asked past it would never be reached, and the
    *                        cache rebuilt on every search for it
    * @param currentCapacity capacity of the cache the index holds, 0 for none
+   * @param sizingCodes     whether the cache sized is the BINARY codes rather than the vectors
    *
    * @return the number of entries to hold, or 0 when caching is disabled
    */
-  private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity) {
+  private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity,
+      final boolean sizingCodes) {
     final int configured = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
     if (configured < 0)
@@ -14538,13 +14555,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (currentCapacity >= idRange)
       return currentCapacity;
 
-    final long affordable = affordableSearchCacheEntries(heapPercent, bytesPerEntry, VectorHeapBudget.availableHeapBytes());
+    final long affordable = affordableSearchCacheEntries(heapPercent, bytesPerEntry, VectorHeapBudget.availableHeapBytes(),
+        sizingCodes);
     return searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
   }
 
   /**
-   * How many entries the search cache of this index may plan on, given what the search caches of the database's other vector
-   * indexes already plan on (issue #12391).
+   * How many entries one search cache of this index may plan on, given what every other search cache of the database's
+   * vector indexes already plans on (issue #12391), the other cache of this same index included: a BINARY index holds both
+   * the vectors and the codes.
    * <p>
    * The percent applies to the heap the caches could have between them: what is free plus what the other caches hold, since
    * that part is not free only because they hold it. What the others plan on - their whole capacity, filled or not, since a
@@ -14557,26 +14576,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * nothing: its searches read the vectors from the pages.
    *
    * @param heapPercent   the share of the heap the search caches of the database may use together
-   * @param bytesPerEntry heap one entry of this index's cache costs
+   * @param bytesPerEntry heap one entry of the cache sized costs
    * @param availableHeap heap currently available, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   * @param sizingCodes   whether the cache sized is this index's BINARY codes rather than its vectors: only that one cache
+   *                      is left out of the charge, since it is the one being replaced
    *
-   * @return the entries this index's cache may hold
+   * @return the entries the cache may hold
    */
-  long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap) {
+  long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap,
+      final boolean sizingCodes) {
     long othersPlan = 0L;
     long othersHold = 0L;
     for (final Index index : getDatabase().getSchema().getIndexes()) {
-      if (index == this || !(index instanceof LSMVectorIndex other))
+      if (!(index instanceof LSMVectorIndex owner))
         continue;
-      final FlatVectorCache vectors = other.searchVectorCache;
-      if (vectors != null) {
+      final FlatVectorCache vectors = owner.searchVectorCache;
+      if (vectors != null && (owner != this || sizingCodes)) {
         othersPlan += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
         othersHold += vectors.allocatedBytes();
       }
-      final BinaryCodeCache codes = other.searchBinaryCodes;
-      if (codes != null) {
+      final BinaryCodeCache codes = owner.searchBinaryCodes;
+      if (codes != null && (owner != this || !sizingCodes)) {
         // Allocated whole when created: what it plans on, it holds
-        final long bytes = codes.capacity() * BinaryCodeCache.bytesPerCode(other.metadata.dimensions);
+        final long bytes = codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
         othersPlan += bytes;
         othersHold += bytes;
       }

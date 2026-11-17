@@ -48,7 +48,7 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
     final LSMVectorIndex sibling = (LSMVectorIndex) buckets[1];
     final long bytesPerEntry = FlatVectorCache.bytesPerVector(DIMENSIONS);
 
-    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, 0L))
+    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, 0L, false))
         .as("the database's first cache keeps the floor, even with nothing free").isEqualTo(8_192);
 
     final FlatVectorCache siblingCache = sibling.getSearchVectorCache();
@@ -58,10 +58,38 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
 
     // 1% of what is free plus what the sibling holds is what the sibling plans on, plus 30 entries
     final long available = (siblingPlans + 30 * bytesPerEntry) * 100 - siblingHolds;
-    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, available))
+    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, available, false))
         .as("what the other index's cache plans on is charged to the same budget").isEqualTo(30);
 
-    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, siblingPlans * 100 - siblingHolds))
+    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, siblingPlans * 100 - siblingHolds, false))
         .as("a budget the other caches have taken leaves this one none, not the floor").isZero();
+  }
+
+  /**
+   * A BINARY index holds two search caches, the vectors and the one-bit codes: sizing one of them charges the other, and
+   * only the one being sized is left out.
+   */
+  @Test
+  void aBinaryIndexChargesItsOtherCacheToTheSameBudget() {
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("Bin").withTotalBuckets(1).create()
+          .createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.command("sql", "CREATE INDEX ON Bin (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+          + ", \"similarity\": \"COSINE\", \"quantization\": \"BINARY\" }");
+    });
+    final LSMVectorIndex index = (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Bin[embedding]"))
+        .getIndexesOnBuckets()[0];
+    final FlatVectorCache vectors = index.getSearchVectorCache();
+    assertThat(vectors).as("precondition: the index has a vector cache").isNotNull();
+    final long vectorsPlan = vectors.capacity() * FlatVectorCache.bytesPerVector(DIMENSIONS);
+    final long vectorsHold = vectors.allocatedBytes();
+    final long bytesPerCode = BinaryCodeCache.bytesPerCode(DIMENSIONS);
+
+    final long available = (vectorsPlan + 30 * bytesPerCode) * 100 - vectorsHold;
+    assertThat(index.affordableSearchCacheEntries(1, bytesPerCode, available, true))
+        .as("the codes are charged the vector cache of the same index").isEqualTo(30);
+    assertThat(index.affordableSearchCacheEntries(1, FlatVectorCache.bytesPerVector(DIMENSIONS), 0L, false))
+        .as("the vector cache being sized is not charged to itself: alone in the database, it keeps the floor")
+        .isEqualTo(8_192);
   }
 }
