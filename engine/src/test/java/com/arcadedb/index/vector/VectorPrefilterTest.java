@@ -272,14 +272,15 @@ class VectorPrefilterTest {
         final LSMVectorIndex index = vectorIndex();
         final float[] query = embedding(7);
 
-        // Every real RID (100% of the index) plus enough RIDs from a bucket this index knows nothing about to push
-        // the allow-list past availableVectors (100) but comfortably under an unclamped 5.0x threshold (500). Only a
-        // literal (unclamped) selectivity would route this to the pre-filter plan.
+        // Every real RID (100% of the index) plus enough RIDs of positions this bucket never assigned to push the
+        // allow-list past availableVectors (100) but comfortably under an unclamped 5.0x threshold (500). Only a
+        // literal (unclamped) selectivity would route this to the pre-filter plan. Of this index's own bucket: an index
+        // searches only the members of its bucket (issue #12355), so RIDs of another bucket would not count at all.
         final Set<RID> allWithExtra = new HashSet<>();
         for (int i = 0; i < VERTICES; i++)
           allWithExtra.add(ridOf("doc" + i));
         for (int i = 0; i < 50; i++)
-          allWithExtra.add(new RID(9999, i));
+          allWithExtra.add(new RID(index.getAssociatedBucketId(), 1_000_000 + i));
         assertThat(allWithExtra.size()).as("must exceed availableVectors to distinguish clamped from unclamped")
             .isGreaterThan(VERTICES);
 

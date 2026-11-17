@@ -9197,6 +9197,44 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The members of {@code allowedRIDs} this index can hold: the RIDs of its own bucket (issue #12355). A type's vector index is
+   * one index per bucket, and a caller searches every one of them with the same allow-list. Sized against one bucket's
+   * vectors, a list spread over the type's buckets looks as many times wider than it is: it missed the pre-filter plan, the
+   * filtered walk met almost none of its members, and the shortfall fallback scanned every vector of the bucket - in each
+   * bucket, on every query - logging that the graph may need rebuilding. A {@link PredicateRidSet} decides its members one
+   * candidate at a time and is returned as it is.
+   *
+   * @return {@code allowedRIDs} itself when it has no member of another bucket (and when there is no allow-list), a new set
+   * of the members of this bucket otherwise, empty when there is none
+   */
+  Set<RID> allowedInThisBucket(final Set<RID> allowedRIDs) {
+    final int bucketId = metadata.associatedBucketId;
+    if (allowedRIDs == null || allowedRIDs.isEmpty() || allowedRIDs instanceof PredicateRidSet || bucketId < 0)
+      return allowedRIDs;
+    int inBucket = 0;
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId)
+        ++inBucket;
+    if (inBucket == allowedRIDs.size())
+      return allowedRIDs;
+    if (inBucket == 0)
+      return Collections.emptySet();
+    final Set<RID> inThisBucket = new HashSet<>(inBucket * 4 / 3 + 1);
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId)
+        inThisBucket.add(rid);
+    return inThisBucket;
+  }
+
+  /**
+   * Whether an allow-list leaves this index nothing to answer: it had members, none of them in this bucket. Not the same as
+   * an empty {@code allowedRIDs}, which the searches read as no allow-list at all.
+   */
+  private static boolean nothingAllowedHere(final Set<RID> allowedRIDs, final Set<RID> inThisBucket) {
+    return inThisBucket != null && inThisBucket.isEmpty() && allowedRIDs != null && !allowedRIDs.isEmpty();
+  }
+
+  /**
    * The pre-filter plan of {@code allowedRIDs} when it is narrow enough, relative to {@code selectivitySetting}, to take
    * one instead of paying for a {@code Bits}-filtered HNSW walk (issue #6502, extended to the groupBy and
    * PQ-approximate paths by issue #6514), or null for the walk. Shared by all three call sites - {@link #findNeighborsFromVector},
@@ -9481,9 +9519,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final int efSearch,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
     checkIsValid();
+    final Set<RID> allowed = allowedInThisBucket(allowedRIDs);
+    if (nothingAllowedHere(allowedRIDs, allowed))
+      return Collections.emptyList();
     if (metadata.quantizationType != VectorQuantizationType.BINARY || k <= 0 || queryVector == null)
-      return searchNeighbors(queryVector, k, efSearch, allowedRIDs, guard);
-    return rerankedBinarySearch(queryVector, k, efSearch, metadata.rerankOversample, allowedRIDs, guard);
+      return searchNeighbors(queryVector, k, efSearch, allowed, guard);
+    return rerankedBinarySearch(queryVector, k, efSearch, metadata.rerankOversample, allowed, guard);
   }
 
   /**
@@ -10038,10 +10079,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private List<Pair<RID, Float>> groupedSearch(final float[] queryVector, final int limit, final int groupSize,
       final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final Set<Object> onlyGroups, final float maxDistance, final WorkGuard guard) {
+    final Set<RID> allowed = allowedInThisBucket(allowedRIDs);
+    if (nothingAllowedHere(allowedRIDs, allowed))
+      return Collections.emptyList();
     if (metadata.quantizationType == VectorQuantizationType.BINARY && queryVector != null && groupKeyResolver != null)
-      return rerankedGroupedSearch(queryVector, limit, groupSize, efSearch, allowedRIDs, groupKeyResolver, onlyGroups,
+      return rerankedGroupedSearch(queryVector, limit, groupSize, efSearch, allowed, groupKeyResolver, onlyGroups,
           maxDistance, guard);
-    return groupedSearch(queryVector, limit, groupSize, efSearch, allowedRIDs, groupKeyResolver, onlyGroups, maxDistance,
+    return groupedSearch(queryVector, limit, groupSize, efSearch, allowed, groupKeyResolver, onlyGroups, maxDistance,
         null, guard);
   }
 
@@ -10910,8 +10954,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
     if (metadata.quantizationType == VectorQuantizationType.BINARY && k > 0 && queryVector != null) {
       checkIsValid();
+      final Set<RID> allowed = allowedInThisBucket(allowedRIDs);
+      if (nothingAllowedHere(allowedRIDs, allowed))
+        return Collections.emptyList();
       return rerankedBinarySearch(queryVector, k, efSearch, rerankOversample >= 0 ? rerankOversample : metadata.rerankOversample,
-          allowedRIDs, guard);
+          allowed, guard);
     }
     if (metadata.quantizationType != VectorQuantizationType.PRODUCT)
       return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
@@ -10940,10 +10987,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *                        needs no record read. {@link #DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} is a good start
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int requestedK,
-      final int efSearch, final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+      final int efSearch, final int rerankOversample, final Set<RID> allowedInAnyBucket, final WorkGuard guard) {
     checkIsValid();
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
+    final Set<RID> allowedRIDs = allowedInThisBucket(allowedInAnyBucket);
+    if (nothingAllowedHere(allowedInAnyBucket, allowedRIDs))
+      return Collections.emptyList();
     final boolean rerank = rerankOversample > 0;
     // Check if PQ is available. Through isPQSearchAvailable(), not the two fields directly: the codebooks are
     // loaded with the locations and both are deferred to first use (issue #6722), so reading the fields here -
