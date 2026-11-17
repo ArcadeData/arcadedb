@@ -320,9 +320,12 @@ class CypherExpressionBuilder {
    *                          parent is absent from the child (issue #8132)
    */
   private Expression parseExpressionFromText(final ParseTree node, final boolean noBlockConstructs) {
-    // The five block constructs below use a length guard: only match when the found context covers (almost) the
-    // full node text, preventing mis-parsing of func(CASE ...) as just the inner CASE. The - 2 allows for
-    // whitespace.
+    // The five block constructs below use a length guard: only match when the found context IS the whole node,
+    // preventing mis-parsing of func(CASE ...) as just the inner CASE. getText() carries no whitespace, so the two
+    // texts are equal exactly when nothing else is in the node: the slack of two characters this guard used to allow
+    // took `COUNT { ... } > 0` for the bare COUNT and dropped the comparison, which only the truthiness of a
+    // non-Boolean under AND/OR hid (issue #11760). Anything else - a construct in parentheses included - is reached by
+    // the descent of the grammar below, which handles every one of the five at the atom level.
     //
     // Found in ONE traversal, skipped outright once a level above has ruled them out, and the node's own text
     // materialised only if one of them turned up (issue #8132). This method walks the grammar's expression
@@ -335,22 +338,22 @@ class CypherExpressionBuilder {
     final boolean noBlocksBelow = blocks.isEmpty();
     final int nodeTextLength = noBlocksBelow ? 0 : node.getText().length();
 
-    if (blocks.caseExpression != null && blocks.caseExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.caseExpression != null && blocks.caseExpression.getText().length() == nodeTextLength)
       return parseCaseExpression(blocks.caseExpression);
 
-    if (blocks.extendedCaseExpression != null && blocks.extendedCaseExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.extendedCaseExpression != null && blocks.extendedCaseExpression.getText().length() == nodeTextLength)
       return parseExtendedCaseExpression(blocks.extendedCaseExpression);
 
     // Check for EXISTS expressions
-    if (blocks.existsExpression != null && blocks.existsExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.existsExpression != null && blocks.existsExpression.getText().length() == nodeTextLength)
       return SubqueryExpressionParser.parseExistsExpression(blocks.existsExpression);
 
     // Check for COLLECT { ... } subqueries
-    if (blocks.collectExpression != null && blocks.collectExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.collectExpression != null && blocks.collectExpression.getText().length() == nodeTextLength)
       return SubqueryExpressionParser.parseCollectExpression(blocks.collectExpression);
 
     // Check for COUNT { ... } subqueries
-    if (blocks.countExpression != null && blocks.countExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.countExpression != null && blocks.countExpression.getText().length() == nodeTextLength)
       return SubqueryExpressionParser.parseCountExpression(blocks.countExpression);
 
     // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree

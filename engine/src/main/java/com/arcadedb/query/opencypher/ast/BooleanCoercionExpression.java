@@ -18,8 +18,14 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+
+import java.lang.reflect.Array;
+import java.util.Collection;
 
 /**
  * Adapter that wraps a generic {@link Expression} so it can be used as a
@@ -27,6 +33,9 @@ import com.arcadedb.query.sql.executor.Result;
  * boolean-typed value but is not a comparison/IS NULL/IN/pattern/EXISTS form -
  * for example a bare boolean literal ({@code WHERE true}, {@code WHERE false}),
  * a parameter, or a property access on a boolean-typed property.
+ * <p>
+ * {@link #toPredicate(Object)} is the one place a value in a predicate position becomes a truth value, for WHERE, the
+ * logical operators, CASE WHEN and the WHERE of a list predicate or comprehension alike (issue #11760).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -39,18 +48,32 @@ public class BooleanCoercionExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
-    final Object value = expression.evaluate(result, context);
-    return Boolean.TRUE.equals(value);
+    return Boolean.TRUE.equals(toPredicate(expression.evaluate(result, context)));
   }
 
   @Override
   public Object evaluateTernary(final Result result, final CommandContext context) {
-    final Object value = expression.evaluate(result, context);
+    return toPredicate(expression.evaluate(result, context));
+  }
+
+  /**
+   * The truth value of a value used as a predicate, as Neo4j's runtime takes it: a BOOLEAN is itself, null is unknown
+   * ({@code null}), a LIST is true when it is not empty (the coercion Cypher kept for a list read from a property), and
+   * any other value is a type error. Before issue #11760 the logical operators took every non-null value as true and a
+   * WHERE took every non-Boolean as false, so the same integer was true under OR and false under WHERE.
+   */
+  public static Boolean toPredicate(final Object value) {
+    if (value instanceof Boolean bool)
+      return bool;
     if (value == null)
       return null;
-    if (value instanceof Boolean)
-      return value;
-    return Boolean.TRUE;
+    if (value instanceof Collection<?> list)
+      return !list.isEmpty();
+    // a byte[] is BINARY, one opaque value everywhere in openCypher, not a list
+    if (MultiValue.isSequenceArray(value))
+      return Array.getLength(value) > 0;
+    throw new TypeMismatchException(
+        "TypeError: Type mismatch: expected Boolean but was " + CypherFunctionHelper.cypherTypeName(value));
   }
 
   @Override

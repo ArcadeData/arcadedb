@@ -230,17 +230,8 @@ public class CaseExpression implements Expression {
     return operandHolder;
   }
 
-  /**
-   * Check if a value is considered true.
-   */
-  private boolean isTrue(final Object value) {
-    if (value == null) {
-      return false;
-    }
-    if (value instanceof Boolean) {
-      return (Boolean) value;
-    }
-    // Non-null, non-false values are considered true in Cypher
-    return true;
+  /** A WHEN predicate takes its value as every other predicate does (issue #11760): an integer is a type error, not true. */
+  private static boolean isTrue(final Object value) {
+    return Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(value));
   }
 }
