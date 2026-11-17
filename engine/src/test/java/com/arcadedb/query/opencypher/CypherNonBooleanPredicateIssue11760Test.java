@@ -125,6 +125,13 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     assertThat(single("RETURN COUNT { MATCH (m:Missing) } = 0 OR false AS r").<Boolean>getProperty("r")).isTrue();
     assertThat(single("RETURN null OR COUNT { MATCH (n:Node) } > 0 AS r").<Boolean>getProperty("r")).isTrue();
     assertThat(ids("MATCH (n:Node) WHERE n.b AND COUNT { MATCH (m:Missing) } > 0 RETURN n.id AS id")).isEmpty();
+
+    // the guard compares token text, which carries no whitespace: every spacing of the comparison reads the same
+    for (final String comparison : new String[] { "COUNT{MATCH (m:Missing)}>0", "COUNT { MATCH (m:Missing) } >  0",
+        "COUNT {\n  MATCH (m:Missing)\n}\n>\n0", "COUNT\t{ MATCH (m:Missing) }\t> 0" }) {
+      assertThat(single("RETURN " + comparison + " AND true AS r").<Boolean>getProperty("r")).as(comparison).isFalse();
+      assertThat(single("RETURN true AND " + comparison + " AS r").<Boolean>getProperty("r")).as(comparison).isFalse();
+    }
   }
 
   /** A BINARY value is one opaque value in openCypher, not a list: a predicate refuses it. */
