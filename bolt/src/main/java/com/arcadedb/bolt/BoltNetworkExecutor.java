@@ -100,6 +100,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -886,14 +888,14 @@ public class BoltNetworkExecutor extends Thread {
         // Through the category, which keeps a genuine parsing failure's own title (classifyParsingError) and lets a failure that
         // outranks parsing, wrapped by this exception, say what it is: a held database is not a syntax error (issue #10553)
         sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e), e);
+            clientMessage(failureText(e, "Query parsing error"), e), e);
         state = State.FAILED;
         return;
       } catch (final Exception e) {
         stream.close(this, "RUN failure");
         LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
         sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"), e);
+            loggedClientMessage(failureText(e, "Database error")), e);
         state = State.FAILED;
         return;
       }
@@ -1015,7 +1017,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       stream.close(this, "RUN failure");
-      final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
+      final String parseMsg = failureText(e, "Query parsing error");
       // Through the category, as the system-query catch does (issue #10553)
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), clientMessage(parseMsg, e), e);
       state = State.FAILED;
@@ -1031,7 +1033,7 @@ public class BoltNetworkExecutor extends Thread {
       // so log them at FINE to avoid flooding WARNING with normal, recoverable flow; genuine errors stay WARNING.
       stream.close(this, "RUN failure");
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
+      final String errorMsg = failureText(e, "Database error");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       state = State.FAILED;
     } finally {
@@ -1129,7 +1131,7 @@ public class BoltNetworkExecutor extends Thread {
       // MVCC conflicts (incl. those raised by an implicit auto-commit here) are expected and auto-retried
       // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
+      final String errorMsg = failureText(e, "Error fetching records");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
       // rather than held until the client RESETs or disconnects
@@ -1174,7 +1176,7 @@ public class BoltNetworkExecutor extends Thread {
       // ANSWERED AS A FAILED PULL IS (issue #11392): A TIMEOUT OR A RETRYABLE CONFLICT MET WHILE SKIPPING ROWS KEEPS ITS CODE, AND THE
       // STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT DISCARD error", e);
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error discarding records";
+      final String errorMsg = failureText(e, "Error discarding records");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       closeStream(stream, "DISCARD failure");
       state = State.FAILED;
@@ -1245,7 +1247,7 @@ public class BoltNetworkExecutor extends Thread {
       } catch (final Exception rollbackError) {
         LogManager.instance().log(this, Level.WARNING, "Failed to rollback after BEGIN error", rollbackError);
       }
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Transaction error";
+      final String errorMsg = failureText(e, "Transaction error");
       // Through the classifier, exactly as handleCommit does, with TRANSACTION_ERROR kept as the unclassified
       // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
       // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
@@ -1289,7 +1291,7 @@ public class BoltNetworkExecutor extends Thread {
       state = State.READY;
 
     } catch (final Exception e) {
-      final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
+      final String message = failureText(e, "Commit error");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e), e);
       state = State.FAILED;
     }
@@ -1310,7 +1312,7 @@ public class BoltNetworkExecutor extends Thread {
       state = State.READY;
 
     } catch (final Exception e) {
-      final String message = e.getMessage() != null ? e.getMessage() : "Rollback error";
+      final String message = failureText(e, "Rollback error");
       // The third of the three transaction handlers, routed through the one classifier for the same reason the
       // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
       // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
@@ -2120,6 +2122,33 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
+   * What a FAILURE says about {@code error} (issue #11973): the failure its code is classified from, with that failure's own causes
+   * ({@link ErrorConcealment#detailChain}), which is what the HTTP API answers as the {@code detail} of the same statement. A query
+   * engine wraps every failure of a statement ("Error executing Cypher command: &lt;statement&gt;"), and the wrapper's message
+   * only repeats the statement: the reason - a duplicated key, a constraint that exists, an index that does not - never reached a
+   * driver. A parsing failure is the innermost one of the chain, the analysis failure a wrapper of the analyzer hides (issue
+   * #11785). A failure no rule classifies is the whole chain, as HTTP answers it. {@code fallback} when there is no failure.
+   */
+  static String failureText(final Throwable error, final String fallback) {
+    if (error == null)
+      return fallback;
+    Throwable source = ErrorCategory.of(error) == ErrorCategory.PARSING ? innermostParsingFailure(error) : null;
+    if (source == null)
+      source = ErrorCategory.classifiedCause(error);
+    return ErrorConcealment.detailChain(source != null ? source : error);
+  }
+
+  /** The innermost {@link CommandParsingException} of the cause chain of {@code error}, or null when it has none. */
+  static CommandParsingException innermostParsingFailure(final Throwable error) {
+    CommandParsingException innermost = null;
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable current = error; current != null && visited.add(current); current = current.getCause())
+      if (current instanceof CommandParsingException parsing)
+        innermost = parsing;
+    return innermost;
+  }
+
+  /**
    * Classify a query/transaction execution error into a Bolt status code.
    * <p>
    * The classification itself is {@link ErrorCategory}, the one place ArcadeDB's exception hierarchy is read, so
@@ -2199,7 +2228,8 @@ public class BoltNetworkExecutor extends Thread {
       case SCHEMA -> BoltErrorCodes.SEMANTIC_ERROR;
       case SECURITY -> BoltErrorCodes.FORBIDDEN_ERROR;
       case VALIDATION -> BoltErrorCodes.ARGUMENT_ERROR;
-      case PARSING -> classifyParsingError(CauseChain.find(error, CommandParsingException.class));
+      // the innermost parsing failure of the chain: an analyzer that wraps the one it hit must not relabel it (issue #11785)
+      case PARSING -> classifyParsingError(innermostParsingFailure(error));
       // A query/statement deadline, not the retryable LockTimeoutException contention RETRY already took. NOT
       // Transaction.Terminated, which means "explicitly killed by the user" and is excluded from driver retry
       // predicates for exactly that reason (issue #7123).
