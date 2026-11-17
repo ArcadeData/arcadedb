@@ -4712,6 +4712,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 lock.writeLock().lock();
                 try {
                   this.graphIndex = diskGraph;
+                  // The on-heap graph is no longer resident, so nothing can be demoted to this twin (issue #7260 compares
+                  // the resident graph against it): kept, the field held the whole build graph - its neighbour map, and
+                  // through the diversity provider the build's reader and vector cache - until the next build (issue #12380)
+                  this.persistedGraphSource = null;
                   if (deltaVectors.isEmpty())
                     this.graphState = GraphState.IMMUTABLE;
                 } finally {
@@ -4985,6 +4989,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Test hook: behave as if the resident graph's persist never certified (issue #7260). */
   void forgetPersistedGraphSourceForTest() {
     persistedGraphSource = null;
+  }
+
+  /** Test hook: the on-heap graph the index keeps as the certified twin of its pages, if any (issue #12380). */
+  ImmutableGraphIndex persistedGraphSourceForTest() {
+    return persistedGraphSource;
   }
 
   private long getTxChunkSize() {
