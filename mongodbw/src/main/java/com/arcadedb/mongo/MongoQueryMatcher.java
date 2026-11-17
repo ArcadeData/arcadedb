@@ -566,7 +566,7 @@ final class MongoQueryMatcher {
   }
 
   /** The values a path reaches in a document (or an array element), a missing value where it reaches nothing outside an array. */
-  private static List<Object> values(final Object target, final String[] path) {
+  static List<Object> values(final Object target, final String[] path) {
     final List<Object> values = new ArrayList<>(2);
     expand(target, path, 0, values);
     return values;
@@ -667,7 +667,7 @@ final class MongoQueryMatcher {
   }
 
   /** The order of {@code mongod} over any two values: by type bracket first, then within it; arrays and documents in order. */
-  private static int compareValues(final Object a, final Object b) {
+  static int compareValues(final Object a, final Object b) {
     final int bracketA = bracket(a);
     final int bracketB = bracket(b);
     if (bracketA != bracketB)

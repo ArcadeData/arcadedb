@@ -89,6 +89,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /** What {@link #getPath} answers for a path that reaches no stored value, told apart from a stored null. */
+  private static final Object MISSING       = new Object();
   /**
    * The fields of a {@code createIndexes} specification this plugin honours ({@code key}, {@code name}, {@code unique}) or that
    * carry no semantics a built index could miss ({@code background} is a build-scheduling hint, {@code v} the index format
@@ -668,10 +670,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     } else
       queryPayload = filter;
 
-    final Document projection = document.get("projection") instanceof Document p && !p.isEmpty() ? p : null;
-    if (projection != null)
-      // reject an invalid projection up front, even when no document would be projected
-      MongoDBToSqlTranslator.isInclusionProjection(projection, "_id");
+    // parsed up front, once: an invalid projection is refused even when no document would be projected (issue #12072)
+    final MongoProjection projection = document.get("projection") instanceof Document p && !p.isEmpty() ? new MongoProjection(p) : null;
 
     final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
 
@@ -680,7 +680,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Document> documents = new ArrayList<>();
     for (Iterator<Document> it = result.iterator(); it.hasNext(); ) {
       final Document next = it.next();
-      documents.add(projection != null ? MongoDBToSqlTranslator.projectDocument(next, projection, "_id") : next);
+      documents.add(projection != null ? projection.apply(next) : next);
     }
 
     return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);
@@ -1007,13 +1007,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final MongoFilter.RegexBudget budget) {
     // built first: an invalid filter is an error whether or not the collection exists
     final MongoFilter filter = new MongoFilter(database, q, budget);
+    // so is an invalid update, whether or not a document would be updated (issue #12070)
+    if (u != null)
+      checkUpdate(u);
     if (!database.getSchema().existsType(collectionName) || u == null)
       return UpdateCount.NONE;
 
     // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
-    // for any shape of data). Only an update without a filter stays one SQL UPDATE.
-    // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
-    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
+    // for any shape of data). Only an update without a filter that sets or removes top-level fields stays one SQL UPDATE: $inc is
+    // never SQL "+=", which concatenates a string, appends to an array and drops a date instead of refusing them (issue #12070)
+    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || u.containsKey("$inc") || !filter.isEmpty())
       return executeUpdateOnRecords(collectionName, filter, u, multi);
 
     final Map<String, Object> params = new HashMap<>();
@@ -1031,6 +1034,52 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final long total = database.countType(collectionName, true);
     final int matched = (int) Math.min(Integer.MAX_VALUE, multi ? total : Math.min(1, total));
     return new UpdateCount(Math.max(matched, modified), modified);
+  }
+
+  /**
+   * Refuses an operator update {@code mongod} refuses when it parses it, before any document is touched (issue #12070): an operand
+   * that is not a document, an {@code $inc} by an amount that is not a number, and two paths of which one is the other or lies below
+   * it ({@code {$set: {a: 1}, $unset: {a: ''}}}, {@code {$set: {a: 1}, $inc: {'a.b': 1}}}), which would otherwise be applied one after
+   * the other, the last one winning.
+   */
+  private static void checkUpdate(final Document u) {
+    if (isReplacement(u))
+      return;
+    // every path named so far, and every proper prefix of them: a conflict is a path met in either set
+    final Set<String> paths = new HashSet<>();
+    final Set<String> prefixes = new HashSet<>();
+    for (final Map.Entry<String, Object> entry : u.entrySet()) {
+      final String op = entry.getKey();
+      if (!(entry.getValue() instanceof Document operand))
+        throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
+            "Modifiers operate on fields but we found type " + typeName(entry.getValue()) + " instead. For example: {$mod: {<field>: ...}} not {"
+                + op + ": " + entry.getValue() + "}");
+      for (final Map.Entry<String, Object> field : operand.entrySet()) {
+        final String path = field.getKey();
+        if ("$inc".equals(op) && !(field.getValue() instanceof Number))
+          throw new MongoServerError(14, "TypeMismatch", "Cannot increment with non-numeric argument: {" + path + ": " + field.getValue() + "}");
+
+        if (paths.contains(path) || prefixes.contains(path))
+          throw conflict(path, path);
+        for (int dot = path.indexOf('.'); dot > 0; dot = path.indexOf('.', dot + 1)) {
+          final String prefix = path.substring(0, dot);
+          if (paths.contains(prefix))
+            throw conflict(path, prefix);
+          prefixes.add(prefix);
+        }
+        paths.add(path);
+      }
+    }
+  }
+
+  private static MongoServerError conflict(final String path, final String at) {
+    return new MongoServerError(40, "ConflictingUpdateOperators", "Updating the path '" + path + "' would create a conflict at '" + at + "'");
+  }
+
+  private static String typeName(final Object value) {
+    return value == null ? "null" : value instanceof String ? "string" : value instanceof Boolean ? "bool" : value instanceof Number ? "number" :
+        value instanceof List ? "array" : value instanceof Map || value instanceof com.arcadedb.database.Document ? "object" :
+            value.getClass().getSimpleName();
   }
 
   /**
@@ -1145,11 +1194,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
-    // Tracks the _id's own BSON type as seeded, independently of the hex string it ends up stored as: a client
-    // that filtered on an ObjectId gets an ObjectId back, but a client that filtered on a plain 24-hex-char String
-    // (indistinguishable from an ObjectId's hex once stored) must get that String type back, not a promoted one.
-    boolean idIsObjectId = false;
-
     // Seed the new document with the filter's top-level equalities, mirroring MongoDB upsert.
     if (q != null)
       for (final Map.Entry<String, Object> entry : q.entrySet()) {
@@ -1163,85 +1207,62 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             // a regex in the filter is a pattern to match, not a value to insert
             if (eqValue instanceof BsonRegularExpression)
               continue;
-            if ("_id".equals(field) && eqValue instanceof ObjectId)
-              idIsObjectId = true;
             record.set(field, MongoBsonValues.toStored(field, eqValue));
           }
         } else {
           if (value instanceof BsonRegularExpression)
             continue;
-          if ("_id".equals(field) && value instanceof ObjectId)
-            idIsObjectId = true;
           record.set(field, MongoBsonValues.toStored(field, value));
         }
       }
 
     if (isReplacement(u)) {
-      for (final Map.Entry<String, Object> entry : u.entrySet()) {
-        final Object value = entry.getValue();
-        // Last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides whatever type
-        // the filter seeded, rather than only ever promoting it to true and leaking a stale ObjectId flag if the
-        // replacement's own _id is some other type.
-        if ("_id".equals(entry.getKey()))
-          idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), value));
-      }
-    } else {
-      final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
-      if (setIdIsObjectId != null)
-        idIsObjectId = setIdIsObjectId;
-    }
+      // last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides what the filter seeded
+      for (final Map.Entry<String, Object> entry : u.entrySet())
+        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), entry.getValue()));
+    } else
+      applyOperatorsToDocument(record, u);
 
     // has(), not get() == null: an explicit "_id": null in the filter/update is a legal (if unusual) BSON _id and
     // must be preserved, whereas a genuinely absent _id needs one generated.
-    if (!record.has("_id")) {
-      record.set("_id", new ObjectId().getHexData());
-      idIsObjectId = true;
-    }
+    if (!record.has("_id"))
+      record.set("_id", MongoBsonValues.toStored("_id", new ObjectId()));
 
     if (!record.saveReportingVeto())
       return UPSERT_VETOED;
 
-    final Object id = record.get("_id");
-    return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
+    // the stored _id tells an ObjectId from a String with the same hex (issue #12073): read back as a find would answer it
+    return MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"));
   }
 
   /**
-   * Applies the update operators to the record being upserted, returning whether an ObjectId-typed {@code _id} was
-   * seeded through {@code $set} - mirroring the same tracking the filter-seeding loop and the replacement branch in
-   * {@link #executeUpsert} already do, so the response reports {@code _id} back as an ObjectId regardless of which
-   * branch supplied it. {@code null} means {@code $set} never touched {@code _id} at all, so the caller should keep
-   * whatever the filter-seeding loop already determined instead of overriding it - unlike a plain {@code boolean}
-   * OR, this lets a non-{@code ObjectId} {@code $set}-supplied {@code _id} correctly override (rather than leak
-   * through) a {@code true} the filter already seeded.
+   * Applies the update operators to a record, in the order they are given: {@link #checkUpdate} has refused two of them on the same
+   * path, so the order cannot change the result.
    */
-  private Boolean applyOperatorsToDocument(final MutableDocument record, final Document u) {
-    Boolean idIsObjectId = null;
+  private void applyOperatorsToDocument(final MutableDocument record, final Document u) {
     for (final Map.Entry<String, Object> entry : u.entrySet()) {
       final String op = entry.getKey();
       final Document operand = (Document) entry.getValue();
       switch (op) {
       case "$set" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet()) {
-          final Object value = f.getValue();
-          if ("_id".equals(f.getKey()))
-            idIsObjectId = value instanceof ObjectId;
-          setPath(record, f.getKey(), "_id".equals(f.getKey()) ? idValue(value) : toMapValue(value));
-        }
+        for (final Map.Entry<String, Object> f : operand.entrySet())
+          setPath(record, f.getKey(), "_id".equals(f.getKey()) ? idValue(f.getValue()) : toMapValue(f.getValue()));
       }
       case "$unset" -> {
         for (final String f : operand.keySet())
           unsetPath(record, f);
       }
       case "$inc" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet())
+        for (final Map.Entry<String, Object> f : operand.entrySet()) {
+          final Object current = getPath(record, f.getKey());
+          final Number delta = (Number) f.getValue();
           // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
-          setPath(record, f.getKey(), MongoBsonValues.toStored(add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue()))));
+          setPath(record, f.getKey(), MongoBsonValues.toStored(current == MISSING ? delta : inc(current, delta, record, f.getKey())));
+        }
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
     }
-    return idIsObjectId;
   }
 
   /**
@@ -1368,21 +1389,33 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return copy;
   }
 
+  /**
+   * The value stored at a possibly dotted path, {@link #MISSING} where there is none: a stored null is a value, which {@code $inc}
+   * refuses, while a missing field is set to the amount.
+   */
   private static Object getPath(final MutableDocument record, final String path) {
     final int dot = path.indexOf('.');
     if (dot < 0)
-      return record.get(path);
+      return record.has(path) ? record.get(path) : MISSING;
 
-    Object current = record.get(path.substring(0, dot));
+    final String head = path.substring(0, dot);
+    if (!record.has(head))
+      return MISSING;
+    Object current = record.get(head);
     for (final String segment : path.substring(dot + 1).split("\\.")) {
-      if (current instanceof Map<?, ?> map)
-        current = map.get(keyNamed(map, segment));
-      else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
+      if (current instanceof Map<?, ?> map) {
+        final Object key = keyNamed(map, segment);
+        if (!map.containsKey(key))
+          return MISSING;
+        current = map.get(key);
+      } else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
         current = list.get(Integer.parseInt(segment));
-      else if (current instanceof com.arcadedb.database.Document embedded)
+      else if (current instanceof com.arcadedb.database.Document embedded) {
+        if (!embedded.has(segment))
+          return MISSING;
         current = embedded.get(segment);
-      else
-        return null;
+      } else
+        return MISSING;
     }
     return current;
   }
@@ -1432,10 +1465,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return Objects.equals(stored, replacement);
   }
 
-  private static Number numberOf(final Object value) {
-    if (value == null || value instanceof Number)
-      return (Number) value;
-    throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
+  /**
+   * {@code $inc} of a stored value, which must be a number: a null, a string, a boolean, an array, a date or a document is refused,
+   * as {@code mongod} refuses it (issue #12070). A Decimal128 stored tagged (a negative zero, NaN, an infinity) is a number.
+   */
+  private static Number inc(final Object stored, final Number delta, final MutableDocument record, final String path) {
+    final Object value = MongoBsonValues.isTagged(stored) ? MongoBsonValues.toBson(stored) : stored;
+    if (!(value instanceof Number current))
+      throw new MongoServerError(14, "TypeMismatch",
+          "Cannot apply $inc to a value of non-numeric type. {_id: " + record.get("_id") + "} has the field '" + path + "' of non-numeric type "
+              + typeName(value));
+    return add(current, delta, record);
   }
 
   private static boolean isEmbedded(final Object value) {
@@ -1453,23 +1493,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long), anything else is a double.
+   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long, a long that overflows is refused as
+   * {@code mongod} refuses it, issue #12070), a decimal operand makes a decimal, anything else is a double.
    */
-  private static Number add(final Number current, final Number delta) {
-    if (current == null)
-      return delta;
+  private static Number add(final Number current, final Number delta, final MutableDocument record) {
     if (isIntegral(current) && isIntegral(delta)) {
       final long sum;
       try {
         sum = Math.addExact(current.longValue(), delta.longValue());
       } catch (final ArithmeticException e) {
-        // like MongoDB, an overflowing long becomes a double
-        return current.doubleValue() + delta.doubleValue();
+        throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(),
+            "Failed to apply $inc operations to current value ((NumberLong)" + current + ") for document {_id: " + record.get("_id") + "}");
       }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
     if (current instanceof BigDecimal || delta instanceof BigDecimal || current instanceof Decimal128 || delta instanceof Decimal128)
-      return MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta));
+      return MongoBsonValues.addDecimal(current, delta);
     return current.doubleValue() + delta.doubleValue();
   }
 
