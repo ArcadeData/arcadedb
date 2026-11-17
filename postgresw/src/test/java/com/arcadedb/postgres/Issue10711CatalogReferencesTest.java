@@ -87,7 +87,7 @@ class Issue10711CatalogReferencesTest {
   /** The invariant the report states, over the rows a client reads: every array and element OID pg_type names is a row of it. */
   @Test
   void everyTypeReferenceOfPgTypeIsARowOfPgType() {
-    final List<Map<String, Object>> rows = resolve("select oid, typname, typelem, typarray from pg_catalog.pg_type").rows;
+    final List<Map<String, Object>> rows = resolve("select oid, typname, typelem, typarray, typinput from pg_catalog.pg_type").rows;
     final Map<Integer, Map<String, Object>> byOid = new HashMap<>();
     for (final Map<String, Object> row : rows)
       byOid.put(number(row, "oid"), row);
@@ -100,8 +100,11 @@ class Issue10711CatalogReferencesTest {
         assertThat(byOid).as("the array type of %s", row.get("typname")).containsKey(array);
         assertThat(number(byOid.get(array), "typelem")).as("the element of the array type of %s", row.get("typname")).isEqualTo(oid);
       }
-      if (element != 0) {
+      if (element != 0)
         assertThat(byOid).as("the element type of %s", row.get("typname")).containsKey(element);
+      // only an array is its element's typarray: name and int2vector name an element too, whose array is "char"[] and int2[]
+      // (issue #12449)
+      if (element != 0 && "array_in".equals(row.get("typinput"))) {
         assertThat(number(byOid.get(element), "typarray")).as("the array type of the element of %s", row.get("typname"))
             .isEqualTo(oid);
       }
@@ -202,15 +205,15 @@ class Issue10711CatalogReferencesTest {
         "amname")).containsExactly("heap");
   }
 
-  /** The default collation every text type names in typcollation is a row of pg_collation. */
+  /** The default collation every text type names in typcollation is a row of pg_collation, and so is the C of name (#12449). */
   @Test
   void theCollationOfTheTextTypesIsARowOfPgCollation() {
     assertThat(column(resolve("select distinct typcollation from pg_type where typcollation <> 0"), "typcollation"))
-        .containsExactly(100);
+        .containsExactlyInAnyOrder(100, 950);
     final PostgresCatalog.Answer collations = resolve("select oid, collname, collnamespace from pg_collation");
-    assertThat(column(collations, "oid")).containsExactly(100);
-    assertThat(column(collations, "collname")).containsExactly("default");
-    assertThat(column(collations, "collnamespace")).containsExactly(11);
+    assertThat(column(collations, "oid")).containsExactly(100, 950);
+    assertThat(column(collations, "collname")).containsExactly("default", "C");
+    assertThat(column(collations, "collnamespace")).containsExactly(11, 11);
   }
 
   /**
