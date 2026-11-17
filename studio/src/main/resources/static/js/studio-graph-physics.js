@@ -117,7 +117,7 @@ function physicsApplyForces() {
   let parameters = physicsForceParameters(globalGraphSettings);
   let sim = globalPhysics.sim;
 
-  sim.force("link").distance(parameters.linkDistance);
+  sim.force("link").distance(link => physicsLinkDistance(link, parameters.linkDistance));
   sim.force("charge").strength(parameters.chargeStrength).distanceMax(parameters.chargeDistanceMax);
   sim.force("collide").radius(d => d.r + parameters.collidePadding);
   sim.force("x").strength(parameters.gravityStrength);
@@ -138,6 +138,80 @@ function physicsReheat() {
 }
 
 /**
+ * The rest length of one link, centre to centre: the length the settings ask for, but never less than what keeps the
+ * edge label visible between the two node borders. Big nodes eat most of a fixed centre-to-centre length, and their
+ * discs then cover the label drawn at the middle of the edge. Pure, so it can be pinned by a unit test.
+ */
+function physicsLinkDistance(link, linkDistance) {
+  return Math.max(linkDistance, link.source.r + link.target.r + link.labelGap);
+}
+
+/** Average glyph width of the graph font, as a fraction of the font size: generous, so a label is never clipped. */
+var PHYSICS_LABEL_CHAR_WIDTH = 0.6;
+
+/**
+ * The room the label of an edge needs between the two node borders. The label is rotated along the edge, so what it
+ * takes is its text width, plus its outline at both ends and one font size of margin for the arrow head. An edge
+ * without a label needs no room.
+ */
+function physicsLabelGap(label, fontSize, outlineWidth) {
+  if (label == null || label === "") return 0;
+  let lines = String(label).split("\n");
+  let longest = 0;
+  for (let i = 0; i < lines.length; i++) longest = Math.max(longest, lines[i].length);
+  return longest * fontSize * PHYSICS_LABEL_CHAR_WIDTH + 2 * outlineWidth + fontSize;
+}
+
+/**
+ * The room the label of a graph edge needs, read from the style the edge is drawn with. Without a style (a headless
+ * graph) there is no label on screen to keep clear.
+ */
+function physicsEdgeLabelGap(edge) {
+  if (typeof edge.cy !== "function" || !edge.cy().styleEnabled()) return 0;
+  return physicsLabelGap(edge.style("label"), edge.numericStyle("font-size") || 0, edge.numericStyle("text-outline-width") || 0);
+}
+
+/** How much of the missing label room is made up in one tick: stiff, but short of overshooting into a bounce. */
+var PHYSICS_LABEL_CLEARANCE_STRENGTH = 0.7;
+
+/**
+ * The force that makes the label room a hard minimum. The link spring only pulls towards its rest length: the gravity
+ * and the other springs of a hub can still squeeze two big nodes over the label between them. This force, like d3's
+ * collide force, pushes the two ends of a link apart whenever their borders are closer than the label needs, and
+ * does nothing otherwise. It reads the links of the link force at every tick, so a rebuilt link force is followed.
+ */
+function physicsLabelClearanceForce(sim) {
+  return function () {
+    let linkForce = sim.force("link");
+    if (linkForce == null) return;
+    let links = linkForce.links();
+    for (let i = 0; i < links.length; i++) {
+      let link = links[i];
+      if (link.labelGap <= 0) continue;
+      let s = link.source;
+      let t = link.target;
+      if (s === t) continue;
+      let dx = t.x + t.vx - s.x - s.vx;
+      let dy = t.y + t.vy - s.y - s.vy;
+      let d = Math.sqrt(dx * dx + dy * dy);
+      let min = s.r + t.r + link.labelGap;
+      if (d >= min) continue;
+      if (d === 0) {
+        // ON TOP OF EACH OTHER: ANY DIRECTION WILL DO, AS LONG AS IT IS THE SAME FOR BOTH
+        dx = 1;
+        dy = 0;
+        d = 1;
+      }
+      let k = ((min - d) / d) * 0.5 * PHYSICS_LABEL_CLEARANCE_STRENGTH;
+      t.vx += dx * k;
+      t.vy += dy * k;
+      s.vx -= dx * k;
+      s.vy -= dy * k;
+    }
+  };
+}
+
+/**
  * The links of the simulation, built from the graph edges. An edge whose endpoint is not on the graph is left out:
  * d3 refuses a link to a node it does not know, and it would take the whole simulation down with it.
  */
@@ -148,7 +222,7 @@ function physicsLinks(edges, byId) {
     let source = edge.data("source");
     let target = edge.data("target");
     if (byId[source] == null || byId[target] == null) continue;
-    links.push({ source: source, target: target });
+    links.push({ source: source, target: target, labelGap: physicsEdgeLabelGap(edge) });
   }
   return links;
 }
@@ -206,6 +280,7 @@ function physicsStart() {
     .force("y", d3.forceY(cy))
     .alpha(0.3)
     .on("tick", physicsTick);
+  sim.force("labels", physicsLabelClearanceForce(sim));
 
   globalPhysics = { cy: globalCy, sim: sim, nodes: nodes, eles: eles, byId: byId };
 

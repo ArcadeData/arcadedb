@@ -58,6 +58,9 @@ assert.ok(constants && constants.length > 0, "studio-graph.js declares the physi
 eval(constants.join("\n"));
 
 eval(extractFn("physicsForceParameters"));
+eval(extractFn("physicsLinkDistance"));
+eval(extractFn("physicsLabelGap"));
+eval(src.match(/var PHYSICS_LABEL_CHAR_WIDTH = [^;]+;/)[0]);
 
 /** The same simulation the engine builds in physicsStart(), with the given parameters and node positions. */
 function buildSimulation(d3, parameters, nodes, links) {
@@ -152,6 +155,29 @@ test("a corrupt setting cannot produce a NaN force", () => {
 
   assert.equal(p.linkDistance, 150);
   for (const value of Object.values(p)) assert.ok(!Number.isNaN(value), "no NaN in " + JSON.stringify(p));
+});
+
+test("an edge without a label needs no room between its nodes", () => {
+  assert.equal(physicsLabelGap("", 16, 8), 0);
+  assert.equal(physicsLabelGap(null, 16, 8), 0);
+});
+
+test("the room for a label grows with its longest line and its font", () => {
+  const short = physicsLabelGap("of", 16, 8);
+  const long = physicsLabelGap("applies_to", 16, 8);
+  assert.ok(long > short, long + " > " + short);
+  assert.equal(physicsLabelGap("applies_to\nof", 16, 8), long);
+  assert.ok(physicsLabelGap("applies_to", 32, 8) > long);
+  // never less than the text itself, so the nodes cannot cover it
+  assert.ok(long >= 10 * 16 * 0.5 + 2 * 8, "gap " + long);
+});
+
+test("small nodes keep the edge length of the settings, big ones keep the label clear", () => {
+  const small = { source: { r: 12.5 }, target: { r: 12.5 }, labelGap: 50 };
+  assert.equal(physicsLinkDistance(small, 150), 150);
+
+  const big = { source: { r: 200 }, target: { r: 150 }, labelGap: 120 };
+  assert.equal(physicsLinkDistance(big, 150), 470);
 });
 
 test("the simulation pushes the graph apart, holds the edges and brings the strays back", () => {

@@ -79,7 +79,7 @@ function jqueryStub(state) {
  * The engine runs in this realm (not a vm context) on purpose: Cytoscape recognises a plain object by its
  * constructor, and an object made in another realm is not one, so the positions would silently be dropped.
  */
-function buildPage(elements, settings, stored) {
+function buildPage(elements, settings, stored, styled) {
   const state = { buttonActive: null, buttonPressed: null, checkboxChecked: null, saved: null, stored: stored };
 
   const globals = Object.assign(
@@ -112,8 +112,13 @@ function buildPage(elements, settings, stored) {
   const engine = factory(globals);
   globals.globalCy = cytoscape({
     headless: true,
+    // a styled graph is drawn with labels, as the page renders it; it keeps a render loop alive until destroyed
+    styleEnabled: styled === true,
     elements: elements,
-    style: [{ selector: "node", style: { width: 10, height: 10 } }],
+    style: [
+      { selector: "node", style: { width: 10, height: 10 } },
+      { selector: "edge[label]", style: { label: "data(label)", "font-size": 16, "text-outline-width": 8 } },
+    ],
   });
 
   // The page the test drives: the engine's functions, and the globals it reads.
@@ -152,10 +157,13 @@ function chargeStrength(sandbox) {
   return typeof strength === "function" ? strength() : strength;
 }
 
-/** d3 keeps the link distance as a function too (it can be a different one per link), so the number is read through it. */
+/**
+ * d3 keeps the link distance as a function (it is a different one per link), so the number is read through it, for a
+ * link between two points with no label: what the settings ask for.
+ */
 function linkDistance(sandbox) {
   const distance = sandbox.globalPhysics.sim.force("link").distance();
-  return typeof distance === "function" ? distance() : distance;
+  return distance({ source: { r: 0 }, target: { r: 0 }, labelGap: 0 });
 }
 
 test("the simulation starts on the nodes of the graph and moves them", () => {
@@ -441,6 +449,34 @@ test("the edge length slider reaches the running simulation", () => {
   sandbox.physicsReheat();
 
   assert.equal(linkDistance(sandbox), 300);
+});
+
+test("big nodes stay far enough apart to show the label of the edge between them", () => {
+  // A hub with big neighbours, the shape of the reported graph: the gravity and the springs pull them all inwards
+  const elements = [{ data: { id: "hub", size: 400 } }];
+  for (let i = 0; i < 6; i++) {
+    elements.push({ data: { id: "n" + i, size: 300 } });
+    elements.push({ data: { id: "e" + i, source: "hub", target: "n" + i, label: "applies_to" } });
+  }
+  const { sandbox } = buildPage(elements, {}, null, true);
+
+  try {
+    sandbox.physicsStart();
+    settle(sandbox, 500);
+
+    const nodes = sandbox.globalPhysics.byId;
+    const labelGap = sandbox.globalPhysics.sim.force("link").links()[0].labelGap;
+    assert.ok(labelGap > 100, "the label needs room: " + labelGap);
+    for (let i = 0; i < 6; i++) {
+      const hub = nodes.hub;
+      const leaf = nodes["n" + i];
+      const borderGap = Math.hypot(hub.x - leaf.x, hub.y - leaf.y) - hub.r - leaf.r;
+      assert.ok(borderGap >= labelGap - 1, "the borders of hub and n" + i + " ended " + borderGap + " apart, the label needs " + labelGap);
+    }
+  } finally {
+    sandbox.physicsStop();
+    sandbox.globalCy.destroy();
+  }
 });
 
 test("the settings of the graph keep the physics ones", () => {
