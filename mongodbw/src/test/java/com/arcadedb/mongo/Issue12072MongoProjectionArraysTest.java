@@ -125,6 +125,29 @@ class Issue12072MongoProjectionArraysTest extends BaseMongoServerTest {
         .isInstanceOf(MongoException.class);
   }
 
+  @Test
+  void anIdPathCollidesEvenWhenTheIdIsGivenTheOtherWay() {
+    final MongoCollection<Document> collection = collection("{_id: {x: 1, y: 2}, a: 1}");
+    assertThatThrownBy(() -> collection.find().projection(Document.parse("{_id: 0, '_id.x': 1}")).first()).isInstanceOf(MongoException.class);
+    assertThatThrownBy(() -> collection.find().projection(Document.parse("{'_id.x': 1, _id: 0}")).first()).isInstanceOf(MongoException.class);
+    assertProjection("{_id: 5, a: 1, b: 2}", "{_id: 0, a: 1}", "{a: 1}");
+    assertProjection("{_id: 5, a: 1, b: 2}", "{_id: 1, a: 0}", "{_id: 5, b: 2}");
+  }
+
+  @Test
+  void thePositionalOperatorIsRefused() {
+    final MongoCollection<Document> collection = collection(ORDER);
+    assertThatThrownBy(() -> collection.find().projection(Document.parse("{'items.$': 1}")).first()).isInstanceOf(MongoException.class);
+  }
+
+  @Test
+  void aProjectionThatIsNotADocumentIsRefused() {
+    final MongoCollection<Document> collection = collection(ORDER);
+    assertThatThrownBy(() -> client.getDatabase(getDatabaseName())
+        .runCommand(new Document("find", collection.getNamespace().getCollectionName()).append("projection", "sku")))
+        .isInstanceOfSatisfying(MongoException.class, e -> assertThat(e.getCode()).isEqualTo(14));
+  }
+
   private void assertProjection(final String document, final String projection, final String expected) {
     final MongoCollection<Document> collection = collection(document);
     final Document found = collection.find().projection(Document.parse(projection)).first();

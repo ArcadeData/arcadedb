@@ -55,7 +55,10 @@ import java.util.logging.Level;
  * <p>
  * An {@link ObjectId} {@code _id} is stored as its bare hex string, the form the {@code _id} has always had, and a String {@code _id}
  * that reads as such a hex string is stored escaped, so that the two are two values to the unique index, to the filters and to the
- * reads (issue #12073). A String {@code _id} stored bare before that reads back as an ObjectId, as it always did.
+ * reads (issue #12073). A bare hex {@code _id} stored before that reads back as an ObjectId, as it always did, and is that
+ * ObjectId to the filters and to the unique index: the bare form cannot tell whether it was written as a String, so it keeps the
+ * meaning every read has given it. A String filter (or insert) with that hex is therefore another value, as an ObjectId and a
+ * String are in {@code mongod}.
  * <p>
  * A tagged value is a map to the engine, so SQL compares maps: the plugin's own filters and sorts compare the BSON value it is
  * read back as ({@link MongoQueryMatcher}, {@link MongoSortOrder}), a statement written in SQL does not. A DECIMAL beyond

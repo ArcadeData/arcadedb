@@ -653,8 +653,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document find(final Document document) throws MongoServerException {
-    final Document filter = (Document) document.get("filter");
-    final Document sort = (Document) document.get("sort");
+    final Document filter = documentField(document, "filter");
+    final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
     final int limit = this.getOptionalNumber(document, "limit", 0);
     final int skip = this.getOptionalNumber(document, "skip", 0);
@@ -672,7 +672,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       queryPayload = filter;
 
     // parsed up front, once: an invalid projection is refused even when no document would be projected (issue #12072)
-    final MongoProjection projection = document.get("projection") instanceof Document p && !p.isEmpty() ? new MongoProjection(p) : null;
+    final Document projectionFields = documentField(document, "projection");
+    final MongoProjection projection = projectionFields != null && !projectionFields.isEmpty() ? new MongoProjection(projectionFields) : null;
 
     final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
 
@@ -685,6 +686,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);
+  }
+
+  /**
+   * An optional field of a command that must be a document, as {@code mongod} declares it: a value of another type is refused
+   * (TypeMismatch), instead of being ignored or failing with an uncoded error.
+   */
+  private static Document documentField(final Document command, final String field) {
+    final Object value = command.get(field);
+    if (value == null || value instanceof Document)
+      return (Document) value;
+    throw new MongoServerError(14, "TypeMismatch",
+        "BSON field '" + field + "' is the wrong type '" + typeName(value) + "', expected type 'object'");
   }
 
   private Document insertDocument(final Channel channel, final Document query) throws MongoServerException {

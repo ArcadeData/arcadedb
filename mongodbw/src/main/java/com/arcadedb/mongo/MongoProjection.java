@@ -39,7 +39,7 @@ import java.util.Map;
  *   <li>an inclusion leaves out a field whose value is a scalar where the path goes on below it, an exclusion keeps it;</li>
  *   <li>two paths of which one is the other or lies below it ({@code a} and {@code a.b}) are a path collision, refused.</li>
  * </ul>
- * The projection operators ({@code $slice}, {@code $elemMatch}, {@code $}) are refused.
+ * The projection operators ({@code $slice}, {@code $elemMatch}, the positional {@code $}) are refused.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -87,14 +87,13 @@ final class MongoProjection {
     this.inclusion = included || (!excluded && fields.containsKey(ID) && Utils.isTrue(fields.get(ID)));
     this.implicitId = inclusion && !fields.containsKey(ID);
 
+    // every path takes part in the collision check, the _id included ({_id: 0, '_id.x': 1} collides)
     this.root = new Node();
-    for (final Map.Entry<String, Object> entry : fields.entrySet()) {
-      final String path = entry.getKey();
-      // an inclusion names the fields it keeps, an exclusion the ones it removes: an _id given the other way is not a path of it
-      if (ID.equals(path) && Utils.isTrue(entry.getValue()) != inclusion)
-        continue;
+    for (final String path : fields.keySet())
       add(path);
-    }
+    // an inclusion names the fields it keeps, an exclusion the ones it removes: an _id given the other way is not a path of it
+    if (fields.containsKey(ID) && Utils.isTrue(fields.get(ID)) != inclusion)
+      root.children.remove(ID);
   }
 
   boolean isInclusion() {
@@ -107,6 +106,9 @@ final class MongoProjection {
     while (true) {
       final int dot = path.indexOf('.', start);
       final String segment = dot < 0 ? path.substring(start) : path.substring(start, dot);
+      // the positional projection ({'items.$': 1}) is an operator, not a field named "$"
+      if (segment.startsWith("$"))
+        throw new IllegalArgumentException("Projection operator in '" + path + "' is not supported");
       final Node existing = node.children.get(segment);
       if (dot < 0) {
         // a path below this one is already there ({a.b} then {a})

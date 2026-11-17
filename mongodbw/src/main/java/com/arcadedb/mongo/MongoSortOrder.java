@@ -19,9 +19,12 @@
 package com.arcadedb.mongo;
 
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.MinKey;
+import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -31,22 +34,25 @@ import java.util.Set;
 
 /**
  * The order of a {@code find} sort, as {@code mongod} sorts (issue #12069). SQL {@code ORDER BY} does not: it coerces across types
- * and sees an array as one opaque value. Here every document gets one key per sort field, and the keys are compared with the BSON
- * order of {@link MongoQueryMatcher#compareValues}:
+ * and sees an array as one opaque value. Here every document gets one key per sort field, chosen as {@code mongod}'s sort key
+ * generator chooses it, and the keys are compared with the BSON order of {@link MongoQueryMatcher#compareValues}:
  * <ul>
- *   <li>the values a path reaches are those the filters see ({@link MongoQueryMatcher#values}): a dotted path enters the embedded
- *   documents of an array, a missing value is null;</li>
- *   <li>an array offers its elements, and the key is the smallest of all the values for an ascending field and the largest for a
- *   descending one;</li>
- *   <li>an empty array sorts before null, in either direction;</li>
- *   <li>values of different types compare by their type bracket, numbers by exact value whatever their type.</li>
+ *   <li>a dotted path enters embedded documents; through an array it enters each element, a scalar element (and a missing field)
+ *   giving null; a numeric segment reads the element at that position;</li>
+ *   <li>an array at the end of a path offers its elements, an empty one a key below null (but above MinKey);</li>
+ *   <li>the candidate keys of a document are tuples, one value per sort field: fields whose paths go through the same array take
+ *   their values from the same element, and the document's key is the tuple that sorts first under the whole sort (the smallest
+ *   for an ascending field, the largest for a descending one); paths through two different arrays of one document are refused, as
+ *   {@code mongod} refuses parallel arrays;</li>
+ *   <li>values of different types compare by their type bracket, numbers by exact value whatever their type, strings by code point
+ *   (the order of their UTF-8 bytes).</li>
  * </ul>
  * Documents with equal keys keep the order they were read in.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MongoSortOrder implements Comparator<Object[]> {
-  /** The key of an empty array: below every value, null included. */
+  /** The key of an empty array: below every value but MinKey, null included. */
   private static final Object EMPTY_ARRAY = EmptyArray.INSTANCE;
 
   private final String[][]  paths;
@@ -83,13 +89,129 @@ final class MongoSortOrder implements Comparator<Object[]> {
   }
 
   /**
-   * The keys of a document, one per sort field.
+   * The keys of a document, one per sort field: the candidate tuple that sorts first.
+   *
+   * @throws MongoServerError when the sort paths go through two different arrays of the document
    */
   Object[] keyOf(final Document document) {
-    final Object[] keys = new Object[paths.length];
-    for (int i = 0; i < paths.length; i++)
-      keys[i] = extreme(MongoQueryMatcher.values(document, paths[i]), descending[i]);
-    return keys;
+    final int fields = paths.length;
+    final Object[] values = new Object[fields];
+    final int[] depths = new int[fields];
+    final boolean[] expanded = new boolean[fields];
+    for (int i = 0; i < fields; i++)
+      values[i] = document;
+    final Object[][] best = new Object[1][];
+    generate(values, depths, expanded, best);
+    return best[0];
+  }
+
+  /**
+   * Walks the sort paths of one document together, expanding at most one array at a time, and keeps the candidate tuple that sorts
+   * first in {@code best[0]}.
+   *
+   * @param values   per field, the value reached so far
+   * @param depths   per field, the number of path segments consumed to reach it
+   * @param expanded per field, whether the value is an element of the array that ended its path (a nested array is then a value)
+   */
+  private void generate(final Object[] values, final int[] depths, final boolean[] expanded, final Object[][] best) {
+    final int fields = paths.length;
+    // walk each field through embedded documents and positional segments, up to the end of its path or an array to expand
+    for (int i = 0; i < fields; i++) {
+      final String[] path = paths[i];
+      while (depths[i] < path.length) {
+        final Object value = values[i];
+        final String segment = path[depths[i]];
+        if (value instanceof Document document) {
+          values[i] = document.get(segment);
+          ++depths[i];
+        } else if (value instanceof List<?> list && position(segment) >= 0) {
+          // a numeric segment reads the element at that position, the array is not expanded
+          final int position = position(segment);
+          values[i] = position < list.size() ? list.get(position) : null;
+          ++depths[i];
+        } else if (value instanceof List)
+          break;
+        else {
+          // a scalar or a null has no field: the path reaches null
+          values[i] = null;
+          depths[i] = path.length;
+        }
+      }
+    }
+
+    // the array to expand: a field stopped in the middle of its path on one, or a field whose path ended on one
+    int expanding = -1;
+    for (int i = 0; i < fields && expanding < 0; i++)
+      if (values[i] instanceof List && !expanded[i])
+        expanding = i;
+    if (expanding < 0) {
+      offer(values.clone(), best);
+      return;
+    }
+
+    // the fields that reached the same array, by the same path; any other field on an array is a parallel array
+    final boolean[] together = new boolean[fields];
+    for (int i = 0; i < fields; i++) {
+      if (!(values[i] instanceof List) || expanded[i])
+        continue;
+      if (Arrays.equals(paths[i], 0, depths[i], paths[expanding], 0, depths[expanding]))
+        together[i] = true;
+      else
+        throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), "cannot sort with keys that are parallel arrays");
+    }
+
+    final List<?> array = (List<?>) values[expanding];
+    if (array.isEmpty()) {
+      final Object[] nextValues = values.clone();
+      final int[] nextDepths = depths.clone();
+      final boolean[] nextExpanded = expanded.clone();
+      for (int i = 0; i < fields; i++)
+        if (together[i]) {
+          // an empty array ends a path with its own key, and reaches nothing below it
+          nextValues[i] = nextDepths[i] == paths[i].length ? EMPTY_ARRAY : null;
+          nextDepths[i] = paths[i].length;
+          nextExpanded[i] = true;
+        }
+      generate(nextValues, nextDepths, nextExpanded, best);
+      return;
+    }
+
+    for (final Object element : array) {
+      final Object[] nextValues = values.clone();
+      final int[] nextDepths = depths.clone();
+      final boolean[] nextExpanded = expanded.clone();
+      for (int i = 0; i < fields; i++)
+        if (together[i]) {
+          if (nextDepths[i] == paths[i].length) {
+            // the path ended on the array: the element is the value, a nested array included
+            nextValues[i] = element;
+            nextExpanded[i] = true;
+          } else if (element instanceof Document)
+            nextValues[i] = element;
+          else {
+            // a scalar element, or a nested array, has no field: null
+            nextValues[i] = null;
+            nextDepths[i] = paths[i].length;
+            nextExpanded[i] = true;
+          }
+        }
+      generate(nextValues, nextDepths, nextExpanded, best);
+    }
+  }
+
+  private void offer(final Object[] candidate, final Object[][] best) {
+    if (best[0] == null || compare(candidate, best[0]) < 0)
+      best[0] = candidate;
+  }
+
+  private static int position(final String segment) {
+    final int length = segment.length();
+    if (length == 0 || length > 9)
+      return -1;
+    for (int i = 0; i < length; i++)
+      if (segment.charAt(i) < '0' || segment.charAt(i) > '9')
+        return -1;
+    return Integer.parseInt(segment);
   }
 
   @Override
@@ -102,44 +224,17 @@ final class MongoSortOrder implements Comparator<Object[]> {
     return 0;
   }
 
-  /**
-   * The smallest (ascending) or largest (descending) of the values a path reaches, an array offering its elements; null when the
-   * path reaches nothing.
-   */
-  private static Object extreme(final List<Object> values, final boolean descending) {
-    Object best = null;
-    boolean found = false;
-    for (final Object value : values) {
-      if (value instanceof List<?> list) {
-        if (list.isEmpty()) {
-          if (!found || better(EMPTY_ARRAY, best, descending))
-            best = EMPTY_ARRAY;
-          found = true;
-        } else
-          for (final Object item : list) {
-            if (!found || better(item, best, descending))
-              best = item;
-            found = true;
-          }
-      } else {
-        if (!found || better(value, best, descending))
-          best = value;
-        found = true;
-      }
-    }
-    return best;
-  }
-
-  private static boolean better(final Object candidate, final Object best, final boolean descending) {
-    final int comparison = compareKeys(candidate, best);
-    return descending ? comparison > 0 : comparison < 0;
-  }
-
   private static int compareKeys(final Object a, final Object b) {
     final boolean emptyA = a instanceof EmptyArray;
     final boolean emptyB = b instanceof EmptyArray;
-    if (emptyA || emptyB)
-      return emptyA == emptyB ? 0 : emptyA ? -1 : 1;
+    if (emptyA || emptyB) {
+      if (emptyA == emptyB)
+        return 0;
+      // MinKey stays below everything, the empty array included
+      if (a instanceof MinKey || b instanceof MinKey)
+        return a instanceof MinKey ? -1 : 1;
+      return emptyA ? -1 : 1;
+    }
     return MongoQueryMatcher.compareValues(a, b);
   }
 

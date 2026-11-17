@@ -28,6 +28,8 @@ import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
 import org.bson.Document;
 import org.bson.types.Decimal128;
+import org.bson.types.MaxKey;
+import org.bson.types.MinKey;
 import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -170,6 +172,56 @@ class Issue12069MongoSortOrderTest extends BaseMongoServerTest {
     final MongoCollection<Document> collection = collection(List.of(Document.parse("{_id: 1, v: 1}")));
     assertThatThrownBy(() -> collection.find().sort(Document.parse("{v: 0}")).first()).isInstanceOf(MongoException.class);
     assertThatThrownBy(() -> collection.find().sort(Document.parse("{v: 'up'}")).first()).isInstanceOf(MongoException.class);
+  }
+
+  @Test
+  void fieldsThroughTheSameArrayTakeTheirValuesFromTheSameElement() {
+    // A's candidate keys are (1, 9) and (2, 0): its key is (1, 9), not the (1, 0) of two independent minima
+    final MongoCollection<Document> collection = collection(
+        List.of(Document.parse("{_id: 'A', a: [{x: 1, y: 9}, {x: 2, y: 0}]}"), Document.parse("{_id: 'B', a: [{x: 1, y: 5}]}")));
+    assertThat(ids(collection.find().sort(Document.parse("{'a.x': 1, 'a.y': 1}")))).containsExactly("B", "A");
+    assertThat(ids(collection.find().sort(Document.parse("{'a.x': 1, 'a.y': 1}")).limit(1))).containsExactly("B");
+    // descending on the second field: A's key is (1, 9), B's (1, 5)
+    assertThat(ids(collection.find().sort(Document.parse("{'a.x': 1, 'a.y': -1}")))).containsExactly("A", "B");
+  }
+
+  @Test
+  void pathsThroughTwoDifferentArraysAreRefused() {
+    final MongoCollection<Document> collection = collection(List.of(Document.parse("{_id: 1, a: [1, 2], b: [3, 4]}")));
+    assertThatThrownBy(() -> collection.find().sort(Document.parse("{a: 1, b: 1}")).first()).isInstanceOf(MongoException.class);
+    // one array and a scalar are fine
+    final MongoCollection<Document> fine = collection(List.of(Document.parse("{_id: 1, a: [1, 2], b: 3}")));
+    assertThat(ids(fine.find().sort(Document.parse("{a: 1, b: 1}")))).containsExactly(1);
+  }
+
+  @Test
+  void aScalarElementOfAnArrayIsNullOnADottedPath() {
+    final MongoCollection<Document> collection = collection(List.of(Document.parse("{_id: 'A', a: [1, {b: 5}]}"), Document.parse("{_id: 'B', a: {b: 2}}")));
+    assertThat(ids(collection.find().sort(Document.parse("{'a.b': 1}")))).containsExactly("A", "B");
+  }
+
+  @Test
+  void minKeySortsBelowAnEmptyArray() {
+    final MongoCollection<Document> collection = collection(List.of(new Document("_id", 1).append("v", new MinKey()), new Document("_id", 2).append("v", List.of()),
+        new Document("_id", 3).append("v", null), new Document("_id", 4).append("v", new MaxKey())));
+    assertThat(ids(collection.find().sort(Document.parse("{v: 1}")))).containsExactly(1, 2, 3, 4);
+    assertThat(ids(collection.find().sort(Document.parse("{v: -1}")))).containsExactly(4, 3, 2, 1);
+  }
+
+  @Test
+  void stringsSortByCodePoint() {
+    // U+E000 is one UTF-16 unit, U+10000 a surrogate pair: by code point (UTF-8 bytes) U+E000 is first, by UTF-16 units it is not
+    final MongoCollection<Document> collection = collection(
+        List.of(new Document("_id", 1).append("v", "𐀀"), new Document("_id", 2).append("v", ""), new Document("_id", 3).append("v", "a")));
+    assertThat(ids(collection.find().sort(Document.parse("{v: 1}")))).containsExactly(3, 2, 1);
+    assertThat(ids(collection.find(Document.parse("{v: {$gt: ''}}")))).containsExactly(1);
+  }
+
+  @Test
+  void aSortThatIsNotADocumentIsRefused() {
+    final MongoCollection<Document> collection = collection(List.of(Document.parse("{_id: 1, v: 1}")));
+    assertThatThrownBy(() -> client.getDatabase(getDatabaseName()).runCommand(new Document("find", collection.getNamespace().getCollectionName()).append("sort", "v")))
+        .isInstanceOfSatisfying(MongoException.class, e -> assertThat(e.getCode()).isEqualTo(14));
   }
 
   private static List<Object> ids(final FindIterable<Document> found) {

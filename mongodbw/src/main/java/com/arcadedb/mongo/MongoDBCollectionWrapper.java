@@ -656,7 +656,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       for (int i = skip; i < sorted.size(); i++)
         result.add(toMongoDocument(sorted.get(i).value));
     } else {
-      // every match is answered: each is converted once, and its keys read off the reply document
+      // every match is answered: each is converted once, and its keys read off the reply document. Known cost: without a limit
+      // every match is held before the sort (mongod would spill to disk past 100MB), as the SQL ORDER BY this replaces held them
       final List<MongoSortOrder.Entry<Document>> entries = new ArrayList<>();
       while (rows.hasNext()) {
         final Document document = toMongoDocument(rows.next());
