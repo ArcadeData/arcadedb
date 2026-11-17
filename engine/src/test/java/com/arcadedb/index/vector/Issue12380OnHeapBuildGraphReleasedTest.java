@@ -22,13 +22,16 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
+import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.OnHeapGraphIndex;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -82,6 +85,51 @@ class Issue12380OnHeapBuildGraphReleasedTest extends TestHelper {
     assertThat(pooledBeforeSwap.get()).as("precondition: the search pooled a searcher on the on-heap graph").isPositive();
     assertThat(index.getGraphIndex()).isInstanceOf(OnDiskGraphIndex.class);
     assertThat(index.getSearcherPool().size()).as("searchers left in the pool after the swap").isZero();
+  }
+
+  /**
+   * The close-time rebuild releases the resident graph before it builds, to halve its peak heap (#6503). A resident on-heap
+   * graph whose persist was certified is also the twin of its pages, and that field kept it for the whole build.
+   */
+  @Test
+  void aRebuildThatReleasesTheResidentGraphFirstReleasesItsCertifiedTwinToo() {
+    final LSMVectorIndex index = createIndexWithVectors(false);
+    index.buildVectorGraphNow();
+    assertThat(index.persistedGraphSourceForTest()).as("precondition: the resident on-heap graph is the certified twin")
+        .isNotNull().isSameAs(index.getGraphIndex());
+
+    final AtomicBoolean sampled = new AtomicBoolean();
+    final AtomicReference<ImmutableGraphIndex> residentOnFirstSample = new AtomicReference<>();
+    final AtomicReference<ImmutableGraphIndex> twinOnFirstSample = new AtomicReference<>();
+    index.buildGraphFromScratchReleasingResidentGraph((phase, processedNodes, totalNodes, vectorAccesses) -> {
+      if (sampled.compareAndSet(false, true)) {
+        residentOnFirstSample.set(index.getGraphIndex());
+        twinOnFirstSample.set(index.persistedGraphSourceForTest());
+      }
+    });
+
+    assertThat(sampled.get()).as("precondition: the build reported progress").isTrue();
+    assertThat(residentOnFirstSample.get()).as("precondition: the resident graph is released while the build runs").isNull();
+    assertThat(twinOnFirstSample.get()).as("the released graph is not kept as the twin of its pages while the build runs")
+        .isNull();
+    // The build's own graph is certified again once it is persisted
+    assertThat(index.persistedGraphSourceForTest()).isNotNull().isSameAs(index.getGraphIndex());
+  }
+
+  /** A build over no vectors publishes no graph: the previous on-heap graph must not stay behind as the twin of its pages. */
+  @Test
+  void anIndexEmptiedOfItsVectorsKeepsNoOnHeapGraph() {
+    final LSMVectorIndex index = createIndexWithVectors(false);
+    index.buildVectorGraphNow();
+    assertThat(index.persistedGraphSourceForTest()).as("precondition: the resident on-heap graph is the certified twin")
+        .isNotNull().isSameAs(index.getGraphIndex());
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc"));
+    index.buildVectorGraphNow();
+
+    assertThat(index.getGraphIndex()).as("precondition: a build over no vectors leaves no resident graph").isNull();
+    assertThat(index.persistedGraphSourceForTest()).as("nothing keeps the on-heap graph of the vectors that were deleted")
+        .isNull();
   }
 
   private LSMVectorIndex createIndexWithVectors(final boolean storeVectorsInGraph) {
