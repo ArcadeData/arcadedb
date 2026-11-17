@@ -550,7 +550,9 @@ public final class LeaderCommandForwarder {
       this.configuration = configuration;
       // An HttpClient's connect timeout is fixed at build time, so this one is read once. The response
       // deadlines below are read per request instead, so SET SERVER SETTING moves them without a restart.
+      // HTTP/1.1, see LeaderDial.newConnectTimeoutBoundedClient: the leader's read timeout is lifted for the statement only there (#12442)
       this.client = HttpClient.newBuilder()
+          .version(HttpClient.Version.HTTP_1_1)
           .connectTimeout(bounded(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT,
               configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT)))
           .build();

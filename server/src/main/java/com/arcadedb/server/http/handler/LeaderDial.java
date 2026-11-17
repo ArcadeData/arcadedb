@@ -97,7 +97,11 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    */
   public static HttpClient newConnectTimeoutBoundedClient(final ContextConfiguration configuration) {
     final long configured = configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT);
+    // HTTP/1.1 and not the JDK default, which upgrades a plain-HTTP connection to HTTP/2: the leader lifts its read timeout while a
+    // statement runs only on HTTP/1.1 connections (HttpClientDisconnectWatch, #9953), so a forwarded command that ran longer than
+    // arcadedb.network.socketTimeout failed with an EOFException on an HTTP/2 stream (#12442)
     return HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(Duration.ofMillis(Math.max(configured, MIN_FORWARD_TIMEOUT_MS)))
         .build();
   }
