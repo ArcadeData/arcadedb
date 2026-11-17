@@ -116,12 +116,15 @@ final class PageVersionLedger {
     private final int     version;
     private final EntryId entry;
     private final long    reservedAtMs;
+    /** {@link DatabaseLedger#publications} when the reservation was taken: a different value means the local copy may be past it. */
+    private final long    publications;
     private volatile boolean appended;
 
-    private Reservation(final int version, final EntryId entry, final long reservedAtMs) {
+    private Reservation(final int version, final EntryId entry, final long reservedAtMs, final long publications) {
       this.version = version;
       this.entry = entry;
       this.reservedAtMs = reservedAtMs;
+      this.publications = publications;
     }
   }
 
@@ -131,6 +134,14 @@ final class PageVersionLedger {
     private final ConcurrentHashMap<Long, Reservation> pages    = new ConcurrentHashMap<>();
     /** Bumped on every release: tells a validation whether a local copy read outside the lock may have moved. */
     private final AtomicLong                           releases = new AtomicLong();
+    /**
+     * Bumped by every commit published outside the log (issue #11921), under the lock. A reservation is the last version
+     * the log assigned to its page only as long as nothing else moves the local copy: such a commit does, and it may
+     * run between the apply of an entry publishing its page and that apply releasing the reservation, when the
+     * reserved version is already the local one. A validation that finds a reservation older than the last such
+     * commit therefore reads the local copy too, see {@link #validateAndReserve}.
+     */
+    private final AtomicLong                           publications = new AtomicLong();
     /**
      * The validation lock. Not a monitor: the commit {@link #publishOutsideTheLog} runs takes it in its middle, after its
      * file locks ({@link #lockForPublication}, issue #11921), and it is released once the commit returns.
@@ -172,6 +183,7 @@ final class PageVersionLedger {
     ledger.lock.lock();
     try {
       final boolean earlyReadsValid = ledger.releases.get() == releasesBefore;
+      final long publications = ledger.publications.get();
       // Validate everything first: an entry is refused as a whole, so no page of a refused entry may stay reserved.
       for (int i = 0; i < pages.count(); i++) {
         final int fileId = pages.fileIds()[i];
@@ -188,6 +200,11 @@ final class PageVersionLedger {
         else if (reserved.entry.equals(entry))
           // The same request, retried by Ratis: it is validated against the base it reserved from.
           expected = reserved.version - 1;
+        else if (reserved.publications != publications)
+          // Issue #11921: a commit was published outside the log since this reservation was taken. If it ran after the
+          // apply of the reserving entry published the page and before that apply released the reservation, the page
+          // is one version past the reserved one, and that version is the commit's: the local copy says so.
+          expected = Math.max(reserved.version, local.versionOf(fileId, pageNumber));
         else
           expected = reserved.version;
 
@@ -196,7 +213,8 @@ final class PageVersionLedger {
       }
 
       for (int i = 0; i < pages.count(); i++)
-        ledger.pages.put(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]), new Reservation(pages.versions()[i], entry, now));
+        ledger.pages.put(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]),
+            new Reservation(pages.versions()[i], entry, now, publications));
     } finally {
       ledger.lock.unlock();
     }
@@ -238,8 +256,12 @@ final class PageVersionLedger {
       else
         PUBLISHING.remove();
       ledger.releases.incrementAndGet();
-      if (!heldBefore && ledger.lock.isHeldByCurrentThread())
+      if (!heldBefore && ledger.lock.isHeldByCurrentThread()) {
+        // A commit that took the lock checked pages and may have published them: the reservations taken before it no
+        // longer bound the local copy, see DatabaseLedger.publications
+        ledger.publications.incrementAndGet();
         ledger.lock.unlock();
+      }
     }
   }
 

@@ -117,6 +117,10 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
       }
     }, "issue11921-compaction");
 
+    // Daemons: a worker stuck past its join fails the test below and must not keep the fork alive
+    appender.setDaemon(true);
+    compactor.setDaemon(true);
+
     boolean phase0Reached = false;
     boolean compactionQueued = false;
     validationLock.lock();
@@ -140,6 +144,9 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
     }
     appender.join(60_000);
     compactor.join(60_000);
+    // The log is read as the outcome of both: one still running could add an entry after the scan
+    assertThat(appender.isAlive()).as("the follower append must have ended before the log is read").isFalse();
+    assertThat(compactor.isAlive()).as("the compaction must have ended before the log is read").isFalse();
     waitForAllServers();
 
     final Map<String, Long> claims = new HashMap<>();

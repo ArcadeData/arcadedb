@@ -494,8 +494,14 @@ class PageVersionLedgerTest {
     final boolean queuedAfterClear = ledger.publishOutsideTheLog(DB, () -> {
       ledger.lockForPublication(DB);
       clear.start();
-      // The clear either ran (the old removal) or waits for this publication: either way a validation must not get through
-      clear.join(200);
+      // The clear either ran (the old removal) or waits for this publication: either way a validation must not get through.
+      // Wait for one of the two, so the validation never starts ahead of a clear that has not run yet.
+      final ReentrantLock lock = validationLock(ledger, DB);
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      while (clear.getState() != Thread.State.TERMINATED && !lock.hasQueuedThread(clear) && System.nanoTime() < deadline)
+        Thread.sleep(1);
+      assertThat(clear.getState() == Thread.State.TERMINATED || lock.hasQueuedThread(clear))
+          .as("the clear must have run or be waiting for the publication").isTrue();
       validation.start();
       return awaitQueuedOnTheValidationLock(ledger, DB, validation);
     });
@@ -599,6 +605,53 @@ class PageVersionLedgerTest {
     assertThat(held[1]).as("the checks of another database must not take this database's lock").isFalse();
     assertThat(held[2]).as("the call before the version checks takes the lock").isTrue();
     assertThat(lock.isLocked()).as("released when the publication returns").isFalse();
+  }
+
+  /**
+   * Issue #11921 review: the apply of an entry publishes its page, then releases the reservation. A commit published
+   * outside the log in between finds the reserved version equal to the local one, passes its check and takes the next
+   * version. The reservation is still there afterwards, one version behind the page: an entry of another node validated
+   * against it alone would be given the version the commit has just published.
+   */
+  @Test
+  void aReservationAPublicationWentPastDoesNotAuthorizeThePublishedVersion() throws Exception {
+    final long page = PageVersionLedger.pageKey(3, 0);
+    final byte[] applied = wal(1, new Page(3, 0, 1));
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(applied), entry(1), localVersions);
+    // The apply of entry 1 published the page and has not released the reservation yet
+    local.put(page, 1);
+
+    ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      assertThat(ledger.reservedVersion(DB, 3, 0)).as("the publication's check sees reserved == local and passes").isEqualTo(1);
+      local.put(page, 2);
+      return null;
+    });
+
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 2))), entry(2), localVersions))
+        .as("version 2 is the publication's").isInstanceOf(ConcurrentModificationException.class).hasMessageContaining("version 2");
+
+    // An entry built on the published version chains on it, and the late release of entry 1 leaves its reservation alone
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 3))), entry(3), localVersions);
+    ledger.release(DB, null, applied);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(3);
+  }
+
+  /** A publication that did not touch the page leaves a reservation ahead of the local copy in charge of it. */
+  @Test
+  void aReservationAheadOfTheLocalCopyStillDecidesAfterAPublication() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+
+    ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      local.put(PageVersionLedger.pageKey(5, 0), 1);
+      return null;
+    });
+
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), localVersions))
+        .isInstanceOf(ConcurrentModificationException.class);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 2))), entry(3), localVersions);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(2);
   }
 
   /**
