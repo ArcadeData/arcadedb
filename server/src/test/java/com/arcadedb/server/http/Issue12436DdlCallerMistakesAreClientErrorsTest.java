@@ -93,7 +93,7 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
 
     assertThat(response.status).as(response.body).isEqualTo(409);
     assertThat(response.body).contains("because used by type 'T12436'");
-    assertThat(command("SELECT count(*) AS n FROM T12436").body).as("the records are still there").contains("\"n\":1");
+    assertThat(command("SELECT count(@rid) AS n FROM T12436").body).as("the records are still there").contains("\"n\":1");
   }
 
   @Test
