@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
@@ -705,15 +706,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
 
       // batch.close() is called by try-with-resources: flushes edges, connects incoming edges
-    } catch (final IllegalArgumentException e) {
-      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID): a batch load
+    } catch (final IllegalArgumentException | SchemaException e) {
+      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID, an edge or vertex type the schema
+      // does not have - a SchemaException since issue #11633, still the caller's 400): a batch load
       // is NOT atomic - GraphBatch commits every commitEvery records, so records handled before the
       // failure may already be durable on disk. Surface how many vertices and edges were attempted so
       // far (plus a partialCommit flag) so a client can reconcile rather than blindly re-POSTing the
       // whole payload - a retry would duplicate the already-committed vertices, whose temporary @id
       // values are not keys (issue #5036).
       //
-      // Only IllegalArgumentException (HTTP 400) is enriched here. Engine/cluster exceptions
+      // Only IllegalArgumentException and SchemaException (HTTP 400) are enriched here. Engine/cluster exceptions
       // (DuplicatedKeyException -> 409, TransactionCommittedRemotelyException -> 409,
       // NeedRetryException -> 503, security -> 403, RecordNotFoundException -> 404, ...) are left to
       // propagate so AbstractServerHttpHandler keeps its status mapping and logs the full stack trace.

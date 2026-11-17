@@ -174,25 +174,25 @@ class Issue7132AllowlistLearnsRuntimePeersTest {
 
   @Test
   void headlessServiceDomainStripsTheLeadingDotAndRejectsBlanks() {
-    assertThat(RaftHAServer.headlessServiceDomain(".arcadedb.myns.svc.cluster.local"))
+    assertThat(RaftTransportSetup.headlessServiceDomain(".arcadedb.myns.svc.cluster.local"))
         .isEqualTo("arcadedb.myns.svc.cluster.local");
-    assertThat(RaftHAServer.headlessServiceDomain("arcadedb.myns.svc.cluster.local"))
+    assertThat(RaftTransportSetup.headlessServiceDomain("arcadedb.myns.svc.cluster.local"))
         .isEqualTo("arcadedb.myns.svc.cluster.local");
-    assertThat(RaftHAServer.headlessServiceDomain("")).isNull();
-    assertThat(RaftHAServer.headlessServiceDomain("   ")).isNull();
-    assertThat(RaftHAServer.headlessServiceDomain(".")).isNull();
-    assertThat(RaftHAServer.headlessServiceDomain(null)).isNull();
+    assertThat(RaftTransportSetup.headlessServiceDomain("")).isNull();
+    assertThat(RaftTransportSetup.headlessServiceDomain("   ")).isNull();
+    assertThat(RaftTransportSetup.headlessServiceDomain(".")).isNull();
+    assertThat(RaftTransportSetup.headlessServiceDomain(null)).isNull();
   }
 
   /** The resolver takes a host, not an address, and rejects the brackets of an IPv6 literal. */
   @Test
   void memberAddressesAreReducedToResolvableHosts() {
-    assertThat(RaftHAServer.allowlistHostOf("arcadedb-3.arcadedb.myns.svc.cluster.local:2434"))
+    assertThat(RaftTransportSetup.allowlistHostOf("arcadedb-3.arcadedb.myns.svc.cluster.local:2434"))
         .isEqualTo("arcadedb-3.arcadedb.myns.svc.cluster.local");
-    assertThat(RaftHAServer.allowlistHostOf("10.1.13.4:2434")).isEqualTo("10.1.13.4");
-    assertThat(RaftHAServer.allowlistHostOf("[fd00::4]:2434")).isEqualTo("fd00::4");
-    assertThat(RaftHAServer.allowlistHostOf("")).isNull();
-    assertThat(RaftHAServer.allowlistHostOf(null)).isNull();
+    assertThat(RaftTransportSetup.allowlistHostOf("10.1.13.4:2434")).isEqualTo("10.1.13.4");
+    assertThat(RaftTransportSetup.allowlistHostOf("[fd00::4]:2434")).isEqualTo("fd00::4");
+    assertThat(RaftTransportSetup.allowlistHostOf("")).isNull();
+    assertThat(RaftTransportSetup.allowlistHostOf(null)).isNull();
   }
 
   private static ContextConfiguration kubernetesConfiguration() {

@@ -41,6 +41,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -293,7 +294,7 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    final RID outEdges = vertex.getOutEdgesHeadChunk();
+    final RID outEdges = vertex.peekOutEdgesHeadChunk();
     if (outEdges != null) {
       header.putInt(outEdges.getBucketId());
       header.putLong(outEdges.getPosition());
@@ -302,7 +303,7 @@ public class BinarySerializer {
       header.putLong(-1);
     }
 
-    final RID inEdges = vertex.getInEdgesHeadChunk();
+    final RID inEdges = vertex.peekInEdgesHeadChunk();
     if (inEdges != null) {
       header.putInt(inEdges.getBucketId());
       header.putLong(inEdges.getPosition());
@@ -838,6 +839,12 @@ public class BinarySerializer {
       }
       break;
     }
+    case BinaryTypes.TYPE_LOCAL_DATETIME: {
+      final LocalDateTime dateTime = (LocalDateTime) value;
+      content.putNumber(dateTime.toEpochSecond(ZoneOffset.UTC));
+      content.putUnsignedNumber(dateTime.getNano());
+      break;
+    }
     case BinaryTypes.TYPE_DURATION: {
       final CypherDuration duration = (CypherDuration) value;
       content.putNumber(duration.getMonths());
@@ -987,7 +994,7 @@ public class BinarySerializer {
       final Document document = (Document) value;
       final long schemaId = database.getSchema().getDictionary().getIdByName(document.getTypeName(), false);
       if (schemaId == -1)
-        throw new IllegalArgumentException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
+        throw new SchemaException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
       content.putUnsignedNumber(schemaId);
 
       final Binary header = new Binary(8192);
@@ -1197,6 +1204,11 @@ public class BinarySerializer {
           ZoneOffset.ofTotalSeconds((int) content.getNumber()) :
           ZoneId.of(content.getString());
       value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSecond, nano), zone);
+      break;
+    }
+    case BinaryTypes.TYPE_LOCAL_DATETIME: {
+      final long epochSecond = content.getNumber();
+      value = LocalDateTime.ofEpochSecond(epochSecond, (int) content.getUnsignedNumber(), ZoneOffset.UTC);
       break;
     }
     case BinaryTypes.TYPE_DURATION: {

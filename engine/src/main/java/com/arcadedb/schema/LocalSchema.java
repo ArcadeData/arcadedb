@@ -57,6 +57,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
@@ -1922,6 +1923,24 @@ public class LocalSchema implements Schema {
       }
     }
     return names;
+  }
+
+  /**
+   * The names of the UNIQUE bucket indexes served without the compacted sub-index their header names, because the load could not
+   * attach it ("File with id N was not found", issue #12348). Such an index answers from its mutable pages alone, so it refuses no
+   * duplicate of a key only the lost sub-index held: an HA node reads this, with {@link #getUnavailableUniqueIndexNames()}, to
+   * re-install the database from its cluster rather than serve, and lead with, a constraint it does not enforce. REBUILD INDEX
+   * replaces the index and empties the list.
+   */
+  public List<String> getPartiallyLoadedUniqueIndexNames() {
+    List<String> names = null;
+    for (final Index index : getIndexes())
+      if (index instanceof LSMTreeIndex lsm && lsm.isUnique() && lsm.getMutableIndex().getDetachedSubIndex() != null) {
+        if (names == null)
+          names = new ArrayList<>(2);
+        names.add(lsm.getName());
+      }
+    return names != null ? names : List.of();
   }
 
   private static boolean hasValidIndex(final List<TypeIndex> indexes) {
@@ -6423,7 +6442,7 @@ public class LocalSchema implements Schema {
         existing.registerFunction(function);
       } else {
         if (newLibrary == null)
-          throw new IllegalArgumentException("Function library '" + libraryName + "' not defined");
+          throw new UnknownFunctionException(libraryName, "Function library '" + libraryName + "' not defined");
         newLibrary.registerFunction(function);
         functionLibraries.put(libraryName, newLibrary);
       }
@@ -6435,7 +6454,7 @@ public class LocalSchema implements Schema {
    * Removes a user-defined function from its library: the schema change behind {@code DELETE FUNCTION}. Runs inside a
    * schema recording session for the reason {@link #defineFunction} does (issue #8404).
    *
-   * @throws IllegalArgumentException if the library is not defined
+   * @throws UnknownFunctionException if the library is not defined
    */
   public void deleteFunction(final String libraryName, final String functionName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -6458,12 +6477,12 @@ public class LocalSchema implements Schema {
   public FunctionLibraryDefinition getFunctionLibrary(final String name) {
     final FunctionLibraryDefinition flib = functionLibraries.get(name);
     if (flib == null)
-      throw new IllegalArgumentException("Function library '" + name + "' not defined");
+      throw new UnknownFunctionException(name, "Function library '" + name + "' not defined");
     return flib;
   }
 
   @Override
-  public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
+  public FunctionDefinition getFunction(final String libraryName, final String functionName) {
     return getFunctionLibrary(libraryName).getFunction(functionName);
   }
 

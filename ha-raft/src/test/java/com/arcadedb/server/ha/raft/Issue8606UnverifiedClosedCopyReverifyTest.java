@@ -227,11 +227,11 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     sm.awaitLifecycleTasksForTesting(60_000);
 
     assertThat(probes.get()).as("the next tick is inside the backoff window").isEqualTo(1);
-    assertThat(ArcadeStateMachine.unverifiedClosedCopyReverifyIntervalMs(0))
+    assertThat(UnverifiedCopyReverifier.unverifiedClosedCopyReverifyIntervalMs(0))
         .isEqualTo(ArcadeStateMachine.UNVERIFIED_COPY_REVERIFY_INTERVAL_MS);
-    assertThat(ArcadeStateMachine.unverifiedClosedCopyReverifyIntervalMs(1))
+    assertThat(UnverifiedCopyReverifier.unverifiedClosedCopyReverifyIntervalMs(1))
         .isEqualTo(2 * ArcadeStateMachine.UNVERIFIED_COPY_REVERIFY_INTERVAL_MS);
-    assertThat(ArcadeStateMachine.unverifiedClosedCopyReverifyIntervalMs(Integer.MAX_VALUE))
+    assertThat(UnverifiedCopyReverifier.unverifiedClosedCopyReverifyIntervalMs(Integer.MAX_VALUE))
         .isEqualTo(ArcadeStateMachine.UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS);
   }
 

@@ -90,7 +90,7 @@ class Issue6965PreAppendValidationTest {
 
     // Once the first entry is applied, the reservation is released and the local copy carries the version: the
     // replica's entry is still stale and still refused, now against the local copy.
-    db.getTransactionManager().applyChanges(ArcadeStateMachine.deserializeWalTransaction(leaderEntry), Map.of(), false);
+    db.getTransactionManager().applyChanges(CommittedEntryDecoding.deserializeWalTransaction(leaderEntry), Map.of(), false);
     stateMachine.releaseReservedVersions(db.getName(), leaderEntry);
     assertThat(stateMachine.reservedPageVersions(db.getName())).isZero();
     assertThatThrownBy(() -> stateMachine.validateBeforeAppend(db, replicaEntry, entry(2)))
@@ -115,7 +115,7 @@ class Issue6965PreAppendValidationTest {
     }, false, 0)).isInstanceOf(ConcurrentModificationException.class);
 
     // The entry is applied and its reservation released: the same local transaction now goes through.
-    db.getTransactionManager().applyChanges(ArcadeStateMachine.deserializeWalTransaction(replicaEntry), Map.of(), false);
+    db.getTransactionManager().applyChanges(CommittedEntryDecoding.deserializeWalTransaction(replicaEntry), Map.of(), false);
     stateMachine.releaseReservedVersions(db.getName(), replicaEntry);
     db.transaction(() -> {
       final Document counter = db.lookupByRID(leaderCounter, true).asDocument();

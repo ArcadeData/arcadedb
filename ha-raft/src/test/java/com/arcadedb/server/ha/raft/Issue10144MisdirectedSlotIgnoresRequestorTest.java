@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue10144MisdirectedSlotIgnoresRequestorTest {
 
   // None of these refusals carries a self-dial probe's nonce (issue #10299)
-  private static final long NO_PROBE = RaftHAServer.NO_PROBE_CALL_ID;
+  private static final long NO_PROBE = MisdirectedRaftRequests.NO_PROBE_CALL_ID;
   private static final String   SERVER_LIST = "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482";
   private static final RaftPeer JOINED      = RaftPeer.newBuilder().setId("joined_peer").setAddress("localhost:2439").build();
   private static final RaftPeer LEAVING     = RaftPeer.newBuilder().setId("leaving_peer").setAddress("localhost:2440").build();

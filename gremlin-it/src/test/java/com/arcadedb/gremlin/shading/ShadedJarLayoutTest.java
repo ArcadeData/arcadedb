@@ -148,6 +148,63 @@ class ShadedJarLayoutTest {
     assertThat(shadedJar.getEntry("META-INF/services/org.codehaus.groovy.runtime.ExtensionModule")).isNull();
   }
 
+  /**
+   * Libraries the TinkerPop/Groovy dependency tree drags in that no class of the runtime reaches (checked with
+   * {@code jdeps -verbose:class} over every bundled jar plus ArcadeDB's own Gremlin classes): Ivy only backs
+   * Groovy's Grape ({@code @Grab}, a runtime dependency downloader), groovysh and its templates/xml modules are an
+   * interactive shell, javapoet and hppc are referenced by nothing, and netty-all carries every Netty transport and
+   * codec (HTTP/3, QUIC, MQTT, Redis, SMTP, ...) with their native libraries while Gremlin Server and the driver use
+   * only HTTP/WebSocket over NIO or epoll. Each one is excluded in gremlin/pom.xml; a TinkerPop upgrade that brings
+   * one back fails here instead of silently regrowing the jar.
+   */
+  @Test
+  void librariesNothingReachesAreNotBundled() {
+    final List<String> forbidden = List.of(
+        "com/arcadedb/gremlin/shaded/org/apache/ivy/",
+        "groovy/grape/GrapeIvy",
+        "com/arcadedb/gremlin/shaded/com/squareup/javapoet/",
+        "com/arcadedb/gremlin/shaded/com/carrotsearch/",
+        "org/apache/groovy/groovysh/",
+        "groovy/text/",
+        "groovy/xml/",
+        "org/apache/groovy/xml/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/http3/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/quic/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/mqtt/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/redis/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/smtp/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/stomp/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/memcache/",
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/dns/",
+        "com/arcadedb/gremlin/shaded/io/netty/channel/kqueue/",
+        "com/arcadedb/gremlin/shaded/io/netty/channel/uring/",
+        "com/arcadedb/gremlin/shaded/io/netty/channel/sctp/",
+        "com/arcadedb/gremlin/shaded/io/netty/channel/udt/",
+        "com/arcadedb/gremlin/shaded/io/netty/channel/rxtx/");
+
+    final Set<String> found = new TreeSet<>();
+    for (final JarEntry entry : (Iterable<JarEntry>) shadedJar.stream()::iterator) {
+      final String name = entry.getName();
+      for (final String prefix : forbidden)
+        if (name.startsWith(prefix))
+          found.add(prefix);
+      if (name.startsWith("META-INF/native/") && (name.contains("quic") || name.contains("io_uring") || name.contains("kqueue")))
+        found.add(name);
+    }
+    assertThat(found).as("libraries no class of the Gremlin runtime reaches must not be bundled").isEmpty();
+
+    // Controls: the scan reaches the Netty that Gremlin Server and the driver DO use.
+    assertThat(shadedJar.getEntry(
+        "com/arcadedb/gremlin/shaded/io/netty/handler/codec/http/websocketx/WebSocketServerProtocolHandler.class"))
+        .as("the scan must reach the bundled, relocated Netty WebSocket codec").isNotNull();
+    assertThat(shadedJar.getEntry("com/arcadedb/gremlin/shaded/io/netty/handler/codec/compression/ZlibCodecFactory.class"))
+        .as("the WebSocket permessage-deflate extension needs the bundled Netty compression codec").isNotNull();
+    assertThat(shadedJar.getEntry("com/arcadedb/gremlin/shaded/io/netty/channel/epoll/Epoll.class"))
+        .as("Gremlin Server's epoll event loop needs the bundled Netty epoll transport").isNotNull();
+    assertThat(shadedJar.getEntry("groovy/grape/Grape.class"))
+        .as("the scan must reach Groovy core, which keeps the Grape facade without the Ivy backend").isNotNull();
+  }
+
   @Test
   void noSwingUserInterfaceIsBundled() {
     // groovy-console/groovy-swing reach a headless server only as dead weight, and groovy-swing

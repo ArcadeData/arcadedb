@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The in-place Ratis restart ({@link RaftHAServer#restartRatisIfNeeded()}) driven by the test itself, against real
+ * The in-place Ratis restart ({@link RatisInPlaceRestart#restartRatisIfNeeded()}) driven by the test itself, against real
  * Ratis, with the health monitor OFF (the base default): a closed division stays closed until the test restarts it.
  * Merged from {@code Issue4839RecoveryRewiresStateMachineIT}, {@code Issue8901ReplicationPathAfterInPlaceRestartIT} and
  * {@code Issue9411LeaderStateMachineClosedMidCommitIT}, which ran on the same fixture: three servers, persistent Raft
