@@ -197,14 +197,15 @@ class ShowCommandTailIssue7946Test {
     assertThat(byParameter.rows()).hasSize(1);
     assertThat(byParameter.rows().getFirst().getFirst()).isEqualTo("beer");
 
-    // A tail naming the row variable must not see the synthetic binding: it is a variable no clause bound, refused as
-    // Neo4j refuses it (issue #12245), where a tail that reached the rows would have matched every one of them.
+    // A tail naming the row variable must not see the synthetic binding: it is an unknown variable, refused like any
+    // other in a WHERE (it evaluated to null, matching no row, until the WHERE of a WITH was scope-checked). A tail that
+    // reached the rows would have matched every one of them.
     assertThatThrownBy(() -> apply("SHOW DATABASES WHERE __showRow IS NOT NULL", Map.of()))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("__showRow");
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("UndefinedVariable");
 
     // Backticks quote the same name, so a collision written that way counts as one too.
     assertThatThrownBy(() -> apply("SHOW DATABASES WHERE `__showRow` IS NOT NULL", Map.of()))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("__showRow");
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("UndefinedVariable");
   }
 
   /**

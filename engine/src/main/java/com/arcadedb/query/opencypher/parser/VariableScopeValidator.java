@@ -138,6 +138,14 @@ final class VariableScopeValidator {
               break;
             }
           }
+          // The WHERE of a WITH filters the projected rows. It sees the projected names and, unless the WITH collapses
+          // rows (aggregation, DISTINCT), the incoming variables too, the same rule ORDER BY follows. It was never
+          // walked, so a name no clause bound filtered every row out, and a CALL subquery inside an EXISTS / COUNT /
+          // COLLECT body escaped the export check of issue #11689. In a collapsing WITH, what repeats a grouping key was
+          // rewritten to read its column first (ProjectedOrderByNormalizer#normalizeWhere, issue #12245)
+          if (withClause.getWhereClause() != null)
+            checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(),
+                withWhereScope(withClause, scope, hasWildcard));
           if (hasWildcard) {
             // WITH * keeps all variables in scope.
             // First validate all extra item expressions against the incoming scope (no scope
@@ -159,9 +167,6 @@ final class VariableScopeValidator {
               if (alias != null)
                 scope.add(alias);
             }
-            // The WHERE runs on the projected rows, which keep every variable plus the aliases (issue #12245)
-            if (withClause.getWhereClause() != null)
-              checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(), scope);
             break;
           }
           // First validate that all referenced variables in WITH are in scope
@@ -178,9 +183,6 @@ final class VariableScopeValidator {
               // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
               validatePlainOrderByScope(withClause.getItems(), withClause.getOrderByClause(), scope);
           }
-          // The WHERE of a plain WITH still sees the incoming variables next to the projected ones (issue #12245)
-          final boolean collapsingWith = withClause.hasAggregations() || withClause.isDistinct();
-          final Set<String> plainWhereScope = withClause.getWhereClause() != null && !collapsingWith ? new HashSet<>(scope) : null;
           // Reset scope to only projected aliases
           scope.clear();
           for (final ReturnClause.ReturnItem item : withClause.getItems()) {
@@ -189,16 +191,6 @@ final class VariableScopeValidator {
               scope.add(alias);
             else if (item.getExpression() instanceof VariableExpression)
               scope.add(((VariableExpression) item.getExpression()).getVariableName());
-          }
-          if (withClause.getWhereClause() != null) {
-            if (plainWhereScope != null) {
-              plainWhereScope.addAll(scope);
-              checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(), plainWhereScope);
-            } else
-              // A collapsing WITH leaves its WHERE only the projected columns: what repeats a grouping key was rewritten to
-              // read the column (ProjectedOrderByNormalizer#normalizeWhere), and a collapsed variable left in it has no
-              // value per row, which used to read as null and filter every group out (issue #12245)
-              checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(), scope);
           }
           break;
         case SET:
@@ -625,6 +617,22 @@ final class VariableScopeValidator {
       if (item.getExpressionAST() != null)
         checkExpressionScope(item.getExpressionAST(), orderByScope);
     }
+  }
+
+  /**
+   * The names the WHERE of {@code withClause} may read: the projected ones, plus the incoming {@code scope} when the WITH
+   * keeps its input rows ({@code WITH *}, or neither aggregating nor DISTINCT). The copy is a {@link Scope}, so an incoming
+   * scope left open by a {@code CALL ... YIELD *} stays open for the WHERE (issue #12124).
+   */
+  private static Set<String> withWhereScope(final WithClause withClause, final Set<String> scope, final boolean hasWildcard) {
+    final boolean collapsing = !hasWildcard && (withClause.hasAggregations() || withClause.isDistinct());
+    final Set<String> whereScope = collapsing ? new Scope() : new Scope(scope);
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (item.getAlias() != null)
+        whereScope.add(item.getAlias());
+      else if (item.getExpression() instanceof VariableExpression variable)
+        whereScope.add(variable.getVariableName());
+    return whereScope;
   }
 
   private static boolean hasStar(final List<ReturnClause.ReturnItem> items) {
