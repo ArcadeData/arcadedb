@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -917,6 +918,49 @@ class VectorDeltaScanTest {
           assertThat(reporterCapacity)
               .as("and it still keeps a useful number of payloads resident")
               .isGreaterThan(100_000L);
+        } finally {
+          db.drop();
+        }
+      }
+    }
+
+    /**
+     * Regression for #12379: the auto-sized budget is the database's, not each index's. A type has one vector index per
+     * bucket, and each of them planned on the whole percent for itself, so 66 bucket indexes of a 3 GB heap kept payloads
+     * worth several times the heap. What the other indexes hold is charged first: with a budget of the other bucket's
+     * payloads plus 30, this one may keep 30.
+     */
+    @Test
+    void theAutoSizedBudgetIsSharedByTheVectorIndexesOfTheDatabase() {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+        final Database db = factory.create();
+        try {
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE, 0);
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT, 1);
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, Integer.MAX_VALUE);
+          db.transaction(() -> {
+            final var type = db.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(2).create();
+            type.createProperty("id", Type.INTEGER);
+            type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+            db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+                + ", \"similarity\": \"EUCLIDEAN\" }");
+          });
+          insert(db, 0, RECORDS);
+
+          final IndexInternal[] buckets = db.getSchema().getType("Doc").getPolymorphicIndexByProperties("vector")
+              .getIndexesOnBuckets();
+          assertThat(buckets).hasSize(2);
+          final LSMVectorIndex index = (LSMVectorIndex) buckets[0];
+          final long otherResident = ((LSMVectorIndex) buckets[1]).getStats().get("deltaResidentVectors");
+          assertThat(otherResident).as("precondition: the other bucket's buffer holds payloads").isPositive();
+
+          final long bytesPerVector = VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
+          // 1% of this ceiling is the other bucket's payloads plus 30, and all of it is free
+          final long maxHeap = (otherResident + 30) * bytesPerVector * 100;
+
+          assertThat(index.computeDeltaPayloadCapacity(maxHeap, maxHeap))
+              .as("the payloads of the other vector index are charged to the same budget").isEqualTo(30);
         } finally {
           db.drop();
         }

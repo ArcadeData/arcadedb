@@ -7519,6 +7519,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * that a payload kept here becomes live heap, which lowers the next reading for both. The percents are a margin
    * against that lag, not a partition of the heap - which is why the default is a modest 10 and why the ceiling
    * that matters is the one an operator sets when they know what else is running.
+   * <p>
+   * <b>The budget is the database's, not the index's (issue #12379).</b> A type has one vector index per bucket, so a
+   * schema with a few vector properties on bucketed types has dozens of them, and each one used to plan on the whole
+   * percent for itself: 66 indexes of a 3 GB heap could keep payloads worth several times the heap, and an ingest that
+   * outran the serialized rebuilds filled it. What the other vector indexes of the database hold is charged first, so
+   * the percent bounds them all together. It is read once per {@value #DELTA_PAYLOAD_CAPACITY_TTL_MS} ms per index,
+   * like the heap itself, so two indexes can each take the room the other is about to within that window: a lag the
+   * next reading corrects, not a growth without bound.
    *
    * @return the capacity, never negative
    */
@@ -7555,8 +7563,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return 0;
 
     final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap, availableHeap);
-    final long affordable = heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
-    return (int) Math.max(0L, Math.min(affordable, Integer.MAX_VALUE / 2));
+    final long affordable = Math.max(0L, heapBudget - payloadBytesOfTheOtherIndexes())
+        / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
+    return (int) Math.min(affordable, Integer.MAX_VALUE / 2);
+  }
+
+  /**
+   * The heap the delta buffers of the database's other vector indexes hold in payloads (issue #12379). Superseded
+   * instances are no longer listed: their buffers go with them once the queries still holding them are done.
+   */
+  private long payloadBytesOfTheOtherIndexes() {
+    long bytes = 0L;
+    for (final Index index : getDatabase().getSchema().getIndexes())
+      if (index != this && index instanceof LSMVectorIndex other)
+        bytes += other.deltaResidentPayloads.get() * VectorHeapBudget.bytesPerCachedVector(other.metadata.dimensions);
+    return bytes;
   }
 
   /**
