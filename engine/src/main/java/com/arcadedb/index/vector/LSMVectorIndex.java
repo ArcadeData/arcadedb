@@ -7525,8 +7525,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * percent for itself: 66 indexes of a 3 GB heap could keep payloads worth several times the heap, and an ingest that
    * outran the serialized rebuilds filled it. What the other vector indexes of the database hold is charged first, so
    * the percent bounds them all together. It is read once per {@value #DELTA_PAYLOAD_CAPACITY_TTL_MS} ms per index,
-   * like the heap itself, so two indexes can each take the room the other is about to within that window: a lag the
-   * next reading corrects, not a growth without bound.
+   * like the heap itself, so indexes whose readings fall in the same window can each admit the room the others are
+   * about to take: at most the budget once per such index. A later reading does not release what they admitted - the
+   * payloads stay until a rebuild drains them - but it admits nothing more while the total is past the budget, so the
+   * overshoot is bounded by those concurrent readings rather than growing with the ingest, as it did per index.
    *
    * @return the capacity, never negative
    */
