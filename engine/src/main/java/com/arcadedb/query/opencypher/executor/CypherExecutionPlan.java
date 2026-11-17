@@ -60,6 +60,8 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
+import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
@@ -1495,15 +1497,22 @@ public class CypherExecutionPlan {
 
     @Override
     public String parallelVariable() {
-      return physicalPlan.getRootOperator() instanceof NodeByLabelScan scan ? scan.getVariable() : null;
+      final PhysicalOperator root = physicalPlan.getRootOperator();
+      if (root instanceof NodeByLabelScan scan)
+        return scan.getVariable();
+      // An adaptive range scan that may give way to a label scan, which then runs in the workers (issue #11873)
+      return root instanceof NodeIndexRangeScan rangeScan && rangeScan.mayServeInParallel() ? rangeScan.getVariable() : null;
     }
 
     @Override
     public ParallelRecordScan planParallelRows(final CommandContext ctx, final List<BooleanExpression> filters) {
       // Only before the operators were pulled: a started scan cannot be taken over
-      if (operatorResults != null || closed || !(physicalPlan.getRootOperator() instanceof NodeByLabelScan scan))
+      if (operatorResults != null || closed)
         return null;
-      return scan.planParallelRows(ctx, filters);
+      final PhysicalOperator root = physicalPlan.getRootOperator();
+      if (root instanceof NodeByLabelScan scan)
+        return scan.planParallelRows(ctx, filters);
+      return root instanceof NodeIndexRangeScan rangeScan ? rangeScan.planParallelRows(ctx, filters) : null;
     }
   }
 

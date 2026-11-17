@@ -30,13 +30,16 @@ import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
@@ -99,6 +102,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
    * thread per cached plan, weakly keyed on this operator, so it goes with the plan.
    */
   private final ThreadLocal<Boolean> servedByScan = new ThreadLocal<>();
+  /** Whether the calling thread's last execution served the range by a parallel label scan. Same lifetime as {@link #servedByScan}. */
+  private final ThreadLocal<Boolean> servedInParallel = new ThreadLocal<>();
+  /**
+   * The WHERE predicates that read only this scan's variable, evaluated on every vertex the scan serves (issue #11873). Only an
+   * adaptive scan takes them: a label scan serving a large range evaluates them in the workers of a parallel scan, as a
+   * filtered {@link NodeByLabelScan} does, rather than handing every vertex of the label to a Filter on the calling thread.
+   */
+  private BooleanExpression whereFilter;
 
   /**
    * Create a range scan operator from range predicates.
@@ -143,6 +154,47 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   public boolean isAdaptive() {
     return adaptive;
+  }
+
+  /**
+   * Adds a WHERE predicate that reads only this scan's variable, evaluated on every vertex the scan serves. Several pushed
+   * predicates are ANDed together.
+   */
+  public void pushDownFilter(final BooleanExpression filter) {
+    this.whereFilter = whereFilter == null ?
+        filter : new LogicalExpression(LogicalExpression.Operator.AND, whereFilter, filter);
+  }
+
+  /**
+   * Whether an execution of this scan can be served by a parallel scan of the label (issue #11873): an adaptive scan, whose
+   * rows come in no order the statement can see, that holds the predicates a vertex must pass.
+   */
+  public boolean mayServeInParallel() {
+    return adaptive && !readsEntriesFirst && !indexOrdered && whereFilter != null;
+  }
+
+  /**
+   * Plans this execution of the scan for a consumer that takes its rows in the workers of a parallel scan, as
+   * {@link NodeByLabelScan#planParallelRows} does for a label (issue #11873): the scan reads the range as it does to decide
+   * how to serve it, and when it would give way to a label scan, that scan runs in parallel with this scan's predicates and
+   * {@code extraFilters} evaluated in the workers.
+   *
+   * @return the scan, or {@code null} when this execution is served sequentially: the range is better served by the index, a
+   * predicate is not one the workers can evaluate, or the parallel scan declines (disabled, in a transaction, too small).
+   * The sequential execution decides again
+   */
+  public ParallelRecordScan planParallelRows(final CommandContext context, final List<BooleanExpression> extraFilters) {
+    if (!mayServeInParallel() || !ParallelSafeExpressions.isParallelSafe(whereFilter, variable))
+      return null;
+    BooleanExpression filter = whereFilter;
+    for (final BooleanExpression extra : extraFilters) {
+      if (!ParallelSafeExpressions.isParallelSafe(extra, variable))
+        return null;
+      filter = new LogicalExpression(LogicalExpression.Operator.AND, filter, extra);
+    }
+    try (final RangeRows rows = open(context, 0)) {
+      return rows.planParallelLabelScan(filter);
+    }
   }
 
   /**
@@ -214,10 +266,22 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    return open(context, nRecords);
+  }
+
+  /** The rows of one execution, which can also plan the parallel label scan of {@link #planParallelRows}. */
+  private interface RangeRows extends ResultSet {
+    /** @return the parallel scan of the label filtered by {@code filter}, or {@code null} when the range is not served by one */
+    ParallelRecordScan planParallelLabelScan(BooleanExpression filter);
+  }
+
+  private RangeRows open(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    return new ResultSet() {
+    final BooleanExpression filter = whereFilter;
+    final boolean parallelFilter = filter != null && ParallelSafeExpressions.isParallelSafe(filter, variable);
+    return new RangeRows() {
       private IndexCursor cursor = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
@@ -232,6 +296,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       // Adaptive mode: records served in physical order, or every vertex of the label
       private PhysicalOrderRidFetcher fetcher;
       private Iterator<Record> labelScan;
+      // A label scan serving the range in the workers of a parallel scan, which evaluate the pushed predicates (issue #11873)
+      private ResultSet parallelRows;
+      // Binds each vertex served and passes it through the pushed predicates
+      private final NodeByLabelScan.VertexRowFilter rows = new NodeByLabelScan.VertexRowFilter(variable, filter);
       // Index order with the null keys last (first, descending): the label scan that follows (precedes) the index, for the
       // vertices it does not hold
       private Iterator<Record> nullKeyScan;
@@ -282,6 +350,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
         if (!opened) {
           opened = true;
+          servedInParallel.set(false);
           if (!resolveIndexAndBounds()) {
             finished = true;
             return;
@@ -299,7 +368,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         } else if (entryBuckets != null) {
           serveEntries(n);
           return;
-        } else if (fetcher != null || labelScan != null) {
+        } else if (fetcher != null || labelScan != null || parallelRows != null) {
           fetchAdaptively(n);
           return;
         }
@@ -484,15 +553,46 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
        * range scan to run
        */
       private boolean chooseAdaptively() {
+        final PhysicalOrderRidFetcher.Outcome outcome = readRangeToDecide();
+        if (outcome == null)
+          return false;
+
+        if (outcome == PhysicalOrderRidFetcher.Outcome.SCAN) {
+          fetcher.close();
+          fetcher = null;
+          // Every vertex of the label, passed through the pushed predicates and the pattern's WHERE downstream, exactly as
+          // what the index returns is, so the rows that survive are the same. With predicates the workers can evaluate,
+          // the label is scanned in parallel and the rows come back filtered, in the order the sequential scan reads them
+          final ParallelRecordScan parallelScan = parallelFilter ?
+              ParallelRecordScan.plan(context, label, () -> new NodeByLabelScan.VertexRowFilter(variable, filter)) : null;
+          if (parallelScan != null) {
+            parallelRows = parallelScan.pull(context);
+            servedInParallel.set(true);
+          } else
+            labelScan = context.getDatabase().iterateType(label, true);
+          servedByScan.set(true);
+        } else
+          servedByScan.set(false);
+        return true;
+      }
+
+      /**
+       * Reads the first pass over the range into {@link #fetcher}, up to the share of the label above which a label scan
+       * serves the range better: a scan in parallel gives way sooner, as SQL's does (issue #8333), and the scan runs in
+       * parallel only when the workers can evaluate the pushed predicates (issue #11873).
+       *
+       * @return how the range is best served, or {@code null} when the label's buckets keep no record count to decide by
+       */
+      private PhysicalOrderRidFetcher.Outcome readRangeToDecide() {
         // Read per execution, not at planning: the plan is cached, and buckets can be added to the type in between
         final DocumentType type = context.getDatabase().getSchema().getType(label);
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
           bucketIds.add(bucket.getFileId());
-        // A label scan runs on this thread alone
-        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, 1);
+        final int scanWorkers = parallelFilter ? ParallelRecordScan.plannedWorkers(context.getDatabase(), bucketIds) : 1;
+        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, scanWorkers);
         if (scanThreshold < 0)
-          return false;
+          return null;
 
         fetcher = new PhysicalOrderRidFetcher(() -> {
           final IndexCursor pass = openCursor();
@@ -508,20 +608,37 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             }
           };
         }, scanThreshold);
+        return fetcher.start(guard);
+      }
 
-        if (fetcher.start(guard) == PhysicalOrderRidFetcher.Outcome.SCAN) {
-          fetcher.close();
-          fetcher = null;
-          // Every vertex of the label: the pattern's WHERE is evaluated downstream on each of them, exactly as it is
-          // on what the index returns, so the rows that survive are the same
-          labelScan = context.getDatabase().iterateType(label, true);
+      @Override
+      public ParallelRecordScan planParallelLabelScan(final BooleanExpression rowFilter) {
+        // THIS RESULT SET ONLY DECIDES: IT IS CLOSED RIGHT AFTER, AND THE ROWS ARE SERVED BY THE SCAN IT RETURNS OR BY ANOTHER EXECUTION
+        opened = true;
+        if (!parallelFilter || !resolveIndexAndBounds())
+          return null;
+        if (readRangeToDecide() != PhysicalOrderRidFetcher.Outcome.SCAN)
+          return null;
+        final ParallelRecordScan parallelScan = ParallelRecordScan.plan(context, label,
+            () -> new NodeByLabelScan.VertexRowFilter(variable, rowFilter));
+        if (parallelScan != null) {
           servedByScan.set(true);
-        } else
-          servedByScan.set(false);
-        return true;
+          servedInParallel.set(true);
+        }
+        return parallelScan;
       }
 
       private void fetchAdaptively(final int n) {
+        if (parallelRows != null) {
+          while (buffer.size() < n && parallelRows.hasNext()) {
+            guard.check();
+            buffer.add(parallelRows.next());
+          }
+          if (!parallelRows.hasNext())
+            finished = true;
+          return;
+        }
+
         if (labelScan != null) {
           while (buffer.size() < n && labelScan.hasNext()) {
             guard.check();
@@ -569,9 +686,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           collect(vertex);
           return;
         }
-        final ResultInternal result = new ResultInternal();
-        result.setProperty(variable, vertex);
-        buffer.add(result);
+        final Result row = rows.map(vertex, context);
+        if (row != null)
+          buffer.add(row);
       }
 
       /**
@@ -722,6 +839,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           fetcher.close();
           fetcher = null;
         }
+        // The workers of a parallel scan stop when its result set is closed
+        if (parallelRows != null) {
+          parallelRows.close();
+          parallelRows = null;
+        }
+        rows.forgetRejected();
         releaseEntries();
       }
     };
@@ -779,6 +902,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       sb.append(scan == null ? " [physical order, or label scan on a large range]" :
           scan ? " [served by label scan: large range]" : " [served in physical order]");
     }
+    if (whereFilter != null)
+      sb.append(" [filter: ").append(whereFilter.getText()).append("]");
+    if (Boolean.TRUE.equals(servedInParallel.get()))
+      sb.append(" [parallel]");
     sb.append("\n");
 
     return sb.toString();
