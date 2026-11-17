@@ -85,6 +85,8 @@ public class Dictionary extends PaginatedComponent {
    * the signal that a database has rolled over is the INFO logged when page 1 is created.
    */
   private static final int    CURRENT_VERSION        = 1;
+  // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
+  private static final int    DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
   /**
    * Byte for byte the same file as version 1. The label marks a database that holds float or double arrays in the fixed-width
    * form (binary types 36 and 37, issue #10856), which no build before 26.11.1 decodes: such a build read them as null and
@@ -94,13 +96,17 @@ public class Dictionary extends PaginatedComponent {
    * label. Builds before 26.8.1 do not check the label at all.
    * <br>
    * Unlike a rollover, this label is changed at runtime. The file keeps its id, its component name and its content, so the rename
-   * needs no flush barrier: it runs under the file's channel write lock, which every page read and write of the file takes too.
+   * needs no flush barrier: it runs under the file's channel write lock, which every page read and write of the file takes too,
+   * and the file reports itself open throughout ({@link PaginatedComponentFile#rename}), so a page the flush thread writes in the
+   * meantime waits for the new channel instead of being dropped as written to a closed file.
    */
   public static final  int    FIXED_WIDTH_FLOAT_ARRAYS_VERSION = 2;
+  /**
+   * The highest label this build opens. Kept apart from {@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION} on purpose: that one names what
+   * label 2 means and never changes, this one is the refusal threshold and moves with the next label a format change adds.
+   */
   private static final int    LATEST_READABLE_VERSION          = FIXED_WIDTH_FLOAT_ARRAYS_VERSION;
-  private final        Object fenceLock                        = new Object();
-  // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
-  private static final int    DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
+  private static final String DICT_SUFFIX            = "." + DICT_EXT;
 
   /**
    * The names and the name-&gt;id map are replaced together by {@link #reload()}, which runs on threads that do not hold this
@@ -122,6 +128,8 @@ public class Dictionary extends PaginatedComponent {
   }
 
   private volatile Entries entries = new Entries(new String[64], 0, new ConcurrentHashMap<>(1024));
+  /** Serializes {@link #fenceFixedWidthFloatArrays()}, so concurrent first writers rename the file once. */
+  private final    Object  fenceLock = new Object();
 
   /**
    * Set when the load found no committed page and wrote a fresh empty one (issue #11258). A power loss that kept the file name
@@ -212,9 +220,19 @@ public class Dictionary extends PaginatedComponent {
    * same bytes under two labels for a while (issue #12234): a dictionary compares without its label, every other file as it is.
    */
   public static String comparableFileName(final String fileName) {
-    if (fileName == null || !fileName.endsWith("." + DICT_EXT))
+    if (fileName == null || !fileName.endsWith(DICT_SUFFIX))
       return fileName;
-    return fileName.replaceFirst("\\.v\\d+\\." + DICT_EXT + "$", "." + DICT_EXT);
+    // <name>.<id>.<pageSize>.v<N>.dict -> <name>.<id>.<pageSize>.dict, WITHOUT A REGEX: THIS RUNS FOR EVERY FILE OF EVERY CHECKSUM
+    final int extensionPos = fileName.length() - DICT_SUFFIX.length();
+    final int labelPos = fileName.lastIndexOf('.', extensionPos - 1);
+    if (labelPos < 0 || labelPos + 2 >= extensionPos || fileName.charAt(labelPos + 1) != 'v')
+      return fileName;
+    for (int i = labelPos + 2; i < extensionPos; i++) {
+      final char c = fileName.charAt(i);
+      if (c < '0' || c > '9')
+        return fileName;
+    }
+    return fileName.substring(0, labelPos) + DICT_SUFFIX;
   }
 
   public int getIdByName(final String name, final boolean create) {

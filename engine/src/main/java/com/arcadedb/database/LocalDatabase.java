@@ -274,6 +274,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    BinarySerializer                          serializer;
   /** Whether the dictionary carries the fixed-width float array label, see {@link #fenceFixedWidthFloatArrays()} (issue #12234). */
   private volatile   boolean                                   fixedWidthFloatArraysFenced;
+  /** Set when the relabel failed: the varint form is kept until the database is reopened, see {@link #fenceFixedWidthFloatArrays()}. */
+  private volatile   boolean                                   fixedWidthFloatArraysFenceFailed;
   protected final    RecordFactory                             recordFactory             = new RecordFactory();
   protected final    GraphEngine                               graphEngine;
   protected final    WALFileFactory                            walFactory;
@@ -3768,10 +3770,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * The serializer's rollback fence (issue #12234): before this database holds a float or double array in the fixed-width form,
    * which no build before 26.11.1 decodes, its dictionary is labelled so that such a build refuses to open it. Answers false, so
    * the value is written in the varint form every build reads, when the label cannot be written.
+   * <br>
+   * A failure is latched until the database is reopened: every later value keeps the varint form without another attempt, so a
+   * persistent cause (a read-only directory, a name taken) costs one rename and one WARNING, not a close and reopen of the
+   * dictionary file under its write lock, which stalls every dictionary read, for each float array written.
    */
   private boolean fenceFixedWidthFloatArrays() {
     if (fixedWidthFloatArraysFenced)
       return true;
+    if (fixedWidthFloatArraysFenceFailed)
+      return false;
     final LocalSchema current = schema;
     if (current == null || current.getDictionary() == null)
       return false;
@@ -3780,9 +3788,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       fixedWidthFloatArraysFenced = true;
       return true;
     } catch (final IOException e) {
+      fixedWidthFloatArraysFenceFailed = true;
       LogManager.instance().log(this, Level.WARNING,
-          "Database '%s': cannot relabel the dictionary for the fixed-width float array form, the value is written in the varint "
-              + "form instead", e, name);
+          "Database '%s': cannot relabel the dictionary for the fixed-width float array form, float and double arrays are written "
+              + "in the varint form until the database is reopened", e, name);
       return false;
     }
   }
@@ -4784,6 +4793,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // ISSUE #12234: A READ-ONLY OPEN NEVER RELABELS ITS FILES, AND NEVER WRITES A RECORD THAT WOULD NEED IT
         fixedWidthFloatArraysFenced = schema.getDictionary() != null && schema.getDictionary().isFixedWidthFloatArraysFenced();
+        fixedWidthFloatArraysFenceFailed = false;
         if (mode == ComponentFile.MODE.READ_WRITE)
           serializer.setFixedWidthFloatArraysFence(this::fenceFixedWidthFloatArrays);
 

@@ -182,6 +182,20 @@ public class BinarySerializer {
   }
 
   /**
+   * Run when a fixed-width float or double array is decoded: a record written by 26.11.x, or received as pages by a replica, can
+   * hold the form under a dictionary not labelled yet, and the first such read labels it (issue #12234). Whether the label could
+   * be written does not matter to the read, which decodes the value either way; a failure is the fence's to report.
+   * <br>
+   * The relabel takes only the dictionary's fence monitor and its file's channel write lock. A decoding thread holds neither: the
+   * channel lock is held inside a single page read or write of that file, which never decodes a record, and the fence monitor
+   * only around the rename. So a read cannot deadlock against the relabel it triggers, whatever page, transaction or database
+   * lock it holds.
+   */
+  private void ensureFixedWidthFloatArraysFenced() {
+    fixedWidthFloatArraysFence.getAsBoolean();
+  }
+
+  /**
    * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
    * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFence} is in place, {@code type} itself
    * otherwise. Only the record's own type bytes go through here; an index key is written under its declared type, so an index
@@ -1316,12 +1330,11 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED:
-      // A RECORD WRITTEN BY 26.11.x, OR RECEIVED AS PAGES BY A REPLICA, HOLDS THE FORM UNDER AN UNLABELLED DICTIONARY (#12234)
-      fixedWidthFloatArraysFence.getAsBoolean();
+      ensureFixedWidthFloatArraysFenced();
       value = content.getFloatArray(checkDeserializedCount(content.getUnsignedNumber(), content));
       break;
     case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED:
-      fixedWidthFloatArraysFence.getAsBoolean();
+      ensureFixedWidthFloatArraysFenced();
       value = content.getDoubleArray(checkDeserializedCount(content.getUnsignedNumber(), content));
       break;
 

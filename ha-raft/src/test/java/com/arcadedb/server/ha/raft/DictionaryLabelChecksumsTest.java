@@ -18,6 +18,12 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -55,5 +61,33 @@ class DictionaryLabelChecksumsTest {
     Files.write(new File(follower, "dictionary.0.65536.v1.dict").toPath(), new byte[] { 1, 2, 4 });
 
     assertThat(SnapshotManager.computeFileChecksums(leader)).isNotEqualTo(SnapshotManager.computeFileChecksums(follower));
+  }
+
+  /**
+   * The relabel can land while a point-in-time window is open: the window knows the dictionary under its old name, the directory
+   * lists it under the new one. Matched by file name, the dictionary was taken for a page file created after t0 and left out of
+   * the checksums, which a peer then reports as a missing file.
+   */
+  @Test
+  void aDictionaryRelabelledWhileASnapshotIsOpenIsStillChecksummed(@TempDir final File root) throws Exception {
+    final File dbDir = new File(root, "relabel-under-snapshot");
+    try (final Database database = new DatabaseFactory(dbDir.getPath()).create()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      database.transaction(() -> database.getSchema().createDocumentType("Doc").createProperty("emb", Type.ARRAY_OF_FLOATS));
+      db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+      assertThat(db.getSchema().getDictionary().isFixedWidthFloatArraysFenced()).isFalse();
+
+      try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+        final Map<String, Long> t0 = SnapshotManager.computeFileChecksums(dbDir, snapshot);
+
+        // THE FIRST FIXED-WIDTH ARRAY RELABELS THE DICTIONARY AFTER t0
+        database.transaction(() -> database.newDocument("Doc").set("emb", new float[] { 1F, 2F }).save());
+        assertThat(db.getSchema().getDictionary().isFixedWidthFloatArraysFenced()).isTrue();
+
+        final Map<String, Long> afterRelabel = SnapshotManager.computeFileChecksums(dbDir, snapshot);
+        assertThat(t0.keySet()).anyMatch(name -> name.endsWith("." + Dictionary.DICT_EXT));
+        assertThat(afterRelabel).as("the window answers for the relabelled dictionary as it did at t0").isEqualTo(t0);
+      }
+    }
   }
 }

@@ -232,10 +232,12 @@ public final class SnapshotManager {
     if (files == null)
       return checksums;
 
+    // KEYED BY THE COMPARABLE NAME: THE DICTIONARY CAN BE RELABELLED AFTER t0 (ISSUE #12234), AND LOOKED UP UNDER ITS NEW NAME IT
+    // WOULD PASS FOR A PAGE FILE CREATED AFTER t0 AND BE LEFT OUT. THE FILE ID, WHICH THE WINDOW READS BY, NEVER CHANGES
     final Map<String, Integer> snapshotFileIds = new HashMap<>();
     if (snapshot != null)
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        snapshotFileIds.put(file.fileName(), file.fileId());
+        snapshotFileIds.put(Dictionary.comparableFileName(file.fileName()), file.fileId());
 
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
@@ -243,9 +245,10 @@ public final class SnapshotManager {
       if (isNodeLocalFileName(name))
         continue;
 
-      final Integer snapshotFileId = snapshotFileIds.get(name);
+      final String comparableName = Dictionary.comparableFileName(name);
+      final Integer snapshotFileId = snapshotFileIds.get(comparableName);
       if (snapshotFileId != null) {
-        checksums.put(Dictionary.comparableFileName(name), snapshot.calculateChecksum(snapshotFileId));
+        checksums.put(comparableName, snapshot.calculateChecksum(snapshotFileId));
         continue;
       }
 
@@ -273,7 +276,7 @@ public final class SnapshotManager {
         continue;
       }
       // A DICTIONARY IS KEYED WITHOUT ITS FORMAT LABEL, WHICH TWO NODES WITH THE SAME BYTES CAN DISAGREE ON (ISSUE #12234)
-      checksums.put(Dictionary.comparableFileName(name), crc.getValue());
+      checksums.put(comparableName, crc.getValue());
     }
 
     return checksums;
