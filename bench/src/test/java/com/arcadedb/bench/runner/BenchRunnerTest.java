@@ -280,4 +280,71 @@ class BenchRunnerTest {
     assertThat(results.get(0).error()).doesNotContain("teardown skipped");
     assertThat(w.teardowns.get()).isEqualTo(1);
   }
+
+  @Test
+  void anAbandonedWorkerThatSwallowsItsInterruptStartsNoFurtherRepetition() throws Exception {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("swallow");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        calls.incrementAndGet();
+        final long until = System.nanoTime() + 400_000_000L;
+        while (System.nanoTime() < until)
+          if (Thread.interrupted()) // a measure that clears the flag and carries on
+            Thread.onSpinWait();
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(5, 0, Duration.ofMillis(100), Duration.ofMillis(10)).run(w, CTX,
+        n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    Thread.sleep(1_500); // the worker's first measure ends after 400 ms; a second one would have started by now
+    assertThat(w.calls.get()).isEqualTo(1);
+  }
+
+  @Test
+  void anAbandonedWorkerAlsoStopsTheWorkloadsThatFollow() {
+    final Fake hung = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        while (spin)
+          Thread.onSpinWait();
+        return m(1);
+      }
+    };
+    final Fake next = new Fake() {
+      @Override
+      public String name() {
+        return "next";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("x");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        calls.incrementAndGet();
+        return m(1);
+      }
+    };
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofMillis(200), Duration.ofMillis(100));
+    runner.run(hung, CTX, n -> true);
+    assertThat(runner.hasAbandonedWorker()).isTrue();
+    final List<CaseResult> results = runner.run(next, CTX, n -> true);
+    // the worker still burns host CPU: a later workload on a fresh server would be measured beside it
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(results.get(0).error()).contains("not started").contains("'a'");
+    assertThat(next.calls.get()).isZero();
+  }
 }

@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 
 /**
  * Who ran what, where and when. The {@code arcadedb} object carries commit, branch, tag, version, variant, image,
@@ -30,13 +31,16 @@ import java.time.format.DateTimeFormatter;
  */
 public record RunInfo(String runId, Instant startedAt, Instant finishedAt, String trigger, String source,
                       JSONObject arcadedb, JSONObject machine, JSONObject config) {
-  private static final DateTimeFormatter RUN_ID_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss'Z'")
+  private static final DateTimeFormatter RUN_ID_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss")
       .withZone(ZoneOffset.UTC);
 
   /**
-   * @return an id safe as a file name: colons of the ISO timestamp become dashes
+   * @return an id safe as a file name: colons of the ISO timestamp become dashes. Milliseconds are kept when the start has
+   * any, so two starts in the same second (two {@code ldbc-convert} inputs, say) do not share an id
    */
   public static String newRunId(final Instant startedAt, final String commit, final String variant) {
-    return RUN_ID_TIME.format(startedAt) + "-" + commit + "-" + variant;
+    final int millis = startedAt.getNano() / 1_000_000;
+    final String fraction = startedAt.getNano() == 0 ? "" : String.format(Locale.ROOT, ".%03d", millis);
+    return RUN_ID_TIME.format(startedAt) + fraction + "Z-" + commit + "-" + variant;
   }
 }

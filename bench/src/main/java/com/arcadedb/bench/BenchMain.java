@@ -340,6 +340,11 @@ public final class BenchMain {
     JSONObject serverConfig = null;
     JSONObject imageInfo = null;
     for (final Workload w : selected) {
+      if (runner.hasAbandonedWorker()) {
+        // the runner records every case as not started; a server started now would only compete with the stuck worker
+        results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null));
+        continue;
+      }
       final ServerUnderTest server;
       try {
         server = serverFactory.start(image, serverCpus, memLimitGb, heap);

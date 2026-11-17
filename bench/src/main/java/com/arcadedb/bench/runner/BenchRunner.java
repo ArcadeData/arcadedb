@@ -32,6 +32,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 /**
@@ -48,6 +49,8 @@ public final class BenchRunner {
 
   // set by runCase for run(), on the caller's thread
   private boolean lastWorkerStopped = true;
+  // the case whose worker outlived its timeout: it still loads the host, so no later case of any workload is measured
+  private String  abandoned;
 
   public BenchRunner(final int reps, final int warmup, final Duration caseTimeout) {
     this(reps, warmup, caseTimeout, Duration.ofSeconds(5));
@@ -66,8 +69,6 @@ public final class BenchRunner {
 
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter) {
     final List<CaseResult> results = new ArrayList<>();
-    // a worker that outlived its timeout still loads this server: whatever this run measured next would be wrong
-    String abandoned = null;
     for (final String caseName : w.cases()) {
       if (caseFilter != null && !caseFilter.test(caseName))
         continue;
@@ -76,7 +77,7 @@ public final class BenchRunner {
         result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "not started: the run was interrupted");
       else if (abandoned != null)
         result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED,
-            "not started: the worker of case '" + abandoned + "' is still running on this server");
+            "not started: the worker of case '" + abandoned + "' is still running");
       else {
         result = runCase(w, ctx, caseName);
         if (!lastWorkerStopped)
@@ -87,6 +88,11 @@ public final class BenchRunner {
     return results;
   }
 
+  /** Whether a timed-out worker could not be stopped: every later case is then recorded as not started. */
+  public boolean hasAbandonedWorker() {
+    return abandoned != null;
+  }
+
   // each case gets its own worker thread, so a worker hung past an interrupt is abandoned and cannot block the next case
   private CaseResult runCase(final Workload w, final WorkloadContext ctx, final String caseName) {
     final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
@@ -95,9 +101,11 @@ public final class BenchRunner {
       return t;
     });
     final long deadline = System.nanoTime() + caseTimeout.toNanos();
+    // a flag of its own: a measure() that swallows the interrupt must not let the worker start another repetition
+    final AtomicBoolean cancelled = new AtomicBoolean();
     final Future<CaseResult> future = executor.submit(() -> {
       try {
-        return execute(w, ctx, caseName);
+        return execute(w, ctx, caseName, cancelled);
       } catch (final CaseFailedWithMetrics e) {
         return result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
       } catch (final Throwable t) {
@@ -109,12 +117,14 @@ public final class BenchRunner {
     try {
       result = future.get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
     } catch (final TimeoutException e) {
+      cancelled.set(true);
       future.cancel(true);
       executor.shutdownNow();
       workerStopped = awaitStopped(executor);
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT,
           "case exceeded " + caseTimeout.toMillis() + " ms" + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING));
     } catch (final InterruptedException e) {
+      cancelled.set(true);
       future.cancel(true);
       executor.shutdownNow();
       Thread.currentThread().interrupt();
@@ -148,15 +158,16 @@ public final class BenchRunner {
   }
 
   /** An abandoned worker (its case timed out) ends at the next repetition instead of measuring on. */
-  private static void stopIfInterrupted() throws InterruptedException {
-    if (Thread.currentThread().isInterrupted())
+  private static void stopIfCancelled(final AtomicBoolean cancelled) throws InterruptedException {
+    if (cancelled.get() || Thread.currentThread().isInterrupted())
       throw new InterruptedException("case abandoned");
   }
 
-  private CaseResult execute(final Workload w, final WorkloadContext ctx, final String caseName) throws Exception {
+  private CaseResult execute(final Workload w, final WorkloadContext ctx, final String caseName, final AtomicBoolean cancelled)
+      throws Exception {
     w.prepare(ctx, caseName);
     for (int i = 0; i < warmup; i++) {
-      stopIfInterrupted();
+      stopIfCancelled(cancelled);
       w.measure(ctx, caseName);
     }
 
@@ -164,7 +175,7 @@ public final class BenchRunner {
     final Map<String, List<Double>> values = new LinkedHashMap<>();
     final Map<String, Metric> first = new LinkedHashMap<>();
     for (int i = 0; i < reps; i++) {
-      stopIfInterrupted();
+      stopIfCancelled(cancelled);
       for (final Metric m : w.measure(ctx, caseName).perRep()) {
         first.putIfAbsent(m.name(), m);
         values.computeIfAbsent(m.name(), k -> new ArrayList<>()).add(m.median());

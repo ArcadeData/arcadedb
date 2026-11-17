@@ -89,21 +89,25 @@ public final class ResultsStore {
     final URI uri = parse(url);
     final RemoteServer server = new RemoteServer(serverAddress(uri), port(uri), rootUser, rootPassword);
     server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
-    server.setTimeout(TIMEOUT_MS);
+    try {
+      server.setTimeout(TIMEOUT_MS);
 
-    if (!server.exists(DATABASE))
-      server.create(DATABASE);
+      if (!server.exists(DATABASE))
+        server.create(DATABASE);
 
-    try (final RemoteDatabase db = open(url, rootUser, rootPassword)) {
-      for (final String statement : SCHEMA)
-        db.command("sql", statement).close();
+      try (final RemoteDatabase db = open(url, rootUser, rootPassword)) {
+        for (final String statement : SCHEMA)
+          db.command("sql", statement).close();
+      }
+
+      server.saveGroup(DATABASE, WRITER_GROUP, group(Set.of("createRecord", "readRecord", "deleteRecord"), Set.of("Run", "Measurement")));
+      server.saveGroup(DATABASE, READER_GROUP, group(Set.of("readRecord"), Set.of("Run", "Measurement")));
+
+      ensureUser(server, WRITER, writerPassword, WRITER_GROUP);
+      ensureUser(server, READER, readerPassword, READER_GROUP);
+    } finally {
+      server.close();
     }
-
-    server.saveGroup(DATABASE, WRITER_GROUP, group(Set.of("createRecord", "readRecord", "deleteRecord"), Set.of("Run", "Measurement")));
-    server.saveGroup(DATABASE, READER_GROUP, group(Set.of("readRecord"), Set.of("Run", "Measurement")));
-
-    ensureUser(server, WRITER, writerPassword, WRITER_GROUP);
-    ensureUser(server, READER, readerPassword, READER_GROUP);
   }
 
   /** Opens the {@code perf} database with the given credentials. */

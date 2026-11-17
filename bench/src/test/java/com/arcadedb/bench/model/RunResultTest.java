@@ -95,4 +95,12 @@ class RunResultTest {
     assertThat(RunInfo.newRunId(Instant.parse("2026-11-17T03:00:00Z"), "1e1ad51768", "jvm")).isEqualTo(
         "2026-11-17T03-00-00Z-1e1ad51768-jvm");
   }
+
+  @Test
+  void runIdKeepsStartsInTheSameSecondApart() {
+    final String a = RunInfo.newRunId(Instant.parse("2026-11-17T03:00:00.100Z"), "1e1ad51768", "jvm");
+    final String b = RunInfo.newRunId(Instant.parse("2026-11-17T03:00:00.900Z"), "1e1ad51768", "jvm");
+    assertThat(a).isEqualTo("2026-11-17T03-00-00.100Z-1e1ad51768-jvm");
+    assertThat(b).isNotEqualTo(a);
+  }
 }
