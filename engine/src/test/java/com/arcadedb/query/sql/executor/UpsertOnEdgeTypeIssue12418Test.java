@@ -44,13 +44,14 @@ class UpsertOnEdgeTypeIssue12418Test extends TestHelper {
     type.createProperty("w", Type.INTEGER);
     type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "w");
 
-    assertThatThrownBy(() -> database.command("sql", "UPDATE Knows SET w = 1 UPSERT WHERE w = 1"))
+    // inside a transaction: outside one the statement fails with "Transaction not begun" before it reaches the UPSERT
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "UPDATE Knows SET w = 1 UPSERT WHERE w = 1")))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Knows")
         .hasMessageContaining("UPSERT");
 
     // no edge with missing endpoints, and no record that cannot be decoded again
-    assertThat(database.countType("Knows", true)).isZero();
+    assertThat(storedEdges()).isZero();
   }
 
   @Test
@@ -66,11 +67,16 @@ class UpsertOnEdgeTypeIssue12418Test extends TestHelper {
       alice.newEdge("Knows", bob).set("w", 1).save();
     });
 
-    assertThatThrownBy(() -> database.command("sql", "UPDATE Knows SET w = 2 UPSERT WHERE w = 1"))
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "UPDATE Knows SET w = 2 UPSERT WHERE w = 1")))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Knows");
 
-    assertThat(database.countType("Knows", true)).isEqualTo(1L);
+    assertThat(storedEdges()).isEqualTo(1L);
+  }
+
+  /** The records the type holds, counted from storage (count(@rid)), not from the bucket's metadata counter. */
+  private long storedEdges() {
+    return ((Number) database.query("sql", "SELECT count(@rid) AS n FROM Knows").next().getProperty("n")).longValue();
   }
 
   @Test
