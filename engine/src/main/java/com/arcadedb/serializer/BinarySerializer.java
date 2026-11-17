@@ -62,6 +62,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.Interruptions;
 
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.io.ShapeWriter;
@@ -370,6 +371,7 @@ public class BinarySerializer {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
           result.size());
     }
@@ -482,6 +484,7 @@ public class BinarySerializer {
         } catch (final DatabaseIsClosedException e) {
           throw e;
         } catch (Exception e) {
+          Interruptions.rethrowIfInterruption(e);
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
                 + e.getMessage(), e);
@@ -500,6 +503,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       if (strict)
         throw e instanceof SerializationException serializationException ?
             serializationException :
@@ -534,6 +538,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
 
@@ -598,6 +603,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return found ? null : absentValue;
     }
@@ -641,6 +647,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // NOT LOGGED HERE: THE CALLER READS EVERY PROPERTY ON ITS OWN, WHICH LOGS THE DAMAGED RECORD AS A SINGLE READ ALWAYS DID
       return false;
     }
@@ -658,6 +665,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return null;
     }

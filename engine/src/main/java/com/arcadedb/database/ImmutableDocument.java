@@ -29,6 +29,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Interruptions;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
@@ -102,6 +103,7 @@ public class ImmutableDocument extends BaseDocument {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return null;
     }
@@ -122,6 +124,7 @@ public class ImmutableDocument extends BaseDocument {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS
       // absentValue/null PER ITS DOCUMENTED FOUND-VS-NOT-FOUND CONTRACT, SO THIS CATCH IS DEAD TODAY. absentValue,
       // NOT null, IS STILL THE RIGHT ANSWER IF IT EVER DOES FIRE: null WOULD SILENTLY BREAK THE "TELL ABSENT FROM
