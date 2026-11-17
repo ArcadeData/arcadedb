@@ -25,153 +25,112 @@ import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetStats;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests issue #11572: MIN and MAX of DOUBLE and FLOAT columnar projections preserve negative zero (-0.0)
- * rather than normalizing to 0.0, matching scan behavior.
+ * Tests issue #11572: MIN and MAX of a DOUBLE or FLOAT column answered from the COLUMNAR projection, and the STATS facet, keep the sign of
+ * a negative zero (-0.0) instead of answering 0.0.
  */
 class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
 
   @Test
   void doubleColumnarMinMaxPreservesNegativeZero() {
-    database.command("sql", "CREATE DOCUMENT TYPE DoubleItem");
-    database.command("sql", "CREATE PROPERTY DoubleItem.grp STRING");
-    database.command("sql", "CREATE PROPERTY DoubleItem.val DOUBLE");
-    database.command("sql", "CREATE INDEX ON DoubleItem (grp) COLUMNAR");
-    database.command("sql", "CREATE INDEX ON DoubleItem (val) COLUMNAR");
-    FacetOracle.awaitCaughtUp(database);
-
-    database.transaction(() -> {
-      // Group A: only negative zero
-      database.newDocument("DoubleItem").set("grp", "A").set("val", -0.0d).save();
-      // Group B: negative zero and positive zero
-      database.newDocument("DoubleItem").set("grp", "B").set("val", -0.0d).save();
-      database.newDocument("DoubleItem").set("grp", "B").set("val", 0.0d).save();
-      // Group C: only positive zero
-      database.newDocument("DoubleItem").set("grp", "C").set("val", 0.0d).save();
-      // Group D: positive zero first, then negative zero
-      database.newDocument("DoubleItem").set("grp", "D").set("val", 0.0d).save();
-      database.newDocument("DoubleItem").set("grp", "D").set("val", -0.0d).save();
-    });
-    FacetOracle.awaitCaughtUp(database);
-
-    for (final boolean accelerated : new boolean[] { false, true }) {
-      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, accelerated);
-
-      // Group A: min and max over {-0.0} should both be -0.0
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal, max(val) AS maxVal FROM DoubleItem WHERE grp = 'A' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final double minA = res.getProperty("minVal");
-        final double maxA = res.getProperty("maxVal");
-        assertThat(Double.doubleToRawLongBits(minA)).as("Group A min accelerated=" + accelerated)
-            .isEqualTo(Double.doubleToRawLongBits(-0.0d));
-        assertThat(Double.doubleToRawLongBits(maxA)).as("Group A max accelerated=" + accelerated)
-            .isEqualTo(Double.doubleToRawLongBits(-0.0d));
-      }
-
-      // Group B: min over {0.0, -0.0} should be -0.0
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal FROM DoubleItem WHERE grp = 'B' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final double minB = res.getProperty("minVal");
-        assertThat(Double.doubleToRawLongBits(minB)).as("Group B min accelerated=" + accelerated)
-            .isEqualTo(Double.doubleToRawLongBits(-0.0d));
-      }
-
-      // Group C: min and max over {0.0} should both be 0.0
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal, max(val) AS maxVal FROM DoubleItem WHERE grp = 'C' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final double minC = res.getProperty("minVal");
-        final double maxC = res.getProperty("maxVal");
-        assertThat(Double.doubleToRawLongBits(minC)).as("Group C min accelerated=" + accelerated)
-            .isEqualTo(Double.doubleToRawLongBits(0.0d));
-        assertThat(Double.doubleToRawLongBits(maxC)).as("Group C max accelerated=" + accelerated)
-            .isEqualTo(Double.doubleToRawLongBits(0.0d));
-      }
-
-      // Group D: reverse insertion order {0.0, -0.0}.
-      // Because SQL min() uses BinaryComparator, where 0.0 and -0.0 compare equal, plain scan (which executes
-      // when a WHERE filter is present) keeps whichever zero was seen first in row order (here, 0.0d).
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal FROM DoubleItem WHERE grp = 'D' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final double minD = res.getProperty("minVal");
-        assertThat(Double.doubleToRawLongBits(minD)).as("Group D min accelerated=" + accelerated)
-            .isEqualTo(Double.doubleToRawLongBits(0.0d));
-      }
-    }
+    loadZeros("DoubleItem", "DOUBLE", -0.0d, 0.0d);
+    assertMinMax("DoubleItem");
   }
 
   @Test
   void floatColumnarMinMaxPreservesNegativeZero() {
-    database.command("sql", "CREATE DOCUMENT TYPE FloatItem");
-    database.command("sql", "CREATE PROPERTY FloatItem.grp STRING");
-    database.command("sql", "CREATE PROPERTY FloatItem.val FLOAT");
-    database.command("sql", "CREATE INDEX ON FloatItem (grp) COLUMNAR");
-    database.command("sql", "CREATE INDEX ON FloatItem (val) COLUMNAR");
+    loadZeros("FloatItem", "FLOAT", -0.0f, 0.0f);
+    assertMinMax("FloatItem");
+  }
+
+  /**
+   * Groups A {-0.0}, B {-0.0, 0.0}, C {0.0} and D {0.0, -0.0} (the zeros of B and D inserted in opposite orders).
+   */
+  private void loadZeros(final String type, final String propertyType, final Number negativeZero, final Number positiveZero) {
+    database.command("sql", "CREATE DOCUMENT TYPE " + type);
+    database.command("sql", "CREATE PROPERTY " + type + ".grp STRING");
+    database.command("sql", "CREATE PROPERTY " + type + ".val " + propertyType);
+    database.command("sql", "CREATE INDEX ON " + type + " (grp) COLUMNAR");
+    database.command("sql", "CREATE INDEX ON " + type + " (val) COLUMNAR");
     FacetOracle.awaitCaughtUp(database);
 
     database.transaction(() -> {
-      // Group A: only negative zero
-      database.newDocument("FloatItem").set("grp", "A").set("val", -0.0f).save();
-      // Group B: negative zero and positive zero
-      database.newDocument("FloatItem").set("grp", "B").set("val", -0.0f).save();
-      database.newDocument("FloatItem").set("grp", "B").set("val", 0.0f).save();
-      // Group C: only positive zero
-      database.newDocument("FloatItem").set("grp", "C").set("val", 0.0f).save();
-      // Group D: positive zero first, then negative zero
-      database.newDocument("FloatItem").set("grp", "D").set("val", 0.0f).save();
-      database.newDocument("FloatItem").set("grp", "D").set("val", -0.0f).save();
+      database.newDocument(type).set("grp", "A").set("val", negativeZero).save();
+      database.newDocument(type).set("grp", "B").set("val", negativeZero).save();
+      database.newDocument(type).set("grp", "B").set("val", positiveZero).save();
+      database.newDocument(type).set("grp", "C").set("val", positiveZero).save();
+      database.newDocument(type).set("grp", "D").set("val", positiveZero).save();
+      database.newDocument(type).set("grp", "D").set("val", negativeZero).save();
     });
     FacetOracle.awaitCaughtUp(database);
+  }
 
-    for (final boolean accelerated : new boolean[] { false, true }) {
-      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, accelerated);
+  /**
+   * The projection orders the zeros as {@code Double.compare} (-0.0 below 0.0) whatever the row order. The normal plan compares with
+   * {@code BinaryComparator}, where the zeros are equal, so on a group holding both it keeps the zero it met first: the two plans agree on
+   * the value of every extreme and differ only on the sign of a zero extreme of a group holding both zeros.
+   */
+  private void assertMinMax(final String type) {
+    final String sql = "SELECT grp, min(val) AS mn, max(val) AS mx FROM " + type + " GROUP BY grp";
 
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal, max(val) AS maxVal FROM FloatItem WHERE grp = 'A' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final float minA = res.getProperty("minVal");
-        final float maxA = res.getProperty("maxVal");
-        assertThat(Float.floatToRawIntBits(minA)).as("Float Group A min accelerated=" + accelerated)
-            .isEqualTo(Float.floatToRawIntBits(-0.0f));
-        assertThat(Float.floatToRawIntBits(maxA)).as("Float Group A max accelerated=" + accelerated)
-            .isEqualTo(Float.floatToRawIntBits(-0.0f));
-      }
+    final Map<String, double[]> accelerated = minMax(sql);
+    assertThat(columnarPath(sql)).as("the accelerated run of " + sql + " is answered from the projection").isEqualTo("columnar");
+    assertThat(accelerated).containsOnlyKeys("A", "B", "C", "D");
+    assertSigned(accelerated, "A", -0.0d, -0.0d);
+    assertSigned(accelerated, "B", -0.0d, 0.0d);
+    assertSigned(accelerated, "C", 0.0d, 0.0d);
+    assertSigned(accelerated, "D", -0.0d, 0.0d);
 
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal FROM FloatItem WHERE grp = 'B' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final float minB = res.getProperty("minVal");
-        assertThat(Float.floatToRawIntBits(minB)).as("Float Group B min accelerated=" + accelerated)
-            .isEqualTo(Float.floatToRawIntBits(-0.0f));
-      }
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, false);
+    try {
+      final Map<String, double[]> normal = minMax(sql);
+      assertThat(columnarPath(sql)).as("the normal run of " + sql + " is not answered from the projection").startsWith("normal");
+      assertThat(normal).containsOnlyKeys("A", "B", "C", "D");
+      // one sign of zero in the group: both plans answer it with its sign
+      assertSigned(normal, "A", -0.0d, -0.0d);
+      assertSigned(normal, "C", 0.0d, 0.0d);
+      // both zeros in the group: the normal plan keeps the zero it meets first, so only the value is fixed
+      for (final String group : new String[] { "B", "D" })
+        for (final double extreme : normal.get(group))
+          assertThat(Math.abs(extreme)).as("normal plan, group " + group).isEqualTo(0.0d);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, true);
+    }
+  }
 
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal, max(val) AS maxVal FROM FloatItem WHERE grp = 'C' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final float minC = res.getProperty("minVal");
-        final float maxC = res.getProperty("maxVal");
-        assertThat(Float.floatToRawIntBits(minC)).as("Float Group C min accelerated=" + accelerated)
-            .isEqualTo(Float.floatToRawIntBits(0.0f));
-        assertThat(Float.floatToRawIntBits(maxC)).as("Float Group C max accelerated=" + accelerated)
-            .isEqualTo(Float.floatToRawIntBits(0.0f));
-      }
+  private static void assertSigned(final Map<String, double[]> rows, final String group, final double min, final double max) {
+    assertThat(Double.doubleToRawLongBits(rows.get(group)[0])).as("min of group " + group).isEqualTo(Double.doubleToRawLongBits(min));
+    assertThat(Double.doubleToRawLongBits(rows.get(group)[1])).as("max of group " + group).isEqualTo(Double.doubleToRawLongBits(max));
+  }
 
-      // Group D: reverse insertion order {0.0f, -0.0f}
-      // Because SQL min() uses BinaryComparator, where 0.0f and -0.0f compare equal, plain scan (which executes
-      // when a WHERE filter is present) keeps whichever zero was seen first in row order (here, 0.0f).
-      try (final ResultSet rs = database.query("sql", "SELECT min(val) AS minVal FROM FloatItem WHERE grp = 'D' GROUP BY grp")) {
-        assertThat(rs.hasNext()).isTrue();
-        final Result res = rs.next();
-        final float minD = res.getProperty("minVal");
-        assertThat(Float.floatToRawIntBits(minD)).as("Float Group D min accelerated=" + accelerated)
-            .isEqualTo(Float.floatToRawIntBits(0.0f));
+  /** min and max of each group, widened to double as a Float keeps its sign. */
+  private Map<String, double[]> minMax(final String sql) {
+    final Map<String, double[]> rows = new HashMap<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        rows.put(row.getProperty("grp"),
+            new double[] { ((Number) row.getProperty("mn")).doubleValue(), ((Number) row.getProperty("mx")).doubleValue() });
       }
     }
+    return rows;
+  }
+
+  /** The path the {@link ColumnarGroupByStep} of a PROFILE of the statement took, null when its plan has no such step. */
+  private String columnarPath(final String sql) {
+    try (final ResultSet rs = database.query("sql", "PROFILE " + sql)) {
+      while (rs.hasNext())
+        rs.next();
+      for (final ExecutionStep step : rs.getExecutionPlan().get().getSteps())
+        if (step instanceof ColumnarGroupByStep columnar)
+          return columnar.lastPath();
+    }
+    return null;
   }
 
   @Test
@@ -245,37 +204,44 @@ class Issue11572ColumnarNegativeZeroMinMaxTest extends TestHelper {
 
   @Test
   void groupByAndFacetsCollapseNegativeAndPositiveZeroIntoSingleKey() {
-    database.command("sql", "CREATE DOCUMENT TYPE ZeroGroupItem");
-    database.command("sql", "CREATE PROPERTY ZeroGroupItem.val DOUBLE");
-    database.command("sql", "CREATE INDEX ON ZeroGroupItem (val) COLUMNAR");
+    assertZerosAreOneKey("ZeroDoubleItem", "DOUBLE", -0.0d, 0.0d);
+    assertZerosAreOneKey("ZeroFloatItem", "FLOAT", -0.0f, 0.0f);
+  }
+
+  /** The column now holds -0.0 as it is: GROUP BY, TERMS and DISTINCT must still see one value for both zeros. */
+  private void assertZerosAreOneKey(final String type, final String propertyType, final Number negativeZero, final Number positiveZero) {
+    database.command("sql", "CREATE DOCUMENT TYPE " + type);
+    database.command("sql", "CREATE PROPERTY " + type + ".val " + propertyType);
+    database.command("sql", "CREATE INDEX ON " + type + " (val) COLUMNAR");
     FacetOracle.awaitCaughtUp(database);
 
     database.transaction(() -> {
-      database.newDocument("ZeroGroupItem").set("val", -0.0d).save();
-      database.newDocument("ZeroGroupItem").set("val", 0.0d).save();
+      database.newDocument(type).set("val", negativeZero).save();
+      database.newDocument(type).set("val", positiveZero).save();
+      database.newDocument(type).set("val", negativeZero).save();
     });
     FacetOracle.awaitCaughtUp(database);
 
     for (final boolean accelerated : new boolean[] { false, true }) {
       database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, accelerated);
-
-      try (final ResultSet rs = database.query("sql", "SELECT val, count(*) AS cnt FROM ZeroGroupItem GROUP BY val")) {
+      try (final ResultSet rs = database.query("sql", "SELECT val, count(*) AS cnt FROM " + type + " GROUP BY val")) {
         assertThat(rs.hasNext()).isTrue();
         final Result res = rs.next();
-        assertThat(((Number) res.getProperty("cnt")).longValue()).isEqualTo(2L);
+        assertThat(((Number) res.getProperty("cnt")).longValue()).as(type + " GROUP BY accelerated=" + accelerated).isEqualTo(3L);
         assertThat(rs.hasNext()).isFalse();
       }
     }
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, true);
 
-    try (final ResultSet rs = database.query("sql", "SELECT FROM ZeroGroupItem FACETS t: val TERMS")) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + type + " FACETS t: val TERMS")) {
       final FacetResult facet = rs.getFacets().get("t");
-      assertThat(facet.buckets()).hasSize(1);
-      assertThat(facet.buckets().getFirst().count()).isEqualTo(2L);
+      assertThat(facet.buckets()).as(type + " TERMS").hasSize(1);
+      assertThat(facet.buckets().getFirst().count()).isEqualTo(3L);
     }
 
-    try (final ResultSet rs = database.query("sql", "SELECT FROM ZeroGroupItem FACETS d: val DISTINCT")) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + type + " FACETS d: val DISTINCT")) {
       final FacetResult facet = rs.getFacets().get("d");
-      assertThat(facet.distinct().value()).isEqualTo(1L);
+      assertThat(facet.distinct().value()).as(type + " DISTINCT").isEqualTo(1L);
     }
   }
 }

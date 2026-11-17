@@ -495,8 +495,8 @@ class ColumnarOverlayTest {
     // Verify individual block bounds
     assertThat(Double.longBitsToDouble(blk0.min(3))).isEqualTo(-10.0);
     assertThat(Double.longBitsToDouble(blk0.max(3))).isEqualTo(-1.0);
-    assertThat(blk1.min(3) > blk1.max(3)).isTrue();
-    assertThat(blk2.min(3) > blk2.max(3)).isTrue();
+    assertThat(blk1.min(3)).isGreaterThan(blk1.max(3));
+    assertThat(blk2.min(3)).isGreaterThan(blk2.max(3));
     assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(blk3.min(3))))
         .isEqualTo(Double.doubleToRawLongBits(-0.0));
     assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(blk3.max(3))))
@@ -512,5 +512,33 @@ class ColumnarOverlayTest {
     assertThat(Double.longBitsToDouble(view.minLong("score"))).isEqualTo(-10.0);
     assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(view.maxLong("score"))))
         .isEqualTo(Double.doubleToRawLongBits(-0.0));
+  }
+
+  /** NaN and -0.0 in ONE block: NaN never becomes a bound, and -0.0 is both bounds when it is the only other value. */
+  @Test
+  void doubleBoundsOfOneBlockMixingNaNAndNegativeZero() {
+    buffer.clear();
+    values.present[0] = true;
+    values.ordinal[0] = 1;
+    values.present[1] = false;
+    values.present[2] = false;
+    values.present[3] = true;
+    values.doubles[3] = Double.NaN;
+    buffer.put(1, values);
+    values.doubles[3] = -0.0;
+    buffer.put(2, values);
+    values.doubles[3] = Double.NaN;
+    buffer.put(3, values);
+    final OverlayPageBlock negativeZeroOnly = OverlayPageBlock.build(0, MRP, COLUMNS, 1, buffer);
+
+    assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(negativeZeroOnly.min(3)))).isEqualTo(Double.doubleToRawLongBits(-0.0));
+    assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(negativeZeroOnly.max(3)))).isEqualTo(Double.doubleToRawLongBits(-0.0));
+
+    values.doubles[3] = 0.0;
+    buffer.put(4, values);
+    final OverlayPageBlock bothZeros = OverlayPageBlock.build(1, MRP, COLUMNS, 1, buffer);
+
+    assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(bothZeros.min(3)))).isEqualTo(Double.doubleToRawLongBits(-0.0));
+    assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(bothZeros.max(3)))).isEqualTo(Double.doubleToRawLongBits(0.0));
   }
 }

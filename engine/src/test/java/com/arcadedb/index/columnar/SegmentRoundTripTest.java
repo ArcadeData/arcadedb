@@ -736,7 +736,7 @@ class SegmentRoundTripTest {
     }
 
     try (final SegmentReader reader = SegmentReader.open(nanOnlyFile, null)) {
-      assertThat(reader.minLong("score") > reader.maxLong("score")).isTrue();
+      assertThat(reader.minLong("score")).isGreaterThan(reader.maxLong("score"));
     }
   }
 }

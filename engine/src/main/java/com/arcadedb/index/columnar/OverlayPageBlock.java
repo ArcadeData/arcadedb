@@ -123,7 +123,8 @@ final class OverlayPageBlock {
           if (!has)
             continue;
           if (kind == ColumnKind.DOUBLE) {
-            // NaN is never a bound, as in SegmentWriter
+            // NaN is never a bound, as in SegmentWriter: Double.compare orders NaN above every value, so it never lowers the low
+            // bound, and the high bound skips it explicitly. -0.0 orders below 0.0, so the bounds keep the sign of a zero extreme
             final double d = Double.longBitsToDouble(v);
             if (Double.compare(d, lowDouble) < 0)
               lowDouble = d;

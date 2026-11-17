@@ -241,6 +241,7 @@ final class SegmentWriter implements AutoCloseable {
       final double v = row.doubles[k];
       values[k][r] = present ? Double.doubleToRawLongBits(v) : 0L;
       if (present) {
+        // Double.compare orders NaN above every value, so it never lowers the min; the max skips it explicitly
         if (Double.compare(v, minDouble[k]) < 0)
           minDouble[k] = v;
         if (!Double.isNaN(v) && Double.compare(v, maxDouble[k]) > 0)
