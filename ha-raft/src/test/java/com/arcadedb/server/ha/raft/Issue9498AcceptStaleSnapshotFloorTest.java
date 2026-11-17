@@ -306,7 +306,7 @@ class Issue9498AcceptStaleSnapshotFloorTest {
   /** The sole-voter "no peer" report names the new way out, next to accept-diverged's. */
   @Test
   void theSoleVoterReportNamesTheOverride() {
-    assertThat(RaftHAServer.noHandoffPeerReport("a node-wide read floor at 100", true))
+    assertThat(PeerChannelRecovery.noHandoffPeerReport("a node-wide read floor at 100", true))
         .contains(PostAcceptStaleSnapshotHandler.ROUTE);
   }
 

@@ -173,7 +173,7 @@ class CypherStringFunctionSecondaryArgumentIssue6608Test extends TestHelper {
   @Test
   void btrimCalledWithThreePositionalArgumentsIsAPreExistingAmbiguityNotIntroducedByThisFix() {
     // btrim() has no dedicated SQL-style grammar rule (only the reserved TRIM keyword does - see
-    // CypherExpressionBuilder#findTrimFunctionRecursive), so a 3-argument call to it is parsed as an
+    // ParseTreeSearch#findTrimFunctionRecursive), so a 3-argument call to it is parsed as an
     // ordinary function call and reaches CypherTrimFunction's args.length == 3 branch positionally:
     // args[0] is read as "mode" (never LEADING/TRAILING, so it silently falls through to "trim both"),
     // args[1] as the trim character, and args[2] as the source - NOT args[0] as the source a caller

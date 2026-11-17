@@ -112,6 +112,16 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   public CheckDatabaseStatement() {
   }
 
+  /**
+   * A check that repairs nothing reports on the node that runs it (issues #12347, #12348): on a replica it used to be forwarded to
+   * the leader like any write, so a replica whose record counter or index had drifted was reported clean, the leader's files
+   * being the ones inspected. FIX and COMPRESS write, so they keep going to the leader, whose repairs replicate.
+   */
+  @Override
+  public boolean inspectsTheLocalNode() {
+    return !fix && !compress;
+  }
+
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     final ResultInternal result = new ResultInternal(context.getDatabase());

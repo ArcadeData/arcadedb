@@ -572,10 +572,11 @@ public final class SetClauseApplier {
    * <p>
    * Cypher accepts a map literal, a node or a relationship there - copying every property off another entity is the
    * documented way to clone one - so anything else is a type error rather than a discarded write (issue #6832). A
-   * null right-hand side stays a no-op, which is what the two callers get back as a null map.
+   * null right-hand side stays a no-op, which is what the two callers get back as a null map. {@link NewNodeSetFolding}
+   * resolves a folded map item through here too, so a folded and an applied write accept and refuse the same values.
    */
   @SuppressWarnings("unchecked")
-  private static Map<String, Object> toPropertyMap(final Object value, final String operator,
+  static Map<String, Object> toPropertyMap(final Object value, final String operator,
       final Expression valueExpression) {
     if (value == null)
       return null;

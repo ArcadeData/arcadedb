@@ -1325,6 +1325,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (inUse != null)
       return new ErrorClassification(409, "Object in use", inUse, null, ErrorLogKind.USER);
 
+    // 409 Conflict: a statement that runs only in the implicit transaction of one request (CALL { ... } IN TRANSACTIONS), sent in
+    // the transaction the caller opened with /begin. The session's state is the cause, the same request outside the transaction
+    // runs, and it is refused again while the transaction is open (issue #12161). Before the generic CommandExecutionException
+    // arm, which it extends and which answers 500
+    final ImplicitTransactionRequiredException implicitOnly = firstOf(e, cause, ImplicitTransactionRequiredException.class);
+    if (implicitOnly != null)
+      return new ErrorClassification(409, "Cannot execute command in an explicit transaction", implicitOnly, null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
     // bad write. See issue #4350.

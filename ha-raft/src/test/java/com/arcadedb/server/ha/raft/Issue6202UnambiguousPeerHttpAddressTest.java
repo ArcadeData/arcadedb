@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * reading it; this variant is for the callers that act on it unattended, where reconciling every database from
  * the wrong node cannot be undone.
  * <p>
- * It is the same rule {@link RaftHAServer#selectUnambiguousRouting} applies to client routing tables (#6183),
+ * It is the same rule {@link PeerEndpoints#selectUnambiguousRouting} applies to client routing tables (#6183),
  * now sharing its claim-counting core with it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

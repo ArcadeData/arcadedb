@@ -537,6 +537,11 @@ public class FunctionCall extends SimpleNode {
     return getFunction(context) instanceof final IndexableSQLFunction function ? function : null;
   }
 
+  /** The function this call invokes, configured with its parameters. */
+  public SQLFunction getSQLFunction(final CommandContext context) {
+    return getFunction(context);
+  }
+
   private SQLFunction getFunction(final CommandContext context) {
     return ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue()).config(params.toArray());
   }

@@ -344,6 +344,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #9694: pages whose reservations are gone and that wait to be measured and listed in freeSpaceInPages again by the
   // next allocation; filled from transaction teardown, which must not read pages (see relistPage()).
   private                Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
+  // #12336: position -> how many running statements hold it, for a record deleted while a statement may still refer to it by
+  // RID (a Cypher label write replaces the record and keeps a statement-wide map keyed by the original RID). A freed slot is
+  // handed to the next insert once the delete commits, which made the RID name two records; a held position is never handed
+  // out until every statement holding it released it (two concurrent statements can both hold one before either commits).
+  // Adopted by a schema reload like the reservations, since the statement releases into the instance it held on.
+  private                Map<Long, Integer>        heldPositions                    = new ConcurrentHashMap<>();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -644,6 +650,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       insertReservations = previousBucket.insertReservations;
       inFlightNewPages = previousBucket.inFlightNewPages;
       pagesToRelist = previousBucket.pagesToRelist;
+      heldPositions = previousBucket.heldPositions;
     }
   }
 
@@ -665,6 +672,41 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     insertReservations.clear();
     inFlightNewPages.clear();
     pagesToRelist.clear();
+    heldPositions.clear();
+  }
+
+  /**
+   * Keeps the slot at {@code position} from being handed to a new record, by any transaction, until
+   * {@link #releaseHeldPosition(long)} (issue #12336). For a caller that deleted the record there and may still meet bindings
+   * that name it by RID: once the delete commits, the allocator would otherwise give the slot - and so the RID - to the next
+   * insert, and a binding could no longer tell the deleted record from the new one. A slot freed inside a transaction is
+   * never reused by that transaction anyway; the hold is what spans its commit.
+   * <p>
+   * Held positions live in memory only: a restart releases them, which is right, since no statement survives it.
+   */
+  public void holdPosition(final long position) {
+    heldPositions.merge(position, 1, Integer::sum);
+  }
+
+  /**
+   * Gives back one hold {@link #holdPosition(long)} took: the position is reusable again once every holder released it, so a
+   * statement that ends (or rolls back) never frees a slot another running statement still refers to.
+   */
+  public void releaseHeldPosition(final long position) {
+    heldPositions.computeIfPresent(position, (key, holders) -> holders > 1 ? holders - 1 : null);
+  }
+
+  /** Whether {@link #holdPosition(long)} keeps {@code position} from reuse. */
+  public boolean isPositionHeld(final long position) {
+    return !heldPositions.isEmpty() && heldPositions.containsKey(position);
+  }
+
+  /**
+   * Whether a free slot may not be handed to a new record: its record was deleted by the calling transaction (a position
+   * deleted in the current transaction is not reused by it), or a running statement holds it ({@link #holdPosition(long)}).
+   */
+  private boolean isFreeSlotKeptFromReuse(final TransactionContext tx, final int bucketId, final long position) {
+    return tx.isDeletedInTransaction(bucketId, position) || isPositionHeld(position);
   }
 
   public int getMaxRecordsInPage() {
@@ -1215,7 +1257,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final TransactionContext transaction = database.getTransaction();
         final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-        transaction.trackScanOfPage(page);
+        final boolean ownImage = transaction.trackScanOfPage(page);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -1238,7 +1280,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
                 final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
-                if (!callback.onRecord(rid, view))
+                if (!callback.onRecord(rid, view, ownImage))
                   return;
 
               } else if (recordSize == RECORD_PLACEHOLDER_POINTER) {
@@ -1246,14 +1288,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 final RID placeHolderPointer = new RID(fileId,
                         page.readLong(recordPositionInPage + recordHeaderSize));
                 final Binary view = getRecordInternal(placeHolderPointer, true, false);
-                if (view != null && !callback.onRecord(rid, view))
+                if (view != null && !callback.onRecord(rid, view, ownImage))
                   return;
               } else if (recordSize == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
                 // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
                 // through the pointer branch above, under the RID the user knows, and exactly once.
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize);
-                if (!callback.onRecord(rid, view))
+                if (!callback.onRecord(rid, view, ownImage))
                   return;
               }
 
@@ -3779,7 +3821,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // preference there, not a requirement (findAvailableSpace deliberately retries with half the size to
         // squeeze a record into the tail of an almost full page), so turning it into a hard limit here would
         // send every record landing in that tail to a brand-new page.
-        if (slot >= maxRecordsInPage || offset + spaceNeeded > maxContentSize) {
+        // A held slot (#12336) is never handed out: reached here only by an append past the table, which the caller's walk
+        // could not see because the reservations of other transactions moved it there
+        if (slot >= maxRecordsInPage || offset + spaceNeeded > maxContentSize
+                || isPositionHeld(((long) pageNumber) * maxRecordsInPage + slot)) {
           if (res.outstanding == 0) {
             res.removed = true;
             insertReservations.remove(pageNumber, res);
@@ -9142,6 +9187,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } else if (pageNumber > 0 || !multiPageRecord) {
       // FIRST RECORD, START RIGHT AFTER THE HEADER
       result.availablePositionIndex = 0;
+      // A page a commit emptied while a statement holds its first slot (#12336): every allocation reaches here, a continuation
+      // chunk included, which never goes through the reservation that refuses a held slot to an ordinary insert
+      if (isAppendSlotHeld(result, ((long) pageNumber) * maxRecordsInPage))
+        return result;
       result.newRecordPositionInPage = contentHeaderSize;
       result.spaceAvailableInCurrentPage = result.page.getMaxContentSize() - result.newRecordPositionInPage;
     } else {
@@ -9181,7 +9230,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int from = ownPage.getSlotScanFirstFreeSlot();
       int slot = from;
       while (slot < totalRecords && (getRecordPositionInPage(pageAnalysis.page, slot) != 0
-              || tx.isDeletedInTransaction(bucketId, firstPositionOfPage + slot)))
+              || isFreeSlotKeptFromReuse(tx, bucketId, firstPositionOfPage + slot)))
         slot++;
       if (slot > from) {
         insertSlotsRead.addAndGet(Math.min(totalRecords, slot + 1) - from);
@@ -9189,6 +9238,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       pageAnalysis.availablePositionIndex = multiPageRecord ? slotForContinuationChunk(pageAnalysis, slot) : slot;
+      if (isAppendSlotHeld(pageAnalysis, firstPositionOfPage))
+        return;
       pageAnalysis.lastRecordPositionInPage = ownPage.getSlotScanLastPosition();
       pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
       pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
@@ -9200,8 +9251,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
         // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD (from previous transactions only: a position deleted in the
-        // current transaction is not reused by it)
-        if (firstFreeSlot == -1 && !tx.isDeletedInTransaction(bucketId, firstPositionOfPage + i))
+        // current transaction is not reused by it, nor one a running statement holds, #12336)
+        if (firstFreeSlot == -1 && !isFreeSlotKeptFromReuse(tx, bucketId, firstPositionOfPage + i))
           firstFreeSlot = i;
       } else if (recordPositionInPage > pageAnalysis.lastRecordPositionInPage)
         pageAnalysis.lastRecordPositionInPage = recordPositionInPage;
@@ -9221,8 +9272,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (multiPageRecord)
       pageAnalysis.availablePositionIndex = slotForContinuationChunk(pageAnalysis, pageAnalysis.availablePositionIndex);
 
+    if (isAppendSlotHeld(pageAnalysis, firstPositionOfPage))
+      return;
+
     pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
     pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
+  }
+
+  /**
+   * Refuses the page when the slot it offers is past its record table and held (#12336): a held position past the table is
+   * one a commit trimmed off the end, and appending there would give a new record the RID a running statement still answers
+   * for. The page is passed over rather than its table extended past the held slot, and takes appends again once released.
+   * Holes inside the table never get here: the walks skip a held one.
+   */
+  private boolean isAppendSlotHeld(final PageAnalysis pageAnalysis, final long firstPositionOfPage) {
+    if (pageAnalysis.availablePositionIndex < pageAnalysis.totalRecordsInPage
+        || !isPositionHeld(firstPositionOfPage + pageAnalysis.availablePositionIndex))
+      return false;
+    pageAnalysis.createNewPage = true;
+    return true;
   }
 
   /**
@@ -9241,7 +9309,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext tx = database.getTransaction();
     final int bucketId = file.getFileId();
     int next = 1;
-    while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || tx.isDeletedInTransaction(bucketId,
+    while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || isFreeSlotKeptFromReuse(tx, bucketId,
             next)))
       next++;
     // Slots read: 1..next when the walk stopped on a free slot (next of them), 1..totalRecords-1 when it ran off the table.
@@ -9816,7 +9884,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * somebody is already diagnosing, would be worse than no report at all.
    * <p>
    * <b>The repair is the invalidation {@code check(fix=true)} already makes</b>: the next {@code count()} rescans and
-   * republishes. A read-only run only reports, like every other finding here.
+   * republishes. A read-only run makes it too (issue #12347): the counter is a cache of this node alone, which no replication
+   * carries and a restart reloads as it was, so on a replica of a cluster, where a FIX is forwarded to the leader, a counter
+   * proven wrong had no repair at all. Dropping it changes no record, and a disagreement this method lets through costs at
+   * worst one recount.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -9857,13 +9928,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     ++totals.totalErrors;
     stats.put("staleRecordCounters", 1L);
-    if (fix)
+    // Under FIX check() dropped it already. A read-only run drops it here, only if nothing folded into it since it was read: a
+    // counter that moved is the commit the guard above refuses to judge
+    final boolean recomputed = fix || cachedRecordCount.compareAndSet(cachedRecordCountBefore, -1);
+    if (recomputed)
       stats.put("staleRecordCountersFixed", 1L);
 
     final String warning = ("cached record count of bucket '%s' is %d but the bucket holds %d records: count(*) on this"
             + " bucket %s by %d%s").formatted(componentName, cachedRecordCountBefore, scanned,
             cachedRecordCountBefore > scanned ? "over-reports" : "under-reports", Math.abs(cachedRecordCountBefore - scanned),
-            fix ? " - the counter is recomputed" : "; run CHECK DATABASE FIX to recompute the counter");
+            recomputed ? " - the counter is recomputed" : "; run CHECK DATABASE again to recompute the counter");
 
     totals.warnings.add(warning);
     if (verboseLevel > 0)
