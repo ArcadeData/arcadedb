@@ -106,6 +106,24 @@ class Issue11621LongScalarTest extends AbstractGraphQLTest {
     });
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = { "byTs", "byTsDirective" })
+  void aVariableOfAWiderTypeIsCheckedAgainstTheLongArgument(final String field) {
+    executeTest(database -> {
+      defineTypes(database);
+      // the variable's own declaration takes a decimal, the Long argument it is bound to does not
+      final String query = "query q($t: Float) { " + field + "(ts: $t) { id } }";
+      assertThatThrownBy(() -> ids(database, query, Map.of("t", 3.14d))).isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("Long").hasMessageContaining("the value 3.14");
+      // an integral value is a valid Float input and a valid Long
+      assertThat(ids(database, query, Map.of("t", 3))).containsExactly("e2");
+      // a custom scalar the module does not model passes the variable's check, the argument still refuses a decimal
+      assertThatThrownBy(() -> ids(database, "query q($t: Anything) { " + field + "(ts: $t) { id } }", Map.of("t", 3.5d)))
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("Long");
+      return null;
+    });
+  }
+
   @Test
   void variablesDecodedFromJsonAreCheckedLikeTheLiterals() {
     executeTest(database -> {

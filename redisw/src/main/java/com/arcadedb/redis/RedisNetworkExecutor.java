@@ -1153,11 +1153,16 @@ public class RedisNetworkExecutor extends Thread {
    * was skipped and read as an option (issue #11783).
    */
   private static long parseProtocolVersion(final String text) {
+    final long version;
     try {
-      return Long.parseLong(text);
+      version = Long.parseLong(text);
     } catch (final NumberFormatException e) {
       throw new RedisException("Protocol version is not an integer or out of range");
     }
+    // Redis' string2ll takes the canonical form only: parseLong also takes "+3", "03" and non-ASCII digits
+    if (!Long.toString(version).equals(text))
+      throw new RedisException("Protocol version is not an integer or out of range");
+    return version;
   }
 
   /**

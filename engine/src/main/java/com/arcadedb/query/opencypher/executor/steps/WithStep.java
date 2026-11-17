@@ -195,8 +195,9 @@ public class WithStep extends AbstractExecutionStep {
             // Project the result
             final ResultInternal projectedResult = projectResult(inputResult);
 
-            // Apply WHERE clause filtering on the incoming scope merged with the projection. A WHERE after a SKIP or a LIMIT filters the paged rows instead (issue #11762): see below, or the steps the planner
-            // chains after the ORDER BY.
+            // Apply WHERE clause filtering on the incoming scope merged with the projection. A WHERE after a SKIP or a
+            // LIMIT filters the paged rows instead (issue #11762): see below, or the steps the planner chains after the
+            // ORDER BY.
             if (withClause.getWhereClause() != null && !whereAfterPaging && !passesWhere(inputResult, projectedResult))
               continue;
 

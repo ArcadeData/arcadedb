@@ -192,29 +192,17 @@ final class CallOperands {
     boolean implementedByInstanceMethod() {
       return implementation.getTag() != Opcodes.H_INVOKESTATIC && implementation.getTag() != Opcodes.H_NEWINVOKESPECIAL;
     }
+
+    /** The capture {@code insn} of {@code in} is, or null when it is no lambda or method reference, or captures nothing. */
+    static Capture of(final Method in, final InvokeDynamicInsnNode insn) {
+      if (!LAMBDA_METAFACTORY.equals(insn.bsm.getOwner()) || Type.getArgumentTypes(insn.desc).length == 0 || insn.bsmArgs.length < 2
+          || !(insn.bsmArgs[1] instanceof Handle implementation))
+        return null;
+      return new Capture(in, insn, implementation);
+    }
   }
 
   private CallOperands() {
-  }
-
-  /** Every lambda and method reference of {@code classes} that captures at least one value, with its analysed method. */
-  static List<Capture> capturesOf(final Map<String, byte[]> classes) {
-    final List<Capture> captures = new ArrayList<>();
-    for (final Map.Entry<String, byte[]> entry : classes.entrySet()) {
-      final ClassNode owner = read(entry.getValue());
-      for (final MethodNode node : owner.methods) {
-        Method method = null;
-        for (final AbstractInsnNode insn : node.instructions) {
-          if (!(insn instanceof InvokeDynamicInsnNode indy) || !LAMBDA_METAFACTORY.equals(indy.bsm.getOwner())
-              || Type.getArgumentTypes(indy.desc).length == 0 || indy.bsmArgs.length < 2 || !(indy.bsmArgs[1] instanceof Handle impl))
-            continue;
-          if (method == null)
-            method = analyse(entry.getKey(), owner, node);
-          captures.add(new Capture(method, indy, impl));
-        }
-      }
-    }
-    return captures;
   }
 
   private static final String LAMBDA_METAFACTORY = "java/lang/invoke/LambdaMetafactory";

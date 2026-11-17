@@ -119,7 +119,7 @@ class Issue11886GremlinTraversalErrorClassificationTest {
     assertThat(drain("g.V().out(null)")).isZero();
     assertThat(drain("g.V().outE(null)")).isZero();
     assertThat(drain("g.V().both(null)")).isZero();
-    assertThat(drain("g.V().in(null).count()")).isEqualTo(1);
+    assertThat(drain("g.V().in(null)")).isZero();
     assertThat(drain("g.V().where(__.outE(null).count().is(0))")).isEqualTo(2);
   }
 

@@ -467,10 +467,7 @@ public class GraphQLSchema {
       return;
 
     final String declared = typeName.getName();
-    // THE JSON DECODER HANDS AN INTEGER TOKEN BEYOND THE LONG RANGE OVER AS A BigDecimal OF SCALE 0, WHICH IS AN INTEGRAL VALUE
-    // (A FLOAT TOKEN IS A Double, OR A BigDecimal WITH A FRACTION): AN ID TAKES IT, A LONG REFUSES IT FOR ITS WIDTH (ISSUE #11621)
-    final Object checked = value instanceof BigDecimal decimal && decimal.scale() == 0 ? decimal.toBigInteger() : value;
-    if (!isValueOf(declared, checked))
+    if (!isValueOf(declared, checkedValue(value)))
       throw new CommandParsingException(
           "GraphQL variable '$" + name + "' is declared as " + declared + " but a " + value.getClass().getSimpleName()
               + " value was " + origin);
@@ -585,10 +582,21 @@ public class GraphQLSchema {
       return;
     }
 
-    if (literal && type.getTypeName() != null && !isValueOf(type.getTypeName().getName(), value))
+    // A VARIABLE IS CHECKED AGAINST THE ARGUMENT TOO: ITS OWN DECLARATION MAY BE A WIDER TYPE ($t: Float BOUND TO A Long
+    // ARGUMENT), WHICH THE SPECIFICATION DOES NOT ALLOW IN THAT POSITION (ISSUE #11621)
+    if (type.getTypeName() != null && !isValueOf(type.getTypeName().getName(), checkedValue(value)))
       throw new CommandParsingException(
           "GraphQL argument '" + name + "' of field '" + field.getName() + "' is declared as " + type + ", which cannot represent "
-              + "the literal " + value + scalarRange(type.getTypeName().getName()));
+              + (literal ? "the literal " : "the value ") + value + scalarRange(type.getTypeName().getName()));
+  }
+
+  /**
+   * The value a scalar check reads. The JSON decoder hands an integer token beyond the long range over as a {@link BigDecimal} of
+   * scale 0, which is an integral value (a float token is a {@code Double}, or a {@code BigDecimal} with a fraction): an ID takes
+   * it, a Long refuses it for its width (issue #11621).
+   */
+  private static Object checkedValue(final Object value) {
+    return value instanceof BigDecimal decimal && decimal.scale() == 0 ? decimal.toBigInteger() : value;
   }
 
   /** Why an integer literal does not fit the scalar, for the scalars with a range. */

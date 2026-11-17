@@ -21,14 +21,17 @@ package com.arcadedb.census;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -64,6 +67,7 @@ class MCPToolArgumentReadsCensusTest {
   private static final String UTILS       = "mcp/tools/MCPToolUtils";
   private static final String UTILS_CLASS = "com/arcadedb/" + UTILS;
   private static final String OBJECT      = "java/lang/Object";
+  private static final String ARCADEDB_PACKAGE = "com/arcadedb/";
 
   /** The member of a {@code tools/call} request that holds the arguments (MCP specification), and how it is read. */
   private static final String      ARGUMENTS       = "arguments";
@@ -145,7 +149,8 @@ class MCPToolArgumentReadsCensusTest {
     final Scan scan = new Scan(Set.of("com/arcadedb/census/MCPToolArgumentReadsCensusTest$Probe.class"), probes);
     assertThat(scan.reads.keySet()).contains("census/MCPToolArgumentReadsCensusTest$Probe#tool",
         "census/MCPToolArgumentReadsCensusTest$Probe#elementRead", "census/MCPToolArgumentReadsCensusTest$Probe#captured",
-        "census/MCPToolArgumentReadsCensusTest$Probe#memberOfAMember", "census/MCPToolArgumentReadsCensusTest$Probe#helperReturned");
+        "census/MCPToolArgumentReadsCensusTest$Probe#memberOfAMember", "census/MCPToolArgumentReadsCensusTest$Probe#helperReturned",
+        "census/MCPToolArgumentReadsCensusTest$Probe#consume", "census/MCPToolArgumentReadsCensusTest$Probe#returnedAsObject");
     assertThat(scan.reads.keySet()).doesNotContain("census/MCPToolArgumentReadsCensusTest$Probe#notTheArguments");
   }
 
@@ -160,45 +165,68 @@ class MCPToolArgumentReadsCensusTest {
     /** The analysed declaration of each method whose returned value is asked about, null when the scan does not declare it. */
     private final Map<String, CallOperands.Method> declarations = new HashMap<>();
 
+    /**
+     * A worklist over the methods the arguments reach, so only those are analysed: it starts at the methods of the root classes that
+     * read the {@code arguments} member, and a method is (re)visited whenever one more of its parameters is handed them. Every
+     * call and every lambda of a visited method is looked at, whatever the types it declares, so a hand-off through an
+     * {@code Object} parameter ({@code consume(args)}, then a cast) is followed as well.
+     */
     private Scan(final Set<String> rootClasses, final Map<String, byte[]> scanned) {
       this.rootClasses = rootClasses;
       this.scanned = scanned;
-      final List<CallOperands.Site> calls = CallOperands.of(scanned, Scan::mayCarryJson);
-      final List<CallOperands.Capture> captures = CallOperands.capturesOf(scanned);
 
-      // TO A FIXPOINT: A PARAMETER HANDED THEM MAKES THE CALLS OF ITS METHOD HAND THEM ON
-      boolean grew = true;
-      while (grew) {
-        grew = false;
-        for (final CallOperands.Site site : calls) {
-          if (isJson(site.call().owner))
-            continue;
-          final Type[] arguments = Type.getArgumentTypes(site.call().desc);
-          for (int i = 0; i < arguments.length; i++)
-            if (isTainted(site.in(), site.argument(i), 0) && handed.add(parameter(site.call().owner, site.call().name,
-                site.call().desc, i)))
-              grew = true;
-        }
-        for (final CallOperands.Capture capture : captures) {
-          if (isJson(capture.implementation().getOwner()))
-            continue;
-          final int receiver = capture.implementedByInstanceMethod() ? 1 : 0;
-          for (int i = receiver; i < capture.capturedCount(); i++)
-            if (isTainted(capture.in(), capture.captured(i), 0) && handed.add(parameter(capture.implementation().getOwner(),
-                capture.implementation().getName(), capture.implementation().getDesc(), i - receiver)))
-              grew = true;
+      final Map<String, byte[]> roots = new HashMap<>();
+      for (final String rootClass : rootClasses)
+        if (scanned.containsKey(rootClass))
+          roots.put(rootClass, scanned.get(rootClass));
+
+      final Deque<CallOperands.Method> pending = new ArrayDeque<>();
+      final Set<CallOperands.Method> queued = new HashSet<>();
+      for (final CallOperands.Site site : CallOperands.of(roots, (owner, name, desc) -> JSON_OBJECT.equals(owner) && ARGUMENTS_READS.contains(name)))
+        if (queued.add(site.in()))
+          pending.add(site.in());
+
+      while (!pending.isEmpty()) {
+        final CallOperands.Method method = pending.poll();
+        queued.remove(method);
+        for (final AbstractInsnNode insn : method.node().instructions) {
+          if (insn instanceof MethodInsnNode call) {
+            final CallOperands.Site site = new CallOperands.Site(method, call);
+            if (isRawRead(call.owner, call.name)) {
+              if (isTainted(method, site.operand(0), 0))
+                reads.computeIfAbsent(method.key(), k -> new TreeSet<>()).add(call.owner + "." + call.name);
+            } else if (!isJson(call.owner)) {
+              final int arguments = Type.getArgumentTypes(call.desc).length;
+              for (int i = 0; i < arguments; i++)
+                if (isTainted(method, site.argument(i), 0) && handed.add(parameter(call.owner, call.name, call.desc, i)))
+                  visit(declarationOf(call.owner, call.name, call.desc), pending, queued);
+            }
+          } else if (insn instanceof InvokeDynamicInsnNode indy) {
+            final CallOperands.Capture capture = CallOperands.Capture.of(method, indy);
+            if (capture == null)
+              continue;
+            final Handle implementation = capture.implementation();
+            final int receiver = capture.implementedByInstanceMethod() ? 1 : 0;
+            if (isRawRead(implementation.getOwner(), implementation.getName())) {
+              // A METHOD REFERENCE OF A RAW ACCESSOR BOUND TO THEM (args::getString) READS THEM TOO
+              if (receiver == 1 && isTainted(method, capture.captured(0), 0))
+                reads.computeIfAbsent(method.key(), k -> new TreeSet<>())
+                    .add(implementation.getOwner() + "." + implementation.getName());
+            } else if (!isJson(implementation.getOwner()))
+              for (int i = receiver; i < capture.capturedCount(); i++)
+                if (isTainted(method, capture.captured(i), 0) && handed.add(parameter(implementation.getOwner(),
+                    implementation.getName(), implementation.getDesc(), i - receiver)))
+                  visit(declarationOf(implementation.getOwner(), implementation.getName(), implementation.getDesc()), pending,
+                      queued);
+          }
         }
       }
+    }
 
-      for (final CallOperands.Site site : calls)
-        if (isRawRead(site.call().owner, site.call().name) && isTainted(site.in(), site.operand(0), 0))
-          reads.computeIfAbsent(site.key(), k -> new TreeSet<>()).add(site.call().owner + "." + site.call().name);
-      // A METHOD REFERENCE OF A RAW ACCESSOR BOUND TO THEM (args::getString) READS THEM TOO
-      for (final CallOperands.Capture capture : captures)
-        if (isRawRead(capture.implementation().getOwner(), capture.implementation().getName())
-            && capture.implementedByInstanceMethod() && isTainted(capture.in(), capture.captured(0), 0))
-          reads.computeIfAbsent(capture.in().key(), k -> new TreeSet<>())
-              .add(capture.implementation().getOwner() + "." + capture.implementation().getName());
+    private static void visit(final CallOperands.Method method, final Deque<CallOperands.Method> pending,
+        final Set<CallOperands.Method> queued) {
+      if (method != null && queued.add(method))
+        pending.add(method);
     }
 
     /**
@@ -230,32 +258,33 @@ class MCPToolArgumentReadsCensusTest {
         if (isRawRead(call.owner, call.name) && (isJson(returned) || OBJECT.equals(returned)) && isTainted(method,
             method.stackBefore(call, argumentCount), depth + 1))
           return true;
-        if (!isJson(returned) || isJson(call.owner))
+        if (!(isJson(returned) || OBJECT.equals(returned)) || isJson(call.owner))
           continue;
         // WHAT AN MCPToolUtils ACCESSOR ANSWERS FOR THEM
-        if (UTILS_CLASS.equals(call.owner) && call.getOpcode() == Opcodes.INVOKESTATIC)
+        if (UTILS_CLASS.equals(call.owner) && call.getOpcode() == Opcodes.INVOKESTATIC && isJson(returned))
           for (int i = 0; i < argumentCount; i++)
             if (isTainted(method, method.stackBefore(call, argumentCount - 1 - i), depth + 1))
               return true;
-        // WHAT ANY OTHER METHOD HANDED THEM RETURNS OF THEM (requireExpandObject(args)), READ FROM ITS OWN BODY
-        final CallOperands.Method declaration = declarationOf(call);
+        // WHAT ANY OTHER METHOD HANDED THEM RETURNS OF THEM (requireExpandObject(args)), READ FROM ITS OWN BODY: a helper typed to
+        // answer an Object (identity(args), then cast) included
+        if (!call.owner.startsWith(ARCADEDB_PACKAGE))
+          continue;
+        final CallOperands.Method declaration = declarationOf(call.owner, call.name, call.desc);
         if (declaration != null && isTainted(declaration, declaration.returned(), depth + 1))
           return true;
       }
       return false;
     }
 
-    private CallOperands.Method declarationOf(final MethodInsnNode call) {
-      final String key = call.owner + "." + call.name + call.desc;
+    /** The analysed method {@code owner} declares with that name and descriptor, null when the scan does not declare it. */
+    private CallOperands.Method declarationOf(final String owner, final String name, final String desc) {
+      final String key = owner + "." + name + desc;
       if (declarations.containsKey(key))
         return declarations.get(key);
-      final CallOperands.Method declaration = CallOperands.declarationOf(scanned, call);
+      final CallOperands.Method declaration = owner.startsWith("[") ? null :
+          CallOperands.declarationOf(scanned, new MethodInsnNode(Opcodes.INVOKESTATIC, owner, name, desc, false));
       declarations.put(key, declaration);
       return declaration;
-    }
-
-    private static boolean mayCarryJson(final String owner, final String name, final String desc) {
-      return isJson(owner) || desc.contains("L" + JSON_OBJECT + ";") || desc.contains("L" + JSON_ARRAY + ";");
     }
 
     private static boolean isJson(final String internalName) {
@@ -280,6 +309,8 @@ class MCPToolArgumentReadsCensusTest {
       captured(args);
       memberOfAMember(args);
       helperReturned(args);
+      handedAsObject(args);
+      returnedAsObject(args);
       notTheArguments(request.getJSONObject("params"));
     }
 
@@ -297,6 +328,24 @@ class MCPToolArgumentReadsCensusTest {
     static void captured(final JSONObject args) {
       final Runnable reader = () -> args.getInt("n");
       reader.run();
+    }
+
+    // THE ARGUMENTS HANDED TO A HELPER TYPED TO TAKE AN OBJECT, READ AFTER A CAST
+    static void handedAsObject(final JSONObject args) {
+      consume(args);
+    }
+
+    private static void consume(final Object value) {
+      ((JSONObject) value).getInt("n");
+    }
+
+    // THE ARGUMENTS ANSWERED BY A HELPER TYPED TO RETURN AN OBJECT, READ BY ITS CALLER AFTER A CAST
+    static void returnedAsObject(final JSONObject args) {
+      ((JSONObject) identity(args)).getString("x");
+    }
+
+    private static Object identity(final JSONObject value) {
+      return value;
     }
 
     // A MEMBER TAKEN OUT BY A HELPER, THEN READ BY ITS CALLER

@@ -65,7 +65,7 @@ class Issue11783RedisHelloAndHashArityTest extends BaseRedisServerTest {
   @Test
   void helloRefusesABadProtocolVersionBeforeAuthentication() throws Exception {
     try (final Socket socket = connect()) {
-      for (final String version : new String[] { "99999999999999999999", "-", "", "abc", "3.0" }) {
+      for (final String version : new String[] { "99999999999999999999", "-", "", "abc", "3.0", "+3", "03", "-0", "\u0663" }) {
         sendCommand(socket, "HELLO", version);
         assertThat(readReply(socket)).as(version).isEqualTo("-ERR Protocol version is not an integer or out of range");
       }
@@ -73,6 +73,11 @@ class Issue11783RedisHelloAndHashArityTest extends BaseRedisServerTest {
         sendCommand(socket, "HELLO", version);
         assertThat(readReply(socket)).as(version).isEqualTo("-NOPROTO unsupported protocol version");
       }
+      // a non-canonical version does not reach the credentials that follow it
+      sendCommand(socket, "HELLO", "+3", "AUTH", "root", DEFAULT_PASSWORD_FOR_TESTS);
+      assertThat(readReply(socket)).isEqualTo("-ERR Protocol version is not an integer or out of range");
+      sendCommand(socket, "GET", "k");
+      assertThat(readReply(socket)).startsWith("-NOAUTH");
       // a word that is no version is not read as an option either: the credentials after it authenticate nobody
       sendCommand(socket, "HELLO", "AUTH", "root", DEFAULT_PASSWORD_FOR_TESTS);
       assertThat(readReply(socket)).isEqualTo("-ERR Protocol version is not an integer or out of range");
