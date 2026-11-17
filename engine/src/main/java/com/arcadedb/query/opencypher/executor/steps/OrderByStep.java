@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
 
@@ -285,7 +286,7 @@ public class OrderByStep extends AbstractExecutionStep {
         // A projected column already holds what its Cypher expression evaluated to - a property read restored its
         // temporal there - so a String in it IS a string: sniffing it again turned a declared STRING "P10D" (or a
         // string literal) into a duration and sorted it as one (issue #8384)
-        if (expression != null && result.getPropertyNames().contains(expression))
+        if (expression != null && listsColumn(result, expression))
           return convertFromStorage(result.getProperty(expression));
 
         // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
@@ -306,6 +307,16 @@ public class OrderByStep extends AbstractExecutionStep {
         }
 
         return convertFromStorage(result.getProperty(expression));
+      }
+
+      /**
+       * Whether the row has a column named {@code name}. Asked once per sort key of every row, so a plain row answers from its
+       * own map: building {@link Result#getPropertyNames()} for it allocated a set per key, the largest cost of the sort itself.
+       */
+      private static boolean listsColumn(final Result result, final String name) {
+        if (result.getClass() == ResultInternal.class)
+          return ((ResultInternal) result).listsPropertyName(name);
+        return result.getPropertyNames().contains(name);
       }
 
       /**

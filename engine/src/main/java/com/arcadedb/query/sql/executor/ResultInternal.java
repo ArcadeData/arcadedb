@@ -405,6 +405,22 @@ public class ResultInternal implements Result {
     return input;
   }
 
+  /**
+   * Whether {@link #getPropertyNames()} lists {@code name}, without building that set. A row made by a projection holds its
+   * columns in {@link #content} alone, and answering for one of them is a map lookup; the set costs a map, an entry per column
+   * and a copy of every key, which a caller that asks once per row (a sort reading its keys, a check on a column name) pays per
+   * row. A row backed by an element takes the general route, because there the set is what decides which names count
+   * (issue #11628, issue #5613).
+   * <p>
+   * Only for a row of exactly this class: a subclass may list its names differently, and its own {@link #getPropertyNames()}
+   * is the answer there.
+   */
+  public boolean listsPropertyName(final String name) {
+    if (element == null)
+      return content != null && content.containsKey(name);
+    return getPropertyNames().contains(name);
+  }
+
   public Set<String> getPropertyNames() {
     final Set<String> result = new LinkedHashSet<>();
 
