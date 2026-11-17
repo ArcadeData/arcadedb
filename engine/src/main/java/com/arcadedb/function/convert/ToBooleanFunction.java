@@ -27,7 +27,7 @@ import java.util.Locale;
 /**
  * toBoolean() function - converts a value to a boolean.
  * Numbers: 0 is false, non-zero is true.
- * Strings: "true" is true, "false" is false (case-insensitive).
+ * Strings: "true" is true, "false" is false (case-insensitive), with the surrounding whitespace ignored.
  */
 public class ToBooleanFunction implements StatelessFunction {
   @Override
@@ -58,8 +58,10 @@ public class ToBooleanFunction implements StatelessFunction {
       throw new CommandSemanticException("TypeError: InvalidArgumentValue - toBoolean() cannot convert " + args[0].getClass().getSimpleName());
     if (args[0] instanceof Number)
       return ((Number) args[0]).longValue() != 0L;
-    if (args[0] instanceof String) {
-      final String str = ((String) args[0]).toLowerCase(Locale.ROOT);
+    if (args[0] instanceof String s) {
+      // Neo4j 5 trims a boolean text before reading it (issue #12400): ' true ' is true there, while
+      // toInteger() reads a text as it is written, so ' 12 ' is not a number.
+      final String str = s.trim().toLowerCase(Locale.ROOT);
       if ("true".equals(str))
         return Boolean.TRUE;
       else if ("false".equals(str))
