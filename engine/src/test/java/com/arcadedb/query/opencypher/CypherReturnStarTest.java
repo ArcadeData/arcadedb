@@ -337,22 +337,21 @@ class CypherReturnStarTest {
 
     /**
      * A pattern walked from an end bound by an earlier clause binds its elements in the plan's direction ({@code b} then
-     * {@code r} then {@code z}), not in the written one: the same names, in an order only the plan knows. Neo4j sorts the
-     * columns of {@code RETURN *}, which removes the difference; #11557 tracks doing that for the rows and the declared columns
-     * together.
+     * {@code r} then {@code z}), not in the written one. The columns of {@code RETURN *} are sorted by name (#11557), so the
+     * rows and the declared columns agree on the order too.
      */
     @Test
     void aPatternWalkedFromABoundEndDeclaresTheSameNames() {
       final String query = "MATCH (b:B) MATCH (z:A)-[r:R]->(b) RETURN *";
       try (final ResultSet rs = database.query("opencypher", query)) {
-        assertThat(declaredColumns(query)).containsExactlyInAnyOrderElementsOf(rs.next().getPropertyNames());
+        assertThat(declaredColumns(query)).isEqualTo(new ArrayList<>(rs.next().getPropertyNames()));
       }
     }
 
     @Test
     void aZeroRowReturnStarDeclaresTheVariablesInScope() {
       assertThat(declaredColumns("MATCH (n:Missing) RETURN *")).containsExactly("n");
-      assertThat(declaredColumns("MATCH (a:A)-[r:R]->(b:B) WHERE a.i > 100 RETURN *")).containsExactly("a", "r", "b");
+      assertThat(declaredColumns("MATCH (a:A)-[r:R]->(b:B) WHERE a.i > 100 RETURN *")).containsExactly("a", "b", "r");
       assertThat(declaredColumns("MATCH (a:A) WHERE a.i > 100 WITH a, a.i AS i RETURN *")).containsExactly("a", "i");
       assertThat(declaredColumns("MATCH (a:A) WHERE a.i > 100 WITH a.i AS i RETURN *")).containsExactly("i");
       assertThat(declaredColumns("EXPLAIN MATCH (n:Missing) RETURN *")).containsExactly("n");
@@ -420,7 +419,7 @@ class CypherReturnStarTest {
     @Test
     void severalItemsAfterTheStarKeepTheirWrittenOrder() {
       final Result row = single("MATCH (z:A {i: 1})-[r:R]->(b:B) RETURN *, b.j AS j, z.i + b.j AS s");
-      assertThat(row.getPropertyNames()).containsExactly("z", "r", "b", "j", "s");
+      assertThat(row.getPropertyNames()).containsExactly("b", "r", "z", "j", "s");
       assertThat(row.<Integer>getProperty("j")).isEqualTo(2);
       assertThat(row.<Number>getProperty("s").longValue()).isEqualTo(3L);
     }
@@ -515,7 +514,7 @@ class CypherReturnStarTest {
       final List<Result> rows = rows("MATCH (z:A) CALL { UNWIND [5, 5] AS k RETURN * } RETURN *, count(*) AS c");
       assertThat(rows).hasSize(3);
       for (final Result row : rows) {
-        assertThat(row.getPropertyNames()).containsExactly("z", "k", "c");
+        assertThat(row.getPropertyNames()).containsExactly("k", "z", "c");
         assertThat(row.<Number>getProperty("c").longValue()).isEqualTo(2L);
       }
     }
@@ -646,9 +645,9 @@ class CypherReturnStarTest {
     @Test
     void aZeroRowReturnStarThroughASubqueryStarDeclaresTheSubqueryVariables() {
       assertThat(declaredColumns("CALL { MATCH (n:Missing) RETURN * } RETURN *")).containsExactly("n");
-      assertThat(declaredColumns("MATCH (z:A) WHERE z.i > 100 CALL { MATCH (b:B) RETURN * } RETURN *")).containsExactly("z", "b");
+      assertThat(declaredColumns("MATCH (z:A) WHERE z.i > 100 CALL { MATCH (b:B) RETURN * } RETURN *")).containsExactly("b", "z");
       assertThat(declaredColumns("MATCH (z:A) CALL (z) { MATCH (z)-[r:R]->(b:Missing) RETURN * } RETURN *"))
-          .containsExactly("z", "r", "b");
+          .containsExactly("b", "r", "z");
       assertThat(declaredColumns("PROFILE CALL { MATCH (n:Missing) RETURN * } RETURN *")).containsExactly("n");
     }
 
@@ -659,7 +658,7 @@ class CypherReturnStarTest {
     @Test
     void anOptionalSubqueryStarDeclaresTheBodyColumns() {
       assertThat(declaredColumns("MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } RETURN *"))
-          .containsExactly("z", "r", "b");
+          .containsExactly("b", "r", "z");
     }
 
     /**
@@ -826,7 +825,7 @@ class CypherReturnStarTest {
     @Test
     void theReturnedItemIsBoundToNull() {
       final Result row = single("MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN r } RETURN *");
-      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("z", "r");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("r", "z");
       assertThat(row.hasProperty("r")).isTrue();
       assertThat(row.<Object>getProperty("r")).isNull();
       assertThat(row.<Object>getProperty("z")).isInstanceOf(Vertex.class);
@@ -836,7 +835,7 @@ class CypherReturnStarTest {
     @Test
     void theBodyStarScopeIsBoundToNull() {
       final Result row = single("MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } RETURN *");
-      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("z", "r", "b");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("b", "r", "z");
       assertThat(row.<Object>getProperty("z")).isInstanceOf(Vertex.class);
       assertThat(row.<Object>getProperty("r")).isNull();
       assertThat(row.<Object>getProperty("b")).isNull();
@@ -869,13 +868,13 @@ class CypherReturnStarTest {
           assertThat(row.<Object>getProperty(column)).as(query + " / " + column).isNull();
     }
 
-    /** IN TRANSACTIONS with REPORT STATUS: the body's columns are null and the status follows them. */
+    /** IN TRANSACTIONS with REPORT STATUS: the body's columns are null next to the status, the outer RETURN * sorting them by name (#11557). */
     @Test
-    void aCommittedBatchWithNoInnerRowBindsTheBodyColumnsBeforeTheStatus() {
+    void aCommittedBatchWithNoInnerRowBindsTheBodyColumnsNextToTheStatus() {
       final Result row = single(
           "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } IN TRANSACTIONS ON ERROR CONTINUE "
           + "REPORT STATUS AS s RETURN *");
-      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("z", "r", "b", "s");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("b", "r", "s", "z");
       assertThat(row.<Object>getProperty("r")).isNull();
       assertThat(row.<Object>getProperty("b")).isNull();
       assertThat(row.<Object>getProperty("s")).isNotNull();
@@ -894,7 +893,7 @@ class CypherReturnStarTest {
       });
       final Result row = single("UNWIND [1] AS i CALL (i) { CREATE (b:B {k: i}) RETURN * } IN TRANSACTIONS ON ERROR CONTINUE "
           + "RETURN *");
-      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("i", "b");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("b", "i");
       assertThat(row.<Number>getProperty("i").intValue()).isEqualTo(1);
       assertThat(row.<Object>getProperty("b")).isNull();
     }
@@ -906,6 +905,133 @@ class CypherReturnStarTest {
         assertThat(rs.hasNext()).as("only one row: %s", query).isFalse();
         return row;
       }
+    }
+  }
+
+  /**
+   * Issue #11557: Neo4j answers the columns of {@code RETURN *} sorted by variable name; ArcadeDB answered them in the order the
+   * plan bound them, which for a pattern walked from a bound end differs from the written order. The variables a star stands
+   * for are now sorted, in the rows and in the columns a zero-row result declares (#11543), and the explicit items written
+   * after the star follow them in their written order, as Neo4j's star expansion does.
+   */
+  @Nested
+  class Issue11557ReturnStarColumnsSortedByName extends TestHelper {
+
+    @Override
+    protected void beginTest() {
+      database.transaction(() -> {
+        database.getSchema().createVertexType("A");
+        database.getSchema().createVertexType("B");
+        database.getSchema().createEdgeType("R");
+        database.command("opencypher", "CREATE (:A {i: 1})-[:R]->(:B {j: 2})");
+      });
+    }
+
+    @Test
+    void aPatternReturnsItsVariablesSortedByName() {
+      assertThat(single("MATCH (z:A)-[r:R]->(b:B) RETURN *").getPropertyNames()).containsExactly("b", "r", "z");
+      assertThat(single("UNWIND [1] AS y MATCH (z:A) RETURN *").getPropertyNames()).containsExactly("y", "z");
+      assertThat(single("MATCH (z:A) WITH z, z.i AS a RETURN *").getPropertyNames()).containsExactly("a", "z");
+    }
+
+    @Test
+    void theNamesAreSortedByTheirCharacters() {
+      assertThat(single("UNWIND [1] AS b UNWIND [2] AS A UNWIND [3] AS a UNWIND [4] AS a2 RETURN *").getPropertyNames())
+          .containsExactly("A", "a", "a2", "b");
+    }
+
+    /** The order the plan walks a pattern in no longer shows: the rows and the declared columns are both sorted. */
+    @Test
+    void aPatternWalkedFromABoundEndAnswersTheSameOrderItDeclares() {
+      final String query = "MATCH (b:B) MATCH (z:A)-[r:R]->(b) RETURN *";
+      assertThat(single(query).getPropertyNames()).containsExactly("b", "r", "z");
+      assertThat(declaredColumns(query)).containsExactly("b", "r", "z");
+    }
+
+    @Test
+    void aZeroRowReturnStarDeclaresItsVariablesSortedByName() {
+      assertThat(declaredColumns("MATCH (z:A)-[r:R]->(b:B) WHERE z.i > 100 RETURN *")).containsExactly("b", "r", "z");
+      assertThat(declaredColumns("UNWIND [] AS y MATCH (z:A) RETURN *")).containsExactly("y", "z");
+      assertThat(declaredColumns("MATCH (z:A) WHERE z.i > 100 CALL { MATCH (b:B) RETURN * } RETURN *")).containsExactly("b", "z");
+    }
+
+    /** The star's variables come first, sorted; the items after the star follow in their written order. */
+    @Test
+    void theItemsAfterTheStarFollowItsSortedVariables() {
+      final String query = "MATCH (z:A {i: 1})-[r:R]->(b:B) RETURN *, z.i + b.j AS s, b.j AS j";
+      assertThat(single(query).getPropertyNames()).containsExactly("b", "r", "z", "s", "j");
+      assertThat(declaredColumns(query)).containsExactly("b", "r", "z", "s", "j");
+    }
+
+    @Test
+    void anAggregateAfterTheStarGroupsBySortedKeys() {
+      final Result row = single("MATCH (z:A) WITH z.i AS k, 1 AS a RETURN *, count(*) AS c");
+      assertThat(row.getPropertyNames()).containsExactly("a", "k", "c");
+      assertThat(row.<Number>getProperty("c").longValue()).isEqualTo(1L);
+    }
+
+    @Test
+    void aSubqueryReturningStarJoinsTheSortedColumns() {
+      final String query = "MATCH (z:A) CALL { UNWIND [5] AS k RETURN * } RETURN *";
+      assertThat(single(query).getPropertyNames()).containsExactly("k", "z");
+      assertThat(declaredColumns(query)).containsExactly("k", "z");
+    }
+
+    /**
+     * A scope only known at run time (the {@code YIELD *} of a {@code DEFINE FUNCTION}) is sorted by the projection itself, the
+     * star's variables before the items written after it.
+     */
+    @Test
+    void aStarOverAScopeKnownOnlyAtRunTimeIsSortedToo() {
+      database.command("sql", "DEFINE FUNCTION math.twice \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
+      assertThat(commandSingle("MATCH (z:A) CALL math.twice(z.i) YIELD * RETURN *").getPropertyNames())
+          .containsExactly("value", "z");
+      assertThat(commandSingle("MATCH (z:A) CALL math.twice(z.i) YIELD * RETURN *, z.i + 1 AS n, z.i AS i").getPropertyNames())
+          .containsExactly("value", "z", "n", "i");
+      assertThat(commandSingle("MATCH (z:A) CALL math.twice(z.i) YIELD * RETURN DISTINCT *, z.i AS i").getPropertyNames())
+          .containsExactly("value", "z", "i");
+    }
+
+    /**
+     * Two branches binding the same names in different orders answer the same sorted columns, so the UNION is one column set,
+     * as it is in Neo4j (before, {@code [a, r, b]} and {@code [b, r, a]} were refused as different columns).
+     */
+    @Test
+    void branchesBindingTheSameNamesInDifferentOrdersAreOneColumnSet() {
+      final String query = "MATCH (a:A)-[r:R]->(b:B) RETURN * UNION ALL MATCH (b:B)<-[r:R]-(a:A) RETURN *";
+      final List<Result> rows = rows(query);
+      assertThat(rows).hasSize(2);
+      for (final Result row : rows)
+        assertThat(row.getPropertyNames()).containsExactly("a", "b", "r");
+      assertThat(declaredColumns(query)).containsExactly("a", "b", "r");
+    }
+
+    private Result single(final String query) {
+      final List<Result> rows = rows(query);
+      assertThat(rows).as(query).hasSize(1);
+      return rows.getFirst();
+    }
+
+    private Result commandSingle(final String query) {
+      try (final ResultSet rs = database.command("opencypher", query)) {
+        assertThat(rs.hasNext()).as(query).isTrue();
+        final Result row = rs.next();
+        assertThat(rs.hasNext()).as(query).isFalse();
+        return row;
+      }
+    }
+
+    private List<Result> rows(final String query) {
+      final List<Result> result = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        while (rs.hasNext())
+          result.add(rs.next());
+      }
+      return result;
+    }
+
+    private List<String> declaredColumns(final String query) {
+      return OpenCypherQueryEngine.declaredColumns((DatabaseInternal) database, query);
     }
   }
 }

@@ -348,8 +348,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * and PROFILE, with the literals extracted otherwise), so an unaliased item is named as the rows of that execution name it,
    * and the parse is the cached one.
    * <p>
-   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN, in the order the statement
-   * binds them (the order a row of it carries them in), followed by any item written after the star; for a standalone
+   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN sorted by name, as Neo4j sorts
+   * them and as a row of it carries them (issue #11557), followed by any item written after the star; for a standalone
    * {@code CALL} the fields it yields (its YIELD items, or every output of the procedure under {@code YIELD *} or no YIELD).
    * <p>
    * A {@code RETURN *} reached through a {@code CALL { ... }} subquery that itself returns {@code *} declares the names of the
