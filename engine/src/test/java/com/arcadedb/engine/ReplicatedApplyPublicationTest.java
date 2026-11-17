@@ -641,6 +641,50 @@ class ReplicatedApplyPublicationTest {
     }
 
     /**
+     * #11784: the same, with the publication that overlaps the first run still open when the redo is due, the case a redo under the
+     * page-manager lock did not exclude (it ran at once, on the odd sequence, and voided the proof). The hold waits the publication
+     * out, so the redo runs against one committed state and its proof stands.
+     */
+    @Test
+    void aProofOverlappedByAPublicationStillOpenIsRunAgainOnceItEnds() throws Exception {
+      createChunkedRecords("Read");
+      final LocalBucket bucket = bucketOf("Read");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicInteger runs = new AtomicInteger();
+      final AtomicInteger oddRuns = new AtomicInteger();
+      final CountDownLatch published = new CountDownLatch(1);
+      final Thread publisher = new Thread(() -> {
+        pageManager.beginPublication();
+        try {
+          published.countDown();
+          // OPEN ACROSS THE END OF THE FIRST RUN, WELL INSIDE THE WAIT OF THE HOLD
+          final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(20);
+          while (System.nanoTime() < until)
+            Thread.onSpinWait();
+        } finally {
+          pageManager.endPublication();
+        }
+      });
+
+      try {
+        assertThat(bucket.provenAgainstOneCommit(() -> {
+          if (runs.incrementAndGet() == 1) {
+            publisher.start();
+            assertThat(published.await(10, TimeUnit.SECONDS)).isTrue();
+          }
+          if ((pageManager.getPublicationSequence() & 1) != 0 && runs.get() > 1)
+            oddRuns.incrementAndGet();
+          return "broken";
+        })).as("the redo ran once the publication ended, against one committed state, so its proof stands").isEqualTo("broken");
+      } finally {
+        publisher.join();
+      }
+      assertThat(runs.get()).as("the overlapped proof was run again").isEqualTo(2);
+      assertThat(oddRuns.get()).as("the redo never ran with a publication open").isZero();
+      assertThat(pageManager.getPublicationSequence() & 1).isZero();
+    }
+
+    /**
      * #11505: the proof that a chunk chain is corrupt did not wait out an open publication, as its two siblings do since #11455:
      * on a replica, where one is nearly always open, it ran at once on the odd sequence, its redo under the page-manager lock found
      * the apply still open, and the corruption was never proven: the read retried to exhaustion and reported contention. The
@@ -827,10 +871,73 @@ class ReplicatedApplyPublicationTest {
       assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isTrue();
     }
 
+    /**
+     * #11784: the visit of a committed page (the COLUMNAR apply's read) reported a broken chain as a record in motion on a busy replica.
+     * The retry loop of the committed read always ends in motion there, so the verdict is the redo's under the held publications, and
+     * that redo answered "in motion" for every walk it could not serve, although nothing can be in motion under the hold. In motion,
+     * the apply keeps the record and retries it without counting it unreadable, so a corrupt slot never reached its rebuild.
+     */
+    @Test
+    void aBrokenChainVisitedWhileEntriesAreAppliedBackToBackIsUnreadableNotInMotion() throws Exception {
+      final RID[] rids = createChunkedRecords(TYPE);
+      // ONLY THE BROKEN RECORD AND ONE HEALTHY ONE ARE KEPT: EVERY CHAINED RECORD OF THE PAGE PAYS ITS OWN RETRIES ON EACH BUSY VISIT
+      database.transaction(() -> {
+        for (int i = 2; i < rids.length; i++)
+          rids[i].asDocument(true).delete();
+      });
+      final RID broken = breakChainAtChunkZero(rids[0]);
+      final RID healthy = rids[1];
+      final LocalBucket bucket = bucketOf(TYPE);
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+
+      // QUIET: THE CONTROL
+      assertThat(visitOutcome(bucket, broken)).isEqualTo("unreadable");
+      assertThat(visitOutcome(bucket, healthy)).isEqualTo("served");
+
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
+      try {
+        for (int i = 0; i < 20; i++) {
+          assertThat(visitOutcome(bucket, broken)).as("busy visit %d of the broken record", i).isEqualTo("unreadable");
+          assertThat(visitOutcome(bucket, healthy)).as("busy visit %d of the healthy record", i).isEqualTo("served");
+        }
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the visits ran").isPositive();
+    }
+
+    /**
+     * How the visit of the page of {@code rid} reports it: served or unreadable (a RECORD with or without content), in motion, or
+     * anything else.
+     */
+    private String visitOutcome(final LocalBucket bucket, final RID rid) {
+      final String[] outcome = { "not visited" };
+      bucket.visitCommittedPage((int) (rid.getPosition() / bucket.getMaxRecordsInPage()), new LocalBucket.CommittedSlotVisitor() {
+        @Override
+        public void onSlot(final long position, final int kind, final Binary content, final int[] offPagePages, final int offPageCount) {
+          if (position == rid.getPosition())
+            outcome[0] = kind != RECORD ? "kind=" + kind : content == null ? "unreadable" : "served";
+        }
+
+        @Override
+        public void onRecordInMotion(final long position) {
+          if (position == rid.getPosition())
+            outcome[0] = "in motion";
+        }
+      });
+      return outcome[0];
+    }
+
     /** A multi-page record whose head chunk points at a page the file does not have: broken at chunk 0. */
     private RID createBrokenRecord() {
-      final RID[] rids = createChunkedRecords(TYPE);
-      final RID broken = rids[0];
+      return breakChainAtChunkZero(createChunkedRecords(TYPE)[0]);
+    }
+
+    /** Points the head chunk of the multi-page record {@code broken} at a page the file does not have, then reopens the database. */
+    private RID breakChainAtChunkZero(final RID broken) {
       final int maxRecordsInPage = bucketOf(TYPE).getMaxRecordsInPage();
       database.transaction(() -> onSlot(broken, page -> {
         final int recordOffset = recordOffsetOf(page, broken);

@@ -7142,19 +7142,38 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     committedWalkLockRedos.incrementAndGet();
     // The last redo holds the publications off (PageManager.callWithPublicationsHeld): the page-manager lock it took before excluded a
     // local commit but not the replicated apply of a replica (#10941), so a replica under write load gave up here on every busy read
+    // Three answers besides a served record: NOT_SERVABLE_COMMITTED when the redo read one committed state and that state is no record
+    // it can serve (a broken chain, or a head deleted or turned into another kind of slot), which the quiet path answers null;
+    // GAVE_UP_IN_MOTION when it could not read one committed state; null from callAgainstOneCommit when the hold was not granted in
+    // time. A broken chain reported as in motion was neither counted nor escalated by the COLUMNAR apply of a busy replica (#11784)
     final Binary served = callAgainstOneCommit(() -> {
       final long sequence = pageManager.getPublicationSequence();
       final int outcome = walkNewestCommitted(headPageId, headSlot, headMarker, walk);
       if (outcome == WALK_PLAIN)
         return walk.served(null);
-      if (outcome == WALK_CHAIN && (sequence & 1) == 0
-              && validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false) != CHAIN_READ_CHANGED
-              && pageManager.getPublicationSequence() == sequence)
-        return walk.served(offPages);
-      return GAVE_UP_IN_MOTION;
+      if ((sequence & 1) != 0)
+        // A hold is granted only with no publication open and none can start under it: an odd sequence is a publisher that bypassed it
+        return GAVE_UP_IN_MOTION;
+      if (outcome == WALK_CHAIN) {
+        if (validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false) != CHAIN_READ_CHANGED
+                && pageManager.getPublicationSequence() == sequence)
+          return walk.served(offPages);
+        return GAVE_UP_IN_MOTION;
+      }
+      // NOT WALKED WHOLE, OR NOT A RECORD THIS READ CAN SERVE, AGAINST ONE COMMITTED STATE: THE STATE ITSELF ANSWERS
+      return pageManager.getPublicationSequence() == sequence ? NOT_SERVABLE_COMMITTED : GAVE_UP_IN_MOTION;
     });
+    if (served == NOT_SERVABLE_COMMITTED)
+      return null;
     return served != null ? served : GAVE_UP_IN_MOTION;
   }
+
+  /**
+   * What the redo of {@link #assembleCommitted} under the held publications answers for a committed state it read whole and could not
+   * serve: a broken chain, or a head gone or turned into another kind of slot. Mapped to null before {@link #assembleCommitted} returns,
+   * so it never leaves the method (#11784).
+   */
+  private static final Binary NOT_SERVABLE_COMMITTED = new Binary(0);
 
   /**
    * How long the redo of a read against one committed state waits for the publications in flight to end
