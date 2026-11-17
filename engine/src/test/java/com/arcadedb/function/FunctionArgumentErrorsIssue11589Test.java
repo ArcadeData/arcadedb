@@ -89,6 +89,19 @@ class FunctionArgumentErrorsIssue11589Test extends TestHelper {
     }
   }
 
+  @Test
+  void siblingTruncatesOfANullAreNull() {
+    try (final ResultSet rs = database.query("opencypher",
+        "RETURN localtime.truncate(null, localtime('12:30')) AS a, localtime.truncate('hour', null) AS b, "
+            + "date.truncate(null, date('2020-05-06')) AS c, date.truncate('month', null) AS d, "
+            + "datetime.truncate(null, datetime('2020-05-06T12:30:00Z')) AS e, datetime.truncate('day', null) AS f, "
+            + "localdatetime.truncate(null, localdatetime('2020-05-06T12:30:00')) AS g, localdatetime.truncate('day', null) AS h")) {
+      final var row = rs.next();
+      for (final String name : new String[] { "a", "b", "c", "d", "e", "f", "g", "h" })
+        assertThat(row.<Object>getProperty(name)).as(name).isNull();
+    }
+  }
+
   private static boolean causeChainHas(final Throwable thrown, final Class<? extends Throwable> type) {
     for (Throwable t = thrown; t != null; t = t.getCause())
       if (type.isInstance(t))

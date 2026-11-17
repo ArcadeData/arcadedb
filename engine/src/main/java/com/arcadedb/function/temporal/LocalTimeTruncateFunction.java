@@ -54,6 +54,9 @@ public class LocalTimeTruncateFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
+    // A null unit or time truncates to null, as every temporal function answers a null argument (issue #11589)
+    if (args[0] == null || args[1] == null)
+      return null;
     final String unit = args[0].toString();
     final LocalTime time;
     if (args[1] instanceof CypherLocalTime)
