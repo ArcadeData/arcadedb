@@ -29,6 +29,7 @@ import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
 import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.DeleteUserHandler;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
+import com.arcadedb.server.http.handler.NotFoundRouteHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
 import com.arcadedb.server.http.handler.GetGroupsHandler;
@@ -336,7 +337,9 @@ public class HttpServer implements ServerPlugin {
   }
 
   private PathHandler setupRoutes() {
-    final PluginPathHandler routes = new PluginPathHandler();
+    // A path that matches no prefix at all is answered with the same envelope as a route that refuses the request:
+    // the error field and the correlation and replay-protection headers (issue #12410)
+    final PluginPathHandler routes = new PluginPathHandler(new NotFoundRouteHandler());
     final RouteRecordingRoutingHandler basicRoutes = new RouteRecordingRoutingHandler();
 
     // Shared with the GET registrations below (issue #8133): container healthchecks such as
