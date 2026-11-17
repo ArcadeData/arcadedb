@@ -5339,7 +5339,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // search and time series RPCs encode a value exactly as this one does (issue #11207)
     final GrpcValue scalar = GrpcTypeConverter.toGrpcScalar(o);
     if (scalar != null)
-      return dbgEnc("toGrpcValue", o, scalar, null);
+      return dbgEnc(debug, o, scalar);
 
     if (o instanceof Document edoc && edoc.getIdentity() == null) {
       GrpcEmbedded.Builder eb = GrpcEmbedded.newBuilder();
@@ -5348,7 +5348,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       for (String k : edoc.getPropertyNames()) {
         eb.putFields(k, toGrpcValue(edoc.get(k), pc));
       }
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build(), null);
+      return dbgEnc(debug, o, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build());
     }
 
     // ===== PROJECTION-AWARE Document handling =====
@@ -5548,12 +5548,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // and neither a RID nor a Result is a Map, an Iterable or an Iterator
     final GrpcValue container = GrpcTypeConverter.toGrpcContainer(o, e -> toGrpcValue(e, pc));
     if (container != null)
-      return dbgEnc("toGrpcValue", o, container, null);
+      return dbgEnc(debug, o, container);
 
     // RID/Identifiable string fallback
     if (o instanceof Identifiable id)
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build(), null);
+      return dbgEnc(debug, o, GrpcValue.newBuilder()
+          .setLinkValue(GrpcLink.newBuilder().setRid(id.getIdentity().toString()).build()).setLogicalType("rid").build());
 
     // Support ArcadeDB Result/ResultInternal as structural MAP
     if (o instanceof Result res) {
@@ -5578,7 +5578,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (Throwable ignore) {
       }
 
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
+      return dbgEnc(debug, o, GrpcValue.newBuilder().setMapValue(mb.build()).build());
     }
 
     // Fallback
@@ -5588,7 +5588,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               o.getClass().getName(),
               summarizeJava(o));
 
-    return dbgEnc("toGrpcValue", o, GrpcTypeConverter.toGrpcString(o), null);
+    return dbgEnc(debug, o, GrpcTypeConverter.toGrpcString(o));
   }
 
   private InsertOptions defaults(InsertOptions in) {
@@ -6342,8 +6342,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    LogManager.instance().log(this, Level.FINE, "ENC-RES DONE rid=%s type=%s props=%s",
-        builder.getRid(), builder.getType(), builder.getPropertiesCount());
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "ENC-RES DONE rid=%s type=%s props=%s",
+          builder.getRid(), builder.getType(), builder.getPropertiesCount());
 
     return builder.build();
   }
@@ -6805,13 +6806,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
-    // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
-    if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance()
-          .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
-              summarizeJava(in),
-              summarizeGrpc(out));
+  /** {@code debug} is what {@link #toGrpcValue(Object, ProjectionConfig)} already asked the logger: once per value is enough. */
+  private GrpcValue dbgEnc(final boolean debug, final Object in, final GrpcValue out) {
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] in=%s -> out=%s", summarizeJava(in), summarizeGrpc(out));
     return out;
   }
 
