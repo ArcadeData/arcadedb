@@ -26,6 +26,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableEdge;
@@ -336,18 +337,24 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (rid != null)
           currentFrom = rid;
         else
-          throw new CommandExecutionException("Invalid vertex for edge creation: " + result);
+          throw new TypeMismatchException("Invalid vertex for edge creation: " + result);
       }
     }
 
-    if (currentFrom instanceof Vertex vertex)
-      return vertex;
-    else if (currentFrom instanceof Document document)
-      return document.asVertex();
-    else if (RID.is(currentFrom))
-      return getContext().getDatabase().newRID(currentFrom.toString()).asVertex();
+    // An endpoint that is not a vertex is the caller's mistake: a TypeMismatchException answers HTTP 400 and names it, where the
+    // ClassCastException of the record cast reached the client as a raw Java exception under a 500 (#12425)
+    try {
+      if (currentFrom instanceof Vertex vertex)
+        return vertex;
+      else if (currentFrom instanceof Document document)
+        return document.asVertex();
+      else if (RID.is(currentFrom))
+        return getContext().getDatabase().newRID(currentFrom.toString()).asVertex();
+    } catch (final ClassCastException e) {
+      throw new TypeMismatchException("Invalid vertex for edge creation: " + e.getMessage(), e);
+    }
 
-    throw new CommandExecutionException(
+    throw new TypeMismatchException(
         "Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
   }
 
