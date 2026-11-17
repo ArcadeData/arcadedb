@@ -1277,7 +1277,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   static boolean sameValue(final Object a, final Object b) {
     // identity on purpose, not equals(): a dotted $set copies only the maps on its path and shares every other value by reference, so a
     // no-op must not walk a large sibling list element by element to find it unchanged
-    if (a == b)
+    if (a == b) // NOPMD: identity is the point, a value shared by reference is unchanged without walking it
       return true;
     // maps and lists first: Map.equals() ignores the order of the fields, which mongod does not, and a list compares its elements with it
     if (a instanceof Map<?, ?> mapA && b instanceof Map<?, ?> mapB) {
