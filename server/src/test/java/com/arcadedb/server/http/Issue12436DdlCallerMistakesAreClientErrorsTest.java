@@ -96,6 +96,16 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
     assertThat(command("SELECT count(@rid) AS n FROM T12436").body).as("the records are still there").contains("\"n\":1");
   }
 
+  /** Control: a value constraint the stored records break (#12037) already answered 400 and is not changed by this fix. */
+  @Test
+  void aMaxTheStoredValuesBreakStillAnswers400() throws Exception {
+    setUpType();
+
+    final Response response = command("ALTER PROPERTY T12436.x MAX 0");
+
+    assertThat(response.status).as(response.body).isEqualTo(400);
+  }
+
   @Test
   void aValidPropertyIsStillCreated() throws Exception {
     setUpType();

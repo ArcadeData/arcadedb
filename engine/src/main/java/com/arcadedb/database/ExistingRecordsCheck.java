@@ -106,7 +106,7 @@ public final class ExistingRecordsCheck {
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new ObjectInUseException(
+        throw new CommandExecutionException(
             "Cannot set " + what + ": record " + document.getIdentity() + " violates it, " + e.getMessage()
                 + ". Fix or delete the non-conforming records first", e);
       }
@@ -134,7 +134,7 @@ public final class ExistingRecordsCheck {
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new ObjectInUseException(createRefusal(type, property, document, e.getMessage()), e);
+        throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
       }
     }
   }
