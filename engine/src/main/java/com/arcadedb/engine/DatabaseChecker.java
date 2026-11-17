@@ -191,7 +191,7 @@ public class DatabaseChecker {
    * statement.
    */
   public Map<String, Object> check() {
-    return OutsideCallerTransaction.execute(database, "CheckDatabase", this::checkOutsideAnyTransaction);
+    return OutsideCallerTransaction.execute(database, "CheckDatabase", fix || compress, this::checkOutsideAnyTransaction);
   }
 
   private Map<String, Object> checkOutsideAnyTransaction() {
@@ -1199,7 +1199,7 @@ public class DatabaseChecker {
    * it used to roll that transaction back.
    */
   public void compress() {
-    OutsideCallerTransaction.execute(database, "CompressDatabase", () -> {
+    OutsideCallerTransaction.execute(database, "CompressDatabase", true, () -> {
       compressOutsideAnyTransaction();
       return null;
     });

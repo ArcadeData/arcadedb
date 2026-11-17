@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -34,9 +35,10 @@ import java.util.concurrent.FutureTask;
  * work. Run on the caller's thread it used to roll that transaction back first, so the writes made before the statement were
  * lost and the next statement failed with "Transaction not begun", naming nothing. With a transaction open the operation runs on
  * a thread of its own, with the caller's user, and this thread waits for it: the caller's transaction, its pending changes,
- * locks and read snapshot are left exactly as they were. Without a transaction it runs inline.
+ * locks and read snapshot are left exactly as they were. Without a transaction it runs inline. A caller holding explicit locks
+ * (LOCK TYPE, LOCK BUCKET) is refused an operation that writes: its commits would wait for those locks while the caller waits for it.
  * <p>
- * An interrupted wait gives up waiting, not the operation: like a background one, it runs to its end.
+ * An interrupt does not end the wait: the operation runs to its end, the caller returns once it has, with its interrupt flag set.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -49,11 +51,20 @@ public final class OutsideCallerTransaction {
    *
    * @param database      the database the operation works on, as the caller holds it
    * @param operationName names the thread the operation runs on when the caller has a transaction open
+   * @param writes        whether the operation commits changes, which take the file locks a caller may hold explicitly: such an
+   *                      operation is refused inside a transaction holding explicit locks, a read-only one is not
    */
-  public static <T> T call(final DatabaseInternal database, final String operationName, final Callable<T> operation)
-      throws Exception {
+  public static <T> T call(final DatabaseInternal database, final String operationName, final boolean writes,
+      final Callable<T> operation) throws Exception {
     if (!database.isTransactionActive())
       return operation.call();
+
+    if (writes && database.getTransaction().holdsExplicitLocks())
+      // The operation's own commits would wait for the files this caller locked, while the caller waits for the operation: it
+      // could only end with a lock timeout. Refused at once, naming the way out
+      throw new CommandSemanticException(
+          operationName + " cannot run inside a transaction that holds explicit locks (LOCK TYPE, LOCK BUCKET): commit or roll back "
+              + "that transaction first");
 
     final DatabaseContext.DatabaseContextTL callerContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     final SecurityDatabaseUser user = callerContext != null ? callerContext.getCurrentUser() : null;
@@ -70,11 +81,18 @@ public final class OutsideCallerTransaction {
     });
     new Thread(task, "ArcadeDB-" + operationName + "-" + database.getName()).start();
 
+    // An interrupt does not end the wait: the operation runs to its end anyway, and the caller unwinding first would release
+    // what it holds for the operation (a backup's maintenance slot, its progress entry) while the operation still uses the
+    // database. The interrupt is kept for the caller to see once the operation is over
+    boolean interrupted = false;
     try {
-      return task.get();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw e;
+      while (true) {
+        try {
+          return task.get();
+        } catch (final InterruptedException e) {
+          interrupted = true;
+        }
+      }
     } catch (final ExecutionException e) {
       final Throwable cause = e.getCause();
       if (cause instanceof final Exception exception)
@@ -82,16 +100,20 @@ public final class OutsideCallerTransaction {
       if (cause instanceof final Error error)
         throw error;
       throw e;
+    } finally {
+      if (interrupted)
+        Thread.currentThread().interrupt();
     }
   }
 
   /**
-   * As {@link #call}, for an operation that throws no checked exception: a checked one it throws all the same (an interrupted
-   * wait) is wrapped in a {@link DatabaseOperationException}.
+   * As {@link #call}, for an operation that throws no checked exception: a checked one it throws all the same is wrapped in a
+   * {@link DatabaseOperationException}.
    */
-  public static <T> T execute(final DatabaseInternal database, final String operationName, final Callable<T> operation) {
+  public static <T> T execute(final DatabaseInternal database, final String operationName, final boolean writes,
+      final Callable<T> operation) {
     try {
-      return call(database, operationName, operation);
+      return call(database, operationName, writes, operation);
     } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {

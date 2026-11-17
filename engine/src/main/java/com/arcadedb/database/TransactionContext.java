@@ -719,6 +719,11 @@ public class TransactionContext implements Transaction {
     return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
+  /** True while the transaction holds the file locks a {@code LOCK TYPE} / {@code LOCK BUCKET} took, until its commit or rollback. */
+  public boolean holdsExplicitLocks() {
+    return explicitLockedFiles != null;
+  }
+
   public LocalTransactionExplicitLock lock() {
     if (explicitLock == null)
       explicitLock = new LocalTransactionExplicitLock(this);

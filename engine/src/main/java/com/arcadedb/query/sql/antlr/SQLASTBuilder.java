@@ -343,7 +343,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /** The refusal of ALTER BUCKET, a statement the engine does not implement (issue #11796). */
   public static final String ALTER_BUCKET_NOT_SUPPORTED =
       "ALTER BUCKET is not supported: a bucket has no attribute that can be altered, and a bucket cannot be renamed. To move the "
-          + "records of a bucket to another one, create the bucket and use MOVE VERTEX or INSERT ... SELECT, then DROP BUCKET";
+          + "records of a bucket to another one, create the bucket and copy them with MOVE VERTEX or INSERT ... SELECT. A record "
+          + "copied this way gets a new RID: rewrite the links to the old RIDs before DROP BUCKET, which deletes the source records";
 
   /** The refusal of TRUNCATE RECORD, a statement the engine does not implement (issue #11796). */
   public static final String TRUNCATE_RECORD_NOT_SUPPORTED =

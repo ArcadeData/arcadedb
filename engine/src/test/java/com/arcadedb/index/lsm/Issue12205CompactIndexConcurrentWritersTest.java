@@ -27,6 +27,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Tag;
@@ -115,8 +116,11 @@ class Issue12205CompactIndexConcurrentWritersTest extends TestHelper {
       try {
         while (!stop.get()) {
           Thread.sleep(20);
-          database.command("sql", "COMPACT INDEX `R[s]`").close();
-          compactions.incrementAndGet();
+          try (final ResultSet rs = database.command("sql", "COMPACT INDEX `R[s]`")) {
+            // counted only when a merge ran: a round can decline (fewer than two pages, a commit holding the file)
+            if (rs.hasNext() && Boolean.TRUE.equals(rs.next().getProperty("compacted")))
+              compactions.incrementAndGet();
+          }
         }
       } catch (final Throwable t) {
         errors.add(t);
@@ -131,7 +135,7 @@ class Issue12205CompactIndexConcurrentWritersTest extends TestHelper {
       t.join();
 
     assertThat(errors).as("writers and compactor ran without errors").isEmpty();
-    assertThat(compactions.get()).as("the compactor ran").isGreaterThan(10);
+    assertThat(compactions.get()).as("compactions that merged pages while the writers ran").isGreaterThan(10);
 
     final Map<String, RID> records = new HashMap<>();
     final Set<String> recordEntries = new HashSet<>();

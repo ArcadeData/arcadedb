@@ -104,6 +104,22 @@ class Issue11781MaintenanceKeepsCallerTransactionTest extends TestHelper {
     assertThat(count()).isEqualTo(2);
   }
 
+  /**
+   * A caller holding explicit locks is refused at once: the maintenance commits would wait for its locked files while it waits
+   * for them, ending only with a lock timeout (review of #12412).
+   */
+  @Test
+  void maintenanceInsideATransactionHoldingExplicitLocksIsRefused() {
+    database.transaction(() -> {
+      database.command("sql", "LOCK TYPE D").close();
+      database.command("sql", "INSERT INTO D SET id = 1").close();
+      assertThatThrownBy(() -> database.command("sql", "CHECK DATABASE COMPRESS").close()).isInstanceOf(
+          CommandParsingException.class).hasMessageContaining("explicit locks");
+      assertThat(database.isTransactionActive()).isTrue();
+    });
+    assertThat(count()).isEqualTo(1);
+  }
+
   @Test
   void alignDatabaseIsRefusedAsAClientErrorAndKeepsTheTransaction() {
     database.transaction(() -> {

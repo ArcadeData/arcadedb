@@ -26,6 +26,9 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonGraphSerializer;
@@ -36,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -101,6 +105,57 @@ class Issue11850StatementErrorsTest extends TestHelper {
     })).isInstanceOf(ValidationException.class);
 
     assertThat(countD()).isEqualTo(before);
+  }
+
+  /**
+   * The refusal of a provisional link is only for a record object holding itself while it is created: every legitimate way of
+   * linking records created in the same transaction still writes real RIDs (the review of #12412 asked for the evidence).
+   */
+  @Test
+  void linksBetweenRecordsCreatedInOneTransactionAreStillStored() {
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      // vertices and an edge through the Java API, all new in this transaction
+      final MutableVertex a = database.newVertex("P").set("i", 100).save();
+      final MutableVertex b = database.newVertex("P").set("i", 101).save();
+      final MutableEdge edge = a.newEdge("K", b);
+      // a document linking records saved earlier in the transaction, and holding an embedded document
+      final MutableDocument doc = database.newDocument("D");
+      doc.set("vertex", a).set("edge", edge).set("list", List.of(a, b));
+      doc.newEmbeddedDocument("D", "embedded").set("x", 1);
+      doc.save();
+      // a record saved first, then linked to itself by an update in the same transaction
+      final MutableDocument self = database.newDocument("D").save();
+      self.set("me", self).save();
+      rids.add(doc.getIdentity());
+      rids.add(a.getIdentity());
+      rids.add(edge.getIdentity());
+      rids.add(self.getIdentity());
+    });
+
+    database.transaction(() -> {
+      final Document doc = rids.get(0).asDocument();
+      assertThat(doc.get("vertex")).isEqualTo(rids.get(1));
+      assertThat(doc.get("edge")).isEqualTo(rids.get(2));
+      assertThat(doc.getEmbedded("embedded").getInteger("x")).isEqualTo(1);
+      assertThat(rids.get(3).asDocument().get("me")).isEqualTo(rids.get(3));
+      assertThat(rids.get(1).asVertex().countEdges(Vertex.DIRECTION.OUT, "K")).isEqualTo(1);
+    });
+  }
+
+  /** A record held inside a map of its own, written through every JSON writer (review of #12412). */
+  @Test
+  void aRecordHeldInAMapOfItselfIsWrittenAsItsRid() {
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("D").save();
+      doc.set("m", Map.of("back", doc)).save();
+      final String rid = doc.getIdentity().toString();
+      assertThat(JsonGraphSerializer.createJsonGraphSerializer().serializeGraphElement(doc).getJSONObject("p").getJSONObject("m")
+          .getString("back")).isEqualTo(rid);
+      assertThat(JsonSerializer.createJsonSerializer().serializeDocument(doc).getJSONObject("m").getString("back")).isEqualTo(rid);
+      assertThat(doc.toJSON(true).toString()).contains(rid);
+      assertThat(new JSONObject().put("d", doc).toString()).contains(rid);
+    });
   }
 
   @Test
@@ -189,7 +244,7 @@ class Issue11850StatementErrorsTest extends TestHelper {
   }
 
   private long countD() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM D")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM D")) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

@@ -116,10 +116,19 @@ public class JsonSerializer {
     final RID rid = document.getIdentity();
     for (int i = stack.size() - 1; i > -1; --i) {
       final Document written = stack.get(i);
-      if (written == document || (rid != null && rid.equals(written.getIdentity())))
+      if (written == document || (rid != null && rid.equals(written.getIdentity()) && sameDatabase(written, document)))
         return true;
     }
     return false;
+  }
+
+  /** RID equality ignores the database: two records are the same one only if they also belong to the same database. */
+  private static boolean sameDatabase(final Document a, final Document b) {
+    final Database dbA = a.getDatabase();
+    final Database dbB = b.getDatabase();
+    if (dbA == dbB)
+      return true;
+    return dbA != null && dbB != null && dbA.getDatabasePath().equals(dbB.getDatabasePath());
   }
 
   /** Marks the document as being written; every call is paired with {@link #endWriting()} in a finally. */

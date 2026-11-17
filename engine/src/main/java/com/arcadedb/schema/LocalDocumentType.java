@@ -2960,7 +2960,8 @@ public class LocalDocumentType implements DocumentType {
                   + " A bucket cannot be renamed (issue #11796): resolve by moving the records of bucket '" + extName
                   + "' to a bucket with another name (CREATE BUCKET, ALTER TYPE ... BUCKET +<new>, MOVE VERTEX or"
                   + " INSERT ... SELECT, ALTER TYPE ... BUCKET -" + extName + ", DROP BUCKET " + extName
-                  + "), then retry the EXTERNAL property change.");
+                  + "; a copied record gets a new RID, so rewrite the links to the old RIDs before the DROP), then retry the"
+                  + " EXTERNAL property change.");
       } else {
         // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (256 vs 2048: file-format
         // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via

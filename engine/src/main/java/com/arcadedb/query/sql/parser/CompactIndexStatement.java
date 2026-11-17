@@ -126,7 +126,7 @@ public class CompactIndexStatement extends DDLStatement {
    */
   private static boolean compactOutsideCallerTransaction(final DatabaseInternal database, final IndexInternal idx)
       throws Exception {
-    return OutsideCallerTransaction.call(database, "CompactIndex", () -> compactIndex(idx));
+    return OutsideCallerTransaction.call(database, "CompactIndex", true, () -> compactIndex(idx));
   }
 
   /**

@@ -50,7 +50,7 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
     final Map<String, Object> commandResult;
     try {
       // Outside the caller's transaction, never by rolling it back (issue #11781)
-      commandResult = OutsideCallerTransaction.execute(database, "AlignDatabase", database::alignToReplicas);
+      commandResult = OutsideCallerTransaction.execute(database, "AlignDatabase", false, database::alignToReplicas);
     } catch (final UnsupportedOperationException e) {
       // No database implements it: with Raft a replica is realigned by log replay or a snapshot installation. Refused as the
       // statement's error (a 400 over HTTP) with a message saying so, not a bare UnsupportedOperationException, which answered

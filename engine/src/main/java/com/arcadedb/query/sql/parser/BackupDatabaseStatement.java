@@ -164,7 +164,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         try {
           // The archive holds the database as committed, never the caller's pending changes, so it is written outside the
           // caller's transaction, which stays as it was (issue #11781): it used to be rolled back first, losing its writes
-          final String backupFile = OutsideCallerTransaction.call(context.getDatabase(), "BackupDatabase",
+          final String backupFile = OutsideCallerTransaction.call(context.getDatabase(), "BackupDatabase", false,
               () -> (String) clazz.getMethod("backupDatabase").invoke(backup));
 
           // PRUNE THE DIRECTORY JUST WRITTEN INTO (issue #9844). The statement is the other on-demand entry point next to the

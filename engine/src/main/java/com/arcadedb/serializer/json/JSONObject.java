@@ -151,7 +151,8 @@ public class JSONObject implements Map<String, Object> {
     case Character character -> put(name, character);
     case JSONObject nObject -> object.add(name, nObject.getInternal());
     case JSONArray array -> put(name, array.getInternal());
-    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
+    // through the same guard as a nested value, so a record held inside its own JSON is written as its RID (issue #11850)
+    case Document doc -> object.add(name, objectToElement(doc));
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
     case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
     case Iterable<?> iterable -> {
