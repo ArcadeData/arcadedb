@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.BucketPageLayoutTestSupport;
@@ -907,6 +908,45 @@ class ReplicatedApplyPublicationTest {
         applier.join();
       }
       assertThat(applied.get()).as("the applier kept publishing while the visits ran").isPositive();
+    }
+
+    /**
+     * #11784, the same verdict reached for certain: a publication overlaps every optimistic walk of the broken record, so the retry
+     * loop ends in motion and the verdict is the held redo's, which the counter of lock redos proves ran. The background applier of
+     * the test above can leave a visit on the quiet path, which never reaches that redo.
+     */
+    @Test
+    void aBrokenChainWhoseOptimisticWalksAPublicationOverlapsIsUnreadableNotInMotion() throws Exception {
+      final RID[] rids = createChunkedRecords(TYPE);
+      // ONLY THE BROKEN RECORD IS KEPT, SO EVERY WALK THE HOOK SEES IS ONE OF ITS WALKS
+      database.transaction(() -> {
+        for (int i = 1; i < rids.length; i++)
+          rids[i].asDocument(true).delete();
+      });
+      final RID broken = breakChainAtChunkZero(rids[0]);
+      final LocalBucket bucket = bucketOf(TYPE);
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      // THE ATTEMPTS committedMultiPageRecord GIVES THE RETRY LOOP BEFORE THE HELD REDO
+      final int optimisticWalks = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES) + 1;
+      final AtomicInteger walks = new AtomicInteger();
+      final long lockRedos = bucket.getCommittedWalkLockRedosForTesting();
+
+      LocalBucket.committedWalkHookForTesting = () -> {
+        // A PUBLICATION OPENED AND CLOSED BETWEEN THE HEAD CHUNK AND THE REST OF EACH OPTIMISTIC WALK; NONE UNDER THE HOLD, WHERE IT
+        // WOULD WAIT FOR THE HOLD THIS THREAD HAS
+        if (walks.incrementAndGet() <= optimisticWalks) {
+          pageManager.beginPublication();
+          pageManager.endPublication();
+        }
+      };
+      try {
+        assertThat(visitOutcome(bucket, broken)).isEqualTo("unreadable");
+      } finally {
+        LocalBucket.committedWalkHookForTesting = null;
+      }
+      assertThat(walks.get()).as("every optimistic walk and the held redo walked the broken record").isEqualTo(optimisticWalks + 1);
+      assertThat(bucket.getCommittedWalkLockRedosForTesting() - lockRedos).as("the verdict is the held redo's").isEqualTo(1);
+      assertThat(pageManager.getPublicationSequence() & 1).isZero();
     }
 
     /**

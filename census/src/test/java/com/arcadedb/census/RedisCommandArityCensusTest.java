@@ -20,6 +20,8 @@ package com.arcadedb.census;
 
 import com.arcadedb.redis.RedisCommandArity;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 
 import java.util.List;
 import java.util.Map;
@@ -147,7 +149,7 @@ class RedisCommandArityCensusTest {
     // control: the shapes the census relies on, compiled by the same javac
     final Map<String, Set<String>> compared = comparedWords(CompiledClasses.ofTheProbes());
     assertThat(compared.get("census/RedisCommandArityCensusTest#probe")).containsExactlyInAnyOrder("ALPHA", "BETA", "GAMMA", "DELTA",
-        "EPSILON", "ZETA", "ETA", "THETA");
+        "EPSILON", "ZETA", "ETA", "THETA", "IOTA", "KAPPA");
   }
 
   @SuppressWarnings("unused")
@@ -162,6 +164,10 @@ class RedisCommandArityCensusTest {
       return 5;
     if (command.equalsIgnoreCase("THETA"))
       return 6;
+    // A WORD THAT CAN BE ONE OF TWO CONSTANTS, ONE PER BRANCH
+    final String either = arguments.size() > 1 ? "IOTA" : "KAPPA";
+    if (command.equals(either))
+      return 7;
     switch (command) {
     case "BETA":
       return 1;
@@ -216,11 +222,11 @@ class RedisCommandArityCensusTest {
     final Map<String, Set<String>> compared = new TreeMap<>();
     for (final CallOperands.Site site : CallOperands.of(classes,
         (owner, name, descriptor) -> "java/lang/String".equals(owner) && ("equals".equals(name) || "equalsIgnoreCase".equals(name))))
-      for (int operand = 0; operand < 2; operand++) {
-        final String word = CallOperands.stringConstant(site.operand(operand));
-        if (word != null)
-          compared.computeIfAbsent(site.key(), k -> new TreeSet<>()).add(word);
-      }
+      for (int operand = 0; operand < 2; operand++)
+        // EVERY CONSTANT THE OPERAND CAN BE, NOT ONLY A SINGLE ONE: A LOCAL ASSIGNED ON TWO BRANCHES (A TERNARY) HAS AN ORIGIN EACH
+        for (final AbstractInsnNode origin : site.operand(operand))
+          if (origin instanceof LdcInsnNode ldc && ldc.cst instanceof String word)
+            compared.computeIfAbsent(site.key(), k -> new TreeSet<>()).add(word);
     return compared;
   }
 }
