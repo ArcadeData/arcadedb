@@ -21,12 +21,14 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,10 +53,53 @@ class CypherOrderByKeysOnceIssue12341Test extends TestHelper {
     return values;
   }
 
+  /** As {@link #values}, through command(): a user library function is not known to be read-only, so query() refuses it. */
+  private List<Long> commandValues(final String query) {
+    final List<Long> values = new ArrayList<>();
+    try (final ResultSet rs = database.command("opencypher", query)) {
+      rs.forEachRemaining(r -> values.add(r.<Number>getProperty("v").longValue()));
+    }
+    return values;
+  }
+
   private double single(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       return rs.next().<Number>getProperty("v").doubleValue();
     }
+  }
+
+  /** A sort key that counts how many times it is evaluated. */
+  public static class CountingKey {
+    static final AtomicInteger CALLS = new AtomicInteger();
+
+    public static long key(final long value) {
+      CALLS.incrementAndGet();
+      return value % 13;
+    }
+  }
+
+  /**
+   * The direct statement of the fix: each key is evaluated exactly once per input row, by the full sort and by the top-k heap,
+   * including the rows the heap rejects. Before, the comparator evaluated it about 2 * log2(n) times per row.
+   */
+  @Test
+  void eachKeyIsEvaluatedOncePerRow() throws Exception {
+    database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("counting", CountingKey.class));
+
+    CountingKey.CALLS.set(0);
+    final List<Long> all = commandValues("UNWIND range(1, 500) AS i RETURN i AS v ORDER BY counting.key(i), i");
+    assertThat(all).hasSize(500).startsWith(13L, 26L, 39L);
+    assertThat(CountingKey.CALLS.get()).isEqualTo(500);
+
+    CountingKey.CALLS.set(0);
+    assertThat(commandValues("UNWIND range(1, 500) AS i RETURN i AS v ORDER BY counting.key(i), i LIMIT 3")).containsExactly(13L, 26L,
+        39L);
+    assertThat(CountingKey.CALLS.get()).isEqualTo(500);
+
+    CountingKey.CALLS.set(0);
+    assertThat(commandValues("UNWIND range(1, 500) AS i RETURN i AS v ORDER BY counting.key(i) DESC, counting.key(i + 1), i LIMIT 1"))
+        .containsExactly(12L);
+    assertThat(CountingKey.CALLS.get()).isEqualTo(1000);
   }
 
   /** About one run in ten failed at 1,000 rows before: 40 passing runs on the old code is below 1.5% likely. */

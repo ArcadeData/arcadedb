@@ -1498,11 +1498,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     final List<String> result = new ArrayList<>(staticLabels.size() + pattern.getDynamicLabels().size());
     result.addAll(staticLabels);
+    // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338). Every operand is still evaluated, so a value that
+    // is not a label is the same type error whatever the order of the operands
+    boolean emptyDisjunct = false;
     for (final Expression dynExpr : pattern.getDynamicLabels())
-      // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338)
-      if (!Labels.appendDynamicMatchLabels(result, evaluator.evaluate(dynExpr, currentInputResult, context)) && pattern.isLabelDisjunction())
-        return List.of();
-    return result;
+      if (!Labels.appendDynamicMatchLabels(result, evaluator.evaluate(dynExpr, currentInputResult, context)))
+        emptyDisjunct = true;
+    return emptyDisjunct && pattern.isLabelDisjunction() ? List.of() : result;
   }
 
   private boolean matchesProperties(final Vertex vertex) {

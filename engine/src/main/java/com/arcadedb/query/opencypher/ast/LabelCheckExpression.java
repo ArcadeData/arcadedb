@@ -94,7 +94,9 @@ public class LabelCheckExpression implements BooleanExpression {
   public LabelCheckExpression(final Expression variableExpression, final LabelPredicate predicate, final String text) {
     this.variableExpression = variableExpression;
     this.labels = List.of();
-    this.dynamicLabels = List.of();
+    // Not evaluated from here - the tree evaluates its own operands - but listed, so every analysis that walks the dynamic
+    // labels (scope validation, the expression walker, the variables a filter reads) sees the ones inside the tree too
+    this.dynamicLabels = predicate.dynamicExpressions();
     this.operator = LabelOperator.EXPRESSION;
     this.predicate = predicate;
     this.text = text;
@@ -155,18 +157,23 @@ public class LabelCheckExpression implements BooleanExpression {
     if (!(value instanceof Vertex) && !(value instanceof Edge))
       return false;
 
+    boolean matched = false;
     for (final String label : labels)
-      if (matchesOperand(value, List.of(label)))
-        return true;
+      if (matchesOperand(value, List.of(label))) {
+        matched = true;
+        break;
+      }
 
+    // every dynamic operand is evaluated, even past one that already matched: a value that is not a label is the same type
+    // error whatever the order of the operands (issue #12338)
     final List<String> operand = new ArrayList<>();
     for (final Expression dynamicLabel : dynamicLabels) {
       operand.clear();
       Labels.appendDynamicMatchLabels(operand, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(dynamicLabel, result, context));
-      if (matchesOperand(value, operand))
-        return true;
+      if (!matched && matchesOperand(value, operand))
+        matched = true;
     }
-    return false;
+    return matched;
   }
 
   /**
@@ -200,7 +207,11 @@ public class LabelCheckExpression implements BooleanExpression {
     return labels;
   }
 
-  /** The Cypher 25 dynamic {@code $(expr)} labels, evaluated per row; empty when there are none. */
+  /**
+   * The Cypher 25 dynamic {@code $(expr)} labels, evaluated per row; empty when there are none. For a check through a
+   * {@link LabelPredicate} tree these are the expressions of its {@link LabelPredicate.Dynamic} operands, which the tree
+   * evaluates itself.
+   */
   public List<Expression> getDynamicLabels() {
     return dynamicLabels;
   }

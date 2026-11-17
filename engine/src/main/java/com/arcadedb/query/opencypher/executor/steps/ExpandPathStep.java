@@ -535,12 +535,13 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
 
     final List<String> labels = new ArrayList<>(staticLabels.size() + targetNodePattern.getDynamicLabels().size());
     labels.addAll(staticLabels);
+    // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338). Every operand is still evaluated, so a value that
+    // is not a label is the same type error whatever the order of the operands
+    boolean emptyDisjunct = false;
     for (final Expression dynamicLabel : targetNodePattern.getDynamicLabels())
-      // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338)
-      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context))
-          && targetNodePattern.isLabelDisjunction())
-        return List.of();
-    return labels;
+      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context)))
+        emptyDisjunct = true;
+    return emptyDisjunct && targetNodePattern.isLabelDisjunction() ? List.of() : labels;
   }
 
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {

@@ -70,6 +70,8 @@ public class OrderByStep extends AbstractExecutionStep {
   private final OrderByClause       orderByClause;
   private final ExpressionEvaluator evaluator;
   private final Integer             limit; // Downstream LIMIT value for Top-K optimization
+  /** The {@link Keyed} holder itself: its header and its three fields, without the key array. */
+  private static final long KEYED_BYTES = HeapEstimator.OBJECT_BYTES + 3L * HeapEstimator.REFERENCE_BYTES;
   // THE ROWS BUFFERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
   // STEP, NOT ON ITS RESULT SET: THE CLOSE() OF A QUERY REACHES THE STEPS
   private       OperationHeapLimit  heapLimit;
@@ -290,6 +292,9 @@ public class OrderByStep extends AbstractExecutionStep {
        * "Comparison method violates its general contract!" and the top-k heap of {@code ORDER BY rand() LIMIT k} was biased
        * towards the last rows (issues #11661, #12340, #12341).
        */
+      // The reference comparison is the point: a key that IS the column's value object is already charged with the row, an
+      // equal but distinct one (a converted temporal, a copied list) is memory the sort holds on its own
+      @SuppressWarnings("PMD.CompareObjectsWithEquals")
       private Keyed withKeys(final Result row) {
         final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
         final boolean charging = heapLimit.isCharging();
@@ -512,9 +517,6 @@ public class OrderByStep extends AbstractExecutionStep {
       }
     };
   }
-
-  /** The {@link Keyed} holder itself: its header and its three fields, without the key array. */
-  private static final long KEYED_BYTES = HeapEstimator.OBJECT_BYTES + 3L * HeapEstimator.REFERENCE_BYTES;
 
   /**
    * A row and the values of its ORDER BY items, evaluated once when the row enters the sort (issue #12341), with the estimated

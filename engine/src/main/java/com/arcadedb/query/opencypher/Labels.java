@@ -665,25 +665,52 @@ public final class Labels {
     final int before = target.size();
     if (value instanceof Iterable<?> iterable) {
       for (final Object item : iterable)
-        target.add(requireDynamicMatchLabel(item, value));
+        target.add(requireDynamicMatchLabel(item));
     } else if (value instanceof Object[] array) {
       for (final Object item : array)
-        target.add(requireDynamicMatchLabel(item, value));
+        target.add(requireDynamicMatchLabel(item));
     } else
-      throw dynamicMatchLabelTypeError(value, value);
+      throw dynamicMatchLabelTypeError(value, false);
     return target.size() > before;
   }
 
-  private static String requireDynamicMatchLabel(final Object item, final Object value) {
-    if (item instanceof String label)
-      return label;
-    throw dynamicMatchLabelTypeError(item, value);
+  /**
+   * Whether an element of {@code type} satisfies a dynamic label that evaluated to {@code value}: {@code $all(expr)} (the
+   * same as {@code $(expr)}) when {@code any} is false, {@code $any(expr)} when it is true. The value is checked as
+   * {@link #appendDynamicMatchLabels} checks it, every element of a list included, without building the label list: a
+   * per-row label predicate asks this for every element it filters. {@code $all} of an empty list holds and {@code $any} of
+   * one does not, as in Neo4j.
+   *
+   * @throws TypeMismatchException when the value is not a string or a list of strings
+   */
+  public static boolean matchesDynamicLabels(final DocumentType type, final Object value, final boolean any) {
+    if (value instanceof String label)
+      return type.instanceOf(label);
+    // the answer stays !any until one label decides it, and every element is still type-checked after that
+    boolean result = !any;
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (type.instanceOf(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else if (value instanceof Object[] array) {
+      for (final Object item : array)
+        if (type.instanceOf(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else
+      throw dynamicMatchLabelTypeError(value, false);
+    return result;
   }
 
-  private static TypeMismatchException dynamicMatchLabelTypeError(final Object offender, final Object value) {
+  private static String requireDynamicMatchLabel(final Object item) {
+    if (item instanceof String label)
+      return label;
+    throw dynamicMatchLabelTypeError(item, true);
+  }
+
+  private static TypeMismatchException dynamicMatchLabelTypeError(final Object offender, final boolean listElement) {
     final String kind = offender == null ? "null" : offender.getClass().getSimpleName() + " (" + offender + ")";
     return new TypeMismatchException("TypeError: a dynamic label or relationship type $(...) must evaluate to a STRING or a "
-        + "LIST<STRING> with no null element, but " + (offender == value ? "it evaluated to " : "the list contains ") + kind);
+        + "LIST<STRING> with no null element, but " + (listElement ? "the list contains " : "it evaluated to ") + kind);
   }
 
   /**

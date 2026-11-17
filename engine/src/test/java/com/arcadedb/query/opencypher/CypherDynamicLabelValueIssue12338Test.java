@@ -131,6 +131,27 @@ class CypherDynamicLabelValueIssue12338Test extends TestHelper {
     assertThat(count("MATCH (a:A) ((x)-[:R]->(y:!$('B'))){1,1} (z) RETURN count(*) AS c")).isZero();
   }
 
+  /** A bad operand is a type error whatever the order of the operands, and wherever the operand sits in the expression. */
+  @Test
+  void aBadOperandIsATypeErrorWhateverTheOrder() {
+    assertTypeError("MATCH (n:$([])|$(null)) RETURN count(n) AS c");
+    assertTypeError("MATCH (n:$(null)|$([])) RETURN count(n) AS c");
+    assertTypeError("MATCH (a:A)-[:R]->(b:$([])|$(null)) RETURN count(b) AS c");
+    assertTypeError("MATCH (a:A)-[*1..2]->(b:$([])|$(null)) RETURN count(b) AS c");
+    assertTypeError("MATCH (n) WHERE n:A|$(null) RETURN count(n) AS c");
+    assertTypeError("MATCH (n) WHERE n:A|$any(null) RETURN count(n) AS c");
+    assertTypeError("MATCH (n) WHERE n:!A&$any(null) RETURN count(n) AS c");
+  }
+
+  /** A variable read by a dynamic operand inside a label expression tree is scope-checked like any other. */
+  @Test
+  void anUndefinedVariableInADynamicOperandIsRefused() {
+    for (final String query : List.of("MATCH (n:A) WHERE n:A|$any(missing) RETURN count(n) AS c",
+        "MATCH (n:A) WHERE n:!$(missing) RETURN count(n) AS c", "MATCH (n:A|$any(missing)) RETURN count(n) AS c",
+        "MATCH ()-[r:R&$(missing)]->() RETURN count(r) AS c"))
+      assertThatThrownBy(() -> count(query)).as(query).hasMessageContaining("missing");
+  }
+
   @Test
   void anyIsADisjunction() {
     assertThat(count("MATCH (n:$any(['A', 'B'])) RETURN count(n) AS c")).isEqualTo(3);

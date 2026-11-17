@@ -73,6 +73,34 @@ public abstract sealed class LabelPredicate {
     return out;
   }
 
+  /**
+   * The expressions of the {@link Dynamic} operands anywhere in the tree, in source order: what the semantic checks and the
+   * planner have to see as variables the predicate reads (an undefined variable in {@code n:A|$any(missing)}, a filter that
+   * cannot run before the variable its dynamic label reads is bound). Empty for a static predicate.
+   */
+  public List<Expression> dynamicExpressions() {
+    final List<Expression> out = new ArrayList<>(0);
+    collectDynamic(this, out);
+    return out;
+  }
+
+  private static void collectDynamic(final LabelPredicate predicate, final List<Expression> out) {
+    switch (predicate) {
+    case Dynamic dynamic -> out.add(dynamic.expression);
+    case Not not -> collectDynamic(not.operand, out);
+    case And and -> {
+      for (final LabelPredicate operand : and.operands)
+        collectDynamic(operand, out);
+    }
+    case Or or -> {
+      for (final LabelPredicate operand : or.operands)
+        collectDynamic(operand, out);
+    }
+    default -> {
+    }
+    }
+  }
+
   private static void collectRequired(final LabelPredicate predicate, final List<String> out) {
     if (predicate instanceof Name name) {
       if (!out.contains(name.label))
@@ -174,18 +202,24 @@ public abstract sealed class LabelPredicate {
 
     @Override
     public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
+      // every operand is evaluated, even past the one that decides: a dynamic operand's type error must not depend on the
+      // order of the operands (issue #12338)
+      boolean result = true;
       for (final LabelPredicate operand : operands)
         if (!operand.matchesVertexType(type, row, context))
-          return false;
-      return true;
+          result = false;
+      return result;
     }
 
     @Override
     public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
+      // every operand is evaluated, even past the one that decides: a dynamic operand's type error must not depend on the
+      // order of the operands (issue #12338)
+      boolean result = true;
       for (final LabelPredicate operand : operands)
         if (!operand.matchesEdgeType(edgeType, row, context))
-          return false;
-      return true;
+          result = false;
+      return result;
     }
 
     @Override
@@ -206,7 +240,7 @@ public abstract sealed class LabelPredicate {
 
   /**
    * A Cypher 25 dynamic label {@code $(expr)} (the same as {@code $all(expr)}) or {@code $any(expr)}, evaluated per row. The
-   * value is read through {@link Labels#appendDynamicMatchLabels}, so it is the same type error there is on every other read
+   * value is read through {@link Labels#matchesDynamicLabels}, so it is the same type error there is on every other read
    * path when it is not a string or a list of strings (issue #12338). {@code $all} of an empty list holds (no label is
    * missing) and {@code $any} of one does not, as in Neo4j.
    */
@@ -230,12 +264,7 @@ public abstract sealed class LabelPredicate {
     }
 
     private boolean matches(final DocumentType type, final Result row, final CommandContext context) {
-      final List<String> labels = new ArrayList<>(2);
-      Labels.appendDynamicMatchLabels(labels, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, row, context));
-      for (int i = 0; i < labels.size(); i++)
-        if (type.instanceOf(labels.get(i)) == any)
-          return any;
-      return !any;
+      return Labels.matchesDynamicLabels(type, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, row, context), any);
     }
 
     @Override
@@ -254,18 +283,22 @@ public abstract sealed class LabelPredicate {
 
     @Override
     public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
+      // every operand is evaluated, see And
+      boolean result = false;
       for (final LabelPredicate operand : operands)
         if (operand.matchesVertexType(type, row, context))
-          return true;
-      return false;
+          result = true;
+      return result;
     }
 
     @Override
     public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
+      // every operand is evaluated, see And
+      boolean result = false;
       for (final LabelPredicate operand : operands)
         if (operand.matchesEdgeType(edgeType, row, context))
-          return true;
-      return false;
+          result = true;
+      return result;
     }
 
     @Override

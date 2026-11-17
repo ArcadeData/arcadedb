@@ -497,11 +497,13 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       return pattern.getLabels();
 
     final List<String> labels = new ArrayList<>(pattern.getLabels());
+    // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338). Every operand is still evaluated, so a value that
+    // is not a label is the same type error whatever the order of the operands
+    boolean emptyDisjunct = false;
     for (final Expression dynamicLabel : pattern.getDynamicLabels())
-      // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338)
-      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, input, context)) && pattern.isLabelDisjunction())
-        return List.of();
-    return labels;
+      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, input, context)))
+        emptyDisjunct = true;
+    return emptyDisjunct && pattern.isLabelDisjunction() ? List.of() : labels;
   }
 
   private Result buildRow(final Result input, final Vertex end, final List<Repetition> repetitions) {
