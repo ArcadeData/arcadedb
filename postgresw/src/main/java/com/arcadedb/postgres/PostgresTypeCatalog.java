@@ -422,7 +422,7 @@ public class PostgresTypeCatalog {
    * The name of the C function PostgreSQL converts the type with: {@code typinput}/{@code typoutput} for its
    * text representation, {@code typreceive}/{@code typsend} for its binary one. Spelled out rather than
    * synthesised from the type name alone, because PostgreSQL is not consistent about it: most are
-   * {@code <name><suffix>}, but the temporal types, json and numeric take an underscore.
+   * {@code <name><suffix>}, but the date/time types, interval, json, jsonb and numeric take an underscore.
    * <p>
    * The receive function is what the Apache Arrow ADBC driver reads to decide how to decode a column, so it
    * has to be PostgreSQL's own name and not something plausible: a name the driver does not know leaves the
@@ -439,23 +439,20 @@ public class PostgresTypeCatalog {
     if (type.isArrayType())
       return "array_" + suffix;
     return switch (type) {
-      case DATE, TIMESTAMP, JSON, NUMERIC -> type.typeName + "_" + suffix;
+      case DATE, TIME, TIMETZ, TIMESTAMP, TIMESTAMPTZ, INTERVAL, JSON, JSONB, NUMERIC -> type.typeName + "_" + suffix;
       default -> type.typeName + suffix;
     };
   }
 
   /**
-   * pg_type.typispreferred: within a category, the type PostgreSQL casts towards when it has a choice. Only
-   * one member of each category carries it.
-   * <p>
-   * Category D is an approximation: PostgreSQL's preferred date/time type is {@code timestamptz}, which this
-   * protocol does not produce, so {@code timestamp} is the closest of the two it does have. It is the right
-   * answer for choosing between {@code date} and {@code timestamp}, which is the only choice a client can
-   * face here, but it is not what a stock server would report.
+   * pg_type.typispreferred: within a category, the type PostgreSQL casts towards when it has a choice. Usually
+   * one member of a category carries it, but PostgreSQL 16 marks both {@code float8} and {@code oid} in N;
+   * {@code timestamptz} (not {@code timestamp}) is the preferred date/time type and {@code interval} the
+   * preferred timespan type.
    */
   private static Boolean preferred(final PostgresType type) {
     return switch (type) {
-      case DOUBLE, TEXT, BOOLEAN, TIMESTAMP -> Boolean.TRUE;
+      case DOUBLE, OID, TEXT, BOOLEAN, TIMESTAMPTZ, INTERVAL -> Boolean.TRUE;
       default -> Boolean.FALSE;
     };
   }
@@ -474,7 +471,8 @@ public class PostgresTypeCatalog {
   }
 
   /**
-   * pg_type.typalign: the storage alignment PostgreSQL gives the type, from its width. An array takes INT
+   * pg_type.typalign: the storage alignment PostgreSQL gives the type, from its width; the two wider fixed-width
+   * types, {@code timetz} (12 bytes) and {@code interval} (16), are DOUBLE aligned too. An array takes INT
    * alignment unless its element needs DOUBLE, which is the rule PostgreSQL's own catalog generator applies
    * ({@code Catalog.pm}, {@code GenerateArrayTypes}) - so {@code _int8} and {@code _float8} are {@code d}
    * while every other array is {@code i}.
@@ -489,7 +487,7 @@ public class PostgresTypeCatalog {
     return switch (type.size) {
       case 1 -> "c";
       case 2 -> "s";
-      case 8 -> "d";
+      case 8, 12, 16 -> "d";
       default -> "i";
     };
   }
@@ -520,10 +518,12 @@ public class PostgresTypeCatalog {
     return switch (type) {
       case BOOLEAN -> "B";
       case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC, OID -> "N";
-      case DATE, TIMESTAMP -> "D";
-      case CHAR, VARCHAR, TEXT, BPCHAR, NAME -> "S";
+      case DATE, TIME, TIMETZ, TIMESTAMP, TIMESTAMPTZ -> "D";
+      case INTERVAL -> "T";
+      case VARCHAR, TEXT, BPCHAR, NAME -> "S";
+      case CHAR -> "Z"; // the single-byte internal "char", which PostgreSQL files as an internal-use type
       case INT2VECTOR -> "A";
-      default -> "U"; // user-defined, which is where PostgreSQL itself files json
+      default -> "U"; // user-defined, which is where PostgreSQL itself files json, jsonb and bytea
     };
   }
 
