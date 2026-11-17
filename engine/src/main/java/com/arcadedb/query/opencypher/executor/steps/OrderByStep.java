@@ -27,8 +27,11 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.rewriter.ProjectedExpressionSubstituter;
+import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -75,6 +78,10 @@ public class OrderByStep extends AbstractExecutionStep {
   // THE ROWS BUFFERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
   // STEP, NOT ON ITS RESULT SET: THE CLOSE() OF A QUERY REACHES THE STEPS
   private       OperationHeapLimit  heapLimit;
+  // PER ORDER BY ITEM, THE COLUMN OF THE PROJECTION BEFORE THE SORT THAT ALREADY HOLDS ITS VALUE, AND THE EXPRESSION TO EVALUATE
+  // WITH THE PROJECTED PARTS READ FROM THEIR COLUMNS (ISSUE #12368). NULL WHEN NO PROJECTION WAS GIVEN
+  private       String[]            projectedColumns;
+  private       Expression[]        keyExpressions;
 
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context) {
     this(orderByClause, context, null, null);
@@ -99,6 +106,62 @@ public class OrderByStep extends AbstractExecutionStep {
     this.orderByClause = orderByClause;
     this.evaluator = functionFactory != null ? new ExpressionEvaluator(functionFactory) : null;
     this.limit = limit;
+  }
+
+  /**
+   * Reads the keys that repeat an expression of the projection in front of the sort from the columns it projected them as,
+   * instead of evaluating them again (issue #12368). In
+   * {@code RETURN n.external_id AS external_id ... ORDER BY n.external_id} the key used to be read from the record of {@code n}
+   * once per row, although the row already held it under {@code external_id}; a key that only contains a projected expression
+   * ({@code ORDER BY coalesce(rel.confidence, -1.0)} next to {@code rel.confidence AS confidence}) reads that part from its column.
+   * <p>
+   * The value is the same: the projection evaluated the same expression against the same input row. Where the two could differ
+   * - a projected name that shadows a variable the expression reads, as in {@code RETURN n.y AS n, n.x AS x ORDER BY n.x}, where
+   * the {@code n} of the ORDER BY is the column {@code n} - the key is evaluated as written, so the mapping never changes what a
+   * key means. This is done here, at execution, and not in the parsed ORDER BY, which the planner reads to answer the sort from an
+   * index and EXPLAIN prints as written.
+   * <p>
+   * A collapsing projection (DISTINCT, aggregation) had its ORDER BY rewritten at parse time already
+   * ({@link ProjectedOrderByNormalizer}), so for it this finds nothing more to do.
+   *
+   * @param projected the items of the RETURN or WITH projection whose rows this step sorts, may be null
+   *
+   * @return this step
+   */
+  public OrderByStep withProjection(final List<ReturnClause.ReturnItem> projected) {
+    if (projected == null || projected.isEmpty() || orderByClause.isEmpty())
+      return this;
+
+    final List<OrderByClause.OrderByItem> items = orderByClause.getItems();
+    String[] columns = null;
+    Expression[] expressions = null;
+    ProjectedExpressionSubstituter substituter = null;
+    for (int i = 0; i < items.size(); i++) {
+      final OrderByClause.OrderByItem item = items.get(i);
+      final String column = ProjectedOrderByNormalizer.findPlainProjectedOutputName(projected, item.getExpression());
+      if (column != null) {
+        if (columns == null)
+          columns = new String[items.size()];
+        columns[i] = column;
+        continue;
+      }
+
+      final Expression ast = item.getExpressionAST();
+      // an aggregation in a key is refused by the validator before this, and a key with none is evaluated per row as written
+      if (ast == null || evaluator == null || ast.containsAggregation())
+        continue;
+      if (substituter == null)
+        substituter = ProjectedOrderByNormalizer.newPlainProjectionSubstituter(projected);
+      final Object substituted = substituter.rewrite(ast);
+      if (substituted != ast && substituted instanceof Expression expression) {
+        if (expressions == null)
+          expressions = new Expression[items.size()];
+        expressions[i] = expression;
+      }
+    }
+    this.projectedColumns = columns;
+    this.keyExpressions = expressions;
+    return this;
   }
 
   @Override
@@ -305,7 +368,12 @@ public class OrderByStep extends AbstractExecutionStep {
         long bytes = charging ? KEYED_BYTES + (long) keys.length * HeapEstimator.REFERENCE_BYTES : 0L;
         for (int i = 0; i < keys.length; i++) {
           final OrderByClause.OrderByItem item = items.get(i);
-          final String expression = item.getExpression();
+          final String expression;
+          // the projection's column of a key that repeats one of its expressions (issue #12368), when the row has it
+          if (projectedColumns != null && projectedColumns[i] != null && row.listsProperty(projectedColumns[i]))
+            expression = projectedColumns[i];
+          else
+            expression = item.getExpression();
           // A projected column already holds what its Cypher expression evaluated to - a property read restored its
           // temporal there - so a String in it IS a string: sniffing it again turned a declared STRING "P10D" (or a
           // string literal) into a duration and sorted it as one (issue #8384). The column test does not build the
@@ -317,7 +385,7 @@ public class OrderByStep extends AbstractExecutionStep {
             if (charging && keys[i] != stored)
               bytes += HeapEstimator.estimate(keys[i]);
           } else {
-            keys[i] = evaluateKey(row, item);
+            keys[i] = evaluateKey(row, item, keyExpressions != null ? keyExpressions[i] : null);
             if (charging && keys[i] != null)
               bytes += HeapEstimator.estimate(keys[i]);
           }
@@ -344,10 +412,11 @@ public class OrderByStep extends AbstractExecutionStep {
       }
 
       /** The value of an ORDER BY item that is not a column of the row: its expression, evaluated against the row. */
-      private Object evaluateKey(final Result result, final OrderByClause.OrderByItem item) {
+      private Object evaluateKey(final Result result, final OrderByClause.OrderByItem item, final Expression projectedAST) {
         final String expression = item.getExpression();
-        // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
-        final Expression exprAST = item.getExpressionAST();
+        // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support. The one with its projected
+        // parts read from their columns first (issue #12368)
+        final Expression exprAST = projectedAST != null ? projectedAST : item.getExpressionAST();
         if (exprAST != null && evaluator != null)
           return evaluator.evaluate(exprAST, result, context);
         if (expression.contains(".")) {

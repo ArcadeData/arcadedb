@@ -74,7 +74,10 @@ class SQLFunctionDurationTest {
 
   @Test
   void durationWithIncorrectNumberOfParameters() {
+    // issue #12362: one argument is the openCypher form (an ISO-8601 text or a map), so a lone number is refused for its kind
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5 }, null)).isInstanceOf(
-        IllegalArgumentException.class).hasMessageContaining("duration() function expected 2 parameters: amount and time-unit");
+        InvalidArgumentException.class).hasMessageContaining("ISO-8601 duration text or a map");
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5, "hour", 3 }, null)).isInstanceOf(
+        InvalidArgumentException.class).hasMessageContaining("received 3 arguments");
   }
 }
