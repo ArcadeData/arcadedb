@@ -676,4 +676,127 @@ class CypherReturnStarTest {
       return OpenCypherQueryEngine.declaredColumns((DatabaseInternal) database, query);
     }
   }
+
+  /**
+   * Issue #11775: the UNION (and conditional query) column check compared the texts of the RETURN items, so {@code RETURN *}
+   * was the single column {@code "*"}. Two branches that both {@code RETURN *} over different variables were accepted with
+   * rows that do not match the announced columns, and a {@code RETURN *} next to a branch naming the same columns explicitly
+   * was refused. The check now reads the columns each branch answers, with {@code *} expanded to the variables in scope.
+   */
+  @Nested
+  class Issue11775UnionColumnsOfStar extends TestHelper {
+
+    @Override
+    protected void beginTest() {
+      database.transaction(() -> {
+        database.getSchema().createVertexType("P");
+        database.command("opencypher", "CREATE (:P {v: 1, name: 'a'}), (:P {v: 2, name: 'b'})");
+      });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "MATCH (n:P) WITH n.v AS x RETURN * UNION MATCH (n:P) WITH n.name AS y RETURN *",
+        "MATCH (n:P) WITH n.v AS x RETURN * UNION ALL MATCH (n:P) WITH n.name AS y RETURN *",
+        "MATCH (n:P) WITH n.v AS x RETURN *, 1 AS k UNION ALL MATCH (n:P) WITH n.name AS y RETURN *, 1 AS k",
+        "MATCH (n:P) WITH n.v AS x RETURN * UNION RETURN 1 AS y",
+        "RETURN 1 AS y UNION MATCH (n:P) WITH n.v AS x RETURN *",
+        "MATCH (n:P) WITH n.v AS v, n.name AS w RETURN * UNION RETURN 1 AS v",
+        "MATCH (n:P) WITH n.v AS v RETURN * UNION RETURN 1 AS v, 2 AS w",
+    })
+    void branchesAnsweringDifferentColumnsAreRefused(final String query) {
+      assertThatThrownBy(() -> rows(query))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("DifferentColumnsInUnion");
+    }
+
+    @Test
+    void branchesAnsweringDifferentColumnsInASubqueryBodyAreRefused() {
+      assertThatThrownBy(() -> rows("CALL { MATCH (n:P) WITH n.v AS x RETURN * UNION MATCH (n:P) WITH n.name AS y RETURN * } RETURN 1 AS one"))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("DifferentColumnsInUnion");
+    }
+
+    @Test
+    void aStarAndTheSameColumnsNamedExplicitlyAreOneColumnSet() {
+      final List<Result> result = rows("MATCH (n:P) WITH n.v AS v RETURN * UNION RETURN 1 AS v");
+      // UNION (not ALL) deduplicates across the branches: they answer the same column
+      assertThat(result).hasSize(2);
+      for (final Result row : result)
+        assertThat(row.getPropertyNames()).containsExactly("v");
+      assertThat(result.stream().map(r -> r.<Number>getProperty("v").intValue()).sorted().toList()).containsExactly(1, 2);
+      assertThat(declaredColumns("MATCH (n:P) WITH n.v AS v RETURN * UNION RETURN 1 AS v")).containsExactly("v");
+    }
+
+    @Test
+    void aStarWithItemsAndTheSameColumnsNamedExplicitlyAreOneColumnSet() {
+      final List<Result> result = rows("MATCH (n:P) WITH n.v AS v RETURN *, v + 1 AS u UNION RETURN 1 AS v, 2 AS u");
+      assertThat(result).hasSize(2);
+      for (final Result row : result) {
+        assertThat(row.getPropertyNames()).containsExactly("v", "u");
+        assertThat(row.<Number>getProperty("u").intValue()).isEqualTo(row.<Number>getProperty("v").intValue() + 1);
+      }
+    }
+
+    @Test
+    void unionAllOfAStarWithItemsAndTheSameColumnsNamedExplicitly() {
+      final List<Result> result = rows("MATCH (n:P) WITH n.v AS v RETURN *, 1 AS k UNION ALL MATCH (n:P) WITH n.v AS v RETURN v, 1 AS k");
+      assertThat(result).hasSize(4);
+      for (final Result row : result)
+        assertThat(row.getPropertyNames()).containsExactly("v", "k");
+    }
+
+    @Test
+    void aStarAndTheSameColumnsNamedExplicitlyInASubqueryBody() {
+      final List<Result> result = rows("CALL { MATCH (n:P) WITH n.v AS v RETURN * UNION RETURN 3 AS v } RETURN v ORDER BY v");
+      assertThat(result.stream().map(r -> r.<Number>getProperty("v").intValue()).toList()).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void controlBothBranchesStarOverTheSameVariables() {
+      final List<Result> result = rows("MATCH (n:P) WITH n.v AS v RETURN *, v + 1 AS u UNION MATCH (n:P) WITH n.v AS v RETURN *, v + 1 AS u");
+      assertThat(result).hasSize(2);
+      for (final Result row : result)
+        assertThat(row.getPropertyNames()).containsExactly("v", "u");
+    }
+
+    @Test
+    void conditionalBranchesAnsweringDifferentColumnsAreRefused() {
+      assertThatThrownBy(() -> rows("WHEN true THEN MATCH (n:P) WITH n.v AS x RETURN * ELSE MATCH (n:P) WITH n.name AS y RETURN *"))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("DifferentColumnsInConditionalQuery");
+    }
+
+    @Test
+    void conditionalBranchesWithAStarAndTheSameColumnsNamedExplicitly() {
+      final List<Result> result = rows("WHEN true THEN MATCH (n:P) WITH n.v AS v RETURN * ELSE RETURN 1 AS v");
+      assertThat(result).hasSize(2);
+      for (final Result row : result)
+        assertThat(row.getPropertyNames()).containsExactly("v");
+      assertThat(rows("WHEN false THEN MATCH (n:P) WITH n.v AS v RETURN * ELSE RETURN 1 AS v")).hasSize(1);
+    }
+
+    @Test
+    void conditionalBranchesWithAStarWithItemsAndTheSameColumnsNamedExplicitly() {
+      final List<Result> result = rows("WHEN true THEN MATCH (n:P) WITH n.v AS v RETURN *, v + 1 AS u ELSE RETURN 1 AS v, 2 AS u");
+      assertThat(result).hasSize(2);
+      for (final Result row : result) {
+        assertThat(row.getPropertyNames()).containsExactly("v", "u");
+        assertThat(row.<Number>getProperty("u").intValue()).isEqualTo(row.<Number>getProperty("v").intValue() + 1);
+      }
+    }
+
+    private List<Result> rows(final String query) {
+      final List<Result> result = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        while (rs.hasNext())
+          result.add(rs.next());
+      }
+      return result;
+    }
+
+    private List<String> declaredColumns(final String query) {
+      return OpenCypherQueryEngine.declaredColumns((DatabaseInternal) database, query);
+    }
+  }
 }
