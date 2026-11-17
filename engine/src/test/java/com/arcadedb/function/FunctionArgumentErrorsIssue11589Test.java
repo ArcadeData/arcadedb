@@ -54,6 +54,12 @@ class FunctionArgumentErrorsIssue11589Test extends TestHelper {
   }
 
   @Test
+  void aNullBetweenTwoEdgeTypesKeepsBoth() {
+    assertThat(ids("SELECT expand(out('E', null, 'F')) FROM V WHERE id = 1")).containsExactlyInAnyOrder(2, 3);
+    assertThat(ids("SELECT expand(out(null, 'E', null, 'F', null)) FROM V WHERE id = 1")).containsExactlyInAnyOrder(2, 3);
+  }
+
+  @Test
   void wrongArgumentsAreRefusedAsIllegalArguments() {
     final String[][] statements = {
         { "sql", "SELECT geo.lineString(1) AS v FROM V WHERE id = 1" },
