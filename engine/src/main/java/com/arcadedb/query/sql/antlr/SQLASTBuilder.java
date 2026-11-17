@@ -5531,6 +5531,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Builds every DELETE clause but the target, whose alias is in scope for the duration of this call (issue #7153).
    */
   private void buildDeleteClauses(final DeleteStatement stmt, final SQLParser.DeleteStatementContext deleteCtx) {
+    // DELETE VERTEX: only vertices may be deleted, kept on the AST so the statement renders as written (issue #11620)
+    stmt.deleteVertex = deleteCtx.VERTEX() != null;
+
     // RETURN BEFORE flag
     stmt.returnBefore = deleteCtx.RETURN() != null && deleteCtx.BEFORE() != null;
     // PostgreSQL's trailing RETURNING (issue #11392): the records as they were before the delete, projected
