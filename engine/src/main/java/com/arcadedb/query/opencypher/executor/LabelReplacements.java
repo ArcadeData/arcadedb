@@ -23,6 +23,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -43,7 +45,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -70,16 +71,19 @@ import java.util.logging.Level;
  * map into such a nested plan's own context.
  * <p>
  * <b>What the wider scope costs.</b> The map is keyed by RID, and a RID is a physical position, so a slot freed
- * by the delete inside {@link #replace} can in principle be handed to a record created later in the same
- * statement - which {@link #resolve} would then answer for with the replacement of the record that used to live
- * there. {@link #replace} creates the replacement before deleting the original, so the two never collide inside one
- * transaction. Across the committed batches of {@code CALL { ... } IN TRANSACTIONS} they do: the engine hands a slot a
- * committed delete freed to a later insert, and a later replacement landing on it made the RID name two records, which
- * also let two replacement chains form a cycle (issue #11764). A replacement therefore never takes the slot of a record
- * this map already knows ({@code newReplacementVertex}, {@code newReplacementEdge}). A separate insert of the statement,
- * outside a label write, can still take one, and an old binding of the replaced record would then resolve to its
- * replacement as it should, while a binding of the new record, read back by a later MATCH, would be redirected too
- * (issue #12336).
+ * by the delete inside {@link #replace} could be handed to a record created later - which {@link #resolve} would then
+ * answer for with the replacement of the record that used to live there. Inside one transaction that cannot happen: a
+ * slot freed by a transaction is not reused by it. Across the committed batches of {@code CALL { ... } IN TRANSACTIONS}
+ * it did: the engine handed a slot a committed delete freed to a later insert, a replacement (issue #11764, where two
+ * replacement chains could form a cycle), a plain {@code CREATE} of the statement, or a concurrent transaction (issue
+ * #12336), and a binding of that new record, read back by a later MATCH, was redirected to the old record's replacement:
+ * same RID, same bucket, same type, nothing to tell the two apart. So the RID is never reused while the map can hold it:
+ * every key is held in its bucket ({@link LocalBucket#holdPosition}) from the moment it is recorded until the statement
+ * ends ({@link #endOfStatement}), and no insert of any transaction takes a held slot. The old bindings keep resolving
+ * through the map and a record created later always has a RID of its own, so the map needs no fencing, and the outer
+ * rows of a batch no refresh. The holds cost what the map already costs: one entry per replaced record (and per
+ * re-attached heavy edge) in its bucket, for the length of the statement, and a page whose next append slot is held is
+ * passed over until the statement ends.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -94,6 +98,12 @@ public final class LabelReplacements {
 
   private final Map<RID, Vertex> vertices = new HashMap<>();
   private final Map<RID, Edge>   edges    = new HashMap<>();
+  // The context of the statement this map belongs to, which alone ends it (see endOfStatement); null for a private map
+  private final CommandContext   owner;
+  // The database the held positions live in, set by the first hold
+  private       Database         database;
+  // Set once the holds were given back: each one is released exactly once, since a hold is counted per holder in the bucket
+  private       boolean          positionsReleased;
   // HOW MANY VERTICES {@link #replace} REWROTE: A CHANGE DETECTOR, SO A CALLER RE-WALKS ITS ROW ONLY WHEN SOMETHING MOVED
   private       long             replacements;
 
@@ -114,9 +124,46 @@ public final class LabelReplacements {
       return new LabelReplacements();
     if (context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements existing)
       return existing;
-    final LabelReplacements created = new LabelReplacements();
+    final LabelReplacements created = new LabelReplacements(context);
     context.setCachedValue(CONTEXT_KEY, created);
     return created;
+  }
+
+  /**
+   * A private map, owned by no statement: the caller ends it with {@link #releaseHeldPositions()} when nothing can hold one
+   * of the replaced RIDs anymore.
+   */
+  public LabelReplacements() {
+    this(null);
+  }
+
+  private LabelReplacements(final CommandContext owner) {
+    this.owner = owner;
+  }
+
+  /**
+   * Ends the replacement map of the statement {@code context} runs, if {@code context} is the statement's own: the positions
+   * of the records it replaced are handed back to their buckets, for any later insert to reuse. A nested plan's context, which
+   * only borrows the enclosing statement's map ({@link #inherit}), ends nothing. Called once the statement has produced every
+   * row, when no binding of a replaced record is left to resolve; a statement that writes is drained before it answers.
+   */
+  public static void endOfStatement(final CommandContext context) {
+    if (context != null && context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements replacements && replacements.owner == context)
+      replacements.releaseHeldPositions();
+  }
+
+  /**
+   * Hands back the position of every record this map replaced, which {@link #replace} held so that no insert could reuse the
+   * RID while a binding may still name it (issue #12336). The map itself is left as it is.
+   */
+  public void releaseHeldPositions() {
+    if (database == null || positionsReleased)
+      return;
+    positionsReleased = true;
+    for (final RID rid : vertices.keySet())
+      releasePosition(rid);
+    for (final RID rid : edges.keySet())
+      releasePosition(rid);
   }
 
   /**
@@ -169,6 +216,15 @@ public final class LabelReplacements {
    * taken - the counterpart of {@code QueryStatistics.restore(snapshot)}.
    */
   public void restore(final Snapshot snapshot) {
+    // The rolled-back attempt deleted nothing in the end, so the positions it held are given back
+    if (database != null && !positionsReleased) {
+      for (final RID rid : vertices.keySet())
+        if (!snapshot.vertices.containsKey(rid))
+          releasePosition(rid);
+      for (final RID rid : edges.keySet())
+        if (!snapshot.edges.containsKey(rid))
+          releasePosition(rid);
+    }
     vertices.clear();
     vertices.putAll(snapshot.vertices);
     edges.clear();
@@ -393,7 +449,7 @@ public final class LabelReplacements {
                 + "cost is acceptable");
     }
 
-    final MutableVertex newVertex = newReplacementVertex(database, newTypeName, vertex);
+    final MutableVertex newVertex = copyOf(database, newTypeName, vertex);
 
     long migratedEdges = 0;
     // Outgoing first, so a self-loop is migrated exactly once: the incoming pass below skips it rather than
@@ -401,7 +457,7 @@ public final class LabelReplacements {
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
       final RID in = edge.getIn();
       final Identifiable target = originalRid.equals(in) ? newVertex : in;
-      track(edge, newReplacementEdge(() -> newVertex.newEdge(edge.getTypeName(), target, propertiesOf(edge))));
+      track(edge, newVertex.newEdge(edge.getTypeName(), target, propertiesOf(edge)));
       ++migratedEdges;
     }
     final boolean anyUnidirectional = database.getSchema().hasUnidirectionalEdgeTypes();
@@ -409,8 +465,7 @@ public final class LabelReplacements {
       // A pointer a bulk load stored for a unidirectional type is migrated with the edges below, which answer for it
       if (originalRid.equals(edge.getOut()) || (anyUnidirectional && isUnidirectional(database, edge)))
         continue;
-      track(edge, newReplacementEdge(
-          () -> edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge))));
+      track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
       ++migratedEdges;
     }
     // The edges of a unidirectional type that end in the vertex are stored on their source only: the delete below would
@@ -419,13 +474,13 @@ public final class LabelReplacements {
       for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, originalRid)) {
         if (originalRid.equals(edge.getOut()))
           continue;
-        track(edge, newReplacementEdge(
-            () -> edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge))));
+        track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
         ++migratedEdges;
       }
 
     vertex.delete();
-    vertices.put(originalRid, newVertex);
+    if (vertices.put(originalRid, newVertex) == null)
+      holdPosition(database, originalRid);
     ++replacements;
 
     // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
@@ -483,52 +538,47 @@ public final class LabelReplacements {
     // (type, out vertex, in vertex) triple and hashes on it, so it keys this map exactly like the address of a
     // heavy edge does, and the re-attached copy hanging off the replacement vertex is a different key rather than
     // the same one. Only the null is guarded: an edge that came out of getEdges() always has a bucket.
-    if (rid != null)
-      edges.put(rid, replacement);
+    if (rid != null && edges.put(rid, replacement) == null)
+      holdPosition(original.getDatabase(), rid);
   }
 
   /**
-   * A new vertex of {@code typeName} carrying {@code source}'s properties, never on the slot of a vertex this statement
-   * replaced.
-   * <p>
-   * The map is keyed by RID, and a RID is a physical position. The batches of {@code CALL { ... } IN TRANSACTIONS} commit on
-   * their own, and the engine hands the slot a committed delete freed to a later insert: a replacement created there would
-   * make the RID name two records, the replaced one an old binding still holds and the new one. They cannot be told apart
-   * from the binding (same bucket, same type), so {@link #resolve} answered one of them wrongly - or the two chains formed a
-   * cycle. A replacement landing on such a slot is created again before it is dropped: a slot freed inside the transaction
-   * is not handed out again by that transaction, so the second one lands elsewhere and the slot keeps naming only the record
-   * this map already knows. Costs nothing unless the slot is one of them.
+   * Keeps the slot of a replaced record from being handed to a new record until the statement ends (issue #12336): the map
+   * answers for its RID, so the RID must keep naming that record alone. A lightweight edge has no slot to hold: its identity
+   * is the (type, out vertex, in vertex) triple, and the re-attached copy names the new vertex.
    */
-  private MutableVertex newReplacementVertex(final Database database, final String typeName, final Vertex source) {
-    MutableVertex created = copyOf(database, typeName, source);
-    while (vertices.containsKey(created.getIdentity())) {
-      final MutableVertex onAReplacedSlot = created;
-      created = copyOf(database, typeName, source);
-      onAReplacedSlot.delete();
-    }
-    return created;
+  private void holdPosition(final Database database, final RID rid) {
+    if (rid.getPosition() < 0 || positionsReleased)
+      return;
+    final LocalBucket bucket = bucketOf(database, rid);
+    if (bucket == null)
+      return;
+    this.database = database;
+    bucket.holdPosition(rid.getPosition());
   }
 
+  private void releasePosition(final RID rid) {
+    if (rid.getPosition() < 0)
+      return;
+    final LocalBucket bucket = bucketOf(database, rid);
+    if (bucket != null)
+      bucket.releaseHeldPosition(rid.getPosition());
+  }
+
+  private static LocalBucket bucketOf(final Database database, final RID rid) {
+    final Bucket bucket = database.getSchema().getBucketByIdIfExists(rid.getBucketId());
+    return bucket instanceof LocalBucket localBucket ? localBucket : null;
+  }
+
+  /**
+   * A new vertex of {@code typeName} carrying {@code source}'s properties. It never lands on the slot of a record this
+   * statement replaced: those are held ({@link #holdPosition}), so the RID keeps naming the record the map answers for.
+   */
   private static MutableVertex copyOf(final Database database, final String typeName, final Vertex source) {
     final MutableVertex created = database.newVertex(typeName);
     for (final String property : source.getPropertyNames())
       created.set(property, source.get(property));
     return created.save();
-  }
-
-  /**
-   * A re-attached edge, never on the slot of an edge this statement replaced: the same reason and the same remedy as
-   * {@link #newReplacementVertex}. A lightweight edge has no slot, and its identity names the new vertex, which never
-   * shares a RID with a replaced one.
-   */
-  private Edge newReplacementEdge(final Supplier<Edge> create) {
-    Edge created = create.get();
-    while (created.getIdentity() != null && edges.containsKey(created.getIdentity())) {
-      final Edge onAReplacedSlot = created;
-      created = create.get();
-      onAReplacedSlot.delete();
-    }
-    return created;
   }
 
   /**

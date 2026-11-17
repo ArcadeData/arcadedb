@@ -476,7 +476,14 @@ public class CypherExecutionPlan {
     }
 
     // Execute the step chain
-    final ResultSet resultSet = rootStep.syncPull(context, 100);
+    final ResultSet resultSet;
+    try {
+      resultSet = rootStep.syncPull(context, 100);
+    } catch (final RuntimeException | Error e) {
+      // A step that writes eagerly can fail here, after a label write already held the slots it freed (issue #12336)
+      LabelReplacements.endOfStatement(context);
+      throw e;
+    }
 
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
@@ -498,6 +505,8 @@ public class CypherExecutionPlan {
         // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
         // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
         resultSet.close();
+        // ... and no binding of a record a label write replaced is left to resolve: its slot may be reused (issue #12336)
+        LabelReplacements.endOfStatement(context);
       }
       // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
       // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
@@ -1260,6 +1269,9 @@ public class CypherExecutionPlan {
             if (keepRows)
               results.add(row);
           }
+        } finally {
+          // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
+          LabelReplacements.endOfStatement(context);
         }
       }
     }

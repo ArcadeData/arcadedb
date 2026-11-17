@@ -225,6 +225,11 @@ public class CaseExpression implements Expression {
     return elseExpression;
   }
 
+  /** The holder the comparison-form WHEN predicates read the operand from; null when there are none. */
+  public CaseOperandExpression getOperandHolder() {
+    return operandHolder;
+  }
+
   /**
    * Check if a value is considered true.
    */
