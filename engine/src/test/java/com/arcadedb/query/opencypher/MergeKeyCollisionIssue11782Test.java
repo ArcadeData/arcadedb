@@ -76,16 +76,20 @@ class MergeKeyCollisionIssue11782Test extends TestHelper {
       database.begin();
       database.command("opencypher", merge, Map.of("leaf", leafToHub1, "hub", "hub1"));
       merged.countDown();
-      otherCommitted.await();
+      otherCommitted.await(60, TimeUnit.SECONDS);
       database.commit();
       return null;
     });
     new Thread(first).start();
 
-    assertThat(merged.await(30, TimeUnit.SECONDS)).isTrue();
-    final String leafToHub2 = secondLeaf;
-    database.transaction(() -> database.command("opencypher", merge, Map.of("leaf", leafToHub2, "hub", "hub2")));
-    otherCommitted.countDown();
+    try {
+      assertThat(merged.await(30, TimeUnit.SECONDS)).isTrue();
+      final String leafToHub2 = secondLeaf;
+      database.transaction(() -> database.command("opencypher", merge, Map.of("leaf", leafToHub2, "hub", "hub2")));
+    } finally {
+      // Whatever happened above, the background transaction is released, so it cannot outlive the database
+      otherCommitted.countDown();
+    }
     first.get(30, TimeUnit.SECONDS);
 
     try (final ResultSet rows = database.query("opencypher", "MATCH (:N)-[r:R]->(:N) RETURN count(r) AS c")) {

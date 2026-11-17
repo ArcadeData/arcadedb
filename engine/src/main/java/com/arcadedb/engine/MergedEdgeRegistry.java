@@ -91,7 +91,7 @@ public final class MergedEdgeRegistry {
   private       LongLongHashMap committedKeys;
   private       long            exactSince;
   // The marked keys of each commit in flight, sorted
-  private final List<long[]>    reservations = new ArrayList<>();
+  private final List<Reservation> reservations = new ArrayList<>();
 
   /** The sequence a transaction takes at its begin: a relationship committed after it is one the transaction could not have read. */
   public long getSequence() {
@@ -130,9 +130,9 @@ public final class MergedEdgeRegistry {
         return false;
     }
 
-    final long[] reserved = Arrays.copyOf(marked, markedCount);
-    Arrays.sort(reserved);
-    reservations.add(reserved);
+    final long[] sorted = Arrays.copyOf(marked, markedCount);
+    Arrays.sort(sorted);
+    reservations.add(new Reservation(marked, markedCount, sorted));
     for (int i = 0; i < markedCount; i++)
       ++inFlight[stripeOf(marked[i])];
     return true;
@@ -177,10 +177,14 @@ public final class MergedEdgeRegistry {
   }
 
   private boolean beingCommitted(final long key) {
-    for (final long[] reserved : reservations)
-      if (Arrays.binarySearch(reserved, key) >= 0)
+    for (final Reservation reserved : reservations)
+      if (Arrays.binarySearch(reserved.sorted, key) >= 0)
         return true;
     return false;
+  }
+
+  /** One commit in flight: the array the transaction reserved with (found again by identity), and its keys sorted. */
+  private record Reservation(long[] source, int count, long[] sorted) {
   }
 
   /**
@@ -188,15 +192,28 @@ public final class MergedEdgeRegistry {
    * and changes nothing, so it cannot leave a stripe counted below the commits writing it.
    */
   private void unreserve(final long[] marked, final int markedCount) {
+    // The transaction releases with the array it reserved with: found by identity, with no copy and no sort under the monitor
+    for (int r = 0; r < reservations.size(); r++) {
+      final Reservation reservation = reservations.get(r);
+      if (reservation.source == marked && reservation.count == markedCount) {
+        remove(r, marked, markedCount);
+        return;
+      }
+    }
+    // Another array of the same keys (a caller that did not keep it): found by its sorted keys
     final long[] keys = Arrays.copyOf(marked, markedCount);
     Arrays.sort(keys);
     for (int r = 0; r < reservations.size(); r++)
-      if (Arrays.equals(reservations.get(r), keys)) {
-        reservations.remove(r);
-        for (int i = 0; i < markedCount; i++)
-          --inFlight[stripeOf(marked[i])];
+      if (Arrays.equals(reservations.get(r).sorted, keys)) {
+        remove(r, marked, markedCount);
         return;
       }
+  }
+
+  private void remove(final int index, final long[] marked, final int markedCount) {
+    reservations.remove(index);
+    for (int i = 0; i < markedCount; i++)
+      --inFlight[stripeOf(marked[i])];
   }
 
   /** How many committed keys the exact table holds, for the tests. */
@@ -207,8 +224,8 @@ public final class MergedEdgeRegistry {
   /** How many commits are writing {@code key} now, for the tests. */
   synchronized int inFlight(final long key) {
     int writing = 0;
-    for (final long[] reserved : reservations)
-      if (Arrays.binarySearch(reserved, key) >= 0)
+    for (final Reservation reserved : reservations)
+      if (Arrays.binarySearch(reserved.sorted, key) >= 0)
         ++writing;
     return writing;
   }
