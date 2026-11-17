@@ -61,6 +61,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
 import java.util.function.Function;
@@ -450,7 +451,8 @@ public class GraphQLSchema {
    * integral values in 32-bit range, {@code Float} takes any finite number (an integer input value is a valid
    * float, {@code NaN} and the infinities are not values the specification lets a Float carry),
    * {@code ID} takes a string or an integral value of any width - it is serialised as a string and carries no range
-   * of its own, which is exactly why a schema uses it for a key too large for {@code Int}. Every other declared type name - a custom scalar such as the
+   * of its own, which is exactly why a schema uses it for a key too large for {@code Int}. The custom {@code Long} scalar takes an
+   * integral value in 64-bit range, or a string holding one (see {@link #isValueOf}). Every other declared type name - a custom scalar such as the
    * {@code WHERE} used for the free-form predicate argument, an enum, an input object - is deliberately left
    * unchecked: this module does not model them, and rejecting what it cannot describe would be worse than passing
    * it through. A list type is skipped for the same reason.
@@ -465,7 +467,10 @@ public class GraphQLSchema {
       return;
 
     final String declared = typeName.getName();
-    if (!isValueOf(declared, value))
+    // THE JSON DECODER HANDS AN INTEGER TOKEN BEYOND THE LONG RANGE OVER AS A BigDecimal OF SCALE 0, WHICH IS AN INTEGRAL VALUE
+    // (A FLOAT TOKEN IS A Double, OR A BigDecimal WITH A FRACTION): AN ID TAKES IT, A LONG REFUSES IT FOR ITS WIDTH (ISSUE #11621)
+    final Object checked = value instanceof BigDecimal decimal && decimal.scale() == 0 ? decimal.toBigInteger() : value;
+    if (!isValueOf(declared, checked))
       throw new CommandParsingException(
           "GraphQL variable '$" + name + "' is declared as " + declared + " but a " + value.getClass().getSimpleName()
               + " value was " + origin);
@@ -473,13 +478,15 @@ public class GraphQLSchema {
 
   /**
    * Whether a non-null value is one the scalar named {@code declared} can hold, with the rules of {@link #checkDeclaredType}.
-   * {@code Long} is checked for its width only: it is the one custom scalar a number can overflow, and an integer literal wider
-   * than 64 bits is the only value of the document that can do it (issue #11451).
+   * {@code Long}, the one custom scalar this module models, takes an integral value in signed 64-bit range (issue #11451), or a
+   * string holding one, the form a JSON client uses for a value wider than the 53 bits a JavaScript number keeps exact. A
+   * floating-point value is refused as {@code Int} refuses it: bound to a LONG property it would match nothing without saying
+   * why (issue #11621).
    */
   private static boolean isValueOf(final String declared, final Object value) {
     return switch (declared) {
       case "Int" -> isInteger(value);
-      case "Long" -> !(value instanceof BigInteger b) || b.bitLength() < Long.SIZE;
+      case "Long" -> isLong(value);
       case "Float" -> value instanceof Number && isFinite(value);
       case "Boolean" -> value instanceof Boolean;
       case "String" -> value instanceof String;
@@ -604,6 +611,33 @@ public class GraphQLSchema {
       // bitLength() EXCLUDES THE SIGN BIT, SO A SIGNED 32-BIT VALUE IS EXACTLY ONE OF AT MOST 31 BITS
       return b.bitLength() < Integer.SIZE;
     return value instanceof Integer || value instanceof Short || value instanceof Byte;
+  }
+
+  /** Whether the value is an integral number the 64-bit {@code Long} scalar can hold, or a string holding one. */
+  private static boolean isLong(final Object value) {
+    if (value instanceof BigInteger b)
+      // bitLength() EXCLUDES THE SIGN BIT, SO A SIGNED 64-BIT VALUE IS EXACTLY ONE OF AT MOST 63 BITS
+      return b.bitLength() < Long.SIZE;
+    if (value instanceof String s)
+      return isLongText(s);
+    return isIntegral(value);
+  }
+
+  /** Whether the text is a decimal integer in signed 64-bit range: an optional minus sign and up to 19 digits, nothing else. */
+  private static boolean isLongText(final String text) {
+    final int start = !text.isEmpty() && text.charAt(0) == '-' ? 1 : 0;
+    final int digits = text.length() - start;
+    if (digits < 1 || digits > 19)
+      return false;
+    for (int i = start; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c < '0' || c > '9')
+        return false;
+    }
+    if (digits < 19)
+      return true;
+    // 19 DIGITS MAY EXCEED THE RANGE: THE RARE CASE PAYS FOR THE COMPARISON
+    return new BigInteger(text).bitLength() < Long.SIZE;
   }
 
   /**

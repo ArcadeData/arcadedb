@@ -19,6 +19,7 @@
 package com.arcadedb.census;
 
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -172,8 +173,51 @@ final class CallOperands {
     }
   }
 
+  /**
+   * One lambda or method reference: the analysed method its {@code invokedynamic} is in, the instruction, and the method it is
+   * implemented by. The values it captures are the first operands of that method, the receiver first when the implementation is
+   * an instance method ({@code args::getString}, or a lambda that reads {@code this}).
+   */
+  record Capture(Method in, InvokeDynamicInsnNode insn, Handle implementation) {
+    /** The instructions that produced captured value {@code index}. */
+    Set<AbstractInsnNode> captured(final int index) {
+      return in.stackBefore(insn, Type.getArgumentTypes(insn.desc).length - 1 - index);
+    }
+
+    int capturedCount() {
+      return Type.getArgumentTypes(insn.desc).length;
+    }
+
+    /** Whether the implementation takes a receiver, which is then captured value 0. */
+    boolean implementedByInstanceMethod() {
+      return implementation.getTag() != Opcodes.H_INVOKESTATIC && implementation.getTag() != Opcodes.H_NEWINVOKESPECIAL;
+    }
+  }
+
   private CallOperands() {
   }
+
+  /** Every lambda and method reference of {@code classes} that captures at least one value, with its analysed method. */
+  static List<Capture> capturesOf(final Map<String, byte[]> classes) {
+    final List<Capture> captures = new ArrayList<>();
+    for (final Map.Entry<String, byte[]> entry : classes.entrySet()) {
+      final ClassNode owner = read(entry.getValue());
+      for (final MethodNode node : owner.methods) {
+        Method method = null;
+        for (final AbstractInsnNode insn : node.instructions) {
+          if (!(insn instanceof InvokeDynamicInsnNode indy) || !LAMBDA_METAFACTORY.equals(indy.bsm.getOwner())
+              || Type.getArgumentTypes(indy.desc).length == 0 || indy.bsmArgs.length < 2 || !(indy.bsmArgs[1] instanceof Handle impl))
+            continue;
+          if (method == null)
+            method = analyse(entry.getKey(), owner, node);
+          captures.add(new Capture(method, indy, impl));
+        }
+      }
+    }
+    return captures;
+  }
+
+  private static final String LAMBDA_METAFACTORY = "java/lang/invoke/LambdaMetafactory";
 
   /** Every call {@code matcher} accepts in {@code classes}, with its analysed method. */
   static List<Site> of(final Map<String, byte[]> classes, final CompiledClasses.CallMatcher matcher) {
