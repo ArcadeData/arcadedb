@@ -44,7 +44,9 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MongoProjection {
-  private static final String ID = "_id";
+  private static final String ID   = "_id";
+  /** The whole field: shared, it never gets a child. */
+  private static final Node   LEAF = new Node();
 
   private final boolean inclusion;
   private final Node    root;
@@ -59,8 +61,6 @@ final class MongoProjection {
       return children.isEmpty();
     }
   }
-
-  private static final Node LEAF = new Node();
 
   /**
    * @throws IllegalArgumentException for a projection operator, or an inclusion mixed with an exclusion

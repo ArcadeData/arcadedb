@@ -47,7 +47,7 @@ import java.util.Set;
  */
 final class MongoSortOrder implements Comparator<Object[]> {
   /** The key of an empty array: below every value, null included. */
-  private static final Object EMPTY_ARRAY = new Object();
+  private static final Object EMPTY_ARRAY = EmptyArray.INSTANCE;
 
   private final String[][]  paths;
   private final boolean[]   descending;
@@ -136,9 +136,16 @@ final class MongoSortOrder implements Comparator<Object[]> {
   }
 
   private static int compareKeys(final Object a, final Object b) {
-    if (a == EMPTY_ARRAY || b == EMPTY_ARRAY)
-      return a == b ? 0 : a == EMPTY_ARRAY ? -1 : 1;
+    final boolean emptyA = a instanceof EmptyArray;
+    final boolean emptyB = b instanceof EmptyArray;
+    if (emptyA || emptyB)
+      return emptyA == emptyB ? 0 : emptyA ? -1 : 1;
     return MongoQueryMatcher.compareValues(a, b);
+  }
+
+  /** The type of {@link #EMPTY_ARRAY}, which no stored value has. */
+  private enum EmptyArray {
+    INSTANCE
   }
 
   /**

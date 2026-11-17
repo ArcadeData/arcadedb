@@ -68,6 +68,7 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.math.BigDecimal;
+import java.time.temporal.Temporal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
@@ -1076,10 +1077,20 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return new MongoServerError(40, "ConflictingUpdateOperators", "Updating the path '" + path + "' would create a conflict at '" + at + "'");
   }
 
+  /** The BSON type name of a value, for an error message. */
   private static String typeName(final Object value) {
-    return value == null ? "null" : value instanceof String ? "string" : value instanceof Boolean ? "bool" : value instanceof Number ? "number" :
-        value instanceof List ? "array" : value instanceof Map || value instanceof com.arcadedb.database.Document ? "object" :
-            value.getClass().getSimpleName();
+    return switch (value) {
+      case null -> "null";
+      case String ignored -> "string";
+      case Boolean ignored -> "bool";
+      case Number ignored -> "number";
+      case List<?> ignored -> "array";
+      case Map<?, ?> ignored -> "object";
+      case com.arcadedb.database.Document ignored -> "object";
+      case Date ignored -> "date";
+      case Temporal ignored -> "date";
+      default -> value.getClass().getSimpleName();
+    };
   }
 
   /**
