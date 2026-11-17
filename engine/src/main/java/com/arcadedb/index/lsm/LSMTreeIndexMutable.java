@@ -57,6 +57,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
   private final       PageIdCache           pageIds             = new PageIdCache(this);
+  // how many single values the removals of this index read to decide whether to skip a repeated marker: lets a test pin that
+  // removing one (key, RID) does not read the other values of the key (#11935). A plain long on purpose: it is bumped on every
+  // removal, and only a single-threaded test reads it, so an increment lost to a concurrent removal costs nothing
+  private             long                  removeValuesRead    = 0;
 
   // Why the last onAfterLoad() of a schema load could not attach the sub-index, reported once the schema entries are read
   private String subIndexLoadError;
@@ -424,6 +428,14 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return currentMutablePages;
   }
 
+  /**
+   * How many single values the removals of this index read since it was opened (#11935): one per removal whose key's newest
+   * entry holds exactly one value. Package-private: for tests only, and exact only when the removals ran on one thread.
+   */
+  long getRemoveValuesReadForTesting() {
+    return removeValuesRead;
+  }
+
   protected MutablePage createNewPage() throws IOException {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
@@ -649,34 +661,30 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final RID removedRID = rid != null ? getRemovedRID(rid) : REMOVED_ENTRY_RID;
 
-      final LookupResult result = lookupInPage(pageNum, count, currentPageBuffer, convertedKeys, 1);
+      // #11935: the marker goes after the last entry of the key's run, and the only thing the run is read for is to skip a
+      // marker that would repeat the key's newest entry. Reading every value of the run for that (it used to) made each
+      // removal cost the key's multiplicity, and removing every record of a shared key quadratic. The newest entry is
+      // enough: a marker is always written as an entry of its own, so it is the newest entry exactly when nothing touched
+      // the key since. An older marker of the same RID is not looked for: a second marker is harmless, because every reader
+      // and the compaction apply markers as set operations in write order, and the skip was never exhaustive anyway (it
+      // only ever looked at the last page).
+      final LookupResult result = lookupInPage(pageNum, count, currentPageBuffer, convertedKeys, 0);
+      int keyIndex = result.keyIndex;
       if (result.found) {
-        boolean exit = false;
+        final int startIndexArray = getHeaderSize(pageNum);
+        final int lastOfRun = lastEntryOfRun(currentPageBuffer, startIndexArray, convertedKeys, count, result.keyIndex);
+        keyIndex = lastOfRun + 1;
 
-        for (int i = result.valueBeginPositions.length - 1; !exit && i > -1; --i) {
-          currentPageBuffer.position(result.valueBeginPositions[i]);
-
-          final Object[] values = readEntryValues(currentPageBuffer);
-
-          for (int v = values.length - 1; v > -1; --v) {
-            final RID currentRID = (RID) values[v];
-
-            if (rid != null) {
-              if (rid.equals(currentRID)) {
-                // FOUND
-                exit = true;
-                break;
-              } else if (removedRID.equals(currentRID))
-                // ALREADY DELETED
-                return;
-            }
-
-            if (currentRID.getBucketId() == REMOVED_ENTRY_RID.getBucketId()
-                && currentRID.getPosition() == REMOVED_ENTRY_RID.getPosition()) {
-              // ALREADY DELETED
-              return;
-            }
-          }
+        final int entryPosition = currentPageBuffer.getInt(startIndexArray + (lastOfRun * INT_SERIALIZED_SIZE));
+        currentPageBuffer.position(entryPosition);
+        currentPageBuffer.position(entryPosition + getSerializedKeySize(currentPageBuffer, convertedKeys.length));
+        final RID newest = readSoleEntryValue(currentPageBuffer);
+        if (newest != null) {
+          ++removeValuesRead;
+          if (newest.equals(removedRID) || (newest.getBucketId() == REMOVED_ENTRY_RID.getBucketId()
+              && newest.getPosition() == REMOVED_ENTRY_RID.getPosition()))
+            // ALREADY DELETED BY THE NEWEST ENTRY OF THE KEY
+            return;
         }
       }
 
@@ -687,7 +695,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       int keyValueFreePosition = getValuesFreePosition(currentPage);
 
-      int keyIndex = result.found ? result.keyIndex + 1 : result.keyIndex;
       boolean newPage = false;
 
       final boolean mutablePage = isMutable(currentPage);
