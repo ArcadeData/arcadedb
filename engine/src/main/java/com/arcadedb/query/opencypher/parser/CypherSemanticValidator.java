@@ -592,6 +592,8 @@ public class CypherSemanticValidator {
       return;
     }
     validateConclusion(body);
+    // A UNION branch without RETURN is not walked by validateNestedStatements, so the CALL bodies nested in it are reached here
+    validateSubqueryBodyConclusions(body);
   }
 
   /** Whether a subquery body answers rows: it returns, in any of its branches. */

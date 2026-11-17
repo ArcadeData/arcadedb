@@ -89,6 +89,12 @@ class CypherQueryConclusionIssue12354Test extends TestHelper {
   void aUnionBranchConcludesLikeAQuery() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN 1 AS x UNION MATCH (n)").close())//
         .isInstanceOf(CommandParsingException.class).hasMessageContaining("Query cannot conclude with MATCH");
+    // a CALL body two levels down in a UNION branch without RETURN, which the walk of the nested statements does not reach
+    assertThatThrownBy(() -> database.command("opencypher",
+        "CALL { CALL { MATCH (n) } CREATE (:B) } UNION CALL { CREATE (:B) }").close())//
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("Query cannot conclude with MATCH");
+    assertThatThrownBy(() -> database.command("opencypher", "CALL { CALL { MATCH (n) } CREATE (:B) }").close())//
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("Query cannot conclude with MATCH");
   }
 
   @Test

@@ -31,8 +31,9 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
 
 - a target type that is not a vertex type (a document or an edge type, a TIMESERIES type) is refused before anything runs,
   whether or not it holds records, and so is an `INDEX:` target;
-- a record that is not a vertex, reached through a RID, a bucket or a subquery, is refused before it is deleted, and the
-  statement deletes nothing;
+- a record that is not a vertex, reached through a RID, a bucket or a subquery, is not deleted: the statement fails on it,
+  and the vertices it deleted before are rolled back with the statement (its implicit transaction, or its savepoint inside
+  an explicit one). With `BATCH`, the batches already committed before the failure stay deleted;
 - `EXPLAIN` shows `+ DELETE VERTEX`, and the statement renders back as `DELETE VERTEX FROM ...`.
 
 **Who sees a different answer.** A `DELETE VERTEX FROM` aimed at documents or edges, which used to delete them: write

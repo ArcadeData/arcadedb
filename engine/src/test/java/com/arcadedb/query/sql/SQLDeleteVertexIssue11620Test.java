@@ -100,15 +100,15 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo(1L);
       }
     });
-    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(0L);
+    assertThat(count("SELECT count() AS c FROM Person")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Knows")).isEqualTo(0L);
   }
 
   @Test
   void deletesVerticesNamedByRidAndBySubquery() {
     database.transaction(() -> database.command("sql", "DELETE VERTEX FROM " + vertex1).close());
     database.transaction(() -> database.command("sql", "DELETE VERTEX FROM (SELECT FROM Person WHERE name = 'b')").close());
-    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(0L);
+    assertThat(count("SELECT count() AS c FROM Person")).isEqualTo(0L);
   }
 
   @Test
@@ -128,8 +128,8 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
     for (final String type : List.of("Note", "Knows", "Empty"))
       assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "DELETE VERTEX FROM " + type).close()))//
           .isInstanceOf(CommandExecutionException.class).hasMessageContaining("is not a vertex type");
-    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Note")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Knows")).isEqualTo(1L);
   }
 
   @Test
@@ -139,8 +139,8 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("is not a vertex");
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "DELETE VERTEX FROM (SELECT FROM Note)").close()))//
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("is not a vertex");
-    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(2L);
-    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Person")).isEqualTo(2L);
+    assertThat(count("SELECT count() AS c FROM Note")).isEqualTo(1L);
   }
 
   @Test
@@ -155,9 +155,9 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
     } finally {
       database.setAutoTransaction(false);
     }
-    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(2L);
-    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Person")).isEqualTo(2L);
+    assertThat(count("SELECT count() AS c FROM Knows")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Note")).isEqualTo(1L);
   }
 
   @Test
@@ -169,11 +169,11 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
           .isInstanceOf(CommandExecutionException.class).hasMessageContaining("is not a vertex");
       database.command("sql", "DELETE FROM Note").close();
     });
-    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(0L);
-    assertThat(count("SELECT count(*) AS c FROM Person WHERE name = 'c'")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS c FROM Person WHERE name = 'b'")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(3L);
-    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Note")).isEqualTo(0L);
+    assertThat(count("SELECT count() AS c FROM Person WHERE name = 'c'")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Person WHERE name = 'b'")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Person")).isEqualTo(3L);
+    assertThat(count("SELECT count() AS c FROM Knows")).isEqualTo(1L);
   }
 
   @Test
@@ -181,16 +181,16 @@ class SQLDeleteVertexIssue11620Test extends TestHelper {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("sql", "DELETE VERTEX FROM INDEX:`Person[name]` WHERE key = 'a'").close()))//
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot apply VERTEX on a delete from index");
-    assertThat(count("SELECT count(*) AS c FROM Person WHERE name = 'a'")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Person WHERE name = 'a'")).isEqualTo(1L);
   }
 
   @Test
   void thePlainDeleteStillDeletesAnyRecord() {
     database.transaction(() -> database.command("sql", "DELETE FROM Note").close());
     database.transaction(() -> database.command("sql", "DELETE FROM Person WHERE name = 'a'").close());
-    assertThat(count("SELECT count(*) AS c FROM Note")).isEqualTo(0L);
-    assertThat(count("SELECT count(*) AS c FROM Person")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS c FROM Knows")).isEqualTo(0L);
+    assertThat(count("SELECT count() AS c FROM Note")).isEqualTo(0L);
+    assertThat(count("SELECT count() AS c FROM Person")).isEqualTo(1L);
+    assertThat(count("SELECT count() AS c FROM Knows")).isEqualTo(0L);
   }
 
   private long count(final String query) {

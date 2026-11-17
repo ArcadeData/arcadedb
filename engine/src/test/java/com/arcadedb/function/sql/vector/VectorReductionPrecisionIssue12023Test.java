@@ -138,6 +138,11 @@ class VectorReductionPrecisionIssue12023Test {
       final float[] scores = { 3.0e38f, 3.0e38f, -3.0e38f };
       assertThat(sql("SELECT vector.multiScore(?, 'AVG') AS r", (Object) scores)).isEqualTo(1.0e38f);
       assertThat(sql("SELECT vector.multiScore(?, 'WEIGHTED', ?) AS r", scores, new float[] { 1f, 1f, 1f })).isEqualTo(1.0e38f);
+      // each score x weight product overflows a float, the weighted sum 35 over the weight sum 7 does not
+      assertThat(sql("SELECT vector.multiScore(?, 'WEIGHTED', ?) AS r", A, B)).isEqualTo(5.0f);
+      // the weight sum 6e38 overflows a float, the weighted average 1 does not
+      assertThat(sql("SELECT vector.multiScore(?, 'WEIGHTED', ?) AS r", new float[] { 1f, 1f },
+          new float[] { 3.0e38f, 3.0e38f })).isEqualTo(1.0f);
     }
 
     @Test
