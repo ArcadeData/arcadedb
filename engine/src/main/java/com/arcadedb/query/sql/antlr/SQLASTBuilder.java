@@ -1334,24 +1334,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Arrow syntax with identifier: -EdgeType-> <-EdgeType- -EdgeType-
     // Determine direction based on arrow combination
     final MatchPathItem pathItem = new MatchPathItem();
-    final boolean leftIsArrow = ctx.ARROW_LEFT() != null;
-    final boolean rightIsArrow = ctx.ARROW_RIGHT() != null;
-
-    String methodName;
-    if (leftIsArrow && !rightIsArrow) {
-      // <-EdgeType- = incoming
-      methodName = "in";
-    } else if (!leftIsArrow && rightIsArrow) {
-      // -EdgeType-> = outgoing
-      methodName = "out";
-    } else {
-      // -EdgeType- = bidirectional
-      methodName = "both";
-    }
-
     // Create a MethodCall with the edge type as parameter
     final MethodCall method = new MethodCall();
-    method.methodName = new Identifier(methodName);
+    method.methodName = new Identifier(typedArrowDirection(ctx.ARROW_LEFT() != null, ctx.ARROW_RIGHT() != null));
 
     // Edge type becomes the parameter (as a string literal Expression)
     final Identifier edgeLabel = (Identifier) visit(ctx.identifier());
@@ -1370,6 +1355,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return pathItem;
+  }
+
+  /**
+   * Direction of a typed arrow step, {@code (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT)}, which the grammar accepts in
+   * both {@code matchMethod} and {@code nestedMatchMethod}: the one decision both visitors take, so a spelling cannot answer
+   * different rows at the top level of a path and inside {@code .( )} (issue #11780). A head on one side only is that direction;
+   * no head, or a head on both sides ({@code <-E->}, as openCypher reads {@code <-[:E]->}), is a hop in either direction.
+   */
+  private static String typedArrowDirection(final boolean leftArrow, final boolean rightArrow) {
+    if (leftArrow == rightArrow)
+      return "both";
+    return leftArrow ? "in" : "out";
   }
 
   /**
@@ -1426,16 +1423,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (ctx.DECR() != null && ctx.GT() == null) {
         // -- : anonymous bidirectional edge
         methodName = "both";
-      } else if (ctx.ARROW_LEFT() != null && ctx.identifier() != null) {
-        // <-EdgeType- : incoming edge with type
-        methodName = "in";
       } else {
-        // -EdgeType-> or -EdgeType- : outgoing or bidirectional edge with type
-        if (ctx.ARROW_RIGHT() != null) {
-          methodName = "out";
-        } else {
-          methodName = "both";
-        }
+        // -EdgeType->, <-EdgeType-, -EdgeType- or <-EdgeType->: the same decision as the top level of a path (issue #11780)
+        methodName = typedArrowDirection(ctx.ARROW_LEFT() != null, ctx.ARROW_RIGHT() != null);
       }
 
       // Create a MethodCall
