@@ -85,6 +85,17 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   public static final long MIN_FORWARD_TIMEOUT_MS = 1L;
 
   /**
+   * The HTTP version every follower-to-leader forward is sent with (issue #12442). The JDK client's default is HTTP/2,
+   * which it gets on a plain-HTTP connection by an h2c upgrade and over TLS by ALPN. An HTTP/2 connection keeps reading
+   * frames while a stream waits, and the client sends nothing while it waits for the answer, so the leader's read timeout
+   * ({@code arcadedb.network.socketTimeout}) closed the connection one timeout into any statement longer than that: the
+   * read-timeout lift of #9953 covers HTTP/1.1 exchanges only. Over HTTP/1.1 the leader does not read the connection
+   * while the statement runs, or lifts the timeout while its client-disconnect watch does, and the follower's forward is
+   * answered however long the statement runs.
+   */
+  public static final HttpClient.Version FORWARD_HTTP_VERSION = HttpClient.Version.HTTP_1_1;
+
+  /**
    * Builds the plain-HTTP client a follower-to-leader forward dials on, with
    * {@link GlobalConfiguration#HA_PROXY_CONNECT_TIMEOUT} applied unconditionally (issues
    * #7526/#7527/#7542/#7543): a leader that never even accepts the connection has no bound without this,
@@ -98,6 +109,7 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   public static HttpClient newConnectTimeoutBoundedClient(final ContextConfiguration configuration) {
     final long configured = configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT);
     return HttpClient.newBuilder()
+        .version(FORWARD_HTTP_VERSION)
         .connectTimeout(Duration.ofMillis(Math.max(configured, MIN_FORWARD_TIMEOUT_MS)))
         .build();
   }

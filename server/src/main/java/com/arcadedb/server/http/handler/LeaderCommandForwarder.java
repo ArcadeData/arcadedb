@@ -551,6 +551,8 @@ public final class LeaderCommandForwarder {
       // An HttpClient's connect timeout is fixed at build time, so this one is read once. The response
       // deadlines below are read per request instead, so SET SERVER SETTING moves them without a restart.
       this.client = HttpClient.newBuilder()
+          // HTTP/1.1, not the default HTTP/2: see LeaderDial.FORWARD_HTTP_VERSION (issue #12442)
+          .version(LeaderDial.FORWARD_HTTP_VERSION)
           .connectTimeout(bounded(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT,
               configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT)))
           .build();

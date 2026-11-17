@@ -119,6 +119,8 @@ final class TrustedHttpClientCache {
     // connect timeout cannot change afterwards, so a change needs a restart (or a truststore rotation, which
     // rebuilds the client here).
     client = HttpClient.newBuilder()
+        // HTTP/1.1 rather than the h2 ALPN would pick: see LeaderDial.FORWARD_HTTP_VERSION (issue #12442)
+        .version(LeaderDial.FORWARD_HTTP_VERSION)
         .connectTimeout(connectTimeoutOf(server.getConfiguration()))
         .sslContext(SnapshotInstaller.buildSSLContext(server))
         .build();
