@@ -24,6 +24,7 @@ import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,7 +56,9 @@ class Issue12367CorpusCountersUnderConcurrentWritersIT extends BaseRaftHATest {
     return LSMTreeFullTextIndex.metadataOf(getServerDatabase(serverIndex, getDatabaseName()).getSchema().getIndexByName(INDEX));
   }
 
+  // A hang detector for the writer threads joined below, not a latency bound: the run takes about 25 s
   @Test
+  @Timeout(300)
   void theCountersOfEveryNodeCountTheDocumentsOfTheType() throws Exception {
     final int leaderIndex = requireLeaderIndex();
     final Database leader = getServerDatabase(leaderIndex, getDatabaseName());

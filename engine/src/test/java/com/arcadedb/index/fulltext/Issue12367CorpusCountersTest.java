@@ -23,6 +23,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -85,6 +86,7 @@ class Issue12367CorpusCountersTest extends TestHelper {
 
   /** Every write shape moves the counters by exactly the documents it adds or removes. */
   @Test
+  @Timeout(120) // a hang detector for the writer threads joined below, not a latency bound
   void everyWriteShapeKeepsTheCountersOnTheLiveCount() throws Exception {
     final List<String> drifts = new ArrayList<>();
 
