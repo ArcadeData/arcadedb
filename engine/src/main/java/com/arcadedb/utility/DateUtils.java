@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -941,7 +942,8 @@ public class DateUtils {
       case "millisecond", "milliseconds", "millis" -> ChronoUnit.MILLIS;
       case "microsecond", "microseconds", "micros" -> ChronoUnit.MICROS;
       case "nanosecond", "nanoseconds", "nanos" -> ChronoUnit.NANOS;
-      default -> throw new SerializationException("Unsupported datetime precision '" + precision + "'");
+      // a unit nothing names is the caller's argument: VALIDATION on every protocol, not a server fault (issue #12020)
+      default -> throw new InvalidArgumentException("Unsupported datetime precision '" + InvalidArgumentException.quote(precision) + "'");
     };
   }
 

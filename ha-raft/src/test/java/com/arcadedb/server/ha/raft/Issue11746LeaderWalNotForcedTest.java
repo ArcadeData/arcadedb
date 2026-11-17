@@ -34,10 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #11746: with {@code arcadedb.txWalFlush} 1, the leader forced the WAL record of every replicated commit on the Raft apply
  * thread, one entry at a time, although the entry is durable in the Raft log a majority flushed before it committed and every
  * other node applies it with no WAL record at all. The leader now writes the record without forcing it.
+ * <p>
+ * A {@code *Test}, not an {@code *IT} (issue #12022): the ha-raft IT lane runs nightly only, so as an IT nothing that gates a
+ * merge reached the state machine routing the leader's own entry through {@code publishReplicatedCommittedPages}. The engine
+ * half of the guarantee, the flush the replicated publication skips, is pinned by {@code ReplicatedPublicationWalFlushTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue11746LeaderWalNotForcedIT extends BaseRaftHATest {
+class Issue11746LeaderWalNotForcedTest extends BaseRaftHATest {
   private static final int COMMITS = 50;
 
   @Override

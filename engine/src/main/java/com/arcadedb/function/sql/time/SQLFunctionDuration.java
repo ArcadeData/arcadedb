@@ -20,7 +20,6 @@ package com.arcadedb.function.sql.time;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.InvalidArgumentException;
-import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -65,7 +64,7 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     final ChronoUnit unit;
     try {
       unit = DateUtils.parsePrecision(unitName);
-    } catch (final SerializationException e) {
+    } catch (final InvalidArgumentException e) {
       // issue #11589: a unit nothing names is the caller's mistake
       throw new InvalidArgumentException("duration() does not know the time unit '" + InvalidArgumentException.quote(unitName) + "'", e);
     }
