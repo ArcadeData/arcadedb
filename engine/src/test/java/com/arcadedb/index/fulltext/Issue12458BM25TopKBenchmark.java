@@ -24,6 +24,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -137,9 +138,10 @@ class Issue12458BM25TopKBenchmark extends TestHelper {
           qs.get(qs.size() / 2))) {
         matches = ((Number) rs.next().getProperty("n")).longValue();
       }
-      FullTextTopKSearch.resetExactScoresComputedForTesting();
-      run(top, qs.get(qs.size() / 2));
-      final long exact = FullTextTopKSearch.getExactScoresComputedForTesting();
+      final long[] exactScores = new long[1];
+      FullTextTopKSearch.search(FullTextSearch.getBucketIndexes(FullTextSearch.resolveFullTextIndex(database, "Doc[body]")),
+          qs.get(qs.size() / 2), 50, WorkGuard.forCommandDeadline(null), null, null, exactScores);
+      final long exact = exactScores[0];
       System.out.printf("words=%2d matches~%7d scored exactly=%5d top50 median=%.2f ms%n", words, matches, exact,
           times[times.length / 2] / 1_000_000.0);
       // A profiler attached to the run sees the search rather than the load

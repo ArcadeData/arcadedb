@@ -229,7 +229,9 @@ public final class LSMTreeIndexPostings {
       for (int left = 0; left < size; left += width << 1) {
         final int mid = Math.min(left + width, size);
         final int right = Math.min(left + (width << 1), size);
-        int i = left, j = mid, k = left;
+        int i = left;
+        int j = mid;
+        int k = left;
         while (i < mid && j < right)
           buffer[k++] = compareRid(order[i], order[j]) <= 0 ? order[i++] : order[j++];
         while (i < mid)

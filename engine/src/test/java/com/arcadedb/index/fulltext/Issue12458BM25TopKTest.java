@@ -231,9 +231,10 @@ class Issue12458BM25TopKTest extends TestHelper {
       q.append(WORDS[i]).append(' ');
     final int matches = FullTextSearch.search(index, q.toString(), -1).size();
 
-    FullTextTopKSearch.resetExactScoresComputedForTesting();
-    final Map<RID, Float> top = FullTextSearch.search(index, q.toString(), 10);
-    final long scored = FullTextTopKSearch.getExactScoresComputedForTesting();
+    final long[] exactScores = new long[1];
+    final Map<RID, Float> top = FullTextTopKSearch.search(FullTextSearch.getBucketIndexes(index), q.toString(), 10,
+        WorkGuard.forCommandDeadline(null), null, null, exactScores);
+    final long scored = exactScores[0];
 
     assertThat(top).hasSize(10);
     assertThat(ranked(top, 10)).isEqualTo(ranked(general(index, q.toString(), 10, null), 10));

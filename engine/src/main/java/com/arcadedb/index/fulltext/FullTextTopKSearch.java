@@ -31,7 +31,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * BM25 search of a query that is a disjunction of terms, from primitive posting arrays, with MaxScore pruning against one top-k
@@ -68,19 +67,7 @@ final class FullTextTopKSearch {
    */
   private static final double BOUND_SLACK = 1e-9;
 
-  // Test-only: how many documents had their exact score computed, which MaxScore keeps far below the matches. Added once per
-  // search, so it costs no contention per document; asserted on only because this module's tests run sequentially in one fork
-  private static final AtomicLong exactScoresComputed = new AtomicLong();
-
   private FullTextTopKSearch() {
-  }
-
-  static long getExactScoresComputedForTesting() {
-    return exactScoresComputed.get();
-  }
-
-  static void resetExactScoresComputedForTesting() {
-    exactScoresComputed.set(0L);
   }
 
   /**
@@ -89,6 +76,15 @@ final class FullTextTopKSearch {
    */
   static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null);
+  }
+
+  /**
+   * {@link #search(List, String, int, WorkGuard, List, RIDFilter)} counting, in the first cell of {@code exactScores} when it is not
+   * null, the documents whose exact score was computed: MaxScore keeps them far below the matches, which a test asserts.
+   */
+  static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final long[] exactScores) {
     // a predicate on the records decides some buckets only once their records are loaded, which no limit here can wait for
     if (ridFilter != null && ridFilter.hasRecordPredicate())
       return null;
@@ -132,10 +128,6 @@ final class FullTextTopKSearch {
         first.bucketScoringContext(frequencies) :
         FullTextSearch.createScoringContext(bucketIndexes, frequencies);
 
-    final FullTextIndexMetadata metadata = first.getFullTextMetadata();
-    final double k1 = metadata.getBm25K1();
-    final double b = metadata.getBm25B();
-    final double avgdl = context.avgDocLength();
     final double[] idf = new double[tokenCount];
     final double[] boosts = new double[tokenCount];
     for (int t = 0; t < tokenCount; ++t) {
@@ -145,15 +137,18 @@ final class FullTextTopKSearch {
 
     // Pass two: every bucket against the one heap
     final TopK top = new TopK(limit, first.getDatabase());
-    final Scorer scorer = new Scorer(tokenCount, top, guard, ridFilter);
+    final FullTextIndexMetadata metadata = first.getFullTextMetadata();
+    final Scorer scorer = new Scorer(top, guard, ridFilter, idf, boosts, context.avgDocLength(), metadata.getBm25K1(),
+        metadata.getBm25B());
     for (int bucket = 0; bucket < bucketIndexes.size(); ++bucket) {
       final LSMTreeFullTextIndex ftIndex = bucketIndexes.get(bucket);
       final int bucketId = ftIndex.getAssociatedBucketId();
       if (ridFilter != null && !ridFilter.acceptsBucket(bucketId))
         continue;
-      scorer.scoreBucket(ftIndex, bucketId, postings[bucket], idf, boosts, avgdl, k1, b);
+      scorer.scoreBucket(ftIndex, bucketId, postings[bucket]);
     }
-    exactScoresComputed.addAndGet(scorer.exactScores);
+    if (exactScores != null)
+      exactScores[0] += scorer.exactScores;
     return top.toMap();
   }
 
@@ -172,6 +167,18 @@ final class FullTextTopKSearch {
     private final TopK      top;
     private final WorkGuard guard;
     private final RIDFilter ridFilter;
+    // the BM25 inputs of the whole search, the same for every bucket
+    private final double[]  idf;
+    private final double[]  boosts;
+    private final double    avgdl;
+    private final double    k1;
+    private final double    b;
+    // the lists of the bucket being scored: per token its list or -1, per list its postings
+    private       int[]     listOfToken;
+    private       long[][]  positions;
+    private       int[][]   tfs;
+    private       int[][]   docLengths;
+    private       int[]     sizes;
     // the window: the partial score of each position, and which positions an essential list holds
     private final double[]  windowScores        = new double[WINDOW];
     private final long[]    windowDocuments     = new long[WINDOW >>> 6];
@@ -180,15 +187,20 @@ final class FullTextTopKSearch {
     private       int       ticks;
     private       long      exactScores;
 
-    private Scorer(final int tokenCount, final TopK top, final WorkGuard guard, final RIDFilter ridFilter) {
-      this.tokenCount = tokenCount;
+    private Scorer(final TopK top, final WorkGuard guard, final RIDFilter ridFilter, final double[] idf, final double[] boosts,
+        final double avgdl, final double k1, final double b) {
+      this.tokenCount = idf.length;
       this.top = top;
       this.guard = guard;
       this.ridFilter = ridFilter;
+      this.idf = idf;
+      this.boosts = boosts;
+      this.avgdl = avgdl;
+      this.k1 = k1;
+      this.b = b;
     }
 
-    private void scoreBucket(final LSMTreeFullTextIndex ftIndex, final int bucketId, final LSMTreeIndexPostings[] postings,
-        final double[] idf, final double[] boosts, final double avgdl, final double k1, final double b) {
+    private void scoreBucket(final LSMTreeFullTextIndex ftIndex, final int bucketId, final LSMTreeIndexPostings[] postings) {
       // The lists of this bucket that hold a posting, and the largest contribution of each
       int lists = 0;
       for (final LSMTreeIndexPostings p : postings)
@@ -198,12 +210,11 @@ final class FullTextTopKSearch {
         return;
 
       final int[] token = new int[lists];
-      // the list of each token, or -1 when no posting of this bucket holds it
-      final int[] listOfToken = new int[tokenCount];
-      final long[][] positions = new long[lists][];
-      final int[][] tfs = new int[lists][];
-      final int[][] docLengths = new int[lists][];
-      final int[] sizes = new int[lists];
+      listOfToken = new int[tokenCount];
+      positions = new long[lists][];
+      tfs = new int[lists][];
+      docLengths = new int[lists][];
+      sizes = new int[lists];
       final double[] maxima = new double[lists];
       int l = 0;
       for (int t = 0; t < tokenCount; ++t) {
@@ -218,7 +229,7 @@ final class FullTextTopKSearch {
         tfs[l] = p.termFrequencies();
         docLengths[l] = p.documentLengths();
         sizes[l] = p.size();
-        maxima[l] = largestContribution(tfs[l], docLengths[l], sizes[l], idf[t], boosts[t], avgdl, k1, b);
+        maxima[l] = largestContribution(l, t);
         ++l;
       }
 
@@ -264,7 +275,7 @@ final class FullTextTopKSearch {
           for (; cursor < size && listPositions[cursor] < end; ++cursor) {
             guard.checkPeriodically(++ticks);
             final int slot = (int) (listPositions[cursor] - start);
-            final double contribution = contribution(t, tfs[list][cursor], docLengths[list][cursor], idf, boosts, avgdl, k1, b);
+            final double contribution = contribution(t, tfs[list][cursor], docLengths[list][cursor]);
             final int word = slot >>> 6;
             final long bit = 1L << slot;
             if ((windowDocuments[word] & bit) == 0) {
@@ -294,14 +305,13 @@ final class FullTextTopKSearch {
               final int cursor = advance(positions[list], cursors[list], sizes[list], document);
               cursors[list] = cursor;
               if (cursor < sizes[list] && positions[list][cursor] == document)
-                partial += contribution(token[list], tfs[list][cursor], docLengths[list][cursor], idf, boosts, avgdl, k1, b);
+                partial += contribution(token[list], tfs[list][cursor], docLengths[list][cursor]);
               reachable = top.mayEnter(partial + boundBelow[i]);
             }
             if (!reachable)
               continue;
 
-            final float score = (float) exactScore(document, listOfToken, positions, tfs, docLengths, sizes, idf, boosts, avgdl, k1,
-                b);
+            final float score = (float) exactScore(document);
             if (!top.beats(score, bucketId, document))
               continue;
             if (ridFilter != null && !ridFilter.accepts(new DatabaseRID(ftIndex.getDatabase(), bucketId, document)))
@@ -318,9 +328,7 @@ final class FullTextTopKSearch {
     /**
      * The score of a document as the general path computes it: the contributions of the tokens it holds, summed in token order.
      */
-    private double exactScore(final long document, final int[] listOfToken, final long[][] positions, final int[][] tfs,
-        final int[][] docLengths, final int[] sizes, final double[] idf, final double[] boosts, final double avgdl, final double k1,
-        final double b) {
+    private double exactScore(final long document) {
       ++exactScores;
       double score = 0.0;
       for (int t = 0; t < tokenCount; ++t) {
@@ -329,14 +337,13 @@ final class FullTextTopKSearch {
           continue;
         final int i = Arrays.binarySearch(positions[list], 0, sizes[list], document);
         if (i >= 0)
-          score += contribution(t, tfs[list][i], docLengths[list][i], idf, boosts, avgdl, k1, b);
+          score += contribution(t, tfs[list][i], docLengths[list][i]);
       }
       return score;
     }
 
     /** The expression of {@code LSMTreeFullTextIndex.computeBM25Scores}, so that a score is the general path's to the last bit. */
-    private static double contribution(final int t, final int tf, final int docLength, final double[] idf, final double[] boosts,
-        final double avgdl, final double k1, final double b) {
+    private double contribution(final int t, final int tf, final int docLength) {
       return BM25Scorer.termScore(idf[t], tf, docLength, avgdl, k1, b) * boosts[t];
     }
 
@@ -345,27 +352,31 @@ final class FullTextTopKSearch {
      * document length, so it is the largest of those of each frequency's shortest document: one integer pass over the postings,
      * and a contribution per distinct frequency rather than per posting.
      */
-    private double largestContribution(final int[] tfs, final int[] docLengths, final int size, final double idf, final double boost,
-        final double avgdl, final double k1, final double b) {
+    private double largestContribution(final int list, final int t) {
+      final int[] listTfs = tfs[list];
+      final int[] listDocLengths = docLengths[list];
+      final int size = sizes[list];
+      final double tokenIdf = idf[t];
+      final double boost = boosts[t];
       double max = Double.NEGATIVE_INFINITY;
-      if (idf < 0 || boost < 0 || b < 0 || b > 1 || k1 < 0) {
+      if (tokenIdf < 0 || boost < 0 || b < 0 || b > 1 || k1 < 0) {
         // the monotony does not hold: every posting
         for (int i = 0; i < size; ++i)
-          max = Math.max(max, BM25Scorer.termScore(idf, tfs[i], docLengths[i], avgdl, k1, b) * boost);
+          max = Math.max(max, contribution(t, listTfs[i], listDocLengths[i]));
         return max;
       }
       Arrays.fill(shortestByFrequency, Integer.MAX_VALUE);
       for (int i = 0; i < size; ++i) {
-        final int tf = tfs[i];
+        final int tf = listTfs[i];
         if (tf < shortestByFrequency.length) {
-          if (docLengths[i] < shortestByFrequency[tf])
-            shortestByFrequency[tf] = docLengths[i];
+          if (listDocLengths[i] < shortestByFrequency[tf])
+            shortestByFrequency[tf] = listDocLengths[i];
         } else
-          max = Math.max(max, BM25Scorer.termScore(idf, tf, docLengths[i], avgdl, k1, b) * boost);
+          max = Math.max(max, contribution(t, tf, listDocLengths[i]));
       }
       for (int tf = 0; tf < shortestByFrequency.length; ++tf)
         if (shortestByFrequency[tf] != Integer.MAX_VALUE)
-          max = Math.max(max, BM25Scorer.termScore(idf, tf, shortestByFrequency[tf], avgdl, k1, b) * boost);
+          max = Math.max(max, contribution(t, tf, shortestByFrequency[tf]));
       return max;
     }
 
@@ -429,11 +440,6 @@ final class FullTextTopKSearch {
 
     private boolean full() {
       return limit > 0 && size == limit;
-    }
-
-    /** The score a match has to reach, or minus infinity while the heap is not full. */
-    private float threshold() {
-      return full() ? scores[0] : Float.NEGATIVE_INFINITY;
     }
 
     /** Whether a match scoring at most {@code bound} could still enter: it ties the threshold at best and wins on its RID. */
