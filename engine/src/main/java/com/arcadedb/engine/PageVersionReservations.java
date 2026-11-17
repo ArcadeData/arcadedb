@@ -45,5 +45,6 @@ public interface PageVersionReservations {
    * the authority has moved since. Nothing to do by default.
    */
   default void beforeVersionChecks() {
+    // NO LOCK OF ITS OWN TO TAKE: THE RESERVATIONS ALONE ORDER THE COMMIT
   }
 }
