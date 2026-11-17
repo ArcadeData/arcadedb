@@ -139,26 +139,26 @@ public class SQLFunctionVectorMultiScore extends SQLFunctionVectorAbstract {
   }
 
   private float avg(final float[] scores) {
-    float sum = 0.0f;
-    for (final float score : scores) {
+    // Summed in double: a float running sum overflows to Infinity before an ordinary float average is reached (#12023)
+    double sum = 0.0;
+    for (final float score : scores)
       sum += score;
-    }
-    return sum / scores.length;
+    return (float) (sum / scores.length);
   }
 
   private float weightedAverage(final float[] scores, final float[] weights) {
-    float weightedSum = 0.0f;
-    float weightSum = 0.0f;
+    double weightedSum = 0.0;
+    double weightSum = 0.0;
 
     for (int i = 0; i < scores.length; i++) {
-      weightedSum += scores[i] * weights[i];
+      weightedSum += (double) scores[i] * weights[i];
       weightSum += weights[i];
     }
 
-    if (weightSum == 0.0f)
+    if (weightSum == 0.0)
       throw new CommandSQLParsingException("Sum of weights cannot be zero");
 
-    return weightedSum / weightSum;
+    return (float) (weightedSum / weightSum);
   }
 
   public String getSyntax() {

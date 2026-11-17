@@ -53,12 +53,12 @@ public class SQLFunctionVectorL1Norm extends SQLFunctionVectorAbstract {
     final float[] vector = toFloatArray(vectorObj);
 
     // Calculate L1 norm: sum of absolute values. An empty vector folds to 0, as vector.l2Norm answers (issue #11052)
-    float norm = 0.0f;
-    for (final float value : vector) {
+    // Summed in double: a float running sum overflows to Infinity before an ordinary float total is reached (issue #12023)
+    double norm = 0.0;
+    for (final float value : vector)
       norm += Math.abs(value);
-    }
 
-    return norm;
+    return (float) norm;
   }
 
 

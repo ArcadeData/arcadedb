@@ -63,7 +63,7 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
     // Calculate L2 norm
     double sumSquares = 0.0;
     for (final float value : vector) {
-      sumSquares += value * value;
+      sumSquares += (double) value * value;
     }
     final float norm = (float) Math.sqrt(sumSquares);
 

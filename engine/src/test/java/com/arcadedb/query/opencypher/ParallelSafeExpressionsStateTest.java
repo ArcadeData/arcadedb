@@ -24,22 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CustomFunctionAdapter;
 import com.arcadedb.function.cypher.SQLFunctionBridge;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
-import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
-import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
-import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
-import com.arcadedb.query.opencypher.ast.InExpression;
-import com.arcadedb.query.opencypher.ast.IsNullExpression;
-import com.arcadedb.query.opencypher.ast.ListExpression;
-import com.arcadedb.query.opencypher.ast.LiteralExpression;
-import com.arcadedb.query.opencypher.ast.LogicalExpression;
-import com.arcadedb.query.opencypher.ast.ParameterExpression;
-import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
-import com.arcadedb.query.opencypher.ast.StarExpression;
-import com.arcadedb.query.opencypher.ast.StringMatchExpression;
-import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
@@ -56,30 +41,15 @@ import java.util.TreeSet;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The expressions a parallel label scan evaluates on several workers at once share one instance (issue #8725), so every
- * instance field of them must be final or volatile. A cache added to one of them later fails here instead of racing
- * under a parallel scan. The same holds for the executors of the built-in functions the workers may call (issue #11873):
- * a function call caches its executor, which the workers then share.
+ * The workers of a parallel label scan share one instance of the predicate (issue #8725), so everything they evaluate must
+ * hold only final or volatile state. The expression nodes are checked by {@code ParallelSafeExpressionsStateCensusTest} in the
+ * census module, which reads them from the cases of {@code ParallelSafeExpressions.isParallelSafe} (issue #12383). The
+ * executors of the built-in functions the workers may call (issue #11873) are checked here, at run time: a function call
+ * caches its executor, which the workers then share, and only a resolved executor shows what it holds.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class ParallelSafeExpressionsStateTest {
-  @Test
-  void theWhitelistedExpressionsHoldNoUnsafeMutableState() {
-    final List<String> unsafe = new ArrayList<>();
-    for (final Class<?> type : new Class<?>[] { ArithmeticExpression.class, BooleanCoercionExpression.class,
-        BooleanWrapperExpression.class, ComparisonExpression.class, ComparisonExpressionWrapper.class,
-        FunctionCallExpression.class, InExpression.class, IsNullExpression.class, ListExpression.class,
-        LiteralExpression.class, LogicalExpression.class, ParameterExpression.class, PropertyAccessExpression.class,
-        StarExpression.class, StringMatchExpression.class, TernaryLogicalExpression.class, VariableExpression.class })
-      for (final Field field : type.getDeclaredFields()) {
-        final int modifiers = field.getModifiers();
-        if (!Modifier.isStatic(modifiers) && !Modifier.isFinal(modifiers) && !Modifier.isVolatile(modifiers))
-          unsafe.add(type.getSimpleName() + "." + field.getName());
-      }
-    assertThat(unsafe).as("instance fields that are neither final nor volatile").isEmpty();
-  }
-
   /**
    * Every function the workers may call is a scalar built-in the factory resolves to an executor of its own, and that
    * executor, with every ArcadeDB object it holds, has only final or volatile instance fields.
