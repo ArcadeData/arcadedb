@@ -19,15 +19,21 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.FutureTask;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -111,6 +117,29 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     assertThat(entries("D[v]", 2)).isEmpty();
   }
 
+  /**
+   * The EXTERNAL values go with the record as it is now too: one the concurrent change added is not named by the image read, and
+   * stayed in the paired bucket, referenced by nothing.
+   */
+  @Test
+  void anExternalValueAddedAfterTheReadIsDeletedWithTheRecord() throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("X");
+    type.createProperty("v", Type.INTEGER);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("X").set("v", 1).save().getIdentity());
+    assertThat(externalRecords(type)).isZero();
+
+    deleteAfterAConcurrentUpdate(rid[0], () -> {
+    }, changed -> changed.set("blob", "x".repeat(200)));
+
+    assertThat(externalRecords(type)).isZero();
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+      final Object orphans = rs.next().getProperty("orphanedExternalRecords");
+      assertThat(orphans == null ? 0L : ((Number) orphans).longValue()).isZero();
+    }
+  }
+
   /** A property assigned and never saved is not in the index: the delete removes the entry of the stored value. */
   @Test
   void aDocumentDeletedWithAnUnsavedChangeLeavesNoIndexEntry() {
@@ -180,6 +209,13 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
 
   /** As {@link #deleteAfterAConcurrentUpdate(RID)}, running {@code beforeDelete} right before the delete. */
   private void deleteAfterAConcurrentUpdate(final RID rid, final Runnable beforeDelete) throws Exception {
+    deleteAfterAConcurrentUpdate(rid, beforeDelete, changed -> {
+    });
+  }
+
+  /** As {@link #deleteAfterAConcurrentUpdate(RID, Runnable)}, the concurrent transaction applying {@code alsoChange} too. */
+  private void deleteAfterAConcurrentUpdate(final RID rid, final Runnable beforeDelete, final Consumer<MutableDocument> alsoChange)
+      throws Exception {
     database.begin();
     final Document readBefore = rid.asDocument(true);
     assertThat(readBefore.getInteger("v")).isEqualTo(1);
@@ -187,7 +223,11 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     // get() rethrows a failure of the concurrent transaction, which would otherwise leave the record unchanged and this test
     // deleting it as it was read, proving nothing
     final FutureTask<Integer> concurrent = new FutureTask<>(() -> {
-      database.transaction(() -> rid.asDocument().modify().set("v", 2).save());
+      database.transaction(() -> {
+        final MutableDocument changed = rid.asDocument().modify().set("v", 2);
+        alsoChange.accept(changed);
+        changed.save();
+      });
       final int[] committed = new int[1];
       database.transaction(() -> committed[0] = rid.asDocument().getInteger("v"));
       return committed[0];
@@ -199,6 +239,22 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     readBefore.delete();
     database.commit();
     assertThat(database.existsRecord(rid)).isFalse();
+  }
+
+  /** Scanned, not the cached counter: what the paired external buckets of {@code type} really hold. */
+  private long externalRecords(final DocumentType type) {
+    final long[] total = new long[1];
+    database.transaction(() -> {
+      for (final Bucket bucket : type.getBuckets(false)) {
+        final Integer externalId = ((LocalDocumentType) type).getExternalBucketIdFor(bucket.getFileId());
+        assertThat(externalId).as("the type pairs an external bucket with bucket %d", bucket.getFileId()).isNotNull();
+        database.getSchema().getBucketById(externalId).scan((recordRid, view) -> {
+          ++total[0];
+          return true;
+        }, null);
+      }
+    });
+    return total[0];
   }
 
   private List<RID> entries(final String indexName, final int key) {
