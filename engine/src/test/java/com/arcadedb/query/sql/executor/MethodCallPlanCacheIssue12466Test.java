@@ -30,6 +30,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,10 +51,11 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
       final var type = database.getSchema().createDocumentType("Chunk");
       type.createProperty("name", Type.STRING);
       type.createProperty("tags", Type.LIST);
+      type.createProperty("meta", Type.MAP);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Chunk", "name");
-      database.newDocument("Chunk").set("name", "alpha").set("tags", List.of("a", "b", "c")).save();
-      database.newDocument("Chunk").set("name", "BETA").set("tags", List.of("a")).save();
-      database.newDocument("Chunk").set("name", "gamma").set("tags", List.of()).save();
+      database.newDocument("Chunk").set("name", "alpha").set("tags", List.of("a", "b", "c")).set("meta", Map.of("x", 1, "y", 2)).save();
+      database.newDocument("Chunk").set("name", "BETA").set("tags", List.of("a")).set("meta", Map.of("z", 3)).save();
+      database.newDocument("Chunk").set("name", "gamma").set("tags", List.of()).set("meta", Map.of()).save();
     });
   }
 
@@ -114,28 +118,30 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
     assertThat(seen).containsExactly("ALPHA:3", "BETA:1", "GAMMA:0", "ALPHA:3");
   }
 
-  /** CodeRabbit on the PR: the factory lets an application replace a built-in, and the answer must follow the replacement. */
+  /**
+   * The factory lets an application replace a built-in. A replacement that extends {@link AbstractSQLMethod} under a listed name
+   * inherits {@code isDeterministic() == true} from the name list, which says nothing about what it does: only the implementation
+   * the factory registered itself is trusted.
+   */
   @Test
-  void aBuiltInReplacedByAMethodThatIsNotDeterministicIsNoLongerCached() {
+  void aReplacedBuiltInIsNotCachedWhateverItInherits() {
     final String sql = "SELECT name, tags.size() AS n FROM Chunk WHERE name = ?";
     assertThat(cachedAfterRunning(sql, "alpha")).as("the built-in size()").isTrue();
 
     final DefaultSQLMethodFactory factory = DefaultSQLMethodFactory.getInstance();
-    factory.register(SQLMethodSize.NAME, new AbstractSQLMethod(SQLMethodSize.NAME) {
+    final Object original = factory.getMethods().get(SQLMethodSize.NAME);
+    final AbstractSQLMethod replacement = new AbstractSQLMethod(SQLMethodSize.NAME) {
       @Override
       public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
         return -1;
       }
-
-      @Override
-      public boolean isDeterministic() {
-        return false;
-      }
-    });
+    };
+    assertThat(replacement.isDeterministic()).as("inherited from the name list").isTrue();
+    factory.register(SQLMethodSize.NAME, replacement);
     try {
       assertThat(cachedAfterRunning(sql, "alpha")).as("the replacement").isFalse();
     } finally {
-      factory.register(SQLMethodSize.NAME, new SQLMethodSize());
+      factory.register(SQLMethodSize.NAME, original);
     }
     assertThat(cachedAfterRunning(sql, "alpha")).as("the built-in again").isTrue();
   }
@@ -144,5 +150,44 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
   void aMethodNothingAnswersIsNotCachedAndAsksNothingOfThePlanner() {
     assertThat(((DatabaseInternal) database).getStatementCache().get("SELECT name.nosuchmethod() AS x FROM Chunk")
         .executionPlanCanBeCached()).isFalse();
+  }
+
+  /** The census: adding a method to the plan cache is a visible change to this list. */
+  @Test
+  void theDeterministicBuiltInsAreExactlyTheReviewedList() {
+    final DefaultSQLMethodFactory factory = DefaultSQLMethodFactory.getInstance();
+    final Set<String> deterministic = new TreeSet<>();
+    for (final String name : factory.getBuiltInMethodNames())
+      if (factory.createMethod(name).isDeterministic())
+        deterministic.add(name);
+
+    assertThat(deterministic).containsExactly("append", "capitalize", "charat", "first", "indexof", "keys", "last", "lastindexof", "left",
+        "length", "prefix", "right", "size", "substring", "tolowercase", "touppercase", "trim", "values");
+  }
+
+  /** Every method the PR lists answers what an uncached plan answers, for each row and a bound parameter. */
+  @Test
+  void aCachedPlanAnswersWhatAFreshPlanAnswers() {
+    for (final String sql : new String[] {
+        "SELECT name, tags.first() AS f, tags.last() AS l, tags.size() AS s FROM Chunk WHERE name = ?",
+        "SELECT name, meta.keys() AS k, meta.values() AS v FROM Chunk WHERE name = ?",
+        "SELECT name.left(2) AS l, name.right(2) AS r, name.subString(1, 3) AS s, name.charAt(0) AS c, name.indexOf('a') AS i,"
+            + " name.lastIndexOf('a') AS j, name.length() AS n, name.trim() AS t, name.prefix('x') AS p, name.append('y') AS a,"
+            + " name.capitalize() AS cap, name.toLowerCase() AS lo FROM Chunk WHERE name = ?" })
+      for (final String name : new String[] { "alpha", "BETA", "gamma" }) {
+        ((DatabaseInternal) database).getExecutionPlanCache().invalidate();
+        final String fresh = answer(sql, name);
+        final String again = answer(sql, name);
+        final String cached = answer(sql, name);
+        assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql)).as(sql).isTrue();
+        assertThat(again).as(sql + " [" + name + "]").isEqualTo(fresh);
+        assertThat(cached).as(sql + " [" + name + "]").isEqualTo(fresh);
+      }
+  }
+
+  private String answer(final String sql, final Object... args) {
+    try (final ResultSet rs = database.query("sql", sql, args)) {
+      return rs.next().toMap().toString();
+    }
   }
 }

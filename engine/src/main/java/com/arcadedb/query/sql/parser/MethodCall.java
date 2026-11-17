@@ -274,15 +274,14 @@ public class MethodCall extends SimpleNode {
 
   /**
    * Resolved on every call, not remembered per name as {@link FunctionCall} does: {@link DefaultSQLMethodFactory#register} is public
-   * and may replace a built-in with a method that is not deterministic, which a remembered answer would not see. The look-up is one
-   * map access, the one the execution makes anyway.
+   * and may replace a built-in, which a remembered answer would not see. Only the implementation the factory registered itself
+   * ({@link DefaultSQLMethodFactory#isBuiltIn}) is trusted to say it is deterministic: a replacement or an added method is not
+   * cacheable, whatever it inherits.
    */
   private boolean isDeterministicMethod() {
-    try {
-      return DefaultSQLMethodFactory.getInstance().createMethod(methodName.getStringValue()).isDeterministic();
-    } catch (final CommandExecutionException e) {
-      return false;
-    }
+    final DefaultSQLMethodFactory factory = DefaultSQLMethodFactory.getInstance();
+    final String name = methodName.getStringValue().toLowerCase(Locale.ENGLISH);
+    return factory.isBuiltIn(name) && factory.createMethod(name).isDeterministic();
   }
 
   private boolean isGraphFunction() {
