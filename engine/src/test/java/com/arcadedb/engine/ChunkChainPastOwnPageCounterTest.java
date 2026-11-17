@@ -80,6 +80,31 @@ class ChunkChainPastOwnPageCounterTest extends TestHelper {
     }
   }
 
+  @Test
+  void aBucketScanAndAPositionWalkReachRecordsCommittedOnLaterPages() throws Exception {
+    final LocalBucket bucket = createBucket();
+    final int[] counts = whileAnotherTransactionCommitsABigRecord(bucket, big -> {
+      final Set<RID> scanned = new HashSet<>();
+      final int[] errors = new int[1];
+      bucket.scan((rid, view) -> {
+        scanned.add(rid);
+        return true;
+      }, (rid, exception) -> {
+        errors[0]++;
+        return true;
+      });
+      assertThat(scanned).as("the scan reaches the other transaction's record past the reader's counter").contains(big);
+      assertThat(errors[0]).as("no record of the scan is reported as corrupted").isZero();
+
+      final int[] positions = new int[1];
+      bucket.forEachRecordPosition(position -> positions[0]++);
+      return new int[] { scanned.size(), positions[0] };
+    });
+
+    assertThat(counts[0]).isEqualTo(2);
+    assertThat(counts[1]).as("the position walk reaches both records").isEqualTo(2);
+  }
+
   private LocalBucket createBucket() {
     database.getSchema().createDocumentType("C", 1);
     return (LocalBucket) database.getSchema().getType("C").getBuckets(false).getFirst();
