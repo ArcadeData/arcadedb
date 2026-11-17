@@ -152,7 +152,8 @@ public class CoreApiSpec implements OpenApiContributor {
       0 for a conflict, which clears as soon as the competing commit has landed""";
   private static final String RETRY_AFTER_DESCRIPTION = """
       Seconds to wait before retrying: 0 for a refusal that clears by itself (a conflict with a concurrent commit), \
-      1 or more for a server too busy to start the request""";
+      1 or more for a server too busy to start the request. It is a floor, not a schedule: a client that retries in a \
+      loop still backs off, with jitter, when the same refusal comes back""";
 
   // Shared by the POST query and command operations, which both reach the stale-session branch of
   // DatabaseAbstractHandler.setTransactionInThreadLocal. Held in one place so the two cannot desync:

@@ -43,6 +43,9 @@ import java.util.function.Consumer;
 import java.util.logging.Level;
 
 public class DocumentIndexer {
+  /** Past this many old x new tuple comparisons {@link #applyTupleDelta} hashes the tuples instead of probing them linearly. */
+  private static final int LINEAR_TUPLE_PROBE_LIMIT = 256;
+
   private final LocalDatabase database;
 
   /**
@@ -484,9 +487,6 @@ public class DocumentIndexer {
     }
     return changed;
   }
-
-  /** Past this many old x new tuple comparisons {@link #applyTupleDelta} hashes the tuples instead of probing them linearly. */
-  private static final int LINEAR_TUPLE_PROBE_LIMIT = 256;
 
   /** A key tuple as a hash-set member, with the {@link IndexKeyEquality} equality every diff of this class uses. */
   private record TupleKey(Object[] values) {
