@@ -83,7 +83,8 @@ class Issue11794GavDeltaAcrossThreadsTest extends TestHelper {
   @EnumSource(value = GraphAnalyticalView.UpdateMode.class, names = { "SYNCHRONOUS", "ASYNCHRONOUS" })
   void everyThreadOfOneTransactionReachesTheView(final GraphAnalyticalView.UpdateMode mode) throws Exception {
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("gv").withVertexTypes("A", "B")
-        .withEdgeTypes("R").withUpdateMode(mode).build();
+        .withEdgeTypes("R").withUpdateMode(mode).withCompactionThreshold(Integer.MAX_VALUE).build();
+    final long builtAt = view.getBuildTimestamp();
     try {
       final DatabaseInternal db = (DatabaseInternal) database;
       database.begin();
@@ -110,6 +111,7 @@ class Issue11794GavDeltaAcrossThreadsTest extends TestHelper {
 
       Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
         assertThat(view.isStale()).as("the view caught up with the commit").isFalse();
+        assertDeliveredAsDelta(view, builtAt);
         for (int i = 0; i < VERTICES; i++) {
           final int nodeId = view.getNodeId(sources[i]);
           assertThat(nodeId).isGreaterThanOrEqualTo(0);
@@ -138,7 +140,8 @@ class Issue11794GavDeltaAcrossThreadsTest extends TestHelper {
       sources[2].asVertex().modify().set("name", "old").save();
     });
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("gv").withVertexTypes("A", "B")
-        .withEdgeTypes("R").withProperties("name").withUpdateMode(mode).build();
+        .withEdgeTypes("R").withProperties("name").withUpdateMode(mode).withCompactionThreshold(Integer.MAX_VALUE).build();
+    final long builtAt = view.getBuildTimestamp();
     try {
       assertThat(view.countEdges(view.getNodeId(sources[0]), Vertex.DIRECTION.OUT, "R")).isEqualTo(1L);
 
@@ -166,6 +169,7 @@ class Issue11794GavDeltaAcrossThreadsTest extends TestHelper {
 
       Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
         assertThat(view.isStale()).as("the view caught up with the commit").isFalse();
+        assertDeliveredAsDelta(view, builtAt);
         assertThat(view.countEdges(view.getNodeId(sources[3]), Vertex.DIRECTION.OUT, "R"))
             .as("the edge created on one thread and deleted on another is not in the view").isEqualTo(0L);
         assertThat(view.countEdges(view.getNodeId(sources[0]), Vertex.DIRECTION.OUT, "R"))
@@ -181,6 +185,16 @@ class Issue11794GavDeltaAcrossThreadsTest extends TestHelper {
     } finally {
       view.drop();
     }
+  }
+
+  /**
+   * The change reached the view as the transaction's delta, merged into the overlay, and not through a full rebuild, which
+   * would answer the same final state while hiding a delta that never arrived: compaction is off, the base was not rebuilt,
+   * and the overlay holds the change.
+   */
+  private static void assertDeliveredAsDelta(final GraphAnalyticalView view, final long builtAt) {
+    assertThat(view.getBuildTimestamp()).as("the view was not rebuilt").isEqualTo(builtAt);
+    assertThat(view.hasActiveOverlay()).as("the change is in the overlay").isTrue();
   }
 
   private void runOnItsOwnThread(final DatabaseInternal db, final TransactionContext tx, final Runnable work) throws Exception {
