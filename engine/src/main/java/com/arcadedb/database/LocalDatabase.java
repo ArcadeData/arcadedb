@@ -2658,6 +2658,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public Dictionary getDictionary() {
+    checkOpenAndNotFenced();
+    return schema.getDictionary();
+  }
+
+  @Override
   public BinarySerializer getSerializer() {
     return serializer;
   }
@@ -5106,16 +5112,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
-    if (!open)
-      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
-    if (fenceReason != null)
-      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
-      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
-      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
-      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
-      throw new DatabaseOperationException(
-          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
-              + fenceReason + ")");
+    checkOpenAndNotFenced();
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
 
@@ -5134,6 +5131,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     if (lastUsedOn != now)
       lastUsedOn = now;
+  }
+
+  private void checkOpenAndNotFenced() {
+    if (!open)
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
+    if (fenceReason != null)
+      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
+      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
+      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
+      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
+      throw new DatabaseOperationException(
+          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
+              + fenceReason + ")");
   }
 
   private void setDefaultValues(final Record record) {

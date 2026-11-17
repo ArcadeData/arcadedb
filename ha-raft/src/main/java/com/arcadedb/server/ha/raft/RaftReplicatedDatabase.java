@@ -44,6 +44,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
@@ -2438,6 +2439,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Schema getSchema() {
     return proxied.getSchema();
+  }
+
+  @Override
+  public Dictionary getDictionary() {
+    return proxied.getDictionary();
   }
 
   @Override
