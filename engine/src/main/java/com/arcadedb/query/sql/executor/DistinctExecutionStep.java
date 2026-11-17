@@ -178,7 +178,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     if (identity.getBucketId() < 0 || identity.getPosition() < 0)
       return false;
     if (value instanceof ResultInternal ri && ri.hasProjectedProperties())
-      return value.getPropertyNames().contains(RID_PROPERTY);
+      return value.listsProperty(RID_PROPERTY);
     return true;
   }
 
