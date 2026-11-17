@@ -105,6 +105,22 @@ class FixedWidthFloatArraysRollbackFenceTest extends TestHelper {
     assertThat((float[]) database.lookupByRID(rid, true).asDocument().get("emb")).containsExactly(7F, 8F);
   }
 
+  /**
+   * The label follows the setting, not the content: a database that holds no float or double array is relabelled by its first
+   * read-write open too. Whether a database holds the form cannot be told without reading every record, and a database that
+   * does not hold it yet can receive it at any moment, from a write or from a replicated page.
+   */
+  @Test
+  void aDatabaseWithoutAnyArrayIsRelabelledWhenItOpens() {
+    database.transaction(() -> database.newDocument("Doc").set("name", "plain").save());
+    closeAndLabelTheDictionaryAs26_11_1();
+    assertThat(dictionaryFileVersion()).isEqualTo(1);
+
+    database = factory.open();
+    assertThat(dictionaryFileVersion()).isEqualTo(Dictionary.FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    assertThat(database.query("sql", "SELECT name FROM Doc").nextIfAvailable().<String>getProperty("name")).isEqualTo("plain");
+  }
+
   /** The way to keep a rollback possible: with the setting off the label stays 1 and every array is written as a varint. */
   @Test
   void withTheSettingOffTheDictionaryStaysVersion1AndArraysStayVarint() {
