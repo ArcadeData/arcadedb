@@ -748,8 +748,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     }
 
-    // What a read-only commit owes once it has released the read lock (issue #12251), see the arm below
+    // What a read-only commit owes once it has released the read lock (issue #12251), see the arm below, and the context whose
+    // transaction it concluded, popped only once those callbacks have run
     final Runnable[] readOnlyCallbacks = new Runnable[1];
+    final DatabaseContext.DatabaseContextTL[] concludedContext = new DatabaseContext.DatabaseContextTL[1];
 
     // --- PHASE 1 (read lock): capture WAL bytes and delta ---
     final ReplicationPayload payload;
@@ -785,28 +787,38 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           // the write lock this read lock holds off. Every TIMESERIES insert into a type with an aggregate ends here (its
           // samples commit in a transaction of their own), and the cycle cost each one the quorum timeout.
           readOnlyCallbacks[0] = tx.concludeReadOnlyCommitDeferringCallbacks();
-          // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
-          // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
+          concludedContext[0] = current;
+          // The pop waits for the callbacks (found in review): a nested transaction popped before them left the enclosing one
+          // on top, and a callback's database.transaction() joined it, so the enclosing transaction's rollback took back work
+          // whose own commit had returned. Before #12251 the callbacks ran before the pop, as they do off HA.
+          // THE SAVE STAYS BEFORE THE POP (#8635): IT TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH
           if (leader)
             getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
-          current.popIfNotLastTransaction();
           return null;
         } catch (final ArcadeDBException e) {
           rollbackRefusedCommit(tx, e);
-          current.popIfNotLastTransaction();
+          // a failed save after the conclusion leaves the pop to the finally below, after the callbacks
+          if (concludedContext[0] == null)
+            current.popIfNotLastTransaction();
           throw e;
         } catch (final Exception e) {
           final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
           rollbackRefusedCommit(tx, refusal);
-          current.popIfNotLastTransaction();
+          if (concludedContext[0] == null)
+            current.popIfNotLastTransaction();
           throw refusal;
         }
       });
     } finally {
       // Owed by the transaction that ended above, even when the schema save after it failed: they ran before that save until #12251
       final Runnable owed = readOnlyCallbacks[0];
-      if (owed != null)
-        owed.run();
+      try {
+        if (owed != null)
+          owed.run();
+      } finally {
+        if (concludedContext[0] != null)
+          concludedContext[0].popIfNotLastTransaction();
+      }
     }
 
     // Read-only transaction: nothing more to do.

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -134,6 +135,45 @@ class Issue12251ReadOnlyCommitCallbacksOutsideReadLockTest extends BaseRaftHATes
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
         }
+    }
+  }
+
+  /**
+   * A nested read-only commit runs its callbacks while its own context is still on top of the stack (found in review): popped before
+   * them, the enclosing transaction was on top, a callback's {@code database.transaction()} joined it, and the rollback of the
+   * enclosing transaction took back what the callback had committed.
+   */
+  @Test
+  void theCallbackOfANestedReadOnlyCommitDoesNotJoinTheEnclosingTransaction() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("leader elected").isGreaterThanOrEqualTo(0);
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE DOCUMENT TYPE Issue12251Nested").close();
+
+    final AtomicReference<Boolean> enclosingActiveInCallback = new AtomicReference<>();
+    leaderDb.begin();
+    try {
+      leaderDb.newDocument("Issue12251Nested").set("origin", "enclosing").save();
+
+      // nested: nothing written, so its commit takes the read-only arm
+      leaderDb.begin();
+      ((DatabaseInternal) leaderDb).getTransaction().addAfterCompletionCallbackIfAbsent("issue12251-nested", () -> {
+        enclosingActiveInCallback.set(leaderDb.isTransactionActive());
+        leaderDb.transaction(() -> leaderDb.newDocument("Issue12251Nested").set("origin", "callback").save());
+      });
+      leaderDb.commit();
+    } finally {
+      leaderDb.rollback();
+    }
+
+    assertThat(enclosingActiveInCallback.get()).as("the callback ran with no transaction of the caller's on top").isFalse();
+    assertThat(countOn(leaderDb, "callback")).as("what the callback committed survives the enclosing rollback").isEqualTo(1L);
+    assertThat(countOn(leaderDb, "enclosing")).isZero();
+  }
+
+  private static long countOn(final Database db, final String origin) {
+    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM Issue12251Nested WHERE origin = ?", origin)) {
+      return rs.next().<Number>getProperty("c").longValue();
     }
   }
 }
