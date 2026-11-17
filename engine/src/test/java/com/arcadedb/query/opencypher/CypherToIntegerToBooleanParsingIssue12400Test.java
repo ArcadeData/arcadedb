@@ -86,6 +86,21 @@ class CypherToIntegerToBooleanParsingIssue12400Test extends TestHelper {
     assertThatThrownBy(() -> consume("RETURN toInteger('-9223372036854775809') AS r"))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("too large");
+    // the range is checked on the value as it is written, before the truncation
+    assertThatThrownBy(() -> consume("RETURN toInteger('9223372036854775807.9') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("too large");
+    assertThatThrownBy(() -> consume("RETURN toInteger('-9223372036854775808.9') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("too large");
+  }
+
+  @Test
+  void aTextThatFitsIsTruncatedTowardsZero() {
+    assertThat(single("RETURN toInteger('9223372036854775806.9') AS r")).isEqualTo(9223372036854775806L);
+    assertThat(single("RETURN toInteger('9223372036854775807.0') AS r")).isEqualTo(Long.MAX_VALUE);
+    assertThat(single("RETURN toInteger('1e18') AS r")).isEqualTo(1000000000000000000L);
+    assertThat(single("RETURN toInteger('1e-30') AS r")).isEqualTo(0L);
   }
 
   @Test
