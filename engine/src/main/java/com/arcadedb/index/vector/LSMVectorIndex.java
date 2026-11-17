@@ -14503,6 +14503,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * OOM. The cache only ever grows, so a reading taken while the heap is tight simply declines to grow it further rather than
    * shrinking what is already there.
    * <p>
+   * <b>The share is the database's, not the index's (issue #12391).</b> A type has one vector index per bucket, and each
+   * of them used to plan on the whole percent of what was free when it grew: 48 caches of a 3 GB heap held 2.1 GB and had
+   * planned on 3.4 GB, and the heap ran out. See {@link #affordableSearchCacheEntries(int, long, long)} for the rule.
+   * <p>
    * The corpus is the vector ID range rather than the live count: both caches are direct-mapped by id (issues #10968 and
    * #11003), so a capacity at least the range is what keeps every vector in a slot of its own, and a deleted id keeps its
    * place in the range. See {@link #searchCacheCapacity(long, long, int)} for the rule.
@@ -14534,8 +14538,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (currentCapacity >= idRange)
       return currentCapacity;
 
-    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE, VectorHeapBudget.budgetBytes(heapPercent) / bytesPerEntry);
+    final long affordable = affordableSearchCacheEntries(heapPercent, bytesPerEntry, VectorHeapBudget.availableHeapBytes());
     return searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
+  }
+
+  /**
+   * How many entries the search cache of this index may plan on, given what the search caches of the database's other vector
+   * indexes already plan on (issue #12391).
+   * <p>
+   * The percent applies to the heap the caches could have between them: what is free plus what the other caches hold, since
+   * that part is not free only because they hold it. What the others plan on - their whole capacity, filled or not, since a
+   * cache fills up to it without asking again - is charged first. Together the caches therefore never plan on more than
+   * the percent, however many indexes the schema has.
+   * <p>
+   * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
+   * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
+   * 25 MB each at 768 dimensions; past the first, an index gets what the shared budget leaves, and none when it leaves
+   * nothing: its searches read the vectors from the pages.
+   *
+   * @param heapPercent   the share of the heap the search caches of the database may use together
+   * @param bytesPerEntry heap one entry of this index's cache costs
+   * @param availableHeap heap currently available, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   *
+   * @return the entries this index's cache may hold
+   */
+  long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap) {
+    long othersPlan = 0L;
+    long othersHold = 0L;
+    for (final Index index : getDatabase().getSchema().getIndexes()) {
+      if (index == this || !(index instanceof LSMVectorIndex other))
+        continue;
+      final FlatVectorCache vectors = other.searchVectorCache;
+      if (vectors != null) {
+        othersPlan += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
+        othersHold += vectors.allocatedBytes();
+      }
+      final BinaryCodeCache codes = other.searchBinaryCodes;
+      if (codes != null) {
+        // Allocated whole when created: what it plans on, it holds
+        final long bytes = codes.capacity() * BinaryCodeCache.bytesPerCode(other.metadata.dimensions);
+        othersPlan += bytes;
+        othersHold += bytes;
+      }
+    }
+    final long left = Math.max(0L, VectorHeapBudget.budgetBytes(heapPercent, availableHeap + othersHold) - othersPlan);
+    final long entries = left / bytesPerEntry;
+    return othersPlan == 0L ? Math.max(MIN_SEARCH_CACHE_SIZE, entries) : entries;
   }
 
   /**
