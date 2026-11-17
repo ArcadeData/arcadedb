@@ -1684,6 +1684,77 @@ class MaterializedViewRegressionTest {
       assertThat(savedStatus("materializedViews", "MG")).isEqualTo("BUILDING");
     }
 
+    /**
+     * An ALTER that replaces a grouped view while its pass runs copies the status the pass started from (found in review). The pass
+     * then fails: its rows are rolled back, so the replacement holds the rows from before the pass and must not stay VALID.
+     */
+    @Test
+    void aGroupedViewReplacedWhileItsPassFailsIsNotLeftValid() {
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'a'"));
+      database.command("sql", "CREATE MATERIALIZED VIEW MG AS SELECT cat, count(*) AS c FROM P GROUP BY cat REFRESH MANUAL");
+      // a manual view: the row of b reaches it only through a pass
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'b'"));
+      final LocalSchema schema = (LocalSchema) database.getSchema();
+      final MaterializedViewImpl registered = (MaterializedViewImpl) schema.getMaterializedView("MG");
+      assertThat(registered.isPerRecord()).isFalse();
+      assertThat(registered.getStatus()).isEqualTo("VALID");
+
+      final AtomicReference<Throwable> alterFailure = new AtomicReference<>();
+      // armed once the instance is registered: the registration reads the backing type name too
+      final AtomicBoolean armed = new AtomicBoolean(false);
+      final Thread passThread = Thread.currentThread();
+      // Read by the pass first, before its transaction and outside any database lock: the whole ALTER runs here, then the pass fails
+      final MaterializedViewImpl running = new MaterializedViewImpl(database, registered.getName(), registered.getQuery(),
+          registered.getBackingTypeName(), registered.getSourceTypeNames(), registered.getRefreshMode(), registered.isSimpleQuery(),
+          registered.getRefreshInterval()) {
+        @Override
+        public String getBackingTypeName() {
+          if (Thread.currentThread() == passThread && armed.compareAndSet(true, false)) {
+            final Thread alterThread = new Thread(() -> {
+              try {
+                database.command("sql", "ALTER MATERIALIZED VIEW MG REFRESH INCREMENTAL").close();
+              } catch (final Throwable e) {
+                alterFailure.set(e);
+              }
+            }, "mv-alter-during-grouped-pass");
+            alterThread.start();
+            try {
+              alterThread.join(60_000);
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            assertThat(alterThread.isAlive()).as("the ALTER completed during the pass").isFalse();
+            throw new IllegalStateException("simulated failure of the pass the ALTER replaced");
+          }
+          return super.getBackingTypeName();
+        }
+      };
+      synchronized (schema) {
+        schema.materializedViews.put("MG", running);
+      }
+      armed.set(true);
+
+      assertThatThrownBy(() -> MaterializedViewRefresher.refreshAfterCommit(database, running))
+          .hasStackTraceContaining("simulated failure of the pass the ALTER replaced");
+
+      assertThat(armed.get()).as("the ALTER ran during the pass").isFalse();
+      assertThat(alterFailure.get()).isNull();
+      final MaterializedViewImpl replacement = (MaterializedViewImpl) schema.getMaterializedView("MG");
+      assertThat(replacement).isNotSameAs(running);
+      assertThat(replacement.getStatus()).as("the replacement holds the rows from before the failed pass")
+          .isNotEqualTo("VALID");
+      assertThat(savedStatus("materializedViews", "MG")).isNotEqualTo("VALID");
+
+      // the next pass of the replacement settles it
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'c'"));
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+          .until(() -> "VALID".equals(status("materializedViews", "MG")));
+      try (final ResultSet rs = database.query("sql", "SELECT sum(c) AS s FROM MG")) {
+        assertThat(rs.next().<Number>getProperty("s").longValue()).isEqualTo(3L);
+      }
+    }
+
     private boolean saveOnce(final AtomicBoolean saved, final AtomicReference<String> statusDuringPass,
         final AtomicReference<String> savedDuringPass, final String viewName) {
       if (saved.compareAndSet(false, true)) {
