@@ -37,7 +37,6 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class MethodCall extends SimpleNode {
@@ -256,8 +255,8 @@ public class MethodCall extends SimpleNode {
   /**
    * Whether a statement holding this call can have its execution plan cached: a graph method always can, any other method when it
    * declares itself {@link SQLMethod#isDeterministic() deterministic} and every argument is itself cacheable, as
-   * {@link FunctionCall#isCacheable()} decides for a function (#12466). Resolved against the built-in registry without invoking the
-   * method, so a name nothing answers is not cacheable.
+   * {@link FunctionCall#isCacheable()} decides for a function (#12466). Resolved against the registry the call is executed against,
+   * without invoking the method, so a name nothing answers is not cacheable.
    */
   public boolean isCacheable() {
     if (isGraphFunction())
@@ -273,16 +272,14 @@ public class MethodCall extends SimpleNode {
     return true;
   }
 
-  /** Per method name, whether the built-in of that name is deterministic: the registry is populated once and never mutated. */
-  private static final Map<String, Boolean> DETERMINISTIC_METHODS = new ConcurrentHashMap<>();
-
+  /**
+   * Resolved on every call, not remembered per name as {@link FunctionCall} does: {@link DefaultSQLMethodFactory#register} is public
+   * and may replace a built-in with a method that is not deterministic, which a remembered answer would not see. The look-up is one
+   * map access, the one the execution makes anyway.
+   */
   private boolean isDeterministicMethod() {
-    return DETERMINISTIC_METHODS.computeIfAbsent(methodName.getStringValue().toLowerCase(Locale.ENGLISH), MethodCall::resolveDeterministic);
-  }
-
-  private static boolean resolveDeterministic(final String lowercaseName) {
     try {
-      return DefaultSQLMethodFactory.getInstance().createMethod(lowercaseName).isDeterministic();
+      return DefaultSQLMethodFactory.getInstance().createMethod(methodName.getStringValue()).isDeterministic();
     } catch (final CommandExecutionException e) {
       return false;
     }

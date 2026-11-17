@@ -20,6 +20,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.query.sql.method.collection.SQLMethodSize;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -108,5 +112,37 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
       }
 
     assertThat(seen).containsExactly("ALPHA:3", "BETA:1", "GAMMA:0", "ALPHA:3");
+  }
+
+  /** CodeRabbit on the PR: the factory lets an application replace a built-in, and the answer must follow the replacement. */
+  @Test
+  void aBuiltInReplacedByAMethodThatIsNotDeterministicIsNoLongerCached() {
+    final String sql = "SELECT name, tags.size() AS n FROM Chunk WHERE name = ?";
+    assertThat(cachedAfterRunning(sql, "alpha")).as("the built-in size()").isTrue();
+
+    final DefaultSQLMethodFactory factory = DefaultSQLMethodFactory.getInstance();
+    factory.register(SQLMethodSize.NAME, new AbstractSQLMethod(SQLMethodSize.NAME) {
+      @Override
+      public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+        return -1;
+      }
+
+      @Override
+      public boolean isDeterministic() {
+        return false;
+      }
+    });
+    try {
+      assertThat(cachedAfterRunning(sql, "alpha")).as("the replacement").isFalse();
+    } finally {
+      factory.register(SQLMethodSize.NAME, new SQLMethodSize());
+    }
+    assertThat(cachedAfterRunning(sql, "alpha")).as("the built-in again").isTrue();
+  }
+
+  @Test
+  void aMethodNothingAnswersIsNotCachedAndAsksNothingOfThePlanner() {
+    assertThat(((DatabaseInternal) database).getStatementCache().get("SELECT name.nosuchmethod() AS x FROM Chunk")
+        .executionPlanCanBeCached()).isFalse();
   }
 }
