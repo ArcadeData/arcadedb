@@ -22,8 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
-import com.mongodb.MongoCommandException;
 import com.mongodb.MongoCredential;
+import com.mongodb.MongoWriteException;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.UpdateOptions;
@@ -193,8 +193,9 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThatThrownBy(() -> collection.insertOne(new Document("_id", 16).append("v", new Document("$bson", "timestamp"))))
         .isInstanceOf(IllegalArgumentException.class);
     collection.insertOne(new Document("_id", 16).append("v", new BsonTimestamp(1, 2)));
+    // a write error of the statement (issue #11444)
     assertThatThrownBy(() -> collection.updateOne(eq("_id", 16), set("w", new Document("$bson", "timestamp").append("value", 5L))))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class);
     collection.insertOne(new Document("_id", 17).append("v", 1));
     assertThat(collection.find(eq("_id", 17)).first()).isNotNull();
     assertThat(collection.find(eq("_id", 16)).first().containsKey("w")).isFalse();
@@ -204,7 +205,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   void reservedTagIsRefusedByUpdateToo() {
     collection.insertOne(new Document("_id", 18).append("x", 1));
     assertThatThrownBy(() -> collection.updateOne(eq("_id", 18), set("v", new Document("$bson", "timestamp").append("value", 5L))))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class);
     assertThat(collection.find(eq("_id", 18)).first().containsKey("v")).isFalse();
   }
 
