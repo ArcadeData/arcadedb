@@ -174,10 +174,10 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThat(collection.find(in("v", List.of(new BsonTimestamp(7, 8)))).first().get("_id")).isEqualTo(12);
   }
 
+  // issue #12073: mongod stores NaN and the infinities of a Decimal128, which a DECIMAL cannot hold, so they are stored tagged
   @Test
-  void nanDecimalIsRefusedNotDropped() {
-    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 14).append("v", Decimal128.NaN))).isInstanceOf(MongoWriteException.class);
-    assertThat(collection.find(eq("_id", 14)).first()).isNull();
+  void nanDecimalIsStoredNotDropped() {
+    assertThat(roundTrip(14, Decimal128.NaN)).isEqualTo(Decimal128.NaN);
   }
 
   // the Java driver refuses a $-prefixed field name itself; the server-side check is covered by MongoBsonValuesTest
@@ -190,11 +190,15 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void refusalLeavesNoOpenTransaction() {
-    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 16).append("v", Decimal128.POSITIVE_INFINITY)))
+    assertThatThrownBy(() -> collection.insertOne(new Document("_id", 16).append("v", new Document("$bson", "timestamp"))))
+        .isInstanceOf(IllegalArgumentException.class);
+    collection.insertOne(new Document("_id", 16).append("v", new BsonTimestamp(1, 2)));
+    // a write error of the statement (issue #11444)
+    assertThatThrownBy(() -> collection.updateOne(eq("_id", 16), set("w", new Document("$bson", "timestamp").append("value", 5L))))
         .isInstanceOf(MongoWriteException.class);
     collection.insertOne(new Document("_id", 17).append("v", 1));
     assertThat(collection.find(eq("_id", 17)).first()).isNotNull();
-    assertThat(collection.find(eq("_id", 16)).first()).isNull();
+    assertThat(collection.find(eq("_id", 16)).first().containsKey("w")).isFalse();
   }
 
   @Test
@@ -205,10 +209,11 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThat(collection.find(eq("_id", 18)).first().containsKey("v")).isFalse();
   }
 
+  // issue #12073: a negative zero keeps its sign, as mongod keeps it
   @Test
-  void negativeZeroDecimalIsStoredAsZero() {
-    final Object v = roundTrip(19, Decimal128.NEGATIVE_ZERO);
-    assertThat(((Decimal128) v).bigDecimalValue().signum()).isZero();
+  void negativeZeroDecimalKeepsItsSign() {
+    assertThat(roundTrip(19, Decimal128.NEGATIVE_ZERO)).isEqualTo(Decimal128.NEGATIVE_ZERO);
+    assertThat(collection.find(eq("v", 0)).first().get("_id")).isEqualTo(19);
   }
 
   @Test
@@ -288,10 +293,10 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   }
 
   @Test
-  void setWithNanDecimalIsRefused() {
+  void setWithNanDecimalIsStored() {
     collection.insertOne(new Document("_id", 48).append("x", 1));
-    assertThatThrownBy(() -> collection.updateOne(eq("_id", 48), set("v", Decimal128.NaN))).isInstanceOf(MongoWriteException.class);
-    assertThat(collection.find(eq("_id", 48)).first().containsKey("v")).isFalse();
+    collection.updateOne(eq("_id", 48), set("v", Decimal128.NaN));
+    assertThat(collection.find(eq("_id", 48)).first().get("v")).isEqualTo(Decimal128.NaN);
   }
 
   @Test
@@ -321,13 +326,17 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     assertThat(collection.find(eq("_id", 61)).first().get("ref")).isEqualTo(oid);
   }
 
+  // issue #12073: a bare hex string outside the _id (an ObjectId stored before ObjectIds were tagged, or a String) reads back as a
+  // String, so it is a String to the filters too: an ObjectId filter does not match it, a String filter does
   @Test
-  void filterMatchesAnObjectIdStoredAsHexBeforeTagging() {
+  void aBareHexStringOutsideTheIdIsAString() {
     final ObjectId oid = new ObjectId("507f1f77bcf86cd799439013");
     final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 62).set("ref", oid.toHexString()).save());
-    assertThat(collection.find(eq("ref", oid)).first().get("_id")).isEqualTo(62);
-    assertThat(collection.find(in("ref", List.of(oid))).first().get("_id")).isEqualTo(62);
+    assertThat(collection.find(eq("_id", 62)).first().get("ref")).isEqualTo(oid.toHexString());
+    assertThat(collection.find(eq("ref", oid)).first()).isNull();
+    assertThat(collection.find(in("ref", List.of(oid))).first()).isNull();
+    assertThat(collection.find(eq("ref", oid.toHexString())).first().get("_id")).isEqualTo(62);
   }
 
   @Test
@@ -349,13 +358,16 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   }
 
   @Test
-  void explicitEqAndNeOnAnObjectIdMatchBothStoredForms() {
+  void explicitEqAndNeOnAnObjectIdTellItFromItsHexString() {
     final ObjectId oid = new ObjectId("507f1f77bcf86cd799439016");
-    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
-    db.transaction(() -> db.newDocument("bson").set("_id", 68).set("ref", oid.toHexString()).save());
+    collection.insertOne(new Document("_id", 68).append("ref", oid.toHexString()));
     collection.insertOne(new Document("_id", 69).append("ref", oid));
-    assertThat(collection.find(new Document("ref", new Document("$eq", oid))).into(new ArrayList<>())).hasSize(2);
-    assertThat(collection.find(new Document("ref", new Document("$ne", oid))).into(new ArrayList<>())).isEmpty();
+    final List<Document> equal = collection.find(new Document("ref", new Document("$eq", oid))).into(new ArrayList<>());
+    assertThat(equal).hasSize(1);
+    assertThat(equal.getFirst().get("_id")).isEqualTo(69);
+    final List<Document> notEqual = collection.find(new Document("ref", new Document("$ne", oid))).into(new ArrayList<>());
+    assertThat(notEqual).hasSize(1);
+    assertThat(notEqual.getFirst().get("_id")).isEqualTo(68);
   }
 
   @Test
@@ -368,15 +380,15 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   }
 
   @Test
-  void notEqOnAnObjectIdExcludesBothStoredForms() {
+  void notEqOnAnObjectIdExcludesOnlyTheObjectId() {
     final ObjectId oid = new ObjectId("507f1f77bcf86cd799439017");
-    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
-    db.transaction(() -> db.newDocument("bson").set("_id", 70).set("ref", oid.toHexString()).save());
+    collection.insertOne(new Document("_id", 70).append("ref", oid.toHexString()));
     collection.insertOne(new Document("_id", 71).append("ref", oid));
     collection.insertOne(new Document("_id", 72).append("ref", new ObjectId("507f1f77bcf86cd799439018")));
-    final List<Document> found = collection.find(new Document("ref", new Document("$not", new Document("$eq", oid)))).into(new ArrayList<>());
-    assertThat(found).hasSize(1);
-    assertThat(found.getFirst().get("_id")).isEqualTo(72);
+    final List<Object> found = new ArrayList<>();
+    for (final Document d : collection.find(new Document("ref", new Document("$not", new Document("$eq", oid)))).sort(eq("_id", 1)))
+      found.add(d.get("_id"));
+    assertThat(found).containsExactly(70, 72);
   }
 
   @Test

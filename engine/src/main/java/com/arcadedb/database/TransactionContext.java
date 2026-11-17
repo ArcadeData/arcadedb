@@ -2142,7 +2142,7 @@ public class TransactionContext implements Transaction {
         // below into a hard failure on this read path instead (code review on #6013). The cast is safe
         // because PaginatedComponent is the only direct subclass of Component in the codebase.
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
+        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
         if (!isNewPage)
           // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
           immutablePages.put(pageId, (ImmutablePage) page);
