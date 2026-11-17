@@ -413,11 +413,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         while (buffer.size() < n && nextEntry < entries) {
           guard.check();
           final int i = nextEntry++;
+          final Vertex vertex;
           try {
-            addVertex(context.getDatabase().newRID(entryBuckets[i], entryPositions[i]).asVertex());
+            vertex = context.getDatabase().newRID(entryBuckets[i], entryPositions[i]).asVertex();
           } catch (final RecordNotFoundException e) {
             // DELETED SINCE THE RANGE WAS READ: NOTHING TO MATCH
+            continue;
           }
+          // OUTSIDE THE CATCH: A RECORD THE PUSHED PREDICATE READS AND FINDS GONE FAILS THE QUERY, AS IN A FILTER (ISSUE #11873)
+          addVertex(vertex);
         }
         if (nextEntry >= entries) {
           finished = true;
@@ -659,12 +663,17 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             return;
           }
           guard.check();
+          final Vertex vertex;
           try {
-            addIndexed((Identifiable) entry);
+            vertex = resolveIndexed((Identifiable) entry);
           } catch (final RecordNotFoundException e) {
             // An entry that is not a stored record's address is resolved here, and can be gone since the index answered:
             // nothing to match. A record the fetcher loaded itself arrives resolved, a deleted one already skipped
+            continue;
           }
+          // OUTSIDE THE CATCH: A RECORD THE PUSHED PREDICATE READS AND FINDS GONE FAILS THE QUERY, AS IN A FILTER (ISSUE #11873)
+          if (vertex != null)
+            addVertex(vertex);
         }
       }
 
@@ -673,12 +682,24 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
        * hierarchy, which is rejected from its bucket without being loaded (issue #8834).
        */
       private void addIndexed(final Identifiable identifiable) {
+        final Vertex vertex = resolveIndexed(identifiable);
+        if (vertex != null)
+          addVertex(vertex);
+      }
+
+      /**
+       * The vertex an index entry names, to match; {@code null} when it is rejected from its bucket or collected for the first
+       * pass instead. Throws {@link RecordNotFoundException} for a vertex deleted since the index answered: only resolving the
+       * entry may, the predicate evaluated on the vertex afterwards must not be mistaken for it.
+       */
+      private Vertex resolveIndexed(final Identifiable identifiable) {
         if (inheritedIndex && !Labels.carriesLabel(context.getDatabase().getSchema(), identifiable, label))
-          return;
-        if (collecting)
+          return null;
+        if (collecting) {
           collect(identifiable);
-        else
-          addVertex(identifiable.asVertex());
+          return null;
+        }
+        return identifiable.asVertex();
       }
 
       private void addVertex(final Vertex vertex) {

@@ -22,6 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -290,6 +294,44 @@ class CypherParallelLabelScansIssue11873Test extends TestHelper {
     assertThat(underRow.isUnderEnclosingRow()).isTrue();
     assertThat(ParallelRecordScan.plan(underRow, "T", () -> (record, workerContext) -> null)).isNull();
     assertThat(ParallelRecordScan.plannedWorkers(underRow, bucketIds)).isEqualTo(1);
+  }
+
+  /**
+   * A predicate pushed into an index range is evaluated where the range resolves the vertices an entry names, and a vertex
+   * deleted since the index answered is skipped there. A {@link RecordNotFoundException} the PREDICATE raises (a function
+   * reading a record that is gone) is not that: it fails the query, as it does when the predicate runs in a Filter, instead of
+   * dropping the row and answering an incomplete result. Both the range read first and the range in physical order.
+   */
+  @Test
+  void aRecordNotFoundRaisedByAPushedPredicateFailsTheQuery() {
+    CypherFunctionRegistry.registerOrReplace(new StatelessFunction() {
+      @Override
+      public String getName() {
+        return "test.readsAGoneRecord";
+      }
+
+      @Override
+      public Object execute(final Object[] args, final CommandContext context) {
+        throw new RecordNotFoundException("the record the predicate reads is gone", null);
+      }
+    });
+    try {
+      for (final String query : new String[] {
+          "MATCH (n:T) WHERE n.k < 100 AND test.readsAGoneRecord(n) RETURN count(n) AS c",
+          "MATCH (n:T) WHERE n.k < 5000 AND test.readsAGoneRecord(n) RETURN count(n) AS c" }) {
+        assertThatThrownBy(() -> column(query)).as(query).satisfies(CypherParallelLabelScansIssue11873Test::isRecordNotFound);
+        assertThatThrownBy(() -> sequential(query)).as(query).satisfies(CypherParallelLabelScansIssue11873Test::isRecordNotFound);
+      }
+    } finally {
+      CypherFunctionRegistry.unregister("test.readsAGoneRecord");
+    }
+  }
+
+  private static void isRecordNotFound(final Throwable thrown) {
+    Throwable cause = thrown;
+    while (cause != null && !(cause instanceof RecordNotFoundException))
+      cause = cause.getCause();
+    assertThat(cause).as("a RecordNotFoundException in the cause chain of %s", thrown).isNotNull();
   }
 
   private List<Object> sequential(final String query) {
