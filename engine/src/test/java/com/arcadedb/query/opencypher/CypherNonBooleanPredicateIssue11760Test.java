@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -124,6 +125,39 @@ class CypherNonBooleanPredicateIssue11760Test extends TestHelper {
     assertThat(single("RETURN COUNT { MATCH (m:Missing) } = 0 OR false AS r").<Boolean>getProperty("r")).isTrue();
     assertThat(single("RETURN null OR COUNT { MATCH (n:Node) } > 0 AS r").<Boolean>getProperty("r")).isTrue();
     assertThat(ids("MATCH (n:Node) WHERE n.b AND COUNT { MATCH (m:Missing) } > 0 RETURN n.id AS id")).isEmpty();
+  }
+
+  /** A BINARY value is one opaque value in openCypher, not a list: a predicate refuses it. */
+  @Test
+  void aBinaryPredicateIsATypeError() {
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("opencypher", "RETURN $b OR false AS r", Map.of("b", new byte[] { 1 }))) {
+        rs.next();
+      }
+    }).isInstanceOf(TypeMismatchException.class).hasMessageContaining("expected Boolean");
+  }
+
+  /** The inline WHERE of a node pattern is a predicate position too. */
+  @Test
+  void anInlinePatternWhereChecksItsCondition() {
+    assertTypeError("MATCH (n:Node WHERE n.v) RETURN n.id", "INTEGER");
+    assertThat(ids("MATCH (n:Node WHERE n.b) RETURN n.id AS id ORDER BY id")).containsExactly(1L, 3L);
+  }
+
+  /**
+   * The exact guard on block constructs: every other shape (parenthesised, inside a function argument, under a postfix) is
+   * reached by the descent of the grammar and keeps what surrounds the construct.
+   */
+  @Test
+  void blockConstructsKeepWhatSurroundsThem() {
+    assertThat(single("RETURN (COUNT { MATCH (m:Missing) }) > 0 AND true AS r").<Boolean>getProperty("r")).isFalse();
+    assertThat(single("RETURN (CASE WHEN true THEN 1 ELSE 0 END) = 1 AND true AS r").<Boolean>getProperty("r")).isTrue();
+    assertThat(single("RETURN CASE WHEN true THEN 1 ELSE 0 END = 0 OR false AS r").<Boolean>getProperty("r")).isFalse();
+    assertThat(single("RETURN coalesce(EXISTS { MATCH (n:Node) }, false) AND true AS r").<Boolean>getProperty("r")).isTrue();
+    assertThat(single("RETURN size(COLLECT { MATCH (n:Node) RETURN n.id }) = 3 AND true AS r").<Boolean>getProperty("r")).isTrue();
+    assertThat(single("RETURN COLLECT { MATCH (n:Node) RETURN n.id ORDER BY n.id }[0] AS r").<Number>getProperty("r").longValue())
+        .isEqualTo(1L);
+    assertThat(single("RETURN EXISTS { MATCH (m:Missing) } OR false AS r").<Boolean>getProperty("r")).isFalse();
   }
 
   private void assertTypeError(final String query, final String type) {
