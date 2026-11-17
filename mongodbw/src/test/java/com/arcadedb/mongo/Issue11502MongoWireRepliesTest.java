@@ -135,6 +135,31 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
       assertThat(reply.get("n")).isEqualTo(3);
       assertThat(collection.estimatedDocumentCount()).isEqualTo(3L);
     }
+
+    @Test
+    void skipAndLimitBoundTheCount() {
+      assertThat(count(new Document("skip", 1))).isEqualTo(2);
+      assertThat(count(new Document("limit", 2))).isEqualTo(2);
+      assertThat(count(new Document("skip", 1).append("limit", 1))).isEqualTo(1);
+      assertThat(count(new Document("skip", 5))).isEqualTo(0);
+      assertThat(count(new Document("skip", 1).append("query", new Document("b", "x")))).isEqualTo(2);
+    }
+
+    @Test
+    void aSkipOrLimitThatIsNoNumberIsRefused() {
+      for (final String option : List.of("skip", "limit")) {
+        final MongoCommandException e = catchThrowableOfType(MongoCommandException.class,
+            () -> mongoDatabase.runCommand(new Document("count", "doc").append(option, "1")));
+        assertThat(e).as(option).isNotNull();
+        assertThat(e.getErrorCode()).as(option).isEqualTo(14);
+      }
+    }
+
+    private Object count(final Document options) {
+      final Document command = new Document("count", "doc");
+      command.putAll(options);
+      return mongoDatabase.runCommand(command).get("n");
+    }
   }
 
   /**
@@ -146,11 +171,7 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
     @Test
     void theCountReplyCarriesTheWholeCount() {
       final Database database = countingAs(3_000_000_000L);
-      final MongoDBDatabaseWrapper wrapper = new MongoDBDatabaseWrapper(database, null, null);
-
-      final de.bwaldvogel.mongo.bson.Document reply = wrapper.handleCommand(null, "count",
-          new de.bwaldvogel.mongo.bson.Document("count", "doc"), null, null);
-      assertThat(reply.get("n")).isEqualTo(3_000_000_000L);
+      assertThat(countReply(database)).isEqualTo(3_000_000_000L);
 
       final MongoDBCollectionWrapper doc = new MongoDBCollectionWrapper(database, "doc");
       assertThat(doc.countDocuments(null, 0, 0)).isEqualTo(3_000_000_000L);
@@ -159,10 +180,28 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
       assertThat(doc.count(null, 0, -1)).isEqualTo(Integer.MAX_VALUE);
     }
 
+    /** SQL SKIP and LIMIT narrow their bound to an int: the bounds of an unfiltered count are applied to the long count instead. */
+    @Test
+    void skipAndLimitPastAnIntAreNotNarrowed() {
+      final MongoDBCollectionWrapper doc = new MongoDBCollectionWrapper(countingAs(4_000_000_000L), "doc");
+      assertThat(doc.countDocuments(null, 2_500_000_000L, 0)).isEqualTo(1_500_000_000L);
+      assertThat(doc.countDocuments(null, 0, 3_000_000_000L)).isEqualTo(3_000_000_000L);
+      assertThat(doc.countDocuments(null, 500_000_000L, 3_000_000_000L)).isEqualTo(3_000_000_000L);
+      assertThat(doc.countDocuments(null, 5_000_000_000L, 0)).isZero();
+    }
+
     @Test
     void aCountThatFitsAnIntStaysAnInt() {
-      final de.bwaldvogel.mongo.bson.Document reply = new MongoDBDatabaseWrapper(countingAs(Integer.MAX_VALUE), null, null).handleCommand(null, "count", new de.bwaldvogel.mongo.bson.Document("count", "doc"), null, null);
-      assertThat(reply.get("n")).isEqualTo(Integer.MAX_VALUE);
+      assertThat(countReply(countingAs(Integer.MAX_VALUE))).isEqualTo(Integer.MAX_VALUE);
+    }
+
+    /**
+     * The {@code n} the {@code count} command of collection {@code doc} replies, run on the wrapper directly. The wrapper speaks the
+     * library's BSON document, whose simple name the driver's takes in this class, hence the qualified name.
+     */
+    private Object countReply(final Database database) {
+      return new MongoDBDatabaseWrapper(database, null, null)
+          .handleCommand(null, "count", new de.bwaldvogel.mongo.bson.Document("count", "doc"), null, null).get("n");
     }
 
     private Database countingAs(final long count) {
@@ -267,6 +306,15 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
       assertModified(update(new Document("_id", 1), new Document("a", 1).append("b", "x"), false), 1, 0);
     }
 
+    /** A document whose fields are reordered is a different document on mongod: written, counted, and stored in the new order. */
+    @Test
+    void reorderingTheFieldsOfAnEmbeddedDocumentIsAModification() {
+      assertModified(update(new Document("_id", 1), new Document("$set", new Document("e", new Document("x", 1).append("y", 2))), false), 1, 1);
+      assertModified(update(new Document("_id", 1), new Document("$set", new Document("e", new Document("x", 1).append("y", 2))), false), 1, 0);
+      assertModified(update(new Document("_id", 1), new Document("$set", new Document("e", new Document("y", 2).append("x", 1))), false), 1, 1);
+      assertThat(collection.find(eq("_id", 1)).first().get("e", Document.class).keySet()).containsExactly("y", "x");
+    }
+
     private Document update(final Document q, final Document u, final boolean multi) {
       return mongoDatabase.runCommand(
           new Document("update", "doc").append("updates", List.of(new Document("q", q).append("u", u).append("multi", multi))));
@@ -361,6 +409,39 @@ public class Issue11502MongoWireRepliesTest extends BaseMongoServerTest {
       assertThat(ordered.getList("writeErrors", Document.class)).hasSize(1);
       assertThat(v.find(eq("_id", 1)).first().getInteger("age")).isEqualTo(4);
       assertThat(v.find(eq("_id", 3)).first().getInteger("age")).isEqualTo(3);
+    }
+
+    /**
+     * An upsert whose filter is refused before any statement runs (the upsert prepares the {@code _id} index up front) is still the
+     * statement's error: reported at its index, the other statements kept.
+     */
+    @Test
+    void aRefusedUpsertFilterIsAWriteErrorOfItsStatement() {
+      final Document reply = mongoDatabase.runCommand(new Document("update", "doc").append("ordered", false).append("updates", List.of(
+          new Document("q", new Document("_id", 1)).append("u", new Document("$set", new Document("a", 7))),
+          new Document("q", new Document("a", new Document("$foo11502", 1))).append("u", new Document("$set", new Document("a", 8)))
+              .append("upsert", true),
+          new Document("q", new Document("_id", 2)).append("u", new Document("$set", new Document("a", 9))))));
+
+      assertThat(reply.get("nModified", Number.class).intValue()).isEqualTo(2);
+      final List<Document> errors = reply.getList("writeErrors", Document.class);
+      assertThat(errors).hasSize(1);
+      assertThat(errors.getFirst().get("index", Number.class).intValue()).isEqualTo(1);
+      assertThat(collection.find(eq("_id", 1)).first().getInteger("a")).isEqualTo(7);
+      assertThat(collection.find(eq("_id", 2)).first().getInteger("a")).isEqualTo(9);
+      assertThat(collection.countDocuments()).isEqualTo(3L);
+    }
+
+    /** The text of a refusal reaches the client in production mode too: it names the kind of the stored value, never the value. */
+    @Test
+    void aPathBelowAStoredScalarDoesNotEchoTheValue() {
+      collection.updateOne(eq("_id", 1), new Document("$set", new Document("s", "secret-11502")));
+
+      final MongoWriteException e = catchThrowableOfType(MongoWriteException.class,
+          () -> collection.updateOne(eq("_id", 1), new Document("$set", new Document("s.x", 1))));
+      assertThat(e).isNotNull();
+      assertThat(e.getError().getCode()).isEqualTo(28);
+      assertThat(e.getError().getMessage()).contains("'x'").contains("String").doesNotContain("secret-11502");
     }
 
     private Document statement(final int id, final int age) {

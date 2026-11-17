@@ -90,6 +90,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /** Stands for a property the record does not have, which differs from one it has with the value {@code null}. */
+  private static final Object ABSENT        = new Object();
   /**
    * The fields of a {@code createIndexes} specification this plugin honours ({@code key}, {@code name}, {@code unique}) or that
    * carry no semantics a built index could miss ({@code background} is a build-scheduling hint, {@code v} the index format
@@ -947,7 +949,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
         if (refused != null) {
           // The batch was rolled back. MongoDB is not atomic across the statements of a command, so run them again one by one, each
-          // in its own transaction, to report each refusal by index and keep the others (ordered: only the ones before the first)
+          // in its own transaction, to report each refusal by index and keep the others (ordered: only the ones before the first).
+          // The statements that ran in the rolled-back transaction run again, so a record listener is called again for them: what it
+          // wrote in the transaction went with it, only state it keeps outside the transaction sees the call twice (the insert replay
+          // has always done the same)
           n = 0;
           nModified = 0;
           upserted.clear();
@@ -1120,8 +1125,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final Object sample = hasId && id != null ? id : new ObjectId();
       // nothing to do when the index already holds this kind of key: no need to look for a match either
       // a key other than the _id is looked up through its index when it is a declared scalar field (see MongoFilter), else it is a scan
-      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q, budget))
+      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)))
         continue;
+      try {
+        if (matchesAny(collectionName, q, budget))
+          continue;
+      } catch (final RuntimeException e) {
+        // a filter refused on its own (an unknown operator) is the statement's error: it is refused again when the statement runs, and
+        // reported there at its index with the statements before it kept, instead of failing the whole command here (issue #11444)
+        if (statementErrorCode(e) == null)
+          throw e;
+        continue;
+      }
 
       if (samples == null)
         samples = new ArrayList<>();
@@ -1234,9 +1249,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return new UpdateCount(rids.size() - vanished, modified);
   }
 
-  /** Stands for a property the record does not have, which differs from one it has with the value {@code null}. */
-  private static final Object ABSENT = new Object();
-
   /** The top-level properties the operators of {@code u} write: the head of each path. */
   private static String[] touchedProperties(final Document u) {
     final Set<String> heads = new LinkedHashSet<>();
@@ -1255,16 +1267,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * is never missed: at worst a document left as it was is written and counted.
    */
   static boolean sameValue(final Object a, final Object b) {
-    if (a == b)
-      return true;
-    if (a == null || b == null)
-      return false;
+    // maps and lists first: Map.equals() ignores the order of the fields, which mongod does not, and a list compares its elements with it
     if (a instanceof Map<?, ?> mapA && b instanceof Map<?, ?> mapB) {
       if (mapA.size() != mapB.size())
         return false;
-      for (final Map.Entry<?, ?> entry : mapA.entrySet()) {
-        final Object other = mapB.get(entry.getKey());
-        if (!sameValue(entry.getValue(), other) || (other == null && !mapB.containsKey(entry.getKey())))
+      // in iteration order: an embedded document whose fields were reordered is a different document on mongod, written and counted
+      final Iterator<? extends Map.Entry<?, ?>> entriesB = mapB.entrySet().iterator();
+      for (final Map.Entry<?, ?> entryA : mapA.entrySet()) {
+        final Map.Entry<?, ?> entryB = entriesB.next();
+        if (!Objects.equals(entryA.getKey(), entryB.getKey()) || !sameValue(entryA.getValue(), entryB.getValue()))
           return false;
       }
       return true;
@@ -1279,7 +1290,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
     if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
       return Arrays.equals(bytesA, bytesB);
-    return a.getClass() == b.getClass() && a.equals(b);
+    // the values of one class compare by value (an Integer is never equal to a Long, the same 1 stored with another BSON type), the
+    // ABSENT marker and null by identity
+    return Objects.equals(a, b);
   }
 
   /**
@@ -1535,11 +1548,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * MongoDB refuses to create a field below a scalar or an array (with a non-numeric key) instead of replacing it: doing so
-   * here would silently destroy the stored value.
+   * here would silently destroy the stored value. The refusal names the kind of the stored value, never the value: the text reaches
+   * the client in production mode too, and the value is stored data.
    */
   private static void requireEmbedded(final Object container, final String field) {
     if (container != null && !isEmbedded(container))
-      throw new MongoServerError(28, "PathNotViable", "Cannot create field '" + field + "' in element {" + container + "}");
+      throw new MongoServerError(28, "PathNotViable",
+          "Cannot create field '" + field + "' in an element of type " + (container instanceof List ? "array" : container.getClass().getSimpleName()));
   }
 
   /**
@@ -1682,8 +1697,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return limitNumber != null ? limitNumber.intValue() : defaultValue;
   }
 
+  /**
+   * A numeric option of a command, {@code defaultValue} when it is absent or null; any other kind is refused as mongod refuses it.
+   */
   private static long getOptionalLong(final Document query, final String fieldName, final long defaultValue) {
-    return query.get(fieldName) instanceof Number number ? number.longValue() : defaultValue;
+    final Object value = query.get(fieldName);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof Number number)
+      return number.longValue();
+    throw new MongoServerError(14, "TypeMismatch",
+        "BSON field '" + fieldName + "' is the wrong type '" + value.getClass().getSimpleName() + "', expected a number");
   }
 
   private synchronized void clearLastStatus(final Channel channel) {

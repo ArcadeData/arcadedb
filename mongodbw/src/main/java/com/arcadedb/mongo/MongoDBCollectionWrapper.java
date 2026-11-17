@@ -540,26 +540,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     // The count command's own default for an unspecified limit is -1 (MongoDBDatabaseWrapper#countCollection), so
     // limit <= 0 here means "no limit" - deliberately, not incidentally lining up with an explicit limit: 0.
     final MongoFilter filter = new MongoFilter(database, document);
-    if (filter.isEmpty() && skip <= 0 && limit <= 0)
-      return database.countType(collectionName, false);
-
     long counted = 0;
 
     if (filter.isEmpty()) {
-      // Push skip/limit into the query itself - @rid is enough to count a row, no need to materialize the record.
-      final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select @rid from ").append(Identifier.quote(collectionName));
-      if (skip > 0)
-        sql.append(" SKIP ").append(skip);
+      // Without a filter every document of the type matches: skip and limit are arithmetic on the type's O(1) counter, the same
+      // documents find() iterates (not those of its subtypes), with no record read and no bound narrowed to an int as SQL SKIP/LIMIT do
+      counted = Math.max(0L, database.countType(collectionName, false) - Math.max(0L, skip));
       if (limit > 0)
-        sql.append(" LIMIT ").append(limit);
-
-      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        while (rs.hasNext()) {
-          rs.next();
-          counted++;
-        }
-      }
+        counted = Math.min(counted, limit);
     } else {
       // the documents are tested one by one: the skipped matches are not counted, the scan stops at the limit
       final long[] skipped = { 0L };
