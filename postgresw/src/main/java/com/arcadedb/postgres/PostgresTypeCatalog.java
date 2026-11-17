@@ -81,6 +81,9 @@ public class PostgresTypeCatalog {
    */
   static final int DEFAULT_COLLATION_OID = 100;
 
+  /** pg_collation's {@code C} entry, whose OID PostgreSQL fixes at 950: the collation of {@code name}, and so of {@code _name}. */
+  static final int C_COLLATION_OID = 950;
+
   /** The OID PostgreSQL fixes for the {@code pg_catalog} schema, which is the namespace of every type this protocol produces. */
   static final int PG_CATALOG_OID = 11;
 
@@ -235,7 +238,8 @@ public class PostgresTypeCatalog {
       // that asks about an unknown array is better served by the delimiter and element of the most common
       // one than by an empty result it has no fallback for.
       element = PostgresType.TEXT;
-    else if (type.isArrayType())
+    else if (type.elementCode != 0)
+      // the row typelem names: an array's element, and the "char" of name and the int2 of int2vector, as PostgreSQL joins them
       element = PostgresType.byCode(type.elementCode);
     else
       // A scalar has no element, so the join the client wrote selects nothing - under the columns it projected.
@@ -496,7 +500,8 @@ public class PostgresTypeCatalog {
 
   /**
    * pg_type.typcollation: {@link #DEFAULT_COLLATION_OID} for the types whose comparison is
-   * collation-sensitive; 0 for every other, which is what PostgreSQL stores.
+   * collation-sensitive, {@link #C_COLLATION_OID} for {@code name}, which PostgreSQL always compares bytewise;
+   * 0 for every other, which is what PostgreSQL stores.
    * <p>
    * An array of a collatable element is itself collatable. PostgreSQL declares no {@code BKI_ARRAY_DEFAULT}
    * for this column, so an auto-generated array type copies its element's value verbatim - which is why
@@ -509,6 +514,7 @@ public class PostgresTypeCatalog {
     }
     return switch (type) {
       case VARCHAR, TEXT, BPCHAR -> DEFAULT_COLLATION_OID;
+      case NAME -> C_COLLATION_OID;
       default -> 0;
     };
   }
