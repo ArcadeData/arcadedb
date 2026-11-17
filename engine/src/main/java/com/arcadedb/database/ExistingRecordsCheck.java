@@ -197,12 +197,19 @@ public final class ExistingRecordsCheck {
       throw new CommandExecutionException("Cannot set " + what + ": the samples of the TIMESERIES type '" + type.getName()
           + "' could not be read to check it", e);
     }
-    if (violation[1] != null)
+    if (violation[1] != null) {
       // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342)
-      throw new ObjectInUseException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
+      final String message = "Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
-          + "<value> ...], and insert them again if they are to be kept");
+          + "<value> ...], and insert them again if they are to be kept";
+      // Only a MANDATORY or NOTNULL that stored samples lack is the conflict with what the database holds (409). A value that breaks
+      // MIN, MAX or REGEXP is refused as it is on a document type: a CommandExecutionException carrying the ValidationException, which
+      // every protocol answers as the caller's mistake (400)
+      if (required)
+        throw new ObjectInUseException(message);
+      throw new CommandExecutionException(message, new ValidationException(String.valueOf(violation[1])));
+    }
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,

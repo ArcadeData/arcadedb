@@ -106,6 +106,19 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
     assertThat(response.status).as(response.body).isEqualTo(400);
   }
 
+  /** The same refusal on a TIMESERIES type: a value that breaks the bound is the caller's mistake (400), not a conflict (409). */
+  @Test
+  void aMaxTheStoredSamplesBreakIsAnswered400() throws Exception {
+    for (final String sql : new String[] { "CREATE TIMESERIES TYPE M12436 TIMESTAMP ts TAGS (h STRING) FIELDS (v LONG) SHARDS 1",
+        "INSERT INTO M12436 SET ts = 1000, h = 'a', v = 10" })
+      assertThat(command(sql).status).as(sql).isEqualTo(200);
+
+    final Response response = command("ALTER PROPERTY M12436.v MAX 5");
+
+    assertThat(response.status).as(response.body).isEqualTo(400);
+    assertThat(response.body).contains("violates it");
+  }
+
   @Test
   void aValidPropertyIsStillCreated() throws Exception {
     setUpType();
