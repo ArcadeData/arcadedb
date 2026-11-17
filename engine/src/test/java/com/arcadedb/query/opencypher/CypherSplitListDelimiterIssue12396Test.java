@@ -20,13 +20,16 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Regression test for issue #12396: {@code split()} only accepted a single STRING delimiter, while Neo4j 5 also
@@ -91,6 +94,34 @@ class CypherSplitListDelimiterIssue12396Test extends TestHelper {
     assertThat(split("split(null, ['1']) AS r")).isNull();
     assertThat(split("split('abc', null) AS r")).isNull();
     assertThat(split("split('abc', ['b',null]) AS r")).isNull();
+  }
+
+  /** Neo4j 5.26.33 reads the list in order: a null before a non-string element is null, a non-string before a null is a type error. */
+  @Test
+  void aNullElementAnswersNullAtTheFirstNullAsNeo4jDoes() {
+    assertThat(split("split('a', [null, 1]) AS r")).isNull();
+    assertThatThrownBy(() -> split("split('a', [1, null]) AS r")).isInstanceOf(CommandSemanticException.class);
+  }
+
+  /** Neo4j 5.26.33: cutting the other delimiters out leaves nothing, and the characters of nothing are no piece. */
+  @Test
+  void aTextThatTheOtherDelimitersCutToNothingIsAnEmptyList() {
+    assertThat(split("split('aaa', ['','a']) AS r")).isEmpty();
+    assertThat(split("split('aaa', ['a','']) AS r")).isEmpty();
+    // the empty text itself is the one empty piece
+    assertThat(split("split('', ['']) AS r")).containsExactly("");
+    assertThat(split("split('', ['','a']) AS r")).containsExactly("");
+  }
+
+  /** A delimiter that is absent from the text was searched for again after every cut: quadratic on a long text. */
+  @Test
+  void aLongTextWithAnAbsentDelimiterIsSplitInLinearTime() {
+    final int pieces = 600_000;
+    final String text = "a,".repeat(pieces);
+    assertTimeoutPreemptively(Duration.ofSeconds(20), () -> {
+      final List<String> result = CypherFunctionHelper.splitLiteral(text, List.of(",", ";"));
+      assertThat(result).hasSize(pieces + 1);
+    });
   }
 
   @Test

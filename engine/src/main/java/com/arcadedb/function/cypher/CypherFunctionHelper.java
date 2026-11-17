@@ -51,6 +51,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -567,18 +568,33 @@ public final class CypherFunctionHelper {
       for (final String delimiter : delimiters)
         if (!delimiter.isEmpty())
           text = replaceLiteral(text, delimiter, "");
+      // Cutting the other delimiters out of a text can leave nothing, and the characters of nothing are no piece, as in Neo4j 5:
+      // split('aaa', ['','a']) is [], while the empty text itself is the one empty piece, split('', ['']) is [""]
+      if (text.isEmpty() && !str.isEmpty())
+        return List.of();
       return splitLiteral(text, "");
     }
 
+    final String[] candidates = delimiters.toArray(new String[0]);
+    // The next place each delimiter is found at or after 'at': searched again only once 'at' has passed it, and never again once it
+    // is not found any more. Searching every delimiter from 'at' on each cut scanned the rest of the text for a delimiter that is
+    // absent after every cut, which was quadratic on a long text with a list like [",", ";"] (review of #12403)
+    final int[] nextIndex = new int[candidates.length];
+    Arrays.fill(nextIndex, -1);
     final List<String> pieces = new ArrayList<>();
     int from = 0;
     int at = 0;
     while (true) {
       int foundAt = -1;
       String found = null;
-      for (final String delimiter : delimiters) {
-        final int index = str.indexOf(delimiter, at);
-        if (index < 0)
+      for (int i = 0; i < candidates.length; i++) {
+        final String delimiter = candidates[i];
+        if (nextIndex[i] < at) {
+          final int looked = str.indexOf(delimiter, at);
+          nextIndex[i] = looked < 0 ? Integer.MAX_VALUE : looked;
+        }
+        final int index = nextIndex[i];
+        if (index == Integer.MAX_VALUE)
           continue;
         if (foundAt < 0 || index < foundAt) {
           foundAt = index;
