@@ -19,12 +19,15 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.StringUtils;
 
+import java.time.DateTimeException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -53,7 +56,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
     // USE STATIC ONE WHEN THE FIELD DOES NOT RESOLVE
     final String format = resolved != null ? resolved.toString() : params[0].toString();
 
-    final String timeZone = params.length > 1 ? (String) params[1] : null;
+    final String timeZone = timeZoneOf(params);
 
     if (isCollectionOfDates(value)) {
       final List<String> result = new ArrayList<String>();
@@ -61,14 +64,44 @@ public class SQLMethodFormat extends AbstractSQLMethod {
 
       // every element is rendered in the requested zone, as a single value is (issue #10676)
       while (iterator.hasNext())
-        result.add(DateUtils.format(iterator.next(), format, timeZone));
+        result.add(formatDate(iterator.next(), format, timeZone));
 
       return result;
 
     } else if (DateUtils.isDate(value)) {
-      return DateUtils.format(value, format, timeZone);
+      return formatDate(value, format, timeZone);
     }
     return value != null ? StringUtils.format(NAME, format, value) : null;
+  }
+
+  /**
+   * The time zone argument, which must be text naming a zone. It used to be cast, so any other kind answered a
+   * ClassCastException: a server fault for the caller's argument (issue #12020).
+   */
+  private static String timeZoneOf(final Object[] params) {
+    if (params.length < 2 || params[1] == null)
+      return null;
+    if (params[1] instanceof String zone)
+      return zone;
+    throw new TypeMismatchException(
+        NAME + "() expects a time zone name as its second argument, but received " + params[1].getClass().getSimpleName() + " "
+            + InvalidArgumentException.quote(params[1]));
+  }
+
+  /**
+   * A zone nothing names ({@code ZoneRulesException}), an offset out of range and a pattern field the value lacks
+   * ({@code DateTimeException}), or a malformed pattern ({@code IllegalArgumentException}) are the caller's argument, not a
+   * server fault (issue #12020).
+   */
+  private static String formatDate(final Object value, final String format, final String timeZone) {
+    try {
+      return DateUtils.format(value, format, timeZone);
+    } catch (final DateTimeException | IllegalArgumentException e) {
+      throw new InvalidArgumentException(
+          NAME + "() cannot format the value with the pattern '" + InvalidArgumentException.quote(format) + "'" + (timeZone != null ?
+              " in the time zone '" + InvalidArgumentException.quote(timeZone) + "'" :
+              "") + ": " + e.getMessage(), e);
+    }
   }
 
   private boolean isCollectionOfDates(final Object value) {

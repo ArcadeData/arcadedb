@@ -30,7 +30,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.AlterBucketStatement;
 import com.arcadedb.query.sql.parser.AlterDatabaseStatement;
 import com.arcadedb.query.sql.parser.AlterGraphAnalyticalViewStatement;
 import com.arcadedb.query.sql.parser.AlterMaterializedViewStatement;
@@ -442,7 +441,6 @@ class SchemaDdlAtomicityTest {
       DELETES_INDEX_FILES.put(TruncateTypeStatement.class, List.of(new Scenario("TRUNCATE TYPE B", db -> subIndexes(db, "B[p]"))));
       DELETES_INDEX_FILES.put(RebuildIndexStatement.class, List.of(new Scenario("REBUILD INDEX `B[p]`", db -> subIndexes(db, "B[p]"))));
 
-      DELETES_NO_INDEX_FILE.put(AlterBucketStatement.class, "changes a bucket's name or settings");
       DELETES_NO_INDEX_FILE.put(AlterDatabaseStatement.class, "changes a database setting");
       DELETES_NO_INDEX_FILE.put(AlterGraphAnalyticalViewStatement.class, "changes the definition of a graph analytical view");
       DELETES_NO_INDEX_FILE.put(AlterMaterializedViewStatement.class, "changes the refresh mode of a materialized view");

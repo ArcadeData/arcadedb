@@ -19,7 +19,6 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 
@@ -41,10 +40,19 @@ public class SQLFunctionRandomInt extends SQLFunctionAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 1)
-      throw new CommandSQLParsingException("Expected maximum value in function");
+    checkArity(params);
 
     if (params[0] == null)
       return null;

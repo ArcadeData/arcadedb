@@ -184,7 +184,7 @@ class Issue7602LocalCommitNotAppliedTest {
     final TransactionContext tx = db.getTransaction();
     final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
     final byte[] walData = phase1.result.toByteArray();
-    final LocalCommit local = new LocalCommit(db.getName(), ArcadeStateMachine.peekWalTransactionId(walData), tx,
+    final LocalCommit local = new LocalCommit(db.getName(), CommittedEntryDecoding.peekWalTransactionId(walData), tx,
         phase1, walData);
     assertThat(sm.registerLocalCommit(local)).isTrue();
 

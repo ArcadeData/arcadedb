@@ -50,7 +50,8 @@ public class EmptyResult implements Result {
 
   @Override
   public Set<String> getPropertyNames() {
-    return null;
+    // an empty row lists no name: null broke every caller that walks or asks the set (toJSON(), listsProperty())
+    return Set.of();
   }
 
   @Override

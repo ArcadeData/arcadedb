@@ -127,6 +127,7 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.WeakHashMap;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
@@ -3692,7 +3693,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
-    boolean documentScanPerformed = false;
     if (metadata.associatedBucketId != -1) {
       try {
         final Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
@@ -3730,7 +3730,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
 
-          documentScanPerformed = true;
           LogManager.instance().log(this, Level.INFO,
               "After document scan fallback: %d active vectors for graph build (was %d from pages only)",
               ridToLatestVector.size(), activeVectorIds.length);
@@ -3747,26 +3746,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the in-memory vectorIndex, recover them. This catches cases where the document scan
     // fallback could not trigger (e.g., typeName is null, countType failed, or the type has
     // multiple buckets making the count comparison unreliable).
-    if (!documentScanPerformed) {
-      final VectorLocationIndex recoveryLocations = vectorIndex();
-      final int inMemorySize = recoveryLocations.size();
-      if (inMemorySize > ridToLatestVector.size()) {
-        final int pageParsedCount = ridToLatestVector.size();
-        // Recover entries from the in-memory vectorIndex that are missing from pages
-        recoveryLocations.getAllVectorIds().forEach(vectorId -> {
-          final long offsetAndFlag = recoveryLocations.getOffsetAndFlag(vectorId);
-          if (offsetAndFlag == VectorLocationIndex.ABSENT)
-            return;
-          final RID rid = recoveryLocations.getRid(vectorId);
-          if (rid != null && !ridToLatestVector.containsKey(rid))
-            ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid,
-                VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
-        });
-        if (ridToLatestVector.size() > pageParsedCount)
-          LogManager.instance().log(this, Level.WARNING,
-              "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
-              ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
-      }
+    // It runs after a document scan too: a commit still between its replay and its publication has its vector in the
+    // in-memory index only, and neither its pages nor its record are visible to the scan (issue #11962). Left out of the
+    // live set, the publish below would drop its location along with it.
+    final VectorLocationIndex recoveryLocations = vectorIndex();
+    final int inMemorySize = recoveryLocations.size();
+    if (inMemorySize > ridToLatestVector.size()) {
+      final int pageParsedCount = ridToLatestVector.size();
+      // Recover entries from the in-memory vectorIndex that are missing from pages
+      recoveryLocations.getAllVectorIds().forEach(vectorId -> {
+        final long offsetAndFlag = recoveryLocations.getOffsetAndFlag(vectorId);
+        if (offsetAndFlag == VectorLocationIndex.ABSENT)
+          return;
+        final RID rid = recoveryLocations.getRid(vectorId);
+        if (rid != null && !ridToLatestVector.containsKey(rid))
+          ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid,
+              VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
+      });
+      if (ridToLatestVector.size() > pageParsedCount)
+        LogManager.instance().log(this, Level.WARNING,
+            "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
+            ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
     }
 
     final boolean leftRecordsOut = collapseToWhatALoadKeeps(replay);
@@ -4527,10 +4527,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
 
-        // Keep only delta entries inserted DURING the rebuild (vectorId >= snapshot)
+        // Keep the delta entries this build did not incorporate: the ones inserted DURING it (vectorId >= snapshot), and
+        // the ones before its snapshot that it could not read but are still live (issue #11962). A commit replays its
+        // vectors into the location index and the delta before its pages and records are published - on a Raft leader for
+        // the whole quorum round trip - so a build in that window finds neither, and validation drops the vector like a
+        // deleted one. Trimmed here as well, it was in neither the graph nor the delta once its commit completed, and no
+        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay). A vector the
+        // build leaves out by its value - one this index cannot score, such as an all-zero placeholder under COSINE - is
+        // not kept: the delta scan would score it as NaN, which is why the graph leaves it out in the first place.
+        final VectorLocationIndex liveLocations = vectorIndex();
         final List<DeltaVectorEntry> remaining = new ArrayList<>();
         for (final DeltaVectorEntry e : deltaVectors)
-          if (e.vectorId >= deltaSnapshotId)
+          if (e.vectorId >= deltaSnapshotId || (e.vector != null && Arrays.binarySearch(finalActiveVectorIds, e.vectorId) < 0
+              && liveLocations.isLive(e.vectorId) && e.vector.length() == metadata.dimensions && !isUnscorable(e.vector)))
             remaining.add(e);
 
         // Entries inserted DURING the rebuild are genuinely pending: a later rebuild incorporates them, so they
@@ -4808,6 +4817,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
+    } finally {
+      // The published graph keeps the build reader reachable through jvector's score provider (issue #11747): its vectors go
+      // now, after the persistence above read through it, rather than staying beside the search cache with the graph
+      if (vectors instanceof final ArcadePageVectorValues buildReader)
+        buildReader.releaseBuildVectors();
     }
   }
 
@@ -9608,7 +9622,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return new DefaultSearchScoreProvider(walk, reranker);
   }
 
-  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
+  /**
+   * Runs a search under the database read lock and this index's read lock, taken in that order (issue #11836).
+   * <p>
+   * A search reads the vectors it scores through the database ({@code readStoredVectorInPlace}, the record fallback of
+   * {@link ArcadePageVectorValues}), which takes the database read lock, while it holds this index's lock. Every writer of the
+   * index takes the two the other way round: a commit applies its index changes under the database read lock, and a schema
+   * change holds the database write lock. Taking the index lock first deadlocked a search with a DROP INDEX of its index (the
+   * drop held the database lock and waited for the index lock, the search the opposite), and with a schema change of any
+   * other type too: the database lock is fair, so a new reader waits behind a queued writer, the schema change waited for a
+   * commit to leave the database read lock, and the commit waited for the index lock the search held. Taken first, the
+   * database read lock is held for the whole search, so every read of the walk re-enters it and none of them waits.
+   * <p>
+   * Not around the graph build a search may wait for ({@code ensureGraphAvailable}, {@code rebuildGraphBeforeSearch}): a
+   * build reads through the database while it holds {@code graphBuildLock}, so a search waiting for that lock under the
+   * database read lock would deadlock with it behind a queued schema change.
+   *
+   * @param failure what a failure of the search is reported as
+   */
+  private <T> T underSearchLocks(final String failure, final Callable<T> search) {
+    return getDatabase().executeInReadLock(() -> {
+      lock.readLock().lock();
+      try {
+        return search.call();
+      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
+        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
+        throw e;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, failure, e);
+        throw new IndexException(failure, e);
+      } finally {
+        lock.readLock().unlock();
+      }
+    });
+  }
+
+  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
@@ -9617,8 +9666,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
+      if (requestedK < 0)
+        throw new IllegalArgumentException("k must be >= 0, got " + requestedK);
 
       if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
@@ -9636,7 +9685,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // reranking (NodeQueue.rerank), not an ArcadeDB exception. Short-circuit here, matching the
       // limit <= 0 behavior SQLFunctionVectorNeighbors already applies before ever calling in, and
       // skip the graph build/lock entirely since there is nothing left to search for.
-      if (k == 0)
+      if (requestedK == 0)
         return Collections.emptyList();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
@@ -9670,12 +9719,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Integer.MAX_VALUE, not a k one larger than the live count. Subtracting would cost a pass over the
       // superseded set on every search to tighten an allocation by a handful of entries, and an under-estimate
       // here would drop rows the caller asked for.
-      k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
-      boolean readLockHeld = false;
-      lock.readLock().lock();
-      readLockHeld = true;
-      try {
+      return underSearchLocks("Error performing vector search", () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet — still return delta-only results if available, and the calling transaction's own
           // uncommitted rows are such results too (issue #7378): an empty index written to inside one transaction
@@ -9820,18 +9866,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 results.size(),
                 skippedOutOfBounds, skippedDeletedOrNull);
         return results;
-
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
-        throw new IndexException("Error performing vector search", e);
-      } finally {
-        if (readLockHeld) {
-          lock.readLock().unlock();
-        }
-      }
+      });
     } finally {
       // Track search latency
       final long elapsed = System.currentTimeMillis() - startTime;
@@ -10190,10 +10225,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       final int maxRows = (int) Math.min((long) limit * groupSize,
           Math.max(vectorIndex().size(), 0) + (long) deltaVectors.size() + pendingCount(overlay));
-      boolean readLockHeld = false;
-      lock.readLock().lock();
-      readLockHeld = true;
-      try {
+      return underSearchLocks("Error performing grouped vector search", () -> {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         // Volatile read pinned for the whole query, taken under the read lock because writers mutate this list in
@@ -10418,17 +10450,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 deltaSnapshot.size(), state.outOfBounds, state.deletedOrNull, state.groupFull, state.unresolvedGroup,
                 state.duplicates);
         return results;
-
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing grouped vector search", e);
-        throw new IndexException("Error performing grouped vector search", e);
-      } finally {
-        if (readLockHeld)
-          lock.readLock().unlock();
-      }
+      });
     } finally {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
@@ -10930,8 +10952,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param rerankOversample candidates per requested neighbour to re-rank exactly; {@code 0} for the PQ scores alone, which
    *                        needs no record read. {@link #DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} is a good start
    */
-  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k, final int efSearch,
-      final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int requestedK,
+      final int efSearch, final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
     checkIsValid();
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
@@ -10944,7 +10966,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Fall back to exact search
       LogManager.instance().log(this, Level.FINE,
           "PQ not available for index %s, falling back to exact search", indexName);
-      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
+      return findNeighborsFromVector(queryVector, requestedK, efSearch, allowedRIDs, guard);
     }
 
     // Track search metrics. Both halves are recorded together in the finally below rather than the count here and
@@ -10959,8 +10981,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
+      if (requestedK < 0)
+        throw new IllegalArgumentException("k must be >= 0, got " + requestedK);
 
       if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
@@ -10971,7 +10993,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #6531 follow-up: see findNeighborsFromVector's matching short-circuit - k == 0 must not
       // reach GraphSearcher.search() with topK == 0, which NPEs inside JVector's reranking.
-      if (k == 0)
+      if (requestedK == 0)
         return Collections.emptyList();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
@@ -10991,10 +11013,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
       // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
-      k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
-      lock.readLock().lock();
-      try {
+      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet - still return delta-only results if available.
           //
@@ -11154,22 +11175,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return results;
         }
 
-        // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
-        // own: the exact search below is the search, and it keeps its own books.
-        handedOffToExactSearch = true;
+        // No answer: the guard refused the graph/PQ pair, and the exact search below answers instead
+        return null;
+      });
+      if (answered != null)
+        return answered;
 
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
-        throw new IndexException("Error performing PQ approximate search", e);
-      } finally {
-        lock.readLock().unlock();
-      }
+      // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
+      // own: the exact search below is the search, and it keeps its own books.
+      handedOffToExactSearch = true;
 
       // Reached only when the guard above refused the graph/PQ pair - every other path returns from inside the
-      // block. Outside the read lock on purpose: this can rebuild, which takes the write lock.
+      // block. Outside the locks on purpose: this can rebuild, which takes the write lock.
       return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
     } finally {
       if (!handedOffToExactSearch) {
@@ -11241,9 +11258,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Issue #3679: rebuild graph if needed (sync for first build or small graphs, async for large graphs)
     rebuildGraphBeforeSearch(guard);
 
-    boolean readLockHeld = false;
-    lock.readLock().lock();
-    readLockHeld = true;
+    // Not under this index's lock: findNeighborsFromVector takes the database lock and then this one around its walk (issue
+    // #11836), and held across the call this lock would be held while the search takes the database lock and while it waits
+    // for a graph build. The emptiness check is the same unlocked read the clamp of every search makes.
     try {
       // Perform scored search via findNeighborsFromVector (includes delta scan)
       final List<RID> resultRIDs;
@@ -11313,10 +11330,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
       throw new IndexException("Error performing vector search", e);
-    } finally {
-      if (readLockHeld) {
-        lock.readLock().unlock();
-      }
     }
   }
 

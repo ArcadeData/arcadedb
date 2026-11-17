@@ -240,33 +240,56 @@ final class ColumnarOverlay {
       if (result == null) {
         result = new long[2 * columns.length];
         for (int k = 0; k < columns.length; k++) {
-          final boolean isDouble = columns[k].kind() == ColumnKind.DOUBLE;
-          long low = Long.MAX_VALUE;
-          long high = Long.MIN_VALUE;
-          for (final OverlayPageBlock block : blocks) {
-            final long blockLow = block.min(k);
-            final long blockHigh = block.max(k);
-            if (blockLow > blockHigh)
-              continue; // no value in the block
-            if (low > high) {
-              low = blockLow;
-              high = blockHigh;
-            } else if (isDouble) {
-              if (Double.longBitsToDouble(blockLow) < Double.longBitsToDouble(low))
-                low = blockLow;
-              if (Double.longBitsToDouble(blockHigh) > Double.longBitsToDouble(high))
-                high = blockHigh;
-            } else {
-              low = Math.min(low, blockLow);
-              high = Math.max(high, blockHigh);
-            }
-          }
-          result[2 * k] = low;
-          result[2 * k + 1] = high;
+          if (columns[k].kind() == ColumnKind.DOUBLE)
+            doubleBounds(k, result);
+          else
+            longBounds(k, result);
         }
         bounds = result;
       }
       return result;
+    }
+
+    private void longBounds(final int k, final long[] result) {
+      long low = Long.MAX_VALUE;
+      long high = Long.MIN_VALUE;
+      for (final OverlayPageBlock block : blocks) {
+        final long bLow = block.min(k);
+        final long bHigh = block.max(k);
+        if (bLow > bHigh)
+          continue; // no value in the block
+        if (low > high) {
+          low = bLow;
+          high = bHigh;
+        } else {
+          low = Math.min(low, bLow);
+          high = Math.max(high, bHigh);
+        }
+      }
+      result[2 * k] = low;
+      result[2 * k + 1] = high;
+    }
+
+    private void doubleBounds(final int k, final long[] result) {
+      double low = Double.POSITIVE_INFINITY;
+      double high = Double.NEGATIVE_INFINITY;
+      for (final OverlayPageBlock block : blocks) {
+        final double bLow = Double.longBitsToDouble(block.min(k));
+        final double bHigh = Double.longBitsToDouble(block.max(k));
+        if (Double.compare(bLow, bHigh) > 0)
+          continue; // no value in the block
+        if (Double.compare(bLow, low) < 0)
+          low = bLow;
+        if (!Double.isNaN(bHigh) && Double.compare(bHigh, high) > 0)
+          high = bHigh;
+      }
+      if (Double.compare(low, high) <= 0) {
+        result[2 * k] = Double.doubleToLongBits(low);
+        result[2 * k + 1] = Double.doubleToLongBits(high);
+      } else {
+        result[2 * k] = Long.MAX_VALUE;
+        result[2 * k + 1] = Long.MIN_VALUE;
+      }
     }
 
     /** The index of the block holding the position, -1 when the view has no row there. */

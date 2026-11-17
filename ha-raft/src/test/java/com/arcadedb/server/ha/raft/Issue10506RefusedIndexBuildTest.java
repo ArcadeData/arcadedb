@@ -227,7 +227,7 @@ class Issue10506RefusedIndexBuildTest {
     assertThat(bucketDeltas).hasSameSizeAs(walEntries);
     assertThat(walEntries).as("the restored index's pages are shipped").isNotEmpty();
     for (final byte[] wal : walEntries)
-      for (final WALFile.WALPage page : ArcadeStateMachine.deserializeWalTransaction(wal).pages)
+      for (final WALFile.WALPage page : CommittedEntryDecoding.deserializeWalTransaction(wal).pages)
         assertThat(db.getFileManager().existsFile(page.fileId)).as("WAL page of file %d", page.fileId).isTrue();
 
     // The type still takes writes, including the duplicate key the unique index refused
