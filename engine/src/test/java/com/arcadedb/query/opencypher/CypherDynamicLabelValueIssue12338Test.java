@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -150,6 +151,26 @@ class CypherDynamicLabelValueIssue12338Test extends TestHelper {
         "MATCH (n:A) WHERE n:!$(missing) RETURN count(n) AS c", "MATCH (n:A|$any(missing)) RETURN count(n) AS c",
         "MATCH ()-[r:R&$(missing)]->() RETURN count(r) AS c"))
       assertThatThrownBy(() -> count(query)).as(query).hasMessageContaining("missing");
+  }
+
+  /** Issue #12329, its own repro: $any(list) matches a node with at least one of the labels, $all(list) and $(list) all of them. */
+  @Test
+  void anyAndAllModifiersIssue12329() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {x:1}), (:P:Q {x:2}), (:Q {x:3})").close());
+    for (final String query : List.of("MATCH (n) WHERE n:$any(['P','Q']) RETURN n.x AS x ORDER BY x",
+        "MATCH (n:$any(['P','Q'])) RETURN n.x AS x ORDER BY x"))
+      assertThat(xs(query)).as(query).containsExactly(1L, 2L, 3L);
+    for (final String query : List.of("MATCH (n) WHERE n:$all(['P','Q']) RETURN n.x AS x ORDER BY x",
+        "MATCH (n:$all(['P','Q'])) RETURN n.x AS x ORDER BY x", "MATCH (n:$(['P','Q'])) RETURN n.x AS x ORDER BY x"))
+      assertThat(xs(query)).as(query).containsExactly(2L);
+  }
+
+  private List<Long> xs(final String query) {
+    final List<Long> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      rs.forEachRemaining(r -> out.add(r.<Number>getProperty("x").longValue()));
+    }
+    return out;
   }
 
   @Test

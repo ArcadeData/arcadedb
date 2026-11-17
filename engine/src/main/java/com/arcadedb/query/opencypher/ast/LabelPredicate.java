@@ -62,6 +62,21 @@ public abstract sealed class LabelPredicate {
   public abstract boolean matchesEdgeType(DocumentType edgeType, Result row, CommandContext context);
 
   /**
+   * Whether a {@link Dynamic} operand is anywhere in the tree. A conjunction or disjunction without one stops at the operand
+   * that decides; with one it evaluates every operand, so a type error does not depend on the order of the operands.
+   */
+  public boolean hasDynamic() {
+    return false;
+  }
+
+  private static boolean anyDynamic(final LabelPredicate[] operands) {
+    for (final LabelPredicate operand : operands)
+      if (operand.hasDynamic())
+        return true;
+    return false;
+  }
+
+  /**
    * The label names every match must carry: the plain positive names among the top-level conjuncts. A node that
    * lacks one of them cannot satisfy the predicate, so a pattern may keep them as its label constraint and let the
    * planner pick a label scan, while the predicate filters the rest. Empty when no such name exists - {@code !A},
@@ -177,6 +192,11 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
+    public boolean hasDynamic() {
+      return operand.hasDynamic();
+    }
+
+    @Override
     public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
       return !operand.matchesVertexType(type, row, context);
     }
@@ -195,30 +215,43 @@ public abstract sealed class LabelPredicate {
   /** {@code a & b & ...}, also written {@code a:b}. */
   public static final class And extends LabelPredicate {
     private final LabelPredicate[] operands;
+    private final boolean          dynamic;
 
     public And(final LabelPredicate[] operands) {
       this.operands = operands.clone();
+      this.dynamic = anyDynamic(this.operands);
+    }
+
+    @Override
+    public boolean hasDynamic() {
+      return dynamic;
     }
 
     @Override
     public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
-      // every operand is evaluated, even past the one that decides: a dynamic operand's type error must not depend on the
-      // order of the operands (issue #12338)
+      // with a dynamic operand every operand is evaluated, even past the one that decides: its type error must not depend on
+      // the order of the operands (issue #12338)
       boolean result = true;
       for (final LabelPredicate operand : operands)
-        if (!operand.matchesVertexType(type, row, context))
+        if (!operand.matchesVertexType(type, row, context)) {
+          if (!dynamic)
+            return false;
           result = false;
+        }
       return result;
     }
 
     @Override
     public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
-      // every operand is evaluated, even past the one that decides: a dynamic operand's type error must not depend on the
-      // order of the operands (issue #12338)
+      // with a dynamic operand every operand is evaluated, even past the one that decides: its type error must not depend on
+      // the order of the operands (issue #12338)
       boolean result = true;
       for (final LabelPredicate operand : operands)
-        if (!operand.matchesEdgeType(edgeType, row, context))
+        if (!operand.matchesEdgeType(edgeType, row, context)) {
+          if (!dynamic)
+            return false;
           result = false;
+        }
       return result;
     }
 
@@ -254,6 +287,11 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
+    public boolean hasDynamic() {
+      return true;
+    }
+
+    @Override
     public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
       return type != null && matches(type, row, context);
     }
@@ -276,28 +314,41 @@ public abstract sealed class LabelPredicate {
   /** {@code a | b | ...}. */
   public static final class Or extends LabelPredicate {
     private final LabelPredicate[] operands;
+    private final boolean          dynamic;
 
     public Or(final LabelPredicate[] operands) {
       this.operands = operands.clone();
+      this.dynamic = anyDynamic(this.operands);
+    }
+
+    @Override
+    public boolean hasDynamic() {
+      return dynamic;
     }
 
     @Override
     public boolean matchesVertexType(final DocumentType type, final Result row, final CommandContext context) {
-      // every operand is evaluated, see And
+      // with a dynamic operand every operand is evaluated, see And
       boolean result = false;
       for (final LabelPredicate operand : operands)
-        if (operand.matchesVertexType(type, row, context))
+        if (operand.matchesVertexType(type, row, context)) {
+          if (!dynamic)
+            return true;
           result = true;
+        }
       return result;
     }
 
     @Override
     public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
-      // every operand is evaluated, see And
+      // with a dynamic operand every operand is evaluated, see And
       boolean result = false;
       for (final LabelPredicate operand : operands)
-        if (operand.matchesEdgeType(edgeType, row, context))
+        if (operand.matchesEdgeType(edgeType, row, context)) {
+          if (!dynamic)
+            return true;
           result = true;
+        }
       return result;
     }
 

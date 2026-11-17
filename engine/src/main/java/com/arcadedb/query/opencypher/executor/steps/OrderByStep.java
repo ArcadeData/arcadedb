@@ -291,6 +291,9 @@ public class OrderByStep extends AbstractExecutionStep {
        * them, and a non-deterministic key ({@code rand()}) took a new value at every comparison: the sort failed with
        * "Comparison method violates its general contract!" and the top-k heap of {@code ORDER BY rand() LIMIT k} was biased
        * towards the last rows (issues #11661, #12340, #12341).
+       * <p>
+       * The top-k heap calls this for every row it reads, also the ones it then rejects: a row is rejected by comparing its
+       * keys with the worst row kept, so they are needed before the decision, and they are evaluated exactly once either way.
        */
       // The reference comparison is the point: a key that IS the column's value object is already charged with the row, an
       // equal but distinct one (a converted temporal, a copied list) is memory the sort holds on its own
