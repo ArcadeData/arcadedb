@@ -25,12 +25,13 @@ cdnjs.
 - Imports, never fully qualified names. `final` on locals and parameters. No braces on single-statement `if`. Tests use
   AssertJ (`assertThat(x).isTrue()`).
 - Performance: latency samples go in `long[]` (nanoseconds), never `List<Long>`.
-- `bench` is not run by the regular CI lanes. Unit tests run with `mvn -o -pl bench -am test`. Container tests are
+- `bench` unit tests run in the CI modules shard; its `*IT` classes are not run by any CI lane. Unit tests run with
+  `mvn -o -pl bench -am test`. Container tests are
   `*IT` classes, run with `mvn -o -pl bench -am verify -Pintegration`, the same profile `load-tests` uses.
   Every command below that filters with `-Dtest` or `-Dit.test` also needs `-Dsurefire.failIfNoSpecifiedTests=false`
   and `-Dfailsafe.failIfNoSpecifiedTests=false`. Without them the `-am` upstream modules fail for matching no tests.
-  The first time the upstream modules are run, install them (`mvn install -DskipTests -pl bench -am`), so `-am test`
-  does not rerun their full suites.
+  `-am test` reruns the full suites of the upstream modules even when they are installed: to test bench alone, filter
+  with `-Dtest='com.arcadedb.bench.**'` and the two flags above.
 - Never bind a fixed port. Every server is a Testcontainers container, and its URL is built from `getMappedPort`.
 - **No git commits in `ArcadeData/arcadedb`.** The maintainer commits after review. Each task ends with "stop for
   review", not a commit. Commits in the two new repos are fine.

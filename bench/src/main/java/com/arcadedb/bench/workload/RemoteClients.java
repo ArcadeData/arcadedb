@@ -19,6 +19,7 @@
 package com.arcadedb.bench.workload;
 
 import com.arcadedb.bench.server.ServerUnderTest;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.remote.RemoteServer;
@@ -48,5 +49,14 @@ public final class RemoteClients {
     db.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     db.setTimeout(TIMEOUT_MS);
     return db;
+  }
+
+  /** The {@code n} of a {@code SELECT count(*) AS n} query; an answer with no row is a server fault. */
+  public static long count(final RemoteDatabase db, final String language, final String query) {
+    try (final ResultSet rs = db.query(language, query)) {
+      if (!rs.hasNext())
+        throw new IllegalStateException("the server answered no row to: " + query);
+      return ((Number) rs.next().getProperty("n")).longValue();
+    }
   }
 }

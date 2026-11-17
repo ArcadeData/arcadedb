@@ -58,7 +58,7 @@ class VectorWorkloadIT {
     assertThat(knn.status()).as("knn-k10: " + knn.error()).isEqualTo(CaseResult.Status.OK);
     final Metric recall = ITSupport.metric(knn, "recall_at_10");
     assertThat(recall).isNotNull();
-    assertThat(recall.median()).isGreaterThan(0.90);
+    assertThat(recall.median()).isGreaterThanOrEqualTo(VectorWorkload.MIN_RECALL);
     assertThat(ITSupport.metric(knn, "queries_per_s").median()).isGreaterThan(0);
     assertThat(ITSupport.metric(knn, "latency_p95_ms")).isNotNull();
   }

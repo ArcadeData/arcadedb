@@ -21,6 +21,7 @@ package com.arcadedb.bench;
 import com.arcadedb.bench.env.CpuTopology;
 import com.arcadedb.bench.env.IdleCheck;
 import com.arcadedb.bench.env.MachineProbe;
+import com.arcadedb.bench.env.Processes;
 import com.arcadedb.bench.ldbc.LdbcAdapter;
 import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.RunInfo;
@@ -50,7 +51,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -397,18 +397,14 @@ public final class BenchMain {
       return "";
     if (!value.equals("auto"))
       return value;
+    final String text = Processes.output(Duration.ofSeconds(10), "lscpu", "--extended=CPU,CORE,MAXMHZ");
+    if (text == null)
+      return "";
     try {
-      final Process p = new ProcessBuilder("lscpu", "--extended=CPU,CORE,MAXMHZ").redirectErrorStream(true).start();
-      final String text = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-      if (!p.waitFor(10, TimeUnit.SECONDS) || p.exitValue() != 0)
-        return "";
       final CpuTopology topology = CpuTopology.parse(text);
       final String cpus = server ? topology.performanceCpus() : topology.efficiencyCpus();
       return cpus == null ? "" : cpus;
-    } catch (final IOException | RuntimeException e) {
-      return "";
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
+    } catch (final RuntimeException e) {
       return "";
     }
   }

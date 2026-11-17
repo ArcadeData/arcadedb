@@ -215,8 +215,8 @@ public class VectorWorkload implements Workload {
   }
 
   private boolean dataReady(final RemoteDatabase db, final Scale scale) {
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS n FROM " + TYPE)) {
-      return ((Number) rs.next().getProperty("n")).longValue() == vectors(scale);
+    try {
+      return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + TYPE) == vectors(scale);
     } catch (final RuntimeException e) {
       return false;
     }

@@ -102,7 +102,7 @@ public final class Exporter {
           final String dir = sanitize(workload);
           final String base = dir + "/" + sanitize(caseName) + "__" + sanitizeKeepingCase(scale) + "__" + sanitize(metric);
           String candidate = base;
-          for (int n = 2; !usedFiles.add(candidate.toLowerCase()); n++)
+          for (int n = 2; !usedFiles.add(candidate.toLowerCase(Locale.ROOT)); n++)
             candidate = base + "-" + n;
           final String file = SERIES + "/" + candidate + ".json";
           write(tmp.resolve(file), s.toJSON(metric).toString());

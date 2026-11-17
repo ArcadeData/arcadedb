@@ -218,8 +218,10 @@ jobs:
           - shard: ha-raft
             modules: ha-raft
             fork-count: 1
+          # bench takes part with its unit tests only: its *IT classes start containers of a published image and
+          # stay out of every lane (skipITs is on here, and the integration lanes leave bench out)
           - shard: modules
-            modules: '!engine,!ha-raft,!e2e,!load-tests,!bench'
+            modules: '!engine,!ha-raft,!e2e,!load-tests'
             fork-count: 2
             extra-args: -Pfork-isolation
     # A hung test used to burn the workflow's whole budget in silence (run 29645471373 sat for

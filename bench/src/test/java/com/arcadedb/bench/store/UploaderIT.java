@@ -31,11 +31,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -83,20 +78,6 @@ class UploaderIT {
     return db;
   }
 
-  private static RunResult sample() {
-    try (final InputStream in = UploaderIT.class.getResourceAsStream("/run-sample.json")) {
-      final Path tmp = Files.createTempFile("run-sample", ".json");
-      try {
-        Files.write(tmp, in.readAllBytes());
-        return RunResult.read(tmp);
-      } finally {
-        Files.deleteIfExists(tmp);
-      }
-    } catch (final IOException e) {
-      throw new UncheckedIOException(e);
-    }
-  }
-
   private static long count(final String type) {
     try (final RemoteDatabase db = open("root", ServerUnderTest.PASSWORD)) {
       try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM " + type)) {
@@ -138,7 +119,7 @@ class UploaderIT {
 
   @Test
   void uploadInsertsRows() {
-    final RunResult run = sample();
+    final RunResult run = ExporterIT.sample();
     Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run);
     assertThat(count("Run")).isEqualTo(1);
     assertThat(count("Measurement")).isEqualTo(expectedMeasurements(run)).isEqualTo(3);
@@ -157,7 +138,7 @@ class UploaderIT {
 
   @Test
   void reuploadReplacesRun() {
-    final RunResult run = sample();
+    final RunResult run = ExporterIT.sample();
     Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run);
     Uploader.upload(url, "perf-writer", WRITER_PASSWORD, withMedian(run, 999.0));
     assertThat(count("Run")).isEqualTo(1);
@@ -172,7 +153,7 @@ class UploaderIT {
 
   @Test
   void failedUploadLeavesPreviousCopy() {
-    final RunResult run = sample();
+    final RunResult run = ExporterIT.sample();
     Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run);
 
     // the last case has no workload name: Measurement.workload is mandatory and not null, so the insert of its row fails
@@ -209,7 +190,7 @@ class UploaderIT {
 
   @Test
   void readerCannotDelete() {
-    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, sample());
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, ExporterIT.sample());
     try (final RemoteDatabase db = open("perf-reader", READER_PASSWORD)) {
       assertThatThrownBy(() -> db.command("sql", "DELETE FROM Run")).isInstanceOf(RuntimeException.class)
           .hasMessageContaining(DENIED);
@@ -219,7 +200,7 @@ class UploaderIT {
 
   @Test
   void failedCaseVisible() {
-    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, sample());
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, ExporterIT.sample());
     try (final RemoteDatabase db = open("perf-reader", READER_PASSWORD)) {
       try (final ResultSet rs = db.query("sql", "SELECT FROM Measurement WHERE metric = '_status'")) {
         final Result r = rs.next();
@@ -239,7 +220,7 @@ class UploaderIT {
 
   @Test
   void writerCannotUpdateRecord() {
-    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, sample());
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, ExporterIT.sample());
     assertDenied("perf-writer", WRITER_PASSWORD, "UPDATE Run SET `trigger` = 'x'");
     try (final RemoteDatabase db = open("root", ServerUnderTest.PASSWORD)) {
       try (final ResultSet rs = db.query("sql", "SELECT FROM Run WHERE `trigger` = 'x'")) {
@@ -276,7 +257,7 @@ class UploaderIT {
 
   @Test
   void mapFieldsReadBack() {
-    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, sample());
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, ExporterIT.sample());
     try (final RemoteDatabase db = open("perf-reader", READER_PASSWORD)) {
       try (final ResultSet rs = db.query("sql", "SELECT FROM Run")) {
         final Result r = rs.next();

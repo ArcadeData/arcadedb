@@ -87,7 +87,7 @@ public final class ResultsStore {
   public static void init(final String url, final String rootUser, final String rootPassword, final String writerPassword,
       final String readerPassword) {
     final URI uri = parse(url);
-    final RemoteServer server = new RemoteServer(uri.getHost(), port(uri), rootUser, rootPassword);
+    final RemoteServer server = new RemoteServer(serverAddress(uri), port(uri), rootUser, rootPassword);
     server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     server.setTimeout(TIMEOUT_MS);
 
@@ -109,7 +109,7 @@ public final class ResultsStore {
   /** Opens the {@code perf} database with the given credentials. */
   static RemoteDatabase open(final String url, final String user, final String password) {
     final URI uri = parse(url);
-    final RemoteDatabase db = new RemoteDatabase(uri.getHost(), port(uri), DATABASE, user, password);
+    final RemoteDatabase db = new RemoteDatabase(serverAddress(uri), port(uri), DATABASE, user, password);
     db.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     db.setTimeout(TIMEOUT_MS);
     return db;
@@ -142,6 +142,14 @@ public final class ResultsStore {
     if (uri.getHost() == null)
       throw new IllegalArgumentException("--url must look like http://host:2480, got '" + url + "'");
     return uri;
+  }
+
+  /** The host with its scheme, which the remote clients read to choose TLS: a bare host would always be plain HTTP. */
+  static String serverAddress(final URI uri) {
+    final String scheme = uri.getScheme();
+    if (!"http".equals(scheme) && !"https".equals(scheme))
+      throw new IllegalArgumentException("--url must be an http:// or https:// URL, got '" + uri + "'");
+    return scheme + "://" + uri.getHost();
   }
 
   private static int port(final URI uri) {

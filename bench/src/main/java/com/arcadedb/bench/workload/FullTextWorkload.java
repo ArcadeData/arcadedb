@@ -248,8 +248,8 @@ public class FullTextWorkload implements Workload {
   }
 
   private static boolean dataReady(final RemoteDatabase db, final Scale scale) {
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS n FROM " + TYPE)) {
-      return ((Number) rs.next().getProperty("n")).longValue() == documents(scale);
+    try {
+      return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + TYPE) == documents(scale);
     } catch (final RuntimeException e) {
       return false;
     }

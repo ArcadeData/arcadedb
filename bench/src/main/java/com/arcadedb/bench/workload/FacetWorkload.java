@@ -23,7 +23,6 @@ import com.arcadedb.bench.runner.LatencyRecorder;
 import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.test.support.AssetGenerator;
 import com.arcadedb.test.support.DatabaseWrapper;
@@ -35,6 +34,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -223,7 +223,7 @@ public class FacetWorkload implements Workload {
       return count(db, "") >= records && count(db, " WHERE aid < " + INGEST_KEY_FLOOR) == records;
     } catch (final RuntimeException e) {
       // only a missing type (another workload's database, or an empty one) means "build"; anything else is a real failure
-      final String message = String.valueOf(e.getMessage()).toLowerCase();
+      final String message = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
       if (message.contains("not found") || message.contains("does not exist"))
         return false;
       throw e;
@@ -253,9 +253,7 @@ public class FacetWorkload implements Workload {
   }
 
   private static long count(final RemoteDatabase db, final String where) {
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS n FROM " + FacetSchema.TYPE + where)) {
-      return ((Number) rs.next().getProperty("n")).longValue();
-    }
+    return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + FacetSchema.TYPE + where);
   }
 
   /**

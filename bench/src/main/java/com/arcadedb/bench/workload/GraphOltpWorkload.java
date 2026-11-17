@@ -204,9 +204,7 @@ public class GraphOltpWorkload implements Workload {
   }
 
   private static long count(final RemoteDatabase db, final String type) {
-    try (final ResultSet rs = db.query(SQL, "SELECT count(*) AS n FROM " + type)) {
-      return ((Number) rs.next().getProperty("n")).longValue();
-    }
+    return RemoteClients.count(db, SQL, "SELECT count(*) AS n FROM " + type);
   }
 
   /**

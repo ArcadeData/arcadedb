@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BenchRunnerTest {
   private volatile boolean spin = true;
@@ -180,6 +181,8 @@ class BenchRunnerTest {
         if (caseName.equals("a"))
           while (spin)
             Thread.onSpinWait();
+        else
+          calls.incrementAndGet();
         return m(1);
       }
     };
@@ -188,8 +191,74 @@ class BenchRunnerTest {
     assertThat(results).hasSize(2);
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
     assertThat(results.get(0).error()).contains("teardown skipped");
+    // the abandoned worker still loads the same server: a case measured next to it would record a wrong number
+    assertThat(results.get(1).status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(results.get(1).error()).contains("not started").contains("'a'");
+    assertThat(w.calls.get()).isZero();
+    assertThat(w.teardowns.get()).isZero();
+  }
+
+  @Test
+  void aCaseAfterAStoppedTimeoutStillRuns() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("slow", "next");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (caseName.equals("slow"))
+          Thread.sleep(5_000);
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
     assertThat(results.get(1).status()).isEqualTo(CaseResult.Status.OK);
-    assertThat(w.teardowns.get()).isEqualTo(1);
+  }
+
+  @Test
+  void anInterruptedCallerStartsNoCase() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        calls.incrementAndGet();
+        return m(1);
+      }
+    };
+    Thread.currentThread().interrupt();
+    final List<CaseResult> results;
+    try {
+      results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, n -> true);
+    } finally {
+      assertThat(Thread.interrupted()).as("the interrupt status is kept for the caller").isTrue();
+    }
+    assertThat(results).extracting(CaseResult::status).containsExactly(CaseResult.Status.FAILED, CaseResult.Status.FAILED);
+    assertThat(results.get(0).error()).contains("not started").contains("interrupted");
+    assertThat(w.calls.get()).isZero();
+  }
+
+  @Test
+  void noRepetitionIsRefused() {
+    assertThatThrownBy(() -> new BenchRunner(0, 0, Duration.ofSeconds(1))).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("reps");
+  }
+
+  @Test
+  void aNegativeWarmupIsRefused() {
+    assertThatThrownBy(() -> new BenchRunner(1, -1, Duration.ofSeconds(1))).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("warmup");
+  }
+
+  @Test
+  void zeroWarmupIsAllowed() {
+    assertThat(new BenchRunner(1, 0, Duration.ofSeconds(1))).isNotNull();
   }
 
   @Test

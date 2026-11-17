@@ -44,11 +44,20 @@ public final class BenchRunner {
   private final Duration caseTimeout;
   private final Duration interruptGrace;
 
+  private static final String WORKER_STILL_RUNNING = "teardown skipped: worker still running";
+
+  // set by runCase for run(), on the caller's thread
+  private boolean lastWorkerStopped = true;
+
   public BenchRunner(final int reps, final int warmup, final Duration caseTimeout) {
     this(reps, warmup, caseTimeout, Duration.ofSeconds(5));
   }
 
   BenchRunner(final int reps, final int warmup, final Duration caseTimeout, final Duration interruptGrace) {
+    if (reps < 1)
+      throw new IllegalArgumentException("reps must be at least 1, got " + reps);
+    if (warmup < 0)
+      throw new IllegalArgumentException("warmup must not be negative, got " + warmup);
     this.reps = reps;
     this.warmup = warmup;
     this.caseTimeout = caseTimeout;
@@ -57,10 +66,23 @@ public final class BenchRunner {
 
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter) {
     final List<CaseResult> results = new ArrayList<>();
+    // a worker that outlived its timeout still loads this server: whatever this run measured next would be wrong
+    String abandoned = null;
     for (final String caseName : w.cases()) {
       if (caseFilter != null && !caseFilter.test(caseName))
         continue;
-      results.add(runCase(w, ctx, caseName));
+      final CaseResult result;
+      if (Thread.currentThread().isInterrupted())
+        result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "not started: the run was interrupted");
+      else if (abandoned != null)
+        result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED,
+            "not started: the worker of case '" + abandoned + "' is still running on this server");
+      else {
+        result = runCase(w, ctx, caseName);
+        if (!lastWorkerStopped)
+          abandoned = caseName;
+      }
+      results.add(result);
     }
     return results;
   }
@@ -91,18 +113,19 @@ public final class BenchRunner {
       executor.shutdownNow();
       workerStopped = awaitStopped(executor);
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT,
-          "case exceeded " + caseTimeout.toMillis() + " ms" + (workerStopped ? "" : "; teardown skipped: worker still running"));
+          "case exceeded " + caseTimeout.toMillis() + " ms" + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING));
     } catch (final InterruptedException e) {
       future.cancel(true);
       executor.shutdownNow();
       Thread.currentThread().interrupt();
       workerStopped = false;
-      result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "interrupted; teardown skipped: worker still running");
+      result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "interrupted; " + WORKER_STILL_RUNNING);
     } catch (final Exception e) {
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, e.getClass().getName() + ": " + e.getMessage());
     } finally {
       executor.shutdown();
     }
+    lastWorkerStopped = workerStopped;
     if (workerStopped) {
       try {
         w.teardown(ctx);
@@ -124,15 +147,24 @@ public final class BenchRunner {
     }
   }
 
+  /** An abandoned worker (its case timed out) ends at the next repetition instead of measuring on. */
+  private static void stopIfInterrupted() throws InterruptedException {
+    if (Thread.currentThread().isInterrupted())
+      throw new InterruptedException("case abandoned");
+  }
+
   private CaseResult execute(final Workload w, final WorkloadContext ctx, final String caseName) throws Exception {
     w.prepare(ctx, caseName);
-    for (int i = 0; i < warmup; i++)
+    for (int i = 0; i < warmup; i++) {
+      stopIfInterrupted();
       w.measure(ctx, caseName);
+    }
 
     // metric name -> per-rep medians, in first-seen order
     final Map<String, List<Double>> values = new LinkedHashMap<>();
     final Map<String, Metric> first = new LinkedHashMap<>();
     for (int i = 0; i < reps; i++) {
+      stopIfInterrupted();
       for (final Metric m : w.measure(ctx, caseName).perRep()) {
         first.putIfAbsent(m.name(), m);
         values.computeIfAbsent(m.name(), k -> new ArrayList<>()).add(m.median());

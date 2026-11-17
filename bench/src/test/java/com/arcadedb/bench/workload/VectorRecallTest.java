@@ -39,4 +39,10 @@ class VectorRecallTest {
     final float[][] base = { { 10, 0 }, { 0, 1 }, { 0.2f, 0.2f } };
     assertThat(VectorRecall.exactTopK(base, new float[] { 1, 1 }, 1)).containsExactly(2);
   }
+
+  @Test
+  void zeroNeighboursIsAnEmptyAnswer() {
+    final float[][] base = { { 1, 0 }, { 0, 1 } };
+    assertThat(VectorRecall.exactTopK(base, new float[] { 1, 0 }, 0)).isEmpty();
+  }
 }

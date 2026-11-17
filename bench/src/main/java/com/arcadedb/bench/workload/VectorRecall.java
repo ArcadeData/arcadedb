@@ -42,6 +42,8 @@ public final class VectorRecall {
 
   public static int[] exactTopK(final float[][] base, final double[] baseNorms, final float[] query, final int k) {
     final int size = Math.min(k, base.length);
+    if (size <= 0)
+      return new int[0];
     final int[] ids = new int[size];
     final double[] scores = new double[size];
     int filled = 0;

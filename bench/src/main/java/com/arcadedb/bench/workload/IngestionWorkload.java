@@ -25,7 +25,6 @@ import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
 import com.arcadedb.bench.server.ServerUnderTest;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 
 import java.io.BufferedWriter;
@@ -245,8 +244,6 @@ public class IngestionWorkload implements Workload {
   }
 
   private static long count(final RemoteDatabase db, final String type) {
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS n FROM " + type)) {
-      return ((Number) rs.next().getProperty("n")).longValue();
-    }
+    return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + type);
   }
 }

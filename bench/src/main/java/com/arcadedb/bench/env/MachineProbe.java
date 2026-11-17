@@ -20,13 +20,10 @@ package com.arcadedb.bench.env;
 
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 /**
  * Describes the machine a run executes on. Anything not readable is reported as "unknown", never an exception.
@@ -81,21 +78,8 @@ public final class MachineProbe {
     final String release = readFirstLine("/proc/sys/kernel/osrelease");
     if (!UNKNOWN.equals(release))
       return release;
-    try {
-      final Process process = new ProcessBuilder("uname", "-r").redirectErrorStream(true).start();
-      try (final BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-        final String line = reader.readLine();
-        process.waitFor(2, TimeUnit.SECONDS);
-        return line == null || line.isBlank() ? UNKNOWN : line.trim();
-      } finally {
-        process.destroy();
-      }
-    } catch (final IOException e) {
-      return UNKNOWN;
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return UNKNOWN;
-    }
+    final String output = Processes.output(Duration.ofSeconds(2), "uname", "-r");
+    return output == null || output.isBlank() ? UNKNOWN : output.strip().lines().findFirst().orElse(UNKNOWN);
   }
 
   private static String readFirstLine(final String file) {

@@ -23,6 +23,7 @@ import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
+import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.command.InspectImageResponse;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Statistics;
@@ -101,10 +102,15 @@ public final class ServerUnderTest implements AutoCloseable {
     this.wrapper = new ServerWrapper(container);
   }
 
-  /** Whether the tag of an image reference (what follows the last ':' after the last '/') names a native build. */
-  private static boolean isNativeImage(final String image) {
-    final int colon = image.lastIndexOf(':');
-    return colon > image.lastIndexOf('/') && image.substring(colon + 1).contains("native");
+  /**
+   * Whether the tag of an image reference (what follows the last ':' after the last '/', a digest suffix from '@' left out)
+   * names a native build.
+   */
+  static boolean isNativeImage(final String image) {
+    final int at = image.indexOf('@');
+    final String name = at >= 0 ? image.substring(0, at) : image;
+    final int colon = name.lastIndexOf(':');
+    return colon > name.lastIndexOf('/') && name.substring(colon + 1).contains("native");
   }
 
   /**
@@ -178,9 +184,14 @@ public final class ServerUnderTest implements AutoCloseable {
     return nativeImage;
   }
 
-  /** The image reference, its digest, its variant and the git revision label ({@code "unknown"} when the image has none). */
+  /**
+   * The image reference, its digest, its variant and the git revision label ({@code "unknown"} when the image has none). The
+   * image inspected is the one the container runs, by id: the tag may have been pulled again since the server started.
+   */
   public JSONObject imageInfo() {
-    final InspectImageResponse inspect = docker.inspectImageCmd(image).exec();
+    final InspectContainerResponse running = container.getContainerInfo();
+    final String imageId = running != null && running.getImageId() != null ? running.getImageId() : image;
+    final InspectImageResponse inspect = docker.inspectImageCmd(imageId).exec();
     final List<String> repoDigests = inspect.getRepoDigests();
     String digest = inspect.getId();
     if (repoDigests != null && !repoDigests.isEmpty()) {
