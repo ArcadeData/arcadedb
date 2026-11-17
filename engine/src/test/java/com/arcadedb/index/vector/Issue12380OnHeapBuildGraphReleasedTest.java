@@ -24,8 +24,11 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
 import io.github.jbellis.jvector.graph.OnHeapGraphIndex;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,21 +45,7 @@ class Issue12380OnHeapBuildGraphReleasedTest extends TestHelper {
   @ParameterizedTest(name = "storeVectorsInGraph={0}")
   @ValueSource(booleans = { true, false })
   void anIndexKeepsTheOnHeapBuildGraphOnlyWhileItIsTheResidentOne(final boolean storeVectorsInGraph) {
-    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1_000_000);
-    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, -1);
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(1).create()
-          .createProperty("embedding", Type.ARRAY_OF_FLOATS);
-      database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
-          + ", \"similarity\": \"COSINE\", \"storeVectorsInGraph\": " + storeVectorsInGraph + " }");
-    });
-    database.transaction(() -> {
-      for (int i = 0; i < VECTORS; i++)
-        database.newDocument("Doc").set("embedding", vector(i)).save();
-    });
-
-    final LSMVectorIndex index = (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]"))
-        .getIndexesOnBuckets()[0];
+    final LSMVectorIndex index = createIndexWithVectors(storeVectorsInGraph);
     index.buildVectorGraphNow();
 
     if (storeVectorsInGraph) {
@@ -69,6 +58,46 @@ class Issue12380OnHeapBuildGraphReleasedTest extends TestHelper {
       assertThat(index.getGraphIndex()).isInstanceOf(OnHeapGraphIndex.class);
       assertThat(index.persistedGraphSourceForTest()).isSameAs(index.getGraphIndex());
     }
+  }
+
+  /**
+   * A search between the build publishing its on-heap graph and the swap to the on-disk one pools a searcher on the on-heap
+   * graph, which holds it as firmly as the field did. The swap hands the pool back, as the publication does for the generation
+   * before it.
+   */
+  @Test
+  void aSearcherPooledOnTheOnHeapGraphIsReleasedAtTheSwap() {
+    final LSMVectorIndex index = createIndexWithVectors(true);
+    final AtomicInteger pooledBeforeSwap = new AtomicInteger(-1);
+    index.setBeforeOnDiskGraphSwapForTest(() -> {
+      assertThat(index.findNeighborsFromVector(vector(3), 5)).isNotEmpty();
+      pooledBeforeSwap.set(index.getSearcherPool().size());
+    });
+    try {
+      index.buildVectorGraphNow();
+    } finally {
+      index.setBeforeOnDiskGraphSwapForTest(null);
+    }
+
+    assertThat(pooledBeforeSwap.get()).as("precondition: the search pooled a searcher on the on-heap graph").isPositive();
+    assertThat(index.getGraphIndex()).isInstanceOf(OnDiskGraphIndex.class);
+    assertThat(index.getSearcherPool().size()).as("searchers left in the pool after the swap").isZero();
+  }
+
+  private LSMVectorIndex createIndexWithVectors(final boolean storeVectorsInGraph) {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1_000_000);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, -1);
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(1).create()
+          .createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+          + ", \"similarity\": \"COSINE\", \"storeVectorsInGraph\": " + storeVectorsInGraph + " }");
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < VECTORS; i++)
+        database.newDocument("Doc").set("embedding", vector(i)).save();
+    });
+    return (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]")).getIndexesOnBuckets()[0];
   }
 
   private static float[] vector(final int i) {

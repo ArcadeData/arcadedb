@@ -531,6 +531,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Run by a full rebuild between reading the live set from the pages and publishing it, so a test can commit in between
   private volatile Runnable afterLiveSetReadForTest;
+  // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
+  private volatile Runnable beforeOnDiskGraphSwapForTest;
 
   /**
    * How many entries of {@link #deltaVectors} are currently holding their payload, i.e. what the buffer costs the
@@ -4709,6 +4711,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             try {
               final OnDiskGraphIndex diskGraph = gf.loadGraph();
               if (diskGraph != null) {
+                final Runnable beforeSwap = beforeOnDiskGraphSwapForTest;
+                if (beforeSwap != null)
+                  beforeSwap.run();
                 lock.writeLock().lock();
                 try {
                   this.graphIndex = diskGraph;
@@ -4716,6 +4721,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   // the resident graph against it): kept, the field held the whole build graph - its neighbour map, and
                   // through the diversity provider the build's reader and vector cache - until the next build (issue #12380)
                   this.persistedGraphSource = null;
+                  // A search between the publication above and this swap pooled a searcher on the on-heap graph, which
+                  // holds it as firmly as the field did (issue #12380): hand it back now, as the publication does for the
+                  // generation before it
+                  releasePooledSearchers();
                   if (deltaVectors.isEmpty())
                     this.graphState = GraphState.IMMUTABLE;
                 } finally {
@@ -14064,6 +14073,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setAfterLiveSetReadForTest(final Runnable hook) {
     afterLiveSetReadForTest = hook;
+  }
+
+  void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
+    beforeOnDiskGraphSwapForTest = hook;
   }
 
   /** Whether the resident graph has a node for {@code vectorId}. */
