@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -224,6 +225,10 @@ class LabelReplacementsTest {
     });
   }
 
+  private boolean isHeld(final RID rid) {
+    return ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).isPositionHeld(rid.getPosition());
+  }
+
   private static List<Object> edgeWeights(final Vertex vertex, final Vertex.DIRECTION direction) {
     final List<Object> weights = new ArrayList<>();
     for (final Edge edge : vertex.getEdges(direction))
@@ -250,11 +255,11 @@ class LabelReplacementsTest {
     final Vertex[] firstReplacement = new Vertex[1];
     database.transaction(() -> firstReplacement[0] = replacements.replace(original[0], "B"));
 
-    // The precondition the guard exists for: the engine does hand that slot out again
+    // The freed slot is held while the map can answer for it: no new A vertex takes it
     database.begin();
     final RID probe = database.newVertex("A").save().getIdentity();
     database.rollback();
-    assertThat(probe).as("a new A vertex takes the freed slot").isEqualTo(freed);
+    assertThat(probe).as("a new A vertex does not take the held slot").isNotEqualTo(freed);
 
     // Batch 2 relabels another vertex B -> A: its replacement is created in A's bucket, where the freed slot is
     final Vertex[] other = new Vertex[1];
@@ -266,9 +271,15 @@ class LabelReplacementsTest {
     assertThat(replacements.resolve(original[0])).isSameAs(firstReplacement[0]);
     assertThat(replacements.resolve(other[0])).isSameAs(secondReplacement[0]);
     assertThat(replacements.resolve(secondReplacement[0])).isSameAs(secondReplacement[0]);
-    // The record created and dropped to step over the freed slot leaves nothing behind
     assertThat(database.countType("A", false)).isEqualTo(1);
     assertThat(database.countType("B", false)).isEqualTo(1);
+
+    // Once the statement is over the slot is the engine's again: the hold was all that kept it
+    replacements.releaseHeldPositions();
+    database.begin();
+    final RID afterRelease = database.newVertex("A").save().getIdentity();
+    database.rollback();
+    assertThat(afterRelease).as("a new A vertex takes the released slot").isEqualTo(freed);
   }
 
   /**
@@ -297,11 +308,11 @@ class LabelReplacementsTest {
     final Edge firstCopy = replacements.resolveEdge(bound[0]);
     assertThat(firstCopy.getIdentity()).isNotEqualTo(freed);
 
-    // The precondition the guard exists for: the engine does hand the freed edge slot out again
+    // The freed edge slot is held while the map can answer for it: no new E edge takes it
     database.begin();
     final RID probe = database.newVertex("A").save().newEdge("E", database.newVertex("B").save()).getIdentity();
     database.rollback();
-    assertThat(probe).as("a new E edge takes the freed slot").isEqualTo(freed);
+    assertThat(probe).as("a new E edge does not take the held slot").isNotEqualTo(freed);
 
     // Batch 2 relabels the target: the copy is re-attached again, in E's bucket, where the freed slot is
     final Vertex[] newTarget = new Vertex[1];
@@ -315,5 +326,59 @@ class LabelReplacementsTest {
     assertThat(live.getIn()).isEqualTo(newTarget[0].getIdentity());
     assertThat(live.<Integer>get("w")).isEqualTo(7);
     assertThat(database.countType("E", false)).isEqualTo(1);
+
+    replacements.releaseHeldPositions();
+    database.begin();
+    final RID afterRelease = database.newVertex("A").save().newEdge("E", database.newVertex("B").save()).getIdentity();
+    database.rollback();
+    assertThat(afterRelease).as("a new E edge takes the released slot").isEqualTo(freed);
+  }
+
+  /**
+   * Issue #12336: an ordinary insert after a committed batch - a CREATE of the same statement, or a concurrent transaction -
+   * used to take the slot of a record the statement replaced. The new record then had the replaced record's RID, and a binding
+   * of it was redirected to the replacement. The slot is held instead, so the new record has a RID of its own and resolves to
+   * itself, while the old binding still resolves to the replacement.
+   */
+  @Test
+  void aPlainInsertNeverTakesTheSlotOfAReplacedRecordWhileTheStatementRuns() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] original = new Vertex[1];
+    database.transaction(() -> original[0] = database.newVertex("A").set("name", "old").save());
+    final RID freed = original[0].getIdentity();
+
+    final Vertex[] replacement = new Vertex[1];
+    database.transaction(() -> replacement[0] = replacements.replace(original[0], "B"));
+
+    final Vertex[] fresh = new Vertex[1];
+    database.transaction(() -> fresh[0] = database.newVertex("A").set("fresh", true).save());
+
+    assertThat(fresh[0].getIdentity()).isNotEqualTo(freed);
+    final Vertex readBack = database.lookupByRID(fresh[0].getIdentity(), true).asVertex();
+    assertThat(replacements.resolve(readBack)).isSameAs(readBack);
+    assertThat(replacements.resolve(original[0])).isSameAs(replacement[0]);
+    assertThat(isHeld(freed)).isTrue();
+
+    replacements.releaseHeldPositions();
+    assertThat(isHeld(freed)).isFalse();
+  }
+
+  /** A rolled-back attempt deleted nothing in the end, so the positions it held go back with the entries it recorded. */
+  @Test
+  void restoringASnapshotReleasesThePositionsTheDiscardedEntriesHeld() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] original = new Vertex[1];
+    database.transaction(() -> original[0] = database.newVertex("A").save());
+    final RID rid = original[0].getIdentity();
+
+    final LabelReplacements.Snapshot before = replacements.copy();
+    database.begin();
+    replacements.replace(original[0], "B");
+    database.rollback();
+    assertThat(isHeld(rid)).isTrue();
+
+    replacements.restore(before);
+    assertThat(isHeld(rid)).isFalse();
+    assertThat(replacements.isEmpty()).isTrue();
   }
 }

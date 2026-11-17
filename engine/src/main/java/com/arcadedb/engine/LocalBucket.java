@@ -344,6 +344,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #9694: pages whose reservations are gone and that wait to be measured and listed in freeSpaceInPages again by the
   // next allocation; filled from transaction teardown, which must not read pages (see relistPage()).
   private                Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
+  // #12336: positions whose record was deleted while a running statement may still refer to it by RID (a Cypher label write
+  // replaces the record and keeps a statement-wide map keyed by the original RID). A freed slot is handed to the next insert
+  // once the delete commits, which made the RID name two records; a held position is never handed out until the statement
+  // releases it. Adopted by a schema reload like the reservations, since the statement releases into the instance it held on.
+  private                Set<Long>                 heldPositions                    = ConcurrentHashMap.newKeySet();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -644,6 +649,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       insertReservations = previousBucket.insertReservations;
       inFlightNewPages = previousBucket.inFlightNewPages;
       pagesToRelist = previousBucket.pagesToRelist;
+      heldPositions = previousBucket.heldPositions;
     }
   }
 
@@ -665,6 +671,52 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     insertReservations.clear();
     inFlightNewPages.clear();
     pagesToRelist.clear();
+    heldPositions.clear();
+  }
+
+  /**
+   * Keeps the slot at {@code position} from being handed to a new record, by any transaction, until
+   * {@link #releaseHeldPosition(long)} (issue #12336). For a caller that deleted the record there and may still meet bindings
+   * that name it by RID: once the delete commits, the allocator would otherwise give the slot - and so the RID - to the next
+   * insert, and a binding could no longer tell the deleted record from the new one. A slot freed inside a transaction is
+   * never reused by that transaction anyway; the hold is what spans its commit.
+   * <p>
+   * Held positions live in memory only: a restart releases them, which is right, since no statement survives it.
+   */
+  public void holdPosition(final long position) {
+    heldPositions.add(position);
+  }
+
+  /**
+   * The record count a page left with no record may be trimmed to: 0, or one past its last held slot, which has to stay in
+   * the record table as a hole the allocator skips rather than become the next append position (#12336).
+   */
+  private short recordCountKeepingHeldSlots(final BasePage page, final short recordCountInPage) {
+    if (heldPositions.isEmpty())
+      return 0;
+    final long firstPositionOfPage = ((long) page.getPageId().getPageNumber()) * maxRecordsInPage;
+    for (int i = recordCountInPage - 1; i > -1; i--)
+      if (heldPositions.contains(firstPositionOfPage + i))
+        return (short) (i + 1);
+    return 0;
+  }
+
+  /** Gives back a position {@link #holdPosition(long)} kept from reuse. */
+  public void releaseHeldPosition(final long position) {
+    heldPositions.remove(position);
+  }
+
+  /** Whether {@link #holdPosition(long)} keeps {@code position} from reuse. */
+  public boolean isPositionHeld(final long position) {
+    return !heldPositions.isEmpty() && heldPositions.contains(position);
+  }
+
+  /**
+   * Whether a free slot may not be handed to a new record: its record was deleted by the calling transaction (a position
+   * deleted in the current transaction is not reused by it), or a running statement holds it ({@link #holdPosition(long)}).
+   */
+  private boolean isFreeSlotKeptFromReuse(final TransactionContext tx, final int bucketId, final long position) {
+    return tx.isDeletedInTransaction(bucketId, position) || isPositionHeld(position);
   }
 
   public int getMaxRecordsInPage() {
@@ -6152,11 +6204,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     if (orderedRecordContentInPage.isEmpty()) {
       if (recordCountInPage > 0) {
-        // RESET RECORD COUNTER TO 0
-        page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 0);
+        // RESET RECORD COUNTER TO 0, OR TO ONE PAST THE LAST HELD SLOT (#12336)
+        final short keptRecordCount = recordCountKeepingHeldSlots(page, recordCountInPage);
+        page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, keptRecordCount);
         if (LogManager.instance().isLoggable(this, Level.FINE))
-          LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
-        wipeOutFreeSpace(page, (short) 0);
+          LogManager.instance()
+                  .log(this, Level.FINE, "Update record count from %d to %d in page %s", recordCountInPage, keptRecordCount, page.pageId);
+        wipeOutFreeSpace(page, keptRecordCount);
       }
       accountCompressedPage(page, contentHeaderSize);
       return;
@@ -6172,10 +6226,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // UPDATE THE RECORD COUNT
       // LAST POSITION IN THE PAGE, UPDATE THE TOTAL RECORDS IN THE PAGE GOING BACK FROM THE CURRENT RECORD
+      // A HELD SLOT STAYS IN THE TABLE AS A HOLE, WHICH THE ALLOCATOR SKIPS: TRIMMED, IT WOULD BE THE NEXT APPEND POSITION (#12336)
+      final long firstPositionOfPage = ((long) page.getPageId().getPageNumber()) * maxRecordsInPage;
       int newRecordCount = -1;
       for (int i = recordCountInPage - 1; i > -1; i--) {
         final int pos = getRecordPositionInPage(page, i);
-        if (pos == 0 || page.readNumber(pos) == 0)
+        if ((pos == 0 || page.readNumber(pos) == 0) && !isPositionHeld(firstPositionOfPage + i))
           // DELETED RECORD
           newRecordCount = i;
         else
@@ -9181,7 +9237,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int from = ownPage.getSlotScanFirstFreeSlot();
       int slot = from;
       while (slot < totalRecords && (getRecordPositionInPage(pageAnalysis.page, slot) != 0
-              || tx.isDeletedInTransaction(bucketId, firstPositionOfPage + slot)))
+              || isFreeSlotKeptFromReuse(tx, bucketId, firstPositionOfPage + slot)))
         slot++;
       if (slot > from) {
         insertSlotsRead.addAndGet(Math.min(totalRecords, slot + 1) - from);
@@ -9200,8 +9256,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
         // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD (from previous transactions only: a position deleted in the
-        // current transaction is not reused by it)
-        if (firstFreeSlot == -1 && !tx.isDeletedInTransaction(bucketId, firstPositionOfPage + i))
+        // current transaction is not reused by it, nor one a running statement holds, #12336)
+        if (firstFreeSlot == -1 && !isFreeSlotKeptFromReuse(tx, bucketId, firstPositionOfPage + i))
           firstFreeSlot = i;
       } else if (recordPositionInPage > pageAnalysis.lastRecordPositionInPage)
         pageAnalysis.lastRecordPositionInPage = recordPositionInPage;
@@ -9241,7 +9297,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext tx = database.getTransaction();
     final int bucketId = file.getFileId();
     int next = 1;
-    while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || tx.isDeletedInTransaction(bucketId,
+    while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || isFreeSlotKeptFromReuse(tx, bucketId,
             next)))
       next++;
     // Slots read: 1..next when the walk stopped on a free slot (next of them), 1..totalRecords-1 when it ran off the table.
