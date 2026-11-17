@@ -36,9 +36,11 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.MetadataUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -52,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * back as missing in about one round in five. The commit now answers {@code x-arcadedb-commit-index}, and a read that
  * sends it back as {@code x-arcadedb-read-after} waits until the follower has applied it, as HTTP does.
  */
+@Tag("slow")
 class Issue11948GrpcReadYourWritesIT extends BaseRaftHATest {
   private static final String TYPE   = "Issue11948";
   private static final int    ROUNDS = 100;
@@ -121,8 +124,17 @@ class Issue11948GrpcReadYourWritesIT extends BaseRaftHATest {
       final Metadata readAfter = new Metadata();
       readAfter.put(GrpcReadConsistencyInterceptor.READ_AFTER_HEADER, bookmark);
       readAfter.put(GrpcReadConsistencyInterceptor.READ_CONSISTENCY_HEADER, "read_your_writes");
-      assertThat(count(follower.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(readAfter)), key))
+      final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub followerAfter =
+          follower.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(readAfter));
+      assertThat(count(followerAfter, key))
           .as("a follower read with the bookmark of round %d sees the row committed in it", i).isEqualTo(1);
+      // The other two read paths: a streamed query resolves the database on its call's thread, a read inside a client
+      // transaction runs on that transaction's own thread, where submitToActiveTransaction applies the consistency
+      assertThat(countStreamed(followerAfter, key))
+          .as("a streamed follower read with the bookmark of round %d sees the row committed in it", i).isEqualTo(1);
+      assertThat(countInTransaction(followerAfter, key))
+          .as("a follower read inside a transaction, with the bookmark of round %d, sees the row committed in it", i)
+          .isEqualTo(1);
     }
   }
 
@@ -189,6 +201,32 @@ class Issue11948GrpcReadYourWritesIT extends BaseRaftHATest {
     for (final QueryResult result : response.getResultsList())
       rows += result.getRecordsCount();
     return rows;
+  }
+
+  private int countStreamed(final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub stub, final String key) {
+    final Iterator<QueryResult> results = stub.streamQuery(StreamQueryRequest.newBuilder().setDatabase(getDatabaseName())
+        .setCredentials(credentials()).setLanguage("sql").setQuery("SELECT FROM " + TYPE + " WHERE k = '" + key + "'").build());
+    int rows = 0;
+    while (results.hasNext())
+      rows += results.next().getRecordsCount();
+    return rows;
+  }
+
+  private int countInTransaction(final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub stub, final String key) {
+    final String txId = stub.beginTransaction(
+        BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials()).build()).getTransactionId();
+    final TransactionContext tx = TransactionContext.newBuilder().setTransactionId(txId).setDatabase(getDatabaseName()).build();
+    try {
+      final ExecuteQueryResponse response = stub.executeQuery(ExecuteQueryRequest.newBuilder().setDatabase(getDatabaseName())
+          .setCredentials(credentials()).setLanguage("sql").setQuery("SELECT FROM " + TYPE + " WHERE k = '" + key + "'")
+          .setTransaction(tx).build());
+      int rows = 0;
+      for (final QueryResult result : response.getResultsList())
+        rows += result.getRecordsCount();
+      return rows;
+    } finally {
+      stub.rollbackTransaction(RollbackTransactionRequest.newBuilder().setTransaction(tx).setCredentials(credentials()).build());
+    }
   }
 
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub stub(final int serverIndex) {

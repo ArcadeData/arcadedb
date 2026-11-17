@@ -2120,7 +2120,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
       // submitToActiveTransaction
       final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
-      // The response carries the read-your-writes bookmark of this commit (issue #11948)
+      // The response carries the read-your-writes bookmark of this commit (issue #11948). Bound only, not applied: a
+      // commit reads nothing, and the statements of the transaction had the consistency applied on its thread by
+      // submitToActiveTransaction. Nothing is set on a thread here, so there is nothing for this call to clear
       final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
       if (readConsistency != null)
         readConsistency.bind(txCtx.db);
@@ -4869,7 +4871,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // racing cancel shut the executor down between the cancelled check above and this submit
         // (onCompleted already guards this).
         try {
-          streamExecutor.submit(grpcContext.wrap(task));
+          // START resolves the database on this stream's own thread, which sets the call's read consistency there
+          // (issue #11948): no listener callback runs on that thread to clear it, so the task does
+          streamExecutor.submit(grpcContext.wrap(GrpcReadConsistencyInterceptor.clearingAfter(task)));
         } catch (final RejectedExecutionException ignore) {
           // a racing cancel shut the executor down; drop the message instead of throwing out of the callback
         }

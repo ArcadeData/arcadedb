@@ -76,24 +76,39 @@ class GrpcReadConsistencyInterceptor implements ServerInterceptor {
      * database that is not replicated. Undone by {@link #clear()}.
      */
     void applyTo(final Database database) {
-      final HAReplicatedDatabase haDb = bind(database);
-      if (haDb == null)
-        return;
-      final Database.READ_CONSISTENCY consistency = requested != null ?
-          requested :
-          parseConsistency(database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY));
+      final HAReplicatedDatabase haDb = replicated(database);
+      if (haDb != null)
+        applyTo(haDb, requested != null ? null :
+            database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY));
+    }
+
+    /**
+     * Binds {@code haDb} and sets the call's consistency on the current thread: the requested level, or else
+     * {@code configured} ({@code arcadedb.ha.readConsistency} of the database), the level a read without headers gets.
+     */
+    void applyTo(final HAReplicatedDatabase haDb, final String configured) {
+      bind(haDb);
+      final Database.READ_CONSISTENCY consistency = requested != null ? requested : parseConsistency(configured);
       if (consistency != null)
         haDb.setReadConsistencyContext(consistency, readAfter);
     }
 
     /** Records the replicated database the call reached, for the bookmark of its response, without touching the thread. */
-    HAReplicatedDatabase bind(final Database database) {
+    void bind(final Database database) {
       final HAReplicatedDatabase haDb = replicated(database);
       if (haDb != null)
-        this.database = haDb;
-      return haDb;
+        bind(haDb);
     }
 
+    void bind(final HAReplicatedDatabase haDb) {
+      this.database = haDb;
+    }
+
+    /**
+     * Clears the current thread's consistency. The context is ONE thread-local shared by every replicated database
+     * ({@code RaftReplicatedDatabase}), so clearing through the database bound last also clears what an earlier
+     * database of the same call set on this thread.
+     */
     void clear() {
       final HAReplicatedDatabase haDb = database;
       if (haDb != null)
@@ -145,47 +160,56 @@ class GrpcReadConsistencyInterceptor implements ServerInterceptor {
     return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(delegate) {
       @Override
       public void onMessage(final ReqT message) {
-        try {
-          super.onMessage(message);
-        } finally {
-          state.clear();
-        }
+        runAndClear(() -> super.onMessage(message), state);
       }
 
       @Override
       public void onHalfClose() {
-        try {
-          super.onHalfClose();
-        } finally {
-          state.clear();
-        }
+        runAndClear(super::onHalfClose, state);
       }
 
       @Override
       public void onCancel() {
-        try {
-          super.onCancel();
-        } finally {
-          state.clear();
-        }
+        runAndClear(super::onCancel, state);
       }
 
       @Override
       public void onComplete() {
-        try {
-          super.onComplete();
-        } finally {
-          state.clear();
-        }
+        runAndClear(super::onComplete, state);
       }
 
       @Override
       public void onReady() {
-        try {
-          super.onReady();
-        } finally {
+        runAndClear(super::onReady, state);
+      }
+    };
+  }
+
+  /**
+   * Runs one listener callback and clears what it gave the call's thread: whatever resolved a database there set the
+   * consistency on that thread, which gRPC hands to the next call once the callback returns.
+   */
+  private static void runAndClear(final Runnable callback, final ReadConsistency state) {
+    try {
+      callback.run();
+    } finally {
+      state.clear();
+    }
+  }
+
+  /**
+   * Wraps work a call hands to a thread of its own (the executor of a bidirectional stream), which resolves the database
+   * there and so sets the consistency on that thread, where no listener callback clears it. Run it inside the call's
+   * {@link Context} ({@code Context.wrap}), so {@link #current()} finds the call's state.
+   */
+  static Runnable clearingAfter(final Runnable task) {
+    return () -> {
+      try {
+        task.run();
+      } finally {
+        final ReadConsistency state = current();
+        if (state != null)
           state.clear();
-        }
       }
     };
   }
