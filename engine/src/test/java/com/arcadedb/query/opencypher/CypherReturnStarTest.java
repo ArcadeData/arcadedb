@@ -654,7 +654,7 @@ class CypherReturnStarTest {
 
     /**
      * An OPTIONAL CALL declares the columns its body returns, as Neo4j binds them to null when the body matches nothing. The null
-     * row the executor produces leaves them out today (#11632), so this is pinned on the declared columns alone.
+     * row the executor produces carries them too since #11632 ({@link Issue11632OptionalCallNullColumns}).
      */
     @Test
     void anOptionalSubqueryStarDeclaresTheBodyColumns() {
@@ -797,6 +797,115 @@ class CypherReturnStarTest {
 
     private List<String> declaredColumns(final String query) {
       return OpenCypherQueryEngine.declaredColumns((DatabaseInternal) database, query);
+    }
+  }
+
+  /**
+   * Issue #11632: an {@code OPTIONAL CALL { ... }} whose body answered no row for an outer row passed the outer row on unchanged,
+   * so the columns the body returns were missing from it instead of bound to null, and a {@code RETURN *} after it answered fewer
+   * keys than the columns the same statement declares for a zero-row result ({@code declaredColumns}, which Bolt announces).
+   * <p>
+   * Every path that produces such a row is driven: the streamed body of a read-only statement, the collected body of a statement
+   * that writes, the batch of {@code IN TRANSACTIONS} that committed with no inner row, and the batch that did not commit under
+   * {@code ON ERROR CONTINUE}.
+   */
+  @Nested
+  class Issue11632OptionalCallNullColumns extends TestHelper {
+
+    @Override
+    protected void beginTest() {
+      database.transaction(() -> {
+        database.getSchema().createVertexType("A");
+        database.getSchema().createVertexType("B");
+        database.getSchema().createEdgeType("X");
+        database.command("opencypher", "CREATE (:A {i: 1})");
+      });
+    }
+
+    /** The reported shape: an explicit RETURN in the body. */
+    @Test
+    void theReturnedItemIsBoundToNull() {
+      final Result row = single("MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN r } RETURN *");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("z", "r");
+      assertThat(row.hasProperty("r")).isTrue();
+      assertThat(row.<Object>getProperty("r")).isNull();
+      assertThat(row.<Object>getProperty("z")).isInstanceOf(Vertex.class);
+    }
+
+    /** A RETURN * in the body: the body's scope at its RETURN, the imported outer variable keeping its outer value. */
+    @Test
+    void theBodyStarScopeIsBoundToNull() {
+      final Result row = single("MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } RETURN *");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("z", "r", "b");
+      assertThat(row.<Object>getProperty("z")).isInstanceOf(Vertex.class);
+      assertThat(row.<Object>getProperty("r")).isNull();
+      assertThat(row.<Object>getProperty("b")).isNull();
+    }
+
+    /** Each shape against the columns the statement declares, which are what a zero-row result of it announces over Bolt. */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        // read-only: the body is streamed
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN r } RETURN *",
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } RETURN *",
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN b.k AS k, r } RETURN *",
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN *, 1 AS one } RETURN *",
+        "MATCH (z:A) OPTIONAL CALL { WITH z MATCH (z)-[r:X]->(b) RETURN b } RETURN *",
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[:X]->(b) RETURN b AS n UNION MATCH (n:B) RETURN n } RETURN *",
+        // the statement writes: the body is collected
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN r } SET z.seen = true RETURN *",
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } SET z.seen = true RETURN *",
+        // IN TRANSACTIONS, the batch committed with no inner row
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } IN TRANSACTIONS RETURN *",
+        "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN r } IN TRANSACTIONS RETURN *"
+    })
+    void theRowCarriesTheDeclaredColumns(final String query) {
+      final List<String> declared = OpenCypherQueryEngine.declaredColumns((DatabaseInternal) database, query);
+      assertThat(declared).as(query).isNotNull();
+      final Result row = single(query);
+      assertThat(new ArrayList<>(row.getPropertyNames())).as(query).isEqualTo(declared);
+      for (final String column : declared)
+        if (!column.equals("z"))
+          assertThat(row.<Object>getProperty(column)).as(query + " / " + column).isNull();
+    }
+
+    /** IN TRANSACTIONS with REPORT STATUS: the body's columns are null and the status follows them. */
+    @Test
+    void aCommittedBatchWithNoInnerRowBindsTheBodyColumnsBeforeTheStatus() {
+      final Result row = single(
+          "MATCH (z:A) OPTIONAL CALL (z) { MATCH (z)-[r:X]->(b) RETURN * } IN TRANSACTIONS ON ERROR CONTINUE "
+          + "REPORT STATUS AS s RETURN *");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("z", "r", "b", "s");
+      assertThat(row.<Object>getProperty("r")).isNull();
+      assertThat(row.<Object>getProperty("b")).isNull();
+      assertThat(row.<Object>getProperty("s")).isNotNull();
+    }
+
+    /**
+     * A batch that did not commit under ON ERROR CONTINUE binds what the body returns to null (#11595) - the explicit items only,
+     * before this fix, so a body returning {@code *} left its columns out exactly as the OPTIONAL CALL did.
+     */
+    @Test
+    void anUncommittedBatchBindsTheBodyStarScopeToNull() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE PROPERTY B.k INTEGER");
+        database.command("sql", "CREATE INDEX ON B (k) UNIQUE");
+        database.command("opencypher", "CREATE (:B {k: 1})");
+      });
+      final Result row = single("UNWIND [1] AS i CALL (i) { CREATE (b:B {k: i}) RETURN * } IN TRANSACTIONS ON ERROR CONTINUE "
+          + "RETURN *");
+      assertThat(new ArrayList<>(row.getPropertyNames())).containsExactly("i", "b");
+      assertThat(row.<Number>getProperty("i").intValue()).isEqualTo(1);
+      assertThat(row.<Object>getProperty("b")).isNull();
+    }
+
+    private Result single(final String query) {
+      try (final ResultSet rs = database.command("opencypher", query)) {
+        assertThat(rs.hasNext()).as("one row: %s", query).isTrue();
+        final Result row = rs.next();
+        assertThat(rs.hasNext()).as("only one row: %s", query).isFalse();
+        return row;
+      }
     }
   }
 }
