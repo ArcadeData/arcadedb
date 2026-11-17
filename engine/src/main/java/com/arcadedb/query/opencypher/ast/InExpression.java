@@ -29,6 +29,8 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
@@ -80,8 +82,24 @@ public class InExpression implements BooleanExpression {
    */
   private volatile ListMemo listMemo;
 
-  /** The identity hash of the last list {@link #lookupFor} was asked about and did not find in the memo; a heuristic, racy on purpose. */
-  private int lastSeenIdentity;
+  /**
+   * The identity hash of the last list {@link #lookupFor} was asked about and did not find in the memo; a heuristic, racy on
+   * purpose: a lost or stale value only hashes a list one row early or one row late, never changes an answer. Volatile so the
+   * node keeps the rule every node of a parallel scan holds (final or volatile, issue #11926), but read and written through
+   * {@link #LAST_SEEN_IDENTITY} in opaque mode: no fence on the per-row {@code x IN n.tags} path, which writes it on every
+   * row, while the value still reaches the other threads.
+   */
+  private volatile int lastSeenIdentity;
+
+  private static final VarHandle LAST_SEEN_IDENTITY;
+
+  static {
+    try {
+      LAST_SEEN_IDENTITY = MethodHandles.lookup().findVarHandle(InExpression.class, "lastSeenIdentity", int.class);
+    } catch (final ReflectiveOperationException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
 
   // Membership is equality against each element, so the element check reuses the = operator's
   // comparator (issue #5293) rather than a second, drifting implementation. Held per AST node so no
@@ -333,11 +351,11 @@ public class InExpression implements BooleanExpression {
     final ListMemo memo = listMemo;
     if (memo == null || memo.list() != listValue) {
       // Not the list of the memo: it is hashed only when it is the one the previous call saw. The identity hash is a plain
-      // int, so a list that differs on every row (x IN n.tags) allocates nothing and writes nothing shared; a collision only
-      // hashes a list one row early
+      // int, so a list that differs on every row (x IN n.tags) allocates nothing and writes only that int, without a fence; a
+      // collision only hashes a list one row early
       final int identity = System.identityHashCode(listValue);
-      if (lastSeenIdentity != identity) {
-        lastSeenIdentity = identity;
+      if ((int) LAST_SEEN_IDENTITY.getOpaque(this) != identity) {
+        LAST_SEEN_IDENTITY.setOpaque(this, identity);
         return null;
       }
       final ListLookup built = ListLookup.of(listOperand(listValue));
