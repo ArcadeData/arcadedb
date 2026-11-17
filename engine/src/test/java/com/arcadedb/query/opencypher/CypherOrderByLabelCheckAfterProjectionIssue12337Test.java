@@ -139,6 +139,32 @@ class CypherOrderByLabelCheckAfterProjectionIssue12337Test extends TestHelper {
     assertThatThrownBy(() -> names(prefix + "[m IN [1] | n.kind][0], name")).hasMessageContaining("n");
   }
 
+  /**
+   * A quoted binder ({@code `n`}) used to be kept with its backticks while the body's references are decoded, so the local
+   * bound a different name than the body read: the evaluation missed it, and the shadowing guard did not see that {@code `n`}
+   * shadows the projected {@code n}.
+   */
+  @Test
+  void aQuotedBinderIsTheSameVariableItsBodyReads() {
+    assertThat(column("RETURN [`x` IN [1, 2] | x * 10] AS v")).containsExactly(List.of(10L, 20L));
+    assertThat(column("RETURN any(`x` IN [1, 2] WHERE x = 2) AS v")).containsExactly(true);
+    assertThat(column("RETURN reduce(`s` = 0, `x` IN [1, 2, 3] | s + x) AS v")).containsExactly(6L);
+    assertThat(column("MATCH (`n` {name:'a'}) RETURN `n` {.kind}.kind AS v")).containsExactly("C");
+
+    // The local `n` shadows the projected n: the sort key is the constant 'z', so the rows keep the name order
+    assertThat(names("MATCH (n) RETURN n.name AS name, n AS m, count(*) AS c ORDER BY [`n` IN [{kind:'z'}] | n.kind][0], name"))
+        .containsExactly("a", "ab", "b", "c");
+  }
+
+  private List<Object> column(final String query) {
+    final List<Object> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext())
+        out.add(rs.next().getProperty("v"));
+    }
+    return out;
+  }
+
   @Test
   void aLabelCheckOfAVariableTheProjectionDroppedIsStillRefused() {
     database.transaction(() -> database.command("opencypher", "MATCH (a {name:'a'}), (b {name:'b'}) CREATE (a)-[:R]->(b)").close());

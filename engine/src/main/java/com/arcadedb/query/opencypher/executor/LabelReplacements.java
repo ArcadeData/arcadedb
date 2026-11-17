@@ -100,6 +100,8 @@ public final class LabelReplacements {
   private final CommandContext   owner;
   // The database the held positions live in, set by the first hold
   private       Database         database;
+  // Set once the holds were given back: each one is released exactly once, since a hold is counted per holder in the bucket
+  private       boolean          positionsReleased;
   // HOW MANY VERTICES {@link #replace} REWROTE: A CHANGE DETECTOR, SO A CALLER RE-WALKS ITS ROW ONLY WHEN SOMETHING MOVED
   private       long             replacements;
 
@@ -153,8 +155,9 @@ public final class LabelReplacements {
    * RID while a binding may still name it (issue #12336). The map itself is left as it is.
    */
   public void releaseHeldPositions() {
-    if (database == null)
+    if (database == null || positionsReleased)
       return;
+    positionsReleased = true;
     for (final RID rid : vertices.keySet())
       releasePosition(rid);
     for (final RID rid : edges.keySet())
@@ -212,7 +215,7 @@ public final class LabelReplacements {
    */
   public void restore(final Snapshot snapshot) {
     // The rolled-back attempt deleted nothing in the end, so the positions it held are given back
-    if (database != null) {
+    if (database != null && !positionsReleased) {
       for (final RID rid : vertices.keySet())
         if (!snapshot.vertices.containsKey(rid))
           releasePosition(rid);
@@ -543,7 +546,7 @@ public final class LabelReplacements {
    * is the (type, out vertex, in vertex) triple, and the re-attached copy names the new vertex.
    */
   private void holdPosition(final Database database, final RID rid) {
-    if (rid.getPosition() < 0)
+    if (rid.getPosition() < 0 || positionsReleased)
       return;
     final LocalBucket bucket = bucketOf(database, rid);
     if (bucket == null)
