@@ -132,7 +132,10 @@ public class CypherSemanticValidator {
     for (final CypherStatement branch : conditional.getAllBranches()) {
       validate(branch);
       final ReturnClause returnClause = branch.getReturnClause();
-      final List<String> columns = returnClause != null ? returnClause.getItems() : List.of();
+      final List<String> columns = returnClause != null ? ReturnScope.returnedColumns(branch, returnClause) : List.of();
+      if (columns == null)
+        // the scope of a RETURN * is only known at run time: nothing to compare without running the branch
+        continue;
       if (firstColumns == null)
         firstColumns = columns;
       else if (!firstColumns.equals(columns))
@@ -162,13 +165,17 @@ public class CypherSemanticValidator {
       }
     }
 
-    // Check that all queries have the same return columns
+    // Check that all queries have the same return columns: the columns each one answers, with a star expanded to the variables
+    // in scope at its RETURN (issue #11775), not the texts of its items, which read RETURN * as a column named "*"
     List<String> firstColumns = null;
     for (final CypherStatement query : unionStmt.getQueries()) {
       final ReturnClause returnClause = query.getReturnClause();
       if (returnClause == null)
         continue;
-      final List<String> columns = returnClause.getItems();
+      final List<String> columns = ReturnScope.returnedColumns(query, returnClause);
+      if (columns == null)
+        // the scope of a RETURN * is only known at run time: nothing to compare without running the branch
+        continue;
       if (firstColumns == null)
         firstColumns = columns;
       else if (!firstColumns.equals(columns))
