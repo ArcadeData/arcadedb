@@ -25,17 +25,25 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -95,7 +103,131 @@ class VectorAllowListAcrossBucketsTest extends TestHelper {
     assertThat(after.get("bruteForceScans")).isEqualTo(before.getOrDefault("bruteForceScans", 0L));
   }
 
+  /**
+   * Every search entry point narrows: the plain and the BINARY-reranked walk, {@code findNeighbors}, the approximate search and
+   * both grouped searches. Each answers exactly the allowed members of its own bucket and none of them falls back to scanning
+   * the bucket; a list with no member in the bucket is answered empty, with no scan either.
+   */
+  @ParameterizedTest(name = "{0} {1}")
+  @MethodSource("entryPoints")
+  void everySearchEntryPointAnswersOnlyTheAllowedMembersOfItsBucket(final VectorQuantizationType quantization,
+      final String entryPoint) {
+    final List<RID> all = createSchemaAndData(quantization);
+    final LSMVectorIndex index = indexes()[0];
+    final int bucket = index.getAssociatedBucketId();
+    final Set<RID> mixed = new HashSet<>(firstOfEachBucket(all, ALLOWED_PER));
+    final Set<RID> local = new HashSet<>();
+    final Set<RID> elsewhere = new HashSet<>();
+    for (final RID rid : mixed)
+      (rid.getBucketId() == bucket ? local : elsewhere).add(rid);
+    assertThat(local).hasSize(ALLOWED_PER);
+
+    final float[] query = embedding(7);
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+    final int k = mixed.size();
+    final Function<Set<RID>, List<Pair<RID, Float>>> search = switch (entryPoint) {
+      case "findNeighborsFromVector" -> allowed -> index.findNeighborsFromVector(query, k, -1, allowed, guard);
+      case "findNeighbors" -> allowed -> index.findNeighbors(query, k, -1, -1, allowed, guard);
+      case "findNeighborsFromVectorApproximate" -> allowed -> index.findNeighborsFromVectorApproximate(query, k, -1,
+          LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE, allowed, guard);
+      case "findNeighborsFromVectorGrouped" -> allowed -> index.findNeighborsFromVectorGrouped(query, k, 1, -1, allowed, rid -> rid,
+          guard);
+      case "findNeighborsFromVectorForGroups" -> allowed -> index.findNeighborsFromVectorForGroups(query, new HashSet<>(allowed), 1,
+          -1, allowed, rid -> rid, Float.POSITIVE_INFINITY, guard);
+      default -> throw new IllegalArgumentException(entryPoint);
+    };
+
+    final Map<String, Long> before = index.getStats();
+    assertThat(ridsOf(search.apply(mixed))).as("a list spread over the buckets").containsExactlyInAnyOrderElementsOf(local);
+    final Map<String, Long> afterMixed = index.getStats();
+    assertThat(ridsOf(search.apply(elsewhere))).as("a list with no member in the bucket").isEmpty();
+    final Map<String, Long> after = index.getStats();
+
+    assertThat(afterMixed.getOrDefault("preFilterSearches", 0L) - before.getOrDefault("preFilterSearches", 0L))
+        .as("the bucket's 5 members of the list are scored directly").isEqualTo(1L);
+    assertThat(after.getOrDefault("bruteForceScans", 0L)).as("scans of the whole bucket")
+        .isEqualTo(before.getOrDefault("bruteForceScans", 0L));
+    assertThat(after.getOrDefault("preFilterSearches", 0L)).as("a list with no member here is answered without a plan")
+        .isEqualTo(afterMixed.getOrDefault("preFilterSearches", 0L));
+  }
+
+  static Stream<Arguments> entryPoints() {
+    final List<Arguments> arguments = new ArrayList<>();
+    for (final VectorQuantizationType quantization : List.of(VectorQuantizationType.NONE, VectorQuantizationType.BINARY))
+      for (final String entryPoint : List.of("findNeighborsFromVector", "findNeighbors", "findNeighborsFromVectorApproximate",
+          "findNeighborsFromVectorGrouped", "findNeighborsFromVectorForGroups"))
+        arguments.add(Arguments.of(quantization, entryPoint));
+    return arguments.stream();
+  }
+
+  /**
+   * What {@code allowedInThisBucket} hands the search: the list itself when every member is local (no copy), nothing when none
+   * is, the local members otherwise - and the list untouched when it only answers membership, or when it is so much wider
+   * than the bucket that narrowing would cost a pass over it for no plan it could change.
+   */
+  @Test
+  void theNarrowingCopiesOnlyAMixedListOfUsefulWidth() {
+    final List<RID> all = createSchemaAndData(VectorQuantizationType.NONE);
+    final LSMVectorIndex index = indexes()[0];
+    final int bucket = index.getAssociatedBucketId();
+    final Set<RID> local = new HashSet<>();
+    final Set<RID> elsewhere = new HashSet<>();
+    for (final RID rid : firstOfEachBucket(all, ALLOWED_PER))
+      (rid.getBucketId() == bucket ? local : elsewhere).add(rid);
+    final Set<RID> mixed = new HashSet<>(local);
+    mixed.addAll(elsewhere);
+
+    assertThat(index.allowedInThisBucket(local)).as("all local: the same instance").isSameAs(local);
+    assertThat(index.allowedInThisBucket(elsewhere)).as("none local").isEmpty();
+    assertThat(index.allowedInThisBucket(mixed)).as("mixed: the local members").isNotSameAs(mixed)
+        .containsExactlyInAnyOrderElementsOf(local);
+
+    final Set<RID> tooWide = new HashSet<>(local);
+    for (int i = 0; tooWide.size() <= LSMVectorIndex.NARROWED_ALLOW_LIST_FACTOR * PER_BUCKET; i++)
+      tooWide.add(new RID(bucket + 1, i));
+    assertThat(index.allowedInThisBucket(tooWide)).as("wider than %d times the bucket", LSMVectorIndex.NARROWED_ALLOW_LIST_FACTOR)
+        .isSameAs(tooWide);
+
+    final PredicateRidSet predicate = new MembershipOnly(elsewhere);
+    assertThat(index.allowedInThisBucket(predicate)).as("a predicate decides its members itself").isSameAs(predicate);
+  }
+
+  /** A set decided one candidate at a time, like the ones a WHERE clause compiles to. */
+  private static final class MembershipOnly extends AbstractSet<RID> implements PredicateRidSet {
+    private final Set<RID> members;
+
+    private MembershipOnly(final Set<RID> members) {
+      this.members = members;
+    }
+
+    @Override
+    public boolean contains(final Object o) {
+      return members.contains(o);
+    }
+
+    @Override
+    public Iterator<RID> iterator() {
+      return members.iterator();
+    }
+
+    @Override
+    public int size() {
+      return members.size();
+    }
+  }
+
+  private static Set<RID> ridsOf(final List<Pair<RID, Float>> found) {
+    final Set<RID> rids = new HashSet<>();
+    for (final Pair<RID, Float> pair : found)
+      rids.add(pair.getFirst());
+    return rids;
+  }
+
   private List<RID> createSchemaAndData() {
+    return createSchemaAndData(VectorQuantizationType.NONE);
+  }
+
+  private List<RID> createSchemaAndData(final VectorQuantizationType quantization) {
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1_000_000);
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, -1);
 
@@ -103,7 +235,8 @@ class VectorAllowListAcrossBucketsTest extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE Doc BUCKETS " + BUCKETS);
       database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
       ((TypeLSMVectorIndexBuilder) database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" }).withLSMVectorType())
-          .withDimensions(DIMENSIONS).withQuantization(VectorQuantizationType.NONE).withSimilarity("EUCLIDEAN").create();
+          .withDimensions(DIMENSIONS).withQuantization(quantization)
+          .withSimilarity(quantization == VectorQuantizationType.BINARY ? "COSINE" : "EUCLIDEAN").create();
     });
 
     final List<RID> rids = new ArrayList<>();
