@@ -70,4 +70,29 @@ class Issue11375MongoUnacknowledgedWritesTest extends BaseMongoServerTest {
       assertThat(collection.countDocuments()).isEqualTo(4);
     }
   }
+
+  @Test
+  void failingUnacknowledgedWriteSendsNoReplyAndTheConnectionStaysInStep() {
+    getDatabase(0);
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
+        MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()),
+        MongoClientOptions.builder().serverSelectionTimeout(5000).connectionsPerHost(1).build())) {
+      client.getDatabase(getDatabaseName()).createCollection("w0fail");
+      final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("w0fail");
+      final MongoCollection<Document> unacknowledged = collection.withWriteConcern(WriteConcern.UNACKNOWLEDGED);
+
+      unacknowledged.insertOne(new Document("_id", 1));
+      // same _id: the server fails this write, and the client, which reads no reply, must see none
+      try {
+        unacknowledged.insertOne(new Document("_id", 1));
+      } catch (final RuntimeException e) {
+        // an unacknowledged write reports nothing, but a client-side failure must not hide the check below
+      }
+
+      // the next acknowledged request gets its own reply, not the error of the failed write
+      assertThat(collection.countDocuments()).isEqualTo(1);
+      collection.insertOne(new Document("_id", 2));
+      assertThat(collection.countDocuments()).isEqualTo(2);
+    }
+  }
 }
