@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.WrittenCopy;
+import com.arcadedb.query.opencypher.parser.ReturnScope;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -92,6 +93,8 @@ public class SubqueryStep extends AbstractExecutionStep {
   private boolean streamBody;
   // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
   private ResultSet streamedBody;
+  // THE COLUMNS THE BODY RETURNS, BOUND TO NULL ON A ROW THE BODY ANSWERED NOTHING FOR: COMPUTED ON FIRST USE
+  private String[] returnedColumns;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -298,7 +301,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               } else {
                 body.close();
                 if (subqueryClause.isOptional())
-                  buffer.add(currentOuterRow);
+                  buffer.add(withReturnedColumnsNull(currentOuterRow));
               }
               continue;
             }
@@ -308,10 +311,9 @@ public class SubqueryStep extends AbstractExecutionStep {
             refreshOuterBindings(currentOuterRow, context);
 
             if (innerResults.isEmpty()) {
-              if (subqueryClause.isOptional()) {
-                // OPTIONAL CALL - produce the outer row with nulls for inner columns
-                buffer.add(currentOuterRow);
-              }
+              // OPTIONAL CALL - produce the outer row with nulls for inner columns (issue #11632)
+              if (subqueryClause.isOptional())
+                buffer.add(withReturnedColumnsNull(currentOuterRow));
               // Non-optional: no output rows for this outer row
               currentInnerResults = null;
             } else {
@@ -499,8 +501,12 @@ public class SubqueryStep extends AbstractExecutionStep {
           reloadCommittedRecords(outerRow, committedWrites);
           final List<Result> innerResults = innerResultsPerRow.get(i);
           if (innerResults.isEmpty()) {
-            if (subqueryClause.isOptional())
-              buffer.add(committedStatus != null ? withStatus(outerRow, statusVariable, committedStatus) : outerRow);
+            if (subqueryClause.isOptional()) {
+              final ResultInternal row = withReturnedColumnsNull(outerRow);
+              if (committedStatus != null)
+                row.setProperty(statusVariable, committedStatus);
+              buffer.add(row);
+            }
           } else {
             for (final Result innerRow : innerResults) {
               final ResultInternal merged = mergeResults(outerRow, innerRow);
@@ -528,25 +534,54 @@ public class SubqueryStep extends AbstractExecutionStep {
    * variable the subquery returns, and the status when REPORT STATUS asks for it (issue #11595).
    */
   private Result rowOfUncommittedBatch(final Result outerRow, final String statusVariable, final Map<String, Object> status) {
-    final ResultInternal row = new ResultInternal();
-    for (final String prop : outerRow.getPropertyNames())
-      row.setProperty(prop, outerRow.getProperty(prop));
-    final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
-    if (innerReturn != null)
-      for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
-        if (!item.isStar())
-          row.setProperty(item.getOutputName(), null);
+    final ResultInternal row = withReturnedColumnsNull(outerRow);
     if (statusVariable != null)
       row.setProperty(statusVariable, status);
     return row;
   }
 
-  private static ResultInternal withStatus(final Result outerRow, final String statusVariable, final Map<String, Object> status) {
+  /**
+   * The row of an outer row the body answered no row for: the outer bindings, then {@code null} for every column the body
+   * returns that the outer row does not already bind, in the order a merged row carries them (issue #11632). Before, an OPTIONAL
+   * CALL passed the outer row on as it was, so the body's columns were missing instead of null, and a {@code RETURN *} after it
+   * answered fewer keys than the statement declares for a zero-row result. A column the outer row binds (an imported variable a
+   * body's {@code RETURN *} hands back) keeps its outer value.
+   */
+  private ResultInternal withReturnedColumnsNull(final Result outerRow) {
     final ResultInternal row = new ResultInternal();
     for (final String prop : outerRow.getPropertyNames())
       row.setProperty(prop, outerRow.getProperty(prop));
-    row.setProperty(statusVariable, status);
+    for (final String column : returnedColumns())
+      if (!row.hasProperty(column))
+        row.setProperty(column, null);
     return row;
+  }
+
+  /**
+   * The columns the body returns, by the walk {@code declaredColumns} does: the RETURN items by output name, and for a
+   * {@code RETURN *} the body's scope at its RETURN. The branches of a UNION body return the same columns, under the names of the
+   * first one; a unit subquery returns none. When the scope of a {@code *} is not known without running (a procedure the engine
+   * does not know), only the explicit items are bound.
+   */
+  private String[] returnedColumns() {
+    if (returnedColumns == null) {
+      final CypherStatement body = subqueryClause.getInnerStatement();
+      final CypherStatement first = body instanceof UnionStatement union ? union.getQueries().getFirst() : body;
+      final ReturnClause innerReturn = first != null ? first.getReturnClause() : null;
+      if (innerReturn == null)
+        returnedColumns = new String[0];
+      else {
+        List<String> columns = ReturnScope.returnedColumns(first, innerReturn);
+        if (columns == null) {
+          columns = new ArrayList<>();
+          for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
+            if (!item.isStar())
+              columns.add(item.getOutputName());
+        }
+        returnedColumns = columns.toArray(new String[0]);
+      }
+    }
+    return returnedColumns;
   }
 
   /** The value REPORT STATUS binds: whether the inner transaction started and committed, its number, and its error. */
