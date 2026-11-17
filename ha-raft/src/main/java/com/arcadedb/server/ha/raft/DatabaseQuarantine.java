@@ -412,17 +412,18 @@ final class DatabaseQuarantine {
 
     if (raftHA.isSoleVoter()) {
       LogManager.instance().log(sm, Level.SEVERE,
-          "Database '%s' opened without its unique indexes %s (no header page) and this node is the only voter, so there is "
-              + "no peer to re-install it from. It is NOT quarantined; the constraint is not enforced: run REBUILD INDEX "
-              + "(issue #11258)", null, dbName, indexNames);
+          "Database '%s' opened without its unique indexes %s whole (no header page, or no compacted sub-index) and this node "
+              + "is the only voter, so there is no peer to re-install it from. It is NOT quarantined; the constraint is not "
+              + "enforced: run REBUILD INDEX (issues #11258, #12348)", null, dbName, indexNames);
       return false;
     }
     if (!quarantineDatabase(dbName, DivergenceCause.UNAVAILABLE_UNIQUE_INDEX))
       return false;
 
     LogManager.instance().log(sm, Level.SEVERE,
-        "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
-            + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+        "Database '%s' opened without its unique indexes %s whole (no header page, or no compacted sub-index), so its "
+            + "constraint is not enforced here: quarantining it and re-installing it from the leader (issues #11258, #12348)", null,
+        dbName, indexNames);
     sm.triggerDatabaseResync(dbName);
     sm.resync.handOffLeadershipIfLeader(dbName);
     return true;

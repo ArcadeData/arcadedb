@@ -879,11 +879,41 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     try {
       replicateAndConclude(payload, leader, stateMachine, local);
+    } catch (final Error e) {
+      concludeAfterError(payload, stateMachine, local, e);
+      throw e;
     } finally {
       // Whatever exit was taken above, nothing may stay registered: a claim consumed it, a withdrawal removed it, and an
       // Error that skipped both is withdrawn here (a no-op on anything already claimed or withdrawn).
       if (local != null)
         stateMachine.withdrawLocalCommit(local);
+    }
+  }
+
+  /**
+   * Concludes a transaction whose replication an {@link Error} interrupted on the committing thread (issue #12347): an
+   * {@link OutOfMemoryError} while it waited for the quorum, typically. Every arm of {@link #replicateAndConclude} catches
+   * {@code Exception} only, so the Error left the transaction in its commit phase holding its file locks, and the caller's
+   * cleanup (a Bolt session's {@code rollback()}) then rolled it back while the apply thread, which had claimed it, was
+   * publishing the very same transaction: locks released before the pages were visible, a torn publication, a record delta
+   * cleared under the fold.
+   * <p>
+   * Claimed, the entry is committed and its pages are the apply thread's: this thread waits for the publication and completes
+   * the commit, as the other arms do once a withdrawal fails. Not claimed (withdrawn here, or a replica's commit), it is rolled
+   * back like any failed replication, and should the entry commit regardless the state machine applies it from its WAL bytes.
+   * A transaction already concluded is left alone. Nothing thrown here replaces the Error: it is attached to it.
+   */
+  private void concludeAfterError(final ReplicationPayload payload, final ArcadeStateMachine stateMachine, final LocalCommit local,
+      final Error error) {
+    try {
+      if (payload.tx().getStatus() == TransactionContext.STATUS.INACTIVE)
+        return;
+      if (local != null && (local.isClaimed() || !stateMachine.withdrawLocalCommit(local) && local.isClaimed()))
+        concludeLocalCommit(local, payload);
+      else if (payload.tx().getStatus() == TransactionContext.STATUS.COMMIT_1ST_PHASE)
+        rollback();
+    } catch (final Throwable t) {
+      error.addSuppressed(t);
     }
   }
 
@@ -1609,6 +1639,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (analyzed.inspectsTheLocalNode())
+        // A diagnostic of this node's own files (CHECK DATABASE without FIX): forwarded, it would answer for the leader's
+        // (issues #12347, #12348)
+        return runInspectionOfThisNode(language, query, configuration, args);
       // Forward write commands to the leader. Executing writes locally on a follower would
       // bypass leader-coordinated mutations of shared state (e.g., the schema dictionary,
       // see issue #4039), where the local page cache lags behind the asynchronous state
@@ -1633,6 +1667,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // analyze when a non-EVENTUAL read-consistency header is actually present, so the common write
     // path pays no extra parsing.
     applyReadConsistencyForReadOnlyCommandIfRequested(language, query);
+    return proxied.command(language, query, configuration, args);
+  }
+
+  /**
+   * Runs, on this replica, a statement that reports on this node's own files and writes nothing (issues #12347, #12348): a
+   * {@code CHECK DATABASE} without FIX. Forwarded like any non-idempotent statement, it inspected the leader's pages, so a replica
+   * whose record counter or index had drifted was reported clean by the one statement an operator runs to find out. No
+   * read-consistency barrier: what it reports is this node's state as it stands, which is the question asked.
+   */
+  private ResultSet runInspectionOfThisNode(final String language, final String query, final ContextConfiguration configuration,
+      final Object... args) {
+    ForwardedRequestIdContext.markExecutedLocally();
+    return proxied.command(language, query, configuration, args);
+  }
+
+  private ResultSet runInspectionOfThisNode(final String language, final String query, final ContextConfiguration configuration,
+      final Map<String, Object> args) {
+    ForwardedRequestIdContext.markExecutedLocally();
     return proxied.command(language, query, configuration, args);
   }
 
@@ -1849,6 +1901,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (analyzed.inspectsTheLocalNode())
+        return runInspectionOfThisNode(language, query, configuration, args);
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
         if (!runsInTheClientTransaction(queryEngine, analyzed))
           return forwardCommandToLeaderViaRaft(language, query, args, null);
@@ -3327,6 +3381,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return false;
   }
 
+  /**
+   * Whether a compaction that failed before its entry was sent left this node changed (issues #9558, #12348): it deferred
+   * the persistence of a swap ({@link #runOnceCompactionIsPublished}, which only a swap registers), a file it created is still
+   * here (a failure before the swap drops the file it was filling), or a commit it buffered wrote into a file this node still
+   * has. Any of them is a layout no other node holds.
+   */
+  // @VisibleForTesting
+  boolean compactionChangedThisNode(final List<CallableNoReturn> persistence) {
+    if (persistence != null && !persistence.isEmpty())
+      return true;
+    final FileManager fileManager = proxied.getFileManager();
+    final List<FileManager.FileChange> changes = fileManager.getRecordedChanges();
+    if (changes != null)
+      for (final FileManager.FileChange change : changes)
+        if (change.create && fileManager.existsFile(change.fileId))
+          return true;
+    return bufferedWalTouchesFilesStillHere();
+  }
+
   /** Ends the binding {@link #bindSchemaSessionToTerm} took, if it took one. */
   private void unbindSchemaSession(final long term) {
     if (term < 0)
@@ -4021,6 +4094,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return false;
     }
 
+    // Issue #12348: a quarantined copy is not the one the cluster holds - typically a compaction swapped files here that the log
+    // never carried - and a compaction of it builds on that layout: an incremental round appends to a compacted file no other
+    // node has and publishes a new mutable file that names it, which every follower then loads as an index without its
+    // sub-index. Deferred until the resync restores the committed copy, or the hand-off moves the leadership away.
+    if (backOffOn != null && backOffOn.isDatabaseDiverged(getName())) {
+      HALog.log(this, HALog.DETAILED,
+          "Skipping compaction for database '%s' because its local copy is quarantined on this node; will retry once it is resynced",
+          getName());
+      return false;
+    }
+
     if (!proxied.getFileManager().startRecordingChanges()) {
       // Another recordFileChanges/runWithCompactionReplication session is already active on this
       // node. Running the compaction now would either share the active session's recordedChanges
@@ -4080,7 +4164,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       } catch (final Throwable t) {
         // Issue #9558: the compaction failed on its own, but a commit it made (the TimeSeries mutable-bucket clear) may
         // already be applied here and sitting unshipped in the buffer, which the finally block below throws away.
-        if (!isIndeterminatePublishFailure(t) && bufferedWalTouchesFilesStillHere())
+        // Issue #12348: so may its swap. An LSM compaction writes its files without the WAL, so the buffer says nothing about
+        // it, and a failure after the swap (an OutOfMemoryError formatting its log line, registering its deferred persistence)
+        // left this node serving a compacted file and a mutable file the log never created. The next incremental round then
+        // appended to that file and published a mutable file naming it, and every follower loaded the index without its
+        // sub-index ("File with id N was not found"), for good.
+        if (!isIndeterminatePublishFailure(t) && compactionChangedThisNode(persistence))
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
       }

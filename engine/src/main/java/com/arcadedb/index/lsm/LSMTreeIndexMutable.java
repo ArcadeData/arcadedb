@@ -60,6 +60,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   // Why the last onAfterLoad() of a schema load could not attach the sub-index, reported once the schema entries are read
   private String subIndexLoadError;
+  // Why the compacted sub-index the header names is not attached, null while it is (or the header names none). Unlike
+  // subIndexLoadError it is kept after it is logged: the index serves its mutable pages only while it is set, and CHECK DATABASE
+  // reports it as a corrupted index for as long as it is, so FIX rebuilds it (issue #12348)
+  private volatile String detachedSubIndex;
 
   /**
    * Called at creation time.
@@ -127,6 +131,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public void onAfterLoad() {
     // RELOAD THE PAGE. THIS CAN BE CALLED AT CREATION OF THE OBJECT (CONSTRUCTOR) OR IN A TX WHEN DATABASE STRUCTURE CHANGES
     subIndexLoadError = null;
+    detachedSubIndex = null;
+    int headerSubIndexFileId = 0;
     try {
       final BasePage currentPage = this.database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
 
@@ -138,6 +144,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       currentMutablePages = Math.max(1, getTotalPages());
 
       final int subIndexFileId = currentPage.readInt(pos);
+      headerSubIndexFileId = subIndexFileId;
 
       pos += INT_SERIALIZED_SIZE;
 
@@ -196,6 +203,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // in-memory instance - the sub-index file id is persisted only when page 0 of a NEW file is
       // created, so nothing on disk is rewritten here.
       subIndex = null;
+      detachedSubIndex = headerSubIndexFileId > 0 ?
+          "the compacted sub-index (file id " + headerSubIndexFileId + ") could not be loaded, so the entries it holds are not served: "
+              + e.getMessage() :
+          "the header page of the index could not be read: " + e.getMessage();
       // During a schema load the report waits for onAfterSchemaLoad(): this runs twice before the schema entries are read, so it
       // could neither name the index to rebuild nor tell a file the load is about to drop as a leftover no schema entry references
       // (LocalSchema.sweepOrphanBucketIndexFiles), which it reported as an index to rebuild under a name
@@ -324,6 +335,15 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   public LSMTreeIndexCompacted getSubIndex() {
     return subIndex;
+  }
+
+  /**
+   * Why the compacted sub-index the header of this file names is not attached, or null while it is (or the header names none).
+   * Set when the load could not resolve it ("File with id N was not found"): the index then answers from its mutable pages alone,
+   * a partial index that, when UNIQUE, cannot refuse a duplicate of a key only the lost sub-index held (issue #12348).
+   */
+  public String getDetachedSubIndex() {
+    return detachedSubIndex;
   }
 
   public IndexCursor get(final Object[] keys, final int limit) throws IOException {
