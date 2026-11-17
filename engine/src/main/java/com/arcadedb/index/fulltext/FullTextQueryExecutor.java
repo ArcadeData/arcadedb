@@ -1172,7 +1172,7 @@ public class FullTextQueryExecutor {
           continue;
         lastKey = key;
         if (!key.startsWith(searchPrefix)) {
-          if (rangeScan && key.compareTo(searchPrefix) > 0)
+          if (rangeScan && compareCodePoints(key, searchPrefix) > 0)
             break;
           continue;
         }
