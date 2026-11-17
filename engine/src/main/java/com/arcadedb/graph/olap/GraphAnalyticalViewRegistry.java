@@ -160,6 +160,19 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
+   * Unregisters {@code name} only while {@code view} is the view registered there: a view shutting down must not free a name
+   * that another view, built again under it, holds now (issue #12389).
+   */
+  public static void unregister(final Database database, final String name, final GraphAnalyticalView view) {
+    synchronized (REGISTRY) {
+      final Database unwrapped = unwrap(database);
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
+      if (views != null && views.remove(name, view) && views.isEmpty())
+        REGISTRY.remove(unwrapped);
+    }
+  }
+
+  /**
    * Frees {@code name} from a view whose background work failed and records why, in one step under the registry lock, and only
    * while {@code view} is the view registered there (issue #11032). Answers whether it was. The view that replaced it under the
    * same name keeps the name, and a registration or a {@code shutdownAll()} cannot slip between the removal and the record: the

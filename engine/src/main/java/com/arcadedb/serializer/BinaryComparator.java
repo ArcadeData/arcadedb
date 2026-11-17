@@ -256,6 +256,12 @@ public class BinaryComparator {
         return compareZoned(zonedOf(value1), zonedOf(value2));
       throw unsupportedPair(type1, type2);
 
+    case BinaryTypes.TYPE_LOCAL_DATETIME:
+      // only held by a property nothing declares, whose index keys are STRING: an index never orders it against another kind
+      if (type2 == BinaryTypes.TYPE_LOCAL_DATETIME)
+        return ((LocalDateTime) value1).compareTo((LocalDateTime) value2);
+      throw unsupportedPair(type1, type2);
+
     case BinaryTypes.TYPE_DURATION:
       if (type2 == BinaryTypes.TYPE_DURATION) {
         final CypherDuration d1 = (CypherDuration) value1;

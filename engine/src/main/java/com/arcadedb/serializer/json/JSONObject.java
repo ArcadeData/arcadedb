@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.DurationArithmetic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -204,7 +205,8 @@ public class JSONObject implements Map<String, Object> {
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
     }
-    case Duration duration -> object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+    // exact seconds to the nanosecond: a double lost the sub-microsecond digits of a duration longer than about 100 days (issue #12295)
+    case Duration duration -> object.addProperty(name, DurationArithmetic.toSeconds(duration));
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
     // a Cypher path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
@@ -912,7 +914,7 @@ public class JSONObject implements Map<String, Object> {
         final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
         yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
       }
-      case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+      case Duration duration -> new JsonPrimitive(DurationArithmetic.toSeconds(duration));
       case Class<?> clazz -> new JsonPrimitive(clazz.getName());
       default -> new JsonPrimitive(object.toString());
     };

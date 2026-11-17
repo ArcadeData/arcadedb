@@ -28,6 +28,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BetweenCondition;
@@ -601,11 +602,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final PageManager pageManager = database.getPageManager();
     guard.check();
-    if ((pageManager.getPublicationSequence() & 1) != 0)
-      // A commit is publishing: wait for it to let go of the lock, doing nothing under it. The wait cannot deadlock a reader that
-      // holds file locks in its transaction, for the reason given at loadPointLookup(): a committer takes this lock last and
-      // acquires nothing under it. It lasts one commit's publication, so the guard is checked before it and not during it
-      pageManager.executeInLock(() -> null);
+    awaitPublicationBeforeReread(pageManager, guard);
     unpinRepeatableReadPages(database, indexStep);
     rereadSequence = pageManager.getPublicationSequence();
 
@@ -618,6 +615,26 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           rereadCandidates.add(rid);
     }
     return true;
+  }
+
+  /**
+   * Waits for a commit or a replicated apply that is publishing to end before a key is read again, so the replacement of a record
+   * found deleted is among the entries the re-read finds (#11755). The page-manager lock a local commit publishes under does not
+   * cover the replicated apply of a replica, so the publication is first waited out without a lock, in bounded waits with the guard
+   * checked between them. A publication still open after them is then waited out through the page-manager lock, which a local
+   * commit holds for its whole publication however long it lasts (a synchronous flush writes its pages inside it), as it was before
+   * #11755. The lock cannot deadlock a reader that holds file locks in its transaction: a committer takes it last and acquires
+   * nothing under it, and nothing is run under it here. A replicated apply that outlasts the waits leaves the sequence odd, and every
+   * row of the re-read is then checked against the key ({@link #nextRereadRow}).
+   */
+  static void awaitPublicationBeforeReread(final PageManager pageManager, final WorkGuard guard) {
+    long sequence = pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
+    for (int wait = 1; (sequence & 1) != 0 && wait < ConsistentKeyLookup.MAX_ATTEMPTS; wait++) {
+      guard.check();
+      sequence = pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
+    }
+    if ((sequence & 1) != 0)
+      pageManager.executeInLock(() -> null);
   }
 
   /**
@@ -824,21 +841,21 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * another key's when the slot was reused, and a row found in a later state can then collide with one served earlier from
    * an older one. The entries are read and every record loaded between two samples of the page manager's publication
    * sequence that are equal and even, which no commit can have interleaved with; otherwise the lookup starts again, and
-   * after {@link #MAX_RECONCILE_ATTEMPTS} attempts runs under the publication lock, which keeps every commit out. Costs
-   * two volatile reads when no commit overlaps.
+   * after {@link #MAX_RECONCILE_ATTEMPTS} attempts runs once more with the publications held off
+   * ({@link ConsistentKeyLookup#readAgainstOneCommit}), which keeps every commit and replicated apply out. Costs two volatile
+   * reads when no commit overlaps.
    * <p>
    * The rows are held until all are loaded, so a lookup of more than {@link #MAX_POINT_LOOKUP_ENTRIES} entries is not
    * held: it returns null, leaving the entries read in {@link #pendingEntries} for the streaming path, which settles them
    * one by one (#9902, see {@link #pointLookupRow}): an answer that large is not one state, but every row of it is a record
    * that holds its key when it is loaded, none is served twice, and a record that holds its key the whole time is served.
    * <p>
-   * The last-resort lock cannot deadlock: it is the page-manager lock, which is reentrant and which a committer takes last,
-   * inside the file locks, only to publish pages. It also holds for a reader inside a transaction that holds file locks
-   * (explicit {@code LOCK}, or writes): the committer that owns the page-manager lock took every file lock it needs before
-   * taking it and acquires none under it, so it never waits for the locks this reader holds; and nothing the reader runs under the
-   * lock waits on a committer.
+   * A publication is waited out with {@link PageManager#awaitPublicationEnd}, not through the page-manager lock, which the
+   * replicated apply of a replica does not take (#11755). The last resort cannot deadlock, also for a reader inside a transaction
+   * that holds file locks (explicit {@code LOCK}, or writes): a committer held off took every file lock it needs and the
+   * page-manager lock before it waits for the hold and acquires none after, so it never waits for the locks this reader holds;
+   * and the read under the hold loads pages and records, which waits on no committer.
    */
-  @SuppressWarnings("unchecked")
   private ArrayDeque<Result> loadPointLookup(final CommandContext context, final FetchFromIndexStep indexStep, final int nRecords,
       final WorkGuard guard) {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
@@ -848,9 +865,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
         // a statement cancelled or past its deadline stops between attempts (#9893)
         guard.check();
-        if ((pageManager.getPublicationSequence() & 1) != 0)
-          // a commit is publishing: wait for it to let go of the lock instead of spending an attempt inside its window
-          pageManager.executeInLock(() -> null);
+        // a commit or a replicated apply is publishing: wait for it to end instead of spending an attempt inside its window
+        pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
         final ArrayDeque<Result> rows = readAndLoad(context, indexStep, nRecords, guard);
         if (rows == null)
           return null;
@@ -859,15 +875,15 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           return rows;
         restartLookup(database, indexStep);
       }
-      LogManager.instance().log(this, Level.FINE, "Point lookup on index '%s' overlapped a commit %d times, reading it under the publication lock",
-          null, indexStep.indexName, MAX_RECONCILE_ATTEMPTS);
-      // and not once the lock is held: every commit would wait for a statement that is going to fail anyway
+      LogManager.instance().log(this, Level.FINE,
+          "Point lookup on index '%s' overlapped a commit %d times, reading it with the publications held off", null,
+          indexStep.indexName, MAX_RECONCILE_ATTEMPTS);
+      // and not once they are held off: every commit would wait for a statement that is going to fail anyway
       guard.check();
-      final ArrayDeque<Result> rows = (ArrayDeque<Result>) pageManager.executeInLock(() -> {
+      return ConsistentKeyLookup.readAgainstOneCommit(pageManager, () -> {
         restartLookup(database, indexStep);
         return readAndLoad(context, indexStep, nRecords, guard);
-      });
-      return rows;
+      }, "Point lookup on index '" + indexStep.indexName + "'");
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
@@ -936,30 +952,30 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * could not be loaded (#9369): a range scan reads its entries as it goes, so only the entries whose record is gone are judged,
    * see {@link #pointLookupRow} for a point lookup. A unique key holds one entry and is looked up again, which finds the record
    * that replaced a deleted one; a non-unique key would have to be read whole, so only the entry itself is retried. The lookup
-   * and the load are repeated until no commit published in between, and as a last resort run under the publication lock, which
-   * keeps any commit out for the time of that one entry. Costs nothing unless an entry is dropped.
+   * and the load are repeated until no commit published in between, and as a last resort run with the publications held off
+   * ({@link ConsistentKeyLookup#readAgainstOneCommit}), which keeps any commit and replicated apply out for the time of that one
+   * entry. Costs nothing unless an entry is dropped.
    *
    * @return the rows now found for the entry, empty when the key is gone or the entry was genuinely dangling
    */
-  @SuppressWarnings("unchecked")
   private List<Result> reconcile(final FetchFromIndexStep indexStep, final Object key, final RID missing, final CommandContext context,
       final WorkGuard guard) {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final PageManager pageManager = database.getPageManager();
     for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
       guard.check();
-      final long before = pageManager.getPublicationSequence();
-      if ((before & 1) != 0) {
-        // a commit is publishing: wait for it to let go of the lock
-        pageManager.executeInLock(() -> null);
+      // a commit or a replicated apply is publishing: wait for it to end (#11755)
+      final long before = pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
+      if ((before & 1) != 0)
         continue;
-      }
       final List<Result> found = loadEntryAgain(database, indexStep, key, missing, context, guard);
       if (pageManager.getPublicationSequence() == before)
         return found;
     }
     guard.check();
-    return (List<Result>) pageManager.executeInLock(() -> loadEntryAgain(database, indexStep, key, missing, context, guard));
+    return ConsistentKeyLookup.readAgainstOneCommit(pageManager,
+        () -> loadEntryAgain(database, indexStep, key, missing, context, guard),
+        "Index entry " + missing + " of index '" + indexStep.indexName + "'");
   }
 
   private List<Result> loadEntryAgain(final DatabaseInternal database, final FetchFromIndexStep indexStep, final Object key,

@@ -68,6 +68,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
@@ -146,6 +147,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -205,6 +207,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * the database the compaction runs on.
    */
   private final ThreadLocal<List<CallableNoReturn>> compactionPersistence = new ThreadLocal<>();
+  /**
+   * The commit locks of the files the compaction running on this thread created, held until the entry publishing it is
+   * accepted or the compaction fails (issue #12236). Non-null only inside {@link #runWithCompactionReplication}, like
+   * {@link #compactionPersistence}.
+   */
+  private final ThreadLocal<List<Integer>> compactionHeldLocks = new ThreadLocal<>();
+  /**
+   * Leader commits that passed the recording-session gate of {@link #commit()} and have not ended, and how many of them the
+   * current thread accounts for (issue #12098). A schema session waits for them before it asks for the exclusive lock, see
+   * {@link #awaitCommitsPastRecordingSessionGate()}.
+   */
+  private final AtomicInteger      commitsPastRecordingSessionGate = new AtomicInteger();
+  private final ThreadLocal<int[]> gatedCommitsOfThisThread        = ThreadLocal.withInitial(() -> new int[1]);
   /**
    * Non-null only while a {@code recordFileChanges} session on THIS thread is shipping its buffered WAL in
    * instalments (issue #6136). Thread-local for the same reason the buffers are, and null everywhere else - notably
@@ -451,6 +466,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // #11803: a statement refused for what the database holds now, the caller's to resolve and not a server fault
       Map.entry(ObjectInUseException.class.getName(), ObjectInUseException::new),
+      // #12161: a statement refused for the transaction the caller holds, the caller's to resolve
+      Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /**
@@ -521,6 +538,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
 
+  /**
+   * The highest read-your-writes bookmark the leader answered with for the writes the request served on this thread forwarded
+   * to it (issue #11740), or {@code null} when it forwarded none. Cleared with the read-consistency context at the end of the
+   * request.
+   */
+  private static final ThreadLocal<Long> FORWARDED_WRITE_BOOKMARK = new ThreadLocal<>();
+
   public static ReadConsistencyContext getReadConsistencyContext() {
     return READ_CONSISTENCY_CONTEXT.get();
   }
@@ -547,11 +571,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void clearReadConsistencyContext() {
     READ_CONSISTENCY_CONTEXT.remove();
+    FORWARDED_WRITE_BOOKMARK.remove();
   }
 
   @Override
   public long getLastAppliedIndex() {
     return raftHAServer != null ? raftHAServer.getLastAppliedIndex() : -1;
+  }
+
+  /**
+   * This node's applied index, raised to the leader's bookmark for a write the request forwarded (issue #11740). A write
+   * forwarded to the leader is applied here only when this node learns it was committed, and with a majority quorum the leader
+   * can commit it before this node has it: this node's own index then stands below the write, and a read that waits for it
+   * does not see the write, here or on any other node. The leader's bookmark is at or past the write.
+   */
+  @Override
+  public long getCommitIndexBookmark() {
+    final long applied = getLastAppliedIndex();
+    final Long forwarded = FORWARDED_WRITE_BOOKMARK.get();
+    return forwarded != null ? Math.max(applied, forwarded) : applied;
   }
 
   private final ArcadeDBServer server;
@@ -672,10 +710,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // SCHEMA_ENTRY that creates the file on followers, where TransactionManager.applyChanges
     // silently skips pages whose fileId does not exist - dropping the writes and surfacing
     // later as missing index entries (issue #4083). The schema-commit thread itself uses the
-    // schemaWalBuffer below and must not wait on its own session.
-    if (leader && !Boolean.TRUE.equals(isSchemaCommitThread.get()))
-      waitForActiveRecordingSession();
+    // schemaWalBuffer below and must not wait on its own session. A commit that passes is counted until it ends, so a
+    // schema session can wait for it before asking for the exclusive lock (issue #12098). A commit that passes this check
+    // just before a compaction opens its session is ordered by the lock the compaction keeps on the files it creates until
+    // its entry is accepted (issue #12236, keepLockedUntilCompactionIsPublished).
+    final boolean gated = leader && !Boolean.TRUE.equals(isSchemaCommitThread.get());
+    if (gated)
+      passRecordingSessionGate();
+    try {
+      commitPastRecordingSessionGate(leader);
+    } finally {
+      if (gated)
+        leaveRecordingSessionGate();
+    }
+  }
 
+  /** The two arms of {@link #commit()} past its recording-session gate: the schema-commit thread's and the replicated one. */
+  private void commitPastRecordingSessionGate(final boolean leader) {
     // When commit() is called from inside a recordFileChanges() DDL callback on the leader,
     // the files being created do not yet exist on replicas. Sending a TX_ENTRY now would
     // fail on replicas because the target files are missing. Instead, buffer the WAL data
@@ -876,11 +927,47 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     try {
       replicateAndConclude(payload, leader, stateMachine, local);
+    } catch (final Error e) {
+      concludeAfterError(payload, stateMachine, local, e);
+      throw e;
     } finally {
       // Whatever exit was taken above, nothing may stay registered: a claim consumed it, a withdrawal removed it, and an
       // Error that skipped both is withdrawn here (a no-op on anything already claimed or withdrawn).
       if (local != null)
         stateMachine.withdrawLocalCommit(local);
+    }
+  }
+
+  /**
+   * Concludes a transaction whose replication an {@link Error} interrupted on the committing thread (issue #12347): an
+   * {@link OutOfMemoryError} while it waited for the quorum, typically. Every arm of {@link #replicateAndConclude} catches
+   * {@code Exception} only, so the Error left the transaction in its commit phase holding its file locks, and the caller's
+   * cleanup (a Bolt session's {@code rollback()}) then rolled it back while the apply thread, which had claimed it, was
+   * publishing the very same transaction: locks released before the pages were visible, a torn publication, a record delta
+   * cleared under the fold.
+   * <p>
+   * Claimed, the entry is committed and its pages are the apply thread's: this thread waits for the publication and completes
+   * the commit, as the other arms do once a withdrawal fails. Not claimed (withdrawn here, or a replica's commit), it is rolled
+   * back like any failed replication, and should the entry commit regardless the state machine applies it from its WAL bytes.
+   * A transaction already concluded is left alone. Nothing thrown here replaces the Error: it is attached to it.
+   */
+  private void concludeAfterError(final ReplicationPayload payload, final ArcadeStateMachine stateMachine, final LocalCommit local,
+      final Error error) {
+    try {
+      if (payload.tx().getStatus() == TransactionContext.STATUS.INACTIVE)
+        return;
+      if (local != null && !local.isClaimed()) {
+        // The withdrawal is the point: rolled back, the transaction must not be claimable by the apply thread any more. It fails
+        // when the apply thread claimed it in between (the commit is then concluded below), or when an arm of
+        // replicateAndConclude had already withdrawn it (and isClaimed() stays false)
+        stateMachine.withdrawLocalCommit(local);
+      }
+      if (local != null && local.isClaimed())
+        concludeLocalCommit(local, payload);
+      else if (payload.tx().getStatus() == TransactionContext.STATUS.COMMIT_1ST_PHASE)
+        rollback();
+    } catch (final Throwable t) {
+      error.addSuppressed(t);
     }
   }
 
@@ -1456,7 +1543,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private long localWalTxId(final ReplicationPayload payload) {
     try {
-      return ArcadeStateMachine.peekWalTransactionId(payload.walData());
+      return CommittedEntryDecoding.peekWalTransactionId(payload.walData());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not read the WAL transaction id of a replicated entry (db=%s): %s", getName(), e.getMessage());
@@ -1520,7 +1607,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // choke point besides the pre-append guard), so reconciliation works on a fenced database - it is the
     // same page-level machinery recovery replay uses on reopen.
     try {
-      final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
+      final WALFile.WALTransaction walTx = CommittedEntryDecoding.deserializeWalTransaction(payload.walData());
       // The BM25 corpus deltas ride with the bucket record counts and obey the same rule: applyChanges folds them only when it
       // advances a page. The local commit folds both as the LAST step of publishing its pages, so a failure before that leaves a
       // page to advance here, and one after it finds every page published and folds nothing (a fold counted twice would be
@@ -1606,6 +1693,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (analyzed.inspectsTheLocalNode())
+        // A diagnostic of this node's own files (CHECK DATABASE without FIX): forwarded, it would answer for the leader's
+        // (issues #12347, #12348)
+        return runInspectionOfThisNode(language, query, configuration, args);
       // Forward write commands to the leader. Executing writes locally on a follower would
       // bypass leader-coordinated mutations of shared state (e.g., the schema dictionary,
       // see issue #4039), where the local page cache lags behind the asynchronous state
@@ -1630,6 +1721,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // analyze when a non-EVENTUAL read-consistency header is actually present, so the common write
     // path pays no extra parsing.
     applyReadConsistencyForReadOnlyCommandIfRequested(language, query);
+    return proxied.command(language, query, configuration, args);
+  }
+
+  /**
+   * Runs, on this replica, a statement that reports on this node's own files and writes nothing (issues #12347, #12348): a
+   * {@code CHECK DATABASE} without FIX. Forwarded like any non-idempotent statement, it inspected the leader's pages, so a replica
+   * whose record counter or index had drifted was reported clean by the one statement an operator runs to find out. No
+   * read-consistency barrier: what it reports is this node's state as it stands, which is the question asked.
+   */
+  private ResultSet runInspectionOfThisNode(final String language, final String query, final ContextConfiguration configuration,
+      final Object... args) {
+    ForwardedRequestIdContext.markExecutedLocally();
+    return proxied.command(language, query, configuration, args);
+  }
+
+  private ResultSet runInspectionOfThisNode(final String language, final String query, final ContextConfiguration configuration,
+      final Map<String, Object> args) {
+    ForwardedRequestIdContext.markExecutedLocally();
     return proxied.command(language, query, configuration, args);
   }
 
@@ -1846,6 +1955,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (analyzed.inspectsTheLocalNode())
+        return runInspectionOfThisNode(language, query, configuration, args);
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
         if (!runsInTheClientTransaction(queryEngine, analyzed))
           return forwardCommandToLeaderViaRaft(language, query, args, null);
@@ -2668,7 +2779,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void refuseReadWhileRemovedFromConfiguration(final Database.READ_CONSISTENCY consistency) {
     if (raftHAServer.isRemovedFromConfiguration())
-      throw RaftHAServer.readRefusedWhileRemovedFromConfiguration(getName(), consistency);
+      throw AppliedIndexWaits.readRefusedWhileRemovedFromConfiguration(getName(), consistency);
   }
 
   @Deprecated
@@ -2852,6 +2963,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             + "every entry committed before its term yet (waited up to " + quorumTimeoutOrZero()
             + " ms), so a schema change cannot allocate file ids safely right now. Please retry");
       }
+
+      // Issue #12098: the commits that passed the gate before this session opened end first, while no writer is queued ahead
+      // of the shared lock they re-enter to conclude. Their entries then apply ahead of the exclusive window below, too.
+      awaitCommitsPastRecordingSessionGate();
 
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
@@ -3277,7 +3392,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     for (int i = walEntries.size() - 1; i >= 0; i--) {
       final WALFile.WALTransaction tx;
       try {
-        tx = ArcadeStateMachine.deserializeWalTransaction(walEntries.get(i));
+        tx = CommittedEntryDecoding.deserializeWalTransaction(walEntries.get(i));
       } catch (final RuntimeException e) {
         // Unreadable here means unreadable to nobody's benefit: shipped as it is, as before
         continue;
@@ -3312,7 +3427,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     for (final byte[] wal : buffered) {
       final WALFile.WALTransaction tx;
       try {
-        tx = ArcadeStateMachine.deserializeWalTransaction(wal);
+        tx = CommittedEntryDecoding.deserializeWalTransaction(wal);
       } catch (final RuntimeException e) {
         return true;
       }
@@ -3322,6 +3437,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             return true;
     }
     return false;
+  }
+
+  /**
+   * Whether a compaction that failed before its entry was sent left this node changed (issues #9558, #12348): it deferred
+   * the persistence of a swap ({@link #runOnceCompactionIsPublished}, which only a swap registers), a file it created is still
+   * here (a failure before the swap drops the file it was filling), or a commit it buffered wrote into a file this node still
+   * has. Any of them is a layout no other node holds.
+   */
+  // @VisibleForTesting
+  boolean compactionChangedThisNode(final List<CallableNoReturn> persistence) {
+    if (persistence != null && !persistence.isEmpty())
+      return true;
+    final FileManager fileManager = proxied.getFileManager();
+    final List<FileManager.FileChange> changes = fileManager.getRecordedChanges();
+    if (changes != null)
+      for (final FileManager.FileChange change : changes)
+        if (change.create && fileManager.existsFile(change.fileId))
+          return true;
+    return bufferedWalTouchesFilesStillHere();
   }
 
   /** Ends the binding {@link #bindSchemaSessionToTerm} took, if it took one. */
@@ -4018,6 +4152,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return false;
     }
 
+    // Issue #12348: a quarantined copy is not the one the cluster holds - typically a compaction swapped files here that the log
+    // never carried - and a compaction of it builds on that layout: an incremental round appends to a compacted file no other
+    // node has and publishes a new mutable file that names it, which every follower then loads as an index without its
+    // sub-index. Deferred until the resync restores the committed copy, or the hand-off moves the leadership away.
+    if (backOffOn != null && backOffOn.isDatabaseDiverged(getName())) {
+      HALog.log(this, HALog.DETAILED,
+          "Skipping compaction for database '%s' because its local copy is quarantined on this node; will retry once it is resynced",
+          getName());
+      return false;
+    }
+
     if (!proxied.getFileManager().startRecordingChanges()) {
       // Another recordFileChanges/runWithCompactionReplication session is already active on this
       // node. Running the compaction now would either share the active session's recordedChanges
@@ -4070,6 +4215,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the layout every other node holds
       final List<CallableNoReturn> persistence = new ArrayList<>();
       compactionPersistence.set(persistence);
+      // Issue #12236: the files the compaction creates stay locked until its entry is in the log (see
+      // keepLockedUntilCompactionIsPublished)
+      compactionHeldLocks.set(new ArrayList<>(1));
 
       final boolean result;
       try {
@@ -4077,7 +4225,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       } catch (final Throwable t) {
         // Issue #9558: the compaction failed on its own, but a commit it made (the TimeSeries mutable-bucket clear) may
         // already be applied here and sitting unshipped in the buffer, which the finally block below throws away.
-        if (!isIndeterminatePublishFailure(t) && bufferedWalTouchesFilesStillHere())
+        // Issue #12348: so may its swap. An LSM compaction writes its files without the WAL, so the buffer says nothing about
+        // it, and a failure after the swap (an OutOfMemoryError formatting its log line, registering its deferred persistence)
+        // left this node serving a compacted file and a mutable file the log never created. The next incremental round then
+        // appended to that file and published a mutable file naming it, and every follower loaded the index without its
+        // sub-index ("File with id N was not found"), for good.
+        if (!isIndeterminatePublishFailure(t) && compactionChangedThisNode(persistence))
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
       }
@@ -4144,6 +4297,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
       }
     } finally {
+      releaseCompactionLocks();
       compactionPersistence.remove();
       // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
       // thread and defers (returns false above) whenever a session is already open, so it never nests
@@ -4286,6 +4440,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         sealedBlobs, finalSealedChunks);
     // Published: nothing below may send the caller into a quarantine for a change every node now holds.
     published[0] = true;
+    // The entry creating the new files is in the log: a commit waiting on one of them dispatches after it, so the locks need
+    // not stay held through the deferred persistence (issue #12236). The outer finally releases whatever is left.
+    releaseCompactionLocks();
     // And whatever held this database's compactions off is over (issue #9558). Only HERE, not on the early return of a
     // compaction that had nothing to publish: that one proves nothing about the payload that was too large to ship.
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
@@ -4319,6 +4476,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (droppedFileId > -1)
       proxied.getFileManager().recordDeferredDrop(droppedFileId);
     persistence.add(action);
+  }
+
+  /**
+   * Takes over the commit lock of a file the compaction running on this thread created, until the entry publishing the
+   * compaction is accepted (released right then, before the deferred persistence) or the compaction fails (issue #12236). A commit that passed {@link #waitForActiveRecordingSession}
+   * before the compaction opened its session, and reached its file locks only after the swap, used to lock the new mutable
+   * file the swap had just released and dispatch its entry while the compaction was still building the one that creates the
+   * file: the followers skipped its pages, the file did not exist there yet, then created the file one version behind and
+   * refused the next commit on it as a WAL version gap. Waiting for this lock, the commit dispatches after that entry.
+   */
+  @Override
+  public boolean keepLockedUntilCompactionIsPublished(final int fileId) {
+    final List<Integer> held = compactionHeldLocks.get();
+    if (held == null)
+      return proxied.keepLockedUntilCompactionIsPublished(fileId);
+    held.add(fileId);
+    return true;
+  }
+
+  /** Releases the locks {@link #keepLockedUntilCompactionIsPublished} took over, on every way out of the session. */
+  private void releaseCompactionLocks() {
+    final List<Integer> held = compactionHeldLocks.get();
+    if (held == null)
+      return;
+    compactionHeldLocks.remove();
+    for (final int fileId : held)
+      proxied.getTransactionManager().unlockFile(fileId, Thread.currentThread());
   }
 
   /**
@@ -4395,9 +4579,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * remains as a defensive safety net for any other recorder thread that crashes mid-session; it
    * is intentionally retained, not dead code.
    */
-  private void waitForActiveRecordingSession() {
+  private boolean waitForActiveRecordingSession() {
     if (proxied.getFileManager().getRecordedChanges() == null)
-      return;
+      return true;
     final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     final long deadline = System.currentTimeMillis() + timeout;
     while (proxied.getFileManager().getRecordedChanges() != null) {
@@ -4405,10 +4589,69 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         HALog.log(this, HALog.BASIC,
             "commit waited %dms for FileManager recording session and gave up; proceeding with TX_ENTRY",
             timeout);
-        return;
+        return false;
       }
       try {
         Thread.sleep(2);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The recording-session gate of a leader commit, counted (issue #12098). The commit is counted BEFORE it looks for a session,
+   * and a schema session counts the commits AFTER it opened ({@link #awaitCommitsPastRecordingSessionGate()}), so the two cannot
+   * miss each other: either the commit sees the session and waits for it, or the session sees the commit and waits for it to
+   * end. A commit that finds a session stands aside while it waits, so the session does not wait for it in turn. One that gave
+   * up waiting goes on, counted, as it did before the count existed.
+   */
+  private void passRecordingSessionGate() {
+    while (true) {
+      commitsPastRecordingSessionGate.incrementAndGet();
+      if (proxied.getFileManager().getRecordedChanges() == null)
+        break;
+      commitsPastRecordingSessionGate.decrementAndGet();
+      if (!waitForActiveRecordingSession()) {
+        commitsPastRecordingSessionGate.incrementAndGet();
+        break;
+      }
+    }
+    gatedCommitsOfThisThread.get()[0]++;
+  }
+
+  private void leaveRecordingSessionGate() {
+    gatedCommitsOfThisThread.get()[0]--;
+    commitsPastRecordingSessionGate.decrementAndGet();
+  }
+
+  /**
+   * Waits, with this schema session already open, for the leader commits that passed the gate of {@link #commit()} before it
+   * opened (issue #12098). Each of them holds, or is waiting for, its commit file locks, and after the quorum round trip it
+   * takes the shared lock again to conclude. Asking for the exclusive lock while one of them is in between deadlocks with them:
+   * the concluding commit cannot re-enter the shared lock behind the queued writer, the writer waits for the commits inside
+   * phase 1, and those wait under the shared lock for the concluding commit's file locks, until {@code commitLockTimeout}
+   * fails them. No commit passes the gate while the session is open, so the count only goes down; the commits of this very
+   * thread (a schema change run from inside a commit) are not waited for. Bounded by the quorum timeout, after which the
+   * session goes on as it did before.
+   */
+  private void awaitCommitsPastRecordingSessionGate() {
+    final int own = gatedCommitsOfThisThread.get()[0];
+    if (commitsPastRecordingSessionGate.get() <= own)
+      return;
+    final long started = System.currentTimeMillis();
+    final long deadline = started + server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    while (commitsPastRecordingSessionGate.get() > own) {
+      if (System.currentTimeMillis() >= deadline) {
+        HALog.log(this, HALog.BASIC,
+            "Schema change on database '%s' waited %dms for %d commit(s) already past the recording-session gate and gave up; "
+                + "proceeding", getName(), System.currentTimeMillis() - started, commitsPastRecordingSessionGate.get() - own);
+        return;
+      }
+      try {
+        Thread.sleep(1);
       } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
         return;
@@ -5229,13 +5472,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Forwards a DDL or leader-only command to the Raft leader via HTTP POST to
+   * Forwards a client's DDL or leader-only command to the Raft leader via HTTP POST to
    * {@code /api/v1/command/{dbName}}. The response JSON is parsed back into a
    * {@link ResultSet} so the caller sees results transparently.
+   * <p>
+   * The bookmark the leader answers with is kept for the request (issue #11740), so the one this node answers the client with
+   * covers the write: see {@link #getCommitIndexBookmark()}.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
-    return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, null);
+    final AtomicLong leaderBookmark = new AtomicLong(-1L);
+    try {
+      return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, leaderBookmark);
+    } finally {
+      // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
+      final long bookmark = leaderBookmark.get();
+      final Long previous = FORWARDED_WRITE_BOOKMARK.get();
+      if (bookmark >= 0 && (previous == null || previous < bookmark))
+        FORWARDED_WRITE_BOOKMARK.set(bookmark);
+    }
   }
 
   /**

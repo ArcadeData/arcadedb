@@ -677,6 +677,12 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     responses.addApiResponse("503", SpecBuilders.errorResponse(
         "Service unavailable: on a replicated database, no leader was reachable"));
+    // Issue #11899: the follower forwarding the load to the leader could not learn its outcome
+    responses.addApiResponse("504", SpecBuilders.errorResponse(
+        "On an HA follower the load is forwarded to the leader. 'Cannot connect' (no exception field): it did not reach the "
+            + "leader. With exception com.arcadedb.exception.TransactionOutcomeUnknownException: the connection to the leader "
+            + "was lost or the leader did not answer in time, and the load may have been applied in whole or in part. Check "
+            + "before sending it again"));
     post.setResponses(responses);
 
     final PathItem pathItem = new PathItem();

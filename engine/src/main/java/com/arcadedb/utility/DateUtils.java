@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -943,7 +944,8 @@ public class DateUtils {
       case "millisecond", "milliseconds", "millis" -> ChronoUnit.MILLIS;
       case "microsecond", "microseconds", "micros" -> ChronoUnit.MICROS;
       case "nanosecond", "nanoseconds", "nanos" -> ChronoUnit.NANOS;
-      default -> throw new SerializationException("Unsupported datetime precision '" + precision + "'");
+      // a unit nothing names is the caller's argument: VALIDATION on every protocol, not a server fault (issue #12020)
+      default -> throw new InvalidArgumentException("Unsupported datetime precision '" + InvalidArgumentException.quote(precision) + "'");
     };
   }
 
@@ -1138,6 +1140,12 @@ public class DateUtils {
    * a datetime
    */
   public static int compareNumberAndTemporal(final Object left, final Object right) {
+    // A duration (what subtracting two datetimes answers) against a number reads the number as SECONDS, the unit HTTP shows the
+    // duration in: WHERE sysdate() - ts < 3600 is "in the last hour". It used to be greater than every number (issue #12295)
+    if (left instanceof Duration duration && right instanceof Number number)
+      return DurationArithmetic.compareToSeconds(duration, number);
+    if (right instanceof Duration duration && left instanceof Number number)
+      return -DurationArithmetic.compareToSeconds(duration, number);
     if (left instanceof Number number)
       return compareNumberToDateTime(number, right);
     if (right instanceof Number number) {
