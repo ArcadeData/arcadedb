@@ -2654,8 +2654,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * serialized executor: the handler set by {@code setOnCancelHandler} alone could only run once the stream was over. A stream the
    * client cancelled therefore went on waiting for the transport to become ready until arcadedb.server.grpcStreamWriteTimeoutMs
    * (60 s), holding its worker thread, its result set and its query admission slot, so that arcadedb.queryMaxConcurrent cancelled
-   * streams made every remote query wait. The call's context is cancelled on the transport thread as the cancel arrives, and a
-   * listener with a direct executor sees it at once, as {@code GrpcAdmissionInterceptor} already does.
+   * streams made every remote query wait. The call's context is cancelled as the cancel arrives, on the server's own executor
+   * and not on the call's serialized one (the gRPC server here has no executor of its own configured, so that is an unbounded
+   * cached pool and the cancel never queues behind a busy worker), and a listener with a direct executor sees it at once, as
+   * {@code GrpcAdmissionInterceptor} already does. The listener is not removed: the context is cancelled when the call ends,
+   * which clears its listeners, and outside a call the current context is the root one, which takes none.
    */
   private static void onCancel(final ServerCallStreamObserver<?> call, final AtomicBoolean cancelled) {
     call.setOnCancelHandler(() -> cancelled.set(true));

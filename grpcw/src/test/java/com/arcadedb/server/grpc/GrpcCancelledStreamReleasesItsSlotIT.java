@@ -20,125 +20,208 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import io.grpc.CallOptions;
-import io.grpc.Channel;
-import io.grpc.ClientCall;
-import io.grpc.ClientInterceptor;
-import io.grpc.ClientInterceptors;
-import io.grpc.ForwardingClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import io.grpc.Metadata;
-import io.grpc.MethodDescriptor;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
- * A StreamQuery the client cancels stops on the server at once. The handler runs inside the call's half-close callback, and
- * gRPC delivers the cancel handler on the same serialized executor, so the cancel was only seen once the stream was over: the
- * stream went on waiting for the transport until arcadedb.server.grpcStreamWriteTimeoutMs, with its worker thread, its result
- * set and its query admission slot. arcadedb.queryMaxConcurrent cancelled streams then made every remote query, HTTP included,
- * wait in the admission queue.
+ * A server-streaming call the client cancels stops on the server at once. The handler runs inside the call's half-close
+ * callback, and gRPC delivers the cancel handler on the same serialized executor, so the cancel was only seen once the stream
+ * was over: the stream went on waiting for the transport until arcadedb.server.grpcStreamWriteTimeoutMs, with its worker
+ * thread, its result set and its query admission slot. arcadedb.queryMaxConcurrent cancelled streams then made every remote
+ * query, HTTP included, wait in the admission queue.
+ * <p>
+ * The write timeout is raised far above the waits of these tests, so a stream still listed as running a few seconds after its
+ * client cancelled can only be one that did not see the cancel.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
-  private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
-  private static final Metadata.Key<String> PASSWORD_HEADER = Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
+  private static final String DOCUMENT_TYPE = "Many";
+  private static final String SERIES        = "Samples";
+  private static final int    ROWS          = 20_000;
+  private static final int    SERIES_FIELDS = 24;
 
-  private ManagedChannel                       channel;
+  private ManagedChannel                          channel;
   private ArcadeDbServiceGrpc.ArcadeDbServiceStub stub;
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
-    // Long enough that a stream still running after a few seconds can only be one that did not see the cancel
     GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.setValue(120_000L);
   }
 
   @BeforeEach
   void setupGrpcClient() {
     final Database db = getServerDatabase(0, getDatabaseName());
-    db.getSchema().createDocumentType("Many");
+    db.getSchema().createDocumentType(DOCUMENT_TYPE);
+    // About 4 MB of rows, well above the 1 MB flow-control window: a client that stops reading leaves the server waiting for
+    // the transport
     db.transaction(() -> {
-      for (int i = 0; i < 20_000; i++)
-        db.newDocument("Many").set("i", i, "pad", "x".repeat(200)).save();
+      for (int i = 0; i < ROWS; i++)
+        db.newDocument(DOCUMENT_TYPE).set("i", i, "pad", "x".repeat(200)).save();
     });
 
     channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
-    stub = ArcadeDbServiceGrpc.newStub(ClientInterceptors.intercept(channel, new ClientInterceptor() {
-      @Override
-      public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(final MethodDescriptor<ReqT, RespT> method,
-          final CallOptions callOptions, final Channel next) {
-        return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
-          @Override
-          public void start(final Listener<RespT> responseListener, final Metadata headers) {
-            headers.put(USER_HEADER, "root");
-            headers.put(PASSWORD_HEADER, DEFAULT_PASSWORD_FOR_TESTS);
-            super.start(responseListener, headers);
-          }
-        };
-      }
-    }));
+    stub = ArcadeDbServiceGrpc.newStub(channel).withInterceptors(authentication());
   }
 
   @AfterEach
   void shutdownGrpcClient() throws InterruptedException {
-    if (channel != null) {
-      channel.shutdownNow();
-      channel.awaitTermination(5, TimeUnit.SECONDS);
+    try {
+      if (channel != null) {
+        channel.shutdownNow();
+        channel.awaitTermination(5, TimeUnit.SECONDS);
+      }
+    } finally {
+      GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.reset();
     }
-    GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.reset();
   }
 
   @Test
-  void aCancelledStreamStopsAndLeavesNoRunningQuery() throws Exception {
-    final CountDownLatch firstBatch = new CountDownLatch(1);
-    final CountDownLatch closed = new CountDownLatch(1);
-    stub.streamQuery(StreamQueryRequest.newBuilder()
+  void aCancelledStreamQueryStopsAndLeavesNoRunningQuery() throws Exception {
+    final CancelOnFirstMessage<StreamQueryRequest, QueryResult> client = new CancelOnFirstMessage<>();
+    stub.streamQuery(streamQuery(null), client);
+
+    assertCancelledStreamIsGone(client);
+  }
+
+  /**
+   * Inside a client-managed transaction the stream runs on the transaction's own thread while the handler waits for it: the
+   * producer reads the same flag, so it has to see the cancel as well.
+   */
+  @Test
+  void aCancelledStreamQueryInsideATransactionStopsAndLeavesNoRunningQuery() throws Exception {
+    final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blocking = ArcadeDbServiceGrpc.newBlockingStub(channel)
+        .withInterceptors(authentication());
+    final TransactionContext transaction = TransactionContext.newBuilder()
+        .setTransactionId(blocking.beginTransaction(
+            BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials()).build()).getTransactionId())
         .setDatabase(getDatabaseName())
-        .setCredentials(DatabaseCredentials.newBuilder().setUsername("root").setPassword(DEFAULT_PASSWORD_FOR_TESTS).build())
-        .setQuery("SELECT FROM Many")
+        .build();
+    try {
+      final CancelOnFirstMessage<StreamQueryRequest, QueryResult> client = new CancelOnFirstMessage<>();
+      stub.streamQuery(streamQuery(transaction), client);
+
+      assertCancelledStreamIsGone(client);
+    } finally {
+      blocking.rollbackTransaction(RollbackTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build());
+    }
+  }
+
+  @Test
+  void aCancelledTimeSeriesQueryStopsAndLeavesNoRunningQuery() throws Exception {
+    createSeries();
+
+    final CancelOnFirstMessage<TimeSeriesQueryRequest, TimeSeriesQueryResult> client = new CancelOnFirstMessage<>();
+    stub.timeSeriesQuery(TimeSeriesQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType(SERIES)
         .setBatchSize(10)
-        .build(), new ClientResponseObserver<StreamQueryRequest, QueryResult>() {
-      private ClientCallStreamObserver<StreamQueryRequest> call;
+        .build(), client);
 
-      @Override
-      public void beforeStart(final ClientCallStreamObserver<StreamQueryRequest> requestStream) {
-        call = requestStream;
+    assertCancelledStreamIsGone(client);
+  }
+
+  private StreamQueryRequest streamQuery(final TransactionContext transaction) {
+    final StreamQueryRequest.Builder request = StreamQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM " + DOCUMENT_TYPE)
+        .setBatchSize(10);
+    if (transaction != null)
+      request.setTransaction(transaction);
+    return request.build();
+  }
+
+  /** A series of {@code ROWS} points of {@code SERIES_FIELDS} double fields, a stream of several MB, written in chunks. */
+  private void createSeries() {
+    final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blocking = ArcadeDbServiceGrpc.newBlockingStub(channel)
+        .withInterceptors(authentication());
+
+    final StringBuilder fields = new StringBuilder();
+    for (int f = 0; f < SERIES_FIELDS; f++)
+      fields.append(f > 0 ? ", " : "").append("f").append(f).append(" DOUBLE");
+    blocking.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE TIMESERIES TYPE " + SERIES + " TIMESTAMP ts TAGS (host STRING) FIELDS (" + fields + ")")
+        .build());
+
+    final long base = 1_700_000_000_000L;
+    final int chunk = 1_000;
+    for (int from = 0; from < ROWS; from += chunk) {
+      final TimeSeriesWriteRequest.Builder write = TimeSeriesWriteRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setType(SERIES);
+      for (int i = from; i < from + chunk; i++) {
+        final TimeSeriesPoint.Builder point = TimeSeriesPoint.newBuilder()
+            .setTimestamp(base + i * 1_000L)
+            .putTags("host", GrpcValue.newBuilder().setStringValue("web1").build());
+        for (int f = 0; f < SERIES_FIELDS; f++)
+          point.putFields("f" + f, GrpcValue.newBuilder().setDoubleValue(i + f / 10.0).build());
+        write.addPoints(point);
       }
+      assertThat(blocking.timeSeriesWrite(write.build()).getWritten()).isEqualTo(chunk);
+    }
+  }
 
-      @Override
-      public void onNext(final QueryResult value) {
-        firstBatch.countDown();
-        call.cancel("the client is done", null);
-      }
+  private void assertCancelledStreamIsGone(final CancelOnFirstMessage<?, ?> client) throws InterruptedException {
+    assertThat(client.firstMessage.await(30, TimeUnit.SECONDS)).as("the stream answered a first batch").isTrue();
+    assertThat(client.closed.await(30, TimeUnit.SECONDS)).as("the client saw its call end").isTrue();
 
-      @Override
-      public void onError(final Throwable t) {
-        closed.countDown();
-      }
+    await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(getServer(0).getRunningQueries().getRunning())
+        .as("the cancelled stream is still running on the server, holding its admission slot").isEmpty());
+  }
 
-      @Override
-      public void onCompleted() {
-        closed.countDown();
-      }
-    });
+  private GrpcTestAuthInterceptor authentication() {
+    return new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName());
+  }
 
-    assertThat(firstBatch.await(30, TimeUnit.SECONDS)).as("the stream answered a first batch").isTrue();
-    assertThat(closed.await(30, TimeUnit.SECONDS)).isTrue();
+  private DatabaseCredentials credentials() {
+    return DatabaseCredentials.newBuilder().setUsername("root").setPassword(DEFAULT_PASSWORD_FOR_TESTS).build();
+  }
 
-    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    while (getServer(0).getRunningQueries().size() > 0 && System.nanoTime() < deadline)
-      Thread.sleep(50);
-    assertThat(getServer(0).getRunningQueries().getRunning())
-        .as("the cancelled stream is still running on the server, holding its admission slot").isEmpty();
+  /** Cancels its call as soon as the first message arrives and reports when it saw that message and when the call ended. */
+  private static final class CancelOnFirstMessage<ReqT, RespT> implements ClientResponseObserver<ReqT, RespT> {
+    private final CountDownLatch firstMessage = new CountDownLatch(1);
+    private final CountDownLatch closed       = new CountDownLatch(1);
+
+    private ClientCallStreamObserver<ReqT> call;
+
+    @Override
+    public void beforeStart(final ClientCallStreamObserver<ReqT> requestStream) {
+      call = requestStream;
+    }
+
+    @Override
+    public void onNext(final RespT value) {
+      firstMessage.countDown();
+      call.cancel("the client is done", null);
+    }
+
+    @Override
+    public void onError(final Throwable t) {
+      closed.countDown();
+    }
+
+    @Override
+    public void onCompleted() {
+      closed.countDown();
+    }
   }
 }
