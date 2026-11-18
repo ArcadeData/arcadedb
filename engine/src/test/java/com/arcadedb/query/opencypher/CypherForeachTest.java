@@ -600,6 +600,31 @@ class CypherForeachTest {
           RETURN last(nodes(q)).v AS v""", "v")).isEqualTo(77L));
     }
 
+    /** The row holds nothing but a map carrying the node: the map alone must turn the refresh on. */
+    @Test
+    void rowHoldingOnlyAMapObservesForeachWrite() {
+      database.transaction(() -> assertThat(single("""
+          MATCH (a:Node {id:1})
+          WITH {node: a} AS holder
+          FOREACH (x IN [1] | MERGE (m:Node {id:1}) SET m.v = 60)
+          RETURN holder.node.v AS v""", "v")).isEqualTo(60L));
+
+      assertThat(committedV()).containsExactly(1L, 60L, 2L, 2L, 3L, 3L);
+    }
+
+    /** A write made through an outer variable, not the loop variable, is read back through a collected list. */
+    @Test
+    void listObservesWriteThroughOuterVariable() {
+      database.transaction(() -> assertThat(idToV("""
+          MATCH (a:Node {id:1})
+          WITH a, collect(a) AS ns
+          FOREACH (x IN [1] | SET a.v = 70)
+          UNWIND ns AS m
+          RETURN m.id AS id, m.v AS v""")).containsExactly(1L, 70L));
+
+      assertThat(committedV()).containsExactly(1L, 70L, 2L, 2L, 3L, 3L);
+    }
+
     private long single(final String query, final String column) {
       try (final ResultSet rs = database.command("opencypher", query)) {
         final long value = rs.next().<Number>getProperty(column).longValue();
