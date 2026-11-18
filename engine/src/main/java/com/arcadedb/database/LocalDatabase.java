@@ -90,6 +90,7 @@ import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
+import com.arcadedb.index.vector.VectorDeltaPayloadLedger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -286,6 +287,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          TransactionManager                        transactionManager;
   // Created in openInternal() before the schema loads, so the load can register the COLUMNAR indexes it finds
   private            ColumnarIndexManager                      columnarIndexManager;
+  /**
+   * The heap the delta buffers of this database's vector indexes hold in payloads, which
+   * {@code arcadedb.vectorIndex.deltaCacheMaxHeapPercent} bounds for all of them together (issue #12379).
+   */
+  private final      VectorDeltaPayloadLedger                  vectorDeltaPayloadLedger  = new VectorDeltaPayloadLedger();
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
   // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
   // so nothing may ever wait for the async workers while holding it.
@@ -1399,6 +1405,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** The owner of this database's columnar projections, one per database. */
   public ColumnarIndexManager getColumnarIndexManager() {
     return columnarIndexManager;
+  }
+
+  /**
+   * The ledger the vector indexes of this database charge their buffered payloads to (issue #12379). Answered
+   * whatever the state of the database: an index gives its share back while the database is closing.
+   */
+  public VectorDeltaPayloadLedger getVectorDeltaPayloadLedger() {
+    return vectorDeltaPayloadLedger;
   }
 
   /**
