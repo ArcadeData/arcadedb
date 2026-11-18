@@ -6370,7 +6370,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return builder.build();
   }
 
-  /** Whether a column of {@code result} holds a record, a document with an identity (issue #12196). */
+  /**
+   * Whether a column of {@code result} holds a record, a document with an identity (issue #12196). It walks the columns, but is asked
+   * only for a row with no type of its own that has a String {@code @type} column: a plain projection row never reaches it.
+   */
   private static boolean holdsRecordColumn(final Result result) {
     for (final String name : result.getPropertyNames())
       if (result.getProperty(name) instanceof Document document && document.getIdentity() != null)

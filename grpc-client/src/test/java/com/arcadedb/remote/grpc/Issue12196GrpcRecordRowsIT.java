@@ -244,6 +244,23 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
     assertThat(rows).isEqualTo(3);
   }
 
+  @Test
+  void aMapShapedLikeARecordIsReadAsThatRecord() {
+    // THE SHAPE IS THE ONLY MARK THE WIRE GIVES A RECORD COLUMN, SO A MAP A QUERY BUILDS WITH THE RID OF A RECORD AND THE NAME OF A
+    // TYPE OF THE SCHEMA IS READ AS A RECORD, WHERE THE EMBEDDED API KEEPS THE MAP. PINNED ON PURPOSE, AS THE LIMIT OF THE RULE
+    final String rid;
+    try (final ResultSet rs = grpc.query("sql", "SELECT @rid AS rid FROM P12196 WHERE name = 'a'")) {
+      rid = String.valueOf(rs.next().<Object>getProperty("rid"));
+    }
+
+    try (final ResultSet rs = grpc.query("opencypher", "RETURN {`@rid`: '" + rid + "', `@type`: 'P12196', name: 'lookalike'} AS m")) {
+      final Document record = rs.next().getProperty("m");
+      assertThat(record).isInstanceOf(Vertex.class);
+      assertThat(record.getIdentity().toString()).isEqualTo(rid);
+      assertThat(record.getString("name")).isEqualTo("lookalike");
+    }
+  }
+
   private static List<String> columnNames(final ResultSet resultSet) {
     try (final ResultSet rs = resultSet) {
       return new ArrayList<>(rs.next().getPropertyNames());
