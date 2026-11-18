@@ -139,7 +139,7 @@ class Issue9550ApplyOnDatabaseClosedDuringShutdownTest {
   @Test
   void aLocallyOriginatedEntryOnADatabaseClosedDuringShutdownIsLeftForReplay() throws Exception {
     final Prepared prepared = prepare();
-    final LocalCommit local = new LocalCommit(db.getName(), ArcadeStateMachine.peekWalTransactionId(prepared.walData),
+    final LocalCommit local = new LocalCommit(db.getName(), CommittedEntryDecoding.peekWalTransactionId(prepared.walData),
         prepared.tx, prepared.phase1, prepared.walData);
     assertThat(sm.registerLocalCommit(local)).isTrue();
 
@@ -176,7 +176,7 @@ class Issue9550ApplyOnDatabaseClosedDuringShutdownTest {
   @Test
   void anyFailureOnADatabaseClosedDuringShutdownIsLeftForReplay() throws Exception {
     final Prepared prepared = prepare();
-    final LocalCommit local = new LocalCommit(db.getName(), ArcadeStateMachine.peekWalTransactionId(prepared.walData),
+    final LocalCommit local = new LocalCommit(db.getName(), CommittedEntryDecoding.peekWalTransactionId(prepared.walData),
         prepared.tx, prepared.phase1, prepared.walData);
     assertThat(sm.registerLocalCommit(local)).isTrue();
 
@@ -254,7 +254,7 @@ class Issue9550ApplyOnDatabaseClosedDuringShutdownTest {
   @Test
   void aGenuineFailureOnAnOpenDatabaseIsStillQuarantinedWhileShuttingDown() throws Exception {
     final Prepared prepared = prepare();
-    final LocalCommit local = new LocalCommit(db.getName(), ArcadeStateMachine.peekWalTransactionId(prepared.walData),
+    final LocalCommit local = new LocalCommit(db.getName(), CommittedEntryDecoding.peekWalTransactionId(prepared.walData),
         prepared.tx, prepared.phase1, prepared.walData);
     assertThat(sm.registerLocalCommit(local)).isTrue();
 

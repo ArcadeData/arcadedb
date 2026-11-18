@@ -181,11 +181,11 @@ class Issue8465SnapshotInstallHoldSurvivesRestartTest {
   @Test
   void theServerPlacesTheHoldMarkerBesideTheRaftStorage() {
     final File storageDir = new File(tempDir, "raft-storage-arcadedb-3");
-    final File hold = RaftHAServer.snapshotInstallHoldMarkerFile(storageDir);
+    final File hold = RaftStorageFiles.snapshotInstallHoldMarkerFile(storageDir);
 
     assertThat(hold.getParentFile()).isEqualTo(tempDir.getAbsoluteFile());
     assertThat(hold.getName()).isEqualTo("raft-storage-arcadedb-3.snapshot-install-hold");
-    assertThat(hold).isNotEqualTo(RaftHAServer.runtimeJoinMarkerFile(storageDir));
+    assertThat(hold).isNotEqualTo(RaftStorageFiles.runtimeJoinMarkerFile(storageDir));
   }
 
   // -----------------------------------------------------------------------------------------------

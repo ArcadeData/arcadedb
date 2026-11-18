@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Two peers cannot both be listening on one {@code host:port} for one protocol, so a routing view that maps two
  * of them to the same address has resolved at most one of them and cannot say which (issue #6183). These are the
- * cases {@link RaftHAServer#selectUnambiguousRouting} has to separate, exercised directly because the shape that
+ * cases {@link PeerEndpoints#selectUnambiguousRouting} has to separate, exercised directly because the shape that
  * matters - a follower advertising itself as the leader - is what an in-process cluster produces by default and
  * what a heterogeneous one never can.
  * <p>
@@ -117,6 +117,6 @@ class Issue6183AmbiguousRoutingTest {
   }
 
   private static HAServerPlugin.RoutingTable select(final String[] addresses, final boolean[] fromConfig) {
-    return RaftHAServer.selectUnambiguousRouting(GRPC, addresses, fromConfig, addresses.length);
+    return PeerEndpoints.selectUnambiguousRouting(GRPC, addresses, fromConfig, addresses.length);
   }
 }

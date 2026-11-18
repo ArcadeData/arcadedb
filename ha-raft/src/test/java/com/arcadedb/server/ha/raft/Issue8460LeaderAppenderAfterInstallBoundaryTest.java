@@ -97,7 +97,7 @@ class Issue8460LeaderAppenderAfterInstallBoundaryTest {
 
   @Test
   void leaderSendsEntriesAfterTheFollowerRegistersItsLogStart() throws Exception {
-    final Scenario scenario = new Scenario(true, ArcadeStateMachine::resolveInstalledSnapshotBoundary);
+    final Scenario scenario = new Scenario(true, LeaderSnapshotInstall::resolveInstalledSnapshotBoundary);
     scenario.run();
 
     assertThat(scenario.leaderMarker.get().getIndex()).as("the #8449 shape: the leader marker is past S-1")

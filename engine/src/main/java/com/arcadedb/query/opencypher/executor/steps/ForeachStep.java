@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -137,6 +138,7 @@ public class ForeachStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      private final LabelReplacements labelReplacements = LabelReplacements.of(context);
 
       @Override
       public boolean hasNext() {
@@ -153,6 +155,11 @@ public class ForeachStep extends AbstractExecutionStep {
         if (!hasNext())
           throw new NoSuchElementException();
         final Result result = buffer.get(bufferIndex++);
+        // A record this row holds may have been replaced after it was buffered: by a later row of the same batch, or by a
+        // label write of a step downstream that consumed the rows served before it (a CALL body). Served with the live
+        // records, not the deleted ones (issue #11764). Free while the statement replaced nothing: redirect() returns at
+        // once, and otherwise it is one walk per row served
+        labelReplacements.redirect(result);
         if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
           // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
           // SET OPEN
@@ -249,6 +256,11 @@ public class ForeachStep extends AbstractExecutionStep {
    * Evaluates the list expression, then for each element, executes the inner clauses.
    */
   private void executeForeach(final Result inputRow, final CommandContext context) {
+    // A label write of an earlier row (or of an earlier clause) may have replaced a record this row holds: the list is
+    // evaluated against the live ones (issue #11764)
+    final LabelReplacements labelReplacements = LabelReplacements.of(context);
+    labelReplacements.redirect(inputRow);
+
     final Expression listExpr = foreachClause.getListExpression();
     final Object listValue = evaluator.evaluate(listExpr, inputRow, context);
 
@@ -284,7 +296,11 @@ public class ForeachStep extends AbstractExecutionStep {
         final ResultInternal iterationRow = new ResultInternal();
         for (final String prop : inputRow.getPropertyNames())
           iterationRow.setProperty(prop, inputRow.getProperty(prop));
-        iterationRow.setProperty(variable, element);
+        // The list was evaluated once, before the first iteration: an element an earlier iteration replaced ([n, n] with a
+        // label write on x) is bound as its live record, not as the deleted original. The other bindings come from the
+        // outer row, kept live below
+        iterationRow.setProperty(variable, labelReplacements.resolveValue(element));
+        final long replacementsBefore = labelReplacements.getReplacementCount();
 
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
         context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
@@ -301,6 +317,13 @@ public class ForeachStep extends AbstractExecutionStep {
         // mutations back so the next iteration accumulates on the latest state and a RETURN in the
         // same query observes the update, matching direct SET / Neo4j behaviour (issue #5114).
         propagateMutationsToInputRow(inputRow, iterationRow);
+        // A label write in the body replaced the record under a new RID: every binding of the outer row that still holds
+        // the original follows it, the ones the sync above does not reach included - a list, a map, a relationship
+        // re-attached to the new record. Left behind, {@code [n]} kept the deleted original and a traversal from it missed
+        // the relationship the write moved (issue #11670), as the CALL subquery already redirects its outer row. Walked only
+        // after an iteration that replaced something, so a body without label writes costs nothing
+        if (labelReplacements.getReplacementCount() != replacementsBefore)
+          labelReplacements.redirect(inputRow);
       }
     } catch (final Exception e) {
       if (e instanceof RuntimeException re)
