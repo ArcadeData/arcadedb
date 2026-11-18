@@ -48,9 +48,16 @@ class TimeSeriesDatabaseWrapperPointMetersTest {
 
   private static final int DROPPED_PER_CALL = 10;
 
-  private final AtomicInteger       writeStatus   = new AtomicInteger(204);
-  private final AtomicInteger       writeRequests = new AtomicInteger();
-  private final AtomicInteger       linesReceived = new AtomicInteger();
+  /** Answered by the line protocol stub instead of a status: the connection is closed without a response. */
+  private static final int DROP_CONNECTION = -1;
+
+  private final AtomicInteger       writeStatus       = new AtomicInteger(204);
+  private final AtomicInteger       writeRequests     = new AtomicInteger();
+  private final AtomicInteger       linesReceived     = new AtomicInteger();
+  /** How many of the next line protocol calls the stub answers 503 before it answers {@link #writeStatus}. */
+  private final AtomicInteger       transientRefusals = new AtomicInteger();
+  private final AtomicInteger       sqlStatus         = new AtomicInteger(200);
+  private final AtomicInteger       sqlRequests       = new AtomicInteger();
   private       HttpServer          stub;
   private       SimpleMeterRegistry registry;
 
@@ -69,7 +76,11 @@ class TimeSeriesDatabaseWrapperPointMetersTest {
       writeRequests.incrementAndGet();
       linesReceived.addAndGet(lines);
       final int status = writeStatus.get();
-      if (status == 204)
+      if (transientRefusals.getAndUpdate(remaining -> Math.max(0, remaining - 1)) > 0)
+        answer(exchange, 503, "{\"error\":\"retry, a conflict the server could not resolve\"}");
+      else if (status == DROP_CONNECTION)
+        exchange.close();
+      else if (status == 204)
         answer(exchange, 204, null);
       else if (status == 400) {
         // The server's partial-write answer: the samples it wrote are committed, the others are named as dropped
@@ -79,6 +90,17 @@ class TimeSeriesDatabaseWrapperPointMetersTest {
                 + dropped + "}");
       } else
         answer(exchange, status, "{\"error\":\"refused by the stub\"}");
+    });
+    // The SQL protocols send one INSERT per point through the command endpoint
+    stub.createContext("/api/v1/command/", exchange -> {
+      exchange.getRequestBody().readAllBytes();
+      sqlRequests.incrementAndGet();
+      final int status = sqlStatus.get();
+      if (status == 200)
+        answer(exchange, 200, "{\"result\":[]}");
+      else
+        answer(exchange, status,
+            "{\"error\":\"refused by the stub\",\"detail\":\"refused by the stub\",\"exception\":\"java.lang.IllegalStateException\"}");
     });
     stub.start();
   }
@@ -135,6 +157,61 @@ class TimeSeriesDatabaseWrapperPointMetersTest {
   }
 
   @Test
+  void aBatchAnsweredWithATransientRefusalThenAcceptedIsCountedOnceByItsFinalOutcome() {
+    // One call, refused with 503 once then accepted: the retry must not count the batch as lost, nor as inserted twice
+    transientRefusals.set(1);
+
+    try (final TimeSeriesDatabaseWrapper wrapper = wrapper()) {
+      wrapper.ingestSeries("sensor-0", "region-0", 1_000L, 7);
+    }
+
+    assertThat(writeRequests.get()).as("the refused call and its retry").isEqualTo(2);
+    assertThat(counter("arcadedb.test.ts.inserted.points")).isEqualTo(7);
+    assertThat(counter("arcadedb.test.ts.inserted.points.error")).isZero();
+    assertThat(requestTimer().count()).as("one sample per ingestion call, the retry included").isEqualTo(1);
+  }
+
+  @Test
+  void aBatchThatGotNoAnswerCountsEveryPointItLost() {
+    // The server drops the connection: the write is lost whatever the number of attempts the HTTP client makes
+    writeStatus.set(DROP_CONNECTION);
+
+    try (final TimeSeriesDatabaseWrapper wrapper = wrapper()) {
+      wrapper.ingestSeries("sensor-0", "region-0", 1_000L, 7);
+    }
+
+    assertThat(counter("arcadedb.test.ts.inserted.points.error")).isEqualTo(7);
+    assertThat(counter("arcadedb.test.ts.inserted.points")).isZero();
+    assertThat(requestTimer().count()).isEqualTo(1);
+  }
+
+  @Test
+  void anAcceptedSqlInsertCountsOnePointInserted() {
+    try (final TimeSeriesDatabaseWrapper wrapper = wrapper(TimeSeriesDatabaseWrapper.Protocol.SQL_HTTP)) {
+      wrapper.ingestSeries("sensor-0", "region-0", 1_000L, 7);
+    }
+
+    assertThat(sqlRequests.get()).isEqualTo(7);
+    assertThat(counter("arcadedb.test.ts.inserted.points")).isEqualTo(7);
+    assertThat(counter("arcadedb.test.ts.inserted.points.error")).isZero();
+    assertThat(requestTimer().count()).isEqualTo(7);
+  }
+
+  @Test
+  void aFailedSqlInsertCountsOnePointLostAndNoneInserted() {
+    sqlStatus.set(500);
+
+    try (final TimeSeriesDatabaseWrapper wrapper = wrapper(TimeSeriesDatabaseWrapper.Protocol.SQL_HTTP)) {
+      wrapper.ingestSeries("sensor-0", "region-0", 1_000L, 7);
+    }
+
+    assertThat(sqlRequests.get()).isEqualTo(7);
+    assertThat(counter("arcadedb.test.ts.inserted.points.error")).isEqualTo(7);
+    assertThat(counter("arcadedb.test.ts.inserted.points")).as("a failed INSERT is not an inserted point").isZero();
+    assertThat(requestTimer().count()).isEqualTo(7);
+  }
+
+  @Test
   void theWrittenCountOfAPartialWriteIsReadFromTheAnswerAndKeptWithinTheBatch() {
     assertThat(TimeSeriesDatabaseWrapper.writtenInPartialWrite("{\"written\":490,\"dropped\":10}", 500)).isEqualTo(490);
     assertThat(TimeSeriesDatabaseWrapper.writtenInPartialWrite("{\"written\":900}", 500)).isEqualTo(500);
@@ -147,8 +224,11 @@ class TimeSeriesDatabaseWrapperPointMetersTest {
   }
 
   private TimeSeriesDatabaseWrapper wrapper() {
-    return new TimeSeriesDatabaseWrapper(new ServerWrapper("127.0.0.1", stub.getAddress().getPort(), -1),
-        TimeSeriesDatabaseWrapper.Protocol.LINE_PROTOCOL);
+    return wrapper(TimeSeriesDatabaseWrapper.Protocol.LINE_PROTOCOL);
+  }
+
+  private TimeSeriesDatabaseWrapper wrapper(final TimeSeriesDatabaseWrapper.Protocol protocol) {
+    return new TimeSeriesDatabaseWrapper(new ServerWrapper("127.0.0.1", stub.getAddress().getPort(), -1), protocol);
   }
 
   private double counter(final String name) {
