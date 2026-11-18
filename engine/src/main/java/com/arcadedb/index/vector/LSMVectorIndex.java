@@ -458,7 +458,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile long    lastRebuildDeferralMs  = 0L;
   // The on-heap graph whose persist committed and was certified by the manifest, i.e. the one graph for which
   // gf.loadGraph() reads back the very same ordinals. Reference identity is the whole check: a graph a later build
-  // published, or one whose persist failed, is simply not this object (issue #7260).
+  // published, or one whose persist failed, is simply not this object (issue #7260). Never set while another graph, or
+  // none, is resident: every assignment of graphIndex clears it, because this field alone keeps the whole on-heap graph
+  // reachable - its neighbour map and, through the diversity provider, the build's reader and vector cache (issue #12380).
   private volatile ImmutableGraphIndex persistedGraphSource;
   // Deferrals since a rebuild last got through: the WARNING is worth one line per streak, not one per attempt
   // (issue #7260), because the second line of a streak tells the operator nothing the first did not.
@@ -532,6 +534,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Run by a full rebuild between reading the live set from the pages and publishing it, so a test can commit in between
   private volatile Runnable afterLiveSetReadForTest;
+  // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
+  private volatile Runnable beforeOnDiskGraphSwapForTest;
 
   /**
    * How many entries of {@link #deltaVectors} are currently holding their payload, i.e. what the buffer costs the
@@ -2449,6 +2453,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         else if (productQuantized)
           adoptPQCodesFor(checkedCodes, rebuiltOrdinalToVectorId);
         this.graphIndex = loadedGraph;
+        // A graph read from the pages has no on-heap twin (issue #12380)
+        this.persistedGraphSource = null;
         this.graphUnreachableOrdinals = unreachableOrdinals;
         this.ordinalToVectorId = rebuiltOrdinalToVectorId;
         // Appended, never counted as mutations and never promoting graphState - see readUnreachableEntries().
@@ -2720,6 +2726,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (productQuantized)
         adoptPQCodesFor(checkedCodes, mapVectorIds);
       this.graphIndex = loadedGraph;
+      // A graph read from the pages has no on-heap twin (issue #12380)
+      this.persistedGraphSource = null;
       this.graphUnreachableOrdinals = unreachableOrdinals;
       this.ordinalToVectorId = mapVectorIds;
       queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
@@ -2952,6 +2960,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         else if (productQuantized)
           adoptPQCodesFor(checkedCodes, graphOrdinalToVectorId);
         this.graphIndex = loadedGraph;
+        // A graph read from the pages has no on-heap twin (issue #12380)
+        this.persistedGraphSource = null;
         this.graphUnreachableOrdinals = candidate.unreachableOrdinals();
         this.ordinalToVectorId = graphOrdinalToVectorId;
         queuedIntoDelta = appendToDeltaBuffer(gapEntries);
@@ -3423,8 +3433,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * rebuild cost about 1.7x what building the same corpus from nothing costs and what runs a large index out of
    * heap (issue #6503). Releasing first roughly halves the peak.
    * <p>
-   * <b>All three references have to go, not just {@link #graphIndex}.</b> {@link #searchVectorCache} is the
-   * obvious second one. The third is the searcher pool: a pooled searcher holds the {@code ImmutableGraphIndex}
+   * <b>All four references have to go, not just {@link #graphIndex}.</b> {@link #persistedGraphSource} is the same
+   * object again whenever the resident on-heap graph was persisted and certified, which is the ordinary state of an
+   * index without {@code storeVectorsInGraph} (issue #12380). {@link #searchVectorCache} is the
+   * obvious third one. The fourth is the searcher pool: a pooled searcher holds the {@code ImmutableGraphIndex}
    * it was pooled under, so a populated pool pins the old graph however many times {@code graphIndex} is nulled.
    * That is not hypothetical on the path this method exists for - {@code LocalDatabase.closeDurableParts()}
    * calls {@code index.flush()} BEFORE {@code index.releaseBackgroundResources()}, so on a database close the
@@ -3587,6 +3599,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         this.graphIndex = null;
+        // The fourth reference (issue #12380): a resident on-heap graph whose persist was certified is also held as the
+        // twin of its pages, and kept, that field pinned the whole graph for the build this release makes room for
+        this.persistedGraphSource = null;
         // Cleared with the graph, for the same reason (issue #7190): the ordinals describe the generation being
         // released, and a build that then fails would leave getStats() reporting them against no resident graph.
         // The set on disk is untouched, so a later load reads it back from the manifest.
@@ -4161,6 +4176,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           this.ordinalToVectorId = filteredVectorIds;
           this.graphIndex = null;
+          // No resident graph, so no twin of one either: kept, the field held the last on-heap graph of an index emptied
+          // of its vectors for the life of the index object (issue #12380)
+          this.persistedGraphSource = null;
           // Cleared with the graph it describes: this build published none, so the previous generation's orphans
           // describe nothing that is resident any more, and getStats() would otherwise report unreachable nodes for
           // an index that has no graph at all (issue #7190).
@@ -4727,9 +4745,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
             try {
               final OnDiskGraphIndex diskGraph = gf.loadGraph();
               if (diskGraph != null) {
+                final Runnable beforeSwap = beforeOnDiskGraphSwapForTest;
+                if (beforeSwap != null)
+                  beforeSwap.run();
                 lock.writeLock().lock();
                 try {
                   this.graphIndex = diskGraph;
+                  // The on-heap graph is no longer resident, so nothing can be demoted to this twin (issue #7260 compares
+                  // the resident graph against it): kept, the field held the whole build graph - its neighbour map, and
+                  // through the diversity provider the build's reader and vector cache - until the next build (issue #12380)
+                  this.persistedGraphSource = null;
+                  // A search between the publication above and this swap pooled a searcher on the on-heap graph, which
+                  // holds it as firmly as the field did (issue #12380): hand it back now, as the publication does for the
+                  // generation before it
+                  releasePooledSearchers();
                   if (deltaVectors.isEmpty())
                     this.graphState = GraphState.IMMUTABLE;
                 } finally {
@@ -5008,6 +5037,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Test hook: behave as if the resident graph's persist never certified (issue #7260). */
   void forgetPersistedGraphSourceForTest() {
     persistedGraphSource = null;
+  }
+
+  /** Test hook: the on-heap graph the index keeps as the certified twin of its pages, if any (issue #12380). */
+  ImmutableGraphIndex persistedGraphSourceForTest() {
+    return persistedGraphSource;
   }
 
   private long getTxChunkSize() {
@@ -14163,6 +14197,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setAfterLiveSetReadForTest(final Runnable hook) {
     afterLiveSetReadForTest = hook;
+  }
+
+  void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
+    beforeOnDiskGraphSwapForTest = hook;
   }
 
   /** Whether the resident graph has a node for {@code vectorId}. */
