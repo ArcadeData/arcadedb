@@ -136,6 +136,42 @@ class CypherLabelWriteRedirectsEmittedRowsIssue10614Test extends TestHelper {
     }
   }
 
+  /** The same through MERGE ... ON CREATE SET n:Label: row 1's path holds the node row 2's merge relabels. */
+  @Test
+  void aPathOfAnEarlierRowFollowsALaterRowsMergeLabelSet() {
+    database.transaction(() -> database.command("opencypher", "CREATE (a:A {id: 1})-[:E]->(b:B {id: 2}), (b)-[:E]->(a)"));
+
+    final List<Result> rows = rows("""
+        MATCH p = (n)<-[:E]-()
+        WITH n, p ORDER BY n.id
+        MERGE (n)-[:SEEN]->(:Seen {id: n.id})
+          ON CREATE SET n:Tagged
+        RETURN n, p""");
+
+    assertThat(rows).hasSize(2);
+    for (final Result row : rows) {
+      final Vertex n = row.getProperty("n");
+      assertLive(n);
+      assertThat(n.getTypeName()).contains("Tagged");
+      assertLivePath(row.getProperty("p"));
+    }
+
+    // A clause after the MERGE reads the live nodes of an earlier row's path too
+    database.transaction(() -> database.command("opencypher", "MATCH (n) DETACH DELETE n"));
+    database.transaction(() -> database.command("opencypher", "CREATE (a:A {id: 1})-[:E]->(b:B {id: 2}), (b)-[:E]->(a)"));
+    final List<Result> read = rows("""
+        MATCH p = (n)<-[:E]-()
+        WITH n, p ORDER BY n.id
+        MERGE (n)-[:SEEN]->(:Seen {id: n.id})
+          ON CREATE SET n:Tagged
+        WITH n, p
+        RETURN n.id AS id, [x IN nodes(p) | labels(x)] AS ls""");
+    assertThat(read).hasSize(2);
+    for (final Result row : read)
+      for (final List<String> nodeLabels : row.<List<List<String>>>getProperty("ls"))
+        assertThat(nodeLabels).as("row %s", row.<Object>getProperty("id")).contains("Tagged");
+  }
+
   /**
    * A row that left the write step in an earlier batch and waits in a barrier (ORDER BY) when a row of a later batch relabels
    * a node it holds: the statement answers it with the live records.
