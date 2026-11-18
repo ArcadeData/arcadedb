@@ -89,14 +89,23 @@ public final class PeerCapabilityQuery {
    * confirmed by a probe they answered (issue #9255). They are relayed, not believed: the caller offers each one as a
    * candidate and records it only once the member it names answers a probe on it. A peer that predates the field
    * omits it, which relays nothing.
+   * <p>
+   * {@code applyBacklogBudget} is the byte budget the peer resolved for its own apply backlog (issue #11508), or
+   * {@code -1} when it advertises none: the leader then holds it to the leader's budget alone.
    */
   public record Advertisement(String peerId, String version, Set<String> capabilities, boolean serviceGap,
-      Set<String> quarantined, Map<String, String> peerHttpAddresses, long appliedIndex) {
+      Set<String> quarantined, Map<String, String> peerHttpAddresses, long appliedIndex, long applyBacklogBudget) {
     public Advertisement {
       if (quarantined == null)
         quarantined = Set.of();
       if (peerHttpAddresses == null)
         peerHttpAddresses = Map.of();
+    }
+
+    public Advertisement(final String peerId, final String version, final Set<String> capabilities,
+        final boolean serviceGap, final Set<String> quarantined, final Map<String, String> peerHttpAddresses,
+        final long appliedIndex) {
+      this(peerId, version, capabilities, serviceGap, quarantined, peerHttpAddresses, appliedIndex, -1L);
     }
 
     public Advertisement(final String peerId, final String version, final Set<String> capabilities,
@@ -290,7 +299,32 @@ public final class PeerCapabilityQuery {
 
     return new Advertisement(peerId, json.getString("version", ""), capabilities,
         json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false), quarantined, readPeerHttpAddresses(json, url),
-        json.getLong(PostCapabilitiesHandler.APPLIED_INDEX, -1L));
+        json.getLong(PostCapabilitiesHandler.APPLIED_INDEX, -1L), readApplyBacklogBudget(json));
+  }
+
+  /**
+   * The byte budget the peer advertises for its own apply backlog, or {@code -1} when it advertises none (issue #11508).
+   * Lenient on purpose: the figure can only make the leader hold entries back from the very peer that sent it, so a
+   * value that is not a positive number is read as "none" and costs the peer its budget, never the capabilities it
+   * answered with. A number past what a long holds is the largest long, which no leader's budget exceeds.
+   * Package-private and pure for unit testing.
+   */
+  // @VisibleForTesting
+  static long readApplyBacklogBudget(final JSONObject json) {
+    final Object value;
+    try {
+      value = json.opt(PostCapabilitiesHandler.APPLY_BACKLOG_BUDGET);
+    } catch (final RuntimeException e) {
+      // A number token the JSON decoder refuses
+      return -1L;
+    }
+    if (!(value instanceof Number number))
+      return -1L;
+    final double magnitude = number.doubleValue();
+    // Also false for NaN
+    if (!(magnitude >= 1D))
+      return -1L;
+    return magnitude >= Long.MAX_VALUE ? Long.MAX_VALUE : number.longValue();
   }
 
   /**

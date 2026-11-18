@@ -108,10 +108,11 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
 
   /**
    * Holds entries back from a follower whose apply backlog would exceed the {@link ApplyBackPressure} budget (issue
-   * #11458): Ratis keeps every received entry that the follower has not applied decoded on the follower's heap, so
+   * #11458): Ratis keeps every received entry that the follower has not applied on the follower's heap, so
    * without this a follower applying slowly is fed until it runs out of memory. Heartbeats keep flowing, so the follower
    * neither times out nor loses the leader's commit index (which is what makes it apply). Only the appender decides:
-   * the question is asked on every iteration, so it is a map lookup and two long reads.
+   * the question is asked on every iteration, so it is a few map lookups and long reads. The budget is the smaller of
+   * this leader's and the one the follower advertised for its own heap (issue #11508).
    */
   @Override
   public boolean hasAppendEntries() {
@@ -137,14 +138,16 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
     if (backPressure == null)
       return false;
     final FollowerInfo follower = getFollower();
-    final boolean hold = backPressure.shouldPause(follower.getId().toString(), follower.getNextIndex() - 1, averageEntryBytes);
+    final String followerId = follower.getId().toString();
+    final boolean hold = backPressure.shouldPause(followerId, follower.getNextIndex() - 1, averageEntryBytes);
     if (hold != heldBack) {
       heldBack = hold;
       if (hold)
         LogManager.instance().log(this, Level.WARNING,
             "Holding Raft entries back from follower %s: its apply backlog is estimated above %d bytes, which Ratis keeps on "
-                + "its heap (issue #11458). Heartbeats continue; entries resume when it has applied enough "
-                + "(arcadedb.ha.applyBacklogMax)", follower.getName(), backPressure.getBudgetBytes());
+                + "its heap (issue #11458). Heartbeats continue; entries resume when it has applied enough. The budget is "
+                + "the smaller of this node's and that follower's arcadedb.ha.applyBacklogMax (this node's is %d bytes)",
+            follower.getName(), backPressure.effectiveBudgetBytes(followerId), backPressure.getBudgetBytes());
       else
         LogManager.instance().log(this, Level.INFO, "Resuming Raft entries to follower %s: its apply backlog is back under budget",
             follower.getName());
