@@ -42,6 +42,7 @@ import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
@@ -110,6 +111,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // branches - if a future change drives parallel sub-plans through the same step, all three fields
   // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
+  // TRUE WHEN THE CANDIDATES OF THE LAST COMPUTED ITERATOR DEPEND ON THE INPUT ROW: a node pattern with no label
+  // pinned by a value the row decides is answered by an index seek that is made again for every row, so its
+  // candidates are not the same for every row and must not be cached (issue #12522)
+  private       boolean             candidatesDependOnTheRow = false;
   // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
   // READ BY THE PROFILE WHILE THE THREAD THAT RUNS THE STEP WRITES THEM
   private volatile ScanPressureReporter scanIterator;
@@ -564,6 +569,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * nothing to do with this pattern's own variable - can never route there, so it must not disable caching.
    */
   private boolean isRowIndependentFullScan() {
+    if (candidatesDependOnTheRow)
+      // The index seek answered a value the row decides, so the candidates of this row are not the candidates of
+      // the next one (issue #12522)
+      return false;
     if ((idFilter != null && !idFilter.isEmpty()) || dynamicIdExpression != null || pattern.hasDynamicLabels())
       return false;
     final List<String> labels = pattern.getLabels();
@@ -624,6 +633,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
+    candidatesDependOnTheRow = false;
     // OPTIMIZATION: Resolve ID filter - either static (from plan time) or dynamic (from runtime).
     // Static idFilter handles literals/parameters; dynamicIdExpression handles expressions like
     // BatchEntry.destRID that can only be resolved with the current input row (issue #3864).
@@ -798,6 +808,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     // No label specified - iterate ALL vertex types, which is the same rule with nothing to satisfy - and,
     // like the multi-label branch above, relied on by isRowIndependentFullScan() for the same reason.
+    //
+    // A property the pattern pins to a value is answered by the index of the type that owns it, when the type has
+    // one: the index returns exactly the vertices of that type whose property equals the value, so the walk of the
+    // types that have no such index is all that is left to do (issue #12522).
+    final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult);
+    if (indexed != null)
+      return indexed;
+
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
@@ -968,6 +986,208 @@ public class MatchNodeStep extends AbstractExecutionStep {
       usedIndexName = index.getTypeName() + "[" + String.join(", ", index.getPropertyNames()) + "], prefix: "
           + String.join(", ", propertyNames);
     return seek;
+  }
+
+  /**
+   * The index seek of an unlabelled node pinned to a value, over every vertex type of the database.
+   * <p>
+   * An unlabelled node names no type, so the index of the property it is pinned on cannot be chosen from the
+   * pattern: the step walks every vertex of every type and evaluates the predicate on each one (issue #12522).
+   * The union over the types is what that walk computes, so it can be computed type by type: a type that has an
+   * index on the pinned property answers it with a seek - the index holds exactly the vertices of that type whose
+   * property equals the value - and only the types without such an index are walked.
+   * <p>
+   * The types are visited parents first, because an index declared on a type holds the vertices of that type AND
+   * of its sub types (see {@link Labels#isInheritedIndex}): a type whose ancestor has the index is answered by
+   * that ancestor's seek and is not walked again, so no vertex is answered twice.
+   * <p>
+   * Only the properties written on the pattern itself are used. A value the input row decides makes the
+   * candidates differ from row to row: the seek is then made again for every row, as the labelled path does, and
+   * the candidates are not cached (see {@link #isRowIndependentFullScan()}).
+   *
+   * @return the iterator over the candidates, or null when the pattern pins nothing an index could answer
+   */
+  private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult) {
+    if (pattern.hasDynamicLabels())
+      return null; // the types are only known per row
+
+    final Map<String, Object> pinned = new LinkedHashMap<>();
+    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+      final Object declared = entry.getValue();
+      if (isRowDependent(declared))
+        candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
+      final Object value = InlineProperties.resolve(declared, currentInputResult, context);
+      if (value == null)
+        return null; // a value that does not resolve gives up on the index, as the labelled path does
+      pinned.put(entry.getKey(), value);
+    }
+    if (pinned.isEmpty())
+      return null;
+
+    final Schema schema = context.getDatabase().getSchema();
+    final List<DocumentType> types = Labels.matchingVertexTypes(schema, List.of(), false);
+    if (types.isEmpty())
+      return null;
+
+    final List<Iterator<Identifiable>> parts = new ArrayList<>(types.size());
+    final Set<DocumentType> answeredByAncestor = new LinkedHashSet<>();
+    final List<String> indexNames = new ArrayList<>();
+
+    for (final DocumentType type : parentsFirst(types)) {
+      if (answeredByAncestor.contains(type))
+        continue; // an ancestor's seek already answered the vertices of this type
+
+      final Iterator<Identifiable> seek = seekByPinnedIndex(type, pinned, indexNames);
+      if (seek != null) {
+        parts.add(seek);
+        for (final DocumentType sub : descendantsOf(type))
+          answeredByAncestor.add(sub);
+      } else
+        parts.add(ownVerticesOf(type));
+    }
+
+    if (!indexNames.isEmpty())
+      usedIndexName = String.join(", ", indexNames);
+
+    if (parts.size() == 1)
+      return parts.getFirst();
+    return new ChainedCandidates(parts);
+  }
+
+  /**
+   * The seek of the type's OWN index on the pinned properties, or null when the type has no index that answers them.
+   * <p>
+   * The index has to be the type's own: an index declared on a super type holds the vertices of the whole hierarchy
+   * under it, and the type that owns it answers for its sub types as well.
+   */
+  private Iterator<Identifiable> seekByPinnedIndex(final DocumentType type, final Map<String, Object> pinned,
+      final List<String> indexNames) {
+    TypeIndex best = null;
+    List<String> bestProperties = null;
+    for (final TypeIndex index : type.getAllIndexes(false)) {
+      if (!index.isReadyForQueries())
+        continue; // an index a concurrent DDL is rebuilding answers nothing yet
+      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+      if (indexProperties == null || indexProperties.isEmpty())
+        continue; // not a key index (a FULL_TEXT index answers by token, issue #8439) or dropped meanwhile
+      boolean wholeKey = true;
+      for (final String property : indexProperties)
+        if (!pinned.containsKey(property)) {
+          wholeKey = false;
+          break;
+        }
+      if (!wholeKey)
+        continue; // a prefix of the key does not answer an equality on the whole key
+      if (best == null || indexProperties.size() > bestProperties.size()) {
+        best = index;
+        bestProperties = indexProperties;
+      }
+    }
+    if (best == null)
+      return null;
+
+    final String[] propertyNames = bestProperties.toArray(new String[0]);
+    final Object[] propertyValues = new Object[propertyNames.length];
+    for (int i = 0; i < propertyNames.length; i++)
+      propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
+
+    indexNames.add(best.getTypeName() + "[" + String.join(", ", propertyNames) + "]");
+    return lookupByKey(best, type.getName(), propertyNames, propertyValues);
+  }
+
+  /**
+   * The vertices of the type itself, without the ones of its sub types: the walk of a type that has no index to
+   * answer the pattern.
+   */
+  @SuppressWarnings("unchecked")
+  private Iterator<Identifiable> ownVerticesOf(final DocumentType type) {
+    return (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+  }
+
+  /**
+   * True when the value the pattern pins is decided by the input row, so that the candidates it selects are not the
+   * same for every row.
+   */
+  private static boolean isRowDependent(final Object declared) {
+    return declared instanceof Expression expression
+        && !(expression instanceof ParameterExpression)
+        && !(expression instanceof LiteralExpression);
+  }
+
+  /**
+   * The types with every super type before its sub types: an index declared on a type holds the vertices of its sub
+   * types too, so a sub type has to be seen after the type that answers for it.
+   */
+  private static List<DocumentType> parentsFirst(final List<DocumentType> types) {
+    final List<DocumentType> ordered = new ArrayList<>(types.size());
+    final Set<DocumentType> remaining = new LinkedHashSet<>(types);
+    while (!remaining.isEmpty()) {
+      boolean progress = false;
+      for (final DocumentType type : types) {
+        if (!remaining.contains(type))
+          continue;
+        boolean ready = true;
+        for (final DocumentType parent : type.getSuperTypes())
+          if (remaining.contains(parent)) {
+            ready = false;
+            break;
+          }
+        if (!ready)
+          continue;
+        ordered.add(type);
+        remaining.remove(type);
+        progress = true;
+      }
+      if (!progress) {
+        // a cycle in the hierarchy, which the schema does not allow: the rest keeps the order it came in
+        ordered.addAll(remaining);
+        break;
+      }
+    }
+    return ordered;
+  }
+
+  /**
+   * The sub types of the type, and the sub types of those.
+   */
+  private static List<DocumentType> descendantsOf(final DocumentType type) {
+    final List<DocumentType> descendants = new ArrayList<>();
+    final List<DocumentType> queue = new ArrayList<>(type.getSubTypes());
+    for (int i = 0; i < queue.size(); i++) {
+      final DocumentType sub = queue.get(i);
+      if (!descendants.contains(sub)) {
+        descendants.add(sub);
+        queue.addAll(sub.getSubTypes());
+      }
+    }
+    return descendants;
+  }
+
+  /**
+   * The candidates of the types, one after the other: the seek of a type and the walk of the type after it.
+   */
+  private static final class ChainedCandidates implements Iterator<Identifiable> {
+    private final List<Iterator<Identifiable>> parts;
+    private       int                next    = 0;
+    private       Iterator<Identifiable> current = Collections.emptyIterator();
+
+    private ChainedCandidates(final List<Iterator<Identifiable>> parts) {
+      this.parts = parts;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (!current.hasNext() && next < parts.size())
+        current = parts.get(next++);
+      return current.hasNext();
+    }
+
+    @Override
+    public Identifiable next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return current.next();
+    }
   }
 
   /**
