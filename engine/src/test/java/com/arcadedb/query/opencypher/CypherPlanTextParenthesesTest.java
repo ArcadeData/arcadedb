@@ -41,4 +41,32 @@ class CypherPlanTextParenthesesTest extends TestHelper {
 
     assertThat(plan).contains("2.0 * (1.0 - s) AS d", "(1 + 2) * 3 AS e", "10 - (4 - 1) AS f", "10 - 4 - 1 AS g", "2 + 3 * 4 AS h");
   }
+
+  @Test
+  void powerIsLeftAssociativeSoOnlyARightPowerOperandKeepsItsParentheses() {
+    final String plan = explain("UNWIND [2] AS s WITH 2 ^ (3 ^ s) AS a, 2 ^ 3 ^ s AS b, 2 * s ^ 2 AS c, (2 * s) ^ 2 AS d RETURN a, b, c, d");
+
+    assertThat(plan).contains("2 ^ (3 ^ s) AS a", "2 ^ 3 ^ s AS b", "2 * s ^ 2 AS c", "(2 * s) ^ 2 AS d");
+  }
+
+  @Test
+  void concatKeepsParenthesesOnItsRightOperandOnly() {
+    final String plan = explain("UNWIND ['x'] AS s WITH 'a' || ('b' || s) AS a, 'a' || 'b' || s AS b RETURN a, b");
+
+    assertThat(plan).contains("'a' || ('b' || s) AS a", "'a' || 'b' || s AS b");
+  }
+
+  @Test
+  void aUnaryMinusOperandIsPrintedAsOneOperand() {
+    final String plan = explain("UNWIND [2] AS s WITH 3 * (-s) AS a, 3 - -s AS b RETURN a, b");
+
+    assertThat(plan).contains("3 * (-s) AS a");
+    assertThat(plan).doesNotContain("3 * -s");
+  }
+
+  private String explain(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+    }
+  }
 }
