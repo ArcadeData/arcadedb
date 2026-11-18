@@ -24,9 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.net.http.HttpClient;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -35,6 +33,8 @@ import static org.mockito.Mockito.when;
  * Issue #11742: the read-your-writes bookmark {@link RaftReplicatedDatabase#getLastAppliedIndex()} answers is the index of
  * the last entry the state machine applied, which leaves out the metadata entry Ratis appends after a write. Until the state
  * machine has applied anything its counter is -1, and the Ratis applied index stands in.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class RaftReplicatedDatabaseBookmarkTest {
   private static final long RATIS_APPLIED = 12L;
@@ -76,17 +76,19 @@ class RaftReplicatedDatabaseBookmarkTest {
   }
 
   @Test
-  void onceAnEntryIsAppliedTheBookmarkLeavesOutTheMetadataEntryAfterIt() throws Exception {
-    // The write is entry 11; Ratis has also applied the metadata entry 12 it appended after it
-    setAppliedIndexCounter(RATIS_APPLIED - 1);
+  void onceAnEntryIsAppliedTheBookmarkLeavesOutTheMetadataEntryAfterIt() {
+    // The write is entry 11; Ratis has also applied the metadata entry 12 it appended after it. The counter moves the way
+    // applyTransaction moves it
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 1);
 
     assertThat(database.getLastAppliedIndex()).isEqualTo(RATIS_APPLIED - 1);
   }
 
-  /** Moves the state machine's applied counter the way {@code applyTransaction} does. */
-  private void setAppliedIndexCounter(final long index) throws Exception {
-    final Field field = ArcadeStateMachine.class.getDeclaredField("lastAppliedIndex");
-    field.setAccessible(true);
-    ((AtomicLong) field.get(stateMachine)).set(index);
+  @Test
+  void theCommitIndexBookmarkOfARequestThatForwardedNothingIsTheCounter() {
+    // #11740 raises the bookmark only for a write the request forwarded to the leader: with none it is the counter (#11742)
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 1);
+
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 1);
   }
 }

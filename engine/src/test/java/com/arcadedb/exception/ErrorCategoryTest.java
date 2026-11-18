@@ -148,6 +148,10 @@ class ErrorCategoryTest {
     assertThat(ErrorCategory.of(new CommandParsingException("bad syntax"))).isEqualTo(ErrorCategory.PARSING);
     assertThat(ErrorCategory.of(new CommandSQLParsingException("bad syntax"))).isEqualTo(ErrorCategory.PARSING);
     assertThat(ErrorCategory.of(new TimeoutException("too slow"))).isEqualTo(ErrorCategory.TIMEOUT);
+    // Issue #11803: a CommandExecutionException, which no rule classifies, so a TRUNCATE of a non-empty type was a server fault
+    assertThat(ErrorCategory.of(new ObjectInUseException("type is not empty"))).isEqualTo(ErrorCategory.VALIDATION);
+    assertThat(ErrorCategory.of(new TransactionException("wrapped", new ObjectInUseException("type is not empty"))))
+        .isEqualTo(ErrorCategory.VALIDATION);
   }
 
   @Test

@@ -106,6 +106,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
     }
 
+    // The variable of an aggregating map projection is a grouping key the row does not carry (issue #12316): one group per
+    // value of it, so the projection reads it from a row of its own group. Not added again when it is projected bare.
+    for (final String variable : ImplicitGroupingKeys.of(returnClause.getReturnItems()))
+      if (!isProjectedBare(groupingKeys, variable))
+        groupingKeys.add(new GroupingKey(null, new VariableExpression(variable)));
+
     // Convert aggregation items to arrays for fast indexed access (avoids per-row HashMap lookups)
     final int aggCount = aggregationItems.size();
     final FunctionCallExpression[] aggExpressions = new FunctionCallExpression[aggCount];
@@ -403,7 +409,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         final ResultInternal groupResult = new ResultInternal();
 
         for (int i = 0; i < groupingKeys.size(); i++)
-          groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values[i]);
+          if (groupingKeys.get(i).outputName != null)
+            groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values[i]);
 
         for (int i = 0; i < aggCount; i++)
           groupResult.setProperty(aggOutputNames[i], groupAgg.aggregatorArray[i].getAggregatedResult());
@@ -430,6 +437,14 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         cost += System.nanoTime() - beginBuild;
     }
     return results;
+  }
+
+  /** Whether {@code variable} is already a grouping key as itself, {@code RETURN p, p{n: count(*)}}. */
+  private static boolean isProjectedBare(final List<GroupingKey> groupingKeys, final String variable) {
+    for (final GroupingKey key : groupingKeys)
+      if (key.expression instanceof VariableExpression bare && bare.getVariableName().equals(variable))
+        return true;
+    return false;
   }
 
   /**
@@ -585,73 +600,21 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   }
 
   /**
-   * Recursively collects all aggregation FunctionCallExpressions from an expression tree.
+   * Collects every aggregate call nested in an expression tree, keyed by the call's text for deduplication, with a fresh
+   * function instance for each. The walk is the one {@link NestedAggregates} shares with the other aggregation step.
    */
   private void collectAggregations(final Expression expr,
       final Map<String, FunctionCallExpression> innerAggs,
       final Map<String, StatelessFunction> innerFunctions) {
-    if (expr == null)
-      return;
-    if (expr instanceof FunctionCallExpression funcExpr) {
-      if (funcExpr.isAggregation()) {
-        final String key = funcExpr.getText();
-        if (!innerAggs.containsKey(key)) {
-          innerAggs.put(key, funcExpr);
-          final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(funcExpr.getFunctionName(), funcExpr.isDistinct());
-          funcExpr.validateArity(innerFunction);
-          innerFunctions.put(key, innerFunction);
-        }
-        return;
+    NestedAggregates.forEach(expr, funcExpr -> {
+      final String key = funcExpr.getText();
+      if (!innerAggs.containsKey(key)) {
+        innerAggs.put(key, funcExpr);
+        final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(funcExpr.getFunctionName(), funcExpr.isDistinct());
+        funcExpr.validateArity(innerFunction);
+        innerFunctions.put(key, innerFunction);
       }
-      for (final Expression arg : funcExpr.getArguments())
-        collectAggregations(arg, innerAggs, innerFunctions);
-    } else if (expr instanceof ArithmeticExpression arith) {
-      collectAggregations(arith.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(arith.getRight(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListComprehensionExpression lce) {
-      collectAggregations(lce.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListPredicateExpression lpe) {
-      collectAggregations(lpe.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListExpression le) {
-      for (final Expression elem : le.getElements())
-        collectAggregations(elem, innerAggs, innerFunctions);
-    } else if (expr instanceof ComparisonExpressionWrapper cew) {
-      collectAggregations(cew.getComparison().getLeft(), innerAggs, innerFunctions);
-      collectAggregations(cew.getComparison().getRight(), innerAggs, innerFunctions);
-    } else if (expr instanceof CaseExpression ce) {
-      collectAggregations(ce.getCaseExpression(), innerAggs, innerFunctions);
-      for (final CaseAlternative alt : ce.getAlternatives()) {
-        collectAggregations(alt.getWhenExpression(), innerAggs, innerFunctions);
-        collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
-      }
-      collectAggregations(ce.getElseExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListSliceExpression lse) {
-      collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListIndexExpression lie) {
-      collectAggregations(lie.getListExpression(), innerAggs, innerFunctions);
-      collectAggregations(lie.getIndexExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ReduceExpression re) {
-      collectAggregations(re.getInitialValue(), innerAggs, innerFunctions);
-      collectAggregations(re.getListExpression(), innerAggs, innerFunctions);
-      collectAggregations(re.getReduceExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof MapExpression me) {
-      for (final Expression value : me.getEntries().values())
-        collectAggregations(value, innerAggs, innerFunctions);
-    } else if (expr instanceof BooleanWrapperExpression bwe) {
-      collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
-    }
+    });
   }
 
-  private void collectBooleanAggregations(final BooleanExpression boolExpr,
-      final Map<String, FunctionCallExpression> innerAggs,
-      final Map<String, StatelessFunction> innerFunctions) {
-    if (boolExpr instanceof ComparisonExpression comp) {
-      collectAggregations(comp.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(comp.getRight(), innerAggs, innerFunctions);
-    } else if (boolExpr instanceof LogicalExpression logical) {
-      collectBooleanAggregations(logical.getLeft(), innerAggs, innerFunctions);
-      if (logical.getRight() != null)
-        collectBooleanAggregations(logical.getRight(), innerAggs, innerFunctions);
-    }
-  }
 }

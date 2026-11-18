@@ -367,6 +367,26 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Whether this statement commits its work itself, in batches, when it runs outside a transaction of its caller, and so must
+   * not be wrapped in one on the caller's behalf: an entry point that opens a transaction around every command (the auto-commit
+   * wrapper of {@code POST /api/v1/command}) would make all of its work one transaction held in memory to the end (issue #11728).
+   * A transaction the caller opened itself still contains it.
+   */
+  public boolean managesItsOwnTransactions() {
+    return false;
+  }
+
+  /**
+   * Whether this statement reports on the files of the node that runs it and writes nothing, so a replica of a cluster must run
+   * it itself rather than forward it to the leader: forwarded, it answers for the leader's files, and a replica whose own copy
+   * drifted is reported clean (issues #12347, #12348). Deliberately apart from {@link #isIdempotent()}, which also opens a
+   * statement to {@code query()} and to the read-only gates of the protocols. False by default.
+   */
+  public boolean inspectsTheLocalNode() {
+    return false;
+  }
+
+  /**
    * Returns the set of operation types executing this statement performs: its own ({@link #getOperationTypesItself()})
    * plus the writes of every statement nested in it (issue #9628). Never empty.
    */

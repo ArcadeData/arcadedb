@@ -69,11 +69,20 @@ public interface HAReplicatedDatabase {
   }
 
   /**
-   * Returns the read-your-writes bookmark this node answers a request with, or -1 if not available: the index of the last
-   * entry its state machine applied, which leaves out the metadata entries the replication layer appends on its own (issue
-   * #11742). Used to set the commit index bookmark header in responses.
+   * Returns the last applied index of this node, or -1 if not available: the index of the last entry its state machine
+   * applied, which leaves out the metadata entries the replication layer appends on its own (issue #11742). It is what a
+   * response's read-your-writes bookmark is built from.
    */
   default long getLastAppliedIndex() {
     return -1;
+  }
+
+  /**
+   * The read-your-writes bookmark for the response to the request served on this thread: the {@code X-ArcadeDB-Commit-Index}
+   * a read waits for to see what the request wrote. The state machine's applied index ({@link #getLastAppliedIndex()}), unless
+   * the request forwarded a write to the leader that this node has not applied yet (issue #11740).
+   */
+  default long getCommitIndexBookmark() {
+    return getLastAppliedIndex();
   }
 }

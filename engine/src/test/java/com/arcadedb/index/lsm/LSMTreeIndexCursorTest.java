@@ -127,6 +127,7 @@ class LSMTreeIndexCursorTest extends TestHelper {
         throw new RuntimeException(e);
       }
     });
+    rebuildIndexesFromRecords();
   }
 
   private void createSchema() {

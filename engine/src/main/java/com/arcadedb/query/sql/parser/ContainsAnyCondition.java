@@ -35,12 +35,20 @@ public class ContainsAnyCondition extends BooleanExpression {
   public Expression right;
   public BooleanExpression rightBlock;
 
+  /** The left and right operands as last met, and their lookups (issue #11703); see {@link ContainsLookup.Memo}. */
+  private transient volatile ContainsLookup.Memo leftMemo;
+  private transient volatile ContainsLookup.Memo rightMemo;
+
   public ContainsAnyCondition() {
   }
 
-  public boolean execute(Object left, final Object right) {
+  public boolean execute(final Object left, final Object right) {
+    return execute(left, right, null, null);
+  }
+
+  private boolean execute(Object left, final Object right, final ContainsLookup leftLookup, final ContainsLookup rightLookup) {
     if (left instanceof Collection<?> leftCollection)
-      return containsAny(leftCollection, right);
+      return containsAny(leftCollection, right, leftLookup, rightLookup);
 
     if (left instanceof Iterable<?> iterable)
       left = iterable.iterator();
@@ -53,12 +61,12 @@ public class ContainsAnyCondition extends BooleanExpression {
       final List<Object> leftItems = new ArrayList<>();
       while (leftIterator.hasNext())
         leftItems.add(leftIterator.next());
-      return containsAny(leftItems, right);
+      return containsAny(leftItems, right, leftLookup, rightLookup);
     }
 
     // A scalar left operand is the one-element collection it stands for, so 'u1' CONTAINSANY ['u1','u2'] answers like
     // 'u1' IN ['u1','u2'] instead of being silently false for every record (issue #8436). A missing value stays false.
-    return left != null && containsAny(Collections.singletonList(left), right);
+    return left != null && containsAny(Collections.singletonList(left), right, null, rightLookup);
   }
 
   /**
@@ -71,7 +79,19 @@ public class ContainsAnyCondition extends BooleanExpression {
    *     {@code [1,2,3] CONTAINSANY [2L]} answers the same whatever the concrete type of the left operand, as
    *     {@link ContainsAllCondition} already does.
    */
-  private static boolean containsAny(final Collection<?> leftCollection, Object right) {
+  private static boolean containsAny(final Collection<?> leftCollection, Object right, final ContainsLookup leftLookup,
+      final ContainsLookup rightLookup) {
+    // A right operand that is the same on every row (an ACL filter's :principals) is hashed once, and the row's own items are
+    // probed against it, so a row costs its own size instead of its size times the operand's (issue #11703)
+    if (rightLookup != null) {
+      for (final Object o : leftCollection) {
+        final Boolean found = rightLookup.contains(o);
+        if (found == null ? isItemOf(o, right) : found)
+          return true;
+      }
+      return false;
+    }
+
     if (right instanceof Iterable<?> iterable)
       right = iterable.iterator();
     else if (MultiValue.isSequenceArray(right))
@@ -79,11 +99,27 @@ public class ContainsAnyCondition extends BooleanExpression {
 
     if (right instanceof Iterator<?> iterator) {
       while (iterator.hasNext())
-        if (containsItem(leftCollection, iterator.next()))
+        if (containsItem(leftCollection, iterator.next(), leftLookup))
           return true;
       return false;
     }
-    return containsItem(leftCollection, right);
+    return containsItem(leftCollection, right, leftLookup);
+  }
+
+  /** Whether the left item {@code o} equals an item of the right operand, which {@link ContainsLookup#of} accepted. */
+  private static boolean isItemOf(final Object o, final Object right) {
+    final Iterator<?> items = MultiValue.getMultiValueIterator(right);
+    while (items.hasNext()) {
+      final Object item = items.next();
+      if (o == null ? item == null : QueryOperatorEquals.equals(o, item))
+        return true;
+    }
+    return false;
+  }
+
+  private static boolean containsItem(final Collection<?> collection, final Object item, final ContainsLookup lookup) {
+    final Boolean found = lookup != null ? lookup.contains(item) : null;
+    return found != null ? found : containsItem(collection, item);
   }
 
   private static boolean containsItem(final Collection<?> collection, final Object item) {
@@ -99,41 +135,60 @@ public class ContainsAnyCondition extends BooleanExpression {
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      final Object rightValue = right.execute(currentRecord, context);
-      return execute(leftValue, rightValue);
-    } else {
-      if (!MultiValue.isMultiValue(leftValue))
-        return false;
-
-      final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
-      while (iter.hasNext()) {
-        if (isTrue(evaluateItem(iter.next(), context)))
-          return true;
-      }
-      return false;
+      final ContainsLookup.Memo leftConstant = ContainsLookup.Memo.constant(leftMemo, context);
+      final ContainsLookup.Memo rightConstant = ContainsLookup.Memo.constant(rightMemo, context);
+      final Object leftValue = leftConstant != null ? leftConstant.value() : left.execute(currentRecord, context);
+      final Object rightValue = rightConstant != null ? rightConstant.value() : right.execute(currentRecord, context);
+      return execute(leftValue, rightValue, leftLookup(leftConstant, leftValue, context),
+          rightLookup(rightConstant, rightValue, context));
     }
+    return evaluateBlock(left.execute(currentRecord, context), context);
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    final Object leftValue = left.execute(currentRecord, context);
     if (right != null) {
-      final Object rightValue = right.execute(currentRecord, context);
-      return execute(leftValue, rightValue);
-    } else {
-      if (!MultiValue.isMultiValue(leftValue))
-        return false;
-
-      final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
-      while (iter.hasNext()) {
-        if (isTrue(evaluateItem(iter.next(), context)))
-          return true;
-      }
-      return false;
+      final ContainsLookup.Memo leftConstant = ContainsLookup.Memo.constant(leftMemo, context);
+      final ContainsLookup.Memo rightConstant = ContainsLookup.Memo.constant(rightMemo, context);
+      final Object leftValue = leftConstant != null ? leftConstant.value() : left.execute(currentRecord, context);
+      final Object rightValue = rightConstant != null ? rightConstant.value() : right.execute(currentRecord, context);
+      return execute(leftValue, rightValue, leftLookup(leftConstant, leftValue, context),
+          rightLookup(rightConstant, rightValue, context));
     }
+    return evaluateBlock(left.execute(currentRecord, context), context);
+  }
 
+  private ContainsLookup leftLookup(final ContainsLookup.Memo constant, final Object value, final CommandContext context) {
+    if (constant != null)
+      return constant.lookup();
+    final ContainsLookup.Memo current = leftMemo;
+    final ContainsLookup.Memo next = ContainsLookup.Memo.of(current, left, value, context);
+    if (next != current)
+      leftMemo = next;
+    return next != null ? next.lookupFor(value) : null;
+  }
+
+  private ContainsLookup rightLookup(final ContainsLookup.Memo constant, final Object value, final CommandContext context) {
+    if (constant != null)
+      return constant.lookup();
+    final ContainsLookup.Memo current = rightMemo;
+    final ContainsLookup.Memo next = ContainsLookup.Memo.of(current, right, value, context);
+    if (next != current)
+      rightMemo = next;
+    return next != null ? next.lookupFor(value) : null;
+  }
+
+  private Boolean evaluateBlock(final Object leftValue, final CommandContext context) {
+    if (!MultiValue.isMultiValue(leftValue))
+      return false;
+
+    final Iterator<?> iter = MultiValue.getMultiValueIterator(leftValue);
+    while (iter.hasNext()) {
+      if (isTrue(evaluateItem(iter.next(), context)))
+        return true;
+    }
+    return false;
   }
 
   /**

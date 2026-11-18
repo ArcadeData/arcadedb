@@ -37,6 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link RaftHAServer#notifyApplied()}. The bookmark a write is answered with already counts the metadata entry Ratis appends
  * after it, so a follower read waiting for that bookmark was woken only by its next one-second recheck: a quiet cluster answered
  * every read-your-writes read a whole number of seconds after it started. As for #5846, the notification is checked directly.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class ArcadeStateMachineTermIndexNotifiesTest {
 

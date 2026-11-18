@@ -39,6 +39,8 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.ValueOutOfRangeException;
@@ -1837,10 +1839,29 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private Set<String> columnNamesOf(final Result row) {
     final Set<String> names = new LinkedHashSet<>();
-    if (row.isElement())
-      names.addAll(row.getElement().get().getPropertyNames());
+    if (row.isElement()) {
+      final Set<String> excludes = projectionExcludes(row);
+      for (final String name : row.getElement().get().getPropertyNames())
+        if (excludes == null || !excludes.contains(name))
+          names.add(name);
+    }
     names.addAll(row.getPropertyNames());
     return names;
+  }
+
+  /**
+   * The aliases a {@code SELECT *, !name} projection excluded from the row's backing element, or null. The element still holds
+   * them, so every read this surface makes straight off the element has to skip them, or the excluded column is announced and
+   * its stored value sent (issue #11941). The row's own content still answers: a later item of the projection may write the
+   * same alias.
+   */
+  private static Set<String> projectionExcludes(final Result row) {
+    return row instanceof ResultInternal internal ? internal.getProjectionExcludes() : null;
+  }
+
+  private static boolean isExcludedFromElement(final Result row, final String name) {
+    final Set<String> excludes = projectionExcludes(row);
+    return excludes != null && excludes.contains(name);
   }
 
   /**
@@ -1955,9 +1976,21 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, Class<?>> lastScalarClass = new HashMap<>();
 
     boolean atLeastOneElement = false;
+    // the system columns every element row's projection excluded (SELECT *, !@rid): not announced (issue #11941)
+    Set<String> excludedSystemColumns = null;
     for (final Result row : resultSet) {
-      if (row.isElement())
+      if (row.isElement()) {
+        final Set<String> excludes = projectionExcludes(row);
+        if (!atLeastOneElement)
+          excludedSystemColumns = excludes != null ? new HashSet<>(excludes) : null;
+        else if (excludedSystemColumns != null) {
+          if (excludes == null)
+            excludedSystemColumns = null;
+          else
+            excludedSystemColumns.retainAll(excludes);
+        }
         atLeastOneElement = true;
+      }
 
       for (final String p : columnNamesOf(row)) {
         // Determine the PostgreSQL type based on the actual value.
@@ -1967,7 +2000,7 @@ public class PostgresNetworkExecutor extends Thread {
         // round-trip through clients as strings and parameter comparisons fail silently.
         // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
         // the nested object instead of re-escaping it as an opaque VARCHAR string.
-        final Object value = row.getProperty(p);
+        final Object value = propertyOf(row, p);
         final boolean known = columns.containsKey(p);
         if (value == null) {
           if (!known) {
@@ -2021,9 +2054,12 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (atLeastOneElement) {
-      columns.put(RID_PROPERTY, PostgresType.VARCHAR);
-      columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
-      columns.put(CAT_PROPERTY, PostgresType.CHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(RID_PROPERTY))
+        columns.put(RID_PROPERTY, PostgresType.VARCHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(TYPE_PROPERTY))
+        columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(CAT_PROPERTY))
+        columns.put(CAT_PROPERTY, PostgresType.CHAR);
     }
 
     return columns;
@@ -3072,6 +3108,9 @@ public class PostgresNetworkExecutor extends Thread {
    * the same column.
    */
   private static Object columnValue(final Result row, final String propertyName) {
+    // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
+    if (row.isElement() && isExcludedFromElement(row, propertyName))
+      return propertyOf(row, propertyName);
     return switch (propertyName) {
       case RID_PROPERTY -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
       case TYPE_PROPERTY -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
@@ -3108,7 +3147,7 @@ public class PostgresNetworkExecutor extends Thread {
         yield row.getProperty(propertyName);
       }
       default -> {
-        Object v = row.getProperty(propertyName);
+        Object v = propertyOf(row, propertyName);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
         if (v == null && row.isElement())
@@ -3116,6 +3155,19 @@ public class PostgresNetworkExecutor extends Thread {
         yield v;
       }
     };
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   */
+  private static Object propertyOf(final Result row, final String name) {
+    final Object value = row.getProperty(name);
+    final Object list = PostgresType.materializeLazyMultiValue(value);
+    if (list != value && !row.isElement() && row instanceof ResultInternal internal)
+      internal.setProperty(name, list);
+    return list;
   }
 
   // ---- COPY ... TO STDOUT (issue #7188) ----
@@ -3303,10 +3355,12 @@ public class PostgresNetworkExecutor extends Thread {
    * unioned through that method because this runs per row on the bulk path and the union allocates a set.
    */
   private static void checkRowFitsAnnouncedColumns(final Result row, final Map<String, PostgresType> columns) {
-    if (row.isElement())
+    if (row.isElement()) {
+      final Set<String> excludes = projectionExcludes(row);
       for (final String name : row.getElement().get().getPropertyNames())
-        if (!columns.containsKey(name))
+        if (!columns.containsKey(name) && (excludes == null || !excludes.contains(name)))
           throw unannouncedCopyColumn(name, columns);
+    }
     for (final String name : row.getPropertyNames())
       if (!columns.containsKey(name))
         throw unannouncedCopyColumn(name, columns);
@@ -4736,6 +4790,10 @@ public class PostgresNetworkExecutor extends Thread {
       return "22P02";                              // invalid_text_representation
     if (CauseChain.contains(error, TypeMismatchException.class))
       return "42804";                              // datatype_mismatch
+    if (CauseChain.contains(error, ObjectInUseException.class))
+      return "55006";                              // object_in_use: a non-empty type, an indexed property (issue #11803)
+    if (CauseChain.contains(error, ImplicitTransactionRequiredException.class))
+      return "25001";                              // active_sql_transaction: CALL { ... } IN TRANSACTIONS in a transaction (#12161)
     return "22023";                                // invalid_parameter_value
   }
 
@@ -5326,8 +5384,12 @@ public class PostgresNetworkExecutor extends Thread {
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;
-    if (!database.isTransactionActive())
+    if (!database.isTransactionActive()) {
       database.begin();
+      // Opened by this server, not by a client BEGIN: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs
+      // (issue #11588). A BEGIN that joins it later declares it the client's, which ends that
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+    }
   }
 
   /**

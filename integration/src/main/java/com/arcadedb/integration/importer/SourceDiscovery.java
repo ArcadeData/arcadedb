@@ -298,6 +298,9 @@ public class SourceDiscovery {
       throw new EmptySourceException(url);
 
     String knownFileType = null;
+    // WHETHER THE FILE TYPE CAME FROM THE NAME OF THE SOURCE RATHER THAN FROM THE USER: ONLY THEN DOES AN ARCADEDB EXPORT HEADER
+    // OVERRULE IT (ISSUE #11729)
+    boolean fileTypeFromExtension = false;
     String knownDelimiter = null;
     final String sourceUrl;
     // THE GENERIC `fileType` OPTION NAMES THE FORMAT OF THE `url` SOURCE, WHICHEVER ROUTE THAT SOURCE IS IMPORTED BY:
@@ -308,12 +311,14 @@ public class SourceDiscovery {
     switch (entityType) {
     case DOCUMENT:
       sourceUrl = settings.documents;
+      fileTypeFromExtension = settings.documentsFileType == null;
       knownFileType = settings.documentsFileType != null ? settings.documentsFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.documentsDelimiter;
       break;
 
     case VERTEX:
       sourceUrl = settings.vertices != null ? settings.vertices : settings.url;
+      fileTypeFromExtension = settings.verticesFileType == null && (settings.vertices != null || genericFileType == null);
       knownFileType = settings.verticesFileType != null ? settings.verticesFileType :
           settings.vertices == null && genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.verticesDelimiter;
@@ -321,6 +326,7 @@ public class SourceDiscovery {
 
     case EDGE:
       sourceUrl = settings.edges != null ? settings.edges : settings.url;
+      fileTypeFromExtension = settings.edgesFileType == null && (settings.edges != null || genericFileType == null);
       knownFileType = settings.edgesFileType != null ? settings.edgesFileType :
           settings.edges == null && genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       knownDelimiter = settings.edgesDelimiter;
@@ -332,6 +338,7 @@ public class SourceDiscovery {
       // -documentsDelimiter WHEN IT IS ABSENT (ISSUE #6811). THE GENERIC `fileType` OPTION IS THIS FORM'S
       // -documentsFileType: WITHOUT IT A SOURCE THE SNIFFER MISREAD HAD NO WAY OUT (ISSUE #10754)
       sourceUrl = settings.url;
+      fileTypeFromExtension = genericFileType == null;
       knownFileType = genericFileType != null ? genericFileType : getFileTypeByExtension(sourceUrl);
       final Object genericDelimiter = settings.options.get("delimiter");
       knownDelimiter = genericDelimiter != null ? genericDelimiter.toString() : settings.documentsDelimiter;
@@ -351,9 +358,18 @@ public class SourceDiscovery {
     if (knownFileType != null) {
       final FormatImporter knownFormat = formatOfFileType(knownFileType, userDelimiter);
       if (knownFormat != null) {
-        // XML IS THE ONE FORMAT AN HTML PAGE CAN BE, AS XHTML
-        if (!(knownFormat instanceof XMLImporterFormat))
-          refuseAnHtmlPage(parser);
+        // ONE READ OF THE HEAD OF THE SOURCE SERVES BOTH CHECKS: THE CALLER RESETS THE PARSER BEFORE A FORMAT READS IT, AND A RESET
+        // OF A REMOTE SOURCE IS A NEW FETCH
+        final String head = readSourceHead(parser);
+        // AN ARCADEDB EXPORT NAMED WITH ANOTHER FORMAT'S EXTENSION (backup.csv) IS STILL AN EXPORT: THE NAME SAID WHAT THE FILE WAS
+        // MEANT TO BE, THE FIRST LINE SAYS WHAT IT IS. A FILE TYPE THE USER SET IS LEFT AS IT IS (ISSUE #11729)
+        if (fileTypeFromExtension && !(knownFormat instanceof JsonlImporterFormat) && head.startsWith("{")
+            && JsonlImporterFormat.opensExportHeader(head.substring(1)))
+          return new JsonlImporterFormat();
+        // A KNOWN FILE TYPE SAYS WHAT THE SOURCE WAS MEANT TO BE AND NOTHING ABOUT WHAT ANSWERED: AN ERROR OR A LOGIN PAGE SERVED
+        // WITH A 200 FOR A .csv URL WAS IMPORTED AS ONE HEADER ROW (ISSUE #11311). XML IS THE ONE FORMAT AN HTML PAGE CAN BE, AS XHTML
+        if (!(knownFormat instanceof XMLImporterFormat) && isHtmlPage(head))
+          throw htmlPageRefusal();
         return knownFormat;
       }
       LogManager.instance()
@@ -384,22 +400,26 @@ public class SourceDiscovery {
   }
 
   /**
-   * Refuses a source that opens as an HTML page, reading from the start of a parser that has read nothing. Its file type comes
-   * from the extension or the settings, which say what the source was meant to be and nothing about what answered: an error or
-   * a login page served with a 200 for a {@code .csv} URL imported as one header row, or as records made of its lines (issue
-   * #11311). The caller resets the parser before a format reads it, so what this reads costs no fetch.
+   * The head of a source, from the start of a parser that has read nothing: its first character that is not whitespace and what
+   * follows, up to the first <code>}</code> when it opens with <code>{</code> - what tells an ArcadeDB export, see
+   * {@link JsonlImporterFormat#opensExportHeader} - and otherwise up to what {@link #isHtmlPage} needs. Empty for a source of
+   * whitespace alone. The caller resets the parser before a format reads it.
    */
-  private void refuseAnHtmlPage(final Parser parser) throws IOException {
+  private static String readSourceHead(final Parser parser) throws IOException {
     parser.nextChar();
     if (!skipJsonWhitespace(parser))
-      return;
+      return "";
 
-    final StringBuilder head = new StringBuilder(HTML_PAGE_HEAD_LENGTH).append(parser.getCurrentChar());
-    while (head.length() < HTML_PAGE_HEAD_LENGTH && parser.isAvailable())
-      head.append(parser.nextChar());
-
-    if (isHtmlPage(head))
-      throw htmlPageRefusal();
+    final StringBuilder head = new StringBuilder(64).append(parser.getCurrentChar());
+    final boolean object = parser.getCurrentChar() == '{';
+    final int limit = object ? 1024 : HTML_PAGE_HEAD_LENGTH;
+    while (head.length() < limit && parser.isAvailable()) {
+      final char c = parser.nextChar();
+      head.append(c);
+      if (object && c == '}')
+        break;
+    }
+    return head.toString();
   }
 
   private ImportException htmlPageRefusal() {
@@ -1095,6 +1115,10 @@ public class SourceDiscovery {
         return new OrientDBImporterFormat();
       else if (buffer.toString().startsWith("\"type\":\"node\",\"id\":\""))
         return new Neo4jImporterFormat();
+      else if (JsonlImporterFormat.opensExportHeader(buffer))
+        // AN ARCADEDB EXPORT, WHATEVER ITS NAME. ONLY THE .jsonl EXTENSION USED TO ROUTE IT HERE, SO AN EXPORT WRITTEN AS
+        // backup.tgz WAS READ AS JSON: ITS HEADER LINE BECAME ONE DOCUMENT AND EVERY RECORD AFTER IT WAS DROPPED (ISSUE #11729)
+        return new JsonlImporterFormat();
 
       return new JSONImporterFormat();
 

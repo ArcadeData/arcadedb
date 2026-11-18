@@ -1113,7 +1113,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
-        GraphAnalyticalViewRegistry.unregister(database, name);
+        GraphAnalyticalViewRegistry.unregister(database, name, this);
     }
     invalidateGraphStatisticsCache();
   }

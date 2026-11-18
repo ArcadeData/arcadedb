@@ -36,15 +36,30 @@ public class OpenCypherExplainExecutionPlan implements ExecutionPlan {
   private final String planText;
   private final List<ExecutionStep> steps;
   private final long cost;
+  private final int limit;
 
   public OpenCypherExplainExecutionPlan(final String planText) {
     this(planText, Collections.emptyList(), -1);
   }
 
   public OpenCypherExplainExecutionPlan(final String planText, final List<ExecutionStep> steps, final long cost) {
+    this(planText, steps, cost, 0);
+  }
+
+  /**
+   * @param limit the LIMIT the statement declares on the rows it answers, 0 for none: what {@link #getLimit()} reports for
+   *              the rows a PROFILE returns alongside this plan (issue #12154)
+   */
+  public OpenCypherExplainExecutionPlan(final String planText, final List<ExecutionStep> steps, final long cost, final int limit) {
     this.planText = planText;
     this.steps = steps != null ? steps : Collections.emptyList();
     this.cost = cost;
+    this.limit = limit;
+  }
+
+  @Override
+  public int getLimit() {
+    return limit;
   }
 
   @Override

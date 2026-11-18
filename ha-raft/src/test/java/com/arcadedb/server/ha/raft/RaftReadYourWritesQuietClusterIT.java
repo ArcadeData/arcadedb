@@ -44,6 +44,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * then, and reads the write on a follower with it. The heartbeat is set to about 5 s here (half the minimum election
  * timeout), so a read that waits for it cannot pass for one that waits for the write. The Raft log is the persistent one a
  * deployment runs.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("slow")
 class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {

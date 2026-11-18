@@ -36,6 +36,23 @@ public interface QueryEngine {
     boolean isDDL();
 
     /**
+     * Whether the statement commits its work itself, in batches, when its caller has no transaction open, so an entry point must
+     * not open one around it on the caller's behalf (issue #11728). False unless the language says otherwise.
+     */
+    default boolean managesItsOwnTransactions() {
+      return false;
+    }
+
+    /**
+     * Whether the statement reports on the files of the node that runs it and writes nothing, so a replica runs it itself instead
+     * of forwarding it to the leader, which would answer for its own files (issues #12347, #12348). False unless the language says
+     * otherwise.
+     */
+    default boolean inspectsTheLocalNode() {
+      return false;
+    }
+
+    /**
      * Returns the set of operation types this query performs.
      * Provides semantic, parser-based classification of query operations
      * for fine-grained permission checking.

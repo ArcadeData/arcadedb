@@ -1,0 +1,196 @@
+/*
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.File;
+import java.nio.file.Path;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Regression test for issue #7221: the {@code forceSnapshot} replay guard added for #7143 returned early on
+ * the persisted applied index alone. That index lives in {@code <databaseDirectory>/.raft/applied-index}, a
+ * sibling of the per-database directories rather than a file inside them, so deleting a database's directory
+ * leaves its entry in the map untouched and the guard skips the reinstall of a database that is no longer
+ * there. The wipe-and-resync recovery an operator reaches for - stop the node, delete the bad copy, start it
+ * again - therefore left the database gone for good.
+ * <p>
+ * The guard now has to prove the premise it states, the same way the normal-create arm of the very same
+ * method does: skip only when the database is actually present on this node.
+ */
+class ForceSnapshotGuardMissingDatabaseTest {
+
+  private static final String DB          = "db-wiped";
+
+  private static final long   ENTRY_INDEX = 42L;
+
+  @TempDir
+  private Path           serverDir;
+
+  private ArcadeDBServer server;
+
+  private LocalDatabase  localDb;
+
+  private String         dbPath;
+
+  @BeforeEach
+  void setUp() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
+    server = new ArcadeDBServer(config);
+
+    dbPath = serverDir.resolve(DB).toString();
+    localDb = (LocalDatabase) new DatabaseFactory(dbPath).create();
+    server.registerDatabase(DB, localDb);
+  }
+
+  @AfterEach
+  void tearDown() {
+    if (localDb != null && localDb.isOpen())
+      localDb.close();
+    if (dbPath != null)
+      FileUtils.deleteRecursively(new File(dbPath));
+  }
+
+  // Regression for #7221: a replayed force snapshot entry still reinstalls when the database is gone
+  @Test
+  void aReplayedForceSnapshotEntryStillReinstallsWhenTheDatabaseIsGone() {
+    final ArcadeStateMachine before = newStateMachine();
+    // A previous session ran this install and Raft replicated the database forward from there.
+    before.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
+
+    wipeTheLocalCopy();
+
+    // The restart: a fresh state machine reads the applied index back from disk.
+    final ArcadeStateMachine after = newStateMachine();
+    assertThat(after.readPersistedAppliedIndex(DB))
+        .as(".raft/applied-index is a sibling of the database directories, so wiping one leaves this behind")
+        .isEqualTo(ENTRY_INDEX + 8);
+
+    // Reaching the download path is what this asserts; it cannot complete in a unit test with no Raft server
+    // to resolve a leader from, and that refusal is the proof the guard did not swallow the entry. The guard
+    // firing would instead return normally, which is exactly what this test used to observe. The message is
+    // asserted rather than only the throw, so the discriminator is the refusal the install path is supposed
+    // to raise and not any incidental failure on the way to it.
+    assertThatThrownBy(() -> after.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("an applied index at or beyond the entry must not skip the reinstall of an absent database")
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("Cannot reinstall database '" + DB + "' from the leader");
+  }
+
+  // Regression for #7221: the guard still skips the re download when the database is still there
+  @Test
+  void theGuardStillSkipsTheReDownloadWhenTheDatabaseIsStillThere() {
+    final ArcadeStateMachine sm = newStateMachine();
+    sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
+
+    // Nothing was wiped here, so #7143's guard must still suppress the multi-GB re-download on replay.
+    assertThatCode(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("a replayed entry for a database that IS present must still return without re-downloading it")
+        .doesNotThrowAnyException();
+  }
+
+  // Regression for #7221: a leader decides before the replay guard runs or says anything
+  /**
+   * Issue #7302, item 2: a leader takes no action here whatever the guard decides, so it has to decide that
+   * before the guard has said anything.
+   * <p>
+   * The guard's WARNING announces a reinstall "from the leader", and it was logged above the unconditional
+   * leader skip - so on the one node whose log an operator reads to find out what the cluster did with the
+   * entry, the log recorded an action that never happened. The skip is now first.
+   * <p>
+   * Issue #8067 narrowed what "the leader decides first" may decide: in this exact state - applied before, no copy
+   * now - the leader used to return silently, which left it permanently short of the database. It now refuses in
+   * its own words, which is still not the follower's "reinstalling it from the leader" path. The quarantine that
+   * refusal leads to is pinned by {@code LeaderForceSnapshotReplayMissingDatabaseTest}.
+   */
+  @Test
+  void aLeaderDecidesBeforeTheReplayGuardRunsOrSaysAnything() {
+    final ArcadeStateMachine sm = newStateMachine();
+    sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
+
+    // The exact state that produced the false line: a replayed entry, an applied index past it, and no local
+    // copy of the database to justify the skip.
+    wipeTheLocalCopy();
+
+    final FakeRaftHAServer leader = FakeRaftHAServer.detached();
+    leader.leader(true);
+    sm.setRaftHAServer(leader);
+
+    assertThatThrownBy(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("a leader with no copy cannot reinstall from itself, and must say so rather than skip silently")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("this node is the Raft leader")
+        .hasMessageNotContaining("Cannot reinstall database '" + DB + "' from the leader");
+    assertThat(leader.calls("getLeaderId")).isEmpty();
+  }
+
+  // Regression for #7221: a leader that holds the database neither reinstalls nor fails
+  /** A leader that still holds the database takes no action at all: its files are the authoritative ones. */
+  @Test
+  void aLeaderThatHoldsTheDatabaseNeitherReinstallsNorFails() {
+    final ArcadeStateMachine sm = newStateMachine();
+    sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
+
+    final FakeRaftHAServer leader = FakeRaftHAServer.detached();
+    leader.leader(true);
+    sm.setRaftHAServer(leader);
+
+    assertThatCode(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("the leader's own files are authoritative: it neither reinstalls nor fails")
+        .doesNotThrowAnyException();
+    assertThat(leader.calls("getLeaderId")).isEmpty();
+  }
+
+  /**
+   * The operator's wipe-and-resync recovery: stop the node, remove the bad copy, start it again. Closing and
+   * deregistering is what a restart leaves behind - {@code loadDatabases()} finds no directory to register.
+   */
+  private void wipeTheLocalCopy() {
+    localDb.close();
+    server.removeDatabase(DB);
+    FileUtils.deleteRecursively(new File(dbPath));
+    assertThat(server.existsDatabase(DB)).isFalse();
+    assertThat(new File(dbPath)).doesNotExist();
+  }
+
+  private ArcadeStateMachine newStateMachine() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.setServer(server);
+    return sm;
+  }
+
+  private static RaftLogEntryCodec.DecodedEntry forceSnapshotEntry() {
+    return RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, true));
+  }
+}
