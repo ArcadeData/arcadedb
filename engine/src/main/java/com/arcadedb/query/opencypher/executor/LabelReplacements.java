@@ -40,9 +40,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -104,6 +106,9 @@ public final class LabelReplacements {
   // IDENTITY A DISTINCT KEYS IT BY, SO A NODE HELD AS THE ORIGINAL BY ONE ROW AND AS A REPLACEMENT BY ANOTHER IS ONE VALUE
   // (ISSUE #10614). A VERTEX MAPS TO A VERTEX AND AN EDGE TO AN EDGE
   private final Map<RID, Identifiable> origins = new HashMap<>();
+  // THE SAME FOR A RE-ATTACHED LIGHTWEIGHT EDGE, BY THE OBJECT THE REDIRECT HANDS OUT: ITS IDENTITY IS THE (TYPE, OUT, IN)
+  // TRIPLE, WHICH A PARALLEL TWIN CREATED LATER SHARES, SO KEYING IT BY RID WOULD MERGE TWO RELATIONSHIPS UNDER DISTINCT
+  private final Map<Edge, Edge>        lightweightOrigins = new IdentityHashMap<>();
   // The context of the statement this map belongs to, which alone ends it (see endOfStatement); null for a private map
   private final CommandContext   owner;
   // The database the held positions live in, set by the first hold
@@ -224,7 +229,8 @@ public final class LabelReplacements {
       return key;
     }
 
-    if (value instanceof List<?> list) {
+    // A lazy range holds numbers only: walking it would materialise what it exists not to
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
       List<Object> rebuilt = null;
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
@@ -312,7 +318,7 @@ public final class LabelReplacements {
    * would then hand back to the retried attempt as if it were live.
    */
   public Snapshot copy() {
-    return new Snapshot(new HashMap<>(vertices), new HashMap<>(edges), new HashMap<>(origins));
+    return new Snapshot(new HashMap<>(vertices), new HashMap<>(edges), new HashMap<>(origins), new IdentityHashMap<>(lightweightOrigins));
   }
 
   /**
@@ -336,6 +342,8 @@ public final class LabelReplacements {
     // The replacements of the rolled-back attempt never existed: their RIDs may be handed to unrelated records later
     origins.clear();
     origins.putAll(snapshot.origins);
+    lightweightOrigins.clear();
+    lightweightOrigins.putAll(snapshot.lightweightOrigins);
   }
 
   /**
@@ -347,11 +355,14 @@ public final class LabelReplacements {
     private final Map<RID, Vertex> vertices;
     private final Map<RID, Edge>   edges;
     private final Map<RID, Identifiable> origins;
+    private final Map<Edge, Edge>        lightweightOrigins;
 
-    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges, final Map<RID, Identifiable> origins) {
+    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges, final Map<RID, Identifiable> origins,
+        final Map<Edge, Edge> lightweightOrigins) {
       this.vertices = vertices;
       this.edges = edges;
       this.origins = origins;
+      this.lightweightOrigins = lightweightOrigins;
     }
   }
 
@@ -453,7 +464,8 @@ public final class LabelReplacements {
     if (value instanceof TraversalPath path)
       return redirectPath(path);
 
-    if (value instanceof List<?> list) {
+    // A lazy range holds numbers only, and every row served after a label write is walked: it is not materialised for that
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
       List<Object> rebuilt = null;
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
@@ -662,13 +674,13 @@ public final class LabelReplacements {
       return;
     if (edges.put(rid, replacement) == null)
       holdPosition(original.getDatabase(), rid);
-    // Not for a lightweight edge: its identity is the (type, out, in) triple, which a parallel twin created later shares, so
-    // keying it would merge two relationships under DISTINCT
+    final Identifiable origin = originOf(original);
+    final Identifiable root = origin != null ? origin : original;
     final RID replacementRid = replacement.getIdentity();
-    if (replacementRid != null && !(replacementRid instanceof LightEdgeRID)) {
-      final Identifiable origin = originOf(original);
-      origins.put(replacementRid, origin != null ? origin : original);
-    }
+    if (replacementRid instanceof LightEdgeRID)
+      lightweightOrigins.put(replacement, (Edge) root);
+    else if (replacementRid != null)
+      origins.put(replacementRid, root);
   }
 
   /**
@@ -676,6 +688,8 @@ public final class LabelReplacements {
    */
   private Identifiable originOf(final Identifiable record) {
     final RID rid = record.getIdentity();
+    if (rid instanceof LightEdgeRID)
+      return record instanceof Edge edge ? lightweightOrigins.get(edge) : null;
     return rid != null ? origins.get(rid) : null;
   }
 

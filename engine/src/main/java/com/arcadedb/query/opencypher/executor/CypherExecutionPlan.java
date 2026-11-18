@@ -639,9 +639,11 @@ public class CypherExecutionPlan {
       // Each branch runs seeded with the row, one after the other and only as far as the consumer pulls: collecting every
       // branch first ran the whole body for a LIMIT the first branch could satisfy (issue #11082). The UNION de-duplicates
       // on the canonical keys of the statement-level UNION, under the same heap limit.
-      // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext, so it takes
-      // the non-union path below and does its own inherit under the same gate. A second copy here would be one more
-      // thing to keep in step with that gate (issue #6977).
+      // Each branch runs through this same method with the REAL outerContext, so it takes the non-union path below and
+      // does its own inherit (issue #6977). The UNION itself inherits the map too, under the same gate, only to key its rows:
+      // a replaced node held as the original by one branch and as the replacement by a later one is one row (issue #10614)
+      if (outerContext != null && !statement.isReadOnly())
+        LabelReplacements.inherit(ctx, outerContext);
       final UnionStep unionStep = new UnionStep(branchPlans, removeDuplicates,
           branchPlan -> branchPlan.executeWithSeedRow(seedRow, outerContext, batchSize), ctx);
       return unionStep.syncPull(ctx, batchSize);

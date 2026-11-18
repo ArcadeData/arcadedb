@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
@@ -333,6 +334,45 @@ class CypherLabelWriteRedirectsEmittedRowsIssue10614Test extends TestHelper {
     assertThat(count("MATCH (n:L) RETURN count(n) AS c")).isZero();
   }
 
+  /** The same for a write UNION inside a CALL body, whose branches run seeded with the outer row. */
+  @Test
+  void aUnionInsideACallBodyAnswersAReplacedNodeOnce() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:L {id: 1})"));
+
+    final List<Result> rows = rows("""
+        CALL {
+          MATCH (n:L) RETURN n
+          UNION
+          MATCH (n:L) REMOVE n:L RETURN n
+        }
+        RETURN n""");
+    assertThat(rows).hasSize(1);
+    assertLive(rows.getFirst().getProperty("n"));
+  }
+
+  /**
+   * A path through a lightweight relationship: relabelling its endpoint re-creates the relationship with an identity of its
+   * own (the endpoints are its identity), and the DISTINCT still reads the path before and after the write as one path.
+   */
+  @Test
+  void aDistinctPathThroughALightweightRelationshipCollapsesAcrossTheWrite() {
+    database.getSchema().buildEdgeType().withName("Light").withLightweight(true).create();
+    database.transaction(() -> database.command("opencypher", "CREATE (:L {id: 1})-[:Light]->(:M {id: 2})"));
+
+    final String query = """
+        UNWIND range(1, 250) AS i
+        MATCH p = (a {id: 1})-[:Light]->(b)
+        WITH i, p, CASE WHEN i = 180 THEN a ELSE null END AS target
+        REMOVE target:L
+        RETURN DISTINCT p""";
+    final List<Result> rows = rows(query);
+    assertThat(rows).hasSize(1);
+    assertLivePath(rows.getFirst().getProperty("p"));
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n {id: 1}) SET n:L"));
+    assertThat(rows(query + " SKIP 1")).isEmpty();
+  }
+
   /** PROFILE drains the statement as well, and answers the same live rows. */
   @Test
   void aProfiledStatementAnswersTheLiveRecords() {
@@ -360,7 +400,9 @@ class CypherLabelWriteRedirectsEmittedRowsIssue10614Test extends TestHelper {
       assertLive(vertex);
     for (int i = 0; i < edges.size(); i++) {
       final Edge edge = edges.get(i);
-      assertLive(edge);
+      // A lightweight relationship has no record of its own: the endpoints below are what make it live
+      if (!(edge.getIdentity() instanceof LightEdgeRID))
+        assertLive(edge);
       final RID from = vertices.get(i).getIdentity();
       final RID to = vertices.get(i + 1).getIdentity();
       // Each relationship of the path joins the two nodes it sits between, in either direction
