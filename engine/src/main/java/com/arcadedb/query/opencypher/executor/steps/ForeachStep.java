@@ -73,7 +73,9 @@ public class ForeachStep extends AbstractExecutionStep {
    * which can bind the same underlying vertex/edge across more than one output row (issue #6491), or
    * because it has a variable-length/quantified relationship (see
    * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasVariableLengthRelationships(java.util.List)}),
-   * whose traverser keeps edge-segment cursors open across the rows it is still producing (issue #7023).
+   * whose traverser keeps edge-segment cursors open across the rows it is still producing (issue #7023), or
+   * because a relationship pattern before it is still being walked and the body holds a DETACH DELETE
+   * ({@link ForeachClause#containsDetachDelete()}), which cuts the edge lists of that walk (issue #12254).
    * Either way, a DELETE inside one iteration's body removing an entity while a later row is still being
    * produced makes that row dereference an already-removed record - the identical hazard
    * {@code DeleteStep} guards against, just reached through FOREACH's own row-by-row loop instead.
@@ -194,7 +196,7 @@ public class ForeachStep extends AbstractExecutionStep {
             // eagerMaterialize field doc and DeleteStep's identical mechanism for issue #6491.
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            heapLimit = OperationHeapLimit.of(context, "FOREACH of a disconnected pattern");
+            heapLimit = OperationHeapLimit.of(context, "FOREACH of the matched rows");
             try {
               while (prevResults.hasNext()) {
                 final Result row = prevResults.next();

@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #12254: a {@code DETACH DELETE} of a node bound by a relationship pattern ran on the
@@ -33,6 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * anchor's edge list. The walk then stopped early and the remaining rows were never produced:
  * {@code MATCH (a {k:0})-[r]->(b) DETACH DELETE a, b} over 500 relationships deleted 166 nodes and answered 200, and a
  * {@code SET} on {@code b} in the same statement reached a third of them. Neo4j reads the MATCH to completion first.
+ * <p>
+ * Every consumer of the rows of such a MATCH carries the hazard, not only a DELETE written right after it: a WITH, an UNWIND,
+ * a FOREACH body and a CALL subquery body hand the entity on while the walk is still open, so each of them is covered, and so
+ * is the statement that reaches a node only through a relationship variable ({@code endNode(r)}).
  */
 class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
   private static final int FAN_OUT = 500;
@@ -157,6 +164,177 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
   void nodeOnlyDetachDeleteStillDeletesEverything() {
     createFan();
     rowsOf("MATCH (n:V) DETACH DELETE n");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** Both ends labelled: the statement is planned by the optimizer, whose DeleteStep has its own construction site. */
+  @Test
+  void labelledEndsPlannedByTheOptimizerDeleteEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r:F]->(b:V) DETACH DELETE a, b");
+    assertThat(countVertices()).isZero();
+  }
+
+  @Test
+  void pathVariableTargetDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH p = (a:V {k: 0})-[r]->(b) DETACH DELETE p");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** The UNWIND hands the nodes on one at a time while the walk behind it is still open. */
+  @Test
+  void unwindOfTraversedNodesDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) UNWIND [a, b] AS victim DETACH DELETE victim");
+    assertThat(countVertices()).isZero();
+  }
+
+  @Test
+  void unwindOfAListProjectedByAWithDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) WITH [a, b] AS victims UNWIND victims AS victim DETACH DELETE victim");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** The body of a FOREACH deletes per row, behind the walk of the MATCH that feeds it. */
+  @Test
+  void foreachBodyDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) FOREACH (victim IN [a, b] | DETACH DELETE victim)");
+    assertThat(countVertices()).isZero();
+  }
+
+  @Test
+  void foreachBodyNamingTheMatchedNodesDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) FOREACH (i IN [1] | DETACH DELETE a, b)");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** The body of a CALL subquery runs once per row of the walk behind it. */
+  @Test
+  void callSubqueryBodyDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) CALL (a, b) { DETACH DELETE a, b }");
+    assertThat(countVertices()).isZero();
+  }
+
+  @Test
+  void implicitImportSubqueryBodyDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) CALL { WITH a, b DETACH DELETE a, b }");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** The far end is anonymous: it is reached through the relationship variable, which names no node variable. */
+  @Test
+  void anonymousEndpointReachedThroughAnAliasIsDeletedForEveryRelationship() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->() WITH endNode(r) AS b DETACH DELETE b");
+    assertThat(countVertices()).isEqualTo(1);
+  }
+
+  @Test
+  void anonymousEndpointReachedThroughAnAliasKeepsTheRowsAfterTheDelete() {
+    createFan();
+    assertThat(rowsOf("MATCH (a:V {k: 0})-[r]->() WITH a, endNode(r) AS b DETACH DELETE a RETURN b")).isEqualTo(FAN_OUT);
+    assertThat(countVertices()).isEqualTo(FAN_OUT);
+  }
+
+  /** A WITH item that is no entity (b.k) does not end the walk: the rows behind it are still produced one at a time. */
+  @Test
+  void withOfAScalarComputedFromTheNeighbourKeepsEveryRow() {
+    createFan();
+    assertThat(rowsOf("MATCH (a:V {k: 0})-[r]->(b) WITH a, b.k AS m DETACH DELETE a RETURN m")).isEqualTo(FAN_OUT);
+    assertThat(countVertices()).isEqualTo(FAN_OUT);
+  }
+
+  /**
+   * The node deleted is bound by a node-only MATCH of a later segment, fed by the rows of the walk: it names none of the
+   * variables of the relationship pattern, and its DETACH still removes the relationships the walk has not reached.
+   */
+  @Test
+  void nodeOnlyMatchAfterAWithFedByTheWalkDeletesEveryNeighbour() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) WITH b MATCH (n:V) WHERE n.k = b.k DETACH DELETE n");
+    assertThat(countVertices()).isEqualTo(1);
+  }
+
+  /**
+   * The mixed graph of the report: several vertex and edge types, a hub of 4,500 relationships and a WHERE on the far end.
+   * The report saw a RecordNotFoundException on its own graph; this fixture does not reproduce that error without the guard,
+   * so it pins the result of the eager read on a hub of several types: only the hub and the matched neighbours go.
+   */
+  @Test
+  void hubOfSeveralTypesWithAWhereOnTheFarEndDeletesEveryMatchedNode() {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createVertexType("W");
+    database.getSchema().createEdgeType("F");
+    database.getSchema().createEdgeType("G");
+    database.transaction(() -> {
+      database.command("opencypher", "UNWIND range(0, 3000) AS i CREATE (:V {k: i})");
+      database.command("opencypher", "UNWIND range(1, 1500) AS i CREATE (:W {k: i})");
+      database.command("opencypher", "MATCH (a:V {k: 0}), (b:V) WHERE b.k > 0 CREATE (a)-[:F]->(b)");
+      database.command("opencypher", "MATCH (a:V {k: 0}), (b:W) CREATE (a)-[:G]->(b)");
+    });
+    rowsOf("MATCH (a {k: 0})-[r]->(b) WHERE b.k < 30 DETACH DELETE a, b");
+    // the hub and the 29 + 29 neighbours with k < 30 are gone, nothing else
+    assertThat(countVertices()).isEqualTo(3001 - 1 - 29);
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM W")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1500 - 29);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM F")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /** Deleting the matched relationship itself never disturbs the walk: it stays on the streaming path. */
+  @Test
+  void relationshipOnlyDetachDeleteKeepsStreaming() {
+    createFan();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) DETACH DELETE r");
+    assertThat(countVertices()).isEqualTo(FAN_OUT + 1);
+    try (final ResultSet rs = database.query("opencypher", "MATCH ()-[r:F]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /** Reading the rows first is what bounds a node delete by the heap limit: the same cap fails it where it spares the one above. */
+  @Test
+  void nodeDetachDeleteBehindARelationshipPatternReadsItsRowsUnderTheHeapLimit() {
+    createFan();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
+    assertThatThrownBy(() -> rowsOf("MATCH (a:V {k: 0})-[r]->(b) DETACH DELETE b"))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    assertThat(countVertices()).as("the failed delete was rolled back").isEqualTo(FAN_OUT + 1);
+  }
+
+  @Test
+  void nodeOnlyDetachDeleteKeepsStreamingUnderTheHeapLimit() {
+    createFan();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
+    rowsOf("MATCH (n:V) DETACH DELETE n");
+    assertThat(countVertices()).isZero();
+  }
+
+  /** A DELETE without DETACH refuses a node that still has a relationship: it has no walk to race and keeps streaming. */
+  @Test
+  void plainDeleteOfTheRelationshipsKeepsStreamingUnderTheHeapLimit() {
+    createFan();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) DELETE r");
+    assertThat(countVertices()).isEqualTo(FAN_OUT + 1);
+  }
+
+  /** An aggregating WITH drains the walk before it emits its first row: what follows it streams again. */
+  @Test
+  void deleteAfterAnAggregatingWithKeepsStreamingUnderTheHeapLimit() {
+    createFan();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) WITH count(*) AS c MATCH (n:V) DETACH DELETE n");
     assertThat(countVertices()).isZero();
   }
 }
