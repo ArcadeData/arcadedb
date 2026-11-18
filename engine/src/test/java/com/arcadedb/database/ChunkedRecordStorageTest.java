@@ -1511,17 +1511,27 @@ public class ChunkedRecordStorageTest {
       final RID[] rids = createChunkedRecords(TYPE);
       final int bucketId = rids[0].getBucketId();
 
-      // head -> chunk1 -> chunk2 -> ... becomes head -> chunk1 -> chunk2 -> chunk1 -> ...
-      final long chunk1 = nextChunkPointerOf(bucketId, rids[0].getPosition(), FIRST_CHUNK_MARKER);
-      final long chunk2 = nextChunkPointerOf(bucketId, chunk1, NEXT_CHUNK_MARKER);
-      assertThat(chunk1).as("the fixture must give record 0 a chain of at least three chunks").isPositive();
-      assertThat(chunk2).as("the fixture must give record 0 a chain of at least three chunks").isPositive();
+      // Which records of the fixture end up with a chain of three chunks or more is decided by the order the transaction applied
+      // their growth in, which is the iteration order of a map keyed by RID: take whichever record has one
+      RID chained = null;
+      long chunk1 = 0;
+      long chunk2 = 0;
+      for (final RID rid : rids) {
+        chunk1 = nextChunkPointerOf(bucketId, rid.getPosition(), FIRST_CHUNK_MARKER);
+        chunk2 = chunk1 > 0 ? nextChunkPointerOf(bucketId, chunk1, NEXT_CHUNK_MARKER) : 0;
+        if (chunk2 > 0) {
+          chained = rid;
+          break;
+        }
+      }
+      assertThat(chained).as("the fixture must give some record a chain of at least three chunks").isNotNull();
 
+      // head -> chunk1 -> chunk2 -> ... becomes head -> chunk1 -> chunk2 -> chunk1 -> ...
       writeNextChunkPointer(bucketId, chunk2, NEXT_CHUNK_MARKER, chunk1);
 
       // "visited twice" is the EXACT detector's wording, not the self-reference guard's: asserting it is what keeps
       // this test honest, since a cycle caught by the cheap guard would prove nothing about the one added here.
-      assertBrokenChainIsReportedWithoutRetrying(rids[0], "visited twice");
+      assertBrokenChainIsReportedWithoutRetrying(chained, "visited twice");
     }
 
     /**
@@ -3270,10 +3280,10 @@ public class ChunkedRecordStorageTest {
       final List<RID> fillers = layout.fillers();
       final long countBefore = countRecordsFromCounter("Spill10700");
 
-      database.transaction(() -> {
-        emptied(fillers.getFirst());
-        empties.getFirst().asDocument(true).modify().set("v", BIG).save();
-      });
+      // The hole is committed before the growth: in one transaction the two updates are applied in the iteration order of a map
+      // keyed by RID, and only the order "hole first" is the scenario under test
+      database.transaction(() -> emptied(fillers.getFirst()));
+      database.transaction(() -> empties.getFirst().asDocument(true).modify().set("v", BIG).save());
 
       assertThat((Long) bucketStats("Spill10700").get("totalPlaceholderRecords"))
           .as("a hole of 8 KB hosts a chunk header: no neighbour may have moved behind a pointer").isZero();
