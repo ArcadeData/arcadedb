@@ -46,6 +46,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   // #10929: whether a head was set on THIS instance since it was last queued for update, see adoptEdgeListHeadsOf()
   private boolean outEdgesAssigned;
   private boolean inEdgesAssigned;
+  // #12320: the heads a traversal read on this instance (OUT_HEAD_READ, IN_HEAD_READ), see isEdgeListHeadRead()
+  private byte    edgeListHeadsRead;
+
+  private static final byte OUT_HEAD_READ = 1;
+  private static final byte IN_HEAD_READ  = 2;
 
   /**
    * Creation constructor.
@@ -129,12 +134,38 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return this;
   }
 
+  /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getOutEdgesHeadChunk() {
+    edgeListHeadsRead |= OUT_HEAD_READ;
     return outEdges;
   }
 
+  /** The head of the incoming list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getInEdgesHeadChunk() {
+    edgeListHeadsRead |= IN_HEAD_READ;
     return inEdges;
+  }
+
+  @Override
+  public RID peekOutEdgesHeadChunk() {
+    return outEdges;
+  }
+
+  @Override
+  public RID peekInEdgesHeadChunk() {
+    return inEdges;
+  }
+
+  /**
+   * Whether a traversal read the head of the outgoing ({@code out}) or incoming list on this instance (issue #12320). A
+   * transaction reads a vertex it queued for update from the instance it queued, whose heads are the ones it read when it
+   * queued it: when a concurrent transaction moved such a head meanwhile, a walk of that list missed what it put in front, and
+   * the edge-list head merge must refuse the commit rather than keep the committed head under a decision taken on the old one.
+   * The writers of the list read the heads through {@link #peekOutEdgesHeadChunk()} / {@link #peekInEdgesHeadChunk()}, which
+   * record nothing.
+   */
+  public boolean isEdgeListHeadRead(final boolean out) {
+    return (edgeListHeadsRead & (out ? OUT_HEAD_READ : IN_HEAD_READ)) != 0;
   }
 
   /**
@@ -182,9 +213,12 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   public void adoptEdgeListHeadsOf(final Record held) {
     if (held != this && held instanceof VertexInternal holder) {
       if (!outEdgesAssigned)
-        outEdges = holder.getOutEdgesHeadChunk();
+        outEdges = holder.peekOutEdgesHeadChunk();
       if (!inEdgesAssigned)
-        inEdges = holder.getInEdgesHeadChunk();
+        inEdges = holder.peekInEdgesHeadChunk();
+      // #12320: what a traversal read on the instance this one replaces in the transaction stays read
+      if (holder instanceof MutableVertex mutableHolder)
+        edgeListHeadsRead |= mutableHolder.edgeListHeadsRead;
     }
     outEdgesAssigned = false;
     inEdgesAssigned = false;

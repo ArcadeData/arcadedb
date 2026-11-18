@@ -80,6 +80,8 @@ class Issue11588PostgresCallInTransactionsIT extends PostgresWireProtocolTestBas
       final List<WireMessage> answers = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(answers)).containsOnlyOnce('E');
       assertThat(errorMessage(answers)).contains("can only be executed in an implicit transaction");
+      // the client's transaction block is the cause: active_sql_transaction, a client error (issue #12161)
+      assertThat(errorField(answers, 'C')).isEqualTo("25001");
 
       sendSimpleQuery(out, "ROLLBACK");
       assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
@@ -115,9 +117,13 @@ class Issue11588PostgresCallInTransactionsIT extends PostgresWireProtocolTestBas
   }
 
   private static String errorMessage(final List<WireMessage> answers) {
+    return errorField(answers, 'M');
+  }
+
+  private static String errorField(final List<WireMessage> answers, final char field) {
     for (final WireMessage message : answers)
       if (message.type() == 'E')
-        return errorFields(message).get('M');
+        return errorFields(message).get(field);
     return "";
   }
 

@@ -485,7 +485,7 @@ class Issue6965LocalCommitHandshakeTest {
     claimed.published();
   }
 
-  /** The wire layout {@code ArcadeStateMachine.deserializeWalTransaction} reads: id, timestamp, no pages. */
+  /** The wire layout {@code CommittedEntryDecoding.deserializeWalTransaction} reads: id, timestamp, no pages. */
   private static byte[] walTransactionBytes(final long txId) {
     final ByteBuffer buf = ByteBuffer.allocate(2 * Long.BYTES + 2 * Integer.BYTES);
     buf.putLong(txId);

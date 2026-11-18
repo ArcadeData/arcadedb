@@ -74,7 +74,7 @@ class Issue9762FollowerRenameFilesTest {
     final Bucket bucket = database.getSchema().getType("R").getBuckets(false).getFirst();
     final String newName = "R2" + bucket.getName().substring(1);
 
-    ArcadeStateMachine.renameFiles(database, Map.of(bucket.getFileId(), newName));
+    SchemaEntryApplier.renameFiles(database, Map.of(bucket.getFileId(), newName));
 
     assertThat(database.getFileManager().getFile(bucket.getFileId()).getComponentName()).isEqualTo(newName);
     assertThat(new File(database.getDatabasePath()).list()).anyMatch(n -> n.startsWith(newName + "."));
@@ -85,9 +85,9 @@ class Issue9762FollowerRenameFilesTest {
   void aReplayOfAnAppliedRenameIsSkipped() throws Exception {
     final Bucket bucket = database.getSchema().getType("R").getBuckets(false).getFirst();
     final String newName = "R2" + bucket.getName().substring(1);
-    ArcadeStateMachine.renameFiles(database, Map.of(bucket.getFileId(), newName));
+    SchemaEntryApplier.renameFiles(database, Map.of(bucket.getFileId(), newName));
 
-    ArcadeStateMachine.renameFiles(database, Map.of(bucket.getFileId(), newName));
+    SchemaEntryApplier.renameFiles(database, Map.of(bucket.getFileId(), newName));
 
     assertThat(database.getFileManager().getFile(bucket.getFileId()).getComponentName()).isEqualTo(newName);
   }
@@ -102,9 +102,9 @@ class Issue9762FollowerRenameFilesTest {
     final Map<Integer, String> renames = new LinkedHashMap<>();
     renames.put(first.getFileId(), firstNewName);
     renames.put(second.getFileId(), "R2_extra");
-    ArcadeStateMachine.renameFiles(database, Map.of(first.getFileId(), firstNewName));
+    SchemaEntryApplier.renameFiles(database, Map.of(first.getFileId(), firstNewName));
 
-    ArcadeStateMachine.renameFiles(database, renames);
+    SchemaEntryApplier.renameFiles(database, renames);
 
     assertThat(database.getFileManager().getFile(first.getFileId()).getComponentName()).isEqualTo(firstNewName);
     assertThat(database.getFileManager().getFile(second.getFileId()).getComponentName()).isEqualTo("R2_extra");
@@ -131,8 +131,8 @@ class Issue9762FollowerRenameFilesTest {
       renames.put(engine.getShard(i).getMutableBucket().getFileId(), "Measure_shard_" + i);
     renames.put(engine.getTagDictionary().getFileId(), "Measure_tags");
 
-    ArcadeStateMachine.renameFiles(database, renames);
-    ArcadeStateMachine.renameFiles(database, renames);
+    SchemaEntryApplier.renameFiles(database, renames);
+    SchemaEntryApplier.renameFiles(database, renames);
 
     final File directory = new File(database.getDatabasePath());
     assertThat(directory.list()).noneMatch(n -> n.startsWith("Metric_"))
@@ -154,7 +154,7 @@ class Issue9762FollowerRenameFilesTest {
 
   @Test
   void aFileIdThisNodeDoesNotHaveIsRefusedAsADivergence() {
-    assertThatThrownBy(() -> ArcadeStateMachine.renameFiles(database, Map.of(9_999, "Nowhere_0")))
+    assertThatThrownBy(() -> SchemaEntryApplier.renameFiles(database, Map.of(9_999, "Nowhere_0")))
         .isInstanceOf(SchemaException.class).hasMessageContaining("diverged");
   }
 }

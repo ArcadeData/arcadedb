@@ -147,12 +147,12 @@ class Issue8380CrashLoopRecordSurvivesDivergenceReformatTest {
   @Test
   void theRecordIsNotInsideTheRaftStorageDirectory(@TempDir final Path root) {
     final File storageDir = new File(root.toFile(), "raft-storage-peer");
-    final File record = RaftHAServer.crashLoopEscalationMarkerFile(storageDir);
+    final File record = RaftStorageFiles.crashLoopEscalationMarkerFile(storageDir);
 
     assertThat(record.getParentFile().getAbsoluteFile()).isEqualTo(root.toFile().getAbsoluteFile());
     assertThat(record.toPath().startsWith(storageDir.toPath())).as("a reformat deletes everything under the storage dir")
         .isFalse();
-    assertThat(record.getName()).isEqualTo("raft-storage-peer." + RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
+    assertThat(record.getName()).isEqualTo("raft-storage-peer." + RaftStorageFiles.CRASH_LOOP_ESCALATION_MARKER);
   }
 
   @Test
@@ -277,12 +277,12 @@ class Issue8380CrashLoopRecordSurvivesDivergenceReformatTest {
     assertThat(server.persistCrashLoopEscalation("Ratis crash-loop persists after 11 restarts")).isTrue();
     final File storageDir = storageDirOrCreate(root.toFile());
 
-    RaftHAServer.discardNonPersistentRaftStorage(storageDir);
+    RaftStorageFiles.discardNonPersistentRaftStorage(storageDir);
 
     assertThat(storageDir).doesNotExist();
-    assertThat(RaftHAServer.crashLoopEscalationMarkerFile(storageDir)).doesNotExist();
+    assertThat(RaftStorageFiles.crashLoopEscalationMarkerFile(storageDir)).doesNotExist();
     assertThat(server.hasPersistedCrashLoopEscalation()).isFalse();
-    RaftHAServer.discardNonPersistentRaftStorage(storageDir); // idempotent on a missing storage
+    RaftStorageFiles.discardNonPersistentRaftStorage(storageDir); // idempotent on a missing storage
   }
 
   /**
@@ -291,7 +291,7 @@ class Issue8380CrashLoopRecordSurvivesDivergenceReformatTest {
    * fail on the behaviour - the record lost with the storage - rather than on a path.
    */
   private static File storageDirOrCreate(final File root) {
-    final File storageDir = RaftHAServer.resolveRaftStorageDir(root.getAbsolutePath(), null, root.getAbsolutePath(),
+    final File storageDir = RaftStorageFiles.resolveRaftStorageDir(root.getAbsolutePath(), null, root.getAbsolutePath(),
         "localhost_2434");
     if (!storageDir.exists())
       assertThat(new File(storageDir, "group-0").mkdirs()).isTrue();
