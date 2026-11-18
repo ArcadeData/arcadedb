@@ -39,6 +39,7 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -1612,9 +1613,10 @@ public class LocalDocumentType implements DocumentType {
   /**
    * Every index a SUBTYPE declared on the property {@code propertyName} this type owns, at any depth: the indexes {@link
    * #getIndexesByProperties} does not list (they belong to the sub types) but {@link #dropProperty} and {@link #renameProperty} refuse
-   * for. {@code DROP PROPERTY ... FORCE} drops them with the type's own (issue #12034).
+   * for. {@code DROP PROPERTY ... FORCE} drops them with the type's own (issue #12034). Walks the {@link #subTypes} lists, so it runs
+   * inside a {@link #recordFileChanges} frame (issue #7672).
    */
-  public List<TypeIndex> getSubTypeIndexesOnProperty(final String propertyName) {
+  private List<TypeIndex> getSubTypeIndexesOnProperty(final String propertyName) {
     final List<TypeIndex> result = new ArrayList<>();
     collectSubTypeIndexesOnProperty(propertyName, result);
     return result;
@@ -1638,12 +1640,11 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * The refusals of {@link #dropProperty}, asked by a caller that drops other things first (issue #12034): {@code DROP PROPERTY ...
-   * FORCE} drops the indexes on the property, then the property, and a refusal of the property after the indexes were gone left the
-   * property in place and its UNIQUE index dropped. The indexes in {@code droppedWithIt} are the ones the caller drops first, so they
-   * are not reasons to refuse.
+   * The refusals of {@link #dropProperty}, asked by {@link #dropPropertyAndItsIndexes} before it drops anything (issue #12034): a
+   * refusal of the property after the indexes were gone left the property in place and its UNIQUE index dropped. The indexes in
+   * {@code droppedWithIt} are the ones dropped with the property, so they are not reasons to refuse.
    */
-  public void checkPropertyCanBeDropped(final String propertyName, final Collection<TypeIndex> droppedWithIt) {
+  private void checkPropertyCanBeDropped(final String propertyName, final Collection<TypeIndex> droppedWithIt) {
     if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
       // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
       // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
@@ -1684,24 +1685,76 @@ public class LocalDocumentType implements DocumentType {
 
     return recordFileChanges(() -> {
       checkPropertyCanBeDropped(propertyName, List.of());
-
-      final Property removed = properties.remove(propertyName);
-      if (removed != null) {
-        schema.typesChanged();
-        // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
-        if (removed.isExternal())
-          ownExternalPropertyCount.decrementAndGet();
-        // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
-        // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
-        // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
-        // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
-        // the failure looked like it healed on restart.
-        setPropertyHasDefault(propertyName, false);
-      } else
-        // the one way to remove a definition the load could not create (#11301)
-        forgetUnrestorableProperty(propertyName);
-      return removed;
+      return removeProperty(propertyName);
     });
+  }
+
+  /**
+   * {@code DROP PROPERTY}, with the indexes on the property, as ONE schema change (issue #12034). The indexes on the property are the
+   * type's own and the ones a SUBTYPE declared on the inherited property (a sub type that declares a property of the same name
+   * shadows it, and its indexes are left alone): {@link #dropProperty} refuses for both.
+   * <p>
+   * Without {@code force} an index on the property refuses the drop with an {@link ObjectInUseException} naming every one of them.
+   * With {@code force} every refusal of the property drop is asked BEFORE the first index goes, then the indexes are dropped and the
+   * property removed. The collection, the checks and the drops run in a single {@link #recordFileChanges} frame, under the database
+   * write lock: the walk of the {@link #subTypes} lists is serialised against {@code linkSuperType}/{@code unlinkSuperType} (issue
+   * #7672), and no concurrent {@code CREATE INDEX} or {@code ALTER TYPE ... SUPERTYPE} can land between the check and the drops. A
+   * refusal found after the indexes were dropped used to leave the property in place and its UNIQUE index gone, so duplicates got in.
+   *
+   * @param propertyName the property to drop
+   * @param force        whether the indexes on the property are dropped with it instead of refusing the drop
+   *
+   * @return the names of the indexes dropped with the property, empty if there were none
+   */
+  public List<String> dropPropertyAndItsIndexes(final String propertyName, final boolean force) {
+    checkForSchemaMutation();
+
+    return recordFileChanges(() -> {
+      final List<TypeIndex> indexes = new ArrayList<>(getIndexesByProperties(propertyName));
+      for (final TypeIndex index : getSubTypeIndexesOnProperty(propertyName))
+        if (!indexes.contains(index))
+          indexes.add(index);
+
+      final List<String> indexNames = new ArrayList<>(indexes.size());
+      for (final TypeIndex index : indexes)
+        indexNames.add(index.getName());
+
+      if (!indexNames.isEmpty()) {
+        if (!force)
+          throw new ObjectInUseException("Property used in indexes (" + String.join(", ", indexNames)
+              + "). Please drop these indexes before removing property or use FORCE parameter.");
+
+        // everything the property drop can refuse for is asked before the first index goes
+        checkPropertyCanBeDropped(propertyName, indexes);
+
+        // One drop: the indexes go together or not at all (issue #10589). A nested frame: the save is left to this one
+        schema.dropIndexes(indexNames);
+      } else
+        checkPropertyCanBeDropped(propertyName, List.of());
+
+      removeProperty(propertyName);
+      return indexNames;
+    });
+  }
+
+  /** Removes the property, once {@link #checkPropertyCanBeDropped} let it go. Runs inside a {@link #recordFileChanges} frame. */
+  private Property removeProperty(final String propertyName) {
+    final Property removed = properties.remove(propertyName);
+    if (removed != null) {
+      schema.typesChanged();
+      // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
+      if (removed.isExternal())
+        ownExternalPropertyCount.decrementAndGet();
+      // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
+      // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
+      // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
+      // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
+      // the failure looked like it healed on restart.
+      setPropertyHasDefault(propertyName, false);
+    } else
+      // the one way to remove a definition the load could not create (#11301)
+      forgetUnrestorableProperty(propertyName);
+    return removed;
   }
 
   /**
