@@ -147,4 +147,43 @@ class CypherMergeRepeatedActionsIssue11691Test {
     assertThat(r.<Number>getProperty("w").intValue()).isEqualTo(4);
   }
 
+  @Test
+  void repeatedOnCreateClausesFollowedByPlainSetOnCreatedRow() {
+    final Result r = single(
+        "MERGE (z:Node {id:6}) ON CREATE SET z.v = 1 ON CREATE SET z.s = 'new' SET z.b = false RETURN z.v AS v, z.s AS s, z.b AS b");
+    assertThat(r.<Number>getProperty("v").intValue()).isEqualTo(1);
+    assertThat(r.<String>getProperty("s")).isEqualTo("new");
+    assertThat(r.<Boolean>getProperty("b")).isFalse();
+    final Result stored = node(6);
+    assertThat(stored.<Number>getProperty("v").intValue()).isEqualTo(1);
+    assertThat(stored.<String>getProperty("s")).isEqualTo("new");
+    assertThat(stored.<Boolean>getProperty("b")).isFalse();
+  }
+
+  @Test
+  void repeatedOnCreateClausesFollowedByPlainSetOnMatchedRow() {
+    final Result r = single(
+        "MERGE (z:Node {id:3}) ON CREATE SET z.v = 1 ON CREATE SET z.s = 'new' SET z.b = false RETURN z.v AS v, z.s AS s, z.b AS b");
+    assertThat(r.<Number>getProperty("v").intValue()).isEqualTo(3);
+    assertThat(r.<String>getProperty("s")).isEqualTo("c");
+    assertThat(r.<Boolean>getProperty("b")).isFalse();
+    final Result stored = node(3);
+    assertThat(stored.<Number>getProperty("v").intValue()).isEqualTo(3);
+    assertThat(stored.<String>getProperty("s")).isEqualTo("c");
+    assertThat(stored.<Boolean>getProperty("b")).isFalse();
+  }
+
+  @Test
+  void labelWriteThenPropertyWriteAcrossOnMatchClauses() {
+    final Result r = single(
+        "MERGE (z:Node {id:3}) ON MATCH SET z:Extra ON MATCH SET z.v = z.v + 1 RETURN z.v AS v, labels(z) AS l");
+    assertThat(r.<Number>getProperty("v").intValue()).isEqualTo(4);
+    assertThat(r.<java.util.List<String>>getProperty("l")).contains("Node", "Extra");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Extra {id:3}) RETURN n.v AS v")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Number>getProperty("v").intValue()).isEqualTo(4);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
 }
