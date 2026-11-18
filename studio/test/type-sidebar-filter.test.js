@@ -461,7 +461,8 @@ test("a schema of more than a thousand types is filtered in place and counted wi
   typeFilter("dbTypeFilter", "type01");
   filterTypeSidebar("dbTypeBadges");
   assert.equal(shownBadgeNames("dbTypeBadges").length, 100);
-  assert.equal(statusText("dbTypeFilterStatus"), "100 of 1,500 match");
+  // Built with the same default-locale formatting the status line uses, so the test holds whatever locale it runs in.
+  assert.equal(statusText("dbTypeFilterStatus"), (100).toLocaleString() + " of " + (1500).toLocaleString() + " match");
 
   // The badges are the same nodes, only shown or hidden: no re-render per keystroke.
   const before = document.getElementById("dbTypeBadges").querySelectorAll(".sidebar-badge");
