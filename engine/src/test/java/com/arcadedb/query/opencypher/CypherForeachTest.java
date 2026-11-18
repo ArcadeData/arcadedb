@@ -560,6 +560,46 @@ class CypherForeachTest {
           RETURN m.id AS id, m.v AS v ORDER BY id""")).containsExactly(1L, 1L, 2L, 2L));
     }
 
+    /** The body's MERGE matches several nodes, so it yields several rows: every one of them must reach the outer variable. */
+    @Test
+    void mergeMatchingSeveralNodesWritesAllOfThem() {
+      database.transaction(() -> assertThat(single("""
+          MATCH (n:Node {id:3})
+          FOREACH (x IN [1] | MERGE (m:Node {b:true}) SET m.v = 50)
+          RETURN n.v AS nv""", "nv")).isEqualTo(50L));
+
+      assertThat(committedV()).containsExactly(1L, 50L, 2L, 2L, 3L, 50L);
+    }
+
+    /** A relationship held in a collected list reads the write the body made on it. */
+    @Test
+    void listBoundRelationshipsObserveForeachWrite() {
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", """
+            MATCH ()-[r:R]->()
+            WITH collect(r) AS rs
+            FOREACH (e IN rs | SET e.k = e.k + 10)
+            WITH rs UNWIND rs AS q
+            RETURN q.k AS k ORDER BY k""")) {
+          final List<Long> ks = new ArrayList<>();
+          while (rs.hasNext())
+            ks.add(rs.next().<Number>getProperty("k").longValue());
+          assertThat(ks).containsExactly(11L, 12L);
+        }
+      });
+    }
+
+    /** A path held in a collected list reads the write the body made on one of its nodes. */
+    @Test
+    void listBoundPathsObserveForeachWrite() {
+      database.transaction(() -> assertThat(single("""
+          MATCH p = (a:Node {id:1})-[:R]->(b:Node)
+          WITH collect(p) AS ps, collect(b) AS bs
+          FOREACH (n IN bs | SET n.v = 77)
+          WITH ps UNWIND ps AS q
+          RETURN last(nodes(q)).v AS v""", "v")).isEqualTo(77L));
+    }
+
     private long single(final String query, final String column) {
       try (final ResultSet rs = database.command("opencypher", query)) {
         final long value = rs.next().<Number>getProperty(column).longValue();
