@@ -670,44 +670,129 @@ class WalRecoveryTest {
      * chain is complete), and applying it throws, which stops the replay right there.
      */
     private static void moveNewestWalChangeOutsideThePage(final CrashedPage crashed) throws Exception {
-      final int txHeaderSize = 2 * Binary.LONG_SERIALIZED_SIZE + 2 * Binary.INT_SERIALIZED_SIZE;
-      final int txFooterSize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+      final List<WalRecord> records = walRecordsByTxId();
+      moveSegmentOutsideThePage(records.get(records.size() - 1), crashed.fileId(), 0);
+    }
 
-      File newestFile = null;
-      long newestTxId = -1;
-      long newestPosition = -1;
+    private static final int WAL_TX_HEADER_SIZE      = 2 * Binary.LONG_SERIALIZED_SIZE + 2 * Binary.INT_SERIALIZED_SIZE;
+    private static final int WAL_TX_FOOTER_SIZE      = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+    private static final int WAL_SEGMENT_HEADER_SIZE = 6 * Binary.INT_SERIALIZED_SIZE;
+
+    /** A transaction record of a WAL file of {@link #DB_PATH}: where it starts and how many segments it carries. */
+    private record WalRecord(File file, long position, long txId, int segments) {
+    }
+
+    private static List<WalRecord> walRecordsByTxId() throws IOException {
+      final List<WalRecord> records = new ArrayList<>();
       final File[] walFiles = new File(DB_PATH).listFiles((dir, name) -> name.endsWith(".wal"));
       assertThat(walFiles).isNotEmpty();
       for (final File wal : walFiles)
         try (final RandomAccessFile raf = new RandomAccessFile(wal, "r")) {
           long position = 0;
-          while (position + txHeaderSize <= raf.length()) {
+          while (position + WAL_TX_HEADER_SIZE <= raf.length()) {
             raf.seek(position);
             final long txId = raf.readLong();
             raf.readLong();
-            raf.readInt();
+            final int segments = raf.readInt();
             final int segmentSize = raf.readInt();
             if (segmentSize <= 0)
               break;
-            if (txId > newestTxId) {
-              newestTxId = txId;
-              newestFile = wal;
-              newestPosition = position;
-            }
-            position += txHeaderSize + segmentSize + txFooterSize;
+            records.add(new WalRecord(wal, position, txId, segments));
+            position += WAL_TX_HEADER_SIZE + segmentSize + WAL_TX_FOOTER_SIZE;
           }
         }
-      assertThat(newestFile).as("the WAL holds the updates").isNotNull();
+      assertThat(records).as("the WAL holds the commits").isNotEmpty();
+      records.sort((a, b) -> Long.compare(a.txId(), b.txId()));
+      return records;
+    }
 
-      try (final RandomAccessFile raf = new RandomAccessFile(newestFile, "rw")) {
-        raf.seek(newestPosition + txHeaderSize);
-        assertThat(raf.readInt()).as("the newest entry changes the bucket").isEqualTo(crashed.fileId());
-        assertThat(raf.readInt()).as("in its page 0").isZero();
-        final int changesFrom = raf.readInt();
-        final int changesTo = raf.readInt();
-        raf.seek(newestPosition + txHeaderSize + 2L * Binary.INT_SERIALIZED_SIZE);
-        raf.writeInt(changesFrom + (1 << 30));
-        raf.writeInt(changesTo + (1 << 30));
+    /**
+     * Moves segment {@code index} of a WAL record far outside its page: the WAL still reads it (so the chain stays complete), and
+     * applying it throws. Every segment before it must belong to page 0 of {@code fileId}.
+     */
+    private static void moveSegmentOutsideThePage(final WalRecord record, final int fileId, final int index) throws Exception {
+      assertThat(record.segments()).as("the record carries segment %d", index).isGreaterThan(index);
+      try (final RandomAccessFile raf = new RandomAccessFile(record.file(), "rw")) {
+        long position = record.position() + WAL_TX_HEADER_SIZE;
+        for (int i = 0; ; ++i) {
+          raf.seek(position);
+          assertThat(raf.readInt()).as("segment %d changes the bucket", i).isEqualTo(fileId);
+          assertThat(raf.readInt()).as("in its page 0").isZero();
+          final int changesFrom = raf.readInt();
+          final int changesTo = raf.readInt();
+          if (i == index) {
+            raf.seek(position + 2L * Binary.INT_SERIALIZED_SIZE);
+            raf.writeInt(changesFrom + (1 << 30));
+            raf.writeInt(changesTo + (1 << 30));
+            return;
+          }
+          position += WAL_SEGMENT_HEADER_SIZE + changesTo - changesFrom + 1;
+        }
+      }
+    }
+
+    /**
+     * #12225, review of the held repairs: an older entry whose first segment fits the page and whose second does not throws on the
+     * second, and the replay stops there. The first segment must not have reached the held image, which the end of the replay
+     * writes: before #12225 the entry was applied to a fresh copy of the page, which the throw dropped.
+     */
+    @Test
+    void anOlderEntryWithASegmentOutsideThePageLeavesTheHeldRepairsAsTheyWere() throws Exception {
+      final int versions = 6;
+      final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+      if (factory.exists())
+        factory.open().drop();
+
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      db.getSchema().createDocumentType("Doc");
+      final RID[] rids = new RID[2];
+      db.transaction(() -> {
+        rids[0] = db.newDocument("Doc").set("n", -1).save().getIdentity();
+        // KEEPS THE TWO RECORDS APART: AN UPDATE OF BOTH IS TWO SEGMENTS OF THE PAGE, NOT ONE
+        db.newDocument("Doc").set("filler", "x".repeat(2_000)).save();
+        rids[1] = db.newDocument("Doc").set("n", -1).save().getIdentity();
+      });
+      db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+
+      final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rids[0].getBucketId());
+      assertThat(rids[1].getBucketId()).isEqualTo(rids[0].getBucketId());
+      final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
+
+      assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+          .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
+
+      for (int i = 0; i < versions; ++i) {
+        final int n = i;
+        db.transaction(() -> {
+          for (final RID rid : rids)
+            db.lookupByRID(rid, true).asDocument().modify().set("n", n).save();
+        });
+      }
+
+      final ImmutablePage committed = db.getPageManager()
+          .getImmutablePage(new PageId(db, bucket.getFileId(), 0), file.getPageSize(), false, false);
+      final CrashedPage crashed = new CrashedPage(file.getFilePath(), bucket.getFileId(), committed.getVersion(),
+          committed.getContentSize(), rids[0], versions - 1);
+      ((LocalDatabase) db).kill();
+      db.close();
+
+      writeHeader(crashed, crashed.finalVersion());
+
+      // THE THIRD UPDATE: THE TWO BEFORE IT ARE HELD AS REPAIRS WHEN THE REPLAY REACHES IT
+      final List<WalRecord> records = walRecordsByTxId();
+      final WalRecord third = records.get(records.size() - versions + 2);
+      moveSegmentOutsideThePage(third, crashed.fileId(), third.segments() - 1);
+
+      final Database reopened = factory.open();
+      try {
+        assertThat(((DatabaseInternal) reopened).getTransactionManager().isLastRecoveryIncomplete())
+            .as("the replay stops on the entry with the segment outside the page").isTrue();
+        for (final RID rid : rids)
+          assertThat(reopened.lookupByRID(rid, true).asDocument().getInteger("n"))
+              .as("record %s holds the repairs of the two entries before the corrupt one, none of its bytes", rid).isEqualTo(1);
+      } finally {
+        reopened.close();
+        factory.close();
       }
     }
 

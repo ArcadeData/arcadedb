@@ -1721,6 +1721,22 @@ public class TransactionManager {
     recoveryPendingRepairBytes = 0;
   }
 
+  /**
+   * Throws what {@link MutablePage#writeByteArray(int, byte[])} would throw for the first segment of an entry that does not fit
+   * the page, before any of them is written (#12225).
+   */
+  private static void checkSegmentsFitThePage(final WALFile.WALTransaction tx, final int firstSegment, final int lastSegment,
+      final int physicalPageSize) {
+    for (int k = firstSegment; k < lastSegment; ++k) {
+      final WALFile.WALPage segment = tx.pages[k];
+      if (segment.changesFrom < 0)
+        throw new IllegalArgumentException("Invalid position " + segment.changesFrom);
+      final long end = (long) segment.changesFrom + segment.currentContent.getContent().length;
+      if (end > physicalPageSize)
+        throw new IllegalArgumentException("Cannot write outside the page space (" + end + ">" + physicalPageSize + ")");
+    }
+  }
+
   /** Writes a page the crash recovery repaired and publishes its image to the read cache, as the replay does for an applied one. */
   private void writeRecoveredPage(final PaginatedComponentFile file, final MutablePage page) throws IOException {
     database.getPageManager().writePageWithLock(file, page);
@@ -2247,6 +2263,10 @@ public class TransactionManager {
           if (missingVersion == 0) {
             // #11151: THE PAGE MAY BE TORN, SO RE-APPLY THE BYTES THIS VERSION CHANGED. NEITHER THE VERSION NOR THE CONTENT SIZE
             // MOVES: THEY BELONG TO THE LAST ENTRY OF THE CHAIN, WHICH THIS REPLAY REACHES RIGHT AFTER AND APPLIES AT EQUAL VERSION
+            if (pendingRepair != null)
+              // THE HELD IMAGE IS WRITTEN EVEN WHEN THE REPLAY STOPS ON THIS ENTRY, SO NO SEGMENT TOUCHES IT UNLESS EVERY ONE FITS THE
+              // PAGE. A FRESH COPY NEEDS NO CHECK: A SEGMENT THAT THROWS DROPS IT, AS BEFORE #12225
+              checkSegmentsFitThePage(tx, firstSegment, lastSegment, pendingRepair.getPhysicalSize());
             final MutablePage repaired = pendingRepair != null ? pendingRepair : page.modify();
             for (int k = firstSegment; k < lastSegment; ++k) {
               final WALFile.WALPage segment = tx.pages[k];
