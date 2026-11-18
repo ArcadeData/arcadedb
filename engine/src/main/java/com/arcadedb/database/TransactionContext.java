@@ -776,6 +776,18 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Whether this transaction created {@code rid}, or holds a written copy of it (a deferred update or the mutable working copy),
+   * which is what can make the record's slot differ from an image of it read earlier in the transaction without any concurrent
+   * transaction being involved (issue #12472). Unlike {@link #getWrittenRecord(RID)} it records nothing in the running statement:
+   * it answers a question and hands out no record.
+   */
+  public boolean isWrittenOrCreatedInTransaction(final RID rid) {
+    if (modifiedRecordsCache.containsKey(rid) || (updatedRecords != null && updatedRecords.containsKey(rid)))
+      return true;
+    return isCreatedInTransaction(rid);
+  }
+
+  /**
    * Adds to {@code target} the identity of every record this transaction wrote or deleted and has not committed yet: once it
    * commits, a copy of one of those records read before is a version behind, and updating that copy in a later transaction is
    * refused as a concurrent modification (issue #12324). Costs one pass over the written and deleted records.
