@@ -141,9 +141,11 @@ class Issue11921CompactionPageVersionRaceIT extends BaseRaftHATest {
       }
     } finally {
       validationLock.unlock();
+      // Here rather than after the block, so a failure above still waits for the workers it started before the fixture
+      // stops the servers under them. A thread never started joins at once.
+      appender.join(60_000);
+      compactor.join(60_000);
     }
-    appender.join(60_000);
-    compactor.join(60_000);
     // The log is read as the outcome of both: one still running could add an entry after the scan
     assertThat(appender.isAlive()).as("the follower append must have ended before the log is read").isFalse();
     assertThat(compactor.isAlive()).as("the compaction must have ended before the log is read").isFalse();
