@@ -59,8 +59,6 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * Run it with {@code mvn -pl engine test -Dtest=ReadPathJMHBenchmark} (the benchmark's {@code main} runs the JMH runner), or from
  * an IDE, which has JMH support. The numbers are nanoseconds per operation.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
