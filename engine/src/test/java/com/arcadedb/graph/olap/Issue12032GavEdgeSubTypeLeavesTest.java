@@ -93,19 +93,7 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
   @CsvSource({ "DROP TYPE E1 UNSAFE, SYNCHRONOUS", "ALTER TYPE E1 SUPERTYPE -E0, SYNCHRONOUS", "DROP TYPE E1 UNSAFE, OFF",
       "ALTER TYPE E1 SUPERTYPE -E0, OFF" })
   void aViewHoldingTheEdgesOfASubTypeThatLeftIsNotServedUntilRebuilt(final String change, final String mode) {
-    database.command("sql", "CREATE VERTEX TYPE V").close();
-    database.command("sql", "CREATE EDGE TYPE E0").close();
-    database.command("sql", "CREATE EDGE TYPE E1 EXTENDS E0").close();
-    for (int i = 0; i < 4; i++)
-      write("INSERT INTO V SET i = " + i);
-    for (int i = 0; i < 3; i++) {
-      write("CREATE EDGE E0 FROM (SELECT FROM V WHERE i = " + i + ") TO (SELECT FROM V WHERE i = " + (i + 1) + ")");
-      write("CREATE EDGE E1 FROM (SELECT FROM V WHERE i = " + (i + 1) + ") TO (SELECT FROM V WHERE i = " + i + ")");
-    }
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW G VERTEX TYPES (V) EDGE TYPES (E0) UPDATE MODE " + mode).close();
-    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "G");
-    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
-    assertThat(view.getEdgeCount()).isEqualTo(6);
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr(mode);
 
     final CountDownLatch gate = new CountDownLatch(1);
     view.setBeforeBuildScanForTest(() -> {
@@ -137,6 +125,48 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
     assertThat(cypherPlan(CHAIN_COUNT)).contains(VIEW_HOP);
     assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
     assertThat(count("MATCH (a:V)-[e:E0]->(b:V) RETURN sum(1) AS c")).isEqualTo(3L);
+  }
+
+  /**
+   * A DDL statement in an open transaction changes the types at once and saves the schema, which moves its version, at the commit:
+   * a verdict "every slice is still covered" taken before it must not be served until then.
+   */
+  @ParameterizedTest
+  @CsvSource({ "ALTER TYPE E1 SUPERTYPE -E0, 3", "DROP TYPE E1 UNSAFE, 3", "ALTER TYPE E1 NAME E1R, 6" })
+  void aChangeInsideAnOpenTransactionIsNotAnsweredFromTheVerdictOfBefore(final String change, final long edgesOfE0AndItsSubTypes) {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("SYNCHRONOUS");
+    assertThat(view.isReady()).as("every slice is covered: the verdict the change must not be answered from").isTrue();
+
+    database.begin();
+    try {
+      database.command("sql", change).close();
+      assertThat(view.isReady()).as("the CSR holds a slice named E1, which is no longer a type of the view").isFalse();
+      assertThat(count(CHAIN_COUNT)).isEqualTo(edgesOfE0AndItsSubTypes);
+    } finally {
+      database.commit();
+    }
+
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.getEdgeCount()).isEqualTo(edgesOfE0AndItsSubTypes);
+    assertThat(count(CHAIN_COUNT)).isEqualTo(edgesOfE0AndItsSubTypes);
+  }
+
+  /** E0 and its sub-type E1, 3 edges each, in the base CSR of a view over E0 (the table 2 of the issue). */
+  private GraphAnalyticalView edgesOfASubTypeInTheBaseCsr(final String mode) {
+    database.command("sql", "CREATE VERTEX TYPE V").close();
+    database.command("sql", "CREATE EDGE TYPE E0").close();
+    database.command("sql", "CREATE EDGE TYPE E1 EXTENDS E0").close();
+    for (int i = 0; i < 4; i++)
+      write("INSERT INTO V SET i = " + i);
+    for (int i = 0; i < 3; i++) {
+      write("CREATE EDGE E0 FROM (SELECT FROM V WHERE i = " + i + ") TO (SELECT FROM V WHERE i = " + (i + 1) + ")");
+      write("CREATE EDGE E1 FROM (SELECT FROM V WHERE i = " + (i + 1) + ") TO (SELECT FROM V WHERE i = " + i + ")");
+    }
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW G VERTEX TYPES (V) EDGE TYPES (E0) UPDATE MODE " + mode).close();
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "G");
+    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.getEdgeCount()).isEqualTo(6);
+    return view;
   }
 
   /**

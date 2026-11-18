@@ -387,8 +387,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
-  // Whether a snapshot's edge slices are all of types the filter still covers, for one schema version (issues #12032, #12039)
-  private record SliceCoverage(long schemaVersion, boolean allCovered) {
+  // Whether a snapshot's edge slices are all of types the filter still covers, for one schema version and one types-change serial
+  // (issues #12032, #12039). The serial moves the moment a type changes, the version only when the schema is saved: for a DDL
+  // statement in an open transaction that is its commit, and until then a verdict keyed on the version alone is served as it was
+  private record SliceCoverage(long schemaVersion, long typesSerial, boolean allCovered) {
+    boolean isCurrent(final long version, final long serial) {
+      return schemaVersion == version && typesSerial == serial;
+    }
   }
 
   // The edge types that existed when the listeners were armed (issue #10214). A transaction already open then may have created
@@ -1608,37 +1613,52 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * listed type is not refused), detached from the listed type ({@code SUPERTYPE -}), or renamed (the definition names only the
    * listed types, so a sub-type's slice keeps the name it was scanned with). No commit follows such a change to replace the
    * snapshot, and its slice went on answering the hops and the counts that read every slice, and the view's edge count. The view
-   * is not served until it has rebuilt (OFF: it turns STALE). Decided once per snapshot and schema version; the decision that
-   * finds a slice left behind dispatches the rebuild.
+   * is not served until it has rebuilt (OFF: it turns STALE). Decided once per snapshot, schema version and types-change serial
+   * (the serial is what moves for a DDL statement inside an open transaction, whose schema save waits for the commit); the
+   * decision that finds a slice left behind dispatches the rebuild.
    */
   private boolean holdsOnlyCoveredEdgeTypes() {
     final Snapshot snap = snapshot;
     if (snap == null)
       return true;
-    final long version = database.getSchema().getEmbedded().getVersion();
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    // Both read BEFORE the slices are looked at: a type that changes while they are, moves one of them past the pair the verdict
+    // is stored with, and the next call decides again
+    final long version = schema.getVersion();
+    final long serial = schema.getTypesChangeSerial();
     final SliceCoverage cached = snap.sliceCoverage.get();
-    if (cached != null && cached.schemaVersion() == version)
+    if (cached != null && cached.isCurrent(version, serial))
       return cached.allCovered();
 
-    String left = null;
-    for (final String slice : allEdgeTypes(snap)) {
-      final DocumentType type = database.getSchema().getTypeOrNull(slice);
-      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type)) {
-        left = slice;
-        break;
-      }
-    }
+    // The slices of the base, then the ones only the overlay holds: no merged set is built per decision (a snapshot a commit
+    // replaces is decided again)
+    String left = firstLeftEdgeSlice(snap.csrPerType.keySet());
+    if (left == null && snap.overlay != null)
+      left = firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes());
     // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
-    if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, left == null)) && left != null)
+    if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
       dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
           + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)");
     return left == null;
   }
 
+  /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */
+  private String firstLeftEdgeSlice(final Collection<String> slices) {
+    for (final String slice : slices) {
+      final DocumentType type = database.getSchema().getTypeOrNull(slice);
+      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type))
+        return slice;
+    }
+    return null;
+  }
+
   /** Whether the snapshot is known to hold an edge slice its types no longer cover: see {@link #holdsOnlyCoveredEdgeTypes}. */
   private boolean holdsLeftEdgeTypes(final Snapshot snap) {
     final SliceCoverage verdict = snap != null ? snap.sliceCoverage.get() : null;
-    return verdict != null && !verdict.allCovered() && verdict.schemaVersion() == database.getSchema().getEmbedded().getVersion();
+    if (verdict == null || verdict.allCovered())
+      return false;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    return verdict.isCurrent(schema.getVersion(), schema.getTypesChangeSerial());
   }
 
   /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
