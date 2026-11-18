@@ -19,11 +19,15 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -88,6 +92,22 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
   }
 
   @Test
+  void cypherReturnOfARelationshipIsTheRelationship() {
+    final String query = "MATCH (:P12196)-[r:K12196]->(:P12196) RETURN r";
+    final List<String> rows = rows(http.query("opencypher", query));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst()).contains("since=2020");
+    assertThat(rows(grpc.query("opencypher", query))).isEqualTo(rows);
+
+    try (final ResultSet rs = grpc.query("opencypher", query)) {
+      final Edge edge = rs.next().getEdge().orElseThrow();
+      assertThat(edge.getTypeName()).isEqualTo("K12196");
+      assertThat(edge.getOutVertex().getString("name")).isEqualTo("a");
+      assertThat(edge.getInVertex().getString("name")).isEqualTo("b");
+    }
+  }
+
+  @Test
   void cypherColumnsHoldingElementsAreRecords() {
     // THE HTTP CLIENT HAS ITS OWN WRONG SHAPE FOR THESE COLUMNS (#12184): THE EMBEDDED API IS THE REFERENCE
     final String query = "MATCH (a:P12196)-[r:K12196]->(b:P12196) RETURN a, r, b";
@@ -95,6 +115,51 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
     assertThat(rows).hasSize(1);
     assertThat(rows.getFirst()).contains("a=record:").contains("r=record:").contains("b=record:");
     assertThat(rows(grpc.query("opencypher", query))).isEqualTo(rows);
+
+    // the columns are the record classes, not their lookalike maps
+    try (final ResultSet rs = grpc.query("opencypher", query)) {
+      final Result row = rs.next();
+      assertThat(row.<Object>getProperty("a")).isInstanceOf(Vertex.class);
+      assertThat(row.<Object>getProperty("b")).isInstanceOf(Vertex.class);
+      assertThat(row.<Object>getProperty("r")).isInstanceOf(Edge.class);
+      final Edge edge = row.getProperty("r");
+      assertThat(edge.getOut()).isEqualTo(row.<Vertex>getProperty("a").getIdentity());
+      assertThat(edge.getIn()).isEqualTo(row.<Vertex>getProperty("b").getIdentity());
+      assertThat(row.<Vertex>getProperty("a").getString("name")).isEqualTo("a");
+    }
+  }
+
+  @Test
+  void cypherCollectedNodesAreAListOfRecords() {
+    final String query = "MATCH (n:P12196) WITH n ORDER BY n.name RETURN collect(n) AS nodes";
+    final List<String> rows = rows(getServerDatabase(0, getDatabaseName()).query("opencypher", query));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst()).contains("record:").contains("name=a").contains("name=b");
+    assertThat(rows(grpc.query("opencypher", query))).isEqualTo(rows);
+
+    try (final ResultSet rs = grpc.query("opencypher", query)) {
+      final List<?> nodes = rs.next().getProperty("nodes");
+      assertThat(nodes).hasSize(2).allSatisfy(node -> assertThat(node).isInstanceOf(Vertex.class));
+      assertThat(((Vertex) nodes.getFirst()).getString("name")).isEqualTo("a");
+    }
+  }
+
+  @Test
+  void cypherNullColumnStaysNull() {
+    final String query = "MATCH (n:P12196) OPTIONAL MATCH (n)-[:K12196]->(b:P12196) RETURN n, b ORDER BY n.name";
+    final List<String> rows = rows(getServerDatabase(0, getDatabaseName()).query("opencypher", query));
+    assertThat(rows).hasSize(2);
+    assertThat(rows.getFirst()).contains("b=record:");
+    assertThat(rows.getLast()).contains("b=null");
+    assertThat(rows(grpc.query("opencypher", query))).isEqualTo(rows);
+
+    try (final ResultSet rs = grpc.query("opencypher", query)) {
+      rs.next();
+      final Result second = rs.next();
+      assertThat(second.<Object>getProperty("n")).isInstanceOf(Vertex.class);
+      assertThat(second.hasProperty("b")).isTrue();
+      assertThat(second.<Object>getProperty("b")).isNull();
+    }
   }
 
   @Test
@@ -104,6 +169,92 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
     assertThat(rows).hasSize(2);
     assertThat(rows.getFirst()).startsWith("projection{").contains("@this=record:");
     assertThat(rows(grpc.query("sql", query))).isEqualTo(rows);
+  }
+
+  @Test
+  void aRecordColumnKeepsThePropertyOrderOfTheRecord() {
+    // "p1".."p9" hash to consecutive buckets, so a re-hashed copy of the record lists them 1..9, not in the order they were set
+    http.command("sql", "INSERT INTO P12196 SET name = 'c', p9 = 9, p8 = 8, p7 = 7, p6 = 6, p5 = 5, p4 = 4, p3 = 3, p2 = 2, p1 = 1");
+    final String query = "MATCH (n:P12196 {name: 'c'}) RETURN n, 1 AS one";
+
+    final List<String> embedded = propertyNamesOfColumn(getServerDatabase(0, getDatabaseName()).query("opencypher", query), "n");
+    assertThat(embedded).startsWith("name", "p9", "p8");
+    assertThat(propertyNamesOfColumn(grpc.query("opencypher", query), "n")).isEqualTo(embedded);
+  }
+
+  @Test
+  void aProjectionRowListsItsColumnsInTheOrderTheyWereProjected() {
+    // "z1".."z3" hash to consecutive buckets, so a row built on a HashMap lists them 1..3, not in the order they were projected
+    final String query = "MATCH (n:P12196 {name: 'a'}) RETURN 3 AS z3, 2 AS z2, 1 AS z1, n";
+
+    final List<String> embedded = columnNames(getServerDatabase(0, getDatabaseName()).query("opencypher", query));
+    assertThat(embedded).startsWith("z3", "z2", "z1");
+    assertThat(columnNames(grpc.query("opencypher", query))).isEqualTo(embedded);
+  }
+
+  @Test
+  void streamedRowsAreTheSameShapes() {
+    final String nodes = "MATCH (n:P12196) RETURN n ORDER BY n.name";
+    assertThat(rows(grpc.queryStream("opencypher", nodes))).isEqualTo(rows(http.query("opencypher", nodes)));
+
+    final String columns = "MATCH (a:P12196)-[r:K12196]->(b:P12196) RETURN a, r, b";
+    assertThat(rows(grpc.queryStream("opencypher", columns)))
+        .isEqualTo(rows(getServerDatabase(0, getDatabaseName()).query("opencypher", columns)));
+  }
+
+  @Test
+  void mapEncodingNeverFailsAndKeepsWhatItCannotBuild() {
+    // THE MAP ENCODING SENDS A RECORD'S @rid, @type AND PROPERTIES: AN EDGE HAS NO @out/@in IN IT, SO IT CANNOT BE BUILT AND STAYS
+    // WHAT THE SERVER SENT, WHERE IT USED TO FAIL THE WHOLE QUERY
+    final String query = "MATCH (a:P12196)-[r:K12196]->(b:P12196) RETURN a, r, b";
+    try (final ResultSet rs = grpc.query("opencypher", query, new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_MAP, 0),
+        Map.<String, Object>of())) {
+      final Result row = rs.next();
+      assertThat(row.<Object>getProperty("a")).isInstanceOf(Vertex.class);
+      assertThat(row.<Object>getProperty("b")).isInstanceOf(Vertex.class);
+      assertThat(row.<Vertex>getProperty("a").getString("name")).isEqualTo("a");
+      assertThat(row.<Object>getProperty("r")).isInstanceOf(Map.class);
+      assertThat(row.<Map<String, Object>>getProperty("r")).containsEntry("@type", "K12196").containsEntry("since", 2020);
+    }
+  }
+
+  @Test
+  void aMapThatOnlyLooksLikeARecordStaysAMap() {
+    // A MAP A QUERY BUILDS MAY HOLD ANY KEYS (A STORED MAP PROPERTY CANNOT: A MAP WITH AN @type IS AN EMBEDDED DOCUMENT): ONE NAMING A
+    // TYPE THE SCHEMA DOES NOT HAVE, OR AN @rid THAT IS NOT ONE, IS NOT A RECORD AND STAYS WHAT IT IS, IN EVERY ROW
+    final String query = "UNWIND range(1, 3) AS i RETURN i, {`@rid`: '#1:1', `@type`: 'NoSuchType12196'} AS unknownType, "
+        + "{`@rid`: 'nope', `@type`: 'P12196'} AS badRid";
+
+    final Database database = getServerDatabase(0, getDatabaseName());
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      assertThat(rs.next().<Object>getProperty("unknownType")).isInstanceOf(Map.class);
+    }
+
+    int rows = 0;
+    try (final ResultSet rs = grpc.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<Object>getProperty("unknownType")).isInstanceOf(Map.class);
+        assertThat(row.<Map<String, Object>>getProperty("unknownType")).containsEntry("@type", "NoSuchType12196");
+        assertThat(row.<Object>getProperty("badRid")).isInstanceOf(Map.class);
+        assertThat(row.<Map<String, Object>>getProperty("badRid")).containsEntry("@rid", "nope");
+        ++rows;
+      }
+    }
+    assertThat(rows).isEqualTo(3);
+  }
+
+  private static List<String> columnNames(final ResultSet resultSet) {
+    try (final ResultSet rs = resultSet) {
+      return new ArrayList<>(rs.next().getPropertyNames());
+    }
+  }
+
+  private static List<String> propertyNamesOfColumn(final ResultSet resultSet, final String column) {
+    try (final ResultSet rs = resultSet) {
+      final Document document = rs.next().getProperty(column);
+      return new ArrayList<>(document.getPropertyNames());
+    }
   }
 
   /**
@@ -135,6 +286,12 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
     }
     if (value instanceof Record record)
       return "record:" + record.getIdentity();
+    if (value instanceof List<?> list) {
+      final List<String> items = new ArrayList<>(list.size());
+      for (final Object item : list)
+        items.add(describe(item));
+      return items.toString();
+    }
     return String.valueOf(value);
   }
 }
