@@ -145,6 +145,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.stream.IntStream;
@@ -213,6 +214,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // caches of all the database's vector indexes, so it is read and taken in one step. Sizing is rare - a cache grows
   // O(log n) times over its index's life - and searches on a cache that covers its range never take it.
   private static final Object SEARCH_CACHE_SIZING_LOCK = new Object();
+  // How long a cache that could not grow for want of budget is not asked again (issue #12391). Every search of an index
+  // with no room would otherwise read the heap and walk the schema's indexes to be told the same thing, once per bucket
+  // index per query. A cache that is late to grow by this much has lost nothing: it only ever speeds a search up.
+  private static final long SEARCH_CACHE_DECLINE_NANOS = TimeUnit.SECONDS.toNanos(1);
 
   // DOT_PRODUCT is the fast path for cosine on already-normalized data, and JVector documents unit length as its
   // precondition. How many ordinals a rebuild samples to notice that the precondition is not met, and how far a
@@ -428,6 +433,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // The one-bit codes a BINARY index scores its searches on (issue #10968), keyed by vector id like searchVectorCache
   // and cleared, evicted and released wherever that one is. Null for every other quantization.
   private volatile BinaryCodeCache searchBinaryCodes;
+  // System.nanoTime() of the last time the vector cache / the BINARY codes were refused room by the shared budget, 0 for
+  // never (issue #12391). Read and written without a lock: a stale answer only delays or repeats a sizing decision.
+  private volatile long searchVectorCacheDeclinedAt;
+  private volatile long searchBinaryCodesDeclinedAt;
 
   // Index-scoped pool of JVector graph searchers, reused across queries (issue #5413). Allocating a searcher per
   // query made its scratch state (the growable candidate heap above all) the largest single source of garbage on
@@ -14435,9 +14444,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the shared cache, or {@code null} when caching is disabled by configuration
    */
   FlatVectorCache getSearchVectorCache() {
+    return getSearchVectorCache(VectorHeapBudget::availableHeapBytes);
+  }
+
+  /**
+   * {@link #getSearchVectorCache()} against the heap reading the caller supplies, so a test can pin it.
+   *
+   * @param availableHeap read only when the cache may grow, as {@link VectorHeapBudget#availableHeapBytes()}
+   */
+  FlatVectorCache getSearchVectorCache(final LongSupplier availableHeap) {
     final FlatVectorCache cache = searchVectorCache;
     final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), FlatVectorCache.MAX_CAPACITY,
-        cache != null ? cache.capacity() : 0, false);
+        cache != null ? cache.capacity() : 0, false, availableHeap);
     if (wanted <= 0)
       return null;
 
@@ -14449,7 +14467,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     synchronized (SEARCH_CACHE_SIZING_LOCK) {
       final FlatVectorCache current = searchVectorCache;
       final int decided = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions),
-          FlatVectorCache.MAX_CAPACITY, current != null ? current.capacity() : 0, false);
+          FlatVectorCache.MAX_CAPACITY, current != null ? current.capacity() : 0, false, availableHeap);
       if (decided <= 0)
         return current;
       if (current != null && current.capacity() >= decided)
@@ -14481,11 +14499,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * which case every search reads the codes it scores from the pages
    */
   BinaryCodeCache getSearchBinaryCodes() {
+    return getSearchBinaryCodes(VectorHeapBudget::availableHeapBytes);
+  }
+
+  /**
+   * {@link #getSearchBinaryCodes()} against the heap reading the caller supplies, so a test can pin it.
+   *
+   * @param availableHeap read only when the codes may grow, as {@link VectorHeapBudget#availableHeapBytes()}
+   */
+  BinaryCodeCache getSearchBinaryCodes(final LongSupplier availableHeap) {
     if (metadata.quantizationType != VectorQuantizationType.BINARY)
       return null;
     final BinaryCodeCache codes = searchBinaryCodes;
     final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
-        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0, true);
+        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0, true, availableHeap);
     if (wanted <= 0)
       return null;
 
@@ -14495,7 +14522,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     synchronized (SEARCH_CACHE_SIZING_LOCK) {
       final BinaryCodeCache current = searchBinaryCodes;
       final int decided = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
-          BinaryCodeCache.maxCapacity(metadata.dimensions), current != null ? current.capacity() : 0, true);
+          BinaryCodeCache.maxCapacity(metadata.dimensions), current != null ? current.capacity() : 0, true, availableHeap);
       if (decided <= 0)
         return current;
       if (current != null && current.capacity() >= decided)
@@ -14527,7 +14554,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * place in the range. See {@link #searchCacheCapacity(long, long, int)} for the rule.
    * <p>
    * This runs on every search, and the heap reading polls every memory pool of the JVM. A cache that already has a slot for
-   * every vector id cannot grow, so it is answered without the reading.
+   * every vector id cannot grow, so it is answered without the reading, and so is one the budget refused less than a second
+   * ago (issue #12391): both the reading and the walk over the database's indexes are paid again only after that.
    *
    * @param bytesPerEntry   heap one entry costs
    * @param maxCapacity     the most entries the cache can hold: a capacity asked past it would never be reached, and the
@@ -14538,7 +14566,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the number of entries to hold, or 0 when caching is disabled
    */
   private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity,
-      final boolean sizingCodes) {
+      final boolean sizingCodes, final LongSupplier availableHeap) {
     final int configured = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
     if (configured < 0)
@@ -14555,9 +14583,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (currentCapacity >= idRange)
       return currentCapacity;
 
-    final long affordable = affordableSearchCacheEntries(heapPercent, bytesPerEntry, VectorHeapBudget.availableHeapBytes(),
-        sizingCodes);
-    return searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
+    // Refused room a moment ago: the answer is the same until the budget moves, and moving it takes a collection or another
+    // index's cache going away. This is what an index left with no cache pays on every search, so it costs neither the
+    // heap reading nor the walk over the schema's indexes
+    final long declinedAt = sizingCodes ? searchBinaryCodesDeclinedAt : searchVectorCacheDeclinedAt;
+    if (declinedAt != 0L && System.nanoTime() - declinedAt < SEARCH_CACHE_DECLINE_NANOS)
+      return currentCapacity;
+
+    final long affordable = affordableSearchCacheEntries(heapPercent, bytesPerEntry, availableHeap.getAsLong(), sizingCodes);
+    final int capacity = searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
+    if (capacity <= currentCapacity) {
+      // A range the cache does not cover and no room to grow it: what the budget, or the most the cache can hold, allows
+      final long nanoTime = System.nanoTime();
+      // 0 is "never", and the clock has an arbitrary origin: it may read 0, or be negative
+      final long now = nanoTime != 0L ? nanoTime : 1L;
+      if (sizingCodes)
+        searchBinaryCodesDeclinedAt = now;
+      else
+        searchVectorCacheDeclinedAt = now;
+    }
+    return capacity;
   }
 
   /**
@@ -14575,7 +14620,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
    * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
    * 25 MB each at 768 dimensions; past the first, an index gets what the shared budget leaves, and none when it leaves
-   * nothing: its searches read the vectors from the pages.
+   * less than that many entries: its searches read the vectors from the pages.
+   * <p>
+   * The share is the database's, and only the database's: the walk sees the caches of this schema, while the heap reading is
+   * the JVM's. The caches of another database in the same JVM reach this budget only once they are filled and a collection
+   * has counted them in the reading, so each database may still plan on up to the percent.
    *
    * @param heapPercent   the share of the heap the search caches of the database may use together
    * @param bytesPerEntry heap one entry of the cache sized costs
@@ -14583,7 +14632,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param sizingCodes   whether the cache sized is this index's BINARY codes rather than its vectors: only that one cache
    *                      is left out of the charge, since it is the one being replaced
    *
-   * @return the entries the cache may hold
+   * @return the entries the cache may hold: at least {@code MIN_SEARCH_CACHE_SIZE}, or 0 when the budget leaves no useful
+   * cache after the caches the database already has
    */
   long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap,
       final boolean sizingCodes) {
@@ -14598,9 +14648,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (codes != null && (owner != this || !sizingCodes))
         othersPlan += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
     }
-    final long left = Math.max(0L, VectorHeapBudget.budgetBytes(heapPercent, availableHeap) - othersPlan);
-    final long entries = left / bytesPerEntry;
-    return othersPlan == 0L ? Math.max(MIN_SEARCH_CACHE_SIZE, entries) : entries;
+    final long budget = VectorHeapBudget.budgetBytes(heapPercent, availableHeap);
+    if (othersPlan == 0L)
+      return Math.max(MIN_SEARCH_CACHE_SIZE, budget / bytesPerEntry);
+
+    final long entries = Math.max(0L, budget - othersPlan) / bytesPerEntry;
+    // A few slots are no cache: direct-mapped by id, each id of a range far larger than them evicts the one it shares its slot
+    // with on every search, which costs a write per miss and saves next to no page read
+    return entries < MIN_SEARCH_CACHE_SIZE ? 0L : entries;
   }
 
   /**
@@ -14618,8 +14673,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the range uncovered while the budget covers it.
    *
    * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SIZE}
-   * @param affordable      the entries the budget affords, at least {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache
-   *                        can hold
+   * @param affordable      the entries the budget affords, 0 when it affords none (issue #12391) and otherwise at least
+   *                        {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache can hold
    * @param currentCapacity capacity of the cache the index holds, 0 for none
    *
    * @return the number of entries to hold
