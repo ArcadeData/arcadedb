@@ -5057,9 +5057,13 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return -1;
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
-    // empty), so the function's condition is the very instance the block holds
+    // empty), so the function's condition is the very instance the block holds. A function that answers past its limit takes
+    // the limit as where its answer starts: the filter can reject rows and the rows after them still come, in order.
+    final boolean continues = function.indexedFunctionContinuesPastLimit(context);
     for (final BooleanExpression condition : residual.getSubBlocks())
-      if (condition != function && !containsInstance(recordConditions, condition))
+      if (condition != function && !containsInstance(recordConditions, condition)
+          && (!continues || condition.setsScore(context)))
+        // a condition that sets $score itself would give the rows another order than the one the function answers them in
         return -1;
     if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
       return -1;

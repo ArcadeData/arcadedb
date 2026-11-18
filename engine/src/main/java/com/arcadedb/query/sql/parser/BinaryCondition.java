@@ -149,6 +149,12 @@ public class BinaryCondition extends BooleanExpression {
     return function != null && function.answersByScore();
   }
 
+  /** Whether the function of this condition answers past a limit it is handed, see {@link IndexableSQLFunction#continuesPastLimit()}. */
+  public boolean indexedFunctionContinuesPastLimit(final CommandContext context) {
+    final IndexableSQLFunction function = indexableFunction(context);
+    return function != null && function.continuesPastLimit();
+  }
+
   /**
    * A bare call of a function that sets {@code $score} on either side sets it, as evaluating the condition runs both sides:
    * the full-text searches, and the more-like-this functions that answer from no index (issue #11773).
