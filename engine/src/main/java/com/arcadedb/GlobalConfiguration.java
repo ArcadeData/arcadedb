@@ -209,7 +209,7 @@ public enum GlobalConfiguration {
       Class.class, LocalDate.class),
 
   SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS("arcadedb.serializer.fixedWidthFloatArrays", SCOPE.DATABASE,
-      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so set it to false to keep the files readable by such a build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
+      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so while this is on a database opened read-write has its dictionary labelled format version 2, which builds from 26.8.1 to 26.11.x refuse to open. Set it to false before the database is first opened by this build to keep the files openable by an older build, for a rollback; turning it off later does not remove the label. A replicated database writes the fixed-width form only once every peer reads it",
       Boolean.class, true),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
@@ -227,7 +227,11 @@ public enum GlobalConfiguration {
       Boolean.class, true),
 
   TX_WAL_FLUSH("arcadedb.txWalFlush", SCOPE.DATABASE,
-      "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
+      """
+      Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync). \
+      A replicated commit of an HA cluster is made durable by the replication log, which a majority of the nodes flushes \
+      before the commit completes: its WAL record is written on the node that originated it without a flush, whatever this \
+      setting says, and the other nodes write none""",
       Integer.class, 0),
 
   FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """
@@ -1568,15 +1572,20 @@ public enum GlobalConfiguration {
       second full copy of the corpus in RAM, and a 4.2M x 768-dimension load died of it at -Xmx16g (issue #7357). \
       The vector is already persisted before the entry is buffered, so entries past this cap keep only their id \
       and RID and the delta scan reads the payload back from the pages. \
-      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes. \
-      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent. -1 keeps every \
-      buffered payload on the heap, which is the pre-#7357 behaviour and is unbounded.""",
+      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes PER INDEX: a type has one vector index per bucket, \
+      so an explicit size is multiplied by the number of buckets of every type with a vector index. \
+      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent, which bounds all the \
+      vector indexes of the database together. -1 keeps every buffered payload on the heap, which is the pre-#7357 \
+      behaviour and is unbounded.""",
       Integer.class, 0),
 
   VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.deltaCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Share of the JVM heap ceiling (percentage) the automatically sized delta payload cache may use (see \
-      arcadedb.vectorIndex.deltaCacheSize). Ignored when that size is set explicitly. Taken as this percent of \
+      Share of the JVM heap ceiling (percentage) the automatically sized delta payload caches of ALL the vector \
+      indexes of a database may use together (see arcadedb.vectorIndex.deltaCacheSize). A type has one vector index \
+      per bucket and they draw on the same share, so the bound does not grow with the number of buckets or of \
+      vector properties (issue #12379); an index that finds the share used up keeps no payload and reads its \
+      buffered vectors back from the pages. Ignored when that size is set explicitly. Taken as this percent of \
       -Xmx and then capped at 90% of the heap currently AVAILABLE, the same denominator the graph-build cache \
       uses, so a rebuild holding the old graph and an ingest filling the buffer cannot both plan on the same \
       free heap. Values above 90 are clamped to 90.""",
@@ -2289,8 +2298,10 @@ public enum GlobalConfiguration {
   SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
       """
       Default maximum number of rows the HTTP query/command endpoints serialize into a single response when \
-      the caller states no limit of its own. A request that carries a `limit` field, and a query that carries \
-      its own LIMIT clause, are both honored as written and are never capped by this value. When this default \
+      the caller states no limit of its own. A request that carries a `limit` field, and a SQL or openCypher query \
+      that carries its own LIMIT clause (the LIMIT of the final RETURN, or of every branch of a UNION), are both \
+      honored as written and are never capped by this value. Other languages expose no LIMIT of their own and are \
+      capped unless the request carries `limit`. When this default \
       does cut a result short the response reports `"truncated": true` next to `returned` and `limit`, and the \
       server logs a warning: the truncation is never silent (issue #5711). Set to -1 or 0 for unlimited \
       (WARNING: removes the protection against materializing an unbounded result set in memory). A value above \

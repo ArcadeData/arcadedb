@@ -348,6 +348,7 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
       seenEmails.add(rs.next().getProperty("email"));
     assertThat(seenEmails).containsExactly("k0001", "k0002", "k0003", "k0004", "k0005", "k0006", "k0007", "k0008",
         "k0009");
+    rebuildIndexesFromRecords();
   }
 
   // ---- range/full scan must not lose rows or resurrect deletes when a boundary key is a tombstone ----

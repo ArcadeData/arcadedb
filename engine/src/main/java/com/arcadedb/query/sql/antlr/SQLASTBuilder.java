@@ -31,7 +31,6 @@ import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
-import com.arcadedb.query.sql.parser.AlterBucketStatement;
 import com.arcadedb.query.sql.parser.AlterDatabaseStatement;
 import com.arcadedb.query.sql.parser.AlterGraphAnalyticalViewStatement;
 import com.arcadedb.query.sql.parser.AlterMaterializedViewStatement;
@@ -197,7 +196,6 @@ import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.TruncateBucketStatement;
-import com.arcadedb.query.sql.parser.TruncateRecordStatement;
 import com.arcadedb.query.sql.parser.TruncateTypeStatement;
 import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.UpdateIncrementItem;
@@ -341,6 +339,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /** The message of a FACETS clause written after SKIP or LIMIT; the HTTP auto-limit recognizes it so it does not append a second LIMIT. */
   public static final String FACETS_AFTER_LIMIT_MESSAGE = "FACETS must come before SKIP and LIMIT";
+
+  /** The refusal of ALTER BUCKET, a statement the engine does not implement (issue #11796). */
+  public static final String ALTER_BUCKET_NOT_SUPPORTED =
+      "ALTER BUCKET is not supported: a bucket has no attribute that can be altered, and a bucket cannot be renamed. To move the "
+          + "records of a bucket to another one, create the bucket and copy them with MOVE VERTEX or INSERT ... SELECT. A record "
+          + "copied this way gets a new RID: rewrite the links to the old RIDs before DROP BUCKET, which deletes the source records";
+
+  /** The refusal of TRUNCATE RECORD, a statement the engine does not implement (issue #11796). */
+  public static final String TRUNCATE_RECORD_NOT_SUPPORTED =
+      "TRUNCATE RECORD is not supported: use DELETE FROM <rid> to remove a record together with its index entries and edges, or "
+          + "CHECK DATABASE FIX to remove a record that cannot be read and rebuild the indexes of its bucket";
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
@@ -1307,7 +1316,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.DECR() != null || (ctx.ARROW_LEFT() != null && ctx.identifier() == null)) {
       final MatchPathItem pathItem = new MatchPathItem();
       String methodName;
-      if (ctx.GT() != null || (ctx.MINUS() != null && ctx.ARROW_LEFT() == null)) {
+      // MINUS() is the list of the rule's MINUS tokens, never null: testing it for null took every -- for a --> (issue #11598)
+      if (ctx.GT() != null) {
         // DECR GT = --> = outgoing
         methodName = "out";
       } else if (ctx.ARROW_LEFT() != null) {
@@ -1333,24 +1343,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Arrow syntax with identifier: -EdgeType-> <-EdgeType- -EdgeType-
     // Determine direction based on arrow combination
     final MatchPathItem pathItem = new MatchPathItem();
-    final boolean leftIsArrow = ctx.ARROW_LEFT() != null;
-    final boolean rightIsArrow = ctx.ARROW_RIGHT() != null;
-
-    String methodName;
-    if (leftIsArrow && !rightIsArrow) {
-      // <-EdgeType- = incoming
-      methodName = "in";
-    } else if (!leftIsArrow && rightIsArrow) {
-      // -EdgeType-> = outgoing
-      methodName = "out";
-    } else {
-      // -EdgeType- = bidirectional
-      methodName = "both";
-    }
-
     // Create a MethodCall with the edge type as parameter
     final MethodCall method = new MethodCall();
-    method.methodName = new Identifier(methodName);
+    method.methodName = new Identifier(typedArrowDirection(ctx.ARROW_LEFT() != null, ctx.ARROW_RIGHT() != null));
 
     // Edge type becomes the parameter (as a string literal Expression)
     final Identifier edgeLabel = (Identifier) visit(ctx.identifier());
@@ -1369,6 +1364,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return pathItem;
+  }
+
+  /**
+   * Direction of a typed arrow step, {@code (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT)}, which the grammar accepts in
+   * both {@code matchMethod} and {@code nestedMatchMethod}: the one decision both visitors take, so a spelling cannot answer
+   * different rows at the top level of a path and inside {@code .( )} (issue #11780). A head on one side only is that direction;
+   * no head, or a head on both sides ({@code <-E->}, as openCypher reads {@code <-[:E]->}), is a hop in either direction.
+   */
+  private static String typedArrowDirection(final boolean leftArrow, final boolean rightArrow) {
+    if (leftArrow == rightArrow)
+      return "both";
+    return leftArrow ? "in" : "out";
   }
 
   /**
@@ -1411,10 +1418,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Check for arrow syntax alternatives
-    if (ctx.MINUS() != null || ctx.ARROW_LEFT() != null || ctx.DECR() != null) {
+    // MINUS() is the list of the rule's MINUS tokens, never null: testing it for null sent the simple methodName{...} form
+    // down this branch as an edge type (issue #11598)
+    if (!ctx.MINUS().isEmpty() || ctx.ARROW_LEFT() != null || ctx.DECR() != null) {
       // Determine method name based on arrow direction
       String methodName;
-      if (ctx.ARROW_LEFT() != null && ctx.MINUS() != null && ctx.identifier() == null) {
+      if (ctx.ARROW_LEFT() != null && !ctx.MINUS().isEmpty() && ctx.identifier() == null) {
         // <-- : anonymous incoming edge
         methodName = "in";
       } else if (ctx.DECR() != null && ctx.GT() != null) {
@@ -1423,16 +1432,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (ctx.DECR() != null && ctx.GT() == null) {
         // -- : anonymous bidirectional edge
         methodName = "both";
-      } else if (ctx.ARROW_LEFT() != null && ctx.identifier() != null) {
-        // <-EdgeType- : incoming edge with type
-        methodName = "in";
       } else {
-        // -EdgeType-> or -EdgeType- : outgoing or bidirectional edge with type
-        if (ctx.ARROW_RIGHT() != null) {
-          methodName = "out";
-        } else {
-          methodName = "both";
-        }
+        // -EdgeType->, <-EdgeType-, -EdgeType- or <-EdgeType->: the same decision as the top level of a path (issue #11780)
+        methodName = typedArrowDirection(ctx.ARROW_LEFT() != null, ctx.ARROW_RIGHT() != null);
       }
 
       // Create a MethodCall
@@ -5538,6 +5540,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Builds every DELETE clause but the target, whose alias is in scope for the duration of this call (issue #7153).
    */
   private void buildDeleteClauses(final DeleteStatement stmt, final SQLParser.DeleteStatementContext deleteCtx) {
+    // DELETE VERTEX: only vertices may be deleted, kept on the AST so the statement renders as written (issue #11620)
+    stmt.deleteVertex = deleteCtx.VERTEX() != null;
+
     // RETURN BEFORE flag
     stmt.returnBefore = deleteCtx.RETURN() != null && deleteCtx.BEFORE() != null;
     // PostgreSQL's trailing RETURNING (issue #11392): the records as they were before the delete, projected
@@ -6857,34 +6862,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit ALTER BUCKET statement.
+   * ALTER BUCKET is recognised only to be refused with a message that names it (issue #11796): no attribute of a bucket can be
+   * altered, and the statement used to parse, plan and then fail every time with a bare {@code UnsupportedOperationException}
+   * (HTTP 500), which a client or a retry policy reads as a transient server fault. Refused while the text is parsed, so a script
+   * holding it runs none of its statements.
    */
   @Override
-  public AlterBucketStatement visitAlterBucketStmt(final SQLParser.AlterBucketStmtContext ctx) {
-    final AlterBucketStatement stmt = new AlterBucketStatement();
-    final SQLParser.AlterBucketBodyContext bodyCtx = ctx.alterBucketBody();
-
-    // Bucket name (possibly with wildcard *)
-    stmt.name = (Identifier) visit(bodyCtx.identifier());
-    stmt.starred = bodyCtx.STAR() != null;
-
-    // Process all alter bucket items
-    for (final SQLParser.AlterBucketItemContext itemCtx : bodyCtx.alterBucketItem()) {
-      if (itemCtx.NAME() != null) {
-        stmt.attributeName = new Identifier("name");
-        final Identifier attrNameId = (Identifier) visit(itemCtx.identifier());
-        final BaseExpression attrNameBaseExpr = new BaseExpression();
-        attrNameBaseExpr.identifier = new BaseIdentifier(attrNameId);
-        final Expression attrNameExpr = new Expression();
-        attrNameExpr.mathExpression = attrNameBaseExpr;
-        stmt.attributeValue = attrNameExpr;
-      } else if (itemCtx.CUSTOM() != null) {
-        stmt.attributeName = (Identifier) visit(itemCtx.identifier());
-        stmt.attributeValue = (Expression) visit(itemCtx.expression());
-      }
-    }
-
-    return stmt;
+  public Object visitAlterBucketStmt(final SQLParser.AlterBucketStmtContext ctx) {
+    throw new CommandSQLParsingException(ALTER_BUCKET_NOT_SUPPORTED);
   }
 
   /**
@@ -7583,26 +7568,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit TRUNCATE RECORD statement.
+   * TRUNCATE RECORD is recognised only to be refused with a message that names the statements doing its job (issue #11796). It
+   * is the legacy raw delete of a record without its callbacks: in ArcadeDB that would leave the record's index entries and
+   * edges pointing at a RID the bucket hands out again, so it was never implemented and failed every time with a bare
+   * {@code UnsupportedOperationException} (HTTP 500). DELETE removes a record with everything that refers to it, and CHECK
+   * DATABASE FIX removes a record that cannot be read and rebuilds the indexes of its bucket.
    */
   @Override
-  public TruncateRecordStatement visitTruncateRecordStmt(final SQLParser.TruncateRecordStmtContext ctx) {
-    final TruncateRecordStatement stmt = new TruncateRecordStatement();
-    final SQLParser.TruncateRecordBodyContext bodyCtx = ctx.truncateRecordBody();
-
-    // Record RIDs (one or more)
-    stmt.records = new ArrayList<>();
-    for (final SQLParser.RidContext ridCtx : bodyCtx.rid()) {
-      final Rid rid = (Rid) visit(ridCtx);
-      stmt.records.add(rid);
-    }
-
-    // Set single record if only one
-    if (stmt.records.size() == 1) {
-      stmt.record = stmt.records.get(0);
-    }
-
-    return stmt;
+  public Object visitTruncateRecordStmt(final SQLParser.TruncateRecordStmtContext ctx) {
+    throw new CommandSQLParsingException(TRUNCATE_RECORD_NOT_SUPPORTED);
   }
 
   /**

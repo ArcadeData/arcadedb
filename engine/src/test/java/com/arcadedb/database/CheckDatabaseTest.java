@@ -222,7 +222,9 @@ class CheckDatabaseTest extends TestHelper {
       assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL - 1);
       assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
       assertThat((Long) row.getProperty("invalidLinks")).isEqualTo((TOTAL - 1) * 2);
-      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(TOTAL - 1);
+      // one per edge, plus the summary and the example of the index entry the low-level delete left behind (#11734)
+      assertThat((Long) row.getProperty("danglingIndexEntries")).isEqualTo(1L);
+      assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(TOTAL - 1 + 2);
     }
 
     result = database.command("sql", "check database fix");
@@ -238,7 +240,8 @@ class CheckDatabaseTest extends TestHelper {
     assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL - 1L);
     assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0L);
     assertThat((Long) row.getProperty("invalidLinks")).isEqualTo((TOTAL - 1) * 2L);
-    assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo((TOTAL - 1) * 2L);
+    // the two warnings of the dangling index entry of the deleted vertex, whose index FIX rebuilds (#11734)
+    assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo((TOTAL - 1) * 2L + 2);
 
     result = database.command("sql", "check database");
     assertThat(result.hasNext()).isTrue();

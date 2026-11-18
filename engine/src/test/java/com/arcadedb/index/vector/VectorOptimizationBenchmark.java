@@ -32,6 +32,14 @@ import java.io.File;
 import java.util.*;
 
 /**
+ * Ingestion, graph build, latency and recall@K of {@code LSM_VECTOR} with and without INT8 quantization. Data and
+ * queries come from one set of clusters ({@link ClusteredVectorDataset}, #11711); {@code vector.bench.clusters} and
+ * {@code vector.bench.clusterSpread} shape them.
+ * <p>
+ * Usage:
+ *   mvn -pl engine -am test -Dtest=VectorOptimizationBenchmark -DexcludedGroups= \
+ *     -Dsurefire.failIfNoSpecifiedTests=false -DenableAssertions=false
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
@@ -43,6 +51,9 @@ class VectorOptimizationBenchmark {
   private static final int NUM_QUERIES = Integer.getInteger("vector.bench.numQueries", 200);
   private static final int K = Integer.getInteger("vector.bench.k", 10);
   private static final int BATCH_SIZE = Integer.getInteger("vector.bench.batchSize", 5_000);
+  private static final int NUM_CLUSTERS = Integer.getInteger("vector.bench.clusters", Math.max(10, NUM_VECTORS / 200));
+  private static final float CLUSTER_SPREAD = Float.parseFloat(
+      System.getProperty("vector.bench.clusterSpread", Float.toString(ClusteredVectorDataset.defaultSpread(DIMENSIONS))));
   private static final int WARMUP_QUERIES = 20;
   private static final long SEED = 42L;
 
@@ -51,20 +62,20 @@ class VectorOptimizationBenchmark {
     FileUtils.deleteRecursively(new File(DB_PATH));
     GlobalConfiguration.PROFILE.setValue("high-performance");
 
-    final Random rng = new Random(SEED);
-
     System.out.println("=== VECTOR OPTIMIZATION BENCHMARK ===");
     System.out.printf("Vectors: %,d | Dimensions: %d | Queries: %d | K: %d | Batch: %,d%n",
         NUM_VECTORS, DIMENSIONS, NUM_QUERIES, K, BATCH_SIZE);
     System.out.println();
 
-    System.out.print("Generating data...");
-    final float[][] dataVectors = generateVectors(NUM_VECTORS, DIMENSIONS, rng);
-    final float[][] queryVectors = generateVectors(NUM_QUERIES, DIMENSIONS, rng);
+    System.out.printf("Generating data (%d clusters, spread %.4f per dimension)...", NUM_CLUSTERS, CLUSTER_SPREAD);
+    final ClusteredVectorDataset dataset = ClusteredVectorDataset.generate(NUM_VECTORS, NUM_QUERIES, DIMENSIONS, NUM_CLUSTERS,
+        CLUSTER_SPREAD, SEED);
+    final float[][] dataVectors = dataset.data;
+    final float[][] queryVectors = dataset.queries;
     System.out.println(" done.");
 
     System.out.print("Computing ground truth...");
-    final int[][] groundTruth = computeGroundTruth(dataVectors, queryVectors, K);
+    final int[][] groundTruth = dataset.exactNeighbors(K);
     System.out.println(" done.");
 
     System.out.println();
@@ -180,12 +191,11 @@ class VectorOptimizationBenchmark {
           ridsByInsertOrder[id] = rec.getIdentity();
         });
 
+        // A query that found nothing is a recall of 0, not a query to leave out of the mean
         double totalRecall = 0;
         int validQueries = 0;
         for (int q = 0; q < NUM_QUERIES; q++) {
           final Set<RID> resultRids = resultSets.get(q);
-          if (resultRids.isEmpty())
-            continue;
 
           int hits = 0;
           for (final int gtId : groundTruth[q]) {
@@ -194,7 +204,7 @@ class VectorOptimizationBenchmark {
                 hits++;
             }
           }
-          totalRecall += (double) hits / K;
+          totalRecall += (double) hits / groundTruth[q].length;
           validQueries++;
         }
 
@@ -214,65 +224,5 @@ class VectorOptimizationBenchmark {
   private LSMVectorIndex getVectorIndex(final Database db, final String typeName, final String propertyName) {
     return (LSMVectorIndex) db.getSchema().getType(typeName)
         .getPolymorphicIndexByProperties(propertyName).getIndexesOnBuckets()[0];
-  }
-
-  private float[][] generateVectors(final int count, final int dims, final Random rng) {
-    final int numClusters = Math.max(10, count / 200);
-    final float clusterSpread = 0.15f;
-
-    final float[][] centroids = new float[numClusters][dims];
-    for (int c = 0; c < numClusters; c++) {
-      float norm = 0;
-      for (int d = 0; d < dims; d++) {
-        centroids[c][d] = (float) rng.nextGaussian();
-        norm += centroids[c][d] * centroids[c][d];
-      }
-      norm = (float) Math.sqrt(norm);
-      for (int d = 0; d < dims; d++)
-        centroids[c][d] /= norm;
-    }
-
-    final float[][] vectors = new float[count][dims];
-    for (int i = 0; i < count; i++) {
-      final float[] centroid = centroids[i % numClusters];
-      float norm = 0;
-      for (int d = 0; d < dims; d++) {
-        vectors[i][d] = centroid[d] + (float) (rng.nextGaussian() * clusterSpread);
-        norm += vectors[i][d] * vectors[i][d];
-      }
-      norm = (float) Math.sqrt(norm);
-      for (int d = 0; d < dims; d++)
-        vectors[i][d] /= norm;
-    }
-    return vectors;
-  }
-
-  private int[][] computeGroundTruth(final float[][] data, final float[][] queries, final int k) {
-    final int[][] gt = new int[queries.length][k];
-    for (int q = 0; q < queries.length; q++) {
-      final float[] queryVec = queries[q];
-      final float[] distances = new float[data.length];
-      for (int i = 0; i < data.length; i++)
-        distances[i] = cosineDistance(queryVec, data[i]);
-
-      final Integer[] indices = new Integer[data.length];
-      for (int i = 0; i < data.length; i++)
-        indices[i] = i;
-      Arrays.sort(indices, Comparator.comparingDouble(a -> distances[a]));
-      for (int i = 0; i < k; i++)
-        gt[q][i] = indices[i];
-    }
-    return gt;
-  }
-
-  private static float cosineDistance(final float[] a, final float[] b) {
-    float dot = 0, normA = 0, normB = 0;
-    for (int i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    final float sim = dot / (float) (Math.sqrt(normA) * Math.sqrt(normB));
-    return 1.0f - sim;
   }
 }

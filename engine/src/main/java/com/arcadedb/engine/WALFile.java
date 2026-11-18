@@ -83,6 +83,8 @@ public class WALFile extends LockContext {
   private volatile long             retireEpoch          = Long.MAX_VALUE;
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
+  /** Transactions whose record this file forced at commit, in their own write (issue #11746). */
+  private          long             statsForcedWrites = 0;
   // #10234: WHEN THIS FILE WAS OPENED OR LAST WRITTEN, SO THE HOUSEKEEPING CAN RELEASE A FILE NOBODY WRITES ANY MORE
   private volatile long             lastWriteTime     = System.currentTimeMillis();
   /** Appends so far, raised after each one under the file's monitor; {@link #forced} is the value the last successful force covered. */
@@ -886,10 +888,13 @@ public class WALFile extends LockContext {
     // This instance's own channel, exactly as the channel.force() calls these replaced: the `file`
     // parameter is this same object at the only call site (TransactionManager.tryWriteTransactionToWALFile
     // passes it twice), but the fsync has always been of `this` and this fix does not change that.
-    if (sync == FlushType.YES_NOMETADATA)
+    if (sync == FlushType.YES_NOMETADATA) {
       force(false);
-    else if (sync == FlushType.YES_FULL)
+      ++statsForcedWrites;
+    } else if (sync == FlushType.YES_FULL) {
       force(true);
+      ++statsForcedWrites;
+    }
 
     database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE);
   }
@@ -924,6 +929,7 @@ public class WALFile extends LockContext {
     final Map<String, Object> map = new HashMap<>();
     map.put("pagesWritten", statsPagesWritten);
     map.put("bytesWritten", statsBytesWritten);
+    map.put("forcedWrites", statsForcedWrites);
     return map;
   }
 

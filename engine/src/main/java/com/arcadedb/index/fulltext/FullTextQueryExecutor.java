@@ -19,8 +19,11 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.function.text.TextLevenshteinDistance;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -48,11 +51,17 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.WildcardQuery;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -120,6 +129,11 @@ public class FullTextQueryExecutor {
   private final String[]               restrictedFields;
   /** Decides the matches on their RIDs before they are scored, or null to keep every match (issue #9909). */
   private final RIDFilter              ridFilter;
+  /**
+   * Per fuzzy clause, the stored keys it expands to, chosen across every bucket of the type by {@link #selectFuzzyExpansions}; or
+   * null, and for a clause the map does not hold, the clause chooses them in this bucket alone (issue #12462).
+   */
+  private       Map<FuzzyQuery, Set<String>> chosenFuzzyExpansions;
 
   // BM25 scoring (issue #4687): the positive scoring tokens collected during matching, mapped to their field boost. Populated
   // only when the index uses BM25 similarity and only for positive clauses (never for MUST_NOT exclusion). A new executor is
@@ -190,6 +204,18 @@ public class FullTextQueryExecutor {
   }
 
   /**
+   * Makes each fuzzy clause expand to the terms chosen for it across the buckets of the type (see {@link #selectFuzzyExpansions}),
+   * rather than to the best ones of this bucket alone: the cap on the expansions is the type's, as it is the whole index's in
+   * Lucene (issue #12462).
+   *
+   * @param expansions per fuzzy clause the stored keys it expands to, or null to choose them in this bucket
+   */
+  FullTextQueryExecutor withFuzzyExpansions(final Map<FuzzyQuery, Set<String>> expansions) {
+    this.chosenFuzzyExpansions = expansions;
+    return this;
+  }
+
+  /**
    * Creates a new QueryParser configured for this index.
    * QueryParser is not thread-safe, so we create a new instance per search.
    *
@@ -252,7 +278,11 @@ public class FullTextQueryExecutor {
    */
   Map<String, Float> collectScoringTokens(final String queryString) {
     resetState();
-    final Query query = parseQuery(queryString);
+    collectTokensOnly(parseQuery(queryString));
+    return Map.copyOf(scoringTokens);
+  }
+
+  private void collectTokensOnly(final Query query) {
     tokensOnly = true;
     try {
       // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
@@ -260,7 +290,175 @@ public class FullTextQueryExecutor {
     } finally {
       tokensOnly = false;
     }
-    return Map.copyOf(scoringTokens);
+  }
+
+  /**
+   * Decides whether one record matches a query from the stored keys of that record's own postings (issue #11683).
+   */
+  @FunctionalInterface
+  interface RecordMatcher {
+    /**
+     * @param keys     the stored keys the record has a posting under
+     * @param excluded its first cell is set when a MUST_NOT clause matches the record: the search subtracts what such a clause
+     *                 matches from the matches of the whole query, wherever the clause sits in it
+     */
+    boolean matches(Set<String> keys, boolean[] excluded);
+  }
+
+  /**
+   * A query decided on one record's postings (see {@link #recordQuery}), with the scoring tokens in the order the BM25 pass of
+   * this bucket sums them.
+   */
+  record RecordQuery(RecordMatcher matcher, Map<String, Float> scoringTokens) {
+  }
+
+  /**
+   * The query as {@link #collectQueryMatches} decides it, for one record at a time, or null when a clause of it is not decided by
+   * the record alone (issue #11683): a wildcard, prefix, fuzzy or regexp clause matches the keys of the whole index, and a
+   * MUST_NOT clause beside no MUST clause answers the complement of the bucket's other matches.
+   * <p>
+   * The scoring tokens are this executor's own map in its iteration order, which is the order {@link #executeQuery} hands it to
+   * the BM25 pass: the tokens-only walk records the same tokens in the same order as the matching walk, since both visit the
+   * positive clauses in order and the matching walk records nothing while it collects the MUST_NOT clauses.
+   */
+  RecordQuery recordQuery(final String queryString) {
+    resetState();
+    final Query query = parseQuery(queryString);
+    final RecordMatcher matcher = recordMatcher(query);
+    if (matcher == null)
+      return null;
+    collectTokensOnly(query);
+    return new RecordQuery(matcher, new LinkedHashMap<>(scoringTokens));
+  }
+
+  /** {@link #collectMatches} for one record, or null for a query it cannot decide on the record alone. */
+  private RecordMatcher recordMatcher(final Query query) {
+    if (query instanceof final BooleanQuery bq) {
+      final List<RecordMatcher> exclusions = new ArrayList<>();
+      final List<RecordMatcher> musts = new ArrayList<>();
+      final List<RecordMatcher> shoulds = new ArrayList<>();
+      for (final BooleanClause clause : bq.clauses()) {
+        final RecordMatcher matcher = switch (clause.occur()) {
+          case MUST_NOT -> exclusionMatcher(clause.query());
+          case MUST, SHOULD -> recordMatcher(clause.query());
+          // collectMatches ignores a FILTER clause: no parser of ours writes one, so it is left to the index
+          case FILTER -> null;
+        };
+        if (matcher == null)
+          return null;
+        switch (clause.occur()) {
+          case MUST_NOT -> exclusions.add(matcher);
+          case MUST -> musts.add(matcher);
+          default -> shoulds.add(matcher);
+        }
+      }
+      // Without a MUST clause, MUST_NOT clauses answer the whole bucket minus what they match when no SHOULD clause matches any
+      // record of the bucket: a fact about the other records
+      if (!exclusions.isEmpty() && musts.isEmpty())
+        return null;
+      final boolean conjunction = !musts.isEmpty();
+      return (keys, excluded) -> {
+        for (final RecordMatcher exclusion : exclusions)
+          if (exclusion.matches(keys, excluded))
+            excluded[0] = true;
+        // Every clause is decided, as collectMatches collects every one: a MUST_NOT clause nested in any of them excludes the
+        // record from the whole answer
+        boolean all = true;
+        for (final RecordMatcher must : musts)
+          if (!must.matches(keys, excluded))
+            all = false;
+        boolean any = false;
+        for (final RecordMatcher should : shoulds)
+          if (should.matches(keys, excluded))
+            any = true;
+        return conjunction ? all : any;
+      };
+    }
+    if (query instanceof final BoostQuery bq)
+      return recordMatcher(bq.getQuery());
+    if (query instanceof final TermQuery tq) {
+      final String key = buildSearchKey(tq.getTerm().field(), tq.getTerm().text());
+      return (keys, excluded) -> keys.contains(key);
+    }
+    if (query instanceof final PhraseQuery pq) {
+      final Term[] terms = pq.getTerms();
+      if (terms.length > 1)
+        // the positions of the terms are not among the keys of the record's postings (issue #12165)
+        return null;
+      final String[] phraseKeys = new String[terms.length];
+      for (int i = 0; i < terms.length; i++)
+        phraseKeys[i] = buildSearchKey(terms[i].field(), terms[i].text());
+      return (keys, excluded) -> {
+        if (phraseKeys.length == 0)
+          return false;
+        for (final String key : phraseKeys)
+          if (!keys.contains(key))
+            return false;
+        return true;
+      };
+    }
+    return null;
+  }
+
+  /** {@link #collectTermsForExclusion} for one record: whether the record is among what a MUST_NOT clause excludes. */
+  private RecordMatcher exclusionMatcher(final Query query) {
+    if (query instanceof final BooleanQuery bq) {
+      final List<RecordMatcher> parts = new ArrayList<>();
+      for (final BooleanClause clause : bq.clauses()) {
+        if (clause.occur() == BooleanClause.Occur.MUST_NOT)
+          continue;
+        final RecordMatcher part = exclusionMatcher(clause.query());
+        if (part == null)
+          return null;
+        parts.add(part);
+      }
+      return (keys, excluded) -> {
+        for (final RecordMatcher part : parts)
+          if (part.matches(keys, excluded))
+            return true;
+        return false;
+      };
+    }
+    final RecordMatcher leaf = recordMatcher(query);
+    if (leaf == null)
+      return null;
+    // collectTermsForExclusion matches a leaf with an exclusion set of its own, which it then drops
+    return (keys, excluded) -> leaf.matches(keys, new boolean[1]);
+  }
+
+  /**
+   * The scoring tokens of a query that is a disjunction of terms, each with its boost, in the order the BM25 pass sums them; or null
+   * for any other query (issue #12458). Such a query - terms, caret boosts and OR groups of them, which is also what a restriction to
+   * some fields turns an unqualified term into - matches exactly the documents holding one of its tokens and scores each with the
+   * tokens it holds, so {@link FullTextTopKSearch} can answer it from the postings alone. A required, prohibited, phrase, prefix,
+   * wildcard, fuzzy or regexp clause, or more tokens than {@link #MAX_EXPANDED_SCORING_TERMS} (beyond which a token matches but does
+   * not score), keep the general path.
+   */
+  LinkedHashMap<String, Float> termDisjunction(final String queryText) {
+    resetState();
+    final Query query = parseQuery(queryText);
+    if (!isTermDisjunction(query))
+      return null;
+    collectTokensOnly(query);
+    if (scoringTokens.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS)
+      return null;
+    return new LinkedHashMap<>(scoringTokens);
+  }
+
+  private static boolean isTermDisjunction(final Query query) {
+    if (query instanceof TermQuery)
+      return true;
+    if (query instanceof final BoostQuery bq)
+      return isTermDisjunction(bq.getQuery());
+    if (query instanceof final BooleanQuery bq) {
+      if (bq.clauses().isEmpty() || bq.getMinimumNumberShouldMatch() > 0)
+        return false;
+      for (final BooleanClause clause : bq.clauses())
+        if (clause.occur() != BooleanClause.Occur.SHOULD || !isTermDisjunction(clause.query()))
+          return false;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -274,7 +472,10 @@ public class FullTextQueryExecutor {
     guard.check();
     resetState();
     final Map<RID, AtomicInteger> matches = collectQueryMatches(parseQuery(queryString));
-    return new BM25QueryMatch(Set.copyOf(matches.keySet()), Map.copyOf(scoringTokens), Map.copyOf(documentFrequencies));
+    // The tokens keep this executor's order rather than Map.copyOf's, which is salted per JVM: it is the order every bucket sums
+    // a document's contributions in, so a score does not move in its last bit from one run to the next (issue #12458)
+    return new BM25QueryMatch(Set.copyOf(matches.keySet()), Collections.unmodifiableMap(new LinkedHashMap<>(scoringTokens)),
+        Map.copyOf(documentFrequencies));
   }
 
   private Query parseQuery(final String queryString) {
@@ -629,10 +830,9 @@ public class FullTextQueryExecutor {
   }
 
   private void collectPhraseMatches(final PhraseQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    // For phrase queries, all terms must match in the same document
-    // Note: We can't verify word order without position indexing, so we just require all terms.
-    // Every phrase term is looked up under the SAME key a single-term query would use (buildSearchKey), so a phrase
-    // qualified to a field stays within that field and takes that field's boost; looking the terms up by their bare
+    // For phrase queries, all terms must match in the same document, and then at the positions the phrase gives them
+    // (keepPhraseMatches). Every phrase term is looked up under the SAME key a single-term query would use (buildSearchKey), so
+    // a phrase qualified to a field stays within that field and takes that field's boost; looking the terms up by their bare
     // text matched the phrase across every indexed property while the single-term form of the same query was correctly
     // restricted (issue #7000).
     final Term[] terms = query.getTerms();
@@ -671,11 +871,147 @@ public class FullTextQueryExecutor {
       }
     }
 
-    if (intersection != null) {
-      for (final RID rid : intersection.keySet()) {
-        tick();
-        scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(terms.length);
+    if (terms.length > 1)
+      keepPhraseMatches(query, intersection.keySet());
+
+    for (final RID rid : intersection.keySet()) {
+      tick();
+      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(terms.length);
+    }
+  }
+
+  /**
+   * Keeps the records of {@code candidates} that hold the phrase: its terms at the positions the query gives them, moved by no more
+   * than its slop in all, as Lucene's PhraseQuery matches them (issue #12165). The postings keep no position, so each candidate's
+   * indexed values are analyzed again with the index analyzer. A qualified phrase is looked for in its property, an unqualified one in
+   * each property of the index on its own: a phrase does not span two properties. The values of a list are one sequence of
+   * positions, the analyzer's position increment gap apart, as Lucene indexes a multi-valued field.
+   */
+  private void keepPhraseMatches(final PhraseQuery query, final Set<RID> candidates) {
+    final String field = query.getTerms()[0].field();
+    final int property = isUnqualified(field) ? -1 : propertyNames.indexOf(storedField(field));
+    if (property < 0 && !isUnqualified(field))
+      // a qualifier naming no indexed property: its keys are literal tokens, which the values do not hold as such
+      return;
+
+    final PhrasePositions phrase = new PhrasePositions(query);
+    final Analyzer indexAnalyzer = index.getIndexAnalyzer();
+    final DatabaseInternal database = index.getDatabase();
+    candidates.removeIf(rid -> {
+      tick();
+      if (rid.getBucketId() < 0)
+        return false;
+      final Record record;
+      try {
+        record = database.lookupByRID(rid, true);
+      } catch (final RecordNotFoundException e) {
+        return true;
       }
+      if (!(record instanceof final Document document))
+        return true;
+      final boolean[] found = new boolean[1];
+      database.getIndexer().forEachIndexKey(index, document, keys -> {
+        for (int i = 0; i < keys.length && !found[0]; i++)
+          if ((property < 0 || property == i) && keys[i] != null)
+            found[0] = phrase.matches(LSMTreeFullTextIndex.tokenPositions(indexAnalyzer, keys[i], phrase.terms()), this::tick);
+      });
+      return !found[0];
+    });
+  }
+
+  /**
+   * The terms of a phrase, their positions in the query and its slop. A record holds the phrase when each term can be given one of
+   * its positions in the value, a term repeated in the phrase a different one each time, so that the positions less the query
+   * positions spread over no more than the slop: Lucene's match length, 0 for an exact phrase.
+   */
+  private static final class PhrasePositions {
+    private final String[]    terms;
+    private final int[]       offsets;
+    private final int         slop;
+    private final Set<String> distinct;
+    // per term, the index of the previous term of the phrase that is the same token, or -1
+    private final int[]       previousSame;
+
+    private PhrasePositions(final PhraseQuery query) {
+      final Term[] queryTerms = query.getTerms();
+      this.terms = new String[queryTerms.length];
+      for (int i = 0; i < queryTerms.length; i++)
+        terms[i] = queryTerms[i].text();
+      // in ascending order: PhraseQuery takes its positions in order
+      this.offsets = query.getPositions();
+      this.slop = query.getSlop();
+      this.distinct = Set.copyOf(Arrays.asList(terms));
+      this.previousSame = new int[terms.length];
+      for (int i = 0; i < terms.length; i++) {
+        previousSame[i] = -1;
+        for (int j = i - 1; j >= 0 && previousSame[i] < 0; j--)
+          if (terms[j].equals(terms[i]))
+            previousSame[i] = j;
+      }
+    }
+
+    private Set<String> terms() {
+      return distinct;
+    }
+
+    /**
+     * A placement has a smallest offset (a position less its query position), the offset of one occurrence of one term: each of
+     * those is tried as the bottom of a window {@code slop} wide, which holds the phrase when every term has a free position in it.
+     * That is a number of windows linear in the occurrences, each decided in one pass over the terms, where trying every placement
+     * of a repeated term grew with the factorial of its occurrences (review of #12180).
+     *
+     * @param positions per term, its count in the first cell and its positions in ascending order after it
+     * @param tick      called once per window, so a terminated or timed-out statement stops inside the check
+     */
+    private boolean matches(final Map<String, int[]> positions, final Runnable tick) {
+      final int[][] lists = new int[terms.length][];
+      for (int i = 0; i < terms.length; i++) {
+        lists[i] = positions.get(terms[i]);
+        if (lists[i] == null)
+          return false;
+      }
+      final int[] taken = new int[terms.length];
+      for (int i = 0; i < terms.length; i++)
+        for (int k = 1; k <= lists[i][0]; k++) {
+          tick.run();
+          if (fits(lists[i][k] - offsets[i], lists, taken))
+            return true;
+        }
+      return false;
+    }
+
+    /**
+     * Whether every term has a position whose offset lies between {@code low} and {@code low + slop}, a term repeated in the phrase a
+     * later position each time. The terms are taken in query order, each given the first position of its range after the one the
+     * same term took last. That loses no placement: the ranges of the occurrences of one term are equally wide and come in query
+     * order, so the earliest position never takes one a later occurrence needed, and two occurrences of a term placed the other way
+     * round spread no wider once swapped (each offset they would get lies between the two they had).
+     */
+    private boolean fits(final int low, final int[][] lists, final int[] taken) {
+      for (int i = 0; i < terms.length; i++) {
+        int from = low + offsets[i];
+        if (previousSame[i] >= 0)
+          from = Math.max(from, taken[previousSame[i]] + 1);
+        final int[] list = lists[i];
+        final int k = firstAtLeast(list, list[0], from);
+        if (k > list[0] || list[k] > low + offsets[i] + slop)
+          return false;
+        taken[i] = list[k];
+      }
+      return true;
+    }
+
+    private static int firstAtLeast(final int[] list, final int count, final int value) {
+      int low = 1;
+      int high = count + 1;
+      while (low < high) {
+        final int mid = (low + high) >>> 1;
+        if (list[mid] < value)
+          low = mid + 1;
+        else
+          high = mid;
+      }
+      return low;
     }
   }
 
@@ -729,26 +1065,217 @@ public class FullTextQueryExecutor {
     }
   }
 
+  /**
+   * Matches the terms a fuzzy clause expands to: at most {@link FullTextIndexMetadata#getFuzzyMaxExpansions()} of them, the best
+   * ones as Lucene's FuzzyQuery ranks them (see {@link #BEST_EXPANSION_FIRST}), chosen across the type when the coordinator chose
+   * them (see {@link #withFuzzyExpansions}) and in this bucket otherwise (issue #12462).
+   */
   private void collectFuzzyMatches(final FuzzyQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    final String field = query.getTerm().field();
-    final String term = normalizeText(query.getTerm().text());
-    if (term.isEmpty())
+    Set<String> expansions = chosenFuzzyExpansions != null ? chosenFuzzyExpansions.get(query) : null;
+    if (expansions == null)
+      expansions = keysOf(fuzzyExpansions(query, maxExpansions()));
+    if (expansions.isEmpty())
       return;
 
-    final int maxEdits = query.getMaxEdits();
-    final int prefixLen = Math.min(query.getPrefixLength(), term.length());
-    final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = fieldPrefix(field);
-    final String searchPrefix = fieldPrefix + requiredPrefix;
+    // The walk spans the chosen keys only, and decides each posting with one lookup rather than one edit distance. The span is
+    // bounded in the index's own key order (unsigned UTF-8 bytes, i.e. code points), not in String's UTF-16 order
+    final TreeSet<String> sorted = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
+    sorted.addAll(expansions);
+    iterateAndMatch(sorted.first(), sorted.last(), expansions::contains, scoreMap, boostFor(query.getTerm().field()));
+  }
 
-    iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
-      if (!key.startsWith(searchPrefix))
-        return false;
-      final String token = key.substring(fieldPrefix.length());
-      if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
-        return false;
-      return TextLevenshteinDistance.levenshteinDistance(token, term) <= maxEdits;
-    }, scoreMap, boostFor(field));
+  /** The most terms a fuzzy clause expands to (issue #12462): Lucene's FuzzyQuery default unless the index sets its own. */
+  private int maxExpansions() {
+    return metadata != null ? metadata.getFuzzyMaxExpansions() : FuzzyQuery.defaultMaxExpansions;
+  }
+
+  /**
+   * One indexed term a fuzzy clause matches: its stored key, the token the edit distance was measured on (the key without its field
+   * prefix), and the boost Lucene's FuzzyTermsEnum gives it, which is what ranks the expansions.
+   */
+  record FuzzyExpansion(String key, String token, float boost) {
+  }
+
+  /**
+   * The order Lucene's FuzzyQuery keeps its expansions in (TopTermsRewrite over FuzzyTermsEnum): the higher boost first, and of two
+   * terms with the same boost the lower one in term order, which for the UTF-8 bytes Lucene compares is code point order.
+   */
+  static final Comparator<FuzzyExpansion> BEST_EXPANSION_FIRST = (a, b) -> {
+    final int byBoost = Float.compare(b.boost(), a.boost());
+    return byBoost != 0 ? byBoost : compareCodePoints(a.token(), b.token());
+  };
+
+  /**
+   * The boost FuzzyTermsEnum gives a term {@code distance} edits away from a query term of {@code termLength} code points: 1 for
+   * the term itself, else {@code 1 - distance / min(token length, termLength)}, so an edit costs more in a shorter term.
+   */
+  static float fuzzyBoost(final String token, final int distance, final int termLength) {
+    if (distance == 0)
+      return 1.0f;
+    final int minTermLength = Math.min(token.codePointCount(0, token.length()), termLength);
+    return 1.0f - (float) distance / (float) minTermLength;
+  }
+
+  /** Code point order, which is the order of the UTF-8 bytes both Lucene's terms and the index's keys are sorted by. */
+  static int compareCodePoints(final String a, final String b) {
+    int i = 0;
+    int j = 0;
+    while (i < a.length() && j < b.length()) {
+      final int ca = a.codePointAt(i);
+      final int cb = b.codePointAt(j);
+      if (ca != cb)
+        return Integer.compare(ca, cb);
+      i += Character.charCount(ca);
+      j += Character.charCount(cb);
+    }
+    return Integer.compare(a.length() - i, b.length() - j);
+  }
+
+  private static Set<String> keysOf(final List<FuzzyExpansion> expansions) {
+    final Set<String> keys = new HashSet<>(expansions.size() * 2);
+    for (final FuzzyExpansion expansion : expansions)
+      keys.add(expansion.key());
+    return keys;
+  }
+
+  /**
+   * The best {@code max} terms of this bucket a fuzzy clause expands to, best first (see {@link #BEST_EXPANSION_FIRST}). A term
+   * counts once it has a live posting here: a deletion marker alone does not make it an expansion. Each distinct key is measured
+   * once, however many postings it has.
+   */
+  List<FuzzyExpansion> fuzzyExpansions(final FuzzyQuery query, final int max) {
+    final String term = normalizeText(query.getTerm().text());
+    if (term.isEmpty())
+      return List.of();
+
+    final int maxEdits = query.getMaxEdits();
+    final boolean transpositions = query.getTranspositions();
+    final int termLength = term.codePointCount(0, term.length());
+    final int prefixLen = Math.min(query.getPrefixLength(), term.length());
+    final String fieldPrefix = fieldPrefix(query.getTerm().field());
+    final String searchPrefix = fieldPrefix + term.substring(0, prefixLen);
+    final boolean rangeScan = !searchPrefix.isEmpty();
+
+    // The worst of the best kept so far at the head, so a better term replaces it
+    final PriorityQueue<FuzzyExpansion> best = new PriorityQueue<>(Math.min(max, 1024) + 1, BEST_EXPANSION_FIRST.reversed());
+    final IndexCursor cursor = index.iterateUnderlying(true, rangeScan ? new String[] { searchPrefix } : null, true);
+    String lastKey = null;
+    try {
+      while (cursor.hasNext()) {
+        tick();
+        final RID rid = cursor.next().getIdentity();
+        final Object[] keys = cursor.getKeys();
+        if (keys == null || keys.length == 0 || keys[0] == null || rid.getBucketId() < 0)
+          continue;
+        final String key = keys[0].toString();
+        if (key.equals(lastKey))
+          continue;
+        lastKey = key;
+        if (!key.startsWith(searchPrefix)) {
+          if (rangeScan && compareCodePoints(key, searchPrefix) > 0)
+            break;
+          continue;
+        }
+        final String token = key.substring(fieldPrefix.length());
+        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+          continue;
+        final int distance = fuzzyDistance(token, term, transpositions, maxEdits);
+        if (distance > maxEdits)
+          continue;
+        final FuzzyExpansion expansion = new FuzzyExpansion(key, token, fuzzyBoost(token, distance, termLength));
+        if (best.size() < max)
+          best.add(expansion);
+        else if (BEST_EXPANSION_FIRST.compare(expansion, best.peek()) < 0) {
+          best.poll();
+          best.add(expansion);
+        }
+      }
+    } finally {
+      cursor.close();
+    }
+
+    final List<FuzzyExpansion> result = new ArrayList<>(best);
+    result.sort(BEST_EXPANSION_FIRST);
+    return result;
+  }
+
+  /**
+   * Chooses, for every fuzzy clause of a query, the terms it expands to across all the given buckets of one type (issue #12462).
+   * Lucene's FuzzyQuery keeps the best {@code maxExpansions} terms of the whole index; a bucket choosing its own best ones would let
+   * a type of n buckets expand to n times as many. The ranking depends on the term alone, so the best ones of the type are among
+   * the best ones of each bucket. Answers null when there is nothing to choose across buckets: a single bucket, or no fuzzy clause.
+   */
+  static Map<FuzzyQuery, Set<String>> selectFuzzyExpansions(final List<LSMTreeFullTextIndex> bucketIndexes,
+      final String queryText, final WorkGuard guard, final List<String> restrictedFields) {
+    if (bucketIndexes.size() < 2)
+      return null;
+    final List<FuzzyQuery> fuzzyQueries = new ArrayList<>();
+    collectFuzzyQueries(
+        new FullTextQueryExecutor(bucketIndexes.getFirst(), guard, restrictedFields, null).parseQuery(queryText), fuzzyQueries);
+    if (fuzzyQueries.isEmpty())
+      return null;
+
+    final List<FullTextQueryExecutor> executors = new ArrayList<>(bucketIndexes.size());
+    for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
+      executors.add(new FullTextQueryExecutor(ftIndex, guard, restrictedFields, null));
+    final int max = executors.getFirst().maxExpansions();
+
+    final Map<FuzzyQuery, Set<String>> selected = new HashMap<>();
+    for (final FuzzyQuery fuzzy : fuzzyQueries) {
+      if (selected.containsKey(fuzzy))
+        continue;
+      final Map<String, FuzzyExpansion> union = new HashMap<>();
+      for (final FullTextQueryExecutor executor : executors)
+        for (final FuzzyExpansion expansion : executor.fuzzyExpansions(fuzzy, max))
+          union.putIfAbsent(expansion.key(), expansion);
+      final List<FuzzyExpansion> ranked = new ArrayList<>(union.values());
+      ranked.sort(BEST_EXPANSION_FIRST);
+      selected.put(fuzzy, keysOf(ranked.size() > max ? ranked.subList(0, max) : ranked));
+    }
+    return selected;
+  }
+
+  /** Every fuzzy clause of a query, wherever {@link #collectMatches} reaches it, a prohibited one included. */
+  private static void collectFuzzyQueries(final Query query, final List<FuzzyQuery> fuzzyQueries) {
+    if (query instanceof final BooleanQuery bq) {
+      for (final BooleanClause clause : bq.clauses())
+        collectFuzzyQueries(clause.query(), fuzzyQueries);
+    } else if (query instanceof final BoostQuery bq)
+      collectFuzzyQueries(bq.getQuery(), fuzzyQueries);
+    else if (query instanceof final FuzzyQuery fq)
+      fuzzyQueries.add(fq);
+  }
+
+  /**
+   * The edit distance Lucene's FuzzyQuery matches by (issue #12165): over code points, with a transposition of two adjacent
+   * characters counted as one edit when the query allows transpositions, which it does by default (the optimal string alignment
+   * distance), and as two otherwise. Answers {@code maxEdits + 1} at once when the lengths alone differ by more than
+   * {@code maxEdits}.
+   */
+  static int fuzzyDistance(final String token, final String term, final boolean transpositions, final int maxEdits) {
+    final int[] s = token.codePoints().toArray();
+    final int[] t = term.codePoints().toArray();
+    if (Math.abs(s.length - t.length) > maxEdits)
+      return maxEdits + 1;
+    int[] beforePrevious = new int[t.length + 1];
+    int[] previous = new int[t.length + 1];
+    int[] current = new int[t.length + 1];
+    for (int j = 0; j <= t.length; j++)
+      previous[j] = j;
+    for (int i = 1; i <= s.length; i++) {
+      current[0] = i;
+      for (int j = 1; j <= t.length; j++) {
+        int distance = Math.min(Math.min(previous[j], current[j - 1]) + 1, previous[j - 1] + (s[i - 1] == t[j - 1] ? 0 : 1));
+        if (transpositions && i > 1 && j > 1 && s[i - 1] == t[j - 2] && s[i - 2] == t[j - 1])
+          distance = Math.min(distance, beforePrevious[j - 2] + 1);
+        current[j] = distance;
+      }
+      final int[] recycled = beforePrevious;
+      beforePrevious = previous;
+      previous = current;
+      current = recycled;
+    }
+    return previous[t.length];
   }
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -788,6 +1315,15 @@ public class FullTextQueryExecutor {
    */
   private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap,
       final float boost) {
+    iterateAndMatch(startKey, null, matcher, scoreMap, boost);
+  }
+
+  /**
+   * {@link #iterateAndMatch(String, KeyMatcher, Map, float)} that, given a {@code lastKey}, stops past that key rather than past
+   * the keys starting with {@code startKey}.
+   */
+  private void iterateAndMatch(final String startKey, final String lastKey, final KeyMatcher matcher,
+      final Map<RID, AtomicInteger> scoreMap, final float boost) {
     final boolean rangeScan = startKey != null;
     final IndexCursor cursor = index.iterateUnderlying(true,
         rangeScan ? new String[] { startKey } : null, true);
@@ -809,7 +1345,8 @@ public class FullTextQueryExecutor {
             ++walkFrequencies.computeIfAbsent(key, k -> new long[1])[0];
           if (!tokensOnly)
             scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-        } else if (rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
+        } else if (lastKey != null ? compareCodePoints(key, lastKey) > 0 :
+            rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
           break;
         }
       }

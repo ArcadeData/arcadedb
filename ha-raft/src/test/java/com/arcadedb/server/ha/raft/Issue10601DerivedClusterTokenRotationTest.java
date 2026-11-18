@@ -149,7 +149,7 @@ class Issue10601DerivedClusterTokenRotationTest {
   void aRewrittenPasswordFileRefusesTheNextStart(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
     // The directory the record sits in does not exist before the first start formats the Raft storage.
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("data/.raft-storage/raft-storage-x").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("data/.raft-storage/raft-storage-x").toFile());
     Files.writeString(passwordFile, "Secret-v1!\n");
 
     // First start records the token it runs with; a restart on the same file passes.
@@ -176,7 +176,7 @@ class Issue10601DerivedClusterTokenRotationTest {
   @Test
   void anExplicitRotationStartsWithTheNewTokenAndRecordsIt(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
     Files.writeString(passwordFile, "Secret-v1!\n");
     fileDerived(passwordFile).verifyDerivedTokenFingerprint(fingerprint, false);
 
@@ -192,7 +192,7 @@ class Issue10601DerivedClusterTokenRotationTest {
   @Test
   void anEmptyRecordIsTreatedAsAbsentNotAsARotation(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
     Files.writeString(passwordFile, "Secret-v1!\n");
     Files.writeString(fingerprint.toPath(), "  \n"); // what a crash between truncate and write leaves
 
@@ -206,7 +206,7 @@ class Issue10601DerivedClusterTokenRotationTest {
   @Test
   void theRecordIsOwnerOnlyAndTheRotationFlagIsNotMaskedAsASecret(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
     Files.writeString(passwordFile, "Secret-v1!\n");
     fileDerived(passwordFile).verifyDerivedTokenFingerprint(fingerprint, false);
     if (fingerprint.toPath().getFileSystem().supportedFileAttributeViews().contains("posix"))
@@ -221,7 +221,7 @@ class Issue10601DerivedClusterTokenRotationTest {
   @Test
   void aTokenNotDerivedFromAFileClearsTheRecord(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
     Files.writeString(passwordFile, "Secret-v1!\n");
     fileDerived(passwordFile).verifyDerivedTokenFingerprint(fingerprint, false);
     assertThat(fingerprint).exists();
@@ -243,10 +243,10 @@ class Issue10601DerivedClusterTokenRotationTest {
   void aNodeThatDiscardsItsRaftStorageDiscardsTheRecordToo(@TempDir final Path tmp) throws Exception {
     final File storage = tmp.resolve("raft-storage").toFile();
     assertThat(storage.mkdirs()).isTrue();
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(storage);
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(storage);
     Files.writeString(fingerprint.toPath(), "stale");
 
-    RaftHAServer.discardNonPersistentRaftStorage(storage);
+    RaftStorageFiles.discardNonPersistentRaftStorage(storage);
 
     assertThat(fingerprint).doesNotExist();
   }
@@ -255,7 +255,7 @@ class Issue10601DerivedClusterTokenRotationTest {
 
   @Test
   void aRotatedInlineRootPasswordRefusesTheNextStart(@TempDir final Path tmp) throws Exception {
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("data/.raft-storage/raft-storage-x").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("data/.raft-storage/raft-storage-x").toFile());
 
     final ClusterTokenProvider first = inlineDerived("Secret-v1!");
     first.verifyDerivedTokenFingerprint(fingerprint, false);
@@ -278,7 +278,7 @@ class Issue10601DerivedClusterTokenRotationTest {
 
   @Test
   void anExplicitRotationOfAnInlineRootPasswordStartsAndRecordsTheNewToken(@TempDir final Path tmp) throws Exception {
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
     inlineDerived("Secret-v1!").verifyDerivedTokenFingerprint(fingerprint, false);
 
     final ClusterTokenProvider rotated = inlineDerived("Secret-v2!");
@@ -290,7 +290,7 @@ class Issue10601DerivedClusterTokenRotationTest {
   @Test
   void switchingFromTheFileSourceToTheInlineSourceKeepsTheRecord(@TempDir final Path tmp) throws Exception {
     final Path passwordFile = tmp.resolve("rootPassword");
-    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    final File fingerprint = RaftStorageFiles.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
     Files.writeString(passwordFile, "Secret-v1!\n");
     fileDerived(passwordFile).verifyDerivedTokenFingerprint(fingerprint, false);
     final String recorded = Files.readString(fingerprint.toPath());

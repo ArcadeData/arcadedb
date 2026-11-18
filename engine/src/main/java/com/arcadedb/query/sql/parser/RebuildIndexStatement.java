@@ -108,6 +108,11 @@ public class RebuildIndexStatement extends DDLStatement {
 
     final Database database = context.getDatabase();
 
+    // The index a named rebuild targets is resolved here, ahead of the waits and outside the try below (issue #11803): a name
+    // the schema does not have is the caller's mistake, refused with the SchemaException the lookup raises, which the catch
+    // below used to wrap in an IndexException carrying it as its cause - and a refusal with a cause reads as a server fault
+    final Index namedIndex = all ? null : database.getSchema().getIndexByName(name.getValue());
+
     // THE REFUSAL OF #2097 IS GONE FROM HERE, and one mechanism is left where there were two (issue #6303, note b).
     // It tested the DatabaseContext.perThreadBucketSelection thread-local; the barrier below tests thread IDENTITY
     // (isCurrentThreadOneOfMyWorkers). Two spellings of one question that agreed while the only thread with the flag
@@ -212,7 +217,7 @@ public class RebuildIndexStatement extends DDLStatement {
           if (idx.isAutomatic() && !(idx instanceof TypeIndex))
             targetIndexes.add(idx);
       } else
-        targetIndexes.add(database.getSchema().getIndexByName(name.getValue()));
+        targetIndexes.add(namedIndex);
 
       // REBUILD INDEX * is a bulk repair tool: a single broken index (e.g. an orphaned sub-index whose bucket is
       // gone) must not abort the whole sweep and leave every healthy index un-rebuilt. Record each failure, keep

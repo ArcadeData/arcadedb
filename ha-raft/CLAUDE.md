@@ -26,6 +26,8 @@ The ones that cannot be quarantined are **held** (`heldEntryFloors`, `holdEntryF
 **Security entries are also held for the compare-and-set record** (#7752), which the hold above cannot see: `server-security-cluster.json`, the baseline the next entry is judged against, is written after the document and its failure is swallowed (failing the apply would be the #7137 crash loop). `SecurityDurabilityFloor` pins the first entry per document until `ServerSecurity.isReplicatedDocumentDurable` says both the document AND its record are on disk; `takeSnapshot()` clamps below the lower of the two. A failed record write keeps the previous record rather than removing it: against a guaranteed replay, the previous record is the baseline every peer judged the entry against, and no baseline is the harmful state. The pinned documents are rewritten from memory on the apply thread at most every 30 s, for every entry type (it is the single writer of these files, so a retry elsewhere would race the next security apply; the accepted cost is that a config volume that HANGS stalls the apply path once per interval), and once a document is durable again its `heldEntryFloors` hold is released too, so a fixed volume stops pinning the log without waiting for the next security change. A Raft install past a pin drops it and has `SecurityCatchUp` ask the leader to re-seed even when the fingerprints match; that request is kept in `security-reseed-required` beside the snapshot markers until a forced seed fully commits, so a restart does not forget it.
 
 
+**The leader's WAL is not a durability layer for replicated commits (#11746).** The leader publishes its own entry on the apply thread through `TransactionContext.publishReplicatedCommittedPages`, which writes the WAL record without a flush whatever `arcadedb.txWalFlush` says; followers write no record at all. A restart replays every entry past the marker from the Raft log, with the same page deltas and page-version rule local WAL recovery uses, and `takeSnapshot()` forces the data files before it writes a marker. Do not put a per-entry fsync back on the apply thread: it is single, shared by every database of the node, and the forced record bought nothing the replay does not already give.
+
 Note that `globalAppliedIndex` and `lastAppliedIndex` track the same value on the apply path but are seeded independently, so they can briefly differ right after `reinitialize()`. Do not assert equality across that window.
 
 ## `RaftHAServer.getLastAppliedIndex()` does not read ArcadeDB's counter
@@ -181,9 +183,19 @@ The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with
 follower commits a client-managed transaction with its own registry (#10040), and they are asked on every commit, so the
 synchronous round of `peersMissingCapabilityNow` is the wrong remedy there. They read `allPeersSupportOnceAsked`: a peer
 `PeerCapabilityRegistry.neverAsked` (no answer, no failed probe, no refusal recorded) is a cold registry, not a "no", and
-one single-flight round runs before the verdict; a peer that answered without the capability or could not be reached is a
-settled "no" and costs nothing more. Treating the cold state as a "yes" is not an option, the cheap-failure rule below
-still holds. Do not move a section onto the plain cached read because it degrades on a "no": that is the reading above.
+one single-flight round runs before the verdict; a peer that answered without the capability is a settled "no" and costs
+nothing more. Treating the cold state as a "yes" is not an option, the cheap-failure rule below still holds. Do not move a
+section onto the plain cached read because it degrades on a "no": that is the reading above.
+
+**For the two FRAMED sections an unreachable peer is not a "no" (#12122).** `tx-prepared-at-index` and
+`tx-fulltext-corpus-deltas` read `PeerCapabilityRegistry.peersMissingFramedSection` (through `allPeersSupportOnceAsked(cap,
+true)`), which keeps the capabilities of a peer's last answer while it cannot be reached: otherwise one node's outage
+switched the #8686 refusal and the BM25 deltas off on every other node (#12119). The hold survives an `UNREACHABLE` probe,
+the TTL, and an `ADDRESS_REFUSED` dial for a peer the round still asks at a shared address (#7256); it ends on the peer's
+next answer, a 404 (on its own address or the shared one it sits behind), a refused address with nowhere else to ask,
+`retainOnly` and `clear()`. It is safe only because both sections are framed (#7138) and a downgrade below the framing
+halts loudly. `fixed-width-float-arrays` is a record-level form, not framed, so it passes `false` and stays strict, as does
+every other reader; do not widen the hold to anything that is not framed.
 
 Step 2 is where #7559 came from, and it is worth being precise about why, because the obvious reading of the
 paragraph below - "a degrading section may read the cache, only a refusing one must ask" - is the reading that

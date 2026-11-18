@@ -212,17 +212,17 @@ class Issue7332SharedEndpointPortOffsetTest {
 
   @Test
   void extractPortReadsTheLastColonAndRefusesEverythingElse() {
-    assertThat(RaftHAServer.extractPort("localhost:2424")).isEqualTo(2424);
-    assertThat(RaftHAServer.extractPort("[::1]:2424")).as("a bracketed IPv6 literal keeps its own colons")
+    assertThat(PeerEndpoints.extractPort("localhost:2424")).isEqualTo(2424);
+    assertThat(PeerEndpoints.extractPort("[::1]:2424")).as("a bracketed IPv6 literal keeps its own colons")
         .isEqualTo(2424);
-    assertThat(RaftHAServer.extractPort("fe80::1:2424")).as("an unbracketed one is separated by the LAST colon")
+    assertThat(PeerEndpoints.extractPort("fe80::1:2424")).as("an unbracketed one is separated by the LAST colon")
         .isEqualTo(2424);
-    assertThat(RaftHAServer.extractPort("[::1]")).as("a bracketed literal with no port has none").isEqualTo(-1);
-    assertThat(RaftHAServer.extractPort("localhost")).isEqualTo(-1);
-    assertThat(RaftHAServer.extractPort("localhost:")).isEqualTo(-1);
-    assertThat(RaftHAServer.extractPort("localhost:http")).isEqualTo(-1);
-    assertThat(RaftHAServer.extractPort("")).isEqualTo(-1);
-    assertThat(RaftHAServer.extractPort(null)).isEqualTo(-1);
+    assertThat(PeerEndpoints.extractPort("[::1]")).as("a bracketed literal with no port has none").isEqualTo(-1);
+    assertThat(PeerEndpoints.extractPort("localhost")).isEqualTo(-1);
+    assertThat(PeerEndpoints.extractPort("localhost:")).isEqualTo(-1);
+    assertThat(PeerEndpoints.extractPort("localhost:http")).isEqualTo(-1);
+    assertThat(PeerEndpoints.extractPort("")).isEqualTo(-1);
+    assertThat(PeerEndpoints.extractPort(null)).isEqualTo(-1);
   }
 
   /**

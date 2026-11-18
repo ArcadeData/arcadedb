@@ -171,6 +171,17 @@ class CheckDatabaseFixDocumentTypeTest extends TestHelper {
     // The index was rebuilt in place, so the failure left it as it was, constraint included, rather than missing
     assertThat(database.getSchema().existsIndex("myUniqueDocIdx")).isTrue();
     assertThat(((IndexInternal) database.getSchema().getIndexByName("myUniqueDocIdx")).isValid()).isTrue();
+
+    // Its previous content still names the record FIX removed and misses the duplicate, which the next check reports (#11734)
+    try (final ResultSet rs = database.command("sql", "check database")) {
+      final Result check = rs.next();
+      assertThat(check.<Long>getProperty("danglingIndexEntries")).isEqualTo(1L);
+      assertThat(check.<Long>getProperty("missingIndexEntries")).isEqualTo(1L);
+    }
+
+    // removing the duplicate is what lets the index be rebuilt
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE name = 'alpha' LIMIT 1").close());
+    rebuildIndexesFromRecords();
   }
 
   /**

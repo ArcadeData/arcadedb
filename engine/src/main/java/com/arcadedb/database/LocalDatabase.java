@@ -27,11 +27,13 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.RawRecordCallback;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PageVersionReservations;
@@ -65,6 +67,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.StripeDirectory;
@@ -88,6 +91,7 @@ import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
+import com.arcadedb.index.vector.VectorDeltaPayloadLedger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -284,6 +288,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          TransactionManager                        transactionManager;
   // Created in openInternal() before the schema loads, so the load can register the COLUMNAR indexes it finds
   private            ColumnarIndexManager                      columnarIndexManager;
+  /**
+   * The heap the delta buffers of this database's vector indexes hold in payloads, which
+   * {@code arcadedb.vectorIndex.deltaCacheMaxHeapPercent} bounds for all of them together (issue #12379).
+   */
+  private final      VectorDeltaPayloadLedger                  vectorDeltaPayloadLedger  = new VectorDeltaPayloadLedger();
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
   // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
   // so nothing may ever wait for the async workers while holding it.
@@ -1041,11 +1050,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // delete events and every getType() read are dispatched off it. Resolved once per bucket, not per record.
           final DocumentType bucketType = polymorphic ? schema.getTypeByBucketId(b.getFileId()) : type;
           final DocumentType recordType = bucketType != null ? bucketType : type;
-          b.scan((rid, view) -> {
-            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
-                view, null);
-            continueScan.set(callback.onRecord(record));
-            return continueScan.get();
+          b.scan(new RawRecordCallback() {
+            @Override
+            public boolean onRecord(final RID rid, final Binary view) {
+              return onRecord(rid, view, false);
+            }
+
+            @Override
+            public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+              final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
+                  view, null);
+              markReadFromOwnImage(record, fromOwnImage);
+              continueScan.set(callback.onRecord(record));
+              return continueScan.get();
+            }
           }, errorRecordCallback);
 
           if (!continueScan.get())
@@ -1082,8 +1100,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // NULL FOR A BUCKET NO TYPE OWNS ANY MORE, WHOSE RECORDS ARE STILL THERE TO READ (ISSUE #11335)
       final Bucket bucket = schema.getBucketByName(bucketName);
       final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());
-      bucket.scan((rid, view) -> callback.onRecord(recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null)),
-          errorRecordCallback);
+      bucket.scan(new RawRecordCallback() {
+        @Override
+        public boolean onRecord(final RID rid, final Binary view) {
+          return onRecord(rid, view, false);
+        }
+
+        @Override
+        public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+          final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
+          markReadFromOwnImage(record, fromOwnImage);
+          return callback.onRecord(record);
+        }
+      }, errorRecordCallback);
       return null;
     });
   }
@@ -1242,6 +1271,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
+  /** #12320: a vertex built from the transaction's own image of its page carries the heads of that image. */
+  private static void markReadFromOwnImage(final Record record, final boolean fromOwnImage) {
+    if (fromOwnImage && record instanceof ImmutableVertex vertex)
+      vertex.markReadFromOwnImage();
+  }
+
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     stats.readRecord.incrementAndGet();
@@ -1275,11 +1310,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         final LocalBucket bucket = schema.getBucketById(rid.getBucketId(), false);
         if (bucket == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
+        final long ownImageReads = tx.getOwnImageReads();
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
         // #8610: recorded before the read events run, which may hand back another record
         if (record instanceof ImmutableDocument document)
           document.setReadInTransaction(tx.getBeginSequence());
+        // #12320: a vertex read from the transaction's own image of its page carries the heads of that image
+        if (record instanceof ImmutableVertex vertex && tx.getOwnImageReads() != ownImageReads)
+          vertex.markReadFromOwnImage();
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1367,6 +1406,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** The owner of this database's columnar projections, one per database. */
   public ColumnarIndexManager getColumnarIndexManager() {
     return columnarIndexManager;
+  }
+
+  /**
+   * The ledger the vector indexes of this database charge their buffered payloads to (issue #12379). Answered
+   * whatever the state of the database: an index gives its share back while the database is closing.
+   */
+  public VectorDeltaPayloadLedger getVectorDeltaPayloadLedger() {
+    return vectorDeltaPayloadLedger;
   }
 
   /**
@@ -2234,10 +2281,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       if (record instanceof Document document) {
         try {
-          indexer.deleteDocument(document);
+          // #11733: the entries to remove are those the index holds for the record now, not those of the values the caller's
+          // object carries. A concurrent commit may have changed the record since it was read, and this transaction may have
+          // moved the index forward with an update saved before the delete, or assigned a property it never saved
+          final Document current = storedImageForCleanup(bucket, document);
+          final Document indexed = getTransaction().getLastIndexedSnapshot(document.getIdentity());
+          indexer.deleteDocument(indexed != null ? indexed : current);
           // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
           // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
-          cascadeDeleteExternalValues(document);
+          cascadeDeleteExternalValues(current);
         } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
                        | IndexOutOfBoundsException | IllegalArgumentException e) {
           // The record buffer is corrupted (e.g. written by a version affected by issue #4319 in HA), so its indexed
@@ -2355,6 +2407,72 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   private void doomAfterRefusedDelete(final Record record, final SecurityException e) {
     getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+  }
+
+  /**
+   * The stored image of {@code document}, the one its delete removes the index entries and the EXTERNAL values of (issue
+   * #11733). Not the object the caller holds, for two reasons.
+   * <p>
+   * Under READ_COMMITTED a record read, then changed by a transaction that commits before the delete reaches it, still holds
+   * the values it was read with. Cleaning up with those removes the entries the concurrent change already replaced and keeps
+   * the ones it added, now naming a record that is gone; once the RID is reused, an indexed lookup returns a record holding
+   * another value. The page is pinned here, as an update pins it (#6950), and with it the page of the content a placeholder
+   * points to ({@code LocalBucket.pinRecordForDelete}), so the commit-time version check covers what is compared now, and when
+   * the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
+   * The delete itself is unchanged: it removes the record by its RID, as before. The slot is read without the READ_RECORD check
+   * a user read takes and without the before-read events: the delete was granted, and the image only tells the delete which
+   * entries to remove, so a listener hiding the record must not send the cleanup back to the image the caller read.
+   * <p>
+   * And a {@link MutableDocument} answers a property with the value assigned to it, saved or not, while the index was written
+   * from what was saved: for one with a pending change the image is an immutable record over its buffer, which a deferred update
+   * leaves alone until the commit. The same resolution {@code GraphEngine.indexedImageOf} applies to a moved edge. The caller
+   * asks the transaction's last indexed snapshot first, for the index only: an update saved earlier in this transaction moved
+   * the index past the stored image.
+   * <p>
+   * A record that was never loaded has no image to compare: it is read from the slot once the page is pinned, instead of
+   * loading itself, unpinned, when the cleanup asks its properties.
+   * <p>
+   * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
+   * and one comparison in place: nothing is allocated for it.
+   */
+  private Document storedImageForCleanup(final LocalBucket bucket, final Document document) {
+    final RID rid = document.getIdentity();
+    if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
+      return document;
+    final Binary readImage = base.getBuffer();
+
+    // A RECORD WITH NO BUFFER WAS NOT LOADED YET (lookupByRID(rid, false)): LEFT TO LOAD ITSELF WHEN THE CLEANUP ASKS ITS PROPERTIES,
+    // IT WOULD BE READ BEFORE ITS PAGE IS PINNED, WITH THE SAME WINDOW FOR A CONCURRENT COMMIT. IT IS READ FROM THE SLOT, PINNED
+    final boolean readSlot;
+    try {
+      final MutablePage page = bucket.pinRecordForDelete(rid);
+      readSlot = page != null && (readImage == null || bucket.hasRecordChangedSinceRead(rid, page, readImage));
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on delete the record " + rid, e);
+    }
+
+    final Binary stored;
+    if (readSlot) {
+      final Binary current;
+      try {
+        current = bucket.getRecordForDeleteCleanup(rid);
+      } catch (final RecordNotFoundException e) {
+        // THE DELETE ITSELF REPORTS IT, AS THE CONCURRENT DELETE IT IS WHEN THE RECORD WAS READ IN THIS TRANSACTION
+        return document;
+      }
+      if (current == null)
+        // A concurrent transaction deleted the record: the version check fails this delete at commit
+        return document;
+      // THE COPY DETACHES THE IMAGE FROM A PAGE THAT CHANGED UNDER THE CALLER'S; A RECORD READ HERE FIRST IS A VIEW, AS ANY READ IS
+      stored = readImage == null ? current : current.copyOfContent();
+    } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
+      readImage.rewind();
+      stored = readImage;
+    } else
+      return document;
+
+    return (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getTypeByBucketId(rid.getBucketId()), rid,
+        stored, null);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
@@ -2716,9 +2834,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) sourceVertex).set(sourceVertexKeyNames[i], sourceVertexKeyValues[i]);
         ((MutableVertex) sourceVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source vertex with key " + Arrays.toString(sourceVertexKeyNames) + "=" + Arrays.toString(
-                sourceVertexKeyValues));
+                sourceVertexKeyValues), null);
     } else
       sourceVertex = v1Result.next().getIdentity().asVertex();
 
@@ -2732,9 +2850,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) destinationVertex).set(destinationVertexKeyNames[i], destinationVertexKeyValues[i]);
         ((MutableVertex) destinationVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
@@ -2778,9 +2896,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           ((MutableVertex) destinationVertex).set(destinationVertexKeyNames[i], destinationVertexKeyValues[i]);
         ((MutableVertex) destinationVertex).save();
       } else
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
@@ -2986,12 +3104,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3007,12 +3128,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3029,12 +3153,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3056,12 +3183,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query);
+    try {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -3095,12 +3225,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3115,12 +3248,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3135,12 +3271,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
     final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
+    final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query);
+    try {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
+      span.error(e);
       takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      span.close();
       if (callerTx != null)
         callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -3742,6 +3881,38 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * The rollback fence of the fixed-width float and double arrays (issue #12234). No build before 26.11.1 decodes that form: it
+   * reads such an array as null and drops it on the record's next update. So a database that may hold the form carries a
+   * dictionary labelled {@link Dictionary#FIXED_WIDTH_FLOAT_ARRAYS_VERSION}, which every build from 26.8.1 on refuses to open.
+   * <br>
+   * "May hold" is decided by the setting, not by looking for a value: while {@code arcadedb.serializer.fixedWidthFloatArrays} is
+   * on, a read-write database is labelled when it opens and when the setting is turned on. That makes the label a property of
+   * the node's configuration, the same on every replica, whatever each of them happened to write or read: a replica receives
+   * the form as pages without ever serializing it, and a database written by 26.11.x already holds it under the old label. It
+   * also keeps the rename out of the record paths: the serializer only reads a flag.
+   * <br>
+   * When the label cannot be written the serializer keeps the varint form every build reads, until the next open or the next
+   * change of the configuration tries again. A read-only open labels nothing and writes nothing. The label is never taken back:
+   * turning the setting off does not rewrite the arrays already stored.
+   */
+  private void fenceFixedWidthFloatArrays() {
+    final LocalSchema current = schema;
+    final Dictionary dictionary = current != null ? current.getDictionary() : null;
+    if (dictionary == null || !open)
+      return;
+    if (!dictionary.isFixedWidthFloatArraysFenced() && mode == ComponentFile.MODE.READ_WRITE && configuration.getValueAsBoolean(
+        GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS))
+      try {
+        dictionary.fenceFixedWidthFloatArrays();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': cannot relabel the dictionary for the fixed-width float array form, float and double arrays are written "
+                + "in the varint form, which every build reads, until the database is reopened", e, name);
+      }
+    serializer.setFixedWidthFloatArraysFenced(dictionary.isFixedWidthFloatArraysFenced());
+  }
+
+  /**
    * Warns, naming the property, about a REGEXP on a DATE or DATETIME property that the class in force holds no value of (issue
    * #10104). Reached when the database opens and whenever the serializer's class changes, which is where a statement that can refuse
    * is not the one changing it. Skipped while there is no loaded schema to walk.
@@ -3763,6 +3934,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
   private void configurationChanged() {
     serializer.readConfiguration(configuration);
+    // THE SETTING MAY HAVE BEEN TURNED ON: THE LABEL COMES BEFORE THE FIRST VALUE WRITTEN UNDER IT (ISSUE #12234)
+    fenceFixedWidthFloatArrays();
 
     // ALL FOUR QUERY CACHES, THE PLAN CACHES TOO: A SETTING READ AT PLANNING TIME IS BAKED INTO THE PLAN (issue #10155). ONE
     // SETTING SIZES BOTH SQL CACHES, AS IN THE CONSTRUCTOR
@@ -4614,14 +4787,22 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     transactionManager.checkIntegrity();
 
-    // AN INDEX CREATED JUST BEFORE THE CRASH CAN HAVE ITS HEADER PAGE IN THE WAL ONLY: THE LOAD ABOVE, WHICH RUNS BEFORE THE
-    // REPLAY, FOUND ITS FILE EMPTY AND LEFT IT OUT (#10046), AND THE REPLAY HAS JUST WRITTEN THE HEADER. LOAD THE SCHEMA AGAIN
-    // SO THIS OPEN SERVES THE INDEX - A UNIQUE ONE WOULD OTHERWISE ENFORCE NOTHING UNTIL THE NEXT OPEN. THE RELOAD CARRIES THE
-    // BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE ARE SET AGAIN
-    if (mode == ComponentFile.MODE.READ_WRITE && schema.hasUnavailableIndexCompletedSinceLoad()) {
+    // THE LOAD ABOVE, WHICH RUNS BEFORE THE REPLAY, LEFT TO IT WHAT ONLY THE WAL CAN HOLD AND LOADS THE SCHEMA AGAIN NOW:
+    // - AN INDEX CREATED JUST BEFORE THE CRASH CAN HAVE ITS HEADER PAGE IN THE WAL ONLY: THE LOAD FOUND ITS FILE EMPTY AND LEFT
+    //   IT OUT (#10046), AND THE REPLAY HAS JUST WRITTEN THE HEADER. A UNIQUE ONE WOULD OTHERWISE ENFORCE NOTHING UNTIL THE NEXT OPEN
+    // - A PROPERTY NAME THE FLUSH HAD NOT WRITTEN TO THE DICTIONARY (ISSUE #12111): THE LOAD DID NOT REGISTER IT ITSELF, OR THE
+    //   REPLAY WOULD HAVE SKIPPED THE WAL'S DICTIONARY PAGES AS SUPERSEDED BY THAT NEWER VERSION
+    // THE RELOAD CARRIES THE BUCKET COUNTERS RESET ABOVE OVER, NOT THE BM25 RESCAN MARKS OF THE METADATA IT REBUILDS, SO THOSE
+    // ARE SET AGAIN
+    final boolean nameLeftToTheReplay = schema.endWalReplay(!transactionManager.isLastRecoveryIncomplete());
+    final boolean indexCompleted = schema.hasUnavailableIndexCompletedSinceLoad();
+    if (mode == ComponentFile.MODE.READ_WRITE && (nameLeftToTheReplay || indexCompleted)) {
+      final String missing = nameLeftToTheReplay && indexCompleted ?
+          "a property name not yet in the dictionary and the file of an index with no header page" :
+          nameLeftToTheReplay ? "a property name not yet in the dictionary" : "the file of an index with no header page";
       LogManager.instance().log(this, Level.WARNING,
-          "The WAL replay of database '%s' completed the file of an index the schema load found with no header page: reloading the schema",
-          null, name);
+          "The WAL replay of database '%s' completed what the schema load found missing (%s): reloading the schema", null, name,
+          missing);
       schema.load(mode, true, true);
       requireBM25Rescan();
     }
@@ -4718,10 +4899,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
-        else
+        else {
           // THE TIMESERIES ENGINES READ THEIR PAGES WHEN THEY ARE BUILT, SO ON A CRASHED DATABASE THEY ARE BUILT AFTER
-          // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452)
+          // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452). AND NO PROPERTY NAME IS
+          // REGISTERED IN THE DICTIONARY BY THE LOAD WHEN A WAL REPLAY FOLLOWS: SEE LocalSchema.beginWalReplay()
+          if (recoveryPending)
+            schema.beginWalReplay();
           schema.load(mode, true, recoveryPending);
+        }
 
         serializer.readConfiguration(configuration);
 
@@ -4734,6 +4919,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // From here on the class can change by routes that cannot refuse (a replicated setting, any other caller of the setter), and
         // none of them is silent. Registered after the two assignments above, which are the open's own and were just reported
         serializer.setImplementationChangeListener(() -> warnAboutUnsatisfiableDateRegexps("the class dates are held as changed"));
+
+        // ISSUE #12234: BEFORE THE FIRST RECORD IS WRITTEN OR REPLICATED INTO THIS DATABASE
+        fenceFixedWidthFloatArrays();
 
         if (recoveryPending) {
           try {

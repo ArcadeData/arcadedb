@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -58,7 +58,8 @@ public class SQLMethodHash extends AbstractSQLMethod {
       return createHash(value.toString(), algorithm);
 
     } catch (final NoSuchAlgorithmException e) {
-      throw new CommandExecutionException("hash(): algorithm '" + algorithm + "' is not supported", e);
+      // an algorithm the JVM does not provide is the caller's argument, not a server fault (issue #12020)
+      throw new InvalidArgumentException("hash(): algorithm '" + InvalidArgumentException.quote(algorithm) + "' is not supported", e);
     }
   }
 

@@ -37,9 +37,9 @@ import java.util.NoSuchElementException;
  * Execution step wrapper for the ExpandInto physical operator.
  * Walks the relationships between two already-bound vertices, one row per relationship.
  * <p>
- * This is much faster than ExpandAll when both endpoints are known: the source's edge list is
- * filtered on the neighbour pointer held in the segment, so an edge that does not reach the target
- * costs a pointer comparison instead of a record load.
+ * This is much faster than ExpandAll when both endpoints are known: the shorter of the two ends' edge
+ * lists (issue #11699) is filtered on the neighbour pointer held in the segment, so an edge that does
+ * not join the pair costs a pointer comparison instead of a record load.
  * <p>
  * Example:
  * <pre>
