@@ -33,6 +33,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -204,6 +205,35 @@ public class GrpcPackedArraysIssue11714IT extends BaseGrpcServerTest {
         LookupByRidRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials()).setRid(rid).build()).getRecord();
     assertThat(lookedPlain.getPropertiesOrThrow("embedding").getKindCase()).isEqualTo(GrpcValue.KindCase.LIST_VALUE);
     assertThat(lookedPlain.getPropertiesOrThrow("weights").getKindCase()).isEqualTo(GrpcValue.KindCase.LIST_VALUE);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void aPackedArrayWrittenToAListOrStringPropertyIsConvertedBySchemaType() {
+    database().getSchema().getType(TYPE).createProperty("tags", Type.LIST);
+    database().getSchema().getType(TYPE).createProperty("label", Type.STRING);
+    final double[] doubles = { 1.5, -2.25 };
+
+    final String rid = packed.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName())
+        .setCredentials(credentials()).setType(TYPE).setRecord(GrpcRecord.newBuilder()
+            .putProperties("name", GrpcValue.newBuilder().setStringValue("typed").build())
+            .putProperties("tags", GrpcPackedArrays.encode(VECTOR))
+            .putProperties("label", GrpcPackedArrays.encode(VECTOR))).build()).getRid();
+
+    final Document stored = (Document) database().lookupByRID(new RID(rid), true);
+    assertThat(stored.get("tags")).isInstanceOf(List.class);
+    assertThat((List<Object>) stored.get("tags")).containsExactly(0.25f, -0.5f, 0.75f, 1.0f);
+    assertThat(stored.get("label")).isEqualTo("[0.25, -0.5, 0.75, 1.0]");
+
+    final String rid2 = packed.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName())
+        .setCredentials(credentials()).setType(TYPE).setRecord(GrpcRecord.newBuilder()
+            .putProperties("name", GrpcValue.newBuilder().setStringValue("typed2").build())
+            .putProperties("tags", GrpcPackedArrays.encode(doubles))
+            .putProperties("label", GrpcPackedArrays.encode(doubles))).build()).getRid();
+
+    final Document stored2 = (Document) database().lookupByRID(new RID(rid2), true);
+    assertThat((List<Object>) stored2.get("tags")).containsExactly(1.5, -2.25);
+    assertThat(stored2.get("label")).isEqualTo("[1.5, -2.25]");
   }
 
   private void insertSpecial() {
