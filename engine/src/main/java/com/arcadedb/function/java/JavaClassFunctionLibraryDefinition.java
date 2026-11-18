@@ -17,6 +17,7 @@ package com.arcadedb.function.java;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 
 import java.lang.reflect.InvocationTargetException;
@@ -93,7 +94,7 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
   public JavaMethodFunctionDefinition getFunction(final String functionName) throws IllegalArgumentException {
     final JavaMethodFunctionDefinition f = functions.get(functionName);
     if (f == null)
-      throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+      throw new UnknownFunctionException(functionName, "Function '" + functionName + "' not defined");
     return f;
   }
 

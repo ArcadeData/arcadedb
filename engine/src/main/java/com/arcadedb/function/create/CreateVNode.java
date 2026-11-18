@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.create;
 
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -62,6 +63,8 @@ public class CreateVNode extends AbstractCreateFunction {
   @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     final List<String> labels = extractLabels(args[0]);
+    if (args.length > 1 && args[1] != null && !(args[1] instanceof Map))
+      throw new TypeMismatchException(getName() + "() expects the properties as a map, got " + args[1].getClass().getSimpleName());
     final Map<String, Object> properties = args.length > 1 && args[1] != null
         ? new HashMap<>((Map<String, Object>) args[1])
         : new HashMap<>();

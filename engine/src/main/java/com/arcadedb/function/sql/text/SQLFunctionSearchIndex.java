@@ -21,7 +21,9 @@ package com.arcadedb.function.sql.text;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
@@ -77,10 +79,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       final Object[] iParams, final CommandContext iContext) {
 
     if (iParams.length < 2)
-      throw new CommandExecutionException("SEARCH_INDEX() requires 2 parameters: indexName and query");
+      throw FunctionArity.mismatch(NAME, FunctionArity.describe(2, 2), iParams.length);
 
     if (iParams[0] == null || iParams[1] == null)
-      throw new CommandExecutionException("SEARCH_INDEX() parameters cannot be null");
+      throw new InvalidArgumentException("SEARCH_INDEX() parameters cannot be null");
 
     return search(iParams[0].toString(), iParams[1].toString(), iContext).evaluate(iCurrentRecord, iContext);
   }

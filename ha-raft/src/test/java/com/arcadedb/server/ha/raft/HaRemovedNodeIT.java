@@ -609,7 +609,7 @@ class HaRemovedNodeIT extends BaseRaftHATest {
     if (thread == null || thread.getState() != Thread.State.TIMED_WAITING)
       return false;
     for (final StackTraceElement frame : thread.getStackTrace())
-      if (frame.getMethodName().equals("awaitAppliedIndex") && frame.getClassName().equals(RaftHAServer.class.getName()))
+      if (frame.getMethodName().equals("awaitAppliedIndex") && frame.getClassName().equals(AppliedIndexWaits.class.getName()))
         return true;
     return false;
   }

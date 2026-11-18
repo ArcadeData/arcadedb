@@ -133,7 +133,10 @@ public class StatisticsProvider {
             index.isUnique(),
             index.getName(),
             SelectExecutionPlanner.holdsFoldedKeys(index),
-            index.supportsOrderedIterations()
+            // a range over the leading column of a composite index whose other columns can leave a record without an entry
+            // (one indexed BY ITEM, or null in an index that skips nulls) misses it: such an index answers its whole key only,
+            // as a hash index does (issue #11576)
+            index.supportsOrderedIterations() && index.prefixReachesEveryRecord(1)
         ));
       } catch (final IndexException e) {
         // dropped or rebuilt by a concurrent DDL while being read: not a candidate (issue #8918)

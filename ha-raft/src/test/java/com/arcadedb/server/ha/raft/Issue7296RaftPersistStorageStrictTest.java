@@ -53,7 +53,7 @@ class Issue7296RaftPersistStorageStrictTest {
   void anUnreadablePropertyKeepsTheDurableDefaultInsteadOfSilentlyDisablingPersistence() {
     System.setProperty(KEY, "yes");
 
-    assertThat(RaftHAServer.resolvePersistStorage(new ContextConfiguration()))
+    assertThat(RaftStorageFiles.resolvePersistStorage(new ContextConfiguration()))
         .as("'yes' is not boolean text: refuse it and keep the durable default, never read it as 'wipe the log'")
         .isTrue();
   }
@@ -62,7 +62,7 @@ class Issue7296RaftPersistStorageStrictTest {
   void aTypoKeepsTheDurableDefaultToo() {
     System.setProperty(KEY, "flase");
 
-    assertThat(RaftHAServer.resolvePersistStorage(new ContextConfiguration())).isTrue();
+    assertThat(RaftStorageFiles.resolvePersistStorage(new ContextConfiguration())).isTrue();
   }
 
   /** An explicit, readable {@code false} is still honoured: a throwaway/test cluster may really want ephemeral. */
@@ -70,14 +70,14 @@ class Issue7296RaftPersistStorageStrictTest {
   void anExplicitFalseIsStillHonoured() {
     System.setProperty(KEY, "false");
 
-    assertThat(RaftHAServer.resolvePersistStorage(new ContextConfiguration())).isFalse();
+    assertThat(RaftStorageFiles.resolvePersistStorage(new ContextConfiguration())).isFalse();
   }
 
   @Test
   void anExplicitTrueIsStillHonoured() {
     System.setProperty(KEY, "TRUE");
 
-    assertThat(RaftHAServer.resolvePersistStorage(new ContextConfiguration())).isTrue();
+    assertThat(RaftStorageFiles.resolvePersistStorage(new ContextConfiguration())).isTrue();
   }
 
   /** With no system property, the ContextConfiguration still decides, exactly as before. */
@@ -86,6 +86,6 @@ class Issue7296RaftPersistStorageStrictTest {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
 
-    assertThat(RaftHAServer.resolvePersistStorage(configuration)).isFalse();
+    assertThat(RaftStorageFiles.resolvePersistStorage(configuration)).isFalse();
   }
 }

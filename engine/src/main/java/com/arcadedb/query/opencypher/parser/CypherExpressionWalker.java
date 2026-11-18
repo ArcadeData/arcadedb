@@ -551,7 +551,10 @@ public final class CypherExpressionWalker {
       walk(match.getExpression(), visitor);
       walk(match.getPattern(), visitor);
     }
-    case LabelCheckExpression labelCheck -> walk(labelCheck.getVariableExpression(), visitor);
+    case LabelCheckExpression labelCheck -> {
+      walk(labelCheck.getVariableExpression(), visitor);
+      walkAll(labelCheck.getDynamicLabels(), visitor);
+    }
     case IsTypedExpression typed -> walk(typed.getValueExpression(), visitor);
     case IsNormalizedExpression normalized -> walk(normalized.getValueExpression(), visitor);
     case BooleanCoercionExpression coercion -> walk(coercion.getExpression(), visitor);

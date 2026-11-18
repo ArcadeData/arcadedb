@@ -45,10 +45,21 @@ public class SQLFunctionEnsureLabelTypes extends SQLFunctionAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
+    checkArity(params);
     final List<String> labels = new ArrayList<>();
-    if (params != null && params.length > 0 && params[0] instanceof Collection<?> collection)
+    if (params[0] instanceof Collection<?> collection)
       for (final Object label : collection) {
         if (label == null)
           throw new IllegalArgumentException("ensureLabelTypes() does not accept a null label");

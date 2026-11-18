@@ -90,7 +90,7 @@ class CypherIndexOrderingTest {
       assertThat(column(query, Map.of(), "n.id")).containsExactlyElementsOf(ids(0, 10));
 
       final String profile = profile(query, Map.of());
-      assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("OrderByStep");
+      assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
       assertThat(projectedRows(profile)).as(profile).isLessThan(VERTICES);
     }
 
@@ -107,7 +107,7 @@ class CypherIndexOrderingTest {
         cursor = (String) page.getLast();
       }
       assertThat(all).containsExactlyElementsOf(ids(0, VERTICES));
-      assertThat(profile(query, Map.of("cursor", ""))).doesNotContain("OrderByStep");
+      assertThat(profile(query, Map.of("cursor", ""))).doesNotContain("+ ORDER BY ");
     }
 
     @Test
@@ -121,7 +121,7 @@ class CypherIndexOrderingTest {
 
       final String profile = profile("MATCH (n:Repro) WHERE n.id < $cursor RETURN n.id AS id ORDER BY n.id DESC LIMIT 4",
           Map.of("cursor", id(100)));
-      assertThat(profile).contains("index order, descending").doesNotContain("OrderByStep");
+      assertThat(profile).contains("index order, descending").doesNotContain("+ ORDER BY ");
     }
 
     @Test
@@ -134,7 +134,7 @@ class CypherIndexOrderingTest {
     void aResidualFilterIsAppliedWhileTheScanStreams() {
       final String query = "MATCH (n:Repro) WHERE n.id > $cursor AND n.seq % 2 = 1 RETURN n.seq AS seq ORDER BY n.id LIMIT 5";
       assertThat(column(query, Map.of("cursor", id(10)), "seq")).containsExactly(11, 13, 15, 17, 19);
-      assertThat(profile(query, Map.of("cursor", id(10)))).doesNotContain("OrderByStep");
+      assertThat(profile(query, Map.of("cursor", id(10)))).doesNotContain("+ ORDER BY ");
     }
 
     @Test
@@ -144,14 +144,14 @@ class CypherIndexOrderingTest {
       final List<Map<String, Object>> rows = rows(query, Map.of("cursor", id(10)));
       assertThat(rows).extracting(r -> r.get("a")).containsExactly(id(11), id(12), id(13));
       assertThat(rows).extracting(r -> r.get("b")).containsExactly(id(12), id(13), id(14));
-      assertThat(profile(query, Map.of("cursor", id(10)))).doesNotContain("OrderByStep");
+      assertThat(profile(query, Map.of("cursor", id(10)))).doesNotContain("+ ORDER BY ");
     }
 
     @Test
     void distinctKeepsTheIndexOrder() {
       final String query = "MATCH (n:Repro) WHERE n.num >= 90 RETURN DISTINCT n.num AS num ORDER BY num LIMIT 4";
       assertThat(column(query, Map.of(), "num")).containsExactly(90, 91, 92, 93);
-      assertThat(profile(query, Map.of())).doesNotContain("OrderByStep");
+      assertThat(profile(query, Map.of())).doesNotContain("+ ORDER BY ");
     }
 
     @Test
@@ -164,7 +164,7 @@ class CypherIndexOrderingTest {
       final String query = "MATCH (n:Repro) RETURN n.id AS id ORDER BY n.id LIMIT 10";
       assertThat(column(query, Map.of(), "id")).containsExactlyElementsOf(ids(0, 10));
       final String profile = profile(query, Map.of());
-      assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("OrderByStep");
+      assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
       assertThat(projectedRows(profile)).as(profile).isLessThan(VERTICES);
 
       // The vertices without a key come last, as a null sorts last in Cypher
@@ -197,24 +197,24 @@ class CypherIndexOrderingTest {
     @Test
     void shapesTheIndexOrderDoesNotAnswerKeepTheSort() {
       // No LIMIT: the adaptive range scan of #8333 serves the rows, and the sort stays
-      assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" RETURN n.id ORDER BY n.id", Map.of())).contains("OrderByStep");
+      assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" RETURN n.id ORDER BY n.id", Map.of())).contains("+ ORDER BY ");
       // A second sort key the single-property index does not hold
       final String twoKeys = "MATCH (n:Repro) WHERE n.num >= 98 RETURN n.num AS num, n.seq AS seq ORDER BY num, seq DESC LIMIT 3";
-      assertThat(profile(twoKeys, Map.of())).contains("OrderByStep");
+      assertThat(profile(twoKeys, Map.of())).contains("+ ORDER BY ");
       final List<Map<String, Object>> rows = rows(twoKeys, Map.of());
       assertThat(rows).extracting(r -> r.get("num")).containsExactly(98, 98, 98);
       assertThat(rows).extracting(r -> r.get("seq")).containsExactly(4998, 4898, 4798);
       // Ordered by a property other than the range one
-      assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" RETURN n.seq ORDER BY n.seq LIMIT 3", Map.of())).contains("OrderByStep");
+      assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" RETURN n.seq ORDER BY n.seq LIMIT 3", Map.of())).contains("+ ORDER BY ");
       // A WITH may hand the rows on in another shape
       assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" WITH n RETURN n.id ORDER BY n.id LIMIT 3", Map.of()))
-          .contains("OrderByStep");
+          .contains("+ ORDER BY ");
       // A SET may rewrite the key the rows would be ordered by
       database.transaction(() -> assertThat(
           column("MATCH (n:Repro) WHERE n.id < $cursor SET n.id = 'z' + toString(10 - n.seq) RETURN n.id AS id ORDER BY n.id LIMIT 2",
               Map.of("cursor", id(3)), "id")).containsExactly("z10", "z8"));
       // A RETURN alias that shadows the pattern variable is not the vertex any more
-      assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" RETURN n.seq AS n ORDER BY n LIMIT 3", Map.of())).contains("OrderByStep");
+      assertThat(profile("MATCH (n:Repro) WHERE n.id > \"\" RETURN n.seq AS n ORDER BY n LIMIT 3", Map.of())).contains("+ ORDER BY ");
     }
 
     @Test
@@ -633,7 +633,7 @@ class CypherIndexOrderingTest {
         final String query = "MATCH (m:M) RETURN m.x AS x ORDER BY m.x" + (ascending ? "" : " DESC") + " LIMIT 10";
         assertThat(column(query)).containsExactlyElementsOf(expected(mandatoryValues, ascending, 0, 10));
         final String profile = profile(query);
-        assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("OrderByStep");
+        assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
         assertThat(profile.contains("descending")).isEqualTo(!ascending);
       }
     }
@@ -651,7 +651,7 @@ class CypherIndexOrderingTest {
           final String query = "MATCH (v:" + type + ") WHERE v.x IS NOT NULL RETURN v.x AS x ORDER BY v.x" + (ascending ? "" : " DESC")
               + " LIMIT 10";
           assertThat(column(query)).as(query).containsExactlyElementsOf(expected(nonNull(nullableValues), ascending, 0, 10));
-          assertThat(profile(query)).as(query).contains("NodeIndexRangeScan").contains("index order").doesNotContain("OrderByStep");
+          assertThat(profile(query)).as(query).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
         }
     }
 
@@ -672,14 +672,14 @@ class CypherIndexOrderingTest {
       // Ascending: the values, then the nulls
       final String ascending = "MATCH (i:I) RETURN i.x AS x ORDER BY i.x LIMIT 10";
       assertThat(column(ascending)).containsExactlyElementsOf(expected(nullableValues, true, 0, 10));
-      assertThat(profile(ascending)).contains("NodeIndexRangeScan").contains("index order").doesNotContain("OrderByStep");
+      assertThat(profile(ascending)).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
       assertThat(column("MATCH (i:I) RETURN i.x AS x ORDER BY i.x SKIP " + (VERTICES - nulls - 5) + " LIMIT 20"))
           .containsExactlyElementsOf(expected(nullableValues, true, VERTICES - nulls - 5, 20));
 
       // Descending: the nulls, then the values from the top
       final String descending = "MATCH (i:I) RETURN i.x AS x ORDER BY i.x DESC LIMIT 10";
       assertThat(column(descending)).containsExactlyElementsOf(expected(nullableValues, false, 0, 10));
-      assertThat(profile(descending)).contains("NodeIndexRangeScan").contains("index order, descending").doesNotContain("OrderByStep");
+      assertThat(profile(descending)).contains("NodeIndexRangeScan").contains("index order, descending").doesNotContain("+ ORDER BY ");
       assertThat(column("MATCH (i:I) RETURN i.x AS x ORDER BY i.x DESC SKIP " + (nulls - 3) + " LIMIT 20"))
           .containsExactlyElementsOf(expected(nullableValues, false, nulls - 3, 20));
 
@@ -697,7 +697,7 @@ class CypherIndexOrderingTest {
       final String query = "MATCH (d:D) RETURN d.x AS x ORDER BY d.x DESC LIMIT 10";
       assertThat(column(query)).containsExactlyElementsOf(expected(nullableValues, false, 0, 10));
       assertThat(profile(query)).contains("NodeIndexRangeScan").contains("index order, descending, after null keys")
-          .doesNotContain("OrderByStep");
+          .doesNotContain("+ ORDER BY ");
       // and ascending still reads the index, then the vertices with no key
       assertThat(column("MATCH (d:D) RETURN d.x AS x ORDER BY d.x LIMIT " + VERTICES))
           .containsExactlyElementsOf(expected(nullableValues, true, 0, VERTICES));
@@ -831,7 +831,7 @@ class CypherIndexOrderingTest {
       final String query = "MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT 10";
       assertThat(column(query)).containsExactlyElementsOf(expected(values, false, 0, 10));
       assertThat(profile(query)).contains("NodeIndexRangeScan").contains("index order, descending, after null keys")
-          .doesNotContain("OrderByStep").doesNotContain("NodeByLabelScan");
+          .doesNotContain("+ ORDER BY ").doesNotContain("NodeByLabelScan");
 
       // Another window, and the whole label
       assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC SKIP 1990 LIMIT 20"))
@@ -849,7 +849,7 @@ class CypherIndexOrderingTest {
 
       final String query = "MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC LIMIT 10";
       assertThat(column(query)).containsExactlyElementsOf(expected(values, false, 0, 10));
-      assertThat(profile(query)).contains("after null keys").doesNotContain("OrderByStep");
+      assertThat(profile(query)).contains("after null keys").doesNotContain("+ ORDER BY ");
 
       // The window that straddles the last null key and the first value, and the whole label
       assertThat(column("MATCH (r:R) RETURN r.k AS k ORDER BY r.k DESC SKIP " + (nulls - 3) + " LIMIT 10"))
@@ -903,7 +903,7 @@ class CypherIndexOrderingTest {
       final List<Long> values = load(VERTICES, 7);
       final String query = "MATCH (r:R) RETURN r.k AS k ORDER BY r.k LIMIT " + VERTICES;
       assertThat(column(query)).containsExactlyElementsOf(expected(values, true, 0, VERTICES));
-      assertThat(profile(query)).contains("then null keys").doesNotContain("OrderByStep");
+      assertThat(profile(query)).contains("then null keys").doesNotContain("+ ORDER BY ");
     }
 
     /**

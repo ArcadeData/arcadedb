@@ -165,7 +165,7 @@ class Issue8329RuntimeJoinMarkerTest {
     Files.writeString(new File(storageDir, "log_inprogress_0").toPath(), "entries");
 
     joinAtRuntime(detachedServer(config).getStateMachine().getRuntimeJoinDetector());
-    final File marker = RaftHAServer.runtimeJoinMarkerFile(storageDir);
+    final File marker = RaftStorageFiles.runtimeJoinMarkerFile(storageDir);
     assertThat(marker).exists();
     assertThat(marker.getParentFile().getCanonicalFile()).isEqualTo(tempDir.getCanonicalFile());
 

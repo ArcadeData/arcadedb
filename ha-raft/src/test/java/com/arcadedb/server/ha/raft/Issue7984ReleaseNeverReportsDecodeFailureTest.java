@@ -209,7 +209,7 @@ class Issue7984ReleaseNeverReportsDecodeFailureTest {
     for (final byte[] payload : new byte[][] { PEEKABLE_BUT_UNPARSEABLE, TRUNCATED, tooManyPages, negativePageCount,
         invalidDeltaRange, wal(1L, 3, 0, 1) }) {
       final boolean headerWalkRejects = catchThrowable(() -> PageVersionLedger.parse(payload)) != null;
-      final boolean applyDecodeRejects = catchThrowable(() -> ArcadeStateMachine.deserializeWalTransaction(payload)) != null;
+      final boolean applyDecodeRejects = catchThrowable(() -> CommittedEntryDecoding.deserializeWalTransaction(payload)) != null;
       assertThat(headerWalkRejects)
           .as("parse() and deserializeWalTransaction() must agree on whether these %d bytes are readable", payload.length)
           .isEqualTo(applyDecodeRejects);
