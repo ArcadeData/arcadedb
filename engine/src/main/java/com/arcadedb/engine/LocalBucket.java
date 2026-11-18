@@ -1621,6 +1621,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Pins, for the delete about to remove {@code rid}, the pages a concurrent change of the record has to write, so that the
+   * commit-time version check refuses the delete when such a change commits after the delete chose the image it cleans the
+   * index entries up with (#11733).
+   * <p>
+   * The record's own page covers a plain record and a multi-page one: a rewrite of the chain goes through its head chunk. It
+   * does not cover a placeholder: the slot holds a pointer that an update absorbed by the content record never touches, and
+   * the delete pins the content's page only when it frees it, after the cleanup. A content-only update committed in between
+   * was deleted with the record while the index entries removed were those of the content read before it. Pinning the
+   * content's page here, before the comparison, leaves no such window: the delete of a placeholder poisons its pages for the
+   * slot merge, so a newer version of either is a retryable conflict. It is the page the delete is about to modify anyway.
+   *
+   * @return the page of the record, as {@link #fetchPageInTransaction(RID)}
+   */
+  public MutablePage pinRecordForDelete(final RID rid) throws IOException {
+    final MutablePage page = fetchPageInTransaction(rid);
+    if (page == null)
+      return null;
+
+    try {
+      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+      if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return page;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        return page;
+
+      if (page.readNumber(recordPositionInPage) == RECORD_PLACEHOLDER_POINTER) {
+        final long contentPosition = page.readLong(recordPositionInPage + page.readNumberSize(recordPositionInPage));
+        if (contentPosition >= 0 && contentPosition / maxRecordsInPage < getTotalPages())
+          fetchPageInTransaction(new RID(fileId, contentPosition));
+      }
+    } catch (final IOException e) {
+      throw e;
+    } catch (final Exception e) {
+      // A SLOT THAT CANNOT BE READ IS THE DELETE'S TO REPORT (OR TO FORCE THROUGH), NOT THIS PIN'S
+      LogManager.instance().log(this, Level.FINE, "Unable to read the slot of record %s while pinning it for delete", e, rid);
+    }
+    return page;
+  }
+
+  /**
    * The {@link #hasRecordChangedSinceRead} answer for a record whose body is not in its own slot (#8985): a multi-page
    * record's head chunk, or a placeholder pointer. The record is assembled the way a read does, from the page just
    * pinned and the rest of it as the transaction sees it, and compared with the image the update started from.
@@ -2973,10 +3014,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The record as its slot holds it now, for the delete that is about to remove it and has to know which index entries and
+   * EXTERNAL values go with it (#11733). Read without the before-read events: the delete was granted, the image is handed
+   * to no caller and to no listener, and a listener hiding the record from users must not decide which entries the delete
+   * removes. Not a way to read a record: {@link #getRecord(RID)} is.
+   *
+   * @return {@code null} when the slot holds no record
+   */
+  public Binary getRecordForDeleteCleanup(final RID rid) {
+    return getRecordInternal(rid, false, false);
+  }
+
+  /**
    * @param fireEvents {@code false} to read the content a placeholder points to: the before-read events are about the
    *                   record the caller asked for, under the RID it knows, and already ran for it. Firing them again for
    *                   the internal position of its content notified a listener twice, the second time with a RID no
-   *                   user ever sees (#8312)
+   *                   user ever sees (#8312). And for {@link #getRecordForDeleteCleanup(RID)}
    */
   Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
     // INVOKE EVENT CALLBACKS

@@ -33,6 +33,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PageVersionReservations;
@@ -2280,10 +2281,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       if (record instanceof Document document) {
         try {
-          indexer.deleteDocument(document);
+          // #11733: the entries to remove are those the index holds for the record now, not those of the values the caller's
+          // object carries. A concurrent commit may have changed the record since it was read, and this transaction may have
+          // moved the index forward with an update saved before the delete, or assigned a property it never saved
+          final Document current = storedImageForCleanup(bucket, document);
+          final Document indexed = getTransaction().getLastIndexedSnapshot(document.getIdentity());
+          indexer.deleteDocument(indexed != null ? indexed : current);
           // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
           // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
-          cascadeDeleteExternalValues(document);
+          cascadeDeleteExternalValues(current);
         } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
                        | IndexOutOfBoundsException | IllegalArgumentException e) {
           // The record buffer is corrupted (e.g. written by a version affected by issue #4319 in HA), so its indexed
@@ -2401,6 +2407,72 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   private void doomAfterRefusedDelete(final Record record, final SecurityException e) {
     getTransaction().setRollbackOnly("delete of " + record.getIdentity() + " was refused after it had started: " + e.getMessage());
+  }
+
+  /**
+   * The stored image of {@code document}, the one its delete removes the index entries and the EXTERNAL values of (issue
+   * #11733). Not the object the caller holds, for two reasons.
+   * <p>
+   * Under READ_COMMITTED a record read, then changed by a transaction that commits before the delete reaches it, still holds
+   * the values it was read with. Cleaning up with those removes the entries the concurrent change already replaced and keeps
+   * the ones it added, now naming a record that is gone; once the RID is reused, an indexed lookup returns a record holding
+   * another value. The page is pinned here, as an update pins it (#6950), and with it the page of the content a placeholder
+   * points to ({@code LocalBucket.pinRecordForDelete}), so the commit-time version check covers what is compared now, and when
+   * the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
+   * The delete itself is unchanged: it removes the record by its RID, as before. The slot is read without the READ_RECORD check
+   * a user read takes and without the before-read events: the delete was granted, and the image only tells the delete which
+   * entries to remove, so a listener hiding the record must not send the cleanup back to the image the caller read.
+   * <p>
+   * And a {@link MutableDocument} answers a property with the value assigned to it, saved or not, while the index was written
+   * from what was saved: for one with a pending change the image is an immutable record over its buffer, which a deferred update
+   * leaves alone until the commit. The same resolution {@code GraphEngine.indexedImageOf} applies to a moved edge. The caller
+   * asks the transaction's last indexed snapshot first, for the index only: an update saved earlier in this transaction moved
+   * the index past the stored image.
+   * <p>
+   * A record that was never loaded has no image to compare: it is read from the slot once the page is pinned, instead of
+   * loading itself, unpinned, when the cleanup asks its properties.
+   * <p>
+   * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
+   * and one comparison in place: nothing is allocated for it.
+   */
+  private Document storedImageForCleanup(final LocalBucket bucket, final Document document) {
+    final RID rid = document.getIdentity();
+    if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
+      return document;
+    final Binary readImage = base.getBuffer();
+
+    // A RECORD WITH NO BUFFER WAS NOT LOADED YET (lookupByRID(rid, false)): LEFT TO LOAD ITSELF WHEN THE CLEANUP ASKS ITS PROPERTIES,
+    // IT WOULD BE READ BEFORE ITS PAGE IS PINNED, WITH THE SAME WINDOW FOR A CONCURRENT COMMIT. IT IS READ FROM THE SLOT, PINNED
+    final boolean readSlot;
+    try {
+      final MutablePage page = bucket.pinRecordForDelete(rid);
+      readSlot = page != null && (readImage == null || bucket.hasRecordChangedSinceRead(rid, page, readImage));
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on delete the record " + rid, e);
+    }
+
+    final Binary stored;
+    if (readSlot) {
+      final Binary current;
+      try {
+        current = bucket.getRecordForDeleteCleanup(rid);
+      } catch (final RecordNotFoundException e) {
+        // THE DELETE ITSELF REPORTS IT, AS THE CONCURRENT DELETE IT IS WHEN THE RECORD WAS READ IN THIS TRANSACTION
+        return document;
+      }
+      if (current == null)
+        // A concurrent transaction deleted the record: the version check fails this delete at commit
+        return document;
+      // THE COPY DETACHES THE IMAGE FROM A PAGE THAT CHANGED UNDER THE CALLER'S; A RECORD READ HERE FIRST IS A VIEW, AS ANY READ IS
+      stored = readImage == null ? current : current.copyOfContent();
+    } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
+      readImage.rewind();
+      stored = readImage;
+    } else
+      return document;
+
+    return (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getTypeByBucketId(rid.getBucketId()), rid,
+        stored, null);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
