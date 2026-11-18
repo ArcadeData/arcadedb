@@ -76,7 +76,6 @@ import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.ProductCountStep;
-import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
@@ -505,9 +504,8 @@ public class CypherExecutionPlan {
           materializedResults.add((ResultInternal) resultSet.next());
         }
         // A row produced before a later row's label write still holds what that write deleted: answered with the live
-        // records instead, and a DISTINCT that told the original and the replacement apart answers them once (issue #10614)
-        if (LabelReplacements.redirectRows(context, materializedResults))
-          ProjectReturnStep.removeDuplicatesOfDistinct(statement.getReturnClause(), materializedResults);
+        // records instead (issue #10614)
+        LabelReplacements.redirectRows(context, materializedResults);
       } finally {
         // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
         // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
@@ -1298,21 +1296,16 @@ public class CypherExecutionPlan {
 
   /**
    * Points the rows a profiled write kept at the live records, as {@code execute()} answers them (issue #10614): a row produced
-   * before a later row's label write still holds what that write deleted. The rows are taken out of {@code results} and put
-   * back only when the statement replaced something, so a profile without a label write pays one check and no copy.
+   * before a later row's label write still holds what that write deleted. The rows are redirected in place, and only when the
+   * statement replaced something, so a profile without a label write pays one check.
    */
-  private void redirectProfiledRows(final CommandContext context, final InternalResultSet results) {
-    if (!LabelReplacements.hasReplacements(context))
+  private static void redirectProfiledRows(final CommandContext context, final InternalResultSet results) {
+    final LabelReplacements replacements = LabelReplacements.existing(context);
+    if (replacements == null || replacements.isEmpty())
       return;
-    final List<Result> rows = new ArrayList<>((int) results.countEntries());
     while (results.hasNext())
-      rows.add(results.next());
-    results.close();
+      replacements.redirect(results.next());
     results.reset();
-    if (LabelReplacements.redirectRows(context, rows))
-      ProjectReturnStep.removeDuplicatesOfDistinct(statement.getReturnClause(), rows);
-    for (final Result row : rows)
-      results.add(row);
   }
 
   /**

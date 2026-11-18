@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -141,10 +142,23 @@ public class ProjectReturnStep extends AbstractExecutionStep {
             // Values are canonicalized via DistinctNumericKey so numerically-equal values (issue
             // #5789) and graph-element references sharing one RID (issue #6488) collapse together.
             if (distinct) {
-              final List<String> names = distinctColumns(returnClause, hasStar, projectedResult);
+              final List<String> names;
+              if (returnClause.isReturnAll() || hasStar) {
+                // Distinctness is over the variables the query returns; the executor's internal
+                // bindings for anonymous pattern elements are not returned, so counting them here
+                // would keep rows that are duplicates to the caller (issue #5444).
+                names = new TreeSet<>(projectedResult.getPropertyNames()).stream().filter(name -> !InternalVariables.isInternal(name)).toList();
+              } else {
+                names = returnClause.getReturnItems().stream().map(ReturnClause.ReturnItem::getOutputName).toList();
+              }
               if (distinctKeys == null)
                 distinctKeys = new GroupKeyValues.Builder(names.size() * 2);
-              final GroupKeyValues key = distinctKeys.build(names, projectedResult::getProperty);
+              // A node a label write replaced is keyed by its original identity, so the rows projected before and after the
+              // write are one row (issue #10614)
+              final LabelReplacements replacements = LabelReplacements.existing(context);
+              final GroupKeyValues key = replacements == null ?
+                  distinctKeys.build(names, projectedResult::getProperty) :
+                  distinctKeys.build(names, name -> replacements.distinctKey(projectedResult.getProperty(name)));
               if (!seenResults.add(key))
                 continue;
               distinctLimit.add(seenResults.size(), key.canonicalValues(), HeapEstimator.HASH_ENTRY_BYTES);
@@ -174,45 +188,6 @@ public class ProjectReturnStep extends AbstractExecutionStep {
         ProjectReturnStep.this.close();
       }
     };
-  }
-
-  /**
-   * The columns a {@code RETURN DISTINCT} tells rows apart by: the items it names, or for a star the variables the row
-   * returns. The executor's internal bindings for anonymous pattern elements are not returned, so counting them would keep
-   * rows that are duplicates to the caller (issue #5444).
-   */
-  private static List<String> distinctColumns(final ReturnClause returnClause, final boolean hasStar, final Result row) {
-    if (hasStar)
-      return new TreeSet<>(row.getPropertyNames()).stream().filter(name -> !InternalVariables.isInternal(name)).toList();
-    return returnClause.getReturnItems().stream().map(ReturnClause.ReturnItem::getOutputName).toList();
-  }
-
-  /**
-   * Removes again, in place and keeping the first of each, the rows of a {@code RETURN DISTINCT} that became duplicates after
-   * the projection told them apart (issue #10614). A label write replaces a node by a new record: a row projected before a
-   * later row's write held the original, a row projected after it the replacement, and the DISTINCT kept both. Once both are
-   * pointed at the live record they are the same row, which is what Neo4j, where a node keeps its identity, answers once.
-   * Nothing to do for a statement whose RETURN is not DISTINCT.
-   * <p>
-   * The keys are not charged to the heap budget the streaming DISTINCT reserves from: they are built over rows the caller
-   * already holds in full (the drain of a write statement), and only when a label write moved one of them.
-   */
-  public static <R extends Result> void removeDuplicatesOfDistinct(final ReturnClause returnClause, final List<R> rows) {
-    if (returnClause == null || !returnClause.isDistinct() || rows.size() < 2)
-      return;
-    final boolean hasStar = returnClause.hasStar();
-    final Set<GroupKeyValues> seen = new HashSet<>();
-    GroupKeyValues.Builder keys = null;
-    int kept = 0;
-    for (int i = 0; i < rows.size(); i++) {
-      final R row = rows.get(i);
-      final List<String> names = distinctColumns(returnClause, hasStar, row);
-      if (keys == null)
-        keys = new GroupKeyValues.Builder(names.size() * 2);
-      if (seen.add(keys.build(names, row::getProperty)))
-        rows.set(kept++, row);
-    }
-    rows.subList(kept, rows.size()).clear();
   }
 
   /** The operation of the DISTINCT keys of the result set just handed out, which the step's close() releases. */

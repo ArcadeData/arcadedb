@@ -217,6 +217,56 @@ class CypherLabelWriteRedirectsEmittedRowsIssue10614Test extends TestHelper {
     assertLive(star.getFirst().getProperty("a"));
   }
 
+  /**
+   * The DISTINCT collapses the original and the replacement where it runs, before SKIP and LIMIT: a pass over the answered rows
+   * could not bring back a row SKIP dropped in place of the duplicate.
+   */
+  @Test
+  void aDistinctCollapsesAReplacedNodeBeforeSkipAndLimit() {
+    final String query = """
+        UNWIND range(1, 250) AS i
+        MATCH (a {id: 1})
+        WITH i, a, CASE WHEN i = 180 THEN a ELSE null END AS target
+        REMOVE target:L
+        RETURN DISTINCT a""";
+
+    database.transaction(() -> database.command("opencypher", "CREATE (:L {id: 1})"));
+    assertThat(rows(query + " SKIP 1")).isEmpty();
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n) SET n:L"));
+    final List<Result> limited = rows(query + " LIMIT 5");
+    assertThat(limited).hasSize(1);
+    assertLive(limited.getFirst().getProperty("a"));
+  }
+
+  /** WITH DISTINCT, and a DISTINCT over a list and a path holding the replaced node, collapse the same way. */
+  @Test
+  void aWithDistinctAndADistinctOverListsAndPathsCollapseAReplacedNode() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:L {id: 1})-[:E]->(:M {id: 2})"));
+
+    final List<Result> withDistinct = rows("""
+        UNWIND range(1, 250) AS i
+        MATCH (a {id: 1})
+        WITH i, a, CASE WHEN i = 180 THEN a ELSE null END AS target
+        REMOVE target:L
+        WITH DISTINCT a
+        RETURN a.id AS id""");
+    assertThat(withDistinct).hasSize(1);
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n {id: 1}) SET n:L"));
+    final List<Result> lists = rows("""
+        UNWIND range(1, 250) AS i
+        MATCH p = (a {id: 1})-[:E]->(b)
+        WITH i, a, p, CASE WHEN i = 180 THEN a ELSE null END AS target
+        REMOVE target:L
+        RETURN DISTINCT [a] AS held, p""");
+    assertThat(lists).hasSize(1);
+    final Result row = lists.getFirst();
+    assertLivePath(row.getProperty("p"));
+    final List<Vertex> held = row.getProperty("held");
+    assertLive(held.getFirst());
+  }
+
   /** PROFILE drains the statement as well, and answers the same live rows. */
   @Test
   void aProfiledStatementAnswersTheLiveRecords() {

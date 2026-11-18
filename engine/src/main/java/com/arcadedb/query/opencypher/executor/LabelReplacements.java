@@ -29,8 +29,10 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
@@ -99,6 +101,9 @@ public final class LabelReplacements {
 
   private final Map<RID, Vertex> vertices = new HashMap<>();
   private final Map<RID, Edge>   edges    = new HashMap<>();
+  // EVERY REPLACEMENT RECORD (VERTEX OR RE-ATTACHED EDGE) TO THE RID OF THE RECORD AT THE START OF ITS CHAIN: THE IDENTITY A
+  // DISTINCT KEYS IT BY, SO A NODE HELD AS THE ORIGINAL BY ONE ROW AND AS A REPLACEMENT BY ANOTHER IS ONE VALUE (ISSUE #10614)
+  private final Map<RID, RID>    origins  = new HashMap<>();
   // The context of the statement this map belongs to, which alone ends it (see endOfStatement); null for a private map
   private final CommandContext   owner;
   // The database the held positions live in, set by the first hold
@@ -168,11 +173,78 @@ public final class LabelReplacements {
   }
 
   /**
-   * Whether the statement {@code context} runs (or the enclosing one it inherited the map of) replaced any vertex so far,
-   * without creating the map when no write step asked for it.
+   * The map of the statement {@code context} runs, or {@code null} when no step of it can write a label: what a DISTINCT asks
+   * before keying a row (see {@link #distinctKey}), without creating a map no write step asked for. A step that can write a
+   * label creates the map when it is first pulled, so it exists before the first row of the statement is keyed.
    */
-  public static boolean hasReplacements(final CommandContext context) {
-    return context != null && context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements replacements && !replacements.isEmpty();
+  public static LabelReplacements existing(final CommandContext context) {
+    return context != null && context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements replacements ? replacements : null;
+  }
+
+  /**
+   * The value a DISTINCT keys {@code value} by (issue #10614): a replacement record - a relabelled vertex, an edge re-attached
+   * to one - is keyed by the RID of the record its chain started from, inside a list, a map or a path too, and everything else
+   * is {@code value} itself. A row projected before a later row's label write holds the original, a row projected after it the
+   * replacement: one node, which Neo4j answers once, but the DISTINCT told the two apart by RID - and before any SKIP or LIMIT,
+   * which a second pass over the answered rows could not undo. Keying by the origin matches the original too, since a DISTINCT
+   * reads a record as its RID. A path is keyed by the keys of its elements whether anything in it moved or not, so a path keyed
+   * before the write and the same path keyed after it are one key.
+   */
+  public Object distinctKey(final Object value) {
+    if (value instanceof Vertex || value instanceof Edge) {
+      if (origins.isEmpty())
+        return value;
+      final RID rid = ((Identifiable) value).getIdentity();
+      final RID origin = rid != null ? origins.get(rid) : null;
+      return origin != null ? origin : value;
+    }
+
+    if (value instanceof TraversalPath path) {
+      final List<Vertex> pathVertices = path.getVertices();
+      final List<Edge> pathEdges = path.getEdges();
+      final List<Object> elements = new ArrayList<>(pathVertices.size() + pathEdges.size());
+      for (int i = 0; i < pathVertices.size(); i++) {
+        elements.add(DistinctNumericKey.canonicalize(distinctKey(pathVertices.get(i))));
+        if (i < pathEdges.size())
+          elements.add(DistinctNumericKey.canonicalize(distinctKey(pathEdges.get(i))));
+      }
+      return new PathKey(elements);
+    }
+
+    if (value instanceof List<?> list) {
+      List<Object> rebuilt = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object element = list.get(i);
+        final Object key = distinctKey(element);
+        if (key != element && rebuilt == null)
+          rebuilt = new ArrayList<>(list);
+        if (rebuilt != null)
+          rebuilt.set(i, key);
+      }
+      return rebuilt != null ? rebuilt : value;
+    }
+
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> rebuilt = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object element = entry.getValue();
+        final Object key = distinctKey(element);
+        if (key != element && rebuilt == null)
+          rebuilt = new LinkedHashMap<>(map);
+        if (rebuilt != null)
+          rebuilt.put(entry.getKey(), key);
+      }
+      return rebuilt != null ? rebuilt : value;
+    }
+
+    return value;
+  }
+
+  /**
+   * The DISTINCT key of a path: the keys of its nodes and relationships in order. A type of its own, so a path is never the
+   * same value as a list holding the same elements.
+   */
+  private record PathKey(List<Object> elements) {
   }
 
   /**
@@ -183,18 +255,13 @@ public final class LabelReplacements {
    * the Bolt serializer failed on them with a {@code RecordNotFoundException}. Called once the statement has produced every
    * row and before {@link #endOfStatement}, while the map still answers for the replaced RIDs. Free for a statement that
    * replaced nothing: no map was ever created, or it is empty.
-   *
-   * @return whether any row was changed: two rows a DISTINCT told apart by the original and the replacement of one node may
-   * now be the same row
    */
-  public static boolean redirectRows(final CommandContext context, final Iterable<? extends Result> rows) {
-    if (!hasReplacements(context))
-      return false;
-    final LabelReplacements replacements = (LabelReplacements) context.getCachedValue(CONTEXT_KEY);
-    boolean moved = false;
+  public static void redirectRows(final CommandContext context, final Iterable<? extends Result> rows) {
+    final LabelReplacements replacements = existing(context);
+    if (replacements == null || replacements.isEmpty())
+      return;
     for (final Result row : rows)
-      moved |= replacements.redirect(row);
-    return moved;
+      replacements.redirect(row);
   }
 
   /**
@@ -239,7 +306,7 @@ public final class LabelReplacements {
    * would then hand back to the retried attempt as if it were live.
    */
   public Snapshot copy() {
-    return new Snapshot(new HashMap<>(vertices), new HashMap<>(edges));
+    return new Snapshot(new HashMap<>(vertices), new HashMap<>(edges), new HashMap<>(origins));
   }
 
   /**
@@ -260,6 +327,9 @@ public final class LabelReplacements {
     vertices.putAll(snapshot.vertices);
     edges.clear();
     edges.putAll(snapshot.edges);
+    // The replacements of the rolled-back attempt never existed: their RIDs may be handed to unrelated records later
+    origins.clear();
+    origins.putAll(snapshot.origins);
   }
 
   /**
@@ -270,10 +340,12 @@ public final class LabelReplacements {
   public static final class Snapshot {
     private final Map<RID, Vertex> vertices;
     private final Map<RID, Edge>   edges;
+    private final Map<RID, RID>    origins;
 
-    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges) {
+    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges, final Map<RID, RID> origins) {
       this.vertices = vertices;
       this.edges = edges;
+      this.origins = origins;
     }
   }
 
@@ -332,13 +404,10 @@ public final class LabelReplacements {
    * step-wide. That is a deliberate trade: a clause with no label write at all pays a single
    * {@link Map#isEmpty()} check per row and never walks anything, and correctness after a write is not something a
    * large {@code collect()} list should be able to opt out of.
-   *
-   * @return whether any value of the row was replaced by its live form
    */
-  public boolean redirect(final Result row) {
+  public void redirect(final Result row) {
     if (row == null || vertices.isEmpty())
-      return false;
-    boolean moved = false;
+      return;
     // The ResultInternal cast below is unguarded where SubqueryStep.refreshDocumentBindings guards its own, and
     // deliberately so rather than by oversight. Both plan shapes feed the write steps ResultInternal rows -
     // the optimizer is not disabled by a REMOVE/SET after the MATCH, but its NodeByLabelScan/ExpandAll chain
@@ -350,10 +419,8 @@ public final class LabelReplacements {
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
       final Object live = redirectValue(value);
-      if (live != value) {
+      if (live != value)
         ((ResultInternal) row).setProperty(name, live);
-        moved = true;
-      }
     }
     // A RETURN of a single node or relationship also carries it as the row's element, which is what a client is answered
     // with (the HTTP JSON flattens the row through it): it follows the move too (issue #10614)
@@ -361,12 +428,9 @@ public final class LabelReplacements {
       final Document element = internal.getElement().orElse(null);
       final Object live = redirectValue(element);
       // redirectValue answers a vertex with a vertex and an edge with an edge, and any other document with itself
-      if (live != element) {
+      if (live != element)
         internal.setElement((Document) live);
-        moved = true;
-      }
     }
-    return moved;
   }
 
   /**
@@ -529,6 +593,7 @@ public final class LabelReplacements {
     vertex.delete();
     if (vertices.put(originalRid, newVertex) == null)
       holdPosition(database, originalRid);
+    origins.put(newVertex.getIdentity(), originOf(originalRid));
     ++replacements;
 
     // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
@@ -586,8 +651,20 @@ public final class LabelReplacements {
     // (type, out vertex, in vertex) triple and hashes on it, so it keys this map exactly like the address of a
     // heavy edge does, and the re-attached copy hanging off the replacement vertex is a different key rather than
     // the same one. Only the null is guarded: an edge that came out of getEdges() always has a bucket.
-    if (rid != null && edges.put(rid, replacement) == null)
+    if (rid == null)
+      return;
+    if (edges.put(rid, replacement) == null)
       holdPosition(original.getDatabase(), rid);
+    // A lightweight edge is keyed by its (type, out, in) triple, which DISTINCT already reads as its own key
+    final RID replacementRid = replacement.getIdentity();
+    if (replacementRid != null && !(replacementRid instanceof LightEdgeRID))
+      origins.put(replacementRid, originOf(rid));
+  }
+
+  /** The RID at the start of the replacement chain {@code rid} belongs to, or {@code rid} itself when it replaced nothing. */
+  private RID originOf(final RID rid) {
+    final RID origin = origins.get(rid);
+    return origin != null ? origin : rid;
   }
 
   /**
