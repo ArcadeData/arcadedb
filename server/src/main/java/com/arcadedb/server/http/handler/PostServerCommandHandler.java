@@ -121,9 +121,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       if (forwarded != null) {
         if (forwarded.getCode() == 200) {
           if (command_lc.startsWith(CREATE_DATABASE))
-            awaitForwardedChange(extractTarget(command, CREATE_DATABASE), true);
+            awaitForwardedEntryApplied(forwarded, extractTarget(command, CREATE_DATABASE), true);
           else if (command_lc.startsWith(DROP_DATABASE))
-            awaitForwardedChange(extractTarget(command, DROP_DATABASE), false);
+            awaitForwardedEntryApplied(forwarded, extractTarget(command, DROP_DATABASE), false);
         }
         return forwarded;
       }
@@ -179,7 +179,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Server command not valid\"}");
     }
 
-    return new ExecutionResponse(200, response.toString());
+    final ExecutionResponse answer = new ExecutionResponse(200, response.toString());
+    if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE))
+      emitBookmark(answer);
+    return answer;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -500,19 +503,58 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Waits, bounded by the quorum timeout, for a database whose creation or drop this node forwarded to the leader to exist here, or
-   * to be gone from here (issue #11739). The leader answers once its entry is committed, but this node installs or drops the
-   * database only when it applies that entry, which can be after the answer: relaying it at once let the client's next request to
-   * this node be refused with {@code DatabaseNotFoundException} after a creation, and {@code GET /api/v1/exists} still answer
-   * {@code true} after a drop. The change is made either way, so a wait that runs out still answers success.
+   * Stamps the leader's answer to {@code create database} and {@code drop database} with the {@code X-ArcadeDB-Commit-Index}
+   * bookmark (issue #11739): the highest index it has committed, which is at or past the entry it has just replicated for the
+   * command. A client carries it to read its own write from another node, and a follower that forwarded the command waits on it
+   * (see {@link #awaitForwardedEntryApplied}). Nothing on a server without HA, which has no index.
    */
-  private void awaitForwardedChange(final String databaseName, final boolean created) {
+  private void emitBookmark(final ExecutionResponse answer) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha != null && !databaseName.isEmpty()
-        && !ha.awaitLocally(() -> httpServer.getServer().existsDatabase(databaseName) == created))
+    if (ha == null)
+      return;
+    final long committed = ha.getCommitIndex();
+    if (committed >= 0)
+      answer.setHeader(COMMIT_INDEX_HEADER_NAME, String.valueOf(committed));
+  }
+
+  /**
+   * Holds the leader's answer to a forwarded {@code create database} or {@code drop database} until this node has applied the
+   * entry the leader committed for it, bounded by the quorum timeout (issue #11739). The leader answers once the entry is
+   * committed, but this node installs or drops the database only when it applies it, which can be after the answer: relaying it
+   * at once let the client's next request to this node be refused with {@code DatabaseNotFoundException} after a creation, and
+   * {@code GET /api/v1/exists} still answer {@code true} after a drop.
+   * <p>
+   * The wait is on the entry, through the bookmark the leader answers with, and not on the state of the database here. A database
+   * of that name can already be on this node when the creation is applied (the leader dropped it and it was created again while
+   * this node lagged), and one that was closed here with {@code close database} reads as gone although its files stay until the
+   * drop is applied. A leader that predates the bookmark answers without it: there is no entry to wait for, and the answer is
+   * relayed at once, as before.
+   * <p>
+   * The change is made on the leader either way, so a wait that runs out still answers success.
+   */
+  private void awaitForwardedEntryApplied(final ExecutionResponse forwarded, final String databaseName, final boolean created) {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    final long bookmark = bookmarkOf(forwarded);
+    if (ha == null || bookmark < 0)
+      return;
+
+    if (!ha.awaitLocally(() -> ha.getTrustedAppliedIndex() >= bookmark))
       LogManager.instance().log(this, Level.WARNING,
-          "Database '%s' was %s by the leader but is %s on this server yet: a request for it here may see the old state until it is",
-          databaseName, created ? "created" : "dropped", created ? "not installed" : "still present");
+          "Database '%s' was %s by the leader, but this server has applied the Raft log only up to index %d of the %d that the "
+              + "leader answered with: a request for it here may see the previous state until this server catches up",
+          databaseName, created ? "created" : "dropped", ha.getTrustedAppliedIndex(), bookmark);
+  }
+
+  /** The {@code X-ArcadeDB-Commit-Index} of the leader's relayed answer, or {@code -1} when it carries none or an unreadable one. */
+  private static long bookmarkOf(final ExecutionResponse answer) {
+    final String value = answer.getHeader(COMMIT_INDEX_HEADER_NAME);
+    if (value == null)
+      return -1L;
+    try {
+      return Long.parseLong(value.trim());
+    } catch (final NumberFormatException e) {
+      return -1L;
+    }
   }
 
   /**

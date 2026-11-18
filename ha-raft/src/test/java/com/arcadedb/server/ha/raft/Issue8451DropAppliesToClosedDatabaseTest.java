@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -135,6 +136,26 @@ class Issue8451DropAppliesToClosedDatabaseTest {
         .isNotNull();
     assertThat(server.existsDatabase(DB_NAME)).isFalse();
     assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
+  }
+
+  /**
+   * Issue #11739: {@code close database} also marks the database as closed on purpose, which keeps it a database of this server
+   * (it exists, and its name is taken) while it is not registered. The drop ends that close, as a drop of an open database does
+   * through {@code removeDatabase}: the apply that removed the files of a closed one left the mark, so {@code GET /exists} on
+   * this peer answered {@code true} for a database the whole cluster had dropped, and a create of the name was refused.
+   */
+  @Test
+  void aDropOfADatabaseTheCloseVerbClosedEndsTheMarkItLeft() {
+    final ArcadeStateMachine sm = start();
+    new ServerControlPlane(server).closeDatabase(DB_NAME);
+    assertThat(server.isDatabaseHeld(DB_NAME)).as("precondition: held by the close verb").isTrue();
+    assertThat(server.isDatabaseOfServer(DB_NAME)).as("precondition: still a database of this server").isTrue();
+
+    applyDrop(sm, DB_NAME);
+
+    assertThat(Files.exists(databaseDirectory)).as("the dropped database's directory must be gone").isFalse();
+    assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark goes with the database").isFalse();
+    assertThat(server.isDatabaseOfServer(DB_NAME)).as("what GET /exists reads: not a database of this server any more").isFalse();
   }
 
   /**

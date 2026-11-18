@@ -8271,6 +8271,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
       staged = databaseDirectory == null ? null : deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
       absent = databaseDirectory == null;
+      // Deregistered again now that the directory is gone from under its name (issue #11739). A drop ends the close that a
+      // `close database` asked for, and only removeDatabase ends it: the branch above for a closed database left the mark
+      // standing, so GET /exists kept answering true, and a request kept being refused as closed, for a database the cluster
+      // had dropped. It also has the server list the database directory again AFTER the rename: the call in the registered
+      // branch lists it before, and a listing taken in between kept the name for up to a second after the drop was applied.
+      server.removeDatabase(databaseName);
     }
     if (absent) {
       // Neither registered nor on disk any more: the removal this entry asks for already happened elsewhere.

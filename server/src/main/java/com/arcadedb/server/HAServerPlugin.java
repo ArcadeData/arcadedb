@@ -900,6 +900,26 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * The highest Raft index this node has seen committed, or {@code -1} when HA is not running or the index cannot be read right
+   * now (issue #11739). On the leader, read once a command's entry has been committed, it is at or past that entry: the bookmark
+   * the leader answers {@code create database} and {@code drop database} with, which a node that forwarded the command waits on
+   * through {@link #awaitLocally} and {@link #getTrustedAppliedIndex()}. The default, for non-HA setups, knows no index.
+   */
+  default long getCommitIndex() {
+    return -1L;
+  }
+
+  /**
+   * The Raft index up to which THIS node can vouch that it has applied the committed log, or {@code -1} when HA is not running or
+   * the index cannot be read right now (issue #11739). Not the raw index of the consensus library: it is held back while this
+   * node is inside a snapshot resync gap it has not filled, because there it advertises entries it does not hold. The default,
+   * for non-HA setups, knows no index.
+   */
+  default long getTrustedAppliedIndex() {
+    return -1L;
+  }
+
+  /**
    * Holds {@code databaseName} for a restore that has claimed it on this server (issue #10974): from now until
    * {@link #releaseReplicatedWritesForRestore}, writes other nodes replicate to it through this one are refused with a
    * retryable error, and the call returns once the ones already accepted - which no local commit wait sees - are applied here,

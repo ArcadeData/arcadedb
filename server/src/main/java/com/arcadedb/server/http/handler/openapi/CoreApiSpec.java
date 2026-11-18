@@ -286,6 +286,13 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setResponses(createCommandResponses());
     // Not QueryResponse: every server command answers {"result": ...}, whose shape depends on the command (issue #10164)
     postOp.getResponses().addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "ServerCommandResponse"));
+    // The bookmark of 'create database' and 'drop database' on an HA cluster, sent by a follower that forwarded the command too
+    // (issue #11739). Declared on the 200 only: it is emitted by those two commands, once they have succeeded.
+    postOp.getResponses().get("200").addHeaderObject(COMMIT_INDEX_HEADER, SpecBuilders.stringHeader("""
+        Sent by 'create database' and 'drop database' on an HA cluster: the highest Raft index the leader had committed when it \
+        answered, which is at or past the entry of the command. A follower that was sent the command answers only once it has \
+        applied that index, so the database exists, or is gone, on the server that answered. Absent on a server without HA \
+        and on every other command."""));
     // Besides the 'Query terminated' the shared set declares, 'create database' and 'import database' answer 409 for a
     // name that is already taken (issue #10074). 'restore database' and 'restore backup' keep their 400 for a taken
     // target (issue #7395).

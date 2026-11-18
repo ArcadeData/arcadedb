@@ -114,8 +114,14 @@ public final class LeaderCommandForwarder {
    * {@code 409} for a retry whose {@code X-Request-Id} twin is still executing (issue #8324) and the {@code 503}
    * during a snapshot install. A client that reached the leader through a follower used to see the status and the
    * body that says "retry later", but not the back-off a client talking to the leader gets.
+   * <p>
+   * {@code X-ArcadeDB-Commit-Index} is the bookmark the leader answers a {@code create database} and a {@code drop database}
+   * with (issue #11739): the follower that forwarded the command waits for its own applied index to reach it before it
+   * answers, and the client gets it as if it had talked to the leader. The other routes forwarded through here (users, groups,
+   * API tokens) are answered without it, so nothing changes for them; the batch relay already copied it onto its exchange
+   * and now finds the same value on the relayed answer too.
    */
-  static final String[] RELAYED_RESPONSE_HEADERS = { "Retry-After" };
+  static final String[] RELAYED_RESPONSE_HEADERS = { "Retry-After", AbstractServerHttpHandler.COMMIT_INDEX_HEADER_NAME };
 
   /** The exception class name the error pipeline puts in the body of a "not the leader" refusal (issue #8486). */
   private static final String NOT_THE_LEADER_EXCEPTION = ServerIsNotTheLeaderException.class.getName();

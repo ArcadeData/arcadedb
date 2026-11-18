@@ -572,6 +572,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public long getCommitIndex() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getCommitIndex() : -1L;
+  }
+
+  @Override
+  public long getTrustedAppliedIndex() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getTrustedAppliedIndex() : -1L;
+  }
+
+  @Override
   public void holdReplicatedWritesForRestore(final String databaseName) {
     final RaftHAServer raft = raftHAServer;
     if (raft != null)

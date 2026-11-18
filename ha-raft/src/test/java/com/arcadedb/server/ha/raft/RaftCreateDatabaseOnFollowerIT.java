@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -33,9 +34,11 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,18 +47,37 @@ import static org.assertj.core.api.Assertions.assertThat;
  * at once. It installs the database only when it applies the entry the leader committed, so the client's next request to the
  * same follower was refused with {@code DatabaseNotFoundException}. The follower's apply thread is held off the new database
  * here until the test has seen the leader create it and the follower's answer still pending, which makes that window certain.
+ * <p>
+ * The follower answers once it has applied the entry the leader committed, which the leader names in the
+ * {@code X-ArcadeDB-Commit-Index} bookmark of its answer. The tests also pin the cases a wait on the state of the database
+ * would get wrong: a database of the same name still on the follower (dropped on the leader and created again), and one the
+ * follower closed, which is not registered on it although its files are.
  */
 @Tag("slow")
 class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
-  private static final String   NEW_DATABASE     = "createdThroughAFollower";
-  private static final String   DROPPED_DATABASE = "droppedThroughAFollower";
-  private static final Duration HTTP_TIMEOUT     = Duration.ofSeconds(30);
+  private static final String       NEW_DATABASE         = "createdThroughAFollower";
+  private static final String       DROPPED_DATABASE     = "droppedThroughAFollower";
+  private static final String       RECREATED_DATABASE   = "recreatedThroughAFollower";
+  private static final String       CLOSED_DATABASE      = "closedThenDroppedThroughAFollower";
+  private static final String       BOOKMARKED_DATABASE  = "bookmarkedByTheLeader";
+  private static final List<String> TEST_DATABASES       = List.of(NEW_DATABASE, DROPPED_DATABASE, RECREATED_DATABASE, CLOSED_DATABASE,
+      BOOKMARKED_DATABASE);
+  private static final Duration     HTTP_TIMEOUT         = Duration.ofSeconds(30);
 
   private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
 
+  /** The databases the test created are dropped through the leader, and the client is closed whatever that did. */
   @AfterEach
-  void closeHttpClient() {
-    httpClient.close();
+  void dropTheDatabasesAndCloseTheClient() throws Exception {
+    try {
+      final int leaderIndex = findLeaderIndex();
+      if (leaderIndex >= 0)
+        for (final String database : TEST_DATABASES)
+          if (getServer(leaderIndex).isDatabaseOfServer(database))
+            send(leaderIndex, "/server", new JSONObject().put("command", "drop database " + database)).get(30, TimeUnit.SECONDS);
+    } finally {
+      httpClient.close();
+    }
   }
 
   @Override
@@ -91,11 +113,46 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
     final HttpResponse<String> answer = created.get(30, TimeUnit.SECONDS);
     assertThat(answer.statusCode()).as("create database failed: %s", answer.body()).isEqualTo(200);
+    assertBookmarkAppliedOn(answer, followerIndex);
 
     final HttpResponse<String> next = send(followerIndex, "/command/" + NEW_DATABASE,
         new JSONObject().put("language", "sql").put("command", "CREATE DOCUMENT TYPE AfterCreation")).get(30, TimeUnit.SECONDS);
     assertThat(next.statusCode()).as("the request right after the creation, to the same follower, was refused: %s", next.body())
         .isEqualTo(200);
+  }
+
+  /**
+   * The bookmark the issue asks for: the leader answers {@code create database} and {@code drop database} with the
+   * {@code X-ArcadeDB-Commit-Index} it has committed, which is at or past the entry of the command it just ran.
+   */
+  @Test
+  void theLeaderAnswersTheCreationAndTheDropWithTheBookmark() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final HttpResponse<String> created = send(leaderIndex, "/server",
+        new JSONObject().put("command", "create database " + BOOKMARKED_DATABASE)).get(30, TimeUnit.SECONDS);
+    assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
+    final long createdAt = bookmarkOf(created);
+    assertThat(createdAt).as("the leader's answer to create database carries the bookmark").isGreaterThan(0);
+
+    final HttpResponse<String> dropped = send(leaderIndex, "/server",
+        new JSONObject().put("command", "drop database " + BOOKMARKED_DATABASE)).get(30, TimeUnit.SECONDS);
+    assertThat(dropped.statusCode()).as("drop database failed: %s", dropped.body()).isEqualTo(200);
+    assertThat(bookmarkOf(dropped)).as("the leader's answer to drop database carries a bookmark past the creation's")
+        .isGreaterThan(createdAt);
+  }
+
+  /** Not a database command: a command the follower does not forward answers without a bookmark. */
+  @Test
+  void aCommandThatIsNotACreateOrDropCarriesNoBookmark() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final HttpResponse<String> answer = send(leaderIndex, "/server", new JSONObject().put("command", "list databases"))
+        .get(30, TimeUnit.SECONDS);
+    assertThat(answer.statusCode()).isEqualTo(200);
+    assertThat(answer.headers().firstValue(AbstractServerHttpHandler.COMMIT_INDEX_HEADER_NAME)).isEmpty();
   }
 
   /**
@@ -129,8 +186,102 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
     final HttpResponse<String> answer = dropped.get(30, TimeUnit.SECONDS);
     assertThat(answer.statusCode()).as("drop database failed: %s", answer.body()).isEqualTo(200);
+    assertBookmarkAppliedOn(answer, followerIndex);
     assertThat(getServer(followerIndex).existsDatabase(DROPPED_DATABASE))
         .as("the follower that answered the drop must not list the database any more").isFalse();
+  }
+
+  /**
+   * A creation is not answered because a database of that name is on the follower: when the leader dropped the database and
+   * it was created again through a follower that had not applied the drop yet, the follower still holds the OLD copy, and
+   * answering at once would let the client's next request run against it. The wait is for the entry of this creation.
+   */
+  @Test
+  void aRecreationIsAnsweredOnlyOnceTheFollowerAppliedTheDropAndTheNewInstall() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+
+    final HttpResponse<String> created = send(leaderIndex, "/server",
+        new JSONObject().put("command", "create database " + RECREATED_DATABASE)).get(30, TimeUnit.SECONDS);
+    assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
+    final HttpResponse<String> typed = send(leaderIndex, "/command/" + RECREATED_DATABASE,
+        new JSONObject().put("language", "sql").put("command", "CREATE DOCUMENT TYPE OldGeneration")).get(30, TimeUnit.SECONDS);
+    assertThat(typed.statusCode()).as("CREATE DOCUMENT TYPE failed: %s", typed.body()).isEqualTo(200);
+    awaitUntil("the follower holds the first generation of '" + RECREATED_DATABASE + "'",
+        () -> getServer(followerIndex).existsDatabase(RECREATED_DATABASE) && hasType(followerIndex, RECREATED_DATABASE, "OldGeneration"));
+
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread gateHolder = holdApply(followerIndex, RECREATED_DATABASE, release);
+    final CompletableFuture<HttpResponse<String>> recreated;
+    try {
+      final HttpResponse<String> dropped = send(leaderIndex, "/server",
+          new JSONObject().put("command", "drop database " + RECREATED_DATABASE)).get(30, TimeUnit.SECONDS);
+      assertThat(dropped.statusCode()).as("drop database failed: %s", dropped.body()).isEqualTo(200);
+      assertThat(getServer(followerIndex).existsDatabase(RECREATED_DATABASE))
+          .as("the follower has not applied the drop: it still holds the first generation").isTrue();
+
+      recreated = send(followerIndex, "/server", new JSONObject().put("command", "create database " + RECREATED_DATABASE));
+
+      awaitOnServer(leaderIndex, RECREATED_DATABASE, true);
+      awaitAnswerOrLocalWait(recreated);
+      assertThat(recreated.isDone())
+          .as("the follower must not answer the creation while the database it holds is the one that was dropped").isFalse();
+    } finally {
+      release.countDown();
+      gateHolder.join(TimeUnit.SECONDS.toMillis(30));
+    }
+
+    final HttpResponse<String> answer = recreated.get(30, TimeUnit.SECONDS);
+    assertThat(answer.statusCode()).as("create database failed: %s", answer.body()).isEqualTo(200);
+    assertBookmarkAppliedOn(answer, followerIndex);
+    assertThat(hasType(followerIndex, RECREATED_DATABASE, "OldGeneration"))
+        .as("the follower that answered the creation holds the new database, not the dropped one").isFalse();
+  }
+
+  /**
+   * A database the follower closed with {@code close database} is not registered on it, but its files remain and
+   * {@code GET /api/v1/exists} still answers {@code true}. The drop is therefore answered once the follower applied the
+   * entry, not because the database already looked gone.
+   */
+  @Test
+  void aDropOfADatabaseTheFollowerClosedIsAnsweredOnlyOnceTheFollowerAppliedIt() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+
+    final HttpResponse<String> created = send(leaderIndex, "/server",
+        new JSONObject().put("command", "create database " + CLOSED_DATABASE)).get(30, TimeUnit.SECONDS);
+    assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
+    awaitOnServer(followerIndex, CLOSED_DATABASE, true);
+
+    final HttpResponse<String> closed = send(followerIndex, "/server",
+        new JSONObject().put("command", "close database " + CLOSED_DATABASE)).get(30, TimeUnit.SECONDS);
+    assertThat(closed.statusCode()).as("close database failed: %s", closed.body()).isEqualTo(200);
+    assertThat(getServer(followerIndex).existsDatabase(CLOSED_DATABASE)).as("the closed database is not registered").isFalse();
+    assertThat(getServer(followerIndex).isDatabaseOfServer(CLOSED_DATABASE)).as("its files are still the server's").isTrue();
+
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread gateHolder = holdApply(followerIndex, CLOSED_DATABASE, release);
+    final CompletableFuture<HttpResponse<String>> dropped;
+    try {
+      dropped = send(followerIndex, "/server", new JSONObject().put("command", "drop database " + CLOSED_DATABASE));
+
+      awaitOnServer(leaderIndex, CLOSED_DATABASE, false);
+      awaitAnswerOrLocalWait(dropped);
+      assertThat(dropped.isDone()).as("the follower must not answer the drop while the closed database is still on it").isFalse();
+    } finally {
+      release.countDown();
+      gateHolder.join(TimeUnit.SECONDS.toMillis(30));
+    }
+
+    final HttpResponse<String> answer = dropped.get(30, TimeUnit.SECONDS);
+    assertThat(answer.statusCode()).as("drop database failed: %s", answer.body()).isEqualTo(200);
+    assertBookmarkAppliedOn(answer, followerIndex);
+
+    final HttpResponse<String> exists = get(followerIndex, "/exists/" + CLOSED_DATABASE).get(30, TimeUnit.SECONDS);
+    assertThat(new JSONObject(exists.body()).getBoolean("result", true))
+        .as("GET /exists on the follower that answered the drop: %s", exists.body()).isFalse();
   }
 
   /**
@@ -160,11 +311,36 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
   }
 
   private void awaitOnServer(final int serverIndex, final String database, final boolean exists) throws InterruptedException {
+    awaitUntil("database '" + database + "' " + (exists ? "exists" : "is gone") + " on server " + serverIndex,
+        () -> getServer(serverIndex).existsDatabase(database) == exists);
+  }
+
+  private static void awaitUntil(final String what, final BooleanSupplier condition) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 30_000;
-    while (getServer(serverIndex).existsDatabase(database) != exists && System.currentTimeMillis() < deadline)
+    while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline)
       Thread.sleep(50);
-    assertThat(getServer(serverIndex).existsDatabase(database)).as("database '%s' exists on server %d", database, serverIndex)
-        .isEqualTo(exists);
+    assertThat(condition.getAsBoolean()).as(what).isTrue();
+  }
+
+  private boolean hasType(final int serverIndex, final String database, final String typeName) {
+    return getServer(serverIndex).getDatabase(database).getSchema().existsType(typeName);
+  }
+
+  /** The {@code X-ArcadeDB-Commit-Index} of an answer, or {@code -1} when it carries none. */
+  private static long bookmarkOf(final HttpResponse<?> answer) {
+    return answer.headers().firstValueAsLong(AbstractServerHttpHandler.COMMIT_INDEX_HEADER_NAME).orElse(-1L);
+  }
+
+  /**
+   * The answer carries the leader's bookmark, and the server that relayed it has applied everything up to it: the client's next
+   * request to that server finds the change made.
+   */
+  private void assertBookmarkAppliedOn(final HttpResponse<?> answer, final int serverIndex) {
+    final long bookmark = bookmarkOf(answer);
+    assertThat(bookmark).as("the answer carries the leader's X-ArcadeDB-Commit-Index bookmark").isGreaterThan(0);
+    assertThat(getRaftPlugin(serverIndex).getRaftHAServer().getTrustedAppliedIndex())
+        .as("server %d answered with bookmark %d before it applied that index", serverIndex, bookmark)
+        .isGreaterThanOrEqualTo(bookmark);
   }
 
   /**
@@ -189,14 +365,19 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
   }
 
   private CompletableFuture<HttpResponse<String>> send(final int serverIndex, final String path, final JSONObject body) {
-    final HttpRequest request = HttpRequest.newBuilder()
+    return httpClient.sendAsync(requestTo(serverIndex, path).header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(), HttpResponse.BodyHandlers.ofString());
+  }
+
+  private CompletableFuture<HttpResponse<String>> get(final int serverIndex, final String path) {
+    return httpClient.sendAsync(requestTo(serverIndex, path).GET().build(), HttpResponse.BodyHandlers.ofString());
+  }
+
+  private HttpRequest.Builder requestTo(final int serverIndex, final String path) {
+    return HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1" + path))
         .timeout(HTTP_TIMEOUT)
         .header("Authorization", "Basic " + Base64.getEncoder()
-            .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-        .build();
-    return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
   }
 }
