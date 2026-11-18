@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
@@ -48,18 +49,24 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
       // NULL VALUE, RETURN AN EMPTY SET
       return Collections.emptySet();
 
-    if (value instanceof Collection<?>) {
-      return new HashSet<>((Collection<Object>) value);
+    // One item per value under the membership key set() uses, not under Java equals(): [1, 1L, 1.0].asSet() is one item, as
+    // set([1, 1L, 1.0]) is (issue #11774)
+    if (value instanceof Collection<?> collection) {
+      final DistinctValueSet set = new DistinctValueSet();
+      set.addAll(collection);
+      return set;
     } else if (value.getClass().isArray()) {
       // SAME AS asList(): AN ARRAY IS A COLLECTION OF ITS ELEMENTS, NOT A SINGLE ITEM (ISSUE #7027). NEVER NULL FOR
       // AN ARRAY: EVERY ARRAY IS A MultiValue, SO THE HELPER ALWAYS ANSWERS A LIST HERE
-      return new HashSet<>(listReceiverOrNull(value));
+      final DistinctValueSet set = new DistinctValueSet();
+      set.addAll(listReceiverOrNull(value));
+      return set;
     } else if (value instanceof Iterable<?> iterable) {
       value = iterable.iterator();
     }
 
     if (value instanceof Iterator<?>) {
-      final Set<Object> set = new HashSet<>();
+      final Set<Object> set = new DistinctValueSet();
 
       for (final Iterator<Object> iter = (Iterator<Object>) value; iter.hasNext(); )
         set.add(iter.next());

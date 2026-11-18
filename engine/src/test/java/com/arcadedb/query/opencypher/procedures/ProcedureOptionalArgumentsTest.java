@@ -118,7 +118,7 @@ class ProcedureOptionalArgumentsTest extends TestHelper {
   @Test
   void aNumberOfTheWrongTypeIsRefusedNotReplacedByTheDefault() {
     // algo.leiden read 'ten' as "no value" and ran with the default 10 iterations; algo.simRank raised ClassCastException
-    assertThatThrownBy(() -> rows("CALL algo.leiden('R', 'ten') YIELD node RETURN node"))
+    assertThatThrownBy(() -> rows("CALL algo.leiden('R', 'ten') YIELD nodeId RETURN nodeId"))
         .hasStackTraceContaining("algo.leiden(): maxIterations must be a number, got String");
     assertThatThrownBy(() -> rows("MATCH (a:Node {name: 'A'}) CALL algo.randomWalk(a, 2, 'R', 'OUT', 'seed') YIELD path RETURN path"))
         .hasStackTraceContaining("algo.randomWalk(): seed must be a number, got String");
