@@ -195,6 +195,7 @@ public final class LabelReplacements {
    * reads a record, and a path, by RID. A value holding no replacement is answered as it is, so the keys a DISTINCT built
    * before the first replacement, or before this map existed, still compare equal to the ones it builds after.
    */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity says whether the element was replaced: a copy is built only then
   public Object distinctKey(final Object value) {
     if (origins.isEmpty())
       return value;
