@@ -93,6 +93,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -102,6 +103,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -379,6 +382,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   final Object                    applyNotifier         = new Object();
   RaftClusterManager        clusterManager;
   final Object                    recoveryLock          = new Object();
+  // Issue #11921: read-held by every commit published outside the log for its whole length (see runPublication), write-held
+  // by an in-place restart while it replaces the state machine. The publication takes the validation lock of the ledger of
+  // the state machine current when it starts, so it must not span the replacement of that ledger.
+  private final ReentrantReadWriteLock publicationGate   = new ReentrantReadWriteLock();
   volatile boolean                   shutdownRequested     = false;
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
@@ -2518,6 +2525,67 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /**
+   * Runs a commit published outside the log (issue #11921) so that no in-place restart replaces the state machine while it
+   * runs: the publication and every validation it is ordered against then use one ledger. {@code publication} resolves the
+   * state machine itself, under the gate.
+   */
+  <T> T runPublication(final Callable<T> publication) throws Exception {
+    final Lock gate = publicationGate.readLock();
+    gate.lock();
+    try {
+      return publication.call();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Builds the state machine of an in-place restart once the publications in flight on the old one have returned (issue
+   * #11921), waiting up to {@code waitMs} ({@code arcadedb.ha.ratisCloseTimeoutMs} for {@link RatisInPlaceRestart}): one that
+   * is still running after that fails the restart, which counts toward {@code arcadedb.ha.ratisRestartMaxRetries} like a
+   * close that does not finish.
+   */
+  void replaceStateMachineBetweenPublications(final long waitMs) throws IOException, InterruptedException {
+    final Lock gate = publicationGate.writeLock();
+    lockPublicationGateForReplacement(gate, waitMs);
+    try {
+      this.stateMachine = createStateMachine();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Takes the publication gate for a state machine replacement, waiting up to {@code waitMs} ({@code 0} or less: no bound).
+   *
+   * @throws IOException          when a publication is still running after {@code waitMs}
+   * @throws InterruptedException when the wait is interrupted, with the thread's interrupt flag set again
+   */
+  static void lockPublicationGateForReplacement(final Lock gate, final long waitMs) throws IOException, InterruptedException {
+    final boolean locked;
+    try {
+      if (waitMs <= 0) {
+        gate.lockInterruptibly();
+        locked = true;
+      } else
+        locked = gate.tryLock(waitMs, TimeUnit.MILLISECONDS);
+    } catch (final InterruptedException e) {
+      // The throw cleared the flag, and restartRatis reads the flag to tell an abandoned restart from a failed one: without
+      // it an interrupted restart would count toward arcadedb.ha.ratisRestartMaxRetries
+      Thread.currentThread().interrupt();
+      throw e;
+    }
+    if (!locked)
+      throw new IOException("A commit published outside the Raft log was still running after " + waitMs
+          + "ms; not replacing the state machine under it (issue #11921)");
+  }
+
+  /** Whether {@code thread} waits at the publication gate (issue #11921), for tests that must observe the restart there. */
+  boolean isWaitingAtThePublicationGate(final Thread thread) {
+    return publicationGate.hasQueuedThread(thread);
   }
 
   /**

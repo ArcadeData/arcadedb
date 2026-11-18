@@ -27,6 +27,7 @@ import com.arcadedb.engine.MergedEdgeRegistry;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
@@ -4437,6 +4438,15 @@ public class TransactionContext implements Transaction {
       lockLateJoiningFilesInPlace(explicitLockMode);
 
       reserveMergedEdges();
+
+      // #11921: every file lock of this commit is held from here on and no page version has been read yet, which is where an
+      // ordering authority (the Raft leader's page-version ledger) that must see the checks below and the publication as one
+      // step takes its own lock. One volatile read on a standalone database, nothing on a replica.
+      if (isLeader && database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          reservations.beforeVersionChecks();
+      }
 
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
