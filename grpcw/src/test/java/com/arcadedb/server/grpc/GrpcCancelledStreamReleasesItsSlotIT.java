@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import org.junit.jupiter.api.AfterEach;
@@ -48,10 +49,11 @@ import static org.awaitility.Awaitility.await;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
-  private static final String DOCUMENT_TYPE = "Many";
-  private static final String SERIES        = "Samples";
-  private static final int    ROWS          = 20_000;
-  private static final int    SERIES_FIELDS = 24;
+  private static final String DOCUMENT_TYPE  = "Many";
+  private static final String UNCOMMITTED_PAD = "only the transaction has this row";
+  private static final String SERIES          = "Samples";
+  private static final int    ROWS            = 20_000;
+  private static final int    SERIES_FIELDS   = 24;
 
   private ManagedChannel                          channel;
   private ArcadeDbServiceGrpc.ArcadeDbServiceStub stub;
@@ -93,14 +95,15 @@ public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
   @Test
   void aCancelledStreamQueryStopsAndLeavesNoRunningQuery() throws Exception {
     final CancelOnFirstMessage<StreamQueryRequest, QueryResult> client = new CancelOnFirstMessage<>();
-    stub.streamQuery(streamQuery(null), client);
+    stub.streamQuery(streamQuery("SELECT FROM " + DOCUMENT_TYPE, null), client);
 
     assertCancelledStreamIsGone(client);
   }
 
   /**
    * Inside a client-managed transaction the stream runs on the transaction's own thread while the handler waits for it: the
-   * producer reads the same flag, so it has to see the cancel as well.
+   * producer reads the same flag, so it has to see the cancel as well. The first batch must hold a row only the transaction
+   * has, or a stream that ignored the transaction would pass this test on a gRPC worker.
    */
   @Test
   void aCancelledStreamQueryInsideATransactionStopsAndLeavesNoRunningQuery() throws Exception {
@@ -112,13 +115,31 @@ public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
         .setDatabase(getDatabaseName())
         .build();
     try {
+      blocking.executeCommand(ExecuteCommandRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setTransaction(transaction)
+          .setCommand("INSERT INTO " + DOCUMENT_TYPE + " SET i = -1, pad = '" + UNCOMMITTED_PAD + "'")
+          .build());
+
       final CancelOnFirstMessage<StreamQueryRequest, QueryResult> client = new CancelOnFirstMessage<>();
-      stub.streamQuery(streamQuery(transaction), client);
+      stub.streamQuery(streamQuery("SELECT FROM " + DOCUMENT_TYPE + " ORDER BY i", transaction), client);
 
       assertCancelledStreamIsGone(client);
-    } finally {
-      blocking.rollbackTransaction(RollbackTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build());
+      assertThat(client.first.getRecords(0).getPropertiesMap().get("pad").getStringValue())
+          .as("the first batch holds the row only the transaction has: the stream read inside the transaction")
+          .isEqualTo(UNCOMMITTED_PAD);
+    } catch (final Throwable failure) {
+      // A stream that did not stop still holds the transaction's thread and the rollback queues behind it: the rollback is
+      // bounded and its own failure never replaces the one the test reports
+      try {
+        rollback(blocking, transaction);
+      } catch (final RuntimeException e) {
+        failure.addSuppressed(e);
+      }
+      throw failure;
     }
+    rollback(blocking, transaction);
   }
 
   @Test
@@ -136,15 +157,20 @@ public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
     assertCancelledStreamIsGone(client);
   }
 
-  private StreamQueryRequest streamQuery(final TransactionContext transaction) {
+  private StreamQueryRequest streamQuery(final String query, final TransactionContext transaction) {
     final StreamQueryRequest.Builder request = StreamQueryRequest.newBuilder()
         .setDatabase(getDatabaseName())
         .setCredentials(credentials())
-        .setQuery("SELECT FROM " + DOCUMENT_TYPE)
+        .setQuery(query)
         .setBatchSize(10);
     if (transaction != null)
       request.setTransaction(transaction);
     return request.build();
+  }
+
+  private void rollback(final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub blocking, final TransactionContext transaction) {
+    blocking.withDeadlineAfter(10, TimeUnit.SECONDS).rollbackTransaction(
+        RollbackTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build());
   }
 
   /** A series of {@code ROWS} points of {@code SERIES_FIELDS} double fields, a stream of several MB, written in chunks. */
@@ -183,6 +209,8 @@ public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
   private void assertCancelledStreamIsGone(final CancelOnFirstMessage<?, ?> client) throws InterruptedException {
     assertThat(client.firstMessage.await(30, TimeUnit.SECONDS)).as("the stream answered a first batch").isTrue();
     assertThat(client.closed.await(30, TimeUnit.SECONDS)).as("the client saw its call end").isTrue();
+    assertThat(client.terminal.getCode()).as("the call ended by the client's cancel, not by the server finishing or failing")
+        .isEqualTo(Status.Code.CANCELLED);
 
     await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(getServer(0).getRunningQueries().getRunning())
         .as("the cancelled stream is still running on the server, holding its admission slot").isEmpty());
@@ -196,10 +224,16 @@ public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
     return DatabaseCredentials.newBuilder().setUsername("root").setPassword(DEFAULT_PASSWORD_FOR_TESTS).build();
   }
 
-  /** Cancels its call as soon as the first message arrives and reports when it saw that message and when the call ended. */
+  /**
+   * Cancels its call as soon as the first message arrives and keeps that message, the status the call ended with, and when it
+   * saw each.
+   */
   private static final class CancelOnFirstMessage<ReqT, RespT> implements ClientResponseObserver<ReqT, RespT> {
     private final CountDownLatch firstMessage = new CountDownLatch(1);
     private final CountDownLatch closed       = new CountDownLatch(1);
+
+    private volatile RespT  first;
+    private volatile Status terminal;
 
     private ClientCallStreamObserver<ReqT> call;
 
@@ -210,17 +244,21 @@ public class GrpcCancelledStreamReleasesItsSlotIT extends BaseGrpcServerTest {
 
     @Override
     public void onNext(final RespT value) {
+      if (first == null)
+        first = value;
       firstMessage.countDown();
       call.cancel("the client is done", null);
     }
 
     @Override
     public void onError(final Throwable t) {
+      terminal = Status.fromThrowable(t);
       closed.countDown();
     }
 
     @Override
     public void onCompleted() {
+      terminal = Status.OK;
       closed.countDown();
     }
   }
