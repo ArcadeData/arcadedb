@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongHashSet;
+import com.arcadedb.utility.ScanPressureReporter;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Contains;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -394,8 +395,15 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     public void close() {
       if (!closed) {
         closed = true;
-        if (cursor != null)
-          cursor.close();
+        try {
+          if (cursor != null)
+            cursor.close();
+        } finally {
+          // #11639: A SCAN OF THE TYPE HOLDS THE BATCH IT READ AHEAD, TAKEN FROM THE JVM-WIDE POOL OF READ-AHEAD: GIVEN BACK NOW, NOT
+          // WHEN THE GARBAGE COLLECTOR FINDS A SCAN THE CALLER STOPPED BEFORE ITS END. THE SCAN IS NOT AutoCloseable
+          if (typeScan instanceof ScanPressureReporter reporter)
+            reporter.releaseReadAhead();
+        }
       }
     }
   }
