@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Database;
@@ -6310,19 +6311,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    // HA-forwarded rows are non-element projections; recover the type from the @type property.
+    // HA-forwarded rows are non-element projections; recover the type from the @type property. Not for a row with a column that
+    // holds a record (SELECT @rid, @type, @this): that row is a projection the query made, which a forwarded record never is, and
+    // typing it turned it into a record whose only property was the column (issue #12196)
     if (builder.getType().isEmpty()) {
       final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
-      if (typeProperty instanceof String typeName && !typeName.isEmpty())
+      if (typeProperty instanceof String typeName && !typeName.isEmpty() && !holdsRecordColumn(result))
         builder.setType(typeName);
     }
+
+    // Issue #12196: a Cypher row that returns a node or a relationship (RETURN n) is the element plus its alias column. It goes out
+    // as the element, its own properties, as the HTTP serializer sends it: the alias column alone made a record whose only
+    // property was "n"
+    final Document projectedElement = result.isElement()
+        && result.getMetadata(FinalProjectionStep.PROJECTION_NAME_METADATA) != null ? result.toElement() : null;
 
     // Iterate over ALL properties from the Result, including aliases.
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
     final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
-    for (String propertyName : result.getPropertyNames()) {
-      final Object value = result.getProperty(propertyName);
+    for (String propertyName : projectedElement != null ? projectedElement.getPropertyNames() : result.getPropertyNames()) {
+      final Object value = projectedElement != null ? projectedElement.get(propertyName) : result.getProperty(propertyName);
 
       if (debug)
         LogManager.instance()
@@ -6376,6 +6385,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.getRid(), builder.getType(), builder.getPropertiesCount());
 
     return builder.build();
+  }
+
+  /**
+   * Whether a column of {@code result} holds a record, a document with an identity (issue #12196). It walks the columns, but is asked
+   * only for a row with no type of its own that has a String {@code @type} column: a plain projection row never reaches it.
+   */
+  private static boolean holdsRecordColumn(final Result result) {
+    for (final String name : result.getPropertyNames())
+      if (result.getProperty(name) instanceof Document document && document.getIdentity() != null)
+        return true;
+    return false;
   }
 
   private static boolean isExcluded(final Set<String> excluded, final String name) {
