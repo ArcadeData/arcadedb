@@ -64,7 +64,7 @@ import java.util.concurrent.TimeUnit;
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 @Warmup(iterations = 3, time = 1, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 3, time = 1, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
 @Fork(value = 1, jvmArgs = { "-Xms1G", "-Xmx1G", "--enable-native-access=ALL-UNNAMED", "--add-modules", "jdk.incubator.vector" })
 public class ReadPathJMHBenchmark {
   private static final String DB_PATH = "target/databases/read-path-benchmark";
