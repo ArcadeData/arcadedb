@@ -76,6 +76,7 @@ import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.ProductCountStep;
+import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
@@ -503,6 +504,10 @@ public class CypherExecutionPlan {
           guard.check();
           materializedResults.add((ResultInternal) resultSet.next());
         }
+        // A row produced before a later row's label write still holds what that write deleted: answered with the live
+        // records instead, and a DISTINCT that told the original and the replacement apart answers them once (issue #10614)
+        if (LabelReplacements.redirectRows(context, materializedResults))
+          ProjectReturnStep.removeDuplicatesOfDistinct(statement.getReturnClause(), materializedResults);
       } finally {
         // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
         // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
@@ -1266,11 +1271,18 @@ public class CypherExecutionPlan {
 
       if (rootStep != null) {
         try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
+          final List<Result> kept = new ArrayList<>();
           while (resultSet.hasNext()) {
             final Result row = resultSet.next();
             if (keepRows)
-              results.add(row);
+              kept.add(row);
           }
+          // A row produced before a later row's label write is answered with the live records, as execute() answers it (issue
+          // #10614)
+          if (LabelReplacements.redirectRows(context, kept))
+            ProjectReturnStep.removeDuplicatesOfDistinct(statement.getReturnClause(), kept);
+          for (final Result row : kept)
+            results.add(row);
         } finally {
           // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
           LabelReplacements.endOfStatement(context);

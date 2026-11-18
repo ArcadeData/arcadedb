@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -167,6 +168,27 @@ public final class LabelReplacements {
   }
 
   /**
+   * Points every row a statement is about to answer at the live records, when the statement replaced any (issue #10614).
+   * A row leaves the write step as soon as it is written, so a LATER row's label write can delete a record it still holds:
+   * a row waiting in a barrier further down (an ORDER BY, a DISTINCT, the drain of the statement itself) kept the deleted
+   * vertex and the deleted re-attached edges of its path, and the client was answered with records that no longer exist -
+   * the Bolt serializer failed on them with a {@code RecordNotFoundException}. Called once the statement has produced every
+   * row and before {@link #endOfStatement}, while the map still answers for the replaced RIDs. Free for a statement that
+   * replaced nothing: no map was ever created, or it is empty.
+   *
+   * @return whether any row was changed: two rows a DISTINCT told apart by the original and the replacement of one node may
+   * now be the same row
+   */
+  public static boolean redirectRows(final CommandContext context, final Iterable<? extends Result> rows) {
+    if (context == null || !(context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements replacements) || replacements.isEmpty())
+      return false;
+    boolean moved = false;
+    for (final Result row : rows)
+      moved |= replacements.redirect(row);
+    return moved;
+  }
+
+  /**
    * Makes a nested plan's context answer {@link #of} with the enclosing statement's map, so a label write inside a
    * {@code CALL { }} body is seen by the next outer row even though the body is re-planned for each one.
    */
@@ -301,10 +323,13 @@ public final class LabelReplacements {
    * step-wide. That is a deliberate trade: a clause with no label write at all pays a single
    * {@link Map#isEmpty()} check per row and never walks anything, and correctness after a write is not something a
    * large {@code collect()} list should be able to opt out of.
+   *
+   * @return whether any value of the row was replaced by its live form
    */
-  public void redirect(final Result row) {
+  public boolean redirect(final Result row) {
     if (row == null || vertices.isEmpty())
-      return;
+      return false;
+    boolean moved = false;
     // The ResultInternal cast below is unguarded where SubqueryStep.refreshDocumentBindings guards its own, and
     // deliberately so rather than by oversight. Both plan shapes feed the write steps ResultInternal rows -
     // the optimizer is not disabled by a REMOVE/SET after the MATCH, but its NodeByLabelScan/ExpandAll chain
@@ -316,9 +341,22 @@ public final class LabelReplacements {
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
       final Object live = redirectValue(value);
-      if (live != value)
+      if (live != value) {
         ((ResultInternal) row).setProperty(name, live);
+        moved = true;
+      }
     }
+    // A RETURN of a single node or relationship also carries it as the row's element, which is what a client is answered
+    // with (the HTTP JSON flattens the row through it): it follows the move too (issue #10614)
+    if (row.isElement() && row instanceof ResultInternal internal) {
+      final Document element = internal.getElement().orElse(null);
+      final Object live = redirectValue(element);
+      if (live != element) {
+        internal.setElement((Document) live);
+        moved = true;
+      }
+    }
+    return moved;
   }
 
   /**
