@@ -85,7 +85,7 @@ class Issue11639FilterByTypeScanReleaseTest {
     final GraphTraversal<Vertex, Vertex> traversal = graph.traversal().V().hasLabel("Big");
     assertThat(filterByTypeSteps(graph.traversal().V().hasLabel("Big"))).isEqualTo(1);
 
-    assertStoppedHalfWayScanIsGivenBackByClose(traversal);
+    assertScanIsGivenBack(traversal, 1, GraphTraversal::close);
   }
 
   @Test
@@ -94,7 +94,7 @@ class Issue11639FilterByTypeScanReleaseTest {
     final GraphTraversal<Vertex, Vertex> traversal = graph.traversal().V().hasLabel(bucketLabel);
     assertThat(filterByTypeSteps(graph.traversal().V().hasLabel(bucketLabel))).isEqualTo(1);
 
-    assertStoppedHalfWayScanIsGivenBackByClose(traversal);
+    assertScanIsGivenBack(traversal, 1, GraphTraversal::close);
   }
 
   @Test
@@ -102,7 +102,7 @@ class Issue11639FilterByTypeScanReleaseTest {
     final GraphTraversal<Edge, Edge> traversal = graph.traversal().E().hasLabel("Link");
     assertThat(filterByTypeSteps(graph.traversal().E().hasLabel("Link"))).isEqualTo(1);
 
-    assertStoppedHalfWayScanIsGivenBackByClose(traversal);
+    assertScanIsGivenBack(traversal, 1, GraphTraversal::close);
   }
 
   @Test
@@ -110,18 +110,10 @@ class Issue11639FilterByTypeScanReleaseTest {
     // MID-TRAVERSAL V() OPENS ONE SCAN OF 'Big' PER INCOMING TRAVERSER: THE FIRST ONE IS READ TO THE END, THE SECOND ONE STOPS AFTER
     // ONE ELEMENT. (THE REWRITE ONLY HAPPENS FOR THE FIRST GraphStep FOLLOWED BY hasLabel() OF A TRAVERSAL, HENCE inject() IN FRONT)
     assertThat(filterByTypeSteps(graph.traversal().inject(1, 2, 3).V().hasLabel("Big"))).isEqualTo(1);
-    final long before = ScanReadAheadBudget.getReservedBytes();
     final GraphTraversal<Integer, Vertex> traversal = graph.traversal().inject(1, 2, 3).V().hasLabel("Big");
 
-    for (int i = 0; i < RECORDS; i++)
-      assertThat(traversal.next()).isNotNull();
-    assertThat(traversal.next()).as("the first element of the scan the second incoming traverser opened").isNotNull();
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("the second scan holds the batch it read ahead").isGreaterThan(before);
-
-    traversal.close();
-
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("closing the traversal gives the read-ahead of its scan back")
-        .isLessThanOrEqualTo(before);
+    // THE RECORDS OF THE FIRST SCAN, AND THE FIRST OF THE SECOND
+    assertScanIsGivenBack(traversal, RECORDS + 1, GraphTraversal::close);
   }
 
   @Test
@@ -133,21 +125,24 @@ class Issue11639FilterByTypeScanReleaseTest {
     traversal.asAdmin().applyStrategies();
     graph.getDatabase().getSchema().dropIndex("Big[k]");
 
-    assertStoppedHalfWayScanIsGivenBackByClose(traversal);
+    assertScanIsGivenBack(traversal, 1, GraphTraversal::close);
   }
 
   @Test
-  void aScanIsGivenBackWhenTheRunningTraversalIsReset() {
-    final long before = ScanReadAheadBudget.getReservedBytes();
-    final GraphTraversal<Vertex, Vertex> traversal = graph.traversal().V().hasLabel("Big");
+  void aScanIsGivenBackWhenTheRunningTraversalIsReset() throws Exception {
+    // A RESET DROPS THE SCAN IN HAND: ITS BATCH GOES BACK TO THE POOL
+    assertScanIsGivenBack(graph.traversal().V().hasLabel("Big"), 1, traversal -> traversal.asAdmin().reset());
+  }
 
-    assertThat(traversal.next()).isNotNull();
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("the scan holds the batch it read ahead").isGreaterThan(before);
+  @Test
+  void aTypeScanOfTheIndexStepIsGivenBackWhenTheRunningTraversalIsReset() throws Exception {
+    graph.getDatabase().getSchema().getType("Big").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "k");
+    final GraphTraversal<Vertex, Vertex> traversal = graph.traversal().V().hasLabel("Big").has("k", P.gte(0));
+    traversal.asAdmin().applyStrategies();
+    assertThat(traversal.asAdmin().getSteps().stream().anyMatch(step -> step instanceof ArcadeFilterByIndexStep)).isTrue();
+    graph.getDatabase().getSchema().dropIndex("Big[k]");
 
-    traversal.asAdmin().reset();
-
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("a reset drops the scan: its batch goes back to the pool")
-        .isLessThanOrEqualTo(before);
+    assertScanIsGivenBack(traversal, 1, t -> t.asAdmin().reset());
   }
 
   @Test
@@ -181,21 +176,33 @@ class Issue11639FilterByTypeScanReleaseTest {
     assertThat(ScanReadAheadBudget.getReservedBytes()).isLessThanOrEqualTo(before);
   }
 
+  /** What the caller does with a traversal whose scan it stopped before the end. */
+  @FunctionalInterface
+  private interface Release {
+    void run(GraphTraversal<?, ?> traversal) throws Exception;
+  }
+
   /**
-   * Reads one element of the traversal, which leaves the scan behind it holding a batch, closes the traversal and checks that the
-   * batch went back to the pool without the garbage collector.
+   * Reads {@code elements} of the traversal, which leaves the scan behind them holding a batch, lets go of the traversal and checks
+   * that the batch went back to the pool, without the garbage collector.
    */
-  private static void assertStoppedHalfWayScanIsGivenBackByClose(final GraphTraversal<?, ?> traversal) throws Exception {
+  private static void assertScanIsGivenBack(final GraphTraversal<?, ?> traversal, final int elements, final Release release)
+      throws Exception {
     final long before = ScanReadAheadBudget.getReservedBytes();
 
-    assertThat(traversal.next()).isNotNull();
-    // NOT VACUOUS: THE SCAN HOLDS THE BATCH IT READ AHEAD BEFORE IT IS CLOSED
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("the scan holds the batch it read ahead").isGreaterThan(before);
+    try {
+      for (int i = 0; i < elements; i++)
+        assertThat(traversal.next()).isNotNull();
+      // NOT VACUOUS: THE SCAN HOLDS THE BATCH IT READ AHEAD BEFORE THE TRAVERSAL IS LET GO
+      assertThat(ScanReadAheadBudget.getReservedBytes()).as("the scan holds the batch it read ahead").isGreaterThan(before);
 
-    traversal.close();
+      release.run(traversal);
+    } finally {
+      // A FAILED ASSERTION ABOVE MUST NOT LEAVE THE SCAN HOLDING A BATCH FOR THE TESTS AFTER THIS ONE
+      traversal.close();
+    }
 
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("closing the traversal gives the read-ahead of its scan back")
-        .isLessThanOrEqualTo(before);
+    assertThat(ScanReadAheadBudget.getReservedBytes()).as("the read-ahead of the scan went back to the pool").isLessThanOrEqualTo(before);
   }
 
   private static int filterByTypeSteps(final GraphTraversal<?, ?> traversal) {
