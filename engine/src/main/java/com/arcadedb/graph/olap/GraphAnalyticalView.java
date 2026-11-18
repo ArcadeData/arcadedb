@@ -1377,7 +1377,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
     if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
-      dispatchTypeChangeRebuild("vertex type '" + name + "' joined the view's types with records its CSR does not hold");
+      dispatchTypeChangeRebuild("vertex type '" + name + "' joined the view's types with records its CSR does not hold", null);
     return holds;
   }
 
@@ -1400,15 +1400,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the view already answers as
    * the check found.
    *
-   * @param change what happened to the view's types, for the log
+   * @param change      what happened to the view's types, for the log
+   * @param stillNeeded asked under the monitor when the task runs: whether the change still holds for the snapshot the view has
+   *                    by then, or null when it does by itself. A rebuild that published in between took the change in
    */
-  private void dispatchTypeChangeRebuild(final String change) {
+  private void dispatchTypeChangeRebuild(final String change, final BooleanSupplier stillNeeded) {
     inFlightTasks.incrementAndGet();
     try {
       getExecutor().execute(() -> {
         try {
           if (!shutDown)
-            onTypeChange(change);
+            onTypeChange(change, stillNeeded);
         } finally {
           taskCompleted();
           DatabaseContext.INSTANCE.removeCurrentThreadContexts();
@@ -1425,7 +1427,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * {@link #holdsJoinedVertexType} and {@link #holdsJoinedEdgeTypes}), or an edge type its CSR holds left it (see
    * {@link #holdsOnlyCoveredEdgeTypes}).
    */
-  private synchronized void onTypeChange(final String change) {
+  synchronized void onTypeChange(final String change, final BooleanSupplier stillNeeded) {
+    // A rebuild (a REBUILD of an OFF view, or one that ran for another reason) may have published since the check that found the
+    // change: marking the snapshot it published STALE would put out of service a view that was just repaired
+    if (stillNeeded != null && !stillNeeded.getAsBoolean())
+      return;
     LogManager.instance().log(this, Level.INFO, "GraphAnalyticalView '%s': %s; %s", name, change,
         updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
     if (updateMode == UpdateMode.OFF) {
@@ -1583,7 +1589,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     // Two threads missing the cache at once compute the same verdict; only the one that publishes it dispatches the rebuild
     if (joinedEdgeCoverage.compareAndSet(cached, new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null)) && unheld != null)
-      dispatchTypeChangeRebuild("edge type '" + unheld + "' joined the view's types with records its CSR does not hold");
+      dispatchTypeChangeRebuild("edge type '" + unheld + "' joined the view's types with records its CSR does not hold", null);
     return unheld == null;
   }
 
@@ -1638,8 +1644,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
     if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
       dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
-          + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)");
+          + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)",
+          this::holdsLeftEdgeSlice);
     return left == null;
+  }
+
+  /**
+   * Whether the snapshot the view holds NOW has an edge slice its types no longer cover, decided afresh and with no side effect:
+   * what a dispatched rebuild asks under the monitor, to find out whether a rebuild that published since has taken the change in.
+   */
+  boolean holdsLeftEdgeSlice() {
+    final Snapshot snap = snapshot;
+    if (snap == null)
+      return false;
+    return firstLeftEdgeSlice(snap.csrPerType.keySet()) != null
+        || (snap.overlay != null && firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes()) != null);
   }
 
   /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */

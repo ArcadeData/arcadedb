@@ -24,6 +24,7 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,11 +60,26 @@ class Issue12039GavRenamedEdgeSubTypeTest extends TestHelper {
     }
     assertThat(walkedOut("F")).isEqualTo(3L);
 
-    database.command("sql", "ALTER TYPE F NAME FR").close();
+    // THE REBUILD THE RENAME STARTS IS HELD AT ITS SCAN: THE VIEW STILL HOLDS THE SLICE UNDER THE OLD NAME, AND IS ASKED WITH IT
+    final CountDownLatch gate = new CountDownLatch(1);
+    view.setBeforeBuildScanForTest(() -> {
+      try {
+        gate.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    try {
+      database.command("sql", "ALTER TYPE F NAME FR").close();
 
-    assertThat(walkedOut("FR")).isEqualTo(3L);
-    assertThat(count("MATCH ()-[e:FR]->() RETURN count(*) AS c")).isEqualTo(3L);
-    assertThat(count("MATCH ()-[e:FR]->() RETURN sum(1) AS c")).isEqualTo(3L);
+      assertThat(view.isReady()).as("the CSR holds F's edges under a name that is no longer a type").isFalse();
+      assertThat(walkedOut("FR")).isEqualTo(3L);
+      assertThat(count("MATCH ()-[e:FR]->() RETURN count(*) AS c")).isEqualTo(3L);
+      assertThat(count("MATCH ()-[e:FR]->() RETURN sum(1) AS c")).isEqualTo(3L);
+    } finally {
+      gate.countDown();
+      view.setBeforeBuildScanForTest(null);
+    }
 
     awaitServed(view);
     assertThat(walkedOut("FR")).isEqualTo(3L);

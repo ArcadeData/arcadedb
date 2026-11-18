@@ -64,7 +64,8 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
 
     database.command("sql", change).close();
 
-    assertThat(sqlCount("SELECT count(*) AS c FROM E0")).isZero();
+    // count(@rid), not count(*): the record scan is the reference, count(*) reads a counter
+    assertThat(sqlCount("SELECT count(@rid) AS c FROM E0")).isZero();
     assertThat(count(SUM)).isZero();
     assertThat(count(COUNT)).isZero();
 
@@ -149,6 +150,29 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
     Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
     assertThat(view.getEdgeCount()).isEqualTo(edgesOfE0AndItsSubTypes);
     assertThat(count(CHAIN_COUNT)).isEqualTo(edgesOfE0AndItsSubTypes);
+  }
+
+  /**
+   * The check that finds a slice left behind hands the change to the build executor, and a REBUILD of an OFF view can publish
+   * before that task runs: it must not mark the snapshot the rebuild published STALE, which would take a repaired view out of
+   * service until the next rebuild.
+   */
+  @Test
+  void aTypeChangeFoundBeforeARebuildDoesNotMarkTheRebuiltViewStale() {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("OFF");
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    assertThat(view.holdsLeftEdgeSlice()).as("the CSR still holds E1's slice").isTrue();
+
+    database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW G").close();
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.holdsLeftEdgeSlice()).as("the rebuilt snapshot holds no slice of E1").isFalse();
+
+    // THE TASK OF A CHECK MADE BEFORE THE REBUILD RUNS AFTER IT
+    view.onTypeChange("a check made before the rebuild", view::holdsLeftEdgeSlice);
+
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(view.isReady()).isTrue();
+    assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
   }
 
   /** E0 and its sub-type E1, 3 edges each, in the base CSR of a view over E0 (the table 2 of the issue). */
