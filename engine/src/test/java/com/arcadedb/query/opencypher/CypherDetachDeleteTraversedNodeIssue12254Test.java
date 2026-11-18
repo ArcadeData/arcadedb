@@ -54,6 +54,21 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
     assertThat(countVertices()).isEqualTo(FAN_OUT + 1);
   }
 
+  private void createFan(final int fanOut) {
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("F");
+    database.transaction(() -> {
+      database.command("opencypher", "UNWIND range(0, " + fanOut + ") AS i CREATE (:V {k: i})");
+      database.command("opencypher", "MATCH (a:V {k: 0}), (b:V) WHERE b.k > 0 CREATE (a)-[:F]->(b)");
+    });
+  }
+
+  private long countEdges() {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM F")) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
   private long countVertices() {
     try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V")) {
       return rs.next().<Number>getProperty("c").longValue();
@@ -289,6 +304,26 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
     }
   }
 
+  /**
+   * The relationship deleted is an entry of the edge list the first MATCH is still walking, read again by the second MATCH
+   * for every row of the first: reading the rows first is what keeps all 50 x 50 of them (the streaming path answered 100).
+   * A delete that names only the relationships of its own segment is streaming only while no earlier walk is open.
+   */
+  @Test
+  void relationshipDeletedBehindAnEarlierOpenWalkKeepsEveryRow() {
+    createFan(50);
+    assertThat(rowsOf("MATCH (a:V {k: 0})-[:F]->(b) WITH a MATCH (a)-[s:F]->(c) DETACH DELETE s RETURN 1 AS one")).isEqualTo(2500);
+    assertThat(countEdges()).isZero();
+  }
+
+  /** A WITH that sorts reads the walk to the end, like one that aggregates: what follows it is decided on its own. */
+  @Test
+  void deleteAfterASortingWithDeletesEveryMatchedNode() {
+    createFan();
+    rowsOf("MATCH (a:V {k: 0})-[r]->(b) WITH a, b ORDER BY b.k DETACH DELETE a, b");
+    assertThat(countVertices()).isZero();
+  }
+
   /** Deleting the matched relationship itself never disturbs the walk: it stays on the streaming path. */
   @Test
   void relationshipOnlyDetachDeleteKeepsStreaming() {
@@ -327,6 +362,7 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
     rowsOf("MATCH (a:V {k: 0})-[r]->(b) DELETE r");
     assertThat(countVertices()).isEqualTo(FAN_OUT + 1);
+    assertThat(countEdges()).isZero();
   }
 
   /** An aggregating WITH drains the walk before it emits its first row: what follows it streams again. */

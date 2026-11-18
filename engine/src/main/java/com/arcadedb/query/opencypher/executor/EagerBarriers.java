@@ -194,8 +194,11 @@ final class EagerBarriers {
    * <p>
    * What stays streaming: a DELETE without DETACH (it refuses a node that still has a relationship, until the last row), and
    * a DETACH DELETE whose every target is a relationship variable of the segment's own patterns, which removes only the
-   * relationship the walk is standing on (the same thing a plain {@code DELETE r} does). The second is decided on the segment
-   * alone: a relationship variable carried across a WITH is no longer known as one and is read first.
+   * relationship the walk is standing on, the same thing a plain {@code DELETE r} does. It holds only while no earlier walk is
+   * open: a relationship the segment deletes can be an entry of an edge list an earlier segment is still reading ({@code
+   * MATCH (a)-[]->() WITH a MATCH (a)-[s]->() DETACH DELETE s}), so it is read first then, and so is one carried across a WITH,
+   * which is no longer known as a relationship variable. What a streaming delete of a relationship does not cover, and a plain
+   * {@code DELETE r} does not either, is a later expansion of the same edge list that starts after the delete (issue #12521).
    *
    * @param segmentMatchClauses the MATCH clause(s) of the segment feeding the DELETE (the ones since the last WITH)
    * @param walkedBefore        true when an earlier segment matched a relationship pattern and no aggregating WITH drained it
@@ -203,7 +206,11 @@ final class EagerBarriers {
    */
   static boolean detachDeleteNeedsEagerRead(final DeleteClause deleteClause, final List<MatchClause> segmentMatchClauses,
       final boolean walkedBefore) {
-    return deleteClause.isDetach() && !deleteClause.isEmpty() && relationshipsWalked(segmentMatchClauses, walkedBefore)
+    if (!deleteClause.isDetach() || deleteClause.isEmpty())
+      return false;
+    if (walkedBefore)
+      return true;
+    return MatchClause.hasRelationshipPatterns(segmentMatchClauses)
         && !deletesOnlyMatchedRelationships(deleteClause, segmentMatchClauses);
   }
 
@@ -218,13 +225,14 @@ final class EagerBarriers {
 
   /**
    * Carries the walk of the relationship patterns across a WITH that closes the segment {@code closingSegment}: a WITH that
-   * forwards rows one at a time leaves the walk behind it open, and an aggregating WITH reads it to the end before it emits its
-   * first row, which closes it for everything read before it (the same rule as the #7171 barrier). Call it before
-   * {@link #closeMatchSegment} clears the segment.
+   * forwards rows one at a time leaves the walk behind it open, and a WITH that aggregates or sorts reads it to the end before
+   * it emits its first row, which closes it for everything read before it (the same two rules as the #7171 barrier). Call it
+   * before {@link #closeMatchSegment} clears the segment.
    */
   static boolean relationshipsWalkedAfter(final WithClause withClause, final List<MatchClause> closingSegment,
       final boolean walkedBefore) {
-    return !withClause.hasAggregations() && relationshipsWalked(closingSegment, walkedBefore);
+    return !withClause.hasAggregations() && withClause.getOrderByClause() == null
+        && relationshipsWalked(closingSegment, walkedBefore);
   }
 
   /** Whether every target of the DELETE is, by its plain name, a relationship variable bound by the given MATCH clause(s). */
