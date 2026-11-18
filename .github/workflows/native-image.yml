@@ -711,3 +711,34 @@ jobs:
               "arcadedata/arcadedb:${c}-native-amd64" \
               "arcadedata/arcadedb:${c}-native-arm64"
           done
+
+  # Starts the release benchmark in ArcadeData/arcadedb-perf-infra (#12431). That workflow runs the bench and LDBC
+  # against `arcadedata/arcadedb:<tag>` and `arcadedata/arcadedb:<tag>-native`, so it is dispatched only once both
+  # exist: the JVM image is pushed by mvn-release.yml before the tag, and the native manifest by the job above. A
+  # published release only, never a recovery dispatch (`attach_to_release`), which republishes images of a release
+  # whose benchmark already ran, and never a prerelease. The benchmark is not part of the release: a missing token
+  # or a refused dispatch is a warning, and the benchmark can still be started by hand from the infra repo
+  # (workflow_dispatch with `tag`).
+  perf-benchmark:
+    needs: manifest
+    if: ${{ github.event_name == 'release' && !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the release benchmark
+        env:
+          # fine-grained token, Contents: read and write on ArcadeData/arcadedb-perf-infra only (repository_dispatch)
+          GH_TOKEN: ${{ secrets.PERF_DISPATCH_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::PERF_DISPATCH_TOKEN is not set - the release benchmark of ${TAG} was not started"
+            exit 0
+          fi
+          payload="$(jq -n --arg tag "${TAG}" '{event_type: "arcadedb-release", client_payload: {tag: $tag}}')"
+          if gh api --method POST repos/ArcadeData/arcadedb-perf-infra/dispatches --input - <<< "${payload}"; then
+            echo "[perf] release benchmark of ${TAG} dispatched"
+          else
+            echo "::warning::the release benchmark of ${TAG} could not be dispatched - start it by hand from ArcadeData/arcadedb-perf-infra"
+          fi
