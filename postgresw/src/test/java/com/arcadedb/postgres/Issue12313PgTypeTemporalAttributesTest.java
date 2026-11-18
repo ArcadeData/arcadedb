@@ -65,7 +65,9 @@ class Issue12313PgTypeTemporalAttributesTest {
       "1000|_bool|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1001|_bytea|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1002|_char|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
+      "1003|_name|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1005|_int2|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
+      "1006|_int2vector|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1007|_int4|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1009|_text|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1014|_bpchar|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
@@ -73,6 +75,7 @@ class Issue12313PgTypeTemporalAttributesTest {
       "1016|_int8|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
       "1021|_float4|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1022|_float8|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
+      "1028|_oid|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1042|bpchar|-1|f|S|f|i|x|bpcharin|bpcharout|bpcharrecv|bpcharsend",
       "1043|varchar|-1|f|S|f|i|x|varcharin|varcharout|varcharrecv|varcharsend",
       "1082|date|4|t|D|f|i|p|date_in|date_out|date_recv|date_send",
@@ -80,12 +83,17 @@ class Issue12313PgTypeTemporalAttributesTest {
       "1114|timestamp|8|t|D|f|d|p|timestamp_in|timestamp_out|timestamp_recv|timestamp_send",
       "1115|_timestamp|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
       "1182|_date|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
+      "1183|_time|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
       "1184|timestamptz|8|t|D|t|d|p|timestamptz_in|timestamptz_out|timestamptz_recv|timestamptz_send",
+      "1185|_timestamptz|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
       "1186|interval|16|f|T|t|d|p|interval_in|interval_out|interval_recv|interval_send",
+      "1187|_interval|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
       "1231|_numeric|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send",
       "1266|timetz|12|f|D|f|d|p|timetz_in|timetz_out|timetz_recv|timetz_send",
+      "1270|_timetz|-1|f|A|f|d|x|array_in|array_out|array_recv|array_send",
       "1700|numeric|-1|f|N|f|i|m|numeric_in|numeric_out|numeric_recv|numeric_send",
-      "3802|jsonb|-1|f|U|f|i|x|jsonb_in|jsonb_out|jsonb_recv|jsonb_send");
+      "3802|jsonb|-1|f|U|f|i|x|jsonb_in|jsonb_out|jsonb_recv|jsonb_send",
+      "3807|_jsonb|-1|f|A|f|i|x|array_in|array_out|array_recv|array_send");
 
   @Test
   void theRowsTheIssueNamesAnswerWhatPostgreSQL16Answers() {
