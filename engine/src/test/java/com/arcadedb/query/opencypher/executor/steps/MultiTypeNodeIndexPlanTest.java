@@ -166,9 +166,12 @@ class MultiTypeNodeIndexPlanTest extends TestHelper {
     });
 
     assertThat(MultiTypeNodeIndexPlan.of(database.getSchema(), List.of(), false, pinned("id", 1L))).isNotNull();
-    assertThat(MultiTypeNodeIndexPlan.of(database.getSchema(), List.of(), false, pinned("id", "1"))).as("the text of a number").isNull();
+    // an index answers the pattern, but not with these values: told apart from no index at all, which no row can change
+    assertThat(MultiTypeNodeIndexPlan.of(database.getSchema(), List.of(), false, pinned("id", "1"))).as("the text of a number")
+        .isSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
     assertThat(MultiTypeNodeIndexPlan.of(database.getSchema(), List.of(), false, pinned("id", 1.0d))).as("a floating value for an integer key")
-        .isNull();
+        .isSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
+    assertThat(MultiTypeNodeIndexPlan.of(database.getSchema(), List.of(), false, pinned("other", 1L))).as("a property no index is on").isNull();
   }
 
   @Test

@@ -28,6 +28,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -400,6 +401,31 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
         .contains("Entity[uuid]");
     assertThat(uuidsOf(database, "UNWIND $keys AS k MATCH (n {uuid: k}) RETURN n.uuid AS uuid", params))
         .containsExactlyInAnyOrder("entity-1", "other-1", "plain-1", "mid-1");
+  }
+
+  @Test
+  void aRowThatCannotBeSoughtDoesNotLockTheRowsAfterItOutOfTheIndex() {
+    buildMain(database, true);
+
+    // the first row is a null, the second a value an index keyed by strings cannot be asked with, the third a key: the walk
+    // that answers the first rows is not cached for the rows after them, which are answered by the index
+    final Map<String, Object> params = new HashMap<>();
+    params.put("keys", Arrays.asList(null, 1.5d, "entity-1", "other-1"));
+    final String inline = "UNWIND $keys AS k MATCH (n {uuid: k}) RETURN n.uuid AS uuid";
+    final String where = "UNWIND $keys AS k MATCH (n) WHERE n.uuid = k RETURN n.uuid AS uuid";
+
+    for (final String statement : List.of(inline, where)) {
+      assertThat(profilePlan(database, statement, params)).as(statement).contains("Entity[uuid]");
+      assertThat(uuidsOf(database, statement, params)).as(statement).containsExactlyInAnyOrder("entity-1", "other-1");
+    }
+  }
+
+  @Test
+  void aNullValueMatchesNothing() {
+    buildMain(database, true);
+
+    assertThat(uuidsOf(database, BY_UUID, params(null))).isEmpty();
+    assertThat(uuidsOf(database, "MATCH (n) WHERE n.uuid = $u RETURN n.uuid AS uuid", params(null))).isEmpty();
   }
 
   @Test

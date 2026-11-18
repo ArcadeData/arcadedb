@@ -111,6 +111,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // branches - if a future change drives parallel sub-plans through the same step, all three fields
   // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
+  private final Set<String>         usedIndexNames = new LinkedHashSet<>(); // the indexes sought by the plan of a node with no single type, once each
   // TRUE WHEN THE CANDIDATES OF THE LAST COMPUTED ITERATOR DEPEND ON THE INPUT ROW: a node pattern that names no single
   // type (no label, or several) pinned by a value the row decides is answered by index seeks that are made again for
   // every row, so its candidates are not the same for every row and must not be cached (issue #12522)
@@ -1010,27 +1011,39 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final Object declared = entry.getValue();
       rowDependent |= declared instanceof Expression expression && !RowIndependentValues.isRowIndependent(expression);
       final Object value = InlineProperties.resolve(declared, currentInputResult, context);
-      if (value == null)
-        return null; // a value that does not resolve gives up on the index, as the labelled path does
+      if (value == null) {
+        // A null equals nothing: no vertex matches this row. For a value the row decides the next row has its own candidates, so
+        // the none of this one must not be cached for it, nor the walk of every vertex stand in for the seek of the rows after it
+        candidatesDependOnTheRow = rowDependent;
+        return Collections.emptyIterator();
+      }
       pinned.put(entry.getKey(), value);
     }
     // The equalities of the WHERE filter pin the node as well: (n) WHERE n.uuid = $u is the same statement as (n {uuid: $u}). A
     // predicate whose value cannot be resolved is left to the filter, which decides every candidate in any case
+    final WhereEqualities whereEqualities = new WhereEqualities();
     if (whereFilter != null) {
       final Map<String, Object> fromWhere = new LinkedHashMap<>();
-      final boolean[] whereRowDependent = new boolean[1];
-      extractEqualityPredicates(whereFilter, fromWhere, currentInputResult, whereRowDependent);
+      extractEqualityPredicates(whereFilter, fromWhere, currentInputResult, whereEqualities);
       for (final Map.Entry<String, Object> entry : fromWhere.entrySet())
         if (pinned.putIfAbsent(entry.getKey(), entry.getValue()) == null)
-          rowDependent |= whereRowDependent[0];
+          rowDependent |= whereEqualities.usedDependOnTheRow;
     }
-    if (pinned.isEmpty())
+    if (pinned.isEmpty()) {
+      // the walk answers this row, and a row whose value the row decides is not the one every row after it will have
+      candidatesDependOnTheRow = whereEqualities.anyDependsOnTheRow;
       return null;
+    }
 
     final MultiTypeNodeIndexPlan plan =
         MultiTypeNodeIndexPlan.of(context.getDatabase().getSchema(), labels, pattern.isLabelDisjunction(), pinned);
     if (plan == null)
+      return null; // no index answers the pattern for any row: the walk is cached as it always was
+    if (plan == MultiTypeNodeIndexPlan.UNKEYABLE) {
+      // an index answers the pattern, but not with this row's value: the walk answers this row, and the rows after it may be sought
+      candidatesDependOnTheRow = rowDependent || whereEqualities.anyDependsOnTheRow;
       return null;
+    }
     plan.checkReadable(context.getDatabase());
     if (rowDependent) {
       if (plan.walksARecord(context.getDatabase()))
@@ -1140,10 +1153,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   /** The profile names every index the step sought, once. */
   private void recordIndexUsed(final String indexName) {
-    if (usedIndexName == null)
-      usedIndexName = indexName;
-    else if (!(", " + usedIndexName + ", ").contains(", " + indexName + ", "))
-      usedIndexName = usedIndexName + ", " + indexName;
+    // a row-dependent value seeks the same indexes again for every row: the text is rebuilt only for a name not seen before
+    if (usedIndexNames.add(indexName))
+      usedIndexName = String.join(", ", usedIndexNames);
   }
 
   /**
@@ -1583,11 +1595,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
-   * @param rowDependent when not null, set to true by a predicate whose value only the input row can tell, so that the candidates
-   *                     it selects are not the same for every row
+   * What the equalities of a WHERE filter say about the input row: whether a value only the row can tell stands in one of them.
+   */
+  private static final class WhereEqualities {
+    /** A predicate whose value the row decides was resolved, so the candidates it selects are not the same for every row. */
+    boolean usedDependOnTheRow;
+    /** Such a predicate stands in the filter, resolved or not: a row that leaves it unresolved says nothing about the next rows. */
+    boolean anyDependsOnTheRow;
+  }
+
+  /**
+   * @param rowDependence when not null, told what the predicates say about the input row
    */
   private void extractEqualityPredicates(final BooleanExpression expr,
-      final Map<String, Object> predicates, final Result currentInputResult, final boolean[] rowDependent) {
+      final Map<String, Object> predicates, final Result currentInputResult, final WhereEqualities rowDependence) {
     if (expr instanceof ComparisonExpression) {
       final ComparisonExpression comp = (ComparisonExpression) expr;
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
@@ -1618,12 +1639,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // predicate referencing an unbound variable (e.g. a leading MATCH with no input row) cannot
         // be resolved and is skipped for index selection - the query then falls back to the full
         // scan + row-level whereFilter, which is always correct (issue #5107).
+        final boolean dependsOnTheRow = rowDependence != null && !RowIndependentValues.isRowIndependent(valueExpr);
+        if (dependsOnTheRow)
+          rowDependence.anyDependsOnTheRow = true;
         try {
           final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
           if (resolvedValue != null) {
             predicates.put(propertyName, resolvedValue);
-            if (rowDependent != null && !RowIndependentValues.isRowIndependent(valueExpr))
-              rowDependent[0] = true;
+            if (dependsOnTheRow)
+              rowDependence.usedDependOnTheRow = true;
           }
         } catch (final Exception e) {
           // Unresolvable predicate value: skip it for index selection (correctness preserved by whereFilter).
@@ -1632,8 +1656,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     } else if (expr instanceof LogicalExpression) {
       final LogicalExpression logical = (LogicalExpression) expr;
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
-        extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult, rowDependent);
-        extractEqualityPredicates(logical.getRight(), predicates, currentInputResult, rowDependent);
+        extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult, rowDependence);
+        extractEqualityPredicates(logical.getRight(), predicates, currentInputResult, rowDependence);
       }
     }
   }

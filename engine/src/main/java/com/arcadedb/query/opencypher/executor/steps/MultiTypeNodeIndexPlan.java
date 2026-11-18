@@ -70,6 +70,13 @@ final class MultiTypeNodeIndexPlan {
   /** Two to the 53rd: the largest magnitude from which a double stops standing for one long. */
   private static final long EXACT_DOUBLE_LIMIT = 1L << 53;
 
+  /**
+   * What {@link #of} answers when an index could answer the pattern but cannot be keyed by the value of this row (a double against
+   * an integer key, a text against a number): the walk answers this row, and another row may well be answered by the index.
+   * Told apart from null, no index at all, which no row can change.
+   */
+  static final MultiTypeNodeIndexPlan UNKEYABLE = new MultiTypeNodeIndexPlan(List.of(), List.of());
+
   private final List<Part>         parts;
   private final List<DocumentType> seekedTypes;
 
@@ -109,7 +116,8 @@ final class MultiTypeNodeIndexPlan {
   }
 
   /**
-   * The plan of the pattern, or null when no index answers it: the walk of the types is then the answer.
+   * The plan of the pattern, or null when no index answers it: the walk of the types is then the answer. {@link #UNKEYABLE} when an
+   * index does, but not with these values.
    *
    * @param schema      the schema of the database
    * @param labels      the labels written on the pattern: none for an unlabelled node, which every vertex type can satisfy
@@ -127,6 +135,7 @@ final class MultiTypeNodeIndexPlan {
     // under B, and holds none of its own), so those are collected too, once each
     final boolean everyType = labels == null || labels.isEmpty();
     final Set<TypeIndex> seen = everyType ? null : Collections.newSetFromMap(new IdentityHashMap<>());
+    final boolean[] unkeyable = new boolean[1];
     final List<Cover> covers = new ArrayList<>();
     final BitSet vertexBuckets = new BitSet();
     for (final DocumentType type : types) {
@@ -135,13 +144,13 @@ final class MultiTypeNodeIndexPlan {
       for (final TypeIndex index : type.getAllIndexes(!everyType)) {
         if (seen != null && !seen.add(index))
           continue;
-        final Cover cover = coverOf(index, pinned);
+        final Cover cover = coverOf(index, pinned, unkeyable);
         if (cover != null)
           covers.add(cover);
       }
     }
     if (covers.isEmpty())
-      return null;
+      return unkeyable[0] ? UNKEYABLE : null;
 
     // The index with the longest key first, since it narrows most; among equals the one that covers more buckets, so that fewer
     // seeks are made; the name settles the rest, so that the same schema is always planned the same way
@@ -218,9 +227,10 @@ final class MultiTypeNodeIndexPlan {
 
   /**
    * What the index covers if it can answer the pinned values, null otherwise: it is ready for queries, it is a key index, every
-   * property of its key is pinned, and each value can be keyed by it.
+   * property of its key is pinned, and each value can be keyed by it. {@code unkeyable[0]} is set when the index is one that
+   * would answer if a value could be keyed by it.
    */
-  private static Cover coverOf(final TypeIndex index, final Map<String, Object> pinned) {
+  private static Cover coverOf(final TypeIndex index, final Map<String, Object> pinned, final boolean[] unkeyable) {
     try {
       if (!index.isReadyForQueries())
         return null; // an index a concurrent DDL is rebuilding answers nothing yet
@@ -234,9 +244,14 @@ final class MultiTypeNodeIndexPlan {
       for (int i = 0; i < names.length; i++) {
         names[i] = properties.get(i);
         // a prefix of the key does not answer an equality on the whole key
-        if (!isKeyableBy(keyTypes[i], pinned.get(names[i])))
+        if (!pinned.containsKey(names[i]))
           return null;
       }
+      for (int i = 0; i < names.length; i++)
+        if (!isKeyableBy(keyTypes[i], pinned.get(names[i]))) {
+          unkeyable[0] = true;
+          return null;
+        }
       final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
       final int[] bucketIds = new int[subIndexes.length];
       for (int i = 0; i < bucketIds.length; i++)
