@@ -535,8 +535,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private void awaitForwardedEntryApplied(final ExecutionResponse forwarded, final String databaseName, final boolean created) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     final long bookmark = bookmarkOf(forwarded);
-    if (ha == null || bookmark < 0)
+    if (ha == null)
       return;
+    if (bookmark < 0) {
+      LogManager.instance().log(this, Level.FINE,
+          "The leader answered the forwarded %s of database '%s' without the %s bookmark (it runs a version that predates it, or it "
+              + "could not read its commit index): the answer is relayed without waiting for this server to apply it",
+          created ? "creation" : "drop", databaseName, COMMIT_INDEX_HEADER_NAME);
+      return;
+    }
 
     if (!ha.awaitLocally(() -> ha.getTrustedAppliedIndex() >= bookmark))
       LogManager.instance().log(this, Level.WARNING,

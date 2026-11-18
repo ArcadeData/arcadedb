@@ -57,6 +57,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -78,6 +79,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // the node in between must get the retryable "not the leader" answer, not 401 "Invalid cluster token". The token
   // never changes for the life of the process, so the kept value cannot go stale.
   private volatile String               stoppedClusterToken;
+
+  // The threads inside awaitLocally right now (issue #11739): what a test reads to know a forwarded command is waiting for this
+  // node to apply it, instead of looking for the method on the stacks of every thread of the JVM
+  private final AtomicInteger localWaiters = new AtomicInteger();
 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.
@@ -563,12 +568,21 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final RaftHAServer raft = raftHAServer;
     if (raft == null)
       return condition.getAsBoolean();
+    localWaiters.incrementAndGet();
     try {
       return raft.awaitApplied(condition, raft.getQuorumTimeout());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       return condition.getAsBoolean();
+    } finally {
+      localWaiters.decrementAndGet();
     }
+  }
+
+  /** How many threads wait in {@link #awaitLocally} right now. */
+  // @VisibleForTesting
+  int localWaiters() {
+    return localWaiters.get();
   }
 
   @Override
