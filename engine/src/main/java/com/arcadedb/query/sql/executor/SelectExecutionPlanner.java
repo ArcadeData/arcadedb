@@ -81,6 +81,7 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
@@ -5062,7 +5063,7 @@ public class SelectExecutionPlanner {
     final boolean continues = function.indexedFunctionContinuesPastLimit(context);
     for (final BooleanExpression condition : residual.getSubBlocks())
       if (condition != function && !containsInstance(recordConditions, condition)
-          && (!continues || condition.setsScore(context)))
+          && (!continues || mayChangeScore(condition, context)))
         // a condition that sets $score itself would give the rows another order than the one the function answers them in
         return -1;
     if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
@@ -5081,6 +5082,33 @@ public class SelectExecutionPlanner {
       // SKIP/LIMIT depend on runtime state, or overflow: the function produces every row, as without a limit
       return -1;
     }
+  }
+
+  /**
+   * Whether evaluating {@code condition} on a row may set {@code $score}: a call that sets it anywhere in the condition, not only
+   * at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), a call the engine does not ship, whose
+   * behaviour it cannot know, or a nested statement.
+   */
+  private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
+    if (condition.setsScore(context))
+      return true;
+    return !SqlAstInspector.allNodesMatch(condition, node -> {
+      if (node instanceof Statement)
+        return false;
+      if (node instanceof MethodCall call)
+        return SqlAstInspector.isBuiltInMethod(call);
+      if (!(node instanceof FunctionCall call))
+        return true;
+      if (call.getName() == null || !DefaultSQLFunctionFactory.getInstance()
+          .isBuiltIn(call.getName().getStringValue().toLowerCase(Locale.ENGLISH)))
+        return false;
+      try {
+        final SQLFunction function = call.getSQLFunction(context);
+        return function != null && !function.setsScore();
+      } catch (final RuntimeException e) {
+        return false;
+      }
+    });
   }
 
   /**

@@ -20,19 +20,20 @@ package com.arcadedb.index.fulltext;
 
 import com.arcadedb.index.lsm.LSMTreeIndexPostings;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The postings one statement read for a disjunction of terms, so a later search of the same tokens in the same statement scores
- * them again without reading them again: a search with a limit whose rows a filter rejected, continued by the complete search. The
- * statement reads one state of the index either way, and now reads it once.
+ * The postings the limited search of one fetch read for a disjunction of terms, so the complete search that continues the same
+ * fetch, when a filter rejected the rows the limit covered, scores them again without reading them again. A fetch holds its own
+ * instance and never shares it with another statement. Each read is handed over once and then dropped, so the postings are held
+ * at most until the continuation takes them, or until the fetch ends. The key compares the bucket indexes by identity (no index
+ * overrides {@code equals}), so a read is never handed to another index.
  */
 public final class FullTextPostingsReuse {
-  // Test-only: searches that took their postings from an earlier read of the statement. Nothing in production reads it.
+  // Test-only: searches that took their postings from the limited search of their fetch. Nothing in production reads it.
   private static final AtomicLong reused = new AtomicLong();
 
   private final Map<Key, LSMTreeIndexPostings[][]> reads = new HashMap<>();
@@ -45,7 +46,7 @@ public final class FullTextPostingsReuse {
   }
 
   LSMTreeIndexPostings[][] get(final List<LSMTreeFullTextIndex> bucketIndexes, final String[] tokens) {
-    final LSMTreeIndexPostings[][] postings = reads.get(new Key(bucketIndexes, Arrays.asList(tokens)));
+    final LSMTreeIndexPostings[][] postings = reads.remove(new Key(List.copyOf(bucketIndexes), List.of(tokens)));
     if (postings != null)
       reused.incrementAndGet();
     return postings;

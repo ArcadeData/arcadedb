@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.fulltext.FullTextPostingsReuse;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -92,10 +93,10 @@ class FilteredSearchIndexTopKTest extends TestHelper {
     final String sql = SCORED + " AND n % 100 = 0 ORDER BY $score DESC LIMIT 50";
     final List<Row> expected = expected("w1 w2 w4", FILTERS.get("n % 100 = 0"), 0, 50);
     final long searches = FullTextFunctionSearch.getCompleteSearchesForTesting();
-    final long reused = com.arcadedb.index.fulltext.FullTextPostingsReuse.getReusedReadsForTesting();
+    final long reused = FullTextPostingsReuse.getReusedReadsForTesting();
     assertThat(rows(sql, "w1 w2 w4")).isEqualTo(expected);
     assertThat(FullTextFunctionSearch.getCompleteSearchesForTesting() - searches).isEqualTo(1L);
-    assertThat(com.arcadedb.index.fulltext.FullTextPostingsReuse.getReusedReadsForTesting() - reused).isEqualTo(1L);
+    assertThat(FullTextPostingsReuse.getReusedReadsForTesting() - reused).isEqualTo(1L);
   }
 
   @Test
@@ -109,6 +110,47 @@ class FilteredSearchIndexTopKTest extends TestHelper {
       for (final int limit : new int[] { 1, 10, 50 })
         assertThat(rows(both + " LIMIT " + limit, q)).as("q='%s' LIMIT %d", q, limit)
             .isEqualTo(all.subList(0, Math.min(limit, all.size())));
+    }
+  }
+
+  @Test
+  void aScoringCallNestedInTheFilterKeepsTheSortItsScoreNeeds() {
+    createCorpus(new Random(13), 4, 1500, "mixed");
+    // a search nested in another call runs on every row the filter evaluates and sets $score as a bare one does
+    for (final String filter : new String[] { "ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), false) = true",
+        "(SEARCH_INDEX('Doc[body]', 'w2 w5') = true) = true", "SEARCH_FIELDS(['body'], 'w2 w5') = true",
+        "ifnull(SEARCH_FIELDS(['body'], 'w2 w5'), false) = true" }) {
+      final String sql = SCORED + " AND " + filter + " ORDER BY $score DESC";
+      final List<Row> all = rows(sql, "w0 w1");
+      assertThat(all).as(filter).isNotEmpty();
+      for (final int limit : new int[] { 1, 3, 10, 50 })
+        assertThat(rows(sql + " LIMIT " + limit, "w0 w1")).as("%s LIMIT %d", filter, limit)
+            .isEqualTo(all.subList(0, Math.min(limit, all.size())));
+    }
+    // a call that sets no score, at any depth, keeps the limit
+    final String plain = SCORED + " AND ifnull(n, 0) % 100 <> 0 ORDER BY $score DESC LIMIT 50";
+    assertThat(database.query("sql", "EXPLAIN " + plain, Map.of("q", "w0 w1")).getExecutionPlan().orElseThrow().prettyPrint(0, 2))
+        .contains("(best 50 needed)").doesNotContain("ORDER BY");
+  }
+
+  @Test
+  void aWriteBetweenTwoStatementsOfAScriptIsSeen() {
+    createCorpus(new Random(17), 4, 1200, "mixed");
+    // the limited search of the first statement reads the postings; the second statement must read the committed insert
+    final String search = "SELECT n FROM Doc WHERE SEARCH_INDEX('Doc[body]', 'w1') = true";
+    final long before = database.query("sql", "SELECT count(*) AS c FROM (" + search + ")").next().<Number>getProperty("c")
+        .longValue();
+    try (final ResultSet rs = database.command("sqlscript", search + " ORDER BY $score DESC LIMIT 1;"
+        + "BEGIN; INSERT INTO Doc SET n = 100000, body = 'w1 w1'; COMMIT;" + "SELECT count(*) AS c FROM (" + search + ");")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(before + 1);
+    }
+    try (final ResultSet rs = database.command("sqlscript", search + " ORDER BY $score DESC LIMIT 1;"
+        + "BEGIN; INSERT INTO Doc SET n = 100001, body = 'w1 w1 w1'; COMMIT;" + search
+        + " AND n >= 100000 ORDER BY $score DESC LIMIT 5;")) {
+      final List<Integer> found = new ArrayList<>();
+      while (rs.hasNext())
+        found.add(rs.next().<Number>getProperty("n").intValue());
+      assertThat(found).containsExactlyInAnyOrder(100000, 100001);
     }
   }
 
