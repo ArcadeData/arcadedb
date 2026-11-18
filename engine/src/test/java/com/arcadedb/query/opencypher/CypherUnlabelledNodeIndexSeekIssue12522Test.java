@@ -21,10 +21,11 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.AfterEach;
@@ -49,46 +50,130 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
 
   @BeforeEach
   void setUp() {
-    FileUtils.deleteRecursively(new File(DB_PATH));
+    for (final String path : paths())
+      FileUtils.deleteRecursively(new File(path));
   }
 
   @AfterEach
   void tearDown() {
-    FileUtils.deleteRecursively(new File(DB_PATH));
+    for (final String path : paths())
+      FileUtils.deleteRecursively(new File(path));
   }
 
-  private Database open() {
-    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+  private static List<String> paths() {
+    return List.of(DB_PATH, DB_PATH + "-noindex", DB_PATH + "-diamond", DB_PATH + "-mixed");
+  }
+
+  /**
+   * The schema of the main tests: every vertex type has an index on {@code uuid}, except the ones that inherit it
+   * from their parent. The types of the hierarchy are there so that the answers of a type under another one are
+   * checked as well.
+   */
+  private Database open(final String path, final boolean withIndexes) {
+    final DatabaseFactory factory = new DatabaseFactory(path);
     final Database database = factory.create();
     database.transaction(() -> {
       final var entity = database.getSchema().createVertexType("Entity");
       entity.createProperty("uuid", String.class);
       entity.createProperty("name", String.class);
-      entity.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "uuid"); // UNIQUE
 
       final var other = database.getSchema().createVertexType("Other");
       other.createProperty("uuid", String.class);
-      other.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
 
-      // a type with no index at all: its vertices have to be walked
       final var plain = database.getSchema().createVertexType("Plain");
       plain.createProperty("uuid", String.class);
+
+      // a numeric property, to tell the key of an index from the comparison of a walk
+      final var numeric = database.getSchema().createVertexType("Numeric");
+      numeric.createProperty("id", Long.class);
+      numeric.createProperty("uuid", String.class);
 
       // a hierarchy: the index of the parent holds the vertices of the child too
       final var base = database.getSchema().createVertexType("Base");
       base.createProperty("uuid", String.class);
-      base.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
-      final var sub = database.getSchema().createVertexType("Sub");
-      sub.addSuperType(base);
-      sub.createProperty("extra", String.class);
+      final var mid = database.getSchema().createVertexType("Mid");
+      mid.addSuperType(base);
+      final var leaf = database.getSchema().createVertexType("Leaf");
+      leaf.addSuperType(mid);
+
+      // a type under a type that has an index of its own
+      final var own = database.getSchema().createVertexType("Own");
+      own.createProperty("uuid", String.class);
+      final var underOwn = database.getSchema().createVertexType("UnderOwn");
+      underOwn.addSuperType(own);
+
+      if (withIndexes) {
+        entity.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "uuid");
+        other.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+        plain.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+        base.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+        own.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+        numeric.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+        numeric.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+      }
     });
     database.transaction(() -> {
       database.command("opencypher", "CREATE (e:Entity {uuid: 'entity-1', name: 'one'})");
       database.command("opencypher", "CREATE (e:Entity {uuid: 'entity-2', name: 'two'})");
       database.command("opencypher", "CREATE (o:Other {uuid: 'other-1'})");
       database.command("opencypher", "CREATE (p:Plain {uuid: 'plain-1'})");
+      database.command("opencypher", "CREATE (n:Numeric {id: 1, uuid: 'numeric-1'})");
       database.command("opencypher", "CREATE (b:Base {uuid: 'base-1'})");
-      database.command("opencypher", "CREATE (s:Sub {uuid: 'sub-1', extra: 'x'})");
+      database.command("opencypher", "CREATE (m:Mid {uuid: 'mid-1'})");
+      database.command("opencypher", "CREATE (l:Leaf {uuid: 'leaf-1'})");
+      database.command("opencypher", "CREATE (o:Own {uuid: 'own-1'})");
+      database.command("opencypher", "CREATE (u:UnderOwn {uuid: 'under-own-1'})");
+    });
+    return database;
+  }
+
+  private Database open() {
+    return open(DB_PATH, true);
+  }
+
+  /**
+   * A schema with a type under two types: the two branches can each hold an index over the property, and each of
+   * them holds the vertices of their common sub type.
+   */
+  private Database openDiamond() {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH + "-diamond");
+    final Database database = factory.create();
+    database.transaction(() -> {
+      final var left = database.getSchema().createVertexType("Left");
+      left.createProperty("uuid", String.class);
+      left.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+      final var right = database.getSchema().createVertexType("Right");
+      right.createProperty("uuid", String.class);
+      right.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+      final var diamond = database.getSchema().createVertexType("Diamond");
+      diamond.addSuperType(left);
+      diamond.addSuperType(right);
+    });
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (l:Left {uuid: 'left-1'})");
+      database.command("opencypher", "CREATE (r:Right {uuid: 'right-1'})");
+      database.command("opencypher", "CREATE (d:Diamond {uuid: 'diamond-1'})");
+    });
+    return database;
+  }
+
+  /**
+   * A schema with one type that has an index and one that has not: the type without an index has to be walked, and
+   * a value the row decides makes that walk be repeated for every row, where it used to be walked once and cached.
+   */
+  private Database openMixed() {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH + "-mixed");
+    final Database database = factory.create();
+    database.transaction(() -> {
+      final var entity = database.getSchema().createVertexType("Entity");
+      entity.createProperty("uuid", String.class);
+      entity.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "uuid");
+      final var plain = database.getSchema().createVertexType("Plain");
+      plain.createProperty("uuid", String.class);
+    });
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (e:Entity {uuid: 'entity-1'})");
+      database.command("opencypher", "CREATE (p:Plain {uuid: 'plain-1'})");
     });
     return database;
   }
@@ -125,13 +210,16 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
     return out;
   }
 
+  private Map<String, Object> params(final Object value) {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("u", value);
+    return params;
+  }
+
   @Test
   void unlabelledNodePinnedByAnIndexedPropertyUsesTheIndex() {
     try (final Database database = open()) {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("u", "entity-1");
-
-      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params);
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("entity-1"));
 
       assertThat(plan)
           .as("an unlabelled node pinned by an indexed property must use the index of the type that owns it\n%s", plan)
@@ -142,60 +230,73 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
   @Test
   void unlabelledNodeStillAnswersTheRightVertex() {
     try (final Database database = open()) {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("u", "entity-2");
-
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params)).containsExactly("entity-2");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("entity-2"))).containsExactly("entity-2");
     }
   }
 
   @Test
   void everyTypeWithAnIndexIsAnsweredByItsOwnIndex() {
     try (final Database database = open()) {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("u", "other-1");
-
-      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params);
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("other-1"));
 
       assertThat(plan)
           .as("the index of the second type has to be used as well\n%s", plan)
           .contains("Other[uuid]");
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params)).containsExactly("other-1");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("other-1"))).containsExactly("other-1");
     }
   }
 
   @Test
   void aTypeWithoutAnIndexIsStillWalked() {
-    try (final Database database = open()) {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("u", "plain-1");
+    try (final Database database = open(DB_PATH + "-noindex", false)) {
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("entity-1"));
 
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params)).containsExactly("plain-1");
+      assertThat(plan)
+          .as("without an index there is nothing to seek\n%s", plan)
+          .doesNotContain("[index:");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("entity-1"))).containsExactly("entity-1");
     }
   }
 
   @Test
   void aSubTypeIsAnsweredByTheIndexOfItsParentAndOnlyOnce() {
     try (final Database database = open()) {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("u", "sub-1");
-
       // the index of the parent holds the vertices of the child too: the child must not be answered twice
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params)).containsExactly("sub-1");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("mid-1"))).containsExactly("mid-1");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("base-1"))).containsExactly("base-1");
+    }
+  }
 
-      final Map<String, Object> parent = new HashMap<>();
-      parent.put("u", "base-1");
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", parent)).containsExactly("base-1");
+  @Test
+  void aGrandChildIsAnsweredOnce() {
+    try (final Database database = open()) {
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("leaf-1"))).containsExactly("leaf-1");
+    }
+  }
+
+  @Test
+  void aTypeWithItsOwnIndexUnderATypeWithOneIsAnsweredOnce() {
+    try (final Database database = open()) {
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("own-1"))).containsExactly("own-1");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("under-own-1"))).containsExactly("under-own-1");
+    }
+  }
+
+  @Test
+  void aTypeUnderTwoTypesIsAnsweredOnce() {
+    try (final Database database = openDiamond()) {
+      // the two branches of the diamond can each hold an index over the property, and each of them holds the
+      // vertices of their common sub type: the sub type must not be answered twice
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("diamond-1"))).containsExactly("diamond-1");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("left-1"))).containsExactly("left-1");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("right-1"))).containsExactly("right-1");
     }
   }
 
   @Test
   void aValueNoVertexHasAnswersNoRow() {
     try (final Database database = open()) {
-      final Map<String, Object> params = new HashMap<>();
-      params.put("u", "nobody");
-
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params)).isEmpty();
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("nobody"))).isEmpty();
     }
   }
 
@@ -204,7 +305,7 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
     try (final Database database = open()) {
       // the Graphiti shape: an UNWIND of the keys, each matched by an unlabelled node
       final Map<String, Object> params = new HashMap<>();
-      params.put("keys", List.of("entity-1", "other-1", "plain-1", "sub-1"));
+      params.put("keys", List.of("entity-1", "other-1", "plain-1", "mid-1"));
 
       final String plan = profilePlan(database, "UNWIND $keys AS k MATCH (n {uuid: k}) RETURN n.uuid AS uuid", params);
 
@@ -212,20 +313,67 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
           .as("a value the row decides is answered by an index seek too, made again for every row\n%s", plan)
           .contains("Entity[uuid]");
       assertThat(uuidsOf(database, "UNWIND $keys AS k MATCH (n {uuid: k}) RETURN n.uuid AS uuid", params))
-          .containsExactlyInAnyOrder("entity-1", "other-1", "plain-1", "sub-1");
+          .containsExactlyInAnyOrder("entity-1", "other-1", "plain-1", "mid-1");
     }
   }
 
   @Test
-  void theLabelledFormIsUnchanged() {
-    try (final Database database = open()) {
+  void aValueTheRowDecidesWithATypeWithoutAnIndexIsAnsweredByTheWalk() {
+    // the walk of the types without an index would be repeated for every row, where it used to be walked once and
+    // cached (issues #6602, #8695): the walk of the whole database answers the statement instead
+    try (final Database database = openMixed()) {
       final Map<String, Object> params = new HashMap<>();
-      params.put("u", "entity-1");
+      params.put("keys", List.of("entity-1", "plain-1"));
 
-      final String plan = profilePlan(database, "MATCH (n:Entity {uuid: $u}) RETURN n.uuid AS uuid", params);
+      final String plan = profilePlan(database, "UNWIND $keys AS k MATCH (n {uuid: k}) RETURN n.uuid AS uuid", params);
 
-      assertThat(plan).contains("Entity[uuid]");
-      assertThat(uuidsOf(database, "MATCH (n:Entity {uuid: $u}) RETURN n.uuid AS uuid", params)).containsExactly("entity-1");
+      assertThat(plan)
+          .as("a type without an index keeps the walk of the whole database\n%s", plan)
+          .doesNotContain("[index:");
+      assertThat(uuidsOf(database, "UNWIND $keys AS k MATCH (n {uuid: k}) RETURN n.uuid AS uuid", params))
+          .containsExactlyInAnyOrder("entity-1", "plain-1");
     }
+  }
+
+  @Test
+  void theIndexPathAnswersWhatTheWalkAnswers() {
+    // the same statement over a database with the index and over one without it: the rows have to be the same
+    try (final Database withIndex = open(DB_PATH, true); final Database withoutIndex = open(DB_PATH + "-noindex", false)) {
+      final Object[] values = { 1, 1L, 1.0d, 1.5d, "1", Boolean.TRUE };
+      for (final Object value : values) {
+        assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(value)))
+            .as("the index path and the walk have to answer the same rows for %s", value)
+            .isEqualTo(uuidsOf(withoutIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(value)));
+      }
+    }
+  }
+
+  @Test
+  void theTextOfARIDIsAnsweredByTheWalkAndNotByTheIndex() {
+    try (final Database withIndex = open(DB_PATH, true); final Database withoutIndex = open(DB_PATH + "-noindex", false)) {
+      // a numeric property and the text of a RID: the walk answers it by the id(), the index cannot key it
+      // (issue #11933)
+      final RID rid = ridOf(withIndex, "numeric-1");
+      final RID otherRid = ridOf(withoutIndex, "numeric-1");
+
+      assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(rid.toString())))
+          .isEqualTo(uuidsOf(withoutIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(otherRid.toString())));
+    }
+  }
+
+  private RID ridOf(final Database database, final String uuid) {
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher", "MATCH (n {uuid: $u}) RETURN n AS n", params(uuid));
+      while (rs.hasNext()) {
+        final Object n = rs.next().getProperty("n");
+        if (n instanceof Result r)
+          rid[0] = r.getElement().map(Document::getIdentity).orElse(null);
+        else if (n instanceof Document d)
+          rid[0] = d.getIdentity();
+      }
+      rs.close();
+    });
+    return rid[0];
   }
 }
