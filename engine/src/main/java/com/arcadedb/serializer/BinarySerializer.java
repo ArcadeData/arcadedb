@@ -324,6 +324,16 @@ public class BinarySerializer {
   }
 
   public Binary serializeEdge(final DatabaseInternal database, final Edge edge, final boolean readOnly) {
+    // AN ENDPOINT THAT IS NULL IS NOT WRITTEN AT ALL (serializeValue SKIPS A NULL), SO THE RECORD WOULD START WITH ITS PROPERTIES
+    // WHERE THE TWO VERTEX POINTERS ARE READ BACK: AN EDGE POINTING AT ARBITRARY RECORDS THAT CANNOT BE DECODED AGAIN (#12418)
+    final RID out = edge.getOut();
+    final RID in = edge.getIn();
+    if (out == null || in == null)
+      throw new SerializationException(
+          "Cannot serialize the edge " + edge.getIdentity() + " of type '" + edge.getTypeName() + "' without its " + (out == null ?
+              "@out" :
+              "@in") + " vertex: an edge is created between two vertices (Vertex.newEdge() or CREATE EDGE)");
+
     Binary header = ((BaseRecord) edge).getBuffer();
 
     final DatabaseContext.DatabaseContextTL context = database.getContext();
@@ -341,8 +351,8 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getOut());
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn());
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, out);
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, in);
 
     if (serializeProperties)
       return serializeProperties(database, edge, header, context.getTemporaryBuffer2(), readOnly);
