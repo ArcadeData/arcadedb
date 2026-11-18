@@ -1018,6 +1018,12 @@ class PeerCapabilityProbeTest {
     // Regression for #7549: concurrent starts create exactly one monitor
     @Test
     void concurrentStartsCreateExactlyOneMonitor() throws Exception {
+      // The count below is JVM-wide (threads are found by name), so a monitor another test in the same fork is still
+      // winding down would be counted as this one's. Start from none.
+      Awaitility.await().atMost(10, TimeUnit.SECONDS)
+          .untilAsserted(() -> assertThat(liveCapabilityMonitorThreads())
+              .as("no capability monitor left over from an earlier test").isZero());
+
       final RaftHAServer raft = newDetachedServer();
       raft.setCapabilityProber((peerId, http, https, token) -> {
         throw new IOException("no answer");
