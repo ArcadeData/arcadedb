@@ -258,7 +258,8 @@ public class TransactionManager {
    * The most {@link #recoveryPendingRepairs} may hold (#12225). A page can wait there from its first older entry to its last one,
    * as far apart as the WAL is long, so a WAL touching many pages would otherwise hold them all on the heap. Over it, every held
    * image is written, as each repair did before, and the map starts again: never more writes than one per repair. Not final so a
-   * test can shrink it.
+   * test can shrink it, as {@link #applyChangesHookForTesting} is set: the replay runs inside the open, before any instance field
+   * could be. Any value is correct, it only decides how often the held images are written, never what is written.
    */
   static volatile long                       recoveryPendingRepairsMaxBytes = 64L * 1024 * 1024;
   /**
@@ -1663,7 +1664,9 @@ public class TransactionManager {
     if (chain[1] <= entryVersion)
       return 0;
 
-    // ONLY THE WARNING READS WHICH VERSION IS MISSING, ONCE PER PAGE: AFTER IT ANY MISSING VERSION ABOVE THE ENTRY ANSWERS
+    // ONLY THE WARNING READS WHICH VERSION IS MISSING, ONCE PER PAGE: AFTER IT ANY MISSING VERSION ABOVE THE ENTRY ANSWERS. THE WALK
+    // UP BELOW THEREFORE RUNS ONCE PER PAGE AND REPLAY, AT MOST AS MANY LOOKUPS AS THE PAGE HAS VERSIONS IN THE WAL: THE CALLER WARNS
+    // ON EVERY RESULT ABOVE 0, AND THE WARNING ADDS THE PAGE TO recoveryGapWarnedPages WHETHER IT LOGS OR NOT
     if (recoveryGapWarnedPages.contains(key))
       return chain[1];
     for (long v = entryVersion + 1; v < chain[1]; ++v)
@@ -1693,9 +1696,14 @@ public class TransactionManager {
   }
 
   /**
-   * Writes the repaired images whose chain the replay did not reach the end of (#12225): it stopped first, on a version gap or a
-   * corrupt record, or it holds more than {@link #recoveryPendingRepairsMaxBytes}. A file a later entry of the replay dropped has
-   * nothing left to repair.
+   * Writes the repaired images held back (#12225): those whose chain the replay did not reach the end of (it stopped first, on a
+   * version gap or a corrupt record, every exit of its loop goes through here), or all of them when they exceed
+   * {@link #recoveryPendingRepairsMaxBytes}. The file of a held page existed when the page was repaired; the check only keeps a
+   * file that is gone by now from failing the write.
+   * <br>
+   * A failed write throws a {@link WALException}, which neither {@link #applyChanges} nor the replay loop catches: it escapes
+   * {@link #recoverWALFiles} before the input is released, so the WAL is kept as it was found and the next open repairs the pages
+   * again from it. The images not written yet are dropped then, with the rest of the replay state, in its finally block.
    */
   private void writePendingRecoveryRepairs() {
     if (recoveryPendingRepairs.isEmpty())
@@ -1708,10 +1716,9 @@ public class TransactionManager {
       }
     } catch (final IOException e) {
       throw new WALException("Cannot write the pages repaired by the recovery of database '" + database.getName() + "'", e);
-    } finally {
-      recoveryPendingRepairs.clear();
-      recoveryPendingRepairBytes = 0;
     }
+    recoveryPendingRepairs.clear();
+    recoveryPendingRepairBytes = 0;
   }
 
   /** Writes a page the crash recovery repaired and publishes its image to the read cache, as the replay does for an applied one. */
@@ -2325,9 +2332,7 @@ public class TransactionManager {
         if (pendingRepair != null) {
           // A COPY, ONE PER PAGE AND REPLAY: AN ENTRY THAT FAILS PART-WAY (A SEGMENT OUTSIDE THE PAGE ABORTS THE REPLAY) LEAVES THE
           // REPAIRS TO BE WRITTEN AS THEY WERE, NOT WITH SOME OF ITS SEGMENTS IN THEM
-          final byte[] repairedBytes = pendingRepair.content.getByteBuffer().array();
-          modifiedPage = new MutablePage(pendingRepair.pageId, pendingRepair.size, Arrays.copyOf(repairedBytes, repairedBytes.length),
-              pendingRepair.version, pendingRepair.content.size());
+          modifiedPage = pendingRepair.copy();
         } else
           modifiedPage = page.modify();
         for (int k = firstSegment; k < lastSegment; ++k) {
