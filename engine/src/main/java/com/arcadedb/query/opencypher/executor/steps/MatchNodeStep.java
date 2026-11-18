@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -1199,10 +1200,44 @@ public class MatchNodeStep extends AbstractExecutionStep {
   /**
    * The vertices of the type itself, without the ones of its sub types: the walk of a type that has no index to
    * answer the pattern.
+   * <p>
+   * The walk is opened when the caller asks for the first row, the way the walk of the whole database opens the walk
+   * of a type when the one before it is done (Labels.ChainedTypeIterator): a statement that stops at the first row
+   * of the first type does not open the walk of the others.
    */
-  @SuppressWarnings("unchecked")
   private Iterator<Identifiable> ownVerticesOf(final DocumentType type) {
-    return (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+    return new LazyScan(context.getDatabase(), type.getName());
+  }
+
+  /**
+   * The walk of a type, opened on the first row the caller asks for.
+   */
+  private static final class LazyScan implements Iterator<Identifiable> {
+    private final Database    database;
+    private final String      typeName;
+    private       Iterator<Identifiable> scan;
+
+    private LazyScan(final Database database, final String typeName) {
+      this.database = database;
+      this.typeName = typeName;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Iterator<Identifiable> scan() {
+      if (scan == null)
+        scan = (Iterator<Identifiable>) (Object) database.iterateType(typeName, false);
+      return scan;
+    }
+
+    @Override
+    public boolean hasNext() {
+      return scan().hasNext();
+    }
+
+    @Override
+    public Identifiable next() {
+      return scan().next();
+    }
   }
 
   /**
