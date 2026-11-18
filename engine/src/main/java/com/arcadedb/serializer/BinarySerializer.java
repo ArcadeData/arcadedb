@@ -172,12 +172,25 @@ public class BinarySerializer {
   }
 
   /**
+   * Whether the database is labelled so that no build which cannot decode the fixed-width form opens it (issue #12234). False
+   * keeps the varint form. True by default: a serializer that is not a database's own has no files to label. The database sets
+   * it when it opens and when its configuration changes, so writing an array costs one more volatile read and never a rename.
+   */
+  private volatile boolean fixedWidthFloatArraysFenced = true;
+
+  /** Tells the serializer whether its database carries the rollback fence of {@link #fixedWidthFloatArraysFenced}. */
+  public void setFixedWidthFloatArraysFenced(final boolean fenced) {
+    this.fixedWidthFloatArraysFenced = fenced;
+  }
+
+  /**
    * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
-   * array when {@link #fixedWidthFloatArrays} allows it, {@code type} itself otherwise. Only the record's own type bytes go
-   * through here; an index key is written under its declared type, so an index page never changes form.
+   * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFenced} is set, {@code type} itself
+   * otherwise. Only the record's own type bytes go through here; an index key is written under its declared type, so an index
+   * page never changes form.
    */
   private byte storageTypeOf(final byte type) {
-    if (!fixedWidthFloatArraysEnabled)
+    if (!fixedWidthFloatArraysEnabled || !fixedWidthFloatArraysFenced)
       return type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
       return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;

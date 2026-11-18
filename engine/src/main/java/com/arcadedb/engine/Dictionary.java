@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -26,6 +27,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -80,15 +82,34 @@ public class Dictionary extends PaginatedComponent {
   /**
    * v0 is single page, v1 rolls over. The reader handles both, the version only marks what wrote the file.
    * <br>
-   * It is stamped at creation and never changed, so a v0 database that later rolls over keeps saying v0. That is deliberate:
-   * this number lives in the FILE NAME, so bumping it at runtime means renaming a live component file, which
-   * {@link PaginatedComponent#rename} can only do behind a full flush barrier and which would race replication shipping pages
-   * by file id. It would also buy nothing, because a build old enough to be at risk does not validate this field at all - it
-   * would open a v1 file just as happily. The signal that a database has rolled over is the INFO logged when page 1 is created.
+   * It is stamped at creation, so a v0 database that later rolls over keeps saying v0: the rollover is not worth a rename, and
+   * the signal that a database has rolled over is the INFO logged when page 1 is created.
    */
   private static final int    CURRENT_VERSION        = 1;
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
   private static final int    DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
+  /**
+   * Byte for byte the same file as version 1. The label marks a database that may hold float or double arrays in the fixed-width
+   * form (binary types 36 and 37, issue #10856), which no build before 26.11.1 decodes: such a build read them as null and
+   * dropped them on the record's next update (issue #12234). Every build from 26.8.1 on refuses, at open, a dictionary labelled
+   * above 1, so a database that writes the form is created with this label, and an existing one is relabelled by
+   * {@link #fenceFixedWidthFloatArrays()} when it opens read-write: an older build then refuses the database instead of losing
+   * data. That refusal includes 26.11.x, which decodes the form but checks the same label. Builds before 26.8.1 do not check the
+   * label at all.
+   * <br>
+   * Unlike a rollover, this label can change on a live file, when the setting is turned on at runtime. The file keeps its id, its
+   * component name and its content, so the rename needs no flush barrier: it runs under the file's channel write lock, which
+   * every page read and write of the file takes too, and the file reports itself open throughout
+   * ({@link PaginatedComponentFile#rename}), so a page the flush thread writes in the meantime waits for the new channel instead
+   * of being dropped as written to a closed file.
+   */
+  public static final  int    FIXED_WIDTH_FLOAT_ARRAYS_VERSION = 2;
+  /**
+   * The highest label this build opens. Kept apart from {@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION} on purpose: that one names what
+   * label 2 means and never changes, this one is the refusal threshold and moves with the next label a format change adds.
+   */
+  private static final int    LATEST_READABLE_VERSION          = FIXED_WIDTH_FLOAT_ARRAYS_VERSION;
+  private static final String DICT_SUFFIX            = "." + DICT_EXT;
 
   /**
    * The names and the name-&gt;id map are replaced together by {@link #reload()}, which runs on threads that do not hold this
@@ -110,6 +131,8 @@ public class Dictionary extends PaginatedComponent {
   }
 
   private volatile Entries entries = new Entries(new String[64], 0, new ConcurrentHashMap<>(1024));
+  /** Serializes {@link #fenceFixedWidthFloatArrays()}, so concurrent first writers rename the file once. */
+  private final    Object  fenceLock = new Object();
 
   /**
    * Set when the load found no committed page and wrote a fresh empty one (issue #11258). A power loss that kept the file name
@@ -132,7 +155,11 @@ public class Dictionary extends PaginatedComponent {
   public Dictionary(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
       final int pageSize)
       throws IOException {
-    super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
+    // A DATABASE THAT WRITES THE FIXED-WIDTH FLOAT ARRAYS IS BORN WITH THEIR LABEL, WITH NO RENAME AT ITS FIRST OPEN (ISSUE #12234)
+    super(database, name, filePath, DICT_EXT, mode, pageSize,
+        database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS) ?
+            FIXED_WIDTH_FLOAT_ARRAYS_VERSION :
+            CURRENT_VERSION);
     // NO COMMITTED PAGE, SO PAGE 0 HAS TO BE CREATED. ASKED OF pageCount RATHER THAN OF THE FILE'S SIZE FOR THE REASONS SET OUT
     // AT reload() (ISSUE #6351), WHICH IS WHERE THAT ARGUMENT LIVES. ON THE BRAND NEW FILE THIS CONSTRUCTOR IS FOR, THE TWO GIVE
     // THE SAME ANSWER.
@@ -150,11 +177,11 @@ public class Dictionary extends PaginatedComponent {
       final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
-    if (version > CURRENT_VERSION)
+    if (version > LATEST_READABLE_VERSION)
       // A NEWER LAYOUT WOULD BE READ AS IF IT WERE THIS ONE, SILENTLY. REFUSE INSTEAD OF GUESSING
       throw new DatabaseMetadataException(
           "Dictionary '" + filePath + "' was written with format version " + version + ", which this version of ArcadeDB cannot "
-              + "read (latest known is " + CURRENT_VERSION + ")");
+              + "read (latest known is " + LATEST_READABLE_VERSION + ")");
     reload();
 
     if (pageCount.get() > 1)
@@ -165,6 +192,83 @@ public class Dictionary extends PaginatedComponent {
           "Database '%s' schema dictionary spans %d pages. It cannot be read by a build without multi-page dictionary support, "
               + "so replicas and any rollback target have to be on this version or newer", null, database.getName(),
           pageCount.get());
+  }
+
+  /** Whether the file is labelled {@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION} or above, so no build before this label opens it. */
+  public boolean isFixedWidthFloatArraysFenced() {
+    return file.getVersion() >= FIXED_WIDTH_FLOAT_ARRAYS_VERSION;
+  }
+
+  /**
+   * Relabels the file {@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION} if it is not already, and forces the directory entry to disk, so
+   * the label is durable before the database writes a fixed-width float or double array (issue #12234). Idempotent.
+   *
+   * @throws IOException when the rename fails; the file then keeps its previous label and name
+   */
+  public void fenceFixedWidthFloatArrays() throws IOException {
+    synchronized (fenceLock) {
+      if (isFixedWidthFloatArraysFenced())
+        return;
+      final String previous = file.getFilePath();
+      file.rename(file.getComponentName() + "." + file.getFileId() + "." + file.getPageSize() + ".v" + FIXED_WIDTH_FLOAT_ARRAYS_VERSION
+          + "." + file.getFileExtension());
+      FileUtils.forceDirectory(file.getOSFile().getAbsoluteFile().getParentFile().toPath());
+      LogManager.instance().log(this, Level.INFO,
+          "Database '%s' stores float and double arrays in the fixed-width form: its dictionary '%s' is relabelled format version "
+              + "%d, so a build before this one refuses to open the database instead of reading those arrays as null (issue #12234). "
+              + "To keep a rollback possible set arcadedb.serializer.fixedWidthFloatArrays=false before the database is first opened "
+              + "by this build", null, database.getName(), previous, FIXED_WIDTH_FLOAT_ARRAYS_VERSION);
+    }
+  }
+
+  /**
+   * The name under which nodes compare a database file. The fixed-width float array label ({@link #FIXED_WIDTH_FLOAT_ARRAYS_VERSION})
+   * is given per node, by {@link #fenceFixedWidthFloatArrays()}, to a file whose bytes do not change, so two nodes can hold the
+   * same dictionary under two labels: a node of a build that does not relabel beside one that does, during a rolling upgrade, or
+   * a node whose relabel failed (issue #12234). A dictionary labelled 2 or above therefore compares under label 1, the one
+   * every build since 26.8.1 creates it with and a build that knows nothing of this still reports; every other file compares as
+   * it is. (A dictionary created before 26.8.1 is labelled 0 until it is relabelled, and compares as a different file against a
+   * peer still holding it under 0: the bytes cannot say which label they had.)
+   */
+  public static String comparableFileName(final String fileName) {
+    final int labelPos = labelPosition(fileName);
+    if (labelPos < 0)
+      return fileName;
+    final int extensionPos = fileName.length() - DICT_SUFFIX.length();
+    // v0 AND v1 ARE WHAT THEY SAY: ONLY A LABEL THIS RELABEL CAN HAVE WRITTEN IS FOLDED BACK
+    if (extensionPos - labelPos == 3 && fileName.charAt(labelPos + 2) < '0' + FIXED_WIDTH_FLOAT_ARRAYS_VERSION)
+      return fileName;
+    return fileName.substring(0, labelPos) + ".v" + CURRENT_VERSION + DICT_SUFFIX;
+  }
+
+  /**
+   * A dictionary's file name without its format label, every other name as it is: what identifies the file across a relabel,
+   * whatever label it had before. For matching one node's own files with each other, never for a name sent to a peer, which
+   * goes through {@link #comparableFileName(String)}.
+   */
+  public static String unlabelledFileName(final String fileName) {
+    final int labelPos = labelPosition(fileName);
+    return labelPos < 0 ? fileName : fileName.substring(0, labelPos) + DICT_SUFFIX;
+  }
+
+  /**
+   * Where the {@code .v<N>} label of a dictionary file name starts, -1 for a name that is not a labelled dictionary. Without a
+   * regex: this runs for every file of every checksum.
+   */
+  private static int labelPosition(final String fileName) {
+    if (fileName == null || !fileName.endsWith(DICT_SUFFIX))
+      return -1;
+    // <name>.<id>.<pageSize>.v<N>.dict
+    final int extensionPos = fileName.length() - DICT_SUFFIX.length();
+    final int labelPos = fileName.lastIndexOf('.', extensionPos - 1);
+    if (labelPos < 0 || labelPos + 2 >= extensionPos || fileName.charAt(labelPos + 1) != 'v')
+      return -1;
+    for (int i = labelPos + 2; i < extensionPos; i++) {
+      final char c = fileName.charAt(i);
+      if (c < '0' || c > '9')
+        return -1;
+    }
+    return labelPos;
   }
 
   public int getIdByName(final String name, final boolean create) {

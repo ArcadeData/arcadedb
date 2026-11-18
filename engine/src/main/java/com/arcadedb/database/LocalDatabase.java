@@ -3881,6 +3881,38 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * The rollback fence of the fixed-width float and double arrays (issue #12234). No build before 26.11.1 decodes that form: it
+   * reads such an array as null and drops it on the record's next update. So a database that may hold the form carries a
+   * dictionary labelled {@link Dictionary#FIXED_WIDTH_FLOAT_ARRAYS_VERSION}, which every build from 26.8.1 on refuses to open.
+   * <br>
+   * "May hold" is decided by the setting, not by looking for a value: while {@code arcadedb.serializer.fixedWidthFloatArrays} is
+   * on, a read-write database is labelled when it opens and when the setting is turned on. That makes the label a property of
+   * the node's configuration, the same on every replica, whatever each of them happened to write or read: a replica receives
+   * the form as pages without ever serializing it, and a database written by 26.11.x already holds it under the old label. It
+   * also keeps the rename out of the record paths: the serializer only reads a flag.
+   * <br>
+   * When the label cannot be written the serializer keeps the varint form every build reads, until the next open or the next
+   * change of the configuration tries again. A read-only open labels nothing and writes nothing. The label is never taken back:
+   * turning the setting off does not rewrite the arrays already stored.
+   */
+  private void fenceFixedWidthFloatArrays() {
+    final LocalSchema current = schema;
+    final Dictionary dictionary = current != null ? current.getDictionary() : null;
+    if (dictionary == null || !open)
+      return;
+    if (!dictionary.isFixedWidthFloatArraysFenced() && mode == ComponentFile.MODE.READ_WRITE && configuration.getValueAsBoolean(
+        GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS))
+      try {
+        dictionary.fenceFixedWidthFloatArrays();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': cannot relabel the dictionary for the fixed-width float array form, float and double arrays are written "
+                + "in the varint form, which every build reads, until the database is reopened", e, name);
+      }
+    serializer.setFixedWidthFloatArraysFenced(dictionary.isFixedWidthFloatArraysFenced());
+  }
+
+  /**
    * Warns, naming the property, about a REGEXP on a DATE or DATETIME property that the class in force holds no value of (issue
    * #10104). Reached when the database opens and whenever the serializer's class changes, which is where a statement that can refuse
    * is not the one changing it. Skipped while there is no loaded schema to walk.
@@ -3902,6 +3934,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
   private void configurationChanged() {
     serializer.readConfiguration(configuration);
+    // THE SETTING MAY HAVE BEEN TURNED ON: THE LABEL COMES BEFORE THE FIRST VALUE WRITTEN UNDER IT (ISSUE #12234)
+    fenceFixedWidthFloatArrays();
 
     // ALL FOUR QUERY CACHES, THE PLAN CACHES TOO: A SETTING READ AT PLANNING TIME IS BAKED INTO THE PLAN (issue #10155). ONE
     // SETTING SIZES BOTH SQL CACHES, AS IN THE CONSTRUCTOR
@@ -4885,6 +4919,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // From here on the class can change by routes that cannot refuse (a replicated setting, any other caller of the setter), and
         // none of them is silent. Registered after the two assignments above, which are the open's own and were just reported
         serializer.setImplementationChangeListener(() -> warnAboutUnsatisfiableDateRegexps("the class dates are held as changed"));
+
+        // ISSUE #12234: BEFORE THE FIRST RECORD IS WRITTEN OR REPLICATED INTO THIS DATABASE
+        fenceFixedWidthFloatArrays();
 
         if (recoveryPending) {
           try {
