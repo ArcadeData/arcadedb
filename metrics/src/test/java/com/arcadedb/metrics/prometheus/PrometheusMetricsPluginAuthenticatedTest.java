@@ -23,12 +23,12 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.net.Authenticator;
-import java.net.PasswordAuthentication;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,25 +63,36 @@ class PrometheusMetricsPluginAuthenticatedTest extends BaseGraphServerTest {
 
   @Test
   void prometheusEndpoint() throws Exception {
-    HttpClient client = HttpClient.newBuilder()
-        .authenticator(new Authenticator() {
-          @Override
-          protected PasswordAuthentication getPasswordAuthentication() {
-            return new PasswordAuthentication(
-                "root",
-                DEFAULT_PASSWORD_FOR_TESTS.toCharArray());
-          }
-        })
+    // THE CREDENTIALS GO IN THE REQUEST: the 401 of this API carries no challenge (issue #12408), and the JDK's
+    // Authenticator needs one to know the scheme to answer with, so it fails the request instead of authenticating it
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(getServerHttpUrl("/prometheus")))
+        .header("Authorization", basicCredentials())
+        .GET()
         .build();
 
+    HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type").get()).isEqualTo("text/plain");
+    assertThat(response.body()).contains("system_cpu_usage");
+  }
+
+  /** A request without credentials is refused with a 401 that carries no challenge (issue #12408). */
+  @Test
+  void prometheusEndpointWithoutCredentialsIsRefusedWithoutAChallenge() throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(getServerHttpUrl("/prometheus")))
         .GET()
         .build();
 
-    HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-    assertThat(response.statusCode()).isEqualTo(200);
-    assertThat(response.headers().firstValue("Content-Type").get()).isEqualTo("text/plain");
-    assertThat(response.body()).contains("system_cpu_usage");
+    HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+
+    assertThat(response.statusCode()).isEqualTo(401);
+    assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+  }
+
+  private static String basicCredentials() {
+    final String pair = "root:" + DEFAULT_PASSWORD_FOR_TESTS;
+    return "Basic " + Base64.getEncoder().encodeToString(pair.getBytes(StandardCharsets.UTF_8));
   }
 }
