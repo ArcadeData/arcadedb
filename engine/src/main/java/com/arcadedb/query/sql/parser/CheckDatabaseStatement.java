@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 
 import java.util.HashSet;
 import java.util.Iterator;
@@ -147,6 +148,8 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       // Same refusal, same reason: RECLAIM UNREFERENCED FILES removes files and must say so explicitly.
       throw new IllegalArgumentException(RECLAIM_UNREFERENCED_FILES_WITHOUT_FIX_ERROR);
 
+    checkRepairAllowed(context);
+
     final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
@@ -183,6 +186,28 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * A check that repairs is a maintenance write, gated by {@link DATABASE_ACCESS#UPDATE_SCHEMA} like {@code REBUILD INDEX} and
+   * {@code COMPACT INDEX} (issue #11797): FIX rebuilds indexes, relinks edge lists and deletes records, COMPRESS rewrites pages,
+   * and the checker works on the wrapped database through the buckets, so no per-type grant is ever asked on the way. Asked HERE,
+   * before the checker exists, because nothing below this point asks. A check that only reports stays a read. No-op with no bound
+   * user (embedded, HA replication apply).
+   */
+  private void checkRepairAllowed(final CommandContext context) {
+    if (!fix && !compress)
+      return;
+
+    try {
+      context.getDatabase().checkPermissionsOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA);
+    } catch (final SecurityException ignored) {
+      // NOT CHAINED: THE HTTP LAYER APPENDS THE CAUSE'S MESSAGE TO THE DETAIL IT SENDS
+      throw new SecurityException(
+          "User '" + context.getDatabase().getCurrentUserName() + "' is not allowed to run CHECK DATABASE " + (fix ? "FIX" : "COMPRESS")
+              + ": it repairs the database whatever the user's per-type grants, so it requires the '"
+              + DATABASE_ACCESS.UPDATE_SCHEMA.name + "' database permission. CHECK DATABASE without FIX and COMPRESS only reports");
+    }
   }
 
   /** Package-private seam for tests: lets a test inject a checker whose {@code check()} fails mid-run. */
