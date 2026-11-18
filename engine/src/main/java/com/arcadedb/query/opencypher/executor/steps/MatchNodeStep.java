@@ -63,6 +63,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
@@ -997,26 +998,35 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * index on the pinned property answers it with a seek - the index holds exactly the vertices of that type whose
    * property equals the value - and only the types without such an index are walked.
    * <p>
+   * The plan of every type is decided before anything is read, and the walk of the whole database is kept when the
+   * plan says nothing better:
+   * <ul>
+   * <li>a type with more than one super type is left out of the plan: an index declared on a type holds the
+   * vertices of its sub types as well (see {@link Labels#isInheritedIndex}), so the two indexes of the two branches
+   * of a diamond would answer the vertices of their common sub type twice;</li>
+   * <li>a type without a usable index is walked, as before, and when the value the pattern pins is decided by the
+   * input row the walk would be repeated for every row, where it used to be walked once and cached (issues #6602,
+   * #8695): in that case the walk of the whole database answers the statement instead;</li>
+   * <li>an index is used only when the value can be keyed by it the way the walk compares it: a number for a
+   * number property, a string for a string property. The text of a RID against a number property is answered by
+   * the walk and not by the index (issue #11933).</li>
+   * </ul>
    * The types are visited parents first, because an index declared on a type holds the vertices of that type AND
-   * of its sub types (see {@link Labels#isInheritedIndex}): a type whose ancestor has the index is answered by
-   * that ancestor's seek and is not walked again, so no vertex is answered twice.
-   * <p>
-   * Only the properties written on the pattern itself are used. A value the input row decides makes the
-   * candidates differ from row to row: the seek is then made again for every row, as the labelled path does, and
-   * the candidates are not cached (see {@link #isRowIndependentFullScan()}).
+   * of its sub types: a type whose ancestor has the index is answered by that ancestor's seek and is not walked
+   * again, so no vertex is answered twice.
    *
-   * @return the iterator over the candidates, or null when the pattern pins nothing an index could answer
+   * @return the iterator over the candidates, or null when the walk of the whole database answers the statement
    */
   private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult) {
     if (pattern.hasDynamicLabels())
       return null; // the types are only known per row
 
     final Map<String, Object> pinned = new LinkedHashMap<>();
+    boolean rowDependent = false;
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
-      final Object declared = entry.getValue();
-      if (isRowDependent(declared))
-        candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
-      final Object value = InlineProperties.resolve(declared, currentInputResult, context);
+      if (isRowDependent(entry.getValue()))
+        rowDependent = true;
+      final Object value = InlineProperties.resolve(entry.getValue(), currentInputResult, context);
       if (value == null)
         return null; // a value that does not resolve gives up on the index, as the labelled path does
       pinned.put(entry.getKey(), value);
@@ -1029,19 +1039,58 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (types.isEmpty())
       return null;
 
-    final List<Iterator<Identifiable>> parts = new ArrayList<>(types.size());
+    // A type with more than one super type: the two branches of the diamond can each hold an index over the
+    // property, and each of them holds the vertices of their common sub type, so the sub type would be answered
+    // twice. The walk of the whole database answers those instead.
+    for (final DocumentType type : types)
+      if (type.getSuperTypes().size() > 1)
+        return null;
+
+    // The plan of every type, decided before anything is read: a type with an index of its own is answered by a
+    // seek, a type whose ancestor has one is answered by that ancestor's seek, and a type with neither is walked.
+    final Map<DocumentType, TypeIndex> plan = new LinkedHashMap<>();
     final Set<DocumentType> answeredByAncestor = new LinkedHashSet<>();
+    boolean anySeek = false;
+    for (final DocumentType type : parentsFirst(types)) {
+      final TypeIndex index = usableIndexOf(type, pinned);
+      plan.put(type, index);
+      if (index != null) {
+        anySeek = true;
+        for (final DocumentType sub : descendantsOf(type))
+          answeredByAncestor.add(sub);
+      }
+    }
+    if (!anySeek)
+      return null; // no index answers the pattern: the walk of the whole database answers it
+
+    // A value the input row decides makes the candidates differ from row to row: the seek is made again for every
+    // row and the candidates cannot be cached. The types that are walked would then be walked again for every row,
+    // where they used to be walked once and cached: the walk of the whole database answers those instead.
+    if (rowDependent)
+      for (final DocumentType type : types)
+        if (plan.get(type) == null && !answeredByAncestor.contains(type) && !isEmptyType(type))
+          return null;
+
+    final List<Iterator<Identifiable>> parts = new ArrayList<>(types.size());
     final List<String> indexNames = new ArrayList<>();
 
     for (final DocumentType type : parentsFirst(types)) {
       if (answeredByAncestor.contains(type))
         continue; // an ancestor's seek already answered the vertices of this type
 
-      final Iterator<Identifiable> seek = seekByPinnedIndex(type, pinned, indexNames);
+      final TypeIndex index = plan.get(type);
+      Iterator<Identifiable> seek = null;
+      if (index != null) {
+        seek = seekByIndex(index, type, pinned, indexNames);
+        if (seek != null)
+          for (final DocumentType sub : descendantsOf(type))
+            answeredByAncestor.add(sub);
+      }
+
       if (seek != null) {
         parts.add(seek);
-        for (final DocumentType sub : descendantsOf(type))
-          answeredByAncestor.add(sub);
+        if (rowDependent)
+          candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
       } else
         parts.add(ownVerticesOf(type));
     }
@@ -1055,13 +1104,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
-   * The seek of the type's OWN index on the pinned properties, or null when the type has no index that answers them.
+   * The index of the type's OWN that answers the pinned properties, or null when the type has none that does.
    * <p>
    * The index has to be the type's own: an index declared on a super type holds the vertices of the whole hierarchy
    * under it, and the type that owns it answers for its sub types as well.
    */
-  private Iterator<Identifiable> seekByPinnedIndex(final DocumentType type, final Map<String, Object> pinned,
-      final List<String> indexNames) {
+  private TypeIndex usableIndexOf(final DocumentType type, final Map<String, Object> pinned) {
     TypeIndex best = null;
     List<String> bestProperties = null;
     for (final TypeIndex index : type.getAllIndexes(false)) {
@@ -1070,29 +1118,82 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
       if (indexProperties == null || indexProperties.isEmpty())
         continue; // not a key index (a FULL_TEXT index answers by token, issue #8439) or dropped meanwhile
-      boolean wholeKey = true;
-      for (final String property : indexProperties)
-        if (!pinned.containsKey(property)) {
-          wholeKey = false;
+      final Type[] keyTypes = index.getKeyTypes();
+      if (keyTypes == null || keyTypes.length < indexProperties.size())
+        continue; // an index that does not say what its key holds cannot be asked with a value
+      boolean usable = true;
+      for (int i = 0; i < indexProperties.size(); i++) {
+        final String property = indexProperties.get(i);
+        final Object value = pinned.get(property);
+        if (value == null || !isKeyableBy(keyTypes[i], value)) {
+          usable = false;
           break;
         }
-      if (!wholeKey)
+      }
+      if (!usable)
         continue; // a prefix of the key does not answer an equality on the whole key
       if (best == null || indexProperties.size() > bestProperties.size()) {
         best = index;
         bestProperties = indexProperties;
       }
     }
-    if (best == null)
+    return best;
+  }
+
+  /**
+   * True when the index can be keyed by the value the way the walk compares it: a number for a number key, a string
+   * for a string key. A value of another kind - the text of a RID against a number key - is answered by the walk and
+   * not by the index (issue #11933).
+   * <p>
+   * The type of the key is the one of the index, not the one of the property: an index can stand on a property the
+   * type does not declare (issue #11777), and the key it holds is what the lookup is made with.
+   */
+  private static boolean isKeyableBy(final Type keyType, final Object value) {
+    if (value == null || keyType == null)
+      return false;
+    switch (keyType) {
+      case INTEGER:
+      case SHORT:
+      case LONG:
+      case FLOAT:
+      case DOUBLE:
+      case BYTE:
+      case DECIMAL:
+        return value instanceof Number;
+      case STRING:
+        return value instanceof String;
+      case BOOLEAN:
+        return value instanceof Boolean;
+      default:
+        return keyType.getDefaultJavaType().isInstance(value);
+    }
+  }
+
+  /**
+   * True when the type holds no vertex at all: a type that holds none is not walked, so a statement that pins a
+   * value the row decides does not fall back to the walk of the whole database for it.
+   */
+  private boolean isEmptyType(final DocumentType type) {
+    return context.getDatabase().countType(type.getName(), false) == 0;
+  }
+
+  /**
+   * The seek of the type's own index on the pinned properties, or null when the index cannot answer them after all
+   * (a concurrent DDL took it away, or its key does not fit the value).
+   */
+  private Iterator<Identifiable> seekByIndex(final TypeIndex index, final DocumentType type, final Map<String, Object> pinned,
+      final List<String> indexNames) {
+    final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+    if (indexProperties == null || indexProperties.isEmpty())
       return null;
 
-    final String[] propertyNames = bestProperties.toArray(new String[0]);
+    final String[] propertyNames = indexProperties.toArray(new String[0]);
     final Object[] propertyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; i++)
       propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
 
-    indexNames.add(best.getTypeName() + "[" + String.join(", ", propertyNames) + "]");
-    return lookupByKey(best, type.getName(), propertyNames, propertyValues);
+    indexNames.add(index.getTypeName() + "[" + String.join(", ", propertyNames) + "]");
+    return lookupByKey(index, type.getName(), propertyNames, propertyValues);
   }
 
   /**
