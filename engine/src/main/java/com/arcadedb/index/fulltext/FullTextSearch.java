@@ -36,6 +36,7 @@ import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import org.apache.lucene.search.FuzzyQuery;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -221,8 +222,11 @@ public class FullTextSearch {
    */
   static Map<RID, Float> searchMatchingFirst(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
       final int effectiveLimit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+    // A fuzzy clause expands to the best terms of the whole type, not to the best ones of each bucket (issue #12462)
+    final Map<FuzzyQuery, Set<String>> fuzzyExpansions = FullTextQueryExecutor.selectFuzzyExpansions(bucketIndexes, queryText, guard,
+        restrictedFields);
     if (bucketIndexes.size() > 1 && bucketIndexes.getFirst().isBM25())
-      return searchBM25(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter);
+      return searchBM25(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter, fuzzyExpansions);
 
     final Map<RID, Float> allResults = new HashMap<>();
 
@@ -231,8 +235,8 @@ public class FullTextSearch {
       // rejects changes no other bucket's scores
       if (ridFilter != null && !ridFilter.acceptsBucket(ftIndex.getAssociatedBucketId()))
         continue;
-      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex, guard, restrictedFields, ridFilter).search(queryText,
-          effectiveLimit)) {
+      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex, guard, restrictedFields, ridFilter)
+          .withFuzzyExpansions(fuzzyExpansions).search(queryText, effectiveLimit)) {
         mergeCursor(allResults, cursor, guard);
       }
     }
@@ -241,7 +245,8 @@ public class FullTextSearch {
   }
 
   private static Map<RID, Float> searchBM25(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
-      final int limit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+      final int limit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter,
+      final Map<FuzzyQuery, Set<String>> fuzzyExpansions) {
     // Pass one: match each bucket and count every scoring token's document frequency during the same posting walk, so global
     // statistics cost no extra scan. Matching stays bucket-local, preserving Lucene boolean/phrase/wildcard semantics; only the
     // corpus statistics are pooled. Both passes are needed because no bucket can be scored until every bucket has reported its
@@ -253,7 +258,7 @@ public class FullTextSearch {
 
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
       final FullTextQueryExecutor.BM25QueryMatch match = new FullTextQueryExecutor(ftIndex, guard, restrictedFields, null)
-          .collectBM25Matches(queryText);
+          .withFuzzyExpansions(fuzzyExpansions).collectBM25Matches(queryText);
       matches.add(match);
       for (final Map.Entry<String, Float> token : match.scoringTokens().entrySet())
         scoringTokens.merge(token.getKey(), token.getValue(), Math::max);
@@ -463,9 +468,12 @@ public class FullTextSearch {
   private static Map<String, Float> collectScoringTokens(final List<LSMTreeFullTextIndex> bucketIndexes,
       final String queryText, final List<String> restrictedFields, final int maxTerms) {
     final TreeMap<String, Float> tokens = new TreeMap<>();
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+    final Map<FuzzyQuery, Set<String>> fuzzyExpansions = FullTextQueryExecutor.selectFuzzyExpansions(bucketIndexes, queryText, guard,
+        restrictedFields);
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
-      for (final Map.Entry<String, Float> token : new FullTextQueryExecutor(ftIndex, WorkGuard.forCommandDeadline(null),
-          restrictedFields, null).collectScoringTokens(queryText).entrySet())
+      for (final Map.Entry<String, Float> token : new FullTextQueryExecutor(ftIndex, guard, restrictedFields, null)
+          .withFuzzyExpansions(fuzzyExpansions).collectScoringTokens(queryText).entrySet())
         tokens.merge(token.getKey(), token.getValue(), Math::max);
 
     while (tokens.size() > maxTerms)
