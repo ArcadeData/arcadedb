@@ -24,6 +24,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import java.lang.ref.SoftReference;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.function.Supplier;
 
@@ -361,10 +362,12 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    // The view is built from the slices its key was made of: a schema change between the two would otherwise store the view of
-    // one selection under the key of another
+    // The view is built from the slices its key was made of, and kept only if the names still resolve to them once it is built:
+    // a schema change in between (the delegate expands the slices once more) would otherwise store the view of one selection
+    // under the key of another
     final String[] slices = sliceSelection(edgeTypes);
-    return cachedView(viewKey(direction, slices), () -> translate(delegate.getNeighborView(direction, slices)));
+    return cachedView(viewKey(direction, slices), () -> translate(delegate.getNeighborView(direction, slices)),
+        () -> Arrays.equals(slices, sliceSelection(edgeTypes)));
   }
 
   /**
@@ -398,11 +401,19 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    * under memory pressure. A delegate with no view for the key answers null, which is not kept.
    */
   private NeighborView cachedView(final String key, final Supplier<NeighborView> builder) {
+    return cachedView(key, builder, null);
+  }
+
+  /**
+   * @param keyStillCurrent asked once the view is built, or null for a key that cannot go stale: a view built while it does not
+   *                        hold is answered but not kept
+   */
+  private NeighborView cachedView(final String key, final Supplier<NeighborView> builder, final BooleanSupplier keyStillCurrent) {
     final SoftReference<NeighborView> cached = views.get(key);
     NeighborView view = cached != null ? cached.get() : null;
     if (view == null) {
       view = builder.get();
-      if (view != null)
+      if (view != null && (keyStillCurrent == null || keyStillCurrent.getAsBoolean()))
         views.put(key, new SoftReference<>(view));
     }
     return view;

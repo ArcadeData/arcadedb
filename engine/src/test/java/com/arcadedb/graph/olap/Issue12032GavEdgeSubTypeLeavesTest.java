@@ -33,6 +33,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,7 +67,7 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
 
     // count(@rid), not count(*): the record scan is the reference, count(*) reads a counter
     assertThat(sqlCount("SELECT count(@rid) AS c FROM E0")).isZero();
-    assertThat(count(SUM)).isZero();
+    assertThat(sumOfOnes(SUM)).isZero();
     assertThat(count(COUNT)).isZero();
 
     Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
@@ -125,7 +126,7 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
     assertThat(schemaRow().<Number>getProperty("edgeCount").intValue()).isEqualTo(3);
     assertThat(cypherPlan(CHAIN_COUNT)).contains(VIEW_HOP);
     assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
-    assertThat(count("MATCH (a:V)-[e:E0]->(b:V) RETURN sum(1) AS c")).isEqualTo(3L);
+    assertThat(sumOfOnes("MATCH (a:V)-[e:E0]->(b:V) RETURN sum(1) AS c")).isEqualTo(3L);
   }
 
   /**
@@ -161,18 +162,41 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
   void aTypeChangeFoundBeforeARebuildDoesNotMarkTheRebuiltViewStale() {
     final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("OFF");
     database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
-    assertThat(view.holdsLeftEdgeSlice()).as("the CSR still holds E1's slice").isTrue();
+    // WHAT THE CHECK THAT FINDS E1'S SLICE HANDS TO THE TASK IT DISPATCHES, TAKEN BEFORE THE REBUILD
+    final BooleanSupplier stillNeeded = view.unlessRebuiltSinceNow();
+    assertThat(stillNeeded.getAsBoolean()).as("nothing has been rebuilt yet").isTrue();
 
     database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW G").close();
     Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
-    assertThat(view.holdsLeftEdgeSlice()).as("the rebuilt snapshot holds no slice of E1").isFalse();
+    assertThat(stillNeeded.getAsBoolean()).as("a rebuild has published since").isFalse();
 
-    // THE TASK OF A CHECK MADE BEFORE THE REBUILD RUNS AFTER IT
-    view.onTypeChange("a check made before the rebuild", view::holdsLeftEdgeSlice);
+    // THE TASK OF THE CHECK RUNS AFTER THE REBUILD
+    view.onTypeChange("a check made before the rebuild", stillNeeded);
 
     assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(view.isReady()).isTrue();
     assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
+  }
+
+  /**
+   * The task of the check is not decided afresh: a type that is attached again by the time it runs may have been written to while
+   * it was detached, and nobody of the view heard those edges, so the rebuild that takes them in is still due.
+   */
+  @Test
+  void aTypeChangeFoundIsStillActedOnWhenTheTypeIsAttachedAgainBeforeTheTaskRuns() {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("OFF");
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    final BooleanSupplier stillNeeded = view.unlessRebuiltSinceNow();
+    write("CREATE EDGE E1 FROM (SELECT FROM V WHERE i = 0) TO (SELECT FROM V WHERE i = 3)");
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE +E0").close();
+
+    view.onTypeChange("a check made while E1 was detached", stillNeeded);
+
+    assertThat(view.getStatus()).as("the view is not served as complete").isEqualTo(GraphAnalyticalView.Status.STALE);
+    database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW G").close();
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.getEdgeCount()).isEqualTo(7);
+    assertThat(count(CHAIN_COUNT)).isEqualTo(7L);
   }
 
   /** E0 and its sub-type E1, 3 edges each, in the base CSR of a view over E0 (the table 2 of the issue). */
@@ -233,7 +257,17 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
     }
   }
 
+  /** A {@code count(*)}: a number, zero included, never null. */
   private long count(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      final Number n = rs.next().getProperty("c");
+      assertThat(n).as("count(*) answers a number: " + cypher).isNotNull();
+      return n.longValue();
+    }
+  }
+
+  /** A {@code sum(1)}, which is null over no row at all. */
+  private long sumOfOnes(final String cypher) {
     try (final ResultSet rs = database.query("opencypher", cypher)) {
       final Number n = rs.next().getProperty("c");
       return n == null ? 0L : n.longValue();

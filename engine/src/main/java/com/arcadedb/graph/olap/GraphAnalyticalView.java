@@ -1401,8 +1401,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * the check found.
    *
    * @param change      what happened to the view's types, for the log
-   * @param stillNeeded asked under the monitor when the task runs: whether the change still holds for the snapshot the view has
-   *                    by then, or null when it does by itself. A rebuild that published in between took the change in
+   * @param stillNeeded asked under the monitor when the task runs: whether no rebuild has published since the check (see
+   *                    {@link #unlessRebuiltSince}), or null when the task is due whatever happened. A build that published in
+   *                    between has read the types as they are
    */
   private void dispatchTypeChangeRebuild(final String change, final BooleanSupplier stillNeeded) {
     inFlightTasks.incrementAndGet();
@@ -1429,7 +1430,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   synchronized void onTypeChange(final String change, final BooleanSupplier stillNeeded) {
     // A rebuild (a REBUILD of an OFF view, or one that ran for another reason) may have published since the check that found the
-    // change: marking the snapshot it published STALE would put out of service a view that was just repaired
+    // change, having read the types as they are: marking the snapshot it published STALE would put out of service a view that was
+    // just repaired
     if (stillNeeded != null && !stillNeeded.getAsBoolean())
       return;
     LogManager.instance().log(this, Level.INFO, "GraphAnalyticalView '%s': %s; %s", name, change,
@@ -1645,20 +1647,29 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
       dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
           + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)",
-          this::holdsLeftEdgeSlice);
+          unlessRebuiltSince(snap));
     return left == null;
   }
 
   /**
-   * Whether the snapshot the view holds NOW has an edge slice its types no longer cover, decided afresh and with no side effect:
-   * what a dispatched rebuild asks under the monitor, to find out whether a rebuild that published since has taken the change in.
+   * What a task dispatched about {@code snap} asks under the monitor: whether the view still holds the CSR that {@code snap} was
+   * decided for. A commit replaces the snapshot and keeps the CSR, so the change is still there to be taken in; a build that
+   * published has read the types as they are, and any slice it holds is decided again, on its own snapshot. The change is not
+   * decided afresh: a type detached, written to and attached again before the task runs would hold its slice, and the rebuild
+   * that takes in the edges it was written while detached would be dropped.
    */
-  boolean holdsLeftEdgeSlice() {
+  private BooleanSupplier unlessRebuiltSince(final Snapshot snap) {
+    final Map<String, CSRAdjacencyIndex> base = snap.csrPerType;
+    return () -> {
+      final Snapshot current = snapshot;
+      return current != null && current.csrPerType == base;
+    };
+  }
+
+  /** {@link #unlessRebuiltSince} for the snapshot the view holds now, for the tests that play the task of an earlier check. */
+  BooleanSupplier unlessRebuiltSinceNow() {
     final Snapshot snap = snapshot;
-    if (snap == null)
-      return false;
-    return firstLeftEdgeSlice(snap.csrPerType.keySet()) != null
-        || (snap.overlay != null && firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes()) != null);
+    return snap == null ? () -> false : unlessRebuiltSince(snap);
   }
 
   /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */

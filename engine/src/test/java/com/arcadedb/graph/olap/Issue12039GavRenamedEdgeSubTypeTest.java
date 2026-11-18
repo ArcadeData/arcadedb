@@ -75,7 +75,7 @@ class Issue12039GavRenamedEdgeSubTypeTest extends TestHelper {
       assertThat(view.isReady()).as("the CSR holds F's edges under a name that is no longer a type").isFalse();
       assertThat(walkedOut("FR")).isEqualTo(3L);
       assertThat(count("MATCH ()-[e:FR]->() RETURN count(*) AS c")).isEqualTo(3L);
-      assertThat(count("MATCH ()-[e:FR]->() RETURN sum(1) AS c")).isEqualTo(3L);
+      assertThat(sumOfOnes("MATCH ()-[e:FR]->() RETURN sum(1) AS c")).isEqualTo(3L);
     } finally {
       gate.countDown();
       view.setBeforeBuildScanForTest(null);
@@ -113,7 +113,17 @@ class Issue12039GavRenamedEdgeSubTypeTest extends TestHelper {
     return walked;
   }
 
+  /** A {@code count(*)}: a number, zero included, never null. */
   private long count(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      final Number n = rs.next().getProperty("c");
+      assertThat(n).as("count(*) answers a number: " + cypher).isNotNull();
+      return n.longValue();
+    }
+  }
+
+  /** A {@code sum(1)}, which is null over no row at all. */
+  private long sumOfOnes(final String cypher) {
     try (final ResultSet rs = database.query("opencypher", cypher)) {
       final Number n = rs.next().getProperty("c");
       return n == null ? 0L : n.longValue();
