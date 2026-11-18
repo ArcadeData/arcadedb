@@ -353,11 +353,11 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
 
     switch (keyType) {
     case STRING:
-      if (value instanceof String)
+      // A boolean too: a declared STRING arrives here as its stored text, and where nothing is declared (a Cypher index
+      // created before the data) the index keys the boolean by its text, which the seek converts to as well. A text
+      // spelling it found that way is dropped by the comparison (issue #11587)
+      if (value instanceof String || value instanceof Boolean)
         return KeyUse.SEEK;
-      // No text equals a boolean where nothing is declared; a declared one arrives here as its stored text
-      if (value instanceof Boolean)
-        return KeyUse.NONE;
       // A number equals a string spelling the RID it encodes as well as the text it was stored as in a property declared
       // STRING (issue #9695): no single text key covers both, so the label is read and the comparison decides
       return KeyUse.SCAN;

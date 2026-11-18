@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.CommandParsingException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies the engine query/command boundary opens a {@link QueryTracer} span carrying the
@@ -65,6 +67,59 @@ class LocalDatabaseQueryTracerTest {
     // Every opened span must have been closed (try-with-resources at the boundary).
     assertThat(ended).contains("command", "query");
     assertThat(ended).hasSameSizeAs(begun);
+  }
+
+  @Test
+  void aFailedStatementReportsItsErrorBeforeTheSpanCloses() {
+    // issue #11638: a span closed with no error is a success to every tracing backend
+    final List<String> events = new ArrayList<>();
+    QueryTracer.Holder.register((protocol, database, language, type, query) -> new QueryTracer.Span() {
+      @Override
+      public void error(final Throwable error) {
+        events.add("error:" + query + ":" + error.getClass().getSimpleName());
+      }
+
+      @Override
+      public void close() {
+        events.add("close:" + query);
+      }
+    });
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      if (factory.exists())
+        factory.open().drop();
+      final Database db = factory.create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE Doc");
+        assertThatThrownBy(() -> db.query("sql", "SELEC FROM Doc")).isInstanceOf(CommandParsingException.class);
+        assertThatThrownBy(() -> db.command("sql", "INSERT INTO Missing SET a = 1")).isInstanceOf(RuntimeException.class);
+      } finally {
+        db.drop();
+      }
+    }
+
+    assertThat(events).containsExactly("close:CREATE DOCUMENT TYPE Doc",//
+        "error:SELEC FROM Doc:CommandSQLParsingException", "close:SELEC FROM Doc",//
+        "error:INSERT INTO Missing SET a = 1:SchemaException", "close:INSERT INTO Missing SET a = 1");
+  }
+
+  @Test
+  void aTracerFailingToOpenASpanNeverFailsTheStatement() {
+    QueryTracer.Holder.register((protocol, database, language, type, query) -> {
+      throw new IllegalStateException("tracer down");
+    });
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      if (factory.exists())
+        factory.open().drop();
+      final Database db = factory.create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE Doc");
+        assertThat(db.query("sql", "SELECT FROM Doc").stream().count()).isZero();
+      } finally {
+        db.drop();
+      }
+    }
   }
 
   @Test

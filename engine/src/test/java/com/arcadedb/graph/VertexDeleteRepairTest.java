@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
@@ -1188,7 +1189,9 @@ class VertexDeleteRepairTest {
     void anAbsentEndpointDoesNotDragItsBucketIntoTheIndexRebuild() {
       final Graph graph = createGraph();
 
-      rawDelete(graph.person2);
+      // its index entries go with it: a dangling entry is a finding of its own that earns the rebuild (#11734), this test is
+      // about the absent endpoint alone
+      rawDeleteWithItsIndexEntries(graph.person2);
 
       // The BUCKET-level names, which is what rebuiltIndexes reports - not the "Person[name]" TypeIndex wrapper the
       // schema is asked for by name. Asserting the wrapper's name would never have matched and would have passed
@@ -1330,6 +1333,18 @@ class VertexDeleteRepairTest {
      */
     private void rawDelete(final RID rid) {
       database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
+    }
+
+    /** {@link #rawDelete} that also takes the record's entries out of the indexes of its bucket. */
+    private void rawDeleteWithItsIndexEntries(final RID rid) {
+      database.transaction(() -> {
+        final DatabaseInternal db = (DatabaseInternal) database;
+        final Document record = rid.asDocument();
+        for (final Index index : db.getSchema().getIndexes())
+          if (index.getAssociatedBucketId() == rid.getBucketId())
+            db.getIndexer().removeFromIndex(index, rid, record);
+        TestHelper.deleteRecordAtLowLevel(database, rid);
+      });
     }
 
     /**
@@ -1625,9 +1640,8 @@ class VertexDeleteRepairTest {
      * reporting the value as ABSENT rather than throwing (see {@code EdgeDeleteRepairRegressionTest.TolerantDelete}), so nothing here
      * can learn the key the index actually holds, and the entry for the deleted record survives. That is not a
      * regression this fix introduces and not one it can close: {@code LocalDatabase.deleteRecordNoLock} degrades
-     * identically on the same record, by design and with a logged warning. CHECK DATABASE does not detect a dangling
-     * LSM entry either ({@code totalErrors} 0, {@code corruptedIndexes} empty), so this test is what records the
-     * boundary instead.
+     * identically on the same record, by design and with a logged warning. Since #11734 CHECK DATABASE reports the
+     * dangling entry, and its FIX rebuilds the index without it.
      * <p>
      * What the move must still get right, and does: the record is removed, the counter stays truthful, and no key is
      * fabricated for the replacement.
@@ -1664,6 +1678,15 @@ class VertexDeleteRepairTest {
       assertThat(lookup(index, CORRUPT_MARKER))
           .as("unreadable key: the stale entry survives, exactly as it does on the ordinary delete path")
           .containsExactly(staleEdgeRID);
+
+      // ...and CHECK DATABASE names it, which is how an operator finds and repairs it (issue #11734)
+      try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+        assertThat(rs.next().<Long>getProperty("danglingIndexEntries")).isEqualTo(1L);
+      }
+      try (final ResultSet rs = database.command("sql", "CHECK DATABASE FIX")) {
+        assertThat(rs.next().<Collection<String>>getProperty("rebuiltIndexes")).isNotEmpty();
+      }
+      assertThat(lookup(index, CORRUPT_MARKER)).as("FIX rebuilt the index from the records").isEmpty();
     }
 
     /**

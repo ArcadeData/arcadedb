@@ -47,9 +47,10 @@ public class SubstringFunction implements StatelessFunction {
     checkArity(args);
     // An explicitly written null length propagates rather than meaning "run to the end of the string", which is what
     // CypherSubstringFunction - the implementation Cypher actually resolves substring() to - already did (issue #5193).
-    if (args[0] == null || args[1] == null || CypherFunctionHelper.isExplicitNull(args, 2))
+    // Issue #11692: the sliced argument is STRING-typed, the same check CypherSubstringFunction makes.
+    final String str = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    if (str == null || args[1] == null || CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
-    final String str = args[0].toString();
     // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
     // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
     // Issue #10850: a whole number or a type error - intValue() read 1.9 as 1 and 3000000000 as a negative start

@@ -56,7 +56,7 @@ import com.arcadedb.schema.LocalSchema;
  * routinely hold different values - or one holds none (issue #9751). Node-local here means "not comparable", not
  * "never shipped".</li>
  * </ul>
- * A new engine side file that is not replicated content belongs here. {@code Issue9638NodeLocalFilesChecksumTest} in
+ * A new engine side file that is not replicated content belongs here. {@code DatabaseVerifyAndChecksumsTest.NodeLocalFilesChecksum} in
  * {@code ha-raft} drives a real database through its writers and fails on a file that is neither shipped by a snapshot
  * nor declared node-local.
  */

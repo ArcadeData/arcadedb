@@ -136,4 +136,43 @@ class VectorIndexExportImportIT {
       assertThat(result.hasNext()).as("Vector search should return results after import").isTrue();
     }
   }
+
+  /**
+   * Issue #11577: the dump holds one definition per bucket of a type index, and the one of a bucket a subtype owns
+   * names the subtype. Restoring it built a second LSM_VECTOR index on the subtype, so the restored database had
+   * {@code P[vec]} and {@code E[vec]} where the source had {@code P[vec]} only.
+   */
+  @Test
+  void vectorIndexOnAParentTypeIsRestoredOnTheParentOnly() throws Exception {
+    try (final Database db = new DatabaseFactory(SOURCE_PATH).create()) {
+      db.transaction(() -> {
+        db.command("sql", "CREATE VERTEX TYPE P");
+        db.command("sql", "CREATE VERTEX TYPE E EXTENDS P");
+        db.command("sql", "CREATE PROPERTY P.vec ARRAY_OF_FLOATS");
+        db.command("sql",
+            "CREATE INDEX ON P (vec) LSM_VECTOR METADATA {dimensions: " + DIMENSIONS + ", similarity: 'COSINE'}");
+      });
+      db.transaction(() -> {
+        for (int i = 0; i < 4; i++) {
+          final float[] embedding = new float[DIMENSIONS];
+          for (int j = 0; j < DIMENSIONS; j++)
+            embedding[j] = (i + 1) * 0.1f + j;
+          db.newVertex(i % 2 == 0 ? "P" : "E").set("vec", embedding).save();
+        }
+      });
+    }
+
+    new Exporter(("-f " + FILE + " -d " + SOURCE_PATH + " -o -format jsonl").split(" ")).exportDatabase();
+
+    try (final Database db2 = new DatabaseFactory(RESTORE_PATH).create()) {
+      db2.command("sql", "IMPORT DATABASE file://" + new File(FILE).getAbsolutePath());
+    }
+
+    try (final Database db2 = new DatabaseFactory(RESTORE_PATH).open()) {
+      final Schema schema = db2.getSchema();
+      assertThat(schema.existsIndex("P[vec]")).isTrue();
+      assertThat(schema.existsIndex("E[vec]")).as("no index of its own on the subtype").isFalse();
+      assertThat(schema.getIndexByName("P[vec]").countEntries()).isEqualTo(4);
+    }
+  }
 }

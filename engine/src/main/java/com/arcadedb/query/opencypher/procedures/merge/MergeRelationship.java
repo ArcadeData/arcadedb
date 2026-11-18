@@ -168,7 +168,7 @@ public class MergeRelationship implements CypherProcedure {
     // The match above read an edge list a concurrent merge may be appending the same relationship to (#11482)
     final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
     if (tx != null)
-      tx.addMergedEdge(latestStartNode.getIdentity(), latestEndNode.getIdentity(), newEdge.getTypeName(), matchProps);
+      tx.addMergedEdgeBetweenExistingNodes(latestStartNode.getIdentity(), latestEndNode.getIdentity(), newEdge.getTypeName(), matchProps);
 
     return createResultStream(newEdge);
   }

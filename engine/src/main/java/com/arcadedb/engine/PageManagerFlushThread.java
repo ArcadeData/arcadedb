@@ -1036,6 +1036,44 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
+   * Waits for the given pending pages of ONE file to leave the flush pipeline, bounded by {@code maxWaitMillis} (issue
+   * #11805). Unlike {@link #waitPagesPendingNowOfDatabaseAreFlushedUntil} the wait ends when those pages are written,
+   * whatever else the database still has queued behind them, and each pass looks only at the pages that were still
+   * pending at the previous one. A page committed again meanwhile is pending again and keeps the wait going: the caller
+   * asks about the newest committed image.
+   *
+   * @param pageNumbers the pages to wait for in {@code [0, count)}; compacted in place to the ones still pending
+   *
+   * @return how many of them are still pending, at the head of {@code pageNumbers}; 0 when all were written
+   */
+  int waitPagesOfFileAreFlushed(final Database database, final int fileId, final int[] pageNumbers, final int count,
+      final long maxWaitMillis) {
+    final long now = System.currentTimeMillis();
+    final long deadlineMillis = maxWaitMillis >= Long.MAX_VALUE - now ? Long.MAX_VALUE : now + maxWaitMillis;
+    int pending = count;
+    try {
+      while (true) {
+        int stillPending = 0;
+        for (int i = 0; i < pending; ++i)
+          if (getCachedPageFromMutablePageInQueue(new PageId(database, fileId, pageNumbers[i])) != null)
+            pageNumbers[stillPending++] = pageNumbers[i];
+        pending = stillPending;
+        if (pending == 0 || isSuspended(database))
+          break;
+        final long remaining = deadlineMillis - System.currentTimeMillis();
+        if (remaining <= 0)
+          break;
+        // The drain signal fires only when the whole database's pipeline empties: the poll interval is what re-checks
+        // the pages of this file while other files keep the pipeline busy
+        pageIndex.awaitDrain(database, Math.min(remaining, flushWaitPollMillis));
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    return pending;
+  }
+
+  /**
    * Bounded {@link #setSuspended(Database, boolean)} acquisition for the snapshot t0 barrier (#6125).
    * <p>
    * The unbounded version parks on {@code suspendLock} for as long as another suspender's resume is in flight, and

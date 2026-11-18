@@ -359,6 +359,38 @@ public class FileManager {
     }
   }
 
+  /**
+   * Forces ONE file to disk when it was written, created or renamed since its last successful fsync, and its directory
+   * when the file was created or renamed (issue #11805). For a writer that owes the durability of its own file only: the
+   * other files keep what they owe for the next {@link #syncFiles()}. Serialized with it, for the same reason.
+   *
+   * @return {@code true} when the file is durable (or is not a paginated file of this database any more); {@code false}
+   *     when its fsync failed
+   */
+  public boolean syncFile(final int fileId) {
+    if (!(fileIdMap.get(fileId) instanceof PaginatedComponentFile pcf))
+      return true;
+
+    syncLock.lock();
+    try {
+      final int synced = pcf.forceIfModified();
+      if (synced != PaginatedComponentFile.SYNC_CLEAN) {
+        syncedFiles.incrementAndGet();
+        if (synced == PaginatedComponentFile.SYNC_METADATA) {
+          final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
+          if (parent != null)
+            FileUtils.forceDirectory(parent.toPath());
+        }
+      }
+      return true;
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, pcf.getFileName());
+      return false;
+    } finally {
+      syncLock.unlock();
+    }
+  }
+
   private boolean syncFilesSerialized() {
     boolean allSynced = true;
     Set<Path> directoriesToSync = null;

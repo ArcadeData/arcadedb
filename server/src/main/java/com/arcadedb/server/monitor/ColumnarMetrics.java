@@ -25,6 +25,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.ArcadeDBServer;
 import io.micrometer.core.instrument.FunctionCounter;
@@ -60,8 +61,8 @@ import java.util.logging.Level;
  * <p>
  * Function meters hold their observed object weakly, so each database's {@code ColumnarStats} is kept strongly here until the
  * database goes away. A refresh every {@value #REFRESH_SECONDS} s (one daemon thread, as {@link HAReplicationMetrics}) registers the
- * series of new databases, replaces those of a database whose stats object changed (it was reopened) and removes those of a closed
- * one. The block cache is shared by every database, so its meters carry {@code database="*"}. Like {@link HAReplicationMetrics}, the
+ * series of new databases and indexes, replaces those of a database whose stats object changed (it was reopened), removes those of a
+ * dropped COLUMNAR index (#11640) and those of a closed database. The block cache is shared by every database, so its meters carry {@code database="*"}. Like {@link HAReplicationMetrics}, the
  * meters are keyed by database name on the JVM-wide registry: several servers in one JVM share the ids, and the first one to close
  * removes them.
  */
@@ -95,8 +96,8 @@ public final class ColumnarMetrics implements AutoCloseable {
     final ColumnarStats        stats;
     /** Held strongly with the stats: the scrape-time gauges read through it, and a function meter keeps its object only weakly. */
     final ColumnarIndexManager manager;
-    final Set<String>          keys = new HashSet<>();
-    final List<Meter.Id>       ids  = new ArrayList<>();
+    /** The meter of each bound series, by series key ({@code kind|type|property|reason}). */
+    final Map<String, Meter.Id> ids = new HashMap<>();
 
     Bound(final ColumnarIndexManager manager) {
       this.manager = manager;
@@ -170,7 +171,7 @@ public final class ColumnarMetrics implements AutoCloseable {
         current = new Bound(manager);
         bound.put(name, current);
       }
-      bindNewSeries(name, current, local);
+      reconcileSeries(name, current, local);
     }
     bound.entrySet().removeIf(e -> {
       if (open.contains(e.getKey()))
@@ -200,37 +201,71 @@ public final class ColumnarMetrics implements AutoCloseable {
   }
 
   private void removeAll(final Bound b) {
-    for (final Meter.Id id : b.ids)
+    for (final Meter.Id id : b.ids.values())
       registry.remove(id);
     b.ids.clear();
-    b.keys.clear();
   }
 
-  private void bindNewSeries(final String database, final Bound b, final LocalDatabase local) {
-    b.stats.forEachKey((kind, type, property, reason) -> bind(database, b, kind, type, property, reason));
-    for (final Index index : local.getSchema().getIndexes()) {
+  /**
+   * Binds the series the database justifies now and removes the bound ones it no longer does (issue #11640): the series of a dropped
+   * COLUMNAR index go on the next refresh, not at the next reopen. A series is justified by a COLUMNAR index of its type and property,
+   * or by a stats cell of a type (and property) that a COLUMNAR index still covers, on the type itself or on a supertype. The stats
+   * keep the cells of a dropped index, so a cell alone justifies nothing: it would keep a dropped index's series forever.
+   */
+  private void reconcileSeries(final String database, final Bound b, final LocalDatabase local) {
+    final Schema schema = local.getSchema();
+    // covered type -> its covered properties, the subtypes of an indexed type included (their buckets are projected too)
+    final Map<String, Set<String>> covered = new HashMap<>();
+    final Set<String> justified = new HashSet<>();
+    for (final Index index : schema.getIndexes()) {
       if (index.getType() != Schema.INDEX_TYPE.COLUMNAR || index.getTypeName() == null || index.getPropertyNames().isEmpty())
         continue;
       final String type = index.getTypeName();
       for (final String kind : TYPE_KINDS)
-        bind(database, b, kind, type, null, null);
+        bind(database, b, justified, kind, type, null, null);
       // final review C-I1: the column's property, the key of every reader ("tags" for "tags by item")
       final String property = Index.basePropertyName(index.getPropertyNames().getFirst());
       for (final String kind : PROPERTY_KINDS)
-        bind(database, b, kind, type, property, null);
+        bind(database, b, justified, kind, type, property, null);
       for (final String reason : REBUILD_REASONS)
-        bind(database, b, "rebuilds", type, null, reason);
+        bind(database, b, justified, "rebuilds", type, null, reason);
+      cover(covered, schema.getTypeOrNull(type), type, property);
     }
-    bind(database, b, "recovery.pages", null, null, null);
+    b.stats.forEachKey((kind, type, property, reason) -> {
+      final Set<String> properties = covered.get(type);
+      if (properties != null && (property == null || properties.contains(property)))
+        bind(database, b, justified, kind, type, property, reason);
+    });
+    bind(database, b, justified, "recovery.pages", null, null, null);
     for (final String kind : QUERY_KINDS)
-      bind(database, b, kind, null, null, null);
+      bind(database, b, justified, kind, null, null, null);
     for (final String reason : ColumnarStats.FALLBACK_SCAN_REASONS)
-      bind(database, b, "query.fallback.scans", null, null, reason);
+      bind(database, b, justified, "query.fallback.scans", null, null, reason);
+
+    if (b.ids.size() > justified.size())
+      b.ids.entrySet().removeIf(e -> {
+        if (justified.contains(e.getKey()))
+          return false;
+        registry.remove(e.getValue());
+        return true;
+      });
   }
 
-  private void bind(final String database, final Bound b, final String kind, final String type, final String property,
-      final String reason) {
-    if (!b.keys.add(kind + '|' + type + '|' + property + '|' + reason))
+  /** Marks the type, and every subtype of it, as covered for the property. */
+  private static void cover(final Map<String, Set<String>> covered, final DocumentType type, final String typeName, final String property) {
+    // a type reached by two inheritance paths is walked once per property
+    if (!covered.computeIfAbsent(typeName, k -> new HashSet<>()).add(property))
+      return;
+    if (type != null)
+      for (final DocumentType subType : type.getSubTypes())
+        cover(covered, subType, subType.getName(), property);
+  }
+
+  private void bind(final String database, final Bound b, final Set<String> justified, final String kind, final String type,
+      final String property, final String reason) {
+    final String key = kind + '|' + type + '|' + property + '|' + reason;
+    justified.add(key);
+    if (b.ids.containsKey(key))
       return;
     Tags tags = Tags.of("database", database);
     if (type != null)
@@ -240,7 +275,7 @@ public final class ColumnarMetrics implements AutoCloseable {
     if (reason != null)
       tags = tags.and("reason", reason);
     final String name = PREFIX + kind;
-    switch (kind) {
+    final Meter.Id id = switch (kind) {
     case "rebuilds" ->
         counter(b, name, tags, "Projection rebuilds by reason; a normal open and crash recovery never count", s -> s.rebuilds(type, reason));
     case "conversion.failures" ->
@@ -304,33 +339,34 @@ public final class ColumnarMetrics implements AutoCloseable {
             + "(the lowest limit when several indexes cover it)", null, m -> m.cardinalityExceeded(type, property) ? 1 : 0);
     case "files.open" -> gauge(b, name, tags, "Open files of the projection", null, s -> s.openFiles(type));
     default -> throw new IllegalArgumentException("Unknown columnar stat " + kind);
-    }
+    };
+    b.ids.put(key, id);
   }
 
-  private void counter(final Bound b, final String name, final Tags tags, final String description,
+  private Meter.Id counter(final Bound b, final String name, final Tags tags, final String description,
       final ToDoubleFunction<ColumnarStats> value) {
-    b.ids.add(FunctionCounter.builder(name, b.stats, value).description(description).tags(tags).register(registry).getId());
+    return FunctionCounter.builder(name, b.stats, value).description(description).tags(tags).register(registry).getId();
   }
 
-  private void timer(final Bound b, final String name, final Tags tags, final String description,
+  private Meter.Id timer(final Bound b, final String name, final Tags tags, final String description,
       final ToLongFunction<ColumnarStats> count, final ToDoubleFunction<ColumnarStats> totalNanos) {
-    b.ids.add(FunctionTimer.builder(name, b.stats, count, totalNanos, TimeUnit.NANOSECONDS).description(description).tags(tags)
-        .register(registry).getId());
+    return FunctionTimer.builder(name, b.stats, count, totalNanos, TimeUnit.NANOSECONDS).description(description).tags(tags)
+        .register(registry).getId();
   }
 
-  private void managerGauge(final Bound b, final String name, final Tags tags, final String description, final String baseUnit,
+  private Meter.Id managerGauge(final Bound b, final String name, final Tags tags, final String description, final String baseUnit,
       final ToDoubleFunction<ColumnarIndexManager> value) {
     final Gauge.Builder<ColumnarIndexManager> builder = Gauge.builder(name, b.manager, value).description(description).tags(tags);
     if (baseUnit != null)
       builder.baseUnit(baseUnit);
-    b.ids.add(builder.register(registry).getId());
+    return builder.register(registry).getId();
   }
 
-  private void gauge(final Bound b, final String name, final Tags tags, final String description, final String baseUnit,
+  private Meter.Id gauge(final Bound b, final String name, final Tags tags, final String description, final String baseUnit,
       final ToDoubleFunction<ColumnarStats> value) {
     final Gauge.Builder<ColumnarStats> builder = Gauge.builder(name, b.stats, value).description(description).tags(tags);
     if (baseUnit != null)
       builder.baseUnit(baseUnit);
-    b.ids.add(builder.register(registry).getId());
+    return builder.register(registry).getId();
   }
 }

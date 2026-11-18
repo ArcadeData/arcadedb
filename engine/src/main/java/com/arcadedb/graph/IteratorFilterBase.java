@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
@@ -112,7 +113,10 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           // VALIDATE RID
           if (nextEdge.getPosition() > -1) {
             try {
-              validatedRecord = database.lookupByRID(nextEdge, false);
+              validatedRecord = database.lookupThroughGraph(nextEdge, walkMark);
+            } catch (final ConcurrentModificationException e) {
+              // A RECORD A CONCURRENT COMMIT DELETED AFTER THE WALK BEGAN IS NOT A CORRUPTION TO SKIP (ISSUE #11713)
+              throw e;
             } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;
@@ -126,7 +130,9 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
           // VALIDATE RID
           try {
-            validatedRecord = database.lookupByRID(nextVertex, false);
+            validatedRecord = database.lookupThroughGraph(nextVertex, walkMark);
+          } catch (final ConcurrentModificationException e) {
+            throw e;
           } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;

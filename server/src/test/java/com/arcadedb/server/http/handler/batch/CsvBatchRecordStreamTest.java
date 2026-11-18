@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler.batch;
 
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -128,6 +129,38 @@ class CsvBatchRecordStreamTest {
     assertThat(CsvBatchRecordStream.parseValue("hello")).isEqualTo("hello");
     assertThat(CsvBatchRecordStream.parseValue("-10")).isEqualTo(-10L);
     assertThat(CsvBatchRecordStream.parseValue("1.5e2")).isEqualTo(150.0);
+  }
+
+  /**
+   * Issue #11802: an undeclared column reads a field as the JSON literal it spells, if it spells one, so nothing that prints back
+   * differently is rewritten; a declared column hands the text to the declared type.
+   */
+  @Test
+  void parseValueKeepsWhatIsNotAJsonLiteral() {
+    for (final String text : new String[] { "007", "00123", "000", "+5", "5.", ".5", "1.", "1e", "1e+", "-", "--1", "0x10", "False",
+        "TRUE", "NaN", "Infinity", "12345678901234567890", "1_000", " 1", "1 " })
+      assertThat(CsvBatchRecordStream.parseValue(text)).as(text).isEqualTo(text);
+
+    assertThat(CsvBatchRecordStream.parseValue("0")).isEqualTo(0L);
+    assertThat(CsvBatchRecordStream.parseValue("-0")).isEqualTo(0L);
+    assertThat(CsvBatchRecordStream.parseValue("9223372036854775807")).isEqualTo(Long.MAX_VALUE);
+    assertThat(CsvBatchRecordStream.parseValue("0.10")).isEqualTo(0.1);
+    assertThat(CsvBatchRecordStream.parseValue("-2.5E-3")).isEqualTo(-0.0025);
+    assertThat(CsvBatchRecordStream.parseValue("1e3")).isEqualTo(1000.0);
+  }
+
+  @Test
+  void parseValueForADeclaredType() {
+    assertThat(CsvBatchRecordStream.parseValue("007", Type.STRING)).isEqualTo("007");
+    assertThat(CsvBatchRecordStream.parseValue("TRUE", Type.STRING)).isEqualTo("TRUE");
+    assertThat(CsvBatchRecordStream.parseValue("1.50", Type.DECIMAL)).isEqualTo("1.50");
+    assertThat(CsvBatchRecordStream.parseValue("007", Type.INTEGER)).isEqualTo(7L);
+    assertThat(CsvBatchRecordStream.parseValue("+5", Type.LONG)).isEqualTo(5L);
+    assertThat(CsvBatchRecordStream.parseValue("TRUE", Type.BOOLEAN)).isEqualTo(true);
+    assertThat(CsvBatchRecordStream.parseValue("1e3", Type.DOUBLE)).isEqualTo(1000.0);
+    assertThat(CsvBatchRecordStream.parseValue("abc", Type.INTEGER)).isEqualTo("abc");
+    assertThat(CsvBatchRecordStream.parseValue("", Type.STRING)).isNull();
+    assertThat(CsvBatchRecordStream.parseValue("007", null)).isEqualTo("007");
   }
 
   @Test

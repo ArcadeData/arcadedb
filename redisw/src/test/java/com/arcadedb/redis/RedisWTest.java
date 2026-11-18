@@ -318,7 +318,7 @@ public class RedisWTest extends BaseRedisServerTest {
       fail("");
     } catch (final JedisDataException e) {
       // EXPECTED
-      assertThat(e.getMessage()).isEqualTo("Command not found");
+      assertThat(e.getMessage()).isEqualTo("ERR unknown command 'ACL'");
     }
   }
 

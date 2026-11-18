@@ -19,11 +19,11 @@
 package com.arcadedb.function.sql.coll;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -51,7 +51,7 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
       return null;
 
     // IN-LINE MODE (STATELESS)
-    final Set<Object> result = new HashSet<Object>();
+    final Set<Object> result = new DistinctValueSet();
 
     boolean first = true;
     for (final Object iParameter : params) {
