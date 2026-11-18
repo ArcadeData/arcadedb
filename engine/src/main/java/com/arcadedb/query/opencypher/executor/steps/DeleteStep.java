@@ -123,10 +123,15 @@ public class DeleteStep extends AbstractExecutionStep {
    *       its depth-first traverser keeps edge-segment cursors open across the rows it is still
    *       producing, so a {@code DETACH DELETE} of a bound node unlinks the edge chunks that same cursor
    *       is about to follow and the next {@code hasNext()} dereferences a removed segment record
-   *       (issue #7023).</li>
+   *       (issue #7023);</li>
+   *   <li>a {@code DETACH DELETE} behind a fixed-length relationship pattern (see
+   *       {@code EagerBarriers.detachDeleteNeedsEagerRead()}): the MATCH walks the edge list of a node while its rows are
+   *       still being produced, and the first row's DETACH removes the relationships of that list the walk has not
+   *       reached, so the rows they would have produced are lost without an error (issue #12254).</li>
    * </ul>
-   * Ordinary fixed-length connected patterns bind each row's variables independently and keep no cursor
-   * open across rows, so they are left on the cheaper streaming path.
+   * A fixed-length connected pattern read by a DELETE without DETACH, or by a DETACH DELETE that removes only the
+   * relationship the walk stands on, binds each row's variables independently and loses nothing to the rows before it, so
+   * it is left on the cheaper streaming path.
    * <p>
    * The cost of this path is the whole upstream row set held in memory at once (see
    * {@code materializedInput} below) rather than streamed - acceptable for the shapes this guards, but a
@@ -209,7 +214,7 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            heapLimit = OperationHeapLimit.of(context, "DELETE of a disconnected pattern");
+            heapLimit = OperationHeapLimit.of(context, "DELETE of the matched rows");
             try {
               while (prevResults.hasNext()) {
                 final Result row = prevResults.next();
