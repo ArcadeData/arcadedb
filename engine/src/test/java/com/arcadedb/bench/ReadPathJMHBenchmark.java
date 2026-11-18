@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
+
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -142,6 +144,12 @@ public class ReadPathJMHBenchmark {
   @Benchmark
   public void multiPageRecordRead(final Data state, final Blackhole blackhole) {
     blackhole.consume(state.database.lookupByRID(state.bigRid, true).asDocument().get("n"));
+  }
+
+  /** A log call at a level that is disabled: the gate, and what the call used to build before it asked. */
+  @Benchmark
+  public void disabledLogCall(final Data state, final Blackhole blackhole) {
+    LogManager.instance().log(this, java.util.logging.Level.FINE, "a message nobody reads %s", "an argument");
   }
 
   /** The hash of a RID: it is on the path of every map that holds a record. */
