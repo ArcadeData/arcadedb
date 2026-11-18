@@ -31,6 +31,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -110,6 +112,46 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
 
     assertThat(dense.resolveEdgeTypes("E0")).as("the same slices as before").containsExactly("E0", "E1");
     assertThat(dense.getTypesGeneration()).as("and a type changed in between").isGreaterThan(before);
+  }
+
+  /**
+   * A renumbered view is built from a resolution of the names that the delegate repeats while it builds. A sub-type attached and
+   * detached again in that time leaves the names resolving to the same slices, and the view of the wider selection was kept under
+   * the narrower key. The changes are made from inside the build, by the delegate the renumbering is put in front of.
+   */
+  @Test
+  void aRenumberedViewBuiltAcrossATypeAttachedAndDetachedAgainIsNotKept() {
+    final GraphAnalyticalView view = overlayWithHoles();
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    final GraphTraversalProvider pinned = view.pinned();
+    final boolean[] armed = { true };
+    final GraphTraversalProvider delegate = (GraphTraversalProvider) Proxy.newProxyInstance(
+        GraphTraversalProvider.class.getClassLoader(), new Class<?>[] { GraphTraversalProvider.class }, (proxy, method, args) -> {
+          if ("pinned".equals(method.getName()))
+            return proxy;
+          final boolean building = armed[0] && "getNeighborView".equals(method.getName());
+          if (building) {
+            armed[0] = false;
+            database.command("sql", "ALTER TYPE E1 SUPERTYPE +E0").close();
+          }
+          try {
+            return method.invoke(pinned, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          } finally {
+            if (building)
+              database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+          }
+        });
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(delegate);
+    assertThat(dense).as("a deleted vertex leaves a hole: the ids are renumbered").isInstanceOf(DenseNodeIdProvider.class);
+    assertThat(dense.resolveEdgeTypes("E0")).as("E1 is detached").containsExactly("E0");
+
+    // BUILT WHILE E1 IS ATTACHED, THEN DETACHED AGAIN BEFORE THE RENUMBERING DECIDES WHETHER TO KEEP IT
+    assertThat(entries(dense.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).as("the view built across the two changes").isEqualTo(1);
+
+    assertThat(dense.resolveEdgeTypes("E0")).as("E1 is detached again").containsExactly("E0");
+    assertThat(entries(dense.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).as("a later request is not answered with E1's edge").isZero();
   }
 
   @ParameterizedTest

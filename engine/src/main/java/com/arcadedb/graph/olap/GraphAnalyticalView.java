@@ -1624,6 +1624,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * is not served until it has rebuilt (OFF: it turns STALE). Decided once per snapshot, schema version and types-change serial
    * (the serial is what moves for a DDL statement inside an open transaction, whose schema save waits for the commit); the
    * decision that finds a slice left behind dispatches the rebuild.
+   * <p>
+   * Known limit (issue #12507): a slice is looked up by its NAME, so a name that resolves to another type after two DDL
+   * statements with no read of the view between them (a type dropped and created again, a rename swap) is not seen, nor is a type
+   * detached, written to and attached again.
    */
   private boolean holdsOnlyCoveredEdgeTypes() {
     final Snapshot snap = snapshot;
