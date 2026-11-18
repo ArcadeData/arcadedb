@@ -59,12 +59,14 @@ class Issue12197GrpcRecordValueAndNullPropertyIT extends BaseGrpcClientServerTes
   @AfterEach
   @Override
   public void endTest() {
-    if (grpc != null)
-      grpc.close();
-    if (grpcServer != null)
-      grpcServer.close();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
+    // a failing close must not leave the server running for the next test: the resources close in reverse order (database,
+    // then server) and keep the first failure, the fixture is torn down whatever happens
+    try (final RemoteGrpcServer server = grpcServer; final RemoteGrpcDatabase database = grpc) {
+      // closed on exit
+    } finally {
+      GlobalConfiguration.SERVER_PLUGINS.setValue("");
+      super.endTest();
+    }
   }
 
   @Test
