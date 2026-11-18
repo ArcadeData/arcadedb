@@ -20,7 +20,9 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.BeforeRecordReadListener;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -36,6 +38,7 @@ import java.util.concurrent.FutureTask;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A delete removes the index entries of the record as it is when the delete reaches it, not as it was when the record was
@@ -138,6 +141,72 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
       final Object orphans = rs.next().getProperty("orphanedExternalRecords");
       assertThat(orphans == null ? 0L : ((Number) orphans).longValue()).isZero();
     }
+  }
+
+  /**
+   * A placeholder keeps its content on another page, which an update absorbed by the content record changes without touching
+   * the pointer's page. The delete pins that page too before it compares, so an update of the content committed after the
+   * comparison is refused at commit instead of being deleted with entries nobody removed.
+   */
+  @Test
+  void aPlaceholderContentChangedAfterTheDeletePinnedItIsAConflict() throws Exception {
+    final DocumentType type = database.getSchema().buildDocumentType().withName("P").withTotalBuckets(1).create();
+    type.createProperty("v", Type.STRING);
+    type.createProperty("k", Type.INTEGER);
+    database.command("sql", "CREATE INDEX ON P (k) NOTUNIQUE NULL_STRATEGY SKIP");
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      // WRITTEN FIRST, SO IT IS NEVER THE LAST RECORD OF THE PAGE (A LAST RECORD GROWS INTO THE FREE TAIL), AND TINY, SO ITS SLOT
+      // CANNOT HOST THE HEADER OF A CHUNK
+      rid[0] = database.newDocument("P").set("v", "p").save().getIdentity();
+      database.newDocument("P").set("v", "n".repeat(19)).save();
+    });
+    BucketPageLayoutTestSupport.sealFirstPage(database, "P");
+    database.transaction(() -> rid[0].asDocument(true).modify().set("k", 1).set("v", "b".repeat(30 * 1024)).save());
+    assertThat((Long) BucketPageLayoutTestSupport.bucketStats(database, "P").get("totalPlaceholderRecords"))
+        .as("the record must be a placeholder pointer").isEqualTo(1L);
+
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+
+    database.begin();
+    try {
+      final Document readBefore = rid[0].asDocument(true);
+      assertThat(readBefore.getInteger("k")).isEqualTo(1);
+      // THE FIRST THING THE DELETE DOES WITH THE RECORD, DONE HERE TO PUT THE CONCURRENT COMMIT RIGHT AFTER IT
+      bucket.pinRecordForDelete(rid[0]);
+
+      final FutureTask<Integer> concurrent = new FutureTask<>(() -> {
+        database.transaction(() -> rid[0].asDocument().modify().set("k", 2).save());
+        final int[] committed = new int[1];
+        database.transaction(() -> committed[0] = rid[0].asDocument().getInteger("k"));
+        return committed[0];
+      });
+      new Thread(concurrent).start();
+      assertThat(concurrent.get()).as("the value the concurrent transaction committed").isEqualTo(2);
+      assertThat((Long) placeholderRecords(bucket)).as("the update was absorbed by the content record").isEqualTo(1L);
+
+      readBefore.delete();
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    assertThat(database.existsRecord(rid[0])).isTrue();
+    assertThat(entries("P[k]", 1)).isEmpty();
+    assertThat(entries("P[k]", 2)).containsExactly(rid[0]);
+  }
+
+  /** Read by another thread: the calling one may be inside a transaction that holds pages of the bucket. */
+  private Object placeholderRecords(final LocalBucket bucket) throws Exception {
+    final FutureTask<Object> check = new FutureTask<>(() -> {
+      final Object[] found = new Object[1];
+      database.transaction(() -> found[0] = bucket.check(0, false).get("totalPlaceholderRecords"));
+      return found[0];
+    });
+    new Thread(check).start();
+    return check.get();
   }
 
   /** A property assigned and never saved is not in the index: the delete removes the entry of the stored value. */

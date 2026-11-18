@@ -2346,8 +2346,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * Under READ_COMMITTED a record read, then changed by a transaction that commits before the delete reaches it, still holds
    * the values it was read with. Cleaning up with those removes the entries the concurrent change already replaced and keeps
    * the ones it added, now naming a record that is gone; once the RID is reused, an indexed lookup returns a record holding
-   * another value. The page is pinned here, as an update pins it (#6950), so the commit-time version check covers what is
-   * compared now, and when the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
+   * another value. The page is pinned here, as an update pins it (#6950), and with it the page of the content a placeholder
+   * points to ({@code LocalBucket.pinRecordForDelete}), so the commit-time version check covers what is compared now, and when
+   * the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
    * The delete itself is unchanged: it removes the record by its RID, as before. The slot is read without the READ_RECORD check
    * a user read takes and without the before-read events: the delete was granted, and the image only tells the delete which
    * entries to remove, so a listener hiding the record must not send the cleanup back to the image the caller read.
@@ -2371,7 +2372,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     final boolean changedInSlot;
     try {
-      final MutablePage page = bucket.fetchPageInTransaction(rid);
+      final MutablePage page = bucket.pinRecordForDelete(rid);
       changedInSlot = page != null && bucket.hasRecordChangedSinceRead(rid, page, readImage);
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on delete the record " + rid, e);
