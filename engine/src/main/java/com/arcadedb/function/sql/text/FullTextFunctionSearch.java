@@ -29,6 +29,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextRecordScorer;
+import com.arcadedb.index.fulltext.FullTextPostingsReuse;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -78,6 +79,7 @@ final class FullTextFunctionSearch {
   private final String       cacheKey;
   private final String       subsetCacheKey;
   private final String       recordsCacheKey;
+  private final String       reuseCacheKey;
 
   /**
    * @param restrictedFields the properties the query's unqualified clauses are searched in, or null for every property of
@@ -103,10 +105,12 @@ final class FullTextFunctionSearch {
       this.cacheKey = "search_index:" + name + ":" + query;
       this.subsetCacheKey = "search_index_best:" + name + ":" + query;
       this.recordsCacheKey = "search_index_records:" + name + ":" + query;
+      this.reuseCacheKey = "search_index_postings:" + name + ":" + query;
     } else {
       this.cacheKey = "search_fields:" + name + ":" + restrictedFields + ":" + query;
       this.subsetCacheKey = "search_fields_best:" + name + ":" + restrictedFields + ":" + query;
       this.recordsCacheKey = "search_fields_records:" + name + ":" + restrictedFields + ":" + query;
+      this.reuseCacheKey = "search_fields_postings:" + name + ":" + restrictedFields + ":" + query;
     }
   }
 
@@ -214,7 +218,7 @@ final class FullTextFunctionSearch {
       return new AllMatches(database, accepted, null, recordFilter, order, guard);
     }
 
-    final Map<RID, Float> best = searchAll(limit, guard, ridFilter);
+    final Map<RID, Float> best = searchAll(limit, guard, ridFilter, postingsReuse(context));
     // The map holds each bucket's best matches, so up to buckets x limit entries: their union contains the global best
     // `limit`, which is the prefix the iteration trusts
     rememberSubset(context, best);
@@ -236,20 +240,36 @@ final class FullTextFunctionSearch {
 
   /** The matches of every index, each searched with the limit and the filter; a limit of -1 is unbounded. */
   private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter) {
+    return searchAll(limit, guard, ridFilter, null);
+  }
+
+  /** With {@code reuse}, the postings one search of the statement read are scored again by the next one, not read again. */
+  private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter,
+      final FullTextPostingsReuse reuse) {
     if (indexes.size() == 1)
-      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter);
+      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter, reuse);
     // a record belongs to one type, so no two indexes match the same RID and putAll never overwrites; each index brings up to `limit`
     // matches, so the plan's own limit trims the union (the best `limit` of it contain the global best)
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex index : indexes)
-      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter));
+      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter, reuse));
     return merged;
+  }
+
+  /** The postings the statement's searches of this function share, so the complete search after a limited one does not read again. */
+  private FullTextPostingsReuse postingsReuse(final CommandContext context) {
+    FullTextPostingsReuse reuse = (FullTextPostingsReuse) context.getCachedValue(reuseCacheKey);
+    if (reuse == null) {
+      reuse = new FullTextPostingsReuse();
+      context.setCachedValue(reuseCacheKey, reuse);
+    }
+    return reuse;
   }
 
   /** Every match with its score, cached for the statement. Stops when the statement is terminated or past its deadline. */
   private Map<RID, Float> completeSearch(final CommandContext context) {
     completeSearches.incrementAndGet();
-    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null);
+    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null, postingsReuse(context));
     context.setCachedValue(cacheKey, allResults);
     return allResults;
   }
