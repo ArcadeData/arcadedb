@@ -156,8 +156,10 @@ class Issue11639FilterByTypeScanReleaseTest {
     assertThat(original.next()).isNotNull();
 
     // AbstractStep.clone() RESETS THE CLONE WHILE IT STILL SHARES THE ITERATOR OF THE ORIGINAL: THE RESET MUST NOT CLOSE IT
+    final GraphTraversal<Vertex, Vertex> closedClone = original.asAdmin().clone();
+    closedClone.close();
+    // A SEPARATE CLONE THAT IS NEVER CLOSED: ITERATING A CLOSED TRAVERSAL IS NOT WHAT IS UNDER TEST
     final GraphTraversal<Vertex, Vertex> clone = original.asAdmin().clone();
-    clone.close();
 
     assertThat(original.toList()).as("the rest of the scan of the original").hasSize(RECORDS - 1);
     original.close();

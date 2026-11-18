@@ -395,13 +395,16 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     public void close() {
       if (!closed) {
         closed = true;
+        // DROPPED, NOT ONLY RELEASED: A CLOSED TRAVERSAL THAT IS KEPT MUST NOT KEEP THE BATCH THE SCAN HAD READ
+        final Iterator<Record> scan = typeScan;
+        typeScan = null;
         try {
           if (cursor != null)
             cursor.close();
         } finally {
           // #11639: A SCAN OF THE TYPE HOLDS THE BATCH IT READ AHEAD, TAKEN FROM THE JVM-WIDE POOL OF READ-AHEAD: GIVEN BACK NOW, NOT
           // WHEN THE GARBAGE COLLECTOR FINDS A SCAN THE CALLER STOPPED BEFORE ITS END. THE SCAN IS NOT AutoCloseable
-          if (typeScan instanceof ScanPressureReporter reporter)
+          if (scan instanceof ScanPressureReporter reporter)
             reporter.releaseReadAhead();
         }
       }

@@ -98,7 +98,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       final Iterator<Record> rawIterator = bucketName == null ?
           database.iterateType(resolvedTypeName, true) :
           database.iterateBucket(bucketName);
-      return new ScanIterator<>(this, rawIterator, record -> (E) new ArcadeVertex(graph, record.asVertex()));
+      return new ScanIterator<>(this, rawIterator, record -> (E) graph.getVertexFromRecord(record));
     }
 
     // A LIGHTWEIGHT EDGE HAS NO RECORD, SO THE BUCKET SCAN OF ITS TYPE IS EMPTY BY CONSTRUCTION (#9142)
@@ -107,7 +107,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     final Iterator<? extends Record> rawIterator = lightweight ?
         LightweightEdges.ofType(database, resolvedTypeName) :
         bucketName == null ? database.iterateType(resolvedTypeName, true) : database.iterateBucket(bucketName);
-    return new ScanIterator<>(this, rawIterator, record -> (E) new ArcadeEdge(graph, record.asEdge()));
+    return new ScanIterator<>(this, rawIterator, record -> (E) graph.getEdgeFromRecord(record));
   }
 
   /**
@@ -123,8 +123,9 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
   private static final class ScanIterator<E extends Element> implements CloseableIterator<E> {
     // THE STEP THAT OPENED THE SCAN: AbstractStep.clone() COPIES THE ITERATOR OF A STEP THAT IS RUNNING TO ITS CLONE, WHICH MUST NOT CLOSE IT
     private final Object                     owner;
-    private final Iterator<? extends Record> rawIterator;
     private final Function<Record, E>        wrapper;
+    // DROPPED WHEN THE SCAN IS CLOSED: A CLOSED TRAVERSAL THAT IS KEPT MUST NOT KEEP THE BATCH THE SCAN HAD READ, WHOSE BYTES WENT BACK TO THE POOL
+    private       Iterator<? extends Record> rawIterator;
     private       boolean                    closed = false;
 
     private ScanIterator(final Object owner, final Iterator<? extends Record> rawIterator, final Function<Record, E> wrapper) {
@@ -155,11 +156,13 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       if (closed)
         return;
       closed = true;
+      final Iterator<? extends Record> scan = rawIterator;
+      rawIterator = null;
       try {
-        if (rawIterator instanceof ScanPressureReporter reporter)
+        if (scan instanceof ScanPressureReporter reporter)
           reporter.releaseReadAhead();
       } finally {
-        CloseableIterator.closeIterator(rawIterator);
+        CloseableIterator.closeIterator(scan);
       }
     }
   }
