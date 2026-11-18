@@ -18,19 +18,11 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.SchemaException;
-import com.arcadedb.graph.GraphTraversalProvider;
-import com.arcadedb.graph.GraphTraversalProviderRegistry;
-import com.arcadedb.graph.olap.GraphAnalyticalView;
-import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
-import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.graph.olap.GraphAnalyticalViewCommands;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Map;
 
@@ -43,46 +35,14 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final DatabaseInternal database = context.getDatabase();
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     final String viewName = name.getStringValue();
-
-    // Check if exists in schema extensions
-    final JSONObject allGavs = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
-    final boolean existsInSchema = allGavs != null && allGavs.has(viewName);
-
-    if (!existsInSchema) {
-      if (ifExists) {
-        final InternalResultSet result = new InternalResultSet();
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("operation", "drop graph analytical view");
-        r.setProperty("name", viewName);
-        r.setProperty("dropped", false);
-        result.add(r);
-        return result;
-      }
-      throw new SchemaException("Graph Analytical View '" + viewName + "' does not exist");
-    }
-
-    // Drop the in-memory view if it exists (also removes from schema)
-    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, viewName);
-    if (view != null) {
-      view.drop();
-    } else {
-      // No in-memory view (its build failed, say): remove the definition, and the failure recorded for it, from the schema
-      GraphAnalyticalViewPersistence.remove(database, viewName);
-
-      // Unregister any orphaned traversal provider with this name
-      for (final GraphTraversalProvider provider : GraphTraversalProviderRegistry.getProviders(database))
-        if (viewName.equals(provider.getName()))
-          GraphTraversalProviderRegistry.unregister(database, provider);
-    }
+    final boolean dropped = GraphAnalyticalViewCommands.drop(context.getDatabase(), viewName, ifExists);
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal r = new ResultInternal();
     r.setProperty("operation", "drop graph analytical view");
     r.setProperty("name", viewName);
-    r.setProperty("dropped", true);
+    r.setProperty("dropped", dropped);
     result.add(r);
     return result;
   }

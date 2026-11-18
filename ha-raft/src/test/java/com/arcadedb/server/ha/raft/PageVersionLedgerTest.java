@@ -240,7 +240,7 @@ class PageVersionLedgerTest {
   void theHeaderWalkAgreesWithTheFullDeserialization() {
     final byte[] entry = wal(9, new Page(3, 0, 4), new Page(3, 0, 4), new Page(7, 12, 1));
     final PageVersionLedger.Pages pages = PageVersionLedger.parse(entry);
-    final com.arcadedb.engine.WALFile.WALTransaction full = ArcadeStateMachine.deserializeWalTransaction(entry);
+    final com.arcadedb.engine.WALFile.WALTransaction full = CommittedEntryDecoding.deserializeWalTransaction(entry);
     assertThat(pages.count()).isEqualTo(full.pages.length);
     for (int i = 0; i < pages.count(); i++) {
       assertThat(pages.fileIds()[i]).isEqualTo(full.pages[i].fileId);
@@ -347,7 +347,7 @@ class PageVersionLedgerTest {
     reservedAtMs.setLong(reservation, reservedAtMs.getLong(reservation) - byMs);
   }
 
-  /** The wire layout {@code ArcadeStateMachine.deserializeWalTransaction} reads, with a 4-byte delta per segment. */
+  /** The wire layout {@code CommittedEntryDecoding.deserializeWalTransaction} reads, with a 4-byte delta per segment. */
   static byte[] wal(final long txId, final Page... pages) {
     final int deltaSize = 4;
     final ByteBuffer buf = ByteBuffer.allocate(2 * Long.BYTES + 2 * Integer.BYTES + pages.length * (6 * Integer.BYTES + deltaSize));

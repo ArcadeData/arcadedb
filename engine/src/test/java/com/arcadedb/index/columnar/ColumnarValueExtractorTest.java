@@ -345,13 +345,13 @@ class ColumnarValueExtractorTest extends TestHelper {
   }
 
   @Test
-  void negativeZeroIsStoredAsZero() {
+  void negativeZeroIsPreserved() {
     declareAllProperties(assetType());
     extractor = extractorFor(allColumns());
     final Document negative = save(database.newDocument("Asset").set("price", -0.0d));
 
     final double stored = extract(negative, "price").doubleValue;
-    assertThat(Double.doubleToRawLongBits(stored)).isEqualTo(Double.doubleToRawLongBits(0.0d));
+    assertThat(Double.doubleToRawLongBits(stored)).isEqualTo(Double.doubleToRawLongBits(-0.0d));
   }
 
   @Test

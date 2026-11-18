@@ -54,9 +54,9 @@ class Issue6297AmbiguityRearmTest {
     final AtomicReference<String> reported = new AtomicReference<>();
     final String verdict = "peer_a, peer_b -> host:2480";
 
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, verdict)).isTrue();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, verdict)).isFalse();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, verdict)).isFalse();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, verdict)).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, verdict)).isFalse();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, verdict)).isFalse();
   }
 
   /** The case a latch cannot serve: the first collision is fixed, a second one appears, and it must be reported. */
@@ -64,9 +64,9 @@ class Issue6297AmbiguityRearmTest {
   void aDifferentCollisionIsReportedEvenAfterOneAlreadyWas() {
     final AtomicReference<String> reported = new AtomicReference<>();
 
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "peer_a, peer_b -> host:2480")).isTrue();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "peer_c, peer_d -> host:2481")).isTrue();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "peer_c, peer_d -> host:2481")).isFalse();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "peer_a, peer_b -> host:2480")).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "peer_c, peer_d -> host:2481")).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "peer_c, peer_d -> host:2481")).isFalse();
   }
 
   /**
@@ -77,9 +77,9 @@ class Issue6297AmbiguityRearmTest {
   void aCollisionThatGainsOrLosesAPeerIsReportedAgain() {
     final AtomicReference<String> reported = new AtomicReference<>();
 
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "peer_a, peer_b -> host:2480")).isTrue();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "peer_a, peer_b, peer_c -> host:2480")).isTrue();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "peer_a, peer_b -> host:2480")).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "peer_a, peer_b -> host:2480")).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "peer_a, peer_b, peer_c -> host:2480")).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "peer_a, peer_b -> host:2480")).isTrue();
   }
 
   /**
@@ -91,10 +91,10 @@ class Issue6297AmbiguityRearmTest {
     final AtomicReference<String> reported = new AtomicReference<>();
     final String verdict = "peer_a, peer_b -> host:2480";
 
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, verdict)).isTrue();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, "")).isFalse();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, verdict)).isTrue();
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, "")).isFalse();
     assertThat(reported.get()).isNull();
-    assertThat(RaftHAServer.isNewAmbiguityVerdict(reported, verdict))
+    assertThat(PeerEndpoints.isNewAmbiguityVerdict(reported, verdict))
         .as("the collision came back, so it is news again")
         .isTrue();
   }
@@ -110,8 +110,8 @@ class Issue6297AmbiguityRearmTest {
     final boolean[] fromConfig = new boolean[4];
     final RaftPeerId[] owners = { PEER_D, PEER_B, PEER_C, PEER_A };
 
-    assertThat(RaftHAServer.describeAmbiguity(addresses, fromConfig, owners, 4,
-        RaftHAServer.claimsByAddress(addresses, fromConfig, 4)))
+    assertThat(PeerEndpoints.describeAmbiguity(addresses, fromConfig, owners, 4,
+        PeerEndpoints.claimsByAddress(addresses, fromConfig, 4)))
         .isEqualTo("peer_a, peer_b -> host:2480; peer_c, peer_d -> host:2481");
   }
 
@@ -122,8 +122,8 @@ class Issue6297AmbiguityRearmTest {
     final boolean[] fromConfig = { true, false, false };
     final RaftPeerId[] owners = { PEER_A, PEER_B, PEER_C };
 
-    assertThat(RaftHAServer.describeAmbiguity(addresses, fromConfig, owners, 3,
-        RaftHAServer.claimsByAddress(addresses, fromConfig, 3)))
+    assertThat(PeerEndpoints.describeAmbiguity(addresses, fromConfig, owners, 3,
+        PeerEndpoints.claimsByAddress(addresses, fromConfig, 3)))
         .isEqualTo("peer_b -> host:2480");
   }
 
@@ -134,8 +134,8 @@ class Issue6297AmbiguityRearmTest {
     final boolean[] fromConfig = new boolean[3];
     final RaftPeerId[] owners = { PEER_A, PEER_B, PEER_C };
 
-    assertThat(RaftHAServer.describeAmbiguity(addresses, fromConfig, owners, 3,
-        RaftHAServer.claimsByAddress(addresses, fromConfig, 3))).isEmpty();
+    assertThat(PeerEndpoints.describeAmbiguity(addresses, fromConfig, owners, 3,
+        PeerEndpoints.claimsByAddress(addresses, fromConfig, 3))).isEmpty();
   }
 
   /**
@@ -206,12 +206,12 @@ class Issue6297AmbiguityRearmTest {
 
   private static void warnRouting(final RaftHAServer raft, final String[] addresses) {
     raft.warnAmbiguousRouting(GRPC, addresses, DERIVED, THREE_PEERS, 3,
-        RaftHAServer.claimsByAddress(addresses, DERIVED, 3));
+        PeerEndpoints.claimsByAddress(addresses, DERIVED, 3));
   }
 
   private static void warnHttps(final RaftHAServer raft, final String[] addresses) {
     raft.warnAmbiguousPeerAddress(true, addresses, DERIVED, THREE_PEERS, 3,
-        RaftHAServer.claimsByAddress(addresses, DERIVED, 3));
+        PeerEndpoints.claimsByAddress(addresses, DERIVED, 3));
   }
 
   private static final HAServerPlugin.ROUTING_PROTOCOL GRPC = HAServerPlugin.ROUTING_PROTOCOL.GRPC;

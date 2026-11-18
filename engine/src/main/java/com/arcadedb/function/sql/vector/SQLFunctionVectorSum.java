@@ -45,10 +45,19 @@ public class SQLFunctionVectorSum extends SQLFunctionVectorAbstract {
     return true;
   }
 
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length == 0)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object vector = params[0];
 
