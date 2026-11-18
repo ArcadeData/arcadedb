@@ -62,7 +62,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // (issues #6267 and #6343).
   //
   // The 120s was a reaction to two CI runs (31578870619, 31587763511) in which
-  // Issue5410AbandonedTicketReleaseIT stalled for the ENTIRE poll budget - once at 30s, once at 60s -
+  // AbandonedTicketReleaseIT stalled for the ENTIRE poll budget - once at 30s, once at 60s -
   // immediately after RaftMigrationCompactionRaceIT (a 72k-record, 24-compaction-round, 12-writer-thread IT)
   // ran in the same shared, reused JVM fork (failsafe reuseForks=true/forkCount=1 for the whole module). The
   // stalls were real, not a log-flush artifact, and never reproduced in isolation. The suspected cause was
@@ -86,7 +86,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // 2026-08-18 and 2026-08-26 - every one of them after #6267's merge, 238 tests each, all 123 IT classes in
   // every run - and again NOT ONE wait reached the report threshold, now 5s rather than 10s. Sampled every
   // fifth run of the 200 the API still had logs for, so the sample spans the whole window rather than one
-  // quiet stretch of it. The corroboration is sharper than last time: Issue5410AbandonedTicketReleaseIT, the
+  // quiet stretch of it. The corroboration is sharper than last time: AbandonedTicketReleaseIT, the
   // class whose stalls bought the original 120s, now takes 13.2-17.0s WALL CLOCK for the ENTIRE class over
   // those 40 runs - cluster startup, three-node replication and teardown included - so the wait that once
   // consumed 60s of budget cannot now be consuming even a fifth of 15s.
@@ -104,7 +104,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   //
   // Both of those measurements are indirect - they say no wait CROSSED a threshold. A later experiment for
   // issue #6343 measured the wait itself, by running the lane with the report threshold at 1ms so every wait
-  // printed its duration: Issue5410AbandonedTicketReleaseIT's awaitValue satisfied in 252 ms and then 1 ms
+  // printed its duration: AbandonedTicketReleaseIT's awaitValue satisfied in 252 ms and then 1 ms
   // (run 33074663154). The budget here is sixty times the wait it exists for, which is the number that should
   // be reassuring rather than the absence of report lines.
   //

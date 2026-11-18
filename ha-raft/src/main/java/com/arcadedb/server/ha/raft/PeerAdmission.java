@@ -262,7 +262,7 @@ final class PeerAdmission {
    * <p>
    * Skipped for a peer that is already in the configuration this add would be evaluated against, because
    * {@code RaftClusterManager.buildAddArgs} treats that case as a no-op success. Adding the peer again is then idempotent -
-   * which {@code connect cluster} documents and {@code Issue7401ConnectClusterJoinsPeerIT} pins - and a probe that refused it
+   * which {@code connect cluster} documents and {@code ClusterRejoinMembershipIT} pins - and a probe that refused it
    * would have broken that for any committed member that happens to be down. {@code alreadyAMember} is read by the caller from
    * the committed configuration, the one {@code buildAddArgs} reads (issue #10937): the declared list
    * {@link RaftHAServer#getLivePeers()} substitutes for an unreadable one would skip the probe for a declared peer that is not a member,
