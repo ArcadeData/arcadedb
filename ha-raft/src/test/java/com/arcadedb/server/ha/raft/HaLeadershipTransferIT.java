@@ -73,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Raft elects on the log alone. As leader it cannot download the copy from itself and refuses every request on the
  * database meanwhile. It must report the condition and hand leadership to a peer; the install then completes.</li>
  * <li><b>#8592</b>: the leader leaving goes through the shared hand-off (the ranked candidates of
- * {@link RaftHAServer#selectStepDownTargets}, no bare step-down) and the removal; the two nodes left keep a leader and a
+ * {@link StepDownTargets#selectStepDownTargets}, no bare step-down) and the removal; the two nodes left keep a leader and a
  * configuration without it.</li>
  * <li>{@code RaftTransferLeadershipIT}: the basic targeted transfer through the HTTP endpoint, after which the target takes
  * writes that replicate.</li>

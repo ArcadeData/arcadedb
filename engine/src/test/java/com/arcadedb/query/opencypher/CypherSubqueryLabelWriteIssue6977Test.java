@@ -198,7 +198,7 @@ class CypherSubqueryLabelWriteIssue6977Test {
     // CALL db.schema() yields one row per declared type, which fans the single matched row out into as many
     // invocations of the body - the shape the issue was reported with.
     final List<String> rows = writingRows("""
-        CALL db.schema() YIELD nodes, relationships
+        CALL db.schema() YIELD name, type
         OPTIONAL MATCH (n5:l11 {k9: false}) <-[:rt5 {k3: true}]-
           (n6:l0&l4&l6&l9&l10&l5 {k4: "kN1omHAd"})
         WITH *

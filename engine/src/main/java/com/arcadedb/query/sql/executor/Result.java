@@ -123,6 +123,16 @@ public interface Result {
 
   Set<String> getPropertyNames();
 
+  /**
+   * Whether {@link #getPropertyNames()} lists {@code name}: the column test, answered without building the name set where the
+   * implementation can. A per-row caller (a sort key, a join, a projection) asked {@code getPropertyNames().contains(name)},
+   * which allocated a set of every name of the row for one membership test (issue #12340). Not {@link #hasProperty(String)}:
+   * that one is deliberately broader, and answers for a property of a backing element a projected row does not list.
+   */
+  default boolean listsProperty(final String name) {
+    return getPropertyNames().contains(name);
+  }
+
   Optional<RID> getIdentity();
 
   boolean isElement();

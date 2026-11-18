@@ -132,13 +132,13 @@ class Issue9553AllVotersQuarantinedTest {
   void aDatabaseEveryVoterHoldsQuarantinedIsReported() {
     final PeerCapabilityRegistry registry = registryWhere(Set.of(DB, OTHER), Set.of(DB));
 
-    assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB, OTHER), voters(), SELF, registry))
+    assertThat(VoterQuarantineCheck.quarantinedOnEveryVoter(Set.of(DB, OTHER), voters(), SELF, registry))
         .as("only the database every voter reports").containsExactly(DB);
   }
 
   @Test
   void oneVoterWithAUsableCopyIsEnough() {
-    assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registryWhere(Set.of(DB), Set.of())))
+    assertThat(VoterQuarantineCheck.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registryWhere(Set.of(DB), Set.of())))
         .isEmpty();
   }
 
@@ -148,7 +148,7 @@ class Issue9553AllVotersQuarantinedTest {
     registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
     // C never answered: it may hold the only good copy, and "unknown" must not read as "quarantined"
 
-    assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registry)).isEmpty();
+    assertThat(VoterQuarantineCheck.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registry)).isEmpty();
   }
 
   @Test
@@ -157,16 +157,16 @@ class Issue9553AllVotersQuarantinedTest {
     registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
     registry.record(registry.generation(), C.toString(), Set.of(), "26.10.1", false);
 
-    assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registry)).isEmpty();
+    assertThat(VoterQuarantineCheck.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registry)).isEmpty();
   }
 
   @Test
   void aSoleVoterAndAHealthyNodeAreNeverReported() {
     final PeerCapabilityRegistry registry = registryWhere(Set.of(DB), Set.of(DB));
 
-    assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB), List.of(peer(SELF)), SELF, registry))
+    assertThat(VoterQuarantineCheck.quarantinedOnEveryVoter(Set.of(DB), List.of(peer(SELF)), SELF, registry))
         .as("a sole voter has its own alert and override (#9308, #9449)").isEmpty();
-    assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(), voters(), SELF, registry))
+    assertThat(VoterQuarantineCheck.quarantinedOnEveryVoter(Set.of(), voters(), SELF, registry))
         .as("this node holds no quarantine, so it holds a usable copy").isEmpty();
   }
 
@@ -319,11 +319,11 @@ class Issue9553AllVotersQuarantinedTest {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
     registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
 
-    assertThat(ArcadeStateMachine.resyncableFromLeader(Set.of(DB, OTHER), B.toString(), registry))
+    assertThat(DatabaseQuarantine.resyncableFromLeader(Set.of(DB, OTHER), B.toString(), registry))
         .containsExactly(OTHER);
-    assertThat(ArcadeStateMachine.resyncableFromLeader(Set.of(DB), C.toString(), registry))
+    assertThat(DatabaseQuarantine.resyncableFromLeader(Set.of(DB), C.toString(), registry))
         .as("a leader that did not answer is not assumed quarantined").containsExactly(DB);
-    assertThat(ArcadeStateMachine.resyncableFromLeader(Set.of(DB), null, registry)).containsExactly(DB);
+    assertThat(DatabaseQuarantine.resyncableFromLeader(Set.of(DB), null, registry)).containsExactly(DB);
   }
 
   /** The caller: the health tick does not even take its throttle slot for a resync the leader can only refuse. */

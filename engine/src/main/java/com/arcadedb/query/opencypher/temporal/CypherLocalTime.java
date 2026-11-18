@@ -21,13 +21,15 @@ package com.arcadedb.query.opencypher.temporal;
 import java.time.LocalTime;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
-import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
 
 /**
  * OpenCypher LocalTime value wrapping java.time.LocalTime.
  */
 public class CypherLocalTime implements CypherTemporalValue {
+  private static final Set<String> TIME_SELECTIONS = Set.of("time");
+
   private final LocalTime value;
 
   public CypherLocalTime(final LocalTime value) {
@@ -43,52 +45,22 @@ public class CypherLocalTime implements CypherTemporalValue {
   }
 
   /**
-   * Parse a local time string, handling compact ISO 8601 formats:
-   * - Standard: 12:31:14, 12:31
-   * - Compact: 123114, 1231, 12
-   * - With fractional seconds: 12:31:14.645
+   * Parses a local time in the ISO 8601 forms Neo4j accepts, see {@link TemporalParser} (issue #12298).
    */
   static LocalTime parseLocalTime(final String str) {
-    // Compact format without colons: 214032, 2140, 21
-    if (str.matches("^\\d{6}(\\.\\d+)?$")) {
-      // HHMMSS[.frac]
-      final String time = str.substring(0, 2) + ":" + str.substring(2, 4) + ":" + str.substring(4);
-      return LocalTime.parse(time);
-    }
-    if (str.matches("^\\d{4}$")) {
-      // HHMM
-      return LocalTime.of(Integer.parseInt(str.substring(0, 2)), Integer.parseInt(str.substring(2, 4)));
-    }
-    if (str.matches("^\\d{2}$")) {
-      // HH
-      return LocalTime.of(Integer.parseInt(str), 0);
-    }
-    // Standard with missing seconds
-    final String normalized = TemporalUtil.normalizeLocalTimeString(str);
-    return LocalTime.parse(normalized);
+    return TemporalParser.parseLocalTime(str);
   }
 
+  /**
+   * A local time from a map of fields, optionally adjusting the {@code time:} base the map names; see
+   * {@link TemporalMapFields} (issue #12297).
+   */
   public static CypherLocalTime fromMap(final Map<String, Object> map) {
-    // Check for base time
-    LocalTime base = null;
-    if (map.containsKey("time")) {
-      final Object timeVal = map.get("time");
-      if (timeVal instanceof CypherLocalTime)
-        base = ((CypherLocalTime) timeVal).value;
-      else if (timeVal instanceof CypherTime)
-        base = ((CypherTime) timeVal).getValue().toLocalTime();
-      else if (timeVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) timeVal).getValue().toLocalTime();
-      else if (timeVal instanceof CypherDateTime)
-        base = ((CypherDateTime) timeVal).getValue().toLocalTime();
-    }
-
-    final int hour = map.containsKey("hour") ? toInt(map.get("hour")) : (base != null ? base.getHour() : 0);
-    final int minute = map.containsKey("minute") ? toInt(map.get("minute")) : (base != null ? base.getMinute() : 0);
-    final int second = map.containsKey("second") ? toInt(map.get("second")) : (base != null ? base.getSecond() : 0);
-    final int nanos = TemporalUtil.computeNanos(map, base != null ? base.getNano() : 0);
-
-    return new CypherLocalTime(LocalTime.of(hour, minute, second, nanos));
+    if (map.containsKey("timezone"))
+      throw new IllegalArgumentException("Cannot assign time zone if also assigning other fields.");
+    TemporalMapFields.checkKeys(map, false, true, TIME_SELECTIONS);
+    final LocalTime base = map.containsKey("time") ? TemporalMapFields.timeOf(map.get("time")) : null;
+    return new CypherLocalTime(TemporalMapFields.resolveTime(map, base));
   }
 
   public LocalTime getValue() {

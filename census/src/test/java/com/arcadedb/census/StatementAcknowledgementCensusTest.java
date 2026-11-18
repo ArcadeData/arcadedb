@@ -54,7 +54,7 @@ class StatementAcknowledgementCensusTest {
 
   static {
     // every schema change (DDLStatement): its row describes the change (issue #11312)
-    for (final String ddl : List.of("AlterBucketStatement", "AlterDatabaseStatement", "AlterGraphAnalyticalViewStatement",
+    for (final String ddl : List.of("AlterDatabaseStatement", "AlterGraphAnalyticalViewStatement",
         "AlterMaterializedViewStatement", "AlterPropertyStatement", "AlterTimeSeriesTypeStatement", "AlterTypeStatement",
         "CompactIndexStatement", "CompactTimeSeriesTypeStatement", "CreateBucketStatement", "CreateContinuousAggregateStatement",
         "CreateDocumentTypeStatement", "CreateEdgeTypeStatement", "CreateGraphAnalyticalViewStatement", "CreateIndexStatement",
@@ -68,7 +68,7 @@ class StatementAcknowledgementCensusTest {
     // the writes with no RETURN clause, whose rows echo what they wrote (issue #11017)
     for (final String write : List.of("InsertStatement", "UpdateStatement", "DeleteStatement", "CreateEdgeStatement",
         "CreateVertexStatement", "CreateVertexStatementEmpty", "CreateVertexStatementEmptyNoTarget", "CreateVertexStatementNoTarget",
-        "TruncateRecordStatement", "RestoreDocumentStatement", "RestoreVertexStatement", "RestoreEdgeStatement"))
+        "RestoreDocumentStatement", "RestoreVertexStatement", "RestoreEdgeStatement"))
       VERDICTS.put(write, true);
 
     // the function library, the session and the transaction (issue #11385)

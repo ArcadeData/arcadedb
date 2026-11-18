@@ -186,12 +186,12 @@ class Issue8901DeadReplicationPathNoReformatTest {
 
   @Test
   void aPendingBaselineIsResolvedFirstAndOnlyALaterMoveProvesThePath() {
-    final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(RaftHAServer.PENDING_BASELINE);
+    final AtomicReference<RaftHAServer.InPlaceRestartBaseline> ref = new AtomicReference<>(RatisInPlaceRestart.PENDING_BASELINE);
     final AtomicReference<RaftHAServer.InPlaceRestartBaseline> position = new AtomicReference<>();
 
     assertThat(RaftHAServer.replicationPathUnproven(ref, position::get))
         .as("still unreadable: nothing to compare against, hold").isTrue();
-    assertThat(ref.get()).isSameAs(RaftHAServer.PENDING_BASELINE);
+    assertThat(ref.get()).isSameAs(RatisInPlaceRestart.PENDING_BASELINE);
 
     position.set(new RaftHAServer.InPlaceRestartBaseline(TermIndex.valueOf(27, 10), 28, true));
     assertThat(RaftHAServer.replicationPathUnproven(ref, position::get))

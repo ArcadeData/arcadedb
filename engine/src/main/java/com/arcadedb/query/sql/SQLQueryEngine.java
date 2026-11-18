@@ -354,6 +354,11 @@ public class SQLQueryEngine implements QueryEngine {
       }
 
       @Override
+      public boolean inspectsTheLocalNode() {
+        return statement.inspectsTheLocalNode();
+      }
+
+      @Override
       public Set<OperationType> getOperationTypes() {
         return statement.getOperationTypes();
       }

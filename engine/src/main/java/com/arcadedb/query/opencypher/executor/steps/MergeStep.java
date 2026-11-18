@@ -158,7 +158,11 @@ public class MergeStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        return buffer.get(bufferIndex++);
+        final Result result = buffer.get(bufferIndex++);
+        // A LATER row of the same batch may have replaced a record this row holds after this row was merged: served with
+        // the live records, not the deleted ones (issue #10614). Free while the statement replaced nothing
+        labelReplacements.redirect(result);
+        return result;
       }
 
       private void fetchMore(final int n) {
