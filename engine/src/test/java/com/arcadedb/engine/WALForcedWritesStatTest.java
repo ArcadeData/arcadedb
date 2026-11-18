@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The {@code forcedWALWrites} statistic counts the commits that forced their WAL record in their own write: the control of
- * {@code Issue11746LeaderWalNotForcedTest}, which asserts that an HA leader forces none, and of
+ * {@code LeaderWalNotForcedTest}, which asserts that an HA leader forces none, and of
  * {@code ReplicatedPublicationWalFlushTest}, which pins the engine branch that makes it so.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
