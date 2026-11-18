@@ -6559,10 +6559,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * build of 150,000 vectors at 768 dimensions against a few hundred MB of heap - without a heap that size. Nothing is
    * reclaimed from the page cache when {@code reclaimableCacheBytes} is 0.
    *
-   * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
+   * @param availableHeapReading  what {@link VectorHeapBudget#availableHeapBytes()} would have answered; the database's
+   *                              search caches' plan is taken off it ({@link #availableHeapNetOfSearchCaches(long)})
    * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
    */
-  int fitSearchBuildToHeap(final int nodes, final long availableHeap, final long reclaimableCacheBytes) {
+  int fitSearchBuildToHeap(final int nodes, final long availableHeapReading, final long reclaimableCacheBytes) {
+    // The search caches' plan is not heap the build may take (issue #12511), here as in computeGraphBuildCacheCapacity()
+    final long availableHeap = availableHeapNetOfSearchCaches(availableHeapReading);
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
     // The nodes test is defence in depth rather than a live branch: the only caller reaches this after its own scope
@@ -6720,13 +6723,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #admitOnlineRebuild()} against pinned heap figures, so a test can drive the 24 GB shape of issue #7260
    * without a 24 GB fixture. Nothing is reclaimed from the page cache when {@code reclaimableCacheBytes} is 0.
    *
-   * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
+   * @param availableHeapReading  what {@link VectorHeapBudget#availableHeapBytes()} would have answered; the database's
+   *                              search caches' plan is taken off it ({@link #availableHeapNetOfSearchCaches(long)})
    * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
    * @param heapReadingCountsResident whether a tenured-pool collection ended after the resident graph was
    *                                  published, i.e. whether {@code availableHeap} can have counted it as live
    */
-  boolean admitOnlineRebuild(final long availableHeap, final long reclaimableCacheBytes,
+  boolean admitOnlineRebuild(final long availableHeapReading, final long reclaimableCacheBytes,
       final boolean heapReadingCountsResident) {
+    // The search caches' plan is not heap the rebuild may take (issue #12511), here as in computeGraphBuildCacheCapacity()
+    final long availableHeap = availableHeapNetOfSearchCaches(availableHeapReading);
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
     if (percent <= 0)
@@ -14624,12 +14630,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * build would get (issue #7146), while sizing off the ceiling with no available-heap cap made an online rebuild
    * holding the old graph ask for the same amount whether that headroom existed or not (issue #6503). See
    * {@link VectorHeapBudget#buildCacheBudgetBytes(int)}.
+   * <p>
+   * <b>The search caches' plan is not available (issue #12511).</b> A search cache allocates its chunks on first use, so
+   * the room it planned on and has not filled yet is in the available-heap reading as free, and so is what it filled since
+   * the last collection of the old generation. The build cache used to take those bytes, the searches running next to the
+   * build then filled their caches into them, and a 2 GB heap ran out while a server built the graphs of a 768-dimension
+   * corpus. The whole capacity of the database's search caches is now taken off the available heap before the 90% cap
+   * applies ({@link #availableHeapNetOfSearchCaches(long)}), as {@link #affordableSearchCacheEntries} charges it among the
+   * search caches (issue #12391). The heap gates of a build ({@link #fitSearchBuildToHeap(int, long, long)},
+   * {@link #admitOnlineRebuild(long, long, boolean)}) take the same charge. The share of the ceiling is left as it is, so an
+   * embedded and a served build still agree (issue #7146).
    *
    * @param expectedSize number of vectors the build will walk
    *
    * @return the number of vectors to hold, always positive
    */
   int computeGraphBuildCacheCapacity(final int expectedSize) {
+    final int configured = getGraphBuildCacheSize();
+    if (configured > 0)
+      return configured;
+    return computeGraphBuildCacheCapacity(expectedSize, VectorHeapBudget.maxHeapBytes(), VectorHeapBudget.availableHeapBytes());
+  }
+
+  /**
+   * {@link #computeGraphBuildCacheCapacity(int)} against heap readings the caller supplies, so a test can pin them.
+   *
+   * @param maxHeap       the heap ceiling, as {@link VectorHeapBudget#maxHeapBytes()} reads it
+   * @param availableHeap the heap available now, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   */
+  int computeGraphBuildCacheCapacity(final int expectedSize, final long maxHeap, final long availableHeap) {
     final int configured = getGraphBuildCacheSize();
     if (configured > 0)
       return configured;
@@ -14644,7 +14673,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (heapPercent <= 0)
       return ArcadePageVectorValues.DEFAULT_CACHE_SIZE;
 
-    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent);
+    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap,
+        availableHeapNetOfSearchCaches(availableHeap));
     final long affordable = Math.max(ArcadePageVectorValues.DEFAULT_CACHE_SIZE,
         heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions));
     final long wanted = Math.max(1, expectedSize);
@@ -14872,6 +14902,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // A few slots are no cache: direct-mapped by id, each id of a range far larger than them evicts the one it shares its slot
     // with on every search, which costs a write per miss and saves next to no page read
     return entries < MIN_SEARCH_CACHE_SIZE ? 0L : entries;
+  }
+
+  /**
+   * The heap the search caches of the database's vector indexes plan on, filled or not (issue #12511): the whole capacity
+   * of each vector cache and of each BINARY code cache, as {@link #affordableSearchCacheEntries} charges it.
+   * <p>
+   * What a cache already holds is charged too, although the available-heap reading may already count it as live. That
+   * reading is the one of the last collection of the old generation: a {@link FlatVectorCache} allocates its chunks on first
+   * use, and a chunk filled since that collection is in neither the reading nor any other figure this method can trust.
+   * Crediting it back would let a build take the bytes a search filled a moment earlier, so the filled part errs toward a
+   * smaller build cache instead.
+   *
+   * @return the bytes, 0 when the database has no search cache
+   */
+  long searchCachesPlannedBytes() {
+    long planned = 0L;
+    for (final Index index : getDatabase().getSchema().getIndexes())
+      if (index instanceof LSMVectorIndex owner) {
+        final FlatVectorCache vectors = owner.searchVectorCache;
+        if (vectors != null)
+          planned += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
+        final BinaryCodeCache codes = owner.searchBinaryCodes;
+        if (codes != null)
+          planned += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
+      }
+    return planned;
+  }
+
+  /**
+   * The available-heap reading less what the database's search caches plan on ({@link #searchCachesPlannedBytes()}): the
+   * heap a graph build and its cache may size themselves against without landing on bytes a search is about to fill
+   * (issue #12511).
+   *
+   * @param availableHeap the heap available now, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   *
+   * @return the bytes, never negative
+   */
+  long availableHeapNetOfSearchCaches(final long availableHeap) {
+    return Math.max(0L, availableHeap - searchCachesPlannedBytes());
   }
 
   /**
