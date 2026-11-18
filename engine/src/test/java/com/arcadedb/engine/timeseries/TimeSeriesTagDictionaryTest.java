@@ -251,6 +251,7 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
   void anIdIsResolvedWhileTheWriterPagesAreStillInTheFlushQueue() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
+    final AtomicReference<TimeSeriesTagDictionary> writerRef = new AtomicReference<>();
     final AtomicReference<TimeSeriesTagDictionary> followerRef = new AtomicReference<>();
     final AtomicReference<Throwable> failure = new AtomicReference<>();
 
@@ -259,6 +260,9 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
     db.getPageManager().suspendFlushAndExecute(db, () -> {
       try {
         final TimeSeriesTagDictionary writer = createDictionary("tags_unflushed");
+        writerRef.set(writer);
+        // Built after the header page and before the entries: since issue #12101 an instance counts the pages the flush has not
+        // written yet, so it can no longer start from none, but it still misses what the writer commits after it
         followerRef.set(new TimeSeriesTagDictionary(db, "tags_unflushed", writer.getComponentFile()));
         writer.internAll(List.of("host_a", "host_b", "host_c"));
       } catch (final Throwable t) {
@@ -273,6 +277,8 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
     assertThat(follower).isNotNull();
     // The fixture: the follower was built over the header page alone, before the writer committed its entries
     assertThat(follower.getTotalPages()).isEqualTo(1);
+    assertThat(writerRef.get().getCommittedPageCount()).as("the fixture: the file holds more pages than the follower counts")
+        .isGreaterThan(follower.getTotalPages());
     assertThat(follower.size()).isZero();
 
     assertThat(follower.getById(2)).isEqualTo("host_b");

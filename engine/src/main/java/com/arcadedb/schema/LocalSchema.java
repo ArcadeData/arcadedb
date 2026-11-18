@@ -670,9 +670,12 @@ public class LocalSchema implements Schema {
         if (file != null)
           if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
             loadedDictionary = (Dictionary) componentFactory.createComponent(file, mode);
-            // On a reload of a live database the new instance counted its pages from the file, which lags a commit
-            // until the flush thread writes the page (see Dictionary.reload()): a committed page still queued is
-            // invisible to it. Take the committed count of the instance it replaces BEFORE anything reads the names
+            // On a reload of a live database the new instance counts the pages of the file, which lags a commit until
+            // the flush thread writes the page (see Dictionary.reload()), and the committed pages the flush queue holds
+            // past its end (issue #12101, see PaginatedComponent). A committed page it can still miss: one past a gap
+            // in the queue (a page number reserved by a transaction that did not commit), or one the file does not
+            // hold for another reason (emptied behind the committed count, see SchemaReloadDictionaryPagesNotFlushedTest).
+            // Take the committed count of the instance it replaces BEFORE anything reads the names
             // or decides that the header page is missing, or the names on that page are silently dropped (a new name
             // then reuses their ids) and, for page 0 of a young database, createHeaderPageIfMissing() writes a fresh
             // page 0 over the committed one and fails its commit with a ConcurrentModificationException. The barrier

@@ -55,6 +55,42 @@ class SchemaReloadIndexPagesNotFlushedTest extends TestHelper {
     assertTheReloadKeepsEveryBucketIndex("COLUMNAR");
   }
 
+  /**
+   * The probe follows the pipeline page after page, not only up to the header: a component built while several of its pages are
+   * committed and not written counts all of them. Checked on a component built through its load constructor, outside of any
+   * schema publication, whose carry-over would otherwise raise the count anyway.
+   */
+  @Test
+  void aComponentBuiltOnTheFileCountsEveryCommittedPageTheFlushHasNotWrittenYet() throws IOException {
+    reopenDatabase();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final Dictionary live = db.getSchema().getEmbedded().getDictionary();
+    final int pagesOnDisk = live.getCommittedPageCount();
+
+    assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(database, true))
+        .as("flush suspension must engage or the new pages could reach disk, invalidating the test").isTrue();
+    try {
+      // names far bigger than the room a page leaves, so every few of them roll the dictionary onto a new page
+      int i = 0;
+      while (live.getCommittedPageCount() < pagesOnDisk + 3)
+        live.getIdByName("manyPendingPages_%06d_".formatted(i++) + "x".repeat(20_000), true);
+      assertThat(live.getComponentFile().getSize()).as("the premise: none of the new pages is on disk")
+          .isEqualTo((long) pagesOnDisk * live.getPageSize());
+      assertThat(PageManager.INSTANCE.getPendingVersionOfPage(new PageId(db, live.getFileId(), live.getCommittedPageCount() - 1)))
+          .as("the premise: the last page is held by the flush pipeline").isNotNegative();
+
+      final Dictionary built = new Dictionary(db, live.getName(), live.getComponentFile().getFilePath(), live.getFileId(),
+          ComponentFile.MODE.READ_WRITE, live.getPageSize(), live.getVersion());
+
+      assertThat(built).as("a new instance, built on the file of the live one").isNotSameAs(live);
+      assertThat(built.getCommittedPageCount()).as("every committed page is counted, the pending ones included")
+          .isEqualTo(live.getCommittedPageCount());
+      assertThat(built.getDictionaryMap()).as("and read: no committed name is lost").isEqualTo(live.getDictionaryMap());
+    } finally {
+      PageManager.INSTANCE.getFlushThread().setSuspended(database, false);
+    }
+  }
+
   private void assertTheReloadKeepsEveryBucketIndex(final String indexType) throws IOException {
     database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 2");
     database.command("sql", "CREATE PROPERTY Asset.brand STRING");

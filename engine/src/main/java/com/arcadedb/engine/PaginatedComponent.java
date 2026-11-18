@@ -175,16 +175,27 @@ public abstract class PaginatedComponent extends Component {
   /**
    * {@code pagesOnDisk} raised by the committed pages that follow them in the flush pipeline (queued, deferred by a suspension,
    * being written, or failed to write), probed one by one up to the first page the pipeline does not hold. The file is read
-   * again afterwards: a page leaves the pipeline only once its write reached the file, so a page written between the two reads
-   * is counted by the second. A page number reserved by a transaction that did not commit leaves a gap the probe stops at; the
-   * pages past it are counted as they were before, from the file once written and, on a schema reload, from the instance this
-   * one replaces at publication ({@link #carryOverFrom(PaginatedComponent)}).
+   * again afterwards: a page leaves the pipeline only once its write reached the file, so a page written during the probe is
+   * counted by the second read. That read can land past pages the pipeline still holds (the flush wrote the first of several
+   * between the two), so the probe resumes from where the file now ends, until neither the pipeline nor the file moves: the
+   * count is then exact, with one probe and one file read when nothing was pending, which is the common case. A page number
+   * reserved by a transaction that did not commit leaves a gap the probe stops at; the pages past it are counted as they were
+   * before, from the file once written and, on a schema reload, from the instance this one replaces at publication
+   * ({@link #carryOverFrom(PaginatedComponent)}).
+   * <p>
+   * Goes through {@link PageManager#INSTANCE} and not through {@code database.getPageManager()}, which refuses a database that is
+   * not open (yet) or is fenced: a component is built by the schema load that opens the database.
    */
   private int withPagesAwaitingFlush(final int pagesOnDisk) throws IOException {
     int pages = pagesOnDisk;
-    while (PageManager.INSTANCE.getPendingVersionOfPage(new PageId(database, fileId, pages)) >= 0)
-      ++pages;
-    return Math.max(pages, (int) (file.getSize() / pageSize));
+    int probedFrom;
+    do {
+      probedFrom = pages;
+      while (PageManager.INSTANCE.getPendingVersionOfPage(new PageId(database, fileId, pages)) >= 0)
+        ++pages;
+      pages = Math.max(pages, (int) (file.getSize() / pageSize));
+    } while (pages > probedFrom);
+    return pages;
   }
 
   public void rename(final String newComponentName) throws IOException {
