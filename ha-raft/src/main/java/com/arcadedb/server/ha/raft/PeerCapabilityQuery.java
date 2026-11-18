@@ -321,8 +321,7 @@ public final class PeerCapabilityQuery {
     if (!(value instanceof Number number))
       return -1L;
     final double magnitude = number.doubleValue();
-    // Also false for NaN
-    if (!(magnitude >= 1D))
+    if (Double.isNaN(magnitude) || magnitude < 1D)
       return -1L;
     return magnitude >= Long.MAX_VALUE ? Long.MAX_VALUE : number.longValue();
   }
