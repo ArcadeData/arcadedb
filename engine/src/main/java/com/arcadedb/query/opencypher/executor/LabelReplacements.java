@@ -29,7 +29,6 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.LightEdgeRID;
@@ -101,9 +100,10 @@ public final class LabelReplacements {
 
   private final Map<RID, Vertex> vertices = new HashMap<>();
   private final Map<RID, Edge>   edges    = new HashMap<>();
-  // EVERY REPLACEMENT RECORD (VERTEX OR RE-ATTACHED EDGE) TO THE RID OF THE RECORD AT THE START OF ITS CHAIN: THE IDENTITY A
-  // DISTINCT KEYS IT BY, SO A NODE HELD AS THE ORIGINAL BY ONE ROW AND AS A REPLACEMENT BY ANOTHER IS ONE VALUE (ISSUE #10614)
-  private final Map<RID, RID>    origins  = new HashMap<>();
+  // EVERY REPLACEMENT RECORD (VERTEX OR RE-ATTACHED EDGE) TO THE RECORD AT THE START OF ITS CHAIN, AS THE ROWS READ IT: THE
+  // IDENTITY A DISTINCT KEYS IT BY, SO A NODE HELD AS THE ORIGINAL BY ONE ROW AND AS A REPLACEMENT BY ANOTHER IS ONE VALUE
+  // (ISSUE #10614). A VERTEX MAPS TO A VERTEX AND AN EDGE TO AN EDGE
+  private final Map<RID, Identifiable> origins = new HashMap<>();
   // The context of the statement this map belongs to, which alone ends it (see endOfStatement); null for a private map
   private final CommandContext   owner;
   // The database the held positions live in, set by the first hold
@@ -187,28 +187,41 @@ public final class LabelReplacements {
    * is {@code value} itself. A row projected before a later row's label write holds the original, a row projected after it the
    * replacement: one node, which Neo4j answers once, but the DISTINCT told the two apart by RID - and before any SKIP or LIMIT,
    * which a second pass over the answered rows could not undo. Keying by the origin matches the original too, since a DISTINCT
-   * reads a record as its RID. A path is keyed by the keys of its elements whether anything in it moved or not, so a path keyed
-   * before the write and the same path keyed after it are one key.
+   * reads a record, and a path, by RID. A value holding no replacement is answered as it is, so the keys a DISTINCT built
+   * before the first replacement, or before this map existed, still compare equal to the ones it builds after.
    */
   public Object distinctKey(final Object value) {
+    if (origins.isEmpty())
+      return value;
+
     if (value instanceof Vertex || value instanceof Edge) {
-      if (origins.isEmpty())
-        return value;
-      final RID rid = ((Identifiable) value).getIdentity();
-      final RID origin = rid != null ? origins.get(rid) : null;
-      return origin != null ? origin : value;
+      final Identifiable origin = originOf((Identifiable) value);
+      return origin != null ? origin.getIdentity() : value;
     }
 
     if (value instanceof TraversalPath path) {
+      // Rebuilt around the original records, whose RIDs are what a path compares and hashes by
       final List<Vertex> pathVertices = path.getVertices();
       final List<Edge> pathEdges = path.getEdges();
-      final List<Object> elements = new ArrayList<>(pathVertices.size() + pathEdges.size());
-      for (int i = 0; i < pathVertices.size(); i++) {
-        elements.add(DistinctNumericKey.canonicalize(distinctKey(pathVertices.get(i))));
-        if (i < pathEdges.size())
-          elements.add(DistinctNumericKey.canonicalize(distinctKey(pathEdges.get(i))));
+      boolean moved = false;
+      final List<Vertex> keyVertices = new ArrayList<>(pathVertices.size());
+      for (final Vertex vertex : pathVertices) {
+        final Identifiable origin = originOf(vertex);
+        moved |= origin != null;
+        keyVertices.add(origin != null ? (Vertex) origin : vertex);
       }
-      return new PathKey(elements);
+      final List<Edge> keyEdges = new ArrayList<>(pathEdges.size());
+      for (final Edge edge : pathEdges) {
+        final Identifiable origin = originOf(edge);
+        moved |= origin != null;
+        keyEdges.add(origin != null ? (Edge) origin : edge);
+      }
+      if (!moved || keyVertices.isEmpty())
+        return value;
+      final TraversalPath key = new TraversalPath(keyVertices.get(0));
+      for (int i = 0; i < keyEdges.size(); i++)
+        key.addStep(keyEdges.get(i), keyVertices.get(i + 1));
+      return key;
     }
 
     if (value instanceof List<?> list) {
@@ -238,13 +251,6 @@ public final class LabelReplacements {
     }
 
     return value;
-  }
-
-  /**
-   * The DISTINCT key of a path: the keys of its nodes and relationships in order. A type of its own, so a path is never the
-   * same value as a list holding the same elements.
-   */
-  private record PathKey(List<Object> elements) {
   }
 
   /**
@@ -340,9 +346,9 @@ public final class LabelReplacements {
   public static final class Snapshot {
     private final Map<RID, Vertex> vertices;
     private final Map<RID, Edge>   edges;
-    private final Map<RID, RID>    origins;
+    private final Map<RID, Identifiable> origins;
 
-    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges, final Map<RID, RID> origins) {
+    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges, final Map<RID, Identifiable> origins) {
       this.vertices = vertices;
       this.edges = edges;
       this.origins = origins;
@@ -593,7 +599,8 @@ public final class LabelReplacements {
     vertex.delete();
     if (vertices.put(originalRid, newVertex) == null)
       holdPosition(database, originalRid);
-    origins.put(newVertex.getIdentity(), originOf(originalRid));
+    final Identifiable vertexOrigin = originOf(vertex);
+    origins.put(newVertex.getIdentity(), vertexOrigin != null ? vertexOrigin : vertex);
     ++replacements;
 
     // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
@@ -655,16 +662,21 @@ public final class LabelReplacements {
       return;
     if (edges.put(rid, replacement) == null)
       holdPosition(original.getDatabase(), rid);
-    // A lightweight edge is keyed by its (type, out, in) triple, which DISTINCT already reads as its own key
+    // Not for a lightweight edge: its identity is the (type, out, in) triple, which a parallel twin created later shares, so
+    // keying it would merge two relationships under DISTINCT
     final RID replacementRid = replacement.getIdentity();
-    if (replacementRid != null && !(replacementRid instanceof LightEdgeRID))
-      origins.put(replacementRid, originOf(rid));
+    if (replacementRid != null && !(replacementRid instanceof LightEdgeRID)) {
+      final Identifiable origin = originOf(original);
+      origins.put(replacementRid, origin != null ? origin : original);
+    }
   }
 
-  /** The RID at the start of the replacement chain {@code rid} belongs to, or {@code rid} itself when it replaced nothing. */
-  private RID originOf(final RID rid) {
-    final RID origin = origins.get(rid);
-    return origin != null ? origin : rid;
+  /**
+   * The record at the start of the replacement chain {@code record} belongs to, or {@code null} when it is no replacement.
+   */
+  private Identifiable originOf(final Identifiable record) {
+    final RID rid = record.getIdentity();
+    return rid != null ? origins.get(rid) : null;
   }
 
   /**

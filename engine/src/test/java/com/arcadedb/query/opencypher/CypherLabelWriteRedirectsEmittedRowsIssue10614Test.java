@@ -267,6 +267,36 @@ class CypherLabelWriteRedirectsEmittedRowsIssue10614Test extends TestHelper {
     assertLive(held.getFirst());
   }
 
+  /**
+   * A later branch of a write UNION relabels the node an earlier branch returned: the row of the earlier branch is answered
+   * with the live record, and UNION (not ALL) answers the node once.
+   */
+  @Test
+  void aRowOfAnEarlierUnionBranchFollowsALaterBranchsLabelWrite() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:L {id: 1})-[:E]->(:M {id: 2})"));
+
+    final List<Result> all = rows("""
+        MATCH p = (n:L {id: 1})-[:E]->() RETURN n, p
+        UNION ALL
+        MATCH p = (n:L {id: 1})-[:E]->() REMOVE n:L RETURN n, p""");
+    assertThat(all).hasSize(2);
+    final RID live = all.get(1).<Vertex>getProperty("n").getIdentity();
+    for (final Result row : all) {
+      assertLive(row.getProperty("n"));
+      assertThat(row.<Vertex>getProperty("n").getIdentity()).isEqualTo(live);
+      assertLivePath(row.getProperty("p"));
+    }
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n {id: 1}) SET n:L"));
+    final List<Result> distinct = rows("""
+        MATCH (n:L {id: 1}) RETURN n
+        UNION
+        MATCH (n:L {id: 1}) REMOVE n:L RETURN n""");
+    assertThat(distinct).hasSize(1);
+    assertLive(distinct.getFirst().getProperty("n"));
+    assertThat(count("MATCH (n:L) RETURN count(n) AS c")).isZero();
+  }
+
   /** PROFILE drains the statement as well, and answers the same live rows. */
   @Test
   void aProfiledStatementAnswersTheLiveRecords() {

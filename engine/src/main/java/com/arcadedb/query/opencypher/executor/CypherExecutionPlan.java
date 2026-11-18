@@ -441,6 +441,10 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    // A branch of a write UNION shares the label replacements of the whole statement: a later branch's label write deletes
+    // the records the rows of an earlier branch hold, and the UNION redirects them with that map (issue #10614)
+    if (outerContext != null && !statement.isReadOnly() && LabelReplacements.existing(outerContext) != null)
+      LabelReplacements.inherit(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -919,13 +923,15 @@ public class CypherExecutionPlan {
 
     // Write UNION: materialize to force each branch's mutation steps to execute (mirroring the
     // non-union write path), then surface the summed per-branch statistics.
-    final ResultSet rs = unionStep.syncPull(context, 100);
+    shareLabelReplacementsWithBranches(context, outerContext);
     final List<Result> rows = new ArrayList<>();
-    try {
+    try (final ResultSet rs = unionStep.syncPull(context, 100)) {
       while (rs.hasNext())
         rows.add(rs.next());
+      // A row of an earlier branch still holds what a later branch's label write deleted (issue #10614)
+      LabelReplacements.redirectRows(context, rows);
     } finally {
-      rs.close();
+      LabelReplacements.endOfStatement(context);
     }
     final IteratorResultSet out = new IteratorResultSet(rows.iterator());
     // Always attach the accumulator for a write UNION, even when no branch actually mutated
@@ -933,6 +939,17 @@ public class CypherExecutionPlan {
     // mirroring the non-union write path above.
     out.setStatistics(unionStep.getAggregatedStatistics());
     return out;
+  }
+
+  /**
+   * Gives the context of a write UNION the label replacements every branch shares (the branches inherit them, see
+   * {@code executeStreaming}): the enclosing statement's when it has one, else a map of its own, which the UNION ends.
+   */
+  private static void shareLabelReplacementsWithBranches(final CommandContext unionContext, final CommandContext outerContext) {
+    if (LabelReplacements.existing(outerContext) != null)
+      LabelReplacements.inherit(unionContext, outerContext);
+    else
+      LabelReplacements.of(unionContext);
   }
 
   /**
@@ -1248,12 +1265,17 @@ public class CypherExecutionPlan {
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
       final UnionStep unionStep =
           new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+      if (!statement.isReadOnly())
+        shareLabelReplacementsWithBranches(context, null);
       try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
         while (resultSet.hasNext()) {
           final Result row = resultSet.next();
           if (keepRows)
             results.add(row);
         }
+        redirectProfiledRows(context, results);
+      } finally {
+        LabelReplacements.endOfStatement(context);
       }
     } else {
       // FAST PATH: Count-push-down (same logic as execute())
