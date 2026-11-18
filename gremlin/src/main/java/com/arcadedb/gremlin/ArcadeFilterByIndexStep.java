@@ -392,7 +392,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     }
 
     /** Whether {@code step} opened this scan: a clone shares the scan of the running step it was cloned from, which is not its to close. */
-    private boolean isOpenedBy(final Object step) {
+    boolean isOpenedBy(final Object step) {
       return step == ArcadeFilterByIndexStep.this;
     }
 

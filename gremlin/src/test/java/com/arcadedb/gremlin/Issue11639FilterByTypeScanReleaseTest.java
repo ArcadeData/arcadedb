@@ -197,12 +197,13 @@ class Issue11639FilterByTypeScanReleaseTest {
       assertThat(ScanReadAheadBudget.getReservedBytes()).as("the scan holds the batch it read ahead").isGreaterThan(before);
 
       release.run(traversal);
+
+      // CHECKED BEFORE THE CLEANUP BELOW, SO IT IS WHAT THE RELEASE DID THAT IS ASSERTED
+      assertThat(ScanReadAheadBudget.getReservedBytes()).as("the read-ahead of the scan went back to the pool").isLessThanOrEqualTo(before);
     } finally {
       // A FAILED ASSERTION ABOVE MUST NOT LEAVE THE SCAN HOLDING A BATCH FOR THE TESTS AFTER THIS ONE
       traversal.close();
     }
-
-    assertThat(ScanReadAheadBudget.getReservedBytes()).as("the read-ahead of the scan went back to the pool").isLessThanOrEqualTo(before);
   }
 
   private static int filterByTypeSteps(final GraphTraversal<?, ?> traversal) {
