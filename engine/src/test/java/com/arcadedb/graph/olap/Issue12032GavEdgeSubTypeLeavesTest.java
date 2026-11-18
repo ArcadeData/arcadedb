@@ -91,6 +91,27 @@ class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
     assertThat(entries(again.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).isZero();
   }
 
+  /**
+   * What a renumbered view is kept on: the names resolve to the same slices before and after a type is detached and attached
+   * again, so resolving them twice cannot tell that a view was built across those two changes. The generation of the types can.
+   */
+  @Test
+  void theTypesGenerationMovesForATypeDetachedAndAttachedAgain() {
+    final GraphAnalyticalView view = overlayWithHoles();
+    final GraphAnalyticalView.Pinned pinned = view.pinned();
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(pinned);
+    assertThat(dense).isInstanceOf(DenseNodeIdProvider.class);
+    final long before = dense.getTypesGeneration();
+    assertThat(pinned.getTypesGeneration()).as("the renumbering answers what the view it wraps answers").isEqualTo(before);
+    assertThat(dense.resolveEdgeTypes("E0")).containsExactly("E0", "E1");
+
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE +E0").close();
+
+    assertThat(dense.resolveEdgeTypes("E0")).as("the same slices as before").containsExactly("E0", "E1");
+    assertThat(dense.getTypesGeneration()).as("and a type changed in between").isGreaterThan(before);
+  }
+
   @ParameterizedTest
   @CsvSource({ "DROP TYPE E1 UNSAFE, SYNCHRONOUS", "ALTER TYPE E1 SUPERTYPE -E0, SYNCHRONOUS", "DROP TYPE E1 UNSAFE, OFF",
       "ALTER TYPE E1 SUPERTYPE -E0, OFF" })

@@ -230,6 +230,11 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   }
 
   @Override
+  public long getTypesGeneration() {
+    return delegate.getTypesGeneration();
+  }
+
+  @Override
   public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
     final int id = delegateId(nodeId);
     if (id < 0)
@@ -362,12 +367,13 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    // The view is built from the slices its key was made of, and kept only if the names still resolve to them once it is built:
-    // a schema change in between (the delegate expands the slices once more) would otherwise store the view of one selection
-    // under the key of another
+    // The view is kept only if no type changed from before the key was resolved to after the view was built: the delegate expands
+    // the slices once more while it builds, and a type changed in between (even attached and detached again, which the slices
+    // resolved twice would not show) would store the view of one selection under the key of another
+    final long generation = delegate.getTypesGeneration();
     final String[] slices = sliceSelection(edgeTypes);
     return cachedView(viewKey(direction, slices), () -> translate(delegate.getNeighborView(direction, slices)),
-        () -> Arrays.equals(slices, sliceSelection(edgeTypes)));
+        () -> delegate.getTypesGeneration() == generation);
   }
 
   /**

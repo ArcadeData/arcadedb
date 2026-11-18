@@ -1741,6 +1741,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return resolved.toArray(new String[0]);
   }
 
+  /** The types-change serial of the schema: what the expansions {@link #resolveEdgeTypes} answers are cached under. */
+  @Override
+  public long getTypesGeneration() {
+    return database.getSchema().getEmbedded().getTypesChangeSerial();
+  }
+
   private String[] expandEdgeType(final String edgeType) {
     if (edgeType == null)
       return new String[] { null };
@@ -2955,6 +2961,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     @Override
     public String[] resolveEdgeTypes(final String... edgeTypes) {
       return view.resolveEdgeTypes(edgeTypes);
+    }
+
+    @Override
+    public long getTypesGeneration() {
+      return view.getTypesGeneration();
     }
 
     @Override
