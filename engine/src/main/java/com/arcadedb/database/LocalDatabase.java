@@ -2174,8 +2174,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // NO INDEXES
         schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record, discardRecordAfter);
 
-      getTransaction().updateRecordInCache(record);
-      getTransaction().removeImmutableRecordsOfSamePage(record.getIdentity());
+      final TransactionContext tx = getTransaction();
+      tx.updateRecordInCache(record);
+      if (!implicitTransaction)
+        // #12472: A DELETE LATER IN THIS TRANSACTION FINDS THIS WRITE IN THE SLOT, AND MUST KNOW IT AS ITS OWN (THE COMMIT'S OWN
+        // WRITES ARE NOT TRACKED, SEE trackImmediateWrite)
+        tx.trackImmediateWrite(record.getIdentity());
+      tx.removeImmutableRecordsOfSamePage(record.getIdentity());
 
       success = true;
 
@@ -2501,19 +2506,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * off-page record it could not assemble (a chain caught moving, or broken): only a difference between two images that were both
    * read is a refusal, and a chain that cannot be read keeps the path that reports it (#6258).
    * <p>
-   * A record this transaction created or wrote is the transaction's own business: an insert is written to its page at once, and so
-   * is a write of the asynchronous executor, so its slot can differ from an image read before that write with no concurrent
-   * transaction involved, and refusing it would fail every retry the same way. A concurrent change committed before such a write
-   * was refused by the write itself ({@code TransactionContext.checkRecordIsStillTheOneRead}), and one committed after it fails the
-   * commit-time version check of the page the write holds. Limit: with read-your-writes off the transaction keeps no copy of a
-   * record the asynchronous executor wrote, so a delete in the same worker transaction through an object read before that write is
-   * refused, where one read after the write is not.
+   * A slot this transaction wrote itself is the transaction's own business: an insert is written to its page at once, and so is a
+   * write of the asynchronous executor, so the slot can differ from an image read before that write with no concurrent transaction
+   * involved, and refusing it would fail every retry the same way. A concurrent change committed before such a write was refused by
+   * the write itself ({@code TransactionContext.checkRecordIsStillTheOneRead}), and one committed after it fails the commit-time
+   * version check of the page the write holds. Every other write of the transaction is deferred to the commit and leaves the slot
+   * alone, so it never explains a difference: a record the transaction updated, or gave an edge, is refused like any other when the
+   * object deleted was read before a concurrent change (the update itself may have been computed from a newer read, or queued for
+   * the commit-time merge of the edge-list heads, #11498).
    */
   private boolean isChangedByAnotherTransaction(final RID rid, final Binary readImage, final Binary current) {
     final int size = current.size();
     if (size == readImage.size() && readImage.isSameRegionAs(0, current, 0, size))
       return false;
-    return !getTransaction().isWrittenOrCreatedInTransaction(rid);
+    return !getTransaction().isSlotWrittenInTransaction(rid);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */

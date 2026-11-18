@@ -165,6 +165,59 @@ class DeleteOfChangedRecordIssue12472Test extends TestHelper {
    */
   @Test
   void anOwnWriteOfTheAsynchronousExecutorIsNotAConflict() {
+    ownWriteOfTheAsynchronousExecutorThenDelete();
+  }
+
+  /** As above, with read-your-writes off: no record cache of the transaction remembers the write. */
+  @Test
+  void anOwnWriteOfTheAsynchronousExecutorIsNotAConflictWithReadYourWritesOff() {
+    database.setReadYourWrites(false);
+    try {
+      ownWriteOfTheAsynchronousExecutorThenDelete();
+    } finally {
+      database.setReadYourWrites(true);
+    }
+  }
+
+  /**
+   * A vertex taken for modification, changed by a concurrent transaction, then given an edge through that object: the edge-list
+   * write is queued over the concurrent change for the commit-time merge of the heads (#11498), and being deferred to the commit it
+   * is not what makes the slot differ from the image read. Deleting the vertex through that object is refused, or it would discard
+   * the concurrent change unseen.
+   */
+  @Test
+  void anEdgeListWriteQueuedOverAConcurrentChangeDoesNotExemptTheDelete() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V");
+      database.getSchema().createEdgeType("E");
+    });
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newVertex("V").set("v", 1).save().getIdentity();
+      rids[1] = database.newVertex("V").set("v", 9).save().getIdentity();
+    });
+
+    // OUTSIDE ANY TRANSACTION, SO modify() PINS NO PAGE THE CONCURRENT COMMIT COULD BE CHECKED AGAINST
+    final MutableVertex readBefore = rids[0].asVertex(true).modify();
+    assertThat(readBefore.getInteger("v")).isEqualTo(1);
+    database.begin();
+    try {
+      runConcurrently(() -> {
+        database.transaction(() -> rids[0].asVertex().modify().set("v", 2).save());
+        return null;
+      });
+      readBefore.newEdge("E", rids[1].asVertex());
+      assertThat(((DatabaseInternal) database).getTransaction().isUpdateQueued(rids[0])).as("the edge-list write must be queued").isTrue();
+
+      assertThatThrownBy(readBefore::delete).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      database.rollback();
+    }
+    assertThat(database.existsRecord(rids[0])).isTrue();
+    database.transaction(() -> assertThat(rids[0].asVertex().getInteger("v")).isEqualTo(2));
+  }
+
+  private void ownWriteOfTheAsynchronousExecutorThenDelete() {
     final RID rid = newDocument();
     final Document readBefore = rid.asDocument(true);
     assertThat(readBefore.getInteger("v")).isEqualTo(1);

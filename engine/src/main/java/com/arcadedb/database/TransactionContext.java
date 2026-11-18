@@ -212,6 +212,8 @@ public class TransactionContext implements Transaction {
   // check addUpdatedRecord would have refused them with is made by the commit instead, under the lock, against the newest
   // committed image: the write is merged onto it when it changed only edge-list heads, refused otherwise.
   private       RidHashSet                            staleEdgeListWrites;
+  // #12472: records written to their page at once (the asynchronous executor) rather than deferred to the commit
+  private       RidHashSet                            immediateWrites;
   // #12320: the vertices whose outgoing / incoming edge-list head a traversal read off a vertex loaded from this transaction's
   // own image of its page, see trackEdgeListHeadReadFromOwnImage()
   private       RidHashSet                            outHeadsReadFromOwnImage;
@@ -776,15 +778,29 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Whether this transaction created {@code rid}, or holds a written copy of it (a deferred update or the mutable working copy),
-   * which is what can make the record's slot differ from an image of it read earlier in the transaction without any concurrent
-   * transaction being involved (issue #12472). Unlike {@link #getWrittenRecord(RID)} it records nothing in the running statement:
-   * it answers a question and hands out no record.
+   * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
+   * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
+   * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred
+   * update leaves the slot alone until the commit, so a slot that differs from the image is never its doing, whatever the record
+   * caches hold. Records nothing in the running statement: it answers a question and hands out no record.
    */
-  public boolean isWrittenOrCreatedInTransaction(final RID rid) {
-    if (modifiedRecordsCache.containsKey(rid) || (updatedRecords != null && updatedRecords.containsKey(rid)))
+  public boolean isSlotWrittenInTransaction(final RID rid) {
+    if (immediateWrites != null && immediateWrites.contains(rid))
       return true;
     return isCreatedInTransaction(rid);
+  }
+
+  /**
+   * Remembers a record written to its page at once inside this transaction (the asynchronous executor), see
+   * {@link #isSlotWrittenInTransaction(RID)}. The writes of the commit itself (the flush of the deferred updates, the merges) are
+   * not remembered: they run after every delete of the transaction.
+   */
+  public void trackImmediateWrite(final RID rid) {
+    if (status != STATUS.BEGUN)
+      return;
+    if (immediateWrites == null)
+      immediateWrites = new RidHashSet();
+    immediateWrites.add(rid);
   }
 
   /**
@@ -5411,6 +5427,7 @@ public class TransactionContext implements Transaction {
     lightEdgeEntryChanges = null;
     newRecordRIDs = null;
     staleEdgeListWrites = null;
+    immediateWrites = null;
     outHeadsReadFromOwnImage = null;
     inHeadsReadFromOwnImage = null;
     mergedEdgeListBases = null;
