@@ -2266,7 +2266,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
 
       final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
-      scso.setOnCancelHandler(() -> cancelled.set(true));
+      onCancel(scso, cancelled);
 
       final int batchSize = Math.max(1, request.getBatchSize());
       final String language = langOrDefault(request.getLanguage());
@@ -2647,6 +2647,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw e;
       }
     }
+  }
+
+  /**
+   * Sets {@code cancelled} when the client cancels the call. A server-streaming handler runs inside the call's half-close callback
+   * and keeps it until the stream ends, and gRPC delivers the call's other callbacks, the cancel handler included, on the same
+   * serialized executor: the handler set by {@code setOnCancelHandler} alone could only run once the stream was over. A stream the
+   * client cancelled therefore went on waiting for the transport to become ready until arcadedb.server.grpcStreamWriteTimeoutMs
+   * (60 s), holding its worker thread, its result set and its query admission slot, so that arcadedb.queryMaxConcurrent cancelled
+   * streams made every remote query wait. The call's context is cancelled as the cancel arrives, on the server's own executor
+   * and not on the call's serialized one (the gRPC server here has no executor of its own configured, so that is an unbounded
+   * cached pool and the cancel never queues behind a busy worker), and a listener with a direct executor sees it at once, as
+   * {@code GrpcAdmissionInterceptor} already does. The listener is not removed: the context is cancelled when the call ends,
+   * which clears its listeners, and outside a call the current context is the root one, which takes none.
+   */
+  private static void onCancel(final ServerCallStreamObserver<?> call, final AtomicBoolean cancelled) {
+    call.setOnCancelHandler(() -> cancelled.set(true));
+    Context.current().addListener(context -> cancelled.set(true), Runnable::run);
   }
 
   private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled, AtomicBoolean serverTimedOut) {
@@ -3870,7 +3887,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final ServerCallStreamObserver<TimeSeriesQueryResult> call = (ServerCallStreamObserver<TimeSeriesQueryResult>) resp;
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
-    call.setOnCancelHandler(() -> cancelled.set(true));
+    onCancel(call, cancelled);
     // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
     boolean terminated = false;
 
