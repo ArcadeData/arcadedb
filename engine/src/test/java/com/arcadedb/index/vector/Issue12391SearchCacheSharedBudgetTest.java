@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
+import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,15 +56,26 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
     final FlatVectorCache siblingCache = sibling.getSearchVectorCache();
     assertThat(siblingCache).as("precondition: the other bucket's index has a search cache").isNotNull();
     final long siblingPlans = siblingCache.capacity() * bytesPerEntry;
-    final long siblingHolds = siblingCache.allocatedBytes();
 
-    // 1% of what is free plus what the sibling holds is what the sibling plans on, plus 30 entries
-    final long available = (siblingPlans + 30 * bytesPerEntry) * 100 - siblingHolds;
+    // 1% of what is free is what the sibling plans on, plus 30 entries
+    final long available = (siblingPlans + 30 * bytesPerEntry) * 100;
     assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, available, false))
         .as("what the other index's cache plans on is charged to the same budget").isEqualTo(30);
 
-    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, siblingPlans * 100 - siblingHolds, false))
+    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, siblingPlans * 100, false))
         .as("a budget the other caches have taken leaves this one none, not the floor").isZero();
+
+    // The heap reading is the one of the last collection: a sibling that fills its cache after it is in no figure the budget
+    // can trust, so what it holds must not be credited back as free heap (code review on PR #12392)
+    final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
+    final float[] vector = new float[DIMENSIONS];
+    for (int id = 0; id < 4_000; id++) {
+      vector[id % DIMENSIONS] = id;
+      siblingCache.put(id, vts.createFloatVector(vector.clone()));
+    }
+    assertThat(siblingCache.allocatedBytes()).as("precondition: the sibling's cache holds vectors now").isPositive();
+    assertThat(index.affordableSearchCacheEntries(1, bytesPerEntry, available, false))
+        .as("filling the sibling's cache under the same heap reading does not grow this one's share").isEqualTo(30);
   }
 
   /**
@@ -82,10 +95,9 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
     final FlatVectorCache vectors = index.getSearchVectorCache();
     assertThat(vectors).as("precondition: the index has a vector cache").isNotNull();
     final long vectorsPlan = vectors.capacity() * FlatVectorCache.bytesPerVector(DIMENSIONS);
-    final long vectorsHold = vectors.allocatedBytes();
     final long bytesPerCode = BinaryCodeCache.bytesPerCode(DIMENSIONS);
 
-    final long available = (vectorsPlan + 30 * bytesPerCode) * 100 - vectorsHold;
+    final long available = (vectorsPlan + 30 * bytesPerCode) * 100;
     assertThat(index.affordableSearchCacheEntries(1, bytesPerCode, available, true))
         .as("the codes are charged the vector cache of the same index").isEqualTo(30);
     assertThat(index.affordableSearchCacheEntries(1, FlatVectorCache.bytesPerVector(DIMENSIONS), 0L, false))

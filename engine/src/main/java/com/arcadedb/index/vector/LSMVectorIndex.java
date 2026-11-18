@@ -14565,10 +14565,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * vector indexes already plans on (issue #12391), the other cache of this same index included: a BINARY index holds both
    * the vectors and the codes.
    * <p>
-   * The percent applies to the heap the caches could have between them: what is free plus what the other caches hold, since
-   * that part is not free only because they hold it. What the others plan on - their whole capacity, filled or not, since a
-   * cache fills up to it without asking again - is charged first. Together the caches therefore never plan on more than
-   * the percent, however many indexes the schema has.
+   * The percent applies to the heap available now, and what the others plan on - their whole capacity, filled or not, since
+   * a cache fills up to it without asking again - is charged against it first. Together the caches therefore never plan on
+   * more than the percent, however many indexes the schema has. What the others already hold is NOT credited back to the
+   * available heap: the reading is the one of the last collection, and a cache filled since then is in neither it nor any
+   * other figure this method can trust, so a credit would count it twice. The filled part of the others' caches is thus
+   * charged twice instead - once as missing from the available heap, once in their plan - which errs toward smaller caches.
    * <p>
    * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
    * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
@@ -14586,24 +14588,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
   long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap,
       final boolean sizingCodes) {
     long othersPlan = 0L;
-    long othersHold = 0L;
     for (final Index index : getDatabase().getSchema().getIndexes()) {
       if (!(index instanceof LSMVectorIndex owner))
         continue;
       final FlatVectorCache vectors = owner.searchVectorCache;
-      if (vectors != null && (owner != this || sizingCodes)) {
+      if (vectors != null && (owner != this || sizingCodes))
         othersPlan += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
-        othersHold += vectors.allocatedBytes();
-      }
       final BinaryCodeCache codes = owner.searchBinaryCodes;
-      if (codes != null && (owner != this || !sizingCodes)) {
-        // Allocated whole when created: what it plans on, it holds
-        final long bytes = codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
-        othersPlan += bytes;
-        othersHold += bytes;
-      }
+      if (codes != null && (owner != this || !sizingCodes))
+        othersPlan += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
     }
-    final long left = Math.max(0L, VectorHeapBudget.budgetBytes(heapPercent, availableHeap + othersHold) - othersPlan);
+    final long left = Math.max(0L, VectorHeapBudget.budgetBytes(heapPercent, availableHeap) - othersPlan);
     final long entries = left / bytesPerEntry;
     return othersPlan == 0L ? Math.max(MIN_SEARCH_CACHE_SIZE, entries) : entries;
   }
