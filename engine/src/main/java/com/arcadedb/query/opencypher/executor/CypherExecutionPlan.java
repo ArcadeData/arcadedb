@@ -60,6 +60,8 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
+import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
@@ -476,7 +478,14 @@ public class CypherExecutionPlan {
     }
 
     // Execute the step chain
-    final ResultSet resultSet = rootStep.syncPull(context, 100);
+    final ResultSet resultSet;
+    try {
+      resultSet = rootStep.syncPull(context, 100);
+    } catch (final RuntimeException | Error e) {
+      // A step that writes eagerly can fail here, after a label write already held the slots it freed (issue #12336)
+      LabelReplacements.endOfStatement(context);
+      throw e;
+    }
 
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
@@ -498,6 +507,8 @@ public class CypherExecutionPlan {
         // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
         // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
         resultSet.close();
+        // ... and no binding of a record a label write replaced is left to resolve: its slot may be reused (issue #12336)
+        LabelReplacements.endOfStatement(context);
       }
       // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
       // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
@@ -1260,6 +1271,9 @@ public class CypherExecutionPlan {
             if (keepRows)
               results.add(row);
           }
+        } finally {
+          // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
+          LabelReplacements.endOfStatement(context);
         }
       }
     }
@@ -1483,15 +1497,22 @@ public class CypherExecutionPlan {
 
     @Override
     public String parallelVariable() {
-      return physicalPlan.getRootOperator() instanceof NodeByLabelScan scan ? scan.getVariable() : null;
+      final PhysicalOperator root = physicalPlan.getRootOperator();
+      if (root instanceof NodeByLabelScan scan)
+        return scan.getVariable();
+      // An adaptive range scan that may give way to a label scan, which then runs in the workers (issue #11873)
+      return root instanceof NodeIndexRangeScan rangeScan && rangeScan.mayServeInParallel() ? rangeScan.getVariable() : null;
     }
 
     @Override
     public ParallelRecordScan planParallelRows(final CommandContext ctx, final List<BooleanExpression> filters) {
       // Only before the operators were pulled: a started scan cannot be taken over
-      if (operatorResults != null || closed || !(physicalPlan.getRootOperator() instanceof NodeByLabelScan scan))
+      if (operatorResults != null || closed)
         return null;
-      return scan.planParallelRows(ctx, filters);
+      final PhysicalOperator root = physicalPlan.getRootOperator();
+      if (root instanceof NodeByLabelScan scan)
+        return scan.planParallelRows(ctx, filters);
+      return root instanceof NodeIndexRangeScan rangeScan ? rangeScan.planParallelRows(ctx, filters) : null;
     }
   }
 

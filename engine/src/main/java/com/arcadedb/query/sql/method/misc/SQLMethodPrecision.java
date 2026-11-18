@@ -19,7 +19,8 @@
 package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
@@ -70,6 +71,8 @@ public class SQLMethodPrecision extends AbstractSQLMethod {
       return DateUtils.dateTime(context.getDatabase(), calendar.getTimeInMillis(), MILLIS, LocalDateTime.class, targetPrecision);
     }
 
-    throw new CommandExecutionException("Error on changing precision for unsupported type '" + value.getClass() + "'");
+    // a value that holds no time is the caller's receiver, not a server fault (issue #12020)
+    throw new TypeMismatchException("precision() expects a date or a datetime, but received " + (value == null ? "null" :
+        value.getClass().getSimpleName() + " " + InvalidArgumentException.quote(value)));
   }
 }

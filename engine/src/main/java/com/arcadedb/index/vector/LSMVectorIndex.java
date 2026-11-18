@@ -26,6 +26,7 @@ import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
@@ -552,11 +553,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private final IntHashSet replicatedPageSeenIds = new IntHashSet();
 
-  /** Cached answer of {@link #computeDeltaPayloadCapacity()}, and when it was last computed. */
-  private volatile int  deltaPayloadCapacity      = -1;
-  private volatile long deltaPayloadCapacityAtMs  = 0L;
+  /**
+   * What {@link #deltaResidentPayloads} costs the heap, as charged to the ledger the vector indexes of the database
+   * share (issue #12379). Moves with the counter, under the same write lock, until the index stops being the
+   * schema's: {@link #releaseBackgroundResources()} and {@link #onSuperseded()} close it.
+   */
+  private final VectorDeltaPayloadLedger.Account deltaPayloadAccount = new VectorDeltaPayloadLedger.Account();
 
-  /** How long a computed delta payload capacity is reused before the heap is measured again. */
+  /**
+   * The two terms a buffered payload is admitted against, and when they were computed.
+   *
+   * @param ownLimit    payloads this index may hold itself: an explicit {@code deltaCacheSize}, or
+   *                    {@link Integer#MAX_VALUE} when only the heap share bounds it
+   * @param sharedBytes heap the vector indexes of the database may hold in payloads together, or
+   *                    {@link VectorDeltaPayloadLedger#NO_SHARED_BUDGET} when the size is explicit
+   */
+  private record DeltaPayloadBudget(int ownLimit, long sharedBytes, long computedAtMs) {
+  }
+
+  /** Cached answer of {@link #computeDeltaPayloadBudget}. */
+  private volatile DeltaPayloadBudget deltaPayloadBudget;
+
+  /** How long a computed delta payload budget is reused before the heap is measured again. */
   private static final long DELTA_PAYLOAD_CAPACITY_TTL_MS = 1_000L;
 
   /**
@@ -3700,7 +3718,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
-    boolean documentScanPerformed = false;
     if (metadata.associatedBucketId != -1) {
       try {
         final Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
@@ -3738,7 +3755,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
 
-          documentScanPerformed = true;
           LogManager.instance().log(this, Level.INFO,
               "After document scan fallback: %d active vectors for graph build (was %d from pages only)",
               ridToLatestVector.size(), activeVectorIds.length);
@@ -3755,26 +3771,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the in-memory vectorIndex, recover them. This catches cases where the document scan
     // fallback could not trigger (e.g., typeName is null, countType failed, or the type has
     // multiple buckets making the count comparison unreliable).
-    if (!documentScanPerformed) {
-      final VectorLocationIndex recoveryLocations = vectorIndex();
-      final int inMemorySize = recoveryLocations.size();
-      if (inMemorySize > ridToLatestVector.size()) {
-        final int pageParsedCount = ridToLatestVector.size();
-        // Recover entries from the in-memory vectorIndex that are missing from pages
-        recoveryLocations.getAllVectorIds().forEach(vectorId -> {
-          final long offsetAndFlag = recoveryLocations.getOffsetAndFlag(vectorId);
-          if (offsetAndFlag == VectorLocationIndex.ABSENT)
-            return;
-          final RID rid = recoveryLocations.getRid(vectorId);
-          if (rid != null && !ridToLatestVector.containsKey(rid))
-            ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid,
-                VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
-        });
-        if (ridToLatestVector.size() > pageParsedCount)
-          LogManager.instance().log(this, Level.WARNING,
-              "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
-              ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
-      }
+    // It runs after a document scan too: a commit still between its replay and its publication has its vector in the
+    // in-memory index only, and neither its pages nor its record are visible to the scan (issue #11962). Left out of the
+    // live set, the publish below would drop its location along with it.
+    final VectorLocationIndex recoveryLocations = vectorIndex();
+    final int inMemorySize = recoveryLocations.size();
+    if (inMemorySize > ridToLatestVector.size()) {
+      final int pageParsedCount = ridToLatestVector.size();
+      // Recover entries from the in-memory vectorIndex that are missing from pages
+      recoveryLocations.getAllVectorIds().forEach(vectorId -> {
+        final long offsetAndFlag = recoveryLocations.getOffsetAndFlag(vectorId);
+        if (offsetAndFlag == VectorLocationIndex.ABSENT)
+          return;
+        final RID rid = recoveryLocations.getRid(vectorId);
+        if (rid != null && !ridToLatestVector.containsKey(rid))
+          ridToLatestVector.put(rid, new VectorEntryForGraphBuild(vectorId, rid,
+              VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
+      });
+      if (ridToLatestVector.size() > pageParsedCount)
+        LogManager.instance().log(this, Level.WARNING,
+            "Recovered %d vectors from in-memory index (page-parsed: %d, in-memory: %d) for index %s",
+            ridToLatestVector.size() - pageParsedCount, pageParsedCount, inMemorySize, indexName);
     }
 
     final boolean leftRecordsOut = collapseToWhatALoadKeeps(replay);
@@ -4535,10 +4552,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
 
-        // Keep only delta entries inserted DURING the rebuild (vectorId >= snapshot)
+        // Keep the delta entries this build did not incorporate: the ones inserted DURING it (vectorId >= snapshot), and
+        // the ones before its snapshot that it could not read but are still live (issue #11962). A commit replays its
+        // vectors into the location index and the delta before its pages and records are published - on a Raft leader for
+        // the whole quorum round trip - so a build in that window finds neither, and validation drops the vector like a
+        // deleted one. Trimmed here as well, it was in neither the graph nor the delta once its commit completed, and no
+        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay). A vector the
+        // build leaves out by its value - one this index cannot score, such as an all-zero placeholder under COSINE - is
+        // not kept: the delta scan would score it as NaN, which is why the graph leaves it out in the first place.
+        final VectorLocationIndex liveLocations = vectorIndex();
         final List<DeltaVectorEntry> remaining = new ArrayList<>();
         for (final DeltaVectorEntry e : deltaVectors)
-          if (e.vectorId >= deltaSnapshotId)
+          if (e.vectorId >= deltaSnapshotId || (e.vector != null && Arrays.binarySearch(finalActiveVectorIds, e.vectorId) < 0
+              && liveLocations.isLive(e.vectorId) && e.vector.length() == metadata.dimensions && !isUnscorable(e.vector)))
             remaining.add(e);
 
         // Entries inserted DURING the rebuild are genuinely pending: a later rebuild incorporates them, so they
@@ -4816,6 +4842,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
+    } finally {
+      // The published graph keeps the build reader reachable through jvector's score provider (issue #11747): its vectors go
+      // now, after the persistence above read through it, rather than staying beside the search cache with the graph
+      if (vectors instanceof final ArcadePageVectorValues buildReader)
+        buildReader.releaseBuildVectors();
     }
   }
 
@@ -7456,7 +7487,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     assert lock.isWriteLockedByCurrentThread() : "queueDeltaEntry() without the write lock";
 
     DeltaVectorEntry queued = entry;
-    if (entry.vector != null && deltaResidentPayloads.get() >= deltaPayloadCapacity())
+    if (entry.vector != null && !admitDeltaPayload())
       // Re-wrapped rather than mutated, so the entry stays immutable and safe to publish to the lock-free readers
       // of the buffer. Allocated only on the over-budget path, where it replaces a `dimensions * 4` byte retention
       // with a 32-byte object - the trade is decisively in its favour exactly when it is made.
@@ -7464,7 +7495,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     deltaVectors.add(queued);
     if (queued.vector != null)
+      // Already charged to the ledger by admitDeltaPayload()
       deltaResidentPayloads.incrementAndGet();
+  }
+
+  /**
+   * Whether one more buffered payload may stay on the heap: this index is under its own limit, and the room is
+   * reserved in the ledger the vector indexes of the database share (issue #12379). Reserving, rather than comparing
+   * against a figure computed a moment ago, is what makes the heap share a bound on all of them together: the room
+   * that is left is handed out once, however many indexes are filling at the same time.
+   * <b>The caller must hold {@link #lock}'s write lock.</b>
+   */
+  private boolean admitDeltaPayload() {
+    final DeltaPayloadBudget budget = deltaPayloadBudget();
+    if (deltaResidentPayloads.get() >= budget.ownLimit)
+      return false;
+    return deltaPayloadAccount.tryCharge(deltaPayloadLedger(), VectorHeapBudget.bytesPerCachedVector(metadata.dimensions),
+        budget.sharedBytes);
+  }
+
+  /**
+   * Records that {@code payloads} buffered payloads were added (positive) or left (negative) without going through
+   * {@link #queueDeltaEntry}, and charges the shared ledger accordingly. Unconditional: an entry put back was
+   * admitted before, and one that left frees its room. <b>The caller must hold {@link #lock}'s write lock.</b>
+   */
+  private void deltaResidentPayloadsChanged(final int payloads) {
+    chargeDeltaResidentPayloads(deltaResidentPayloads.addAndGet(payloads));
   }
 
   /**
@@ -7478,55 +7534,102 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (e.vector != null)
         resident++;
     deltaResidentPayloads.set(resident);
+    chargeDeltaResidentPayloads(resident);
+  }
+
+  private void chargeDeltaResidentPayloads(final int resident) {
+    deltaPayloadAccount.set(deltaPayloadLedger(), resident * VectorHeapBudget.bytesPerCachedVector(metadata.dimensions));
+  }
+
+  /** The ledger the vector indexes of this index's database charge their buffered payloads to (issue #12379). */
+  private VectorDeltaPayloadLedger deltaPayloadLedger() {
+    // Not through getSchema(), which refuses a closed or fenced database: a rebuild that finishes while the database
+    // closes still recounts its buffer, and the statistics are read after the close
+    return ((LocalDatabase) mutable.getDatabase().getEmbedded()).getVectorDeltaPayloadLedger();
   }
 
   /**
-   * The number of buffered payloads the heap can afford, cached for {@value #DELTA_PAYLOAD_CAPACITY_TTL_MS} ms.
+   * The terms a buffered payload is admitted against, cached for {@value #DELTA_PAYLOAD_CAPACITY_TTL_MS} ms.
    * <p>
    * Re-measuring the heap on every insert is not affordable on a path that runs once per written record, and
-   * caching it forever is not correct either - the capacity has to fall when a rebuild starts holding the old
+   * caching it forever is not correct either - the budget has to fall when a rebuild starts holding the old
    * graph alongside the new one, which is precisely when the buffer must stop growing. A one-second window is
    * short next to how long it takes an ingest to fill a budget and long next to the cost of measuring it.
-   *
-   * @return the capacity, {@code 0} when nothing may be cached, {@link Integer#MAX_VALUE} when caching is unbounded
+   * <p>
+   * Only the BUDGET is cached. What the indexes already hold of it is read from the ledger at every admission, so the
+   * window delays noticing that the heap shrank and nothing else (issue #12379).
    */
-  private int deltaPayloadCapacity() {
+  private DeltaPayloadBudget deltaPayloadBudget() {
     final long now = System.currentTimeMillis();
-    final int cached = deltaPayloadCapacity;
-    if (cached >= 0 && now - deltaPayloadCapacityAtMs < DELTA_PAYLOAD_CAPACITY_TTL_MS)
+    final DeltaPayloadBudget cached = deltaPayloadBudget;
+    if (cached != null && now - cached.computedAtMs < DELTA_PAYLOAD_CAPACITY_TTL_MS)
       return cached;
 
-    final int computed = computeDeltaPayloadCapacity();
-    deltaPayloadCapacity = computed;
-    deltaPayloadCapacityAtMs = now;
+    final DeltaPayloadBudget computed = computeDeltaPayloadBudget(VectorHeapBudget.maxHeapBytes(),
+        VectorHeapBudget.availableHeapBytes(), now);
+    deltaPayloadBudget = computed;
     return computed;
   }
 
   /**
-   * Computes how many buffered vectors may keep their payload on the heap.
+   * Computes what bounds the payloads this index's delta buffer keeps on the heap.
    * <p>
    * An explicit {@code arcadedb.vectorIndex.deltaCacheSize} wins, with a negative value meaning "keep every
    * payload" - the behaviour before issue #7357, kept reachable because an index whose ingest is bounded by
-   * something else pays a page read per scored entry for a bound it does not need. Otherwise the budget is the
-   * configured share of the heap ceiling, capped at what is currently available, divided by what one cached
-   * vector of this arity costs: the same arithmetic and the same denominator
-   * {@link #computeGraphBuildCacheCapacity} uses.
+   * something else pays a page read per scored entry for a bound it does not need. An explicit size is a number of
+   * vectors PER INDEX, as it is documented, and no heap share applies to it. Otherwise the budget is the
+   * configured share of the heap ceiling, capped at what is currently available: the same arithmetic and the same
+   * denominator {@link #computeGraphBuildCacheCapacity} uses.
    * <p>
-   * Sharing the denominator is NOT a reservation, and nothing here should be read as one (PR #7360 review): this
-   * cache and the build cache each take their percent of the same {@code availableHeapBytes()} reading, so within
-   * one TTL window both can size themselves against heap the other is about to take. What makes it converge is
-   * that a payload kept here becomes live heap, which lowers the next reading for both. The percents are a margin
-   * against that lag, not a partition of the heap - which is why the default is a modest 10 and why the ceiling
-   * that matters is the one an operator sets when they know what else is running.
+   * Sharing the denominator with the build cache is NOT a reservation, and nothing here should be read as one (PR
+   * #7360 review): this cache and the build cache each take their percent of the same {@code availableHeapBytes()}
+   * reading, so within one TTL window both can size themselves against heap the other is about to take. What makes
+   * it converge is that a payload kept here becomes live heap, which lowers the next reading for both. The percents
+   * are a margin against that lag, not a partition of the heap - which is why the default is a modest 10 and why the
+   * ceiling that matters is the one an operator sets when they know what else is running.
+   * <p>
+   * <b>The heap share is the database's, not the index's (issue #12379).</b> A type has one vector index per bucket,
+   * so a schema with a few vector properties on bucketed types has dozens of them, and each one used to plan on the
+   * whole percent for itself: 66 indexes of a 3 GB heap could keep payloads worth several times the heap, and an
+   * ingest that outran the serialized rebuilds filled it. Among the vector indexes of one database it IS a
+   * reservation: each payload is admitted by {@link #admitDeltaPayload()} against the bytes they hold together
+   * ({@link VectorDeltaPayloadLedger}), so the percent bounds them all whatever their number. Two databases of one JVM
+   * still take their share each.
    *
-   * @return the capacity, never negative
+   * @param maxHeap       the heap ceiling to size against
+   * @param availableHeap the heap currently free, which caps the heap share
    */
-  private int computeDeltaPayloadCapacity() {
-    return computeDeltaPayloadCapacity(VectorHeapBudget.maxHeapBytes(), VectorHeapBudget.availableHeapBytes());
+  private DeltaPayloadBudget computeDeltaPayloadBudget(final long maxHeap, final long availableHeap, final long now) {
+    final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
+
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE);
+    if (configured < 0)
+      return new DeltaPayloadBudget(Integer.MAX_VALUE, VectorDeltaPayloadLedger.NO_SHARED_BUDGET, now);
+    if (configured > 0)
+      return new DeltaPayloadBudget(configured, VectorDeltaPayloadLedger.NO_SHARED_BUDGET, now);
+
+    final int heapPercent = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT);
+    if (heapPercent <= 0)
+      return new DeltaPayloadBudget(0, 0L, now);
+
+    return new DeltaPayloadBudget(Integer.MAX_VALUE, VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap, availableHeap),
+        now);
   }
 
   /**
-   * Same decision as {@link #computeDeltaPayloadCapacity()}, with the heap figures supplied so a test can pin the
+   * How many payloads this index's buffer may hold as things stand: its explicit size, or what it holds plus the
+   * room the vector indexes of the database have left in their shared heap budget (issue #12379). A reading for the
+   * statistics and for the budget of a transaction's overlay; a payload is admitted by {@link #admitDeltaPayload()},
+   * which reserves the room rather than comparing against this.
+   *
+   * @return the capacity, {@code 0} when nothing may be cached, {@link Integer#MAX_VALUE} when caching is unbounded
+   */
+  private int deltaPayloadCapacity() {
+    return deltaPayloadCapacity(deltaPayloadBudget());
+  }
+
+  /**
+   * Same answer as {@link #deltaPayloadCapacity()}, with the heap figures supplied so a test can pin the
    * auto-sizing branch instead of relying on whatever the live JVM happens to have free (PR #7360 review).
    * <p>
    * The auto-sized branch is what an installation that never touches either new setting gets, so it is the one
@@ -7541,21 +7644,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the capacity, never negative
    */
   int computeDeltaPayloadCapacity(final long maxHeap, final long availableHeap) {
-    final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
+    return deltaPayloadCapacity(computeDeltaPayloadBudget(maxHeap, availableHeap, 0L));
+  }
 
-    final int configured = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE);
-    if (configured < 0)
-      return Integer.MAX_VALUE;
-    if (configured > 0)
-      return configured;
+  /**
+   * Pins the heap figures the delta payload budget is sized against, until the index is closed, so a test can fill a
+   * budget of a few vectors through the write path instead of one sized by the JVM it happens to run in.
+   */
+  void pinDeltaPayloadHeapForTest(final long maxHeap, final long availableHeap) {
+    // Stamped at the end of time, so the cached answer never ages out
+    deltaPayloadBudget = computeDeltaPayloadBudget(maxHeap, availableHeap, Long.MAX_VALUE);
+  }
 
-    final int heapPercent = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT);
-    if (heapPercent <= 0)
-      return 0;
+  private int deltaPayloadCapacity(final DeltaPayloadBudget budget) {
+    if (budget.sharedBytes == VectorDeltaPayloadLedger.NO_SHARED_BUDGET)
+      return budget.ownLimit;
 
-    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap, availableHeap);
-    final long affordable = heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
-    return (int) Math.max(0L, Math.min(affordable, Integer.MAX_VALUE / 2));
+    // What the OTHER vector indexes of the database hold is charged first: the rest is this index's to fill
+    final long heldByOthers = Math.max(0L, deltaPayloadLedger().bytes() - deltaPayloadAccount.charged());
+    final long affordable = Math.max(0L, budget.sharedBytes - heldByOthers)
+        / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
+    return (int) Math.min(affordable, Math.min(budget.ownLimit, Integer.MAX_VALUE / 2));
   }
 
   /**
@@ -11887,7 +11996,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
           if (releasedPayloads[0] > 0)
-            deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
+            deltaResidentPayloadsChanged(-releasedPayloads[0]);
         }
       }
 
@@ -11935,7 +12044,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             buffered.add(entry.vectorId);
         }
         if (restoredPayloads > 0)
-          deltaResidentPayloads.addAndGet(restoredPayloads);
+          deltaResidentPayloadsChanged(restoredPayloads);
       }
 
       // A full rebuild that published since the replay built its graph without the ids it read as deleted, so a lifted id
@@ -12241,7 +12350,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               return true;
             });
             if (releasedPayloads[0] > 0)
-              deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
+              deltaResidentPayloadsChanged(-releasedPayloads[0]);
           }
 
           // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
@@ -12980,6 +13089,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public synchronized void onSuperseded() {
     superseded = true;
     cancelInactivityRebuildTimer();
+    // The buffer goes with this instance once the queries still holding it are done, and its successor charges its
+    // own: left open, the payloads of every retired instance would be counted against the database for good (#12379)
+    deltaPayloadAccount.close();
   }
 
   /**
@@ -12994,6 +13106,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // guard and resurrect a fresh Timer.
     valid = false;
     cancelInactivityRebuildTimer();
+
+    // This instance is no longer the schema's (a close, a drop, a simulated crash): whatever its buffer still holds
+    // stops counting against the heap share the vector indexes of the database have together (issue #12379)
+    deltaPayloadAccount.close();
 
     // Shut down the dedicated graph build pool to cancel any in-progress build operations.
     // This interrupts ForkJoinPool workers inside jvector's GraphIndexBuilder.build(),
@@ -14127,7 +14243,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (entry.vectorId == vectorId) {
           deltaVectors.remove(entry);
           if (entry.vector != null)
-            deltaResidentPayloads.decrementAndGet();
+            deltaResidentPayloadsChanged(-1);
           return entry;
         }
       return null;
@@ -14348,7 +14464,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
           if (releasedPayloads[0] > 0)
-            deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
+            deltaResidentPayloadsChanged(-releasedPayloads[0]);
         }
 
         if (inserted + removed > 0) {

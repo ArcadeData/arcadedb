@@ -849,25 +849,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse DISTINCT flag
     final boolean distinct = body.DISTINCT() != null;
 
-    // Parse WHERE clause (applied after projection)
+    boolean aggregating = false;
+    for (final ReturnClause.ReturnItem item : items)
+      if (!item.isStar() && item.getExpression().containsAggregation()) {
+        aggregating = true;
+        break;
+      }
+
+    // Parse WHERE clause (applied after projection). A WHERE that repeats a grouping key reads the projected column
+    // (issue #12245), as ORDER BY does below
+    // The rewrite runs on the predicate as written, before the canonicalization that may reorder it (1 < n.id becomes
+    // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
     if (ctx.whereClause() != null) {
-      whereClause = visitWhereClause(ctx.whereClause());
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+          items, distinct || aggregating);
+      whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
     }
 
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;
-    if (body.orderBy() != null) {
+    if (body.orderBy() != null)
       // An ORDER BY item that repeats a projected expression sorts on the projected column
       // (#5283 for DISTINCT, #5286 for aggregation)
-      boolean aggregating = false;
-      for (final ReturnClause.ReturnItem item : items)
-        if (item.getExpression().containsAggregation()) {
-          aggregating = true;
-          break;
-        }
       orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct || aggregating);
-    }
 
     Expression skip = null;
     if (body.skip() != null) {
@@ -1015,8 +1020,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
-    // Parse the WHERE condition as a boolean expression, then simplify boolean constants
+    // Parse the WHERE condition as a boolean expression, check its operands, then simplify boolean constants
     final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
   }
@@ -1030,6 +1036,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
     // Grammar: FILTER WHERE? expression
     final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
   }
@@ -1220,7 +1227,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // A negation, the wildcard or a mix of '&' and '|': the pattern keeps the labels every match must carry, so the
     // planner can still pick a label scan, and the whole expression is checked as a predicate on the node (#8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       labels = labelPredicate.requiredLabels();
@@ -1285,7 +1292,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // variable-length relationship the predicate rides the inline WHERE, which every expansion evaluates per hop, so
     // each relationship of the path is checked (#9117).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();

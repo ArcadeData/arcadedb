@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
 import com.arcadedb.serializer.json.JSONObject;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -98,8 +99,9 @@ public class Issue7304GrpcControlPlaneIT extends BaseGrpcServerTest {
   }
 
   /**
-   * Aligning is an HA operation: {@code LocalDatabase.align} refuses with "Align Database not
-   * supported" on a standalone server, which is what this fixture is. The assertion is therefore that
+   * Aligning is refused by every database: the {@code ALIGN DATABASE} statement answers
+   * {@link AlignDatabaseStatement#ALIGN_DATABASE_NOT_SUPPORTED} (issue #11796), on the standalone server this fixture
+   * is as on a Raft cluster. The assertion is therefore that
    * the RPC reaches the SQL command and reports its refusal, rather than answering UNIMPLEMENTED the
    * way the RPC did not exist at all before - the wiring is what is under test, and the aligning
    * itself is covered in HA by {@code RaftServerDatabaseAlignIT}.
@@ -109,7 +111,7 @@ public class Issue7304GrpcControlPlaneIT extends BaseGrpcServerTest {
     assertThatThrownBy(() -> adminStub.alignDatabase(
         AlignDatabaseRequest.newBuilder().setCredentials(root()).setName(getDatabaseName()).build()))
         .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("Align Database not supported");
+        .hasMessageContaining(AlignDatabaseStatement.ALIGN_DATABASE_NOT_SUPPORTED);
   }
 
   // -------------------------------------------------------------------------------------------

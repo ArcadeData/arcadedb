@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.temporal;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -53,7 +54,12 @@ public class DurationConstructorFunction implements StatelessFunction {
     if (args[0] instanceof String)
       return CypherDuration.parse((String) args[0]);
     if (args[0] instanceof Map)
-      return CypherDuration.fromMap((Map<String, Object>) args[0]);
+      try {
+        return CypherDuration.fromMap((Map<String, Object>) args[0]);
+      } catch (final IllegalArgumentException e) {
+        // A field that is no number or no duration unit is the caller's error (issue #12297)
+        throw new CommandSemanticException("duration() " + e.getMessage());
+      }
     if (args[0] instanceof CypherDuration)
       return args[0];
     throw new TypeMismatchException("duration() expects a string or map argument, got " + args[0].getClass().getSimpleName());

@@ -383,7 +383,7 @@ final class CypherStepBuilder {
       final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
 
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -935,7 +935,7 @@ final class CypherStepBuilder {
       final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
 
       final OrderByStep orderByStep =
-          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal);
+          new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
@@ -1005,8 +1005,8 @@ final class CypherStepBuilder {
         currentStep = aggStep;
       }
 
-      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-      if (withClause.getWhereClause() != null) {
+      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING), or after the paging (issue #11762)
+      if (withClause.getWhereClause() != null && !withClause.isWhereAfterPaging()) {
         final FilterPropertiesStep filterStep =
             new FilterPropertiesStep(withClause.getWhereClause(), context);
         filterStep.setPrevious(currentStep);
@@ -1024,11 +1024,18 @@ final class CypherStepBuilder {
     return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
   }
 
+  /** The items the RETURN projects, which the sort behind it reads its repeated keys from (issue #12368), or null. */
+  private static List<ReturnClause.ReturnItem> returnItemsOf(final CypherStatement statement) {
+    final ReturnClause returnClause = statement.getReturnClause();
+    return returnClause != null ? returnClause.getReturnItems() : null;
+  }
+
   /**
    * Chains the ORDER BY, SKIP and LIMIT of a WITH after the step that projects it. A plain {@link WithStep} pages its own
    * rows when there is no ORDER BY, but an aggregating WITH is projected by an aggregation step that knows nothing of SKIP
    * and LIMIT, so they are chained after it here: without them {@code WITH collect(x) AS q LIMIT 0} still passed its row on,
-   * and a CREATE behind it ran (issue #10892).
+   * and a CREATE behind it ran (issue #10892). A WHERE {@link WithClause#isWhereAfterPaging() after the paging} is chained after
+   * the LIMIT; a plain {@link WithStep} without ORDER BY applies it itself, after its own paging.
    */
   private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
       final CommandContext context, final CypherFunctionFactory functionFactory) {
@@ -1049,7 +1056,8 @@ final class CypherStepBuilder {
         final long topK = (long) limitVal + (skipVal != null ? skipVal : 0);
         topKVal = topK <= Integer.MAX_VALUE ? (int) topK : null;
       }
-      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
+      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal)
+          .withProjection(withClause.getItems());
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
@@ -1067,6 +1075,14 @@ final class CypherStepBuilder {
       if (currentStep != null)
         limitStep.setPrevious(currentStep);
       currentStep = limitStep;
+    }
+
+    // The WHERE filters the paged rows, before the strip: it reads the incoming scope as well (issue #11762)
+    if (withClause.isWhereAfterPaging()) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(withClause.getWhereClause(), context);
+      if (currentStep != null)
+        filterStep.setPrevious(currentStep);
+      currentStep = filterStep;
     }
 
     // Strip non-projected variables that were kept for ORDER BY evaluation
@@ -1103,8 +1119,8 @@ final class CypherStepBuilder {
         currentStep = aggStep;
       }
 
-      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-      if (withClause.getWhereClause() != null) {
+      // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING), or after the paging (issue #11762)
+      if (withClause.getWhereClause() != null && !withClause.isWhereAfterPaging()) {
         final FilterPropertiesStep filterStep =
             new FilterPropertiesStep(withClause.getWhereClause(), context);
         filterStep.setPrevious(currentStep);
@@ -1650,8 +1666,8 @@ final class CypherStepBuilder {
           currentStep = aggStep;
         }
 
-        // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING)
-        if (withClause.getWhereClause() != null) {
+        // Apply WHERE clause after aggregation (post-aggregation filtering, like SQL HAVING), or after the paging (issue #11762)
+        if (withClause.getWhereClause() != null && !withClause.isWhereAfterPaging()) {
           final FilterPropertiesStep filterStep =
               new FilterPropertiesStep(withClause.getWhereClause(), context);
           if (currentStep != null) {
@@ -1803,7 +1819,7 @@ final class CypherStepBuilder {
       final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
 
       final OrderByStep orderByStep = new OrderByStep(
-          statement.getOrderByClause(), context, functionFactory, topKVal);
+          statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
       orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
     }
