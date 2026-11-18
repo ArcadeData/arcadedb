@@ -145,6 +145,24 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
   }
 
   @Test
+  void aListHoldsARecordWhereverItStands() {
+    // THE RECORD IS NOT THE FIRST ITEM: A NULL OR A PLAIN VALUE IN FRONT OF IT DOES NOT KEEP IT A MAP
+    final String query = "MATCH (n:P12196 {name: 'a'}) RETURN [null, n, 1, n] AS items, [1, 2, 3] AS plain";
+    final List<String> rows = rows(getServerDatabase(0, getDatabaseName()).query("opencypher", query));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst()).contains("[null, record:").contains("plain=[1, 2, 3]");
+    assertThat(rows(grpc.query("opencypher", query))).isEqualTo(rows);
+
+    try (final ResultSet rs = grpc.query("opencypher", query)) {
+      final List<?> items = rs.next().getProperty("items");
+      assertThat(items).hasSize(4);
+      assertThat(items.get(0)).isNull();
+      assertThat(items.get(1)).isInstanceOf(Vertex.class);
+      assertThat(items.get(3)).isInstanceOf(Vertex.class);
+    }
+  }
+
+  @Test
   void cypherNullColumnStaysNull() {
     final String query = "MATCH (n:P12196) OPTIONAL MATCH (n)-[:K12196]->(b:P12196) RETURN n, b ORDER BY n.name";
     final List<String> rows = rows(getServerDatabase(0, getDatabaseName()).query("opencypher", query));
@@ -221,9 +239,11 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
   @Test
   void aMapThatOnlyLooksLikeARecordStaysAMap() {
     // A MAP A QUERY BUILDS MAY HOLD ANY KEYS (A STORED MAP PROPERTY CANNOT: A MAP WITH AN @type IS AN EMBEDDED DOCUMENT): ONE NAMING A
-    // TYPE THE SCHEMA DOES NOT HAVE, OR AN @rid THAT IS NOT ONE, IS NOT A RECORD AND STAYS WHAT IT IS, IN EVERY ROW
+    // TYPE THE SCHEMA DOES NOT HAVE, AN @rid THAT IS NOT ONE (OR IS OUT OF RANGE) OR AN @props THAT IS NOT TEXT IS NOT A RECORD, AND
+    // STAYS WHAT IT IS IN EVERY ROW, WHERE BUILDING IT WOULD FAIL THE WHOLE QUERY
     final String query = "UNWIND range(1, 3) AS i RETURN i, {`@rid`: '#1:1', `@type`: 'NoSuchType12196'} AS unknownType, "
-        + "{`@rid`: 'nope', `@type`: 'P12196'} AS badRid";
+        + "{`@rid`: 'nope', `@type`: 'P12196'} AS badRid, {`@rid`: '#2147483648:1', `@type`: 'P12196'} AS hugeBucket, "
+        + "{`@rid`: '#1:1', `@type`: 'P12196', `@props`: 1} AS badProps";
 
     final Database database = getServerDatabase(0, getDatabaseName());
     try (final ResultSet rs = database.query("opencypher", query)) {
@@ -238,6 +258,10 @@ public class Issue12196GrpcRecordRowsIT extends BaseGrpcClientServerTest {
         assertThat(row.<Map<String, Object>>getProperty("unknownType")).containsEntry("@type", "NoSuchType12196");
         assertThat(row.<Object>getProperty("badRid")).isInstanceOf(Map.class);
         assertThat(row.<Map<String, Object>>getProperty("badRid")).containsEntry("@rid", "nope");
+        assertThat(row.<Object>getProperty("hugeBucket")).isInstanceOf(Map.class);
+        assertThat(row.<Map<String, Object>>getProperty("hugeBucket")).containsEntry("@rid", "#2147483648:1");
+        assertThat(row.<Object>getProperty("badProps")).isInstanceOf(Map.class);
+        assertThat(row.<Map<String, Object>>getProperty("badProps")).containsEntry("@props", 1L);
         ++rows;
       }
     }
