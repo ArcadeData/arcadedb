@@ -243,6 +243,25 @@ public class TransactionManager {
    */
   private long                              recoveryChainProbes;
   /**
+   * Per page (see {@link #pageKey}) of the running crash recovery: the image the #11151 repairs of its older entries built and
+   * nobody wrote yet (#12225). A complete chain ends on the entry at the version on disk, which the same replay reaches next and
+   * applies at an equal version, starting from this image: the page is written once, not once per older entry. What a replay
+   * that stops before that entry leaves here is written when its loop ends ({@link #writePendingRecoveryRepairs}). Touched by
+   * the replay thread only.
+   */
+  private final Map<Long, MutablePage>      recoveryPendingRepairs = new HashMap<>();
+  /** The bytes {@link #recoveryPendingRepairs} holds. Touched by the replay thread only. */
+  private long                              recoveryPendingRepairBytes;
+  /** The pages the last crash recovery wrote to the data files (#12225). Touched by the replay thread only, read by tests. */
+  private long                              recoveryPageWrites;
+  /**
+   * The most {@link #recoveryPendingRepairs} may hold (#12225). A page can wait there from its first older entry to its last one,
+   * as far apart as the WAL is long, so a WAL touching many pages would otherwise hold them all on the heap. Over it, every held
+   * image is written, as each repair did before, and the map starts again: never more writes than one per repair. Not final so a
+   * test can shrink it.
+   */
+  static volatile long                       recoveryPendingRepairsMaxBytes = 64L * 1024 * 1024;
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -573,6 +592,11 @@ public class TransactionManager {
   /** Test-support hook (issue #12225): the WAL versions the last crash recovery looked up for the chain of older entries. */
   long getRecoveryChainProbesForTesting() {
     return recoveryChainProbes;
+  }
+
+  /** Test-support hook (issue #12225): the pages the last crash recovery wrote to the data files. */
+  long getRecoveryPageWritesForTesting() {
+    return recoveryPageWrites;
   }
 
   public void close(final boolean drop) {
@@ -1329,6 +1353,10 @@ public class TransactionManager {
         recoveryAppliedPages.clear();
         recoveryGapWarnedPages.clear();
         recoveryChainGaps.clear();
+        recoveryPendingRepairs.clear();
+        recoveryPendingRepairBytes = 0;
+        recoveryChainProbes = 0;
+        recoveryPageWrites = 0;
 
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
         for (int i = 0; i < recoveryFiles.length; ++i) {
@@ -1418,6 +1446,10 @@ public class TransactionManager {
           }
           walPositions[lowerTx] = nextTx;
         }
+
+        // #12225: A REPLAY THAT STOPPED BEFORE THE ENTRY ENDING A REPAIRED CHAIN STILL WRITES THE REPAIRS, BEFORE THE FSYNC BELOW
+        // AND BEFORE ITS WAL IS DROPPED OR MOVED ASIDE, EXACTLY AS WHEN EACH REPAIR WROTE THE PAGE ITSELF
+        writePendingRecoveryRepairs();
 
         reportRecoveryReopens(recoveryFiles);
 
@@ -1527,6 +1559,9 @@ public class TransactionManager {
       recoveryAppliedPages.clear();
       recoveryGapWarnedPages.clear();
       recoveryChainGaps.clear();
+      // Not written on an escaping failure: the WAL is kept as it was found, and the next open repairs the pages again
+      recoveryPendingRepairs.clear();
+      recoveryPendingRepairBytes = 0;
       // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
       // not deleted, so the next open replays it again.
       if (recoveryFiles != null && !inputReleased)
@@ -1655,6 +1690,35 @@ public class TransactionManager {
               + "v.%d of it is not in the WAL. If it was flushed before its WAL file was dropped this is expected; if the page was torn "
               + "by a power loss, its content can be stale (a per-page checksum, #11157, would tell)", null, entryVersion, pageId,
           diskVersion, missing);
+  }
+
+  /**
+   * Writes the repaired images whose chain the replay did not reach the end of (#12225): it stopped first, on a version gap or a
+   * corrupt record, or it holds more than {@link #recoveryPendingRepairsMaxBytes}. A file a later entry of the replay dropped has
+   * nothing left to repair.
+   */
+  private void writePendingRecoveryRepairs() {
+    if (recoveryPendingRepairs.isEmpty())
+      return;
+    try {
+      for (final MutablePage repaired : recoveryPendingRepairs.values()) {
+        final int fileId = repaired.getPageId().getFileId();
+        if (database.getFileManager().existsFile(fileId))
+          writeRecoveredPage((PaginatedComponentFile) database.getFileManager().getFile(fileId), repaired);
+      }
+    } catch (final IOException e) {
+      throw new WALException("Cannot write the pages repaired by the recovery of database '" + database.getName() + "'", e);
+    } finally {
+      recoveryPendingRepairs.clear();
+      recoveryPendingRepairBytes = 0;
+    }
+  }
+
+  /** Writes a page the crash recovery repaired and publishes its image to the read cache, as the replay does for an applied one. */
+  private void writeRecoveredPage(final PaginatedComponentFile file, final MutablePage page) throws IOException {
+    database.getPageManager().writePageWithLock(file, page);
+    database.getPageManager().putPageInReadCache(new CachedPage(page, true));
+    ++recoveryPageWrites;
   }
 
   /**
@@ -2133,6 +2197,11 @@ public class TransactionManager {
         final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
         if (reached != null)
           reached.add(txPage.fileId, txPage.pageNumber);
+        // #12225: THE REPAIRS OF THE OLDER ENTRIES OF THIS PAGE NOT WRITTEN YET. SAME VERSION AND CONTENT SIZE AS THE PAGE ON DISK
+        // (A REPAIR MOVES NEITHER), SO THE CHECKS BELOW READ THE PAGE, AND THE BYTES ARE TAKEN FROM HERE
+        final MutablePage pendingRepair = recovery && !recoveryPendingRepairs.isEmpty() ?
+            recoveryPendingRepairs.get(pageKey(txPage.fileId, txPage.pageNumber)) :
+            null;
 
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
@@ -2171,7 +2240,7 @@ public class TransactionManager {
           if (missingVersion == 0) {
             // #11151: THE PAGE MAY BE TORN, SO RE-APPLY THE BYTES THIS VERSION CHANGED. NEITHER THE VERSION NOR THE CONTENT SIZE
             // MOVES: THEY BELONG TO THE LAST ENTRY OF THE CHAIN, WHICH THIS REPLAY REACHES RIGHT AFTER AND APPLIES AT EQUAL VERSION
-            final MutablePage repaired = page.modify();
+            final MutablePage repaired = pendingRepair != null ? pendingRepair : page.modify();
             for (int k = firstSegment; k < lastSegment; ++k) {
               final WALFile.WALPage segment = tx.pages[k];
               segment.currentContent.rewind();
@@ -2180,11 +2249,18 @@ public class TransactionManager {
             repaired.setContentSize(page.getContentSize());
             repaired.updateMetadata();
 
-            database.getPageManager().writePageWithLock(file, repaired);
-            database.getPageManager().putPageInReadCache(new CachedPage(repaired, true));
-
-            if (file.getFileId() == dictionaryId)
+            if (file.getFileId() == dictionaryId) {
+              // THE DICTIONARY IS RELOADED FROM ITS PAGES RIGHT AFTER THIS ENTRY, SO ITS REPAIR REACHES THE FILE NOW
+              writeRecoveredPage(file, repaired);
               involveDictionary = true;
+            } else if (pendingRepair == null) {
+              // #12225: KEPT FOR THE NEXT ENTRY OF THE PAGE, WHICH WRITES IT. WRITING IT HERE TOO COST ONE PHYSICAL PAGE WRITE PER
+              // OLDER ENTRY: 160,000 FOR A TIMESERIES SHARD PAGE AFTER AS MANY ONE-ROW COMMITS
+              if (recoveryPendingRepairBytes + repaired.getPhysicalSize() > recoveryPendingRepairsMaxBytes)
+                writePendingRecoveryRepairs();
+              recoveryPendingRepairs.put(pageKey(txPage.fileId, txPage.pageNumber), repaired);
+              recoveryPendingRepairBytes += repaired.getPhysicalSize();
+            }
             changed = true;
           } else if (missingVersion > 0)
             warnOlderEntryWithGap(pageId, txPage.currentPageVersion, page.getVersion(), missingVersion);
@@ -2244,8 +2320,16 @@ public class TransactionManager {
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
             txPage.currentPageVersion, page.getVersion(), tx.txId);
 
-        // IF VERSION IS THE SAME OR MAJOR, OVERWRITE THE PAGE
-        final MutablePage modifiedPage = page.modify();
+        // IF VERSION IS THE SAME OR MAJOR, OVERWRITE THE PAGE: THE IMAGE THE REPAIRS OF ITS OLDER ENTRIES BUILT, IF ANY (#12225)
+        final MutablePage modifiedPage;
+        if (pendingRepair != null) {
+          // A COPY, ONE PER PAGE AND REPLAY: AN ENTRY THAT FAILS PART-WAY (A SEGMENT OUTSIDE THE PAGE ABORTS THE REPLAY) LEAVES THE
+          // REPAIRS TO BE WRITTEN AS THEY WERE, NOT WITH SOME OF ITS SEGMENTS IN THEM
+          final byte[] repairedBytes = pendingRepair.content.getByteBuffer().array();
+          modifiedPage = new MutablePage(pendingRepair.pageId, pendingRepair.size, Arrays.copyOf(repairedBytes, repairedBytes.length),
+              pendingRepair.version, pendingRepair.content.size());
+        } else
+          modifiedPage = page.modify();
         for (int k = firstSegment; k < lastSegment; ++k) {
           final WALFile.WALPage segment = tx.pages[k];
           segment.currentContent.rewind();
@@ -2258,6 +2342,14 @@ public class TransactionManager {
         // Write under the per-page I/O lock so concurrent readers never observe partially-written bytes during
         // replicated/recovery replay (forceApply).
         database.getPageManager().writePageWithLock(file, modifiedPage);
+        if (recovery) {
+          ++recoveryPageWrites;
+          if (pendingRepair != null) {
+            // THE REPAIRS REACHED THE FILE WITH THIS ENTRY
+            recoveryPendingRepairs.remove(pageKey(txPage.fileId, txPage.pageNumber));
+            recoveryPendingRepairBytes -= pendingRepair.getPhysicalSize();
+          }
+        }
 
         // Then publish the applied image to the read cache rather than evicting the page. A reader that loaded the
         // page from disk just before the write caches its image only after releasing the I/O lock: with the page

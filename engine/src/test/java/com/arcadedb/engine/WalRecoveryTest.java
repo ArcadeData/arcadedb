@@ -461,7 +461,7 @@ class WalRecoveryTest {
       }
     }
 
-    private record CrashedPage(String filePath, long finalVersion, int finalContentSize, RID rid, int lastValue) {
+    private record CrashedPage(String filePath, int fileId, long finalVersion, int finalContentSize, RID rid, int lastValue) {
     }
 
     /**
@@ -492,8 +492,8 @@ class WalRecoveryTest {
       // THE ONLY RECORD OF THE BUCKET LIVES IN ITS PAGE 0
       final ImmutablePage committed = db.getPageManager()
           .getImmutablePage(new PageId(db, bucket.getFileId(), 0), file.getPageSize(), false, false);
-      final CrashedPage crashed = new CrashedPage(file.getFilePath(), committed.getVersion(), committed.getContentSize(), rid[0],
-          versions - 1);
+      final CrashedPage crashed = new CrashedPage(file.getFilePath(), bucket.getFileId(), committed.getVersion(),
+          committed.getContentSize(), rid[0], versions - 1);
 
       ((LocalDatabase) db).kill();
       db.close();
@@ -527,8 +527,12 @@ class WalRecoveryTest {
       final Database reopened = factory.open();
       try {
         assertThat(reopened.lookupByRID(crashed.rid(), true).asDocument().getInteger("n")).isEqualTo(crashed.lastValue());
-        assertThat(((DatabaseInternal) reopened).getTransactionManager().getRecoveryChainProbesForTesting())
+        final TransactionManager transactionManager = ((DatabaseInternal) reopened).getTransactionManager();
+        assertThat(transactionManager.getRecoveryChainProbesForTesting())
             .as("the chain of the page is looked up once, not once per older entry (#12225)").isLessThanOrEqualTo(3L * versions);
+        assertThat(transactionManager.getRecoveryPageWritesForTesting())
+            .as("the repairs of the older entries reach the file with the entry ending the chain, not one page write each (#12225)")
+            .isLessThanOrEqualTo(10L);
       } finally {
         reopened.close();
         factory.close();
@@ -561,6 +565,149 @@ class WalRecoveryTest {
       } finally {
         reopened.close();
         factory.close();
+      }
+    }
+
+    /**
+     * #12225: the repairs of the older entries of a page reach the file with the entry that ends the chain. A replay that stops
+     * before that entry (here it is corrupt) still writes them before its WAL is moved aside, so the page keeps every version the
+     * WAL could repair, as when each repair wrote the page itself.
+     */
+    @Test
+    void aReplayStoppedBeforeTheEndOfTheChainStillWritesTheRepairs() throws Exception {
+      final int versions = 50;
+      final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+      final CrashedPage crashed = crashWithManyVersionsOfOnePage(factory, versions);
+      writeHeader(crashed, crashed.finalVersion());
+      moveNewestWalChangeOutsideThePage(crashed);
+
+      final Database reopened = factory.open();
+      try {
+        assertThat(((DatabaseInternal) reopened).getTransactionManager().isLastRecoveryIncomplete())
+            .as("the replay stops on the corrupt entry").isTrue();
+        assertThat(reopened.lookupByRID(crashed.rid(), true).asDocument().getInteger("n"))
+            .as("the repairs up to the entry before the corrupt one reach the file (#12225)").isEqualTo(crashed.lastValue() - 1);
+      } finally {
+        reopened.close();
+        factory.close();
+      }
+    }
+
+    /**
+     * #12225: what the repairs hold back is bounded. Over the budget the held images are written, as each repair did before, and
+     * the recovery is as whole: here the budget holds no image, so two pages repaired in turn evict each other at every entry.
+     */
+    @Test
+    void repairsOverThePendingBudgetAreWrittenAndStillRepairEveryPage() throws Exception {
+      final int versions = 40;
+      final String[] types = { "DocA", "DocB" };
+      final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+      if (factory.exists())
+        factory.open().drop();
+
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      final RID[] firstRids = new RID[types.length];
+      for (final String type : types)
+        db.getSchema().createDocumentType(type);
+      db.transaction(() -> {
+        for (int t = 0; t < types.length; ++t)
+          firstRids[t] = db.newDocument(types[t]).set("n", -1).save().getIdentity();
+      });
+      db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+
+      assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+          .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
+
+      // ONE NEW RECORD PER COMMIT, THE TWO PAGES IN TURN: EACH VERSION WRITES BYTES NO LATER ONE REWRITES, AND THE OLDER ENTRIES OF
+      // EACH PAGE ALTERNATE WITH THE OTHER'S IN THE WAL
+      final List<RID> inserted = new ArrayList<>();
+      for (int i = 0; i < versions; ++i)
+        for (final String type : types) {
+          final int n = i;
+          db.transaction(() -> inserted.add(db.newDocument(type).set("n", n).save().getIdentity()));
+        }
+
+      final CrashedPage[] crashed = new CrashedPage[types.length];
+      for (int t = 0; t < types.length; ++t) {
+        final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(firstRids[t].getBucketId());
+        final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
+        final ImmutablePage committed = db.getPageManager()
+            .getImmutablePage(new PageId(db, bucket.getFileId(), 0), file.getPageSize(), false, false);
+        crashed[t] = new CrashedPage(file.getFilePath(), bucket.getFileId(), committed.getVersion(), committed.getContentSize(),
+            firstRids[t], -1);
+      }
+      assertThat(inserted).as("every record lives in page 0 of its bucket")
+          .allMatch(rid -> rid.getPosition() < ((LocalBucket) db.getSchema().getBucketById(rid.getBucketId())).getMaxRecordsInPage());
+      ((LocalDatabase) db).kill();
+      db.close();
+
+      for (final CrashedPage page : crashed)
+        writeHeader(page, page.finalVersion());
+
+      final long previousBudget = TransactionManager.recoveryPendingRepairsMaxBytes;
+      TransactionManager.recoveryPendingRepairsMaxBytes = 0;
+      final Database reopened;
+      try {
+        reopened = factory.open();
+      } finally {
+        TransactionManager.recoveryPendingRepairsMaxBytes = previousBudget;
+      }
+      try {
+        for (int i = 0; i < inserted.size(); ++i)
+          assertThat(reopened.lookupByRID(inserted.get(i), true).asDocument().getInteger("n"))
+              .as("record %s is repaired although its page was written out over the budget", inserted.get(i))
+              .isEqualTo(i / types.length);
+        assertThat(((DatabaseInternal) reopened).getTransactionManager().getRecoveryPageWritesForTesting())
+            .as("with no budget the held repairs are written at every entry of the other page").isGreaterThanOrEqualTo(versions);
+      } finally {
+        reopened.close();
+        factory.close();
+      }
+    }
+
+    /**
+     * Moves the change of the newest WAL entry, the last version of the page, far outside the page: the WAL still reads it (so the
+     * chain is complete), and applying it throws, which stops the replay right there.
+     */
+    private static void moveNewestWalChangeOutsideThePage(final CrashedPage crashed) throws Exception {
+      final int txHeaderSize = 2 * Binary.LONG_SERIALIZED_SIZE + 2 * Binary.INT_SERIALIZED_SIZE;
+      final int txFooterSize = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
+
+      File newestFile = null;
+      long newestTxId = -1;
+      long newestPosition = -1;
+      final File[] walFiles = new File(DB_PATH).listFiles((dir, name) -> name.endsWith(".wal"));
+      assertThat(walFiles).isNotEmpty();
+      for (final File wal : walFiles)
+        try (final RandomAccessFile raf = new RandomAccessFile(wal, "r")) {
+          long position = 0;
+          while (position + txHeaderSize <= raf.length()) {
+            raf.seek(position);
+            final long txId = raf.readLong();
+            raf.readLong();
+            raf.readInt();
+            final int segmentSize = raf.readInt();
+            if (segmentSize <= 0)
+              break;
+            if (txId > newestTxId) {
+              newestTxId = txId;
+              newestFile = wal;
+              newestPosition = position;
+            }
+            position += txHeaderSize + segmentSize + txFooterSize;
+          }
+        }
+      assertThat(newestFile).as("the WAL holds the updates").isNotNull();
+
+      try (final RandomAccessFile raf = new RandomAccessFile(newestFile, "rw")) {
+        raf.seek(newestPosition + txHeaderSize);
+        assertThat(raf.readInt()).as("the newest entry changes the bucket").isEqualTo(crashed.fileId());
+        assertThat(raf.readInt()).as("in its page 0").isZero();
+        final int changesFrom = raf.readInt();
+        final int changesTo = raf.readInt();
+        raf.seek(newestPosition + txHeaderSize + 2L * Binary.INT_SERIALIZED_SIZE);
+        raf.writeInt(changesFrom + (1 << 30));
+        raf.writeInt(changesTo + (1 << 30));
       }
     }
 
