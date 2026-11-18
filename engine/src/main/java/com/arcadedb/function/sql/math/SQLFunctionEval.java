@@ -19,7 +19,6 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -39,9 +38,22 @@ public class SQLFunctionEval extends SQLFunctionMathAbstract {
     super(NAME);
   }
 
+  /**
+   * The declared arity is the contract the parse-time gate enforces (issue #11927): it used to be checked only inside
+   * execute(), and a second argument was ignored without a word.
+   */
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   public Object execute(Object self, final Identifiable record, final Object currentResult, final Object[] params, CommandContext context) {
-    if (params.length < 1)
-      throw new CommandExecutionException("invalid expression");
+    checkArity(params);
 
     if (predicate == null) {
       try {

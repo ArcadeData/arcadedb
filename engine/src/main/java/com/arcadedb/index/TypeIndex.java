@@ -212,6 +212,57 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return cursor;
   }
 
+  /**
+   * Whether a read of the entries whose first {@code boundColumns} key columns equal non-null values reaches every record that
+   * holds them, and each of them once (issue #11576). Not when a column left unbound is indexed {@code BY ITEM}, {@code BY KEY}
+   * or {@code BY VALUE}: a record has an entry per element there, and none for an empty or null collection. A null in an unbound
+   * column is no hole: even an index that skips null keys drops a key only when every column of it is null (issue #8978), which
+   * a non-null bound value rules out. A whole key is always answered by its lookup.
+   */
+  public boolean prefixReachesEveryRecord(final int boundColumns) {
+    final List<String> names = getPropertyNames();
+    for (int i = boundColumns; i < names.size(); i++)
+      if (!Index.basePropertyName(names.get(i)).equals(names.get(i)))
+        return false;
+    return true;
+  }
+
+  /**
+   * {@link #getForQuery} for the entries whose leading key columns equal {@code prefix}, a key shorter than the index's (issue
+   * #11576): the range of the keys that start with it, so only an index that walks its keys in order answers it. A range cursor
+   * reads lazily, so the entries are collected before the check after the read, which is what makes that check sound; at the
+   * tail of a range whose remaining keys are all deleted the cursor answers null, which is not an entry.
+   * <p>
+   * Costs memory proportional to the entries of the prefix, one RID each: meant for a reader that needs every match anyway (a
+   * MERGE holds them all to decide whether to create). A reader that can stop early streams {@link #range} instead.
+   */
+  public IndexCursor prefixForQuery(final Object[] prefix) {
+    if (!isReadyForQueries())
+      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+
+    final long changesBefore = subIndexChanges.get();
+    if ((changesBefore & 1) != 0)
+      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+    final List<IndexCursorEntry> entries = new ArrayList<>();
+    try (final IndexCursor cursor = range(true, prefix, true, prefix, true)) {
+      while (cursor.hasNext()) {
+        final Identifiable entry = cursor.next();
+        if (entry != null)
+          entries.add(new IndexCursorEntry(prefix, entry, 1));
+      }
+    } catch (final IndexException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      if (isStaleRead(this, e))
+        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+      throw e;
+    }
+
+    if (!valid || dropping || subIndexChanges.get() != changesBefore)
+      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+    return new TempIndexCursor(entries);
+  }
+
   @Override
   public IndexCursor get(final Object[] keys) {
     checkIsValid();

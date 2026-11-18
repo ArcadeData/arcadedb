@@ -356,7 +356,7 @@ class CypherForeachTest {
   }
 
   /**
-   * Regression tests for issue #8105: {@code CypherSemanticValidator.validateVariableScope} skipped the
+   * Regression tests for issue #8105: {@code VariableScopeValidator.validateVariableScope} skipped the
    * body of a {@code FOREACH} clause entirely, so a body writing through a variable a preceding
    * {@code WITH} had dropped - or one that was never bound at all - was accepted, did nothing, and
    * reported success instead of raising {@code UndefinedVariable} the way Neo4j does.

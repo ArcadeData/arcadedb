@@ -24,10 +24,13 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphViewPins;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.Arrays;
@@ -278,6 +281,39 @@ public final class CSRCountUtils {
       final Vertex.DIRECTION direction, final String... edgeTypes) {
     final long degree = provider.countEdges(nodeId, direction, edgeTypes);
     return direction == Vertex.DIRECTION.BOTH && degree > 0 ? degree - selfLoops(provider, nodeId, edgeTypes) : degree;
+  }
+
+  /**
+   * {@link #hopDegree}, counting only the relationships whose far end carries {@code label} when it is not null. The
+   * neighbour's type is read from the bucket of its RID, so no record is loaded (issue #11583).
+   */
+  public static long hopDegree(final GraphTraversalProvider provider, final Schema schema, final int nodeId,
+      final Vertex.DIRECTION direction, final String label, final String... edgeTypes) {
+    if (label == null)
+      return hopDegree(provider, nodeId, direction, edgeTypes);
+    long count = 0;
+    for (final int neighbor : hopNeighborIds(provider, nodeId, direction, edgeTypes))
+      if (Labels.carriesLabel(schema, provider.getRID(neighbor), label))
+        ++count;
+    return count;
+  }
+
+  /**
+   * The relationships one pattern hop matches from {@code vertex} through its own edge lists, counting only those whose
+   * far end carries {@code label} when it is not null (issue #11583). The incoming side of a unidirectional edge type
+   * comes from the query's lookup (issue #8625); an undirected self loop is one relationship (issue #8750).
+   */
+  public static long patternDegree(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
+      final String label, final String... edgeTypes) {
+    if (label == null)
+      return IncomingEdgeLookup.countPatternEdges(context, vertex, direction, edgeTypes);
+    final Iterator<Vertex> adjacent = IncomingEdgeLookup.getVertices(context, vertex, direction, edgeTypes);
+    long count = 0;
+    for (final Iterator<Vertex> neighbors = direction == Vertex.DIRECTION.BOTH ?
+        SelfLoops.deduplicating(adjacent, vertex.getIdentity()) : adjacent; neighbors.hasNext(); )
+      if (Labels.hasLabel(neighbors.next(), label))
+        ++count;
+    return count;
   }
 
   /**

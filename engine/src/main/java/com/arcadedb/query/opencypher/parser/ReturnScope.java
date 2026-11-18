@@ -41,9 +41,9 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * The variables in scope at the RETURN of a statement, read from the statement without running it. It answers the columns a
@@ -167,29 +167,30 @@ public final class ReturnScope {
   }
 
   /**
-   * The variables in scope at the RETURN of a statement, in the order its clauses bind them, which is the order a {@code RETURN
-   * *} row carries them in (Neo4j sorts them alphabetically instead: #11557 tracks switching the rows and this together).
-   * Anonymous pattern elements, and the names the executor generates for them, are not variables. {@code null} when the scope
-   * passes through something this walk does not follow.
+   * The variables in scope at the RETURN of a statement, sorted by name, which is the order a {@code RETURN *} row carries them
+   * in (issue #11557, as Neo4j does): the order the clauses bind them in depends on the plan (a pattern walked from a bound end
+   * binds its elements backwards), so it is not an order a caller can rely on. Anonymous pattern elements, and the names the
+   * executor generates for them, are not variables. {@code null} when the scope passes through something this walk does not
+   * follow.
    */
   public static Set<String> scopeAtReturn(final CypherStatement statement) {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses == null || clauses.isEmpty())
       return null;
-    final Set<String> scope = new LinkedHashSet<>();
+    final Set<String> scope = new HashSet<>();
     for (final ClauseEntry entry : clauses) {
       switch (bindClause(entry, scope)) {
       case NEXT -> {
       }
       case DONE -> {
-        return scope;
+        return new TreeSet<>(scope);
       }
       case UNKNOWN -> {
         return null;
       }
       }
     }
-    return scope;
+    return new TreeSet<>(scope);
   }
 
   /**
@@ -254,9 +255,8 @@ public final class ReturnScope {
         yield ScopeWalk.NEXT;
       }
       case SUBQUERY -> {
-        // What a CALL { } subquery returns joins the enclosing scope, after the names already in it (the order the executor
-        // merges the body's row into the outer one); a unit subquery (no RETURN) adds nothing. The branches of a UNION body
-        // return the same columns, under the names of the first one. A RETURN * of the body is the scope at that RETURN,
+        // What a CALL { } subquery returns joins the enclosing scope; a unit subquery (no RETURN) adds nothing. The branches of
+        // a UNION body return the same columns, under the names of the first one. A RETURN * of the body is the scope at that RETURN,
         // walked the same way (issue #11571): the names the body imports are outer names already, so the walk does not need
         // to seed them, and the WITH that imports them clears and rebinds the body's scope as any WITH does
         final CypherStatement body = ((SubqueryClause) entry.getTypedClause()).getInnerStatement();
@@ -278,7 +278,7 @@ public final class ReturnScope {
     };
   }
 
-  /** Binds the variables of a pattern in the order the match binds them: each element along the path, then the path. */
+  /** Binds the variables of a pattern: each element along the path, then the path. */
   private static void bindPattern(final PathPattern path, final Set<String> scope) {
     if (path == null)
       return;

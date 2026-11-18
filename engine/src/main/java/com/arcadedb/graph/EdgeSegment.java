@@ -91,6 +91,15 @@ public interface EdgeSegment extends Record {
    */
   EdgeSegment getPrevious();
 
+  /**
+   * {@link #getPrevious()} for a walk that began with {@code walkMark} (see
+   * {@link com.arcadedb.database.DatabaseInternal#graphWalkMark()}): a previous chunk that is gone is judged against the commits
+   * published since the walk began, not since now (issue #11713).
+   */
+  default EdgeSegment getPrevious(final char walkMark) {
+    return getPrevious();
+  }
+
   /** Returns the RID of the previous chunk in the list without loading it, or {@code null} if this is the tail. */
   RID getPreviousRID();
 

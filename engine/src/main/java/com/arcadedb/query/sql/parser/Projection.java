@@ -100,7 +100,7 @@ public class Projection extends SimpleNode {
       builder.append("DISTINCT ");
 
     // print * before. A per-record materialized view relies on it: its derived query appends `@rid AS _sourceRID` and is
-    // rendered and parsed again, so the link comes after * and overwrites a same-named field (Issue11552PerRecordSourceRidReservedTest)
+    // rendered and parsed again, so the link comes after * and overwrites a same-named field (MaterializedViewRegressionTest.PerRecordSourceRidReserved)
     for (final ProjectionItem item : items) {
       if (item.isAll()) {
         if (!first)
@@ -160,7 +160,7 @@ public class Projection extends SimpleNode {
       return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
-    // In order, so a later item overwrites a same-named column an earlier * copied (Issue11552PerRecordSourceRidReservedTest)
+    // In order, so a later item overwrites a same-named column an earlier * copied (MaterializedViewRegressionTest.PerRecordSourceRidReserved)
     for (int i = 0; i < items.size(); i++) {
       final ProjectionItem item = items.get(i);
       if (item.exclude)
@@ -172,8 +172,20 @@ public class Projection extends SimpleNode {
         // which of them this statement excluded, since `!alias` is implemented by never writing the value rather
         // than by a tombstone (issue #7895 review): `SELECT *, !@rid` had its @rid put straight back. Written only
         // here, and only when there is something to say: this is the one branch that leaves an element behind.
-        if (!excludedAliases.isEmpty())
-          result.setProjectionExcludes(excludedAliases);
+        // An input row that is itself a `SELECT *, !name` row hands over the same full record as its element, so its
+        // exclusions travel with it (issue #11628): `SELECT *, 1 AS one FROM (SELECT *, !secret FROM P)` must not let
+        // hasProperty("secret") answer from the record. No allocation unless both levels exclude something.
+        final Set<String> inherited = record instanceof ResultInternal ri ? ri.getProjectionExcludes() : null;
+        if (inherited == null || inherited.isEmpty()) {
+          if (!excludedAliases.isEmpty())
+            result.setProjectionExcludes(excludedAliases);
+        } else if (excludedAliases.isEmpty())
+          result.setProjectionExcludes(inherited);
+        else {
+          final Set<String> union = new HashSet<>(inherited);
+          union.addAll(excludedAliases);
+          result.setProjectionExcludes(union);
+        }
 
         // `hidden` is a schema annotation only, and has been since #2378 removed database-level support for it:
         // ALTER PROPERTY still records the flag and SHOW/schema introspection still report it, but no read path
@@ -192,11 +204,14 @@ public class Projection extends SimpleNode {
           result.setProperty(alias, value);
         }
 
+        // An attribute the input row excluded is not seeded back from its element either: if the input row wrote it
+        // itself, the loop above already copied it from the row's content.
         record.getElement().ifPresent(doc -> {
-          if (!excludedAliases.contains(RID_PROPERTY) && doc.getIdentity() != null) {
+          if (!excludedAliases.contains(RID_PROPERTY) && (inherited == null || !inherited.contains(RID_PROPERTY))
+              && doc.getIdentity() != null) {
             result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
-          if (!excludedAliases.contains(Property.TYPE_PROPERTY)) {
+          if (!excludedAliases.contains(Property.TYPE_PROPERTY) && (inherited == null || !inherited.contains(Property.TYPE_PROPERTY))) {
             result.setProperty(Property.TYPE_PROPERTY, doc.getType().getName());
           }
 

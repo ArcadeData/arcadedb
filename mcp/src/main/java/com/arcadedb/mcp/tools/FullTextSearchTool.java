@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.mcp.MCPConfiguration;
 import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -115,13 +114,6 @@ public class FullTextSearchTool {
     if ((indexName == null || indexName.isBlank()) && (typeName == null || typeName.isBlank()))
       throw new MCPToolArgumentException("Provide either 'indexName', or 'typeName' with optional 'properties'");
 
-    final JSONArray properties = MCPToolUtils.optionalArray(args, "properties");
-    if (properties != null)
-      for (int i = 0; i < properties.length(); i++)
-        try {
-          properties.getString(i);
-        } catch (final JSONException e) {
-          throw new MCPToolArgumentException("'properties' must contain only property names");
-        }
+    MCPToolUtils.optionalStringArray(args, "properties", "'properties' must contain only property names");
   }
 }

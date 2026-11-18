@@ -42,6 +42,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -91,6 +92,20 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * Reads a PERSISTED index definition into {@code target}, the metadata of this builder, and keeps the type and the
+   * properties the builder was created for. A type index is persisted as one definition per bucket, and the definition
+   * of a bucket a subtype owns names that subtype: taken over, it made {@link #create()} build a second index on the
+   * subtype (issue #11577). Used by the {@code withPersistedMetadata} of the specialised builders.
+   */
+  protected final void readPersistedDefinition(final IndexMetadata target, final JSONObject json) {
+    final String typeName = target.typeName;
+    final List<String> propertyNames = target.propertyNames;
+    target.fromJSON(json);
+    target.typeName = typeName;
+    target.propertyNames = propertyNames;
+  }
+
+  /**
    * The key type of a {@code BY ITEM} index over a LIST: the declared {@code OF} item type when it is a plain scalar, so
    * a lookup by a number of another Java type ({@code CONTAINS 7} against a {@code LIST OF DOUBLE} holding {@code 7.0})
    * is converted to the stored type the way a scan compares it (issue #8890). STRING is kept for:
@@ -115,6 +130,50 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
            ARRAY_OF_DOUBLES -> Type.STRING;
       default -> itemType;
     };
+  }
+
+  /**
+   * Whether a {@code BY ITEM} index over this LIST property can hold a nested list, map or embedded document as an item: a list
+   * with no declared item type, or one declared of such a type. Its key is then the item's text, the very key of the string that
+   * spells it, so a lookup there answers a superset of the rows and the condition is checked on them (issue #11730).
+   *
+   * @param property the indexed LIST property, null when the schema does not declare it (a nested path such as {@code tags.id})
+   */
+  public static boolean listItemsMayNest(final Property property) {
+    if (property == null || property.getType() != Type.LIST)
+      return false;
+    final String ofType = property.getOfType();
+    if (ofType == null)
+      return true;
+    final Type itemType = Type.getTypeByName(ofType);
+    // a type name that is no Type is an embedded document type
+    return itemType == null || itemType == Type.LIST || itemType == Type.MAP || itemType == Type.EMBEDDED;
+  }
+
+  /**
+   * {@link #listItemsMayNest} for the path a {@code BY ITEM} index reads, which can reach into the items ({@code tags.id}): then
+   * the value keyed is the field of each item, and it can nest unless the schema declares that field, through the embedded types
+   * of the path, as a scalar. An undeclared step answers true, so the condition is checked on what the index returns.
+   */
+  public static boolean byItemValuesMayNest(final DocumentType type, final String path) {
+    final int dot = path.indexOf('.');
+    if (dot < 0)
+      return listItemsMayNest(type.getPolymorphicPropertyIfExists(path));
+
+    final Property root = type.getPolymorphicPropertyIfExists(path.substring(0, dot));
+    DocumentType current = root != null && root.getOfType() != null ? type.getSchema().getTypeOrNull(root.getOfType()) : null;
+    final String[] steps = path.substring(dot + 1).split("\\.");
+    for (int i = 0; i < steps.length; i++) {
+      if (current == null)
+        return true;
+      final Property step = current.getPolymorphicPropertyIfExists(steps[i]);
+      if (step == null)
+        return true;
+      if (i == steps.length - 1)
+        return step.getType() == Type.LIST || step.getType() == Type.MAP || step.getType() == Type.EMBEDDED;
+      current = step.getOfType() != null ? type.getSchema().getTypeOrNull(step.getOfType()) : null;
+    }
+    return true;
   }
 
   /**

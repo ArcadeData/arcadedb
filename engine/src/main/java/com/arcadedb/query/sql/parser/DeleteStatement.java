@@ -46,12 +46,14 @@ public class DeleteStatement extends Statement {
   public Projection  returnProjection;
   public Batch       batch;
   public boolean     unsafe       = false;
+  // DELETE VERTEX: every record the statement reaches must be a vertex (issue #11620)
+  public boolean     deleteVertex = false;
 
   public DeleteStatement() {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("DELETE FROM ");
+    builder.append(deleteVertex ? "DELETE VERTEX FROM " : "DELETE FROM ");
     fromClause.toString(params, builder);
     if (returnBefore && returnProjection == null) {
       builder.append(" RETURN BEFORE");
@@ -98,12 +100,13 @@ public class DeleteStatement extends Statement {
     result.limit = limit == null ? null : limit.copy();
     result.batch = batch == null ? null : batch.copy();
     result.unsafe = unsafe;
+    result.deleteVertex = deleteVertex;
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { fromClause, whereClause, returnBefore, returnProjection, limit, batch, unsafe };
+    return new Object[] { fromClause, whereClause, returnBefore, returnProjection, limit, batch, unsafe, deleteVertex };
   }
 
   @Override
@@ -173,6 +176,10 @@ public class DeleteStatement extends Statement {
 
   public boolean isUnsafe() {
     return unsafe;
+  }
+
+  public boolean isDeleteVertex() {
+    return deleteVertex;
   }
 
   @Override

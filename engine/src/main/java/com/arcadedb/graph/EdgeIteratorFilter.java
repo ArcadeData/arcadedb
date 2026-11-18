@@ -68,17 +68,19 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
         // LIGHTWEIGHT EDGE
         final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdge.getBucketId());
 
-        if (direction == Vertex.DIRECTION.OUT)
-          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), vertex.getIdentity(),
-              nextVertex, currentContainer.getIdentity(), getEntryPosition(), direction, currentContainer.getUsed(), lightEdgeCensus());
-        else
-          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), nextVertex,
-              vertex.getIdentity(), currentContainer.getIdentity(), getEntryPosition(), direction, currentContainer.getUsed(), lightEdgeCensus());
+        final ImmutableLightEdge light = direction == Vertex.DIRECTION.OUT ?
+            new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), vertex.getIdentity(),
+                nextVertex, currentContainer.getIdentity(), getEntryPosition(), direction, currentContainer.getUsed(), lightEdgeCensus()) :
+            new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), nextVertex,
+                vertex.getIdentity(), currentContainer.getIdentity(), getEntryPosition(), direction, currentContainer.getUsed(), lightEdgeCensus());
+        // ITS ENDPOINTS ARE REFERENCES THIS WALK READ (ISSUE #11713)
+        light.markReachedThroughGraph(walkMark);
+        return light;
       }
 
       // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. THE LOOKUP hasNext() DID TO VALIDATE THE RID IS THE ONE
       // THIS CALL WOULD DO AGAIN (#10163). NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-      final Edge edge = takeValidatedRecord() instanceof Edge validated ? validated : next.asEdge(false);
+      final Edge edge = takeValidatedRecord() instanceof Edge validated ? validated : (Edge) database.lookupThroughGraph(next, walkMark);
       if (endpointsFromList && edge instanceof ImmutableEdge immutable) {
         if (direction == Vertex.DIRECTION.OUT)
           immutable.setEndpointsFromEdgeList(vertex.getIdentity(), nextVertex);

@@ -21,6 +21,8 @@ package com.arcadedb.function.sql.text;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -87,14 +89,14 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
       final Object[] iParams, final CommandContext iContext) {
 
     if (iParams.length < 2)
-      throw new CommandExecutionException("SEARCH_FIELDS() requires 2 parameters: fields array and query");
+      throw FunctionArity.mismatch(NAME, FunctionArity.describe(2, 2), iParams.length);
 
     if (iParams[0] == null || iParams[1] == null)
-      throw new CommandExecutionException("SEARCH_FIELDS() parameters cannot be null");
+      throw new InvalidArgumentException("SEARCH_FIELDS() parameters cannot be null");
 
     // The type comes from the current record: without a FROM there is no index to choose
     if (iCurrentRecord == null)
-      throw new CommandExecutionException("SEARCH_FIELDS() requires a type context (use in WHERE clause with FROM)");
+      throw new InvalidArgumentException("SEARCH_FIELDS() requires a type context (use in WHERE clause with FROM)");
 
     final List<String> fieldNames = fieldNames(iParams[0]);
     final String queryString = iParams[1].toString();
@@ -107,7 +109,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     if (search == null) {
       search = search(iContext.getDatabase().getSchema().getType(typeName), fieldNames, queryString);
       if (search == null)
-        throw new CommandExecutionException("No full-text index found for fields: " + fieldNames);
+        throw new InvalidArgumentException("No full-text index found for fields: " + fieldNames);
       iContext.setCachedValue(resolvedKey, search);
     }
 
@@ -303,13 +305,13 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     else
       fieldNames.add(fieldName(fieldsParam));
     if (fieldNames.isEmpty())
-      throw new CommandExecutionException("SEARCH_FIELDS() requires at least one field name");
+      throw new InvalidArgumentException("SEARCH_FIELDS() requires at least one field name");
     return List.copyOf(fieldNames);
   }
 
   private static String fieldName(final Object field) {
     if (field == null)
-      throw new CommandExecutionException("SEARCH_FIELDS() field names cannot be null");
+      throw new InvalidArgumentException("SEARCH_FIELDS() field names cannot be null");
     return field.toString();
   }
 }

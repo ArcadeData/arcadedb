@@ -71,6 +71,10 @@ class ProtocolContextCensusTest {
    * than one door, a test in that module enumerates them and proves each one tagged.
    */
   private static final Map<String, String> TAGS = new TreeMap<>(Map.ofEntries(//
+      Map.entry("server/http/handler/AbstractServerHttpHandler#handleRequest", "every HTTP handler, the batch and binary ones "
+          + "included"),
+      Map.entry("server/http/ws/insert/WebSocketInsertProtocol#execute", "tags and restores around every /ws insert frame: "
+          + "start, chunk, commit, rollback (issue #11779)"),
       Map.entry("bolt/BoltNetworkExecutor#run", "the one loop that serves a connection"),
       Map.entry("postgres/PostgresNetworkExecutor#run", "the one loop that serves a connection"),
       Map.entry("redis/RedisNetworkExecutor#run", "the one loop that serves a connection"),
@@ -105,6 +109,12 @@ class ProtocolContextCensusTest {
     final Map<String, Map<String, byte[]>> modules = CompiledClasses.byModule();
     final Map<String, Set<String>> tags = new TreeMap<>();
     final Set<String> untagged = new TreeSet<>();
+    // The server itself serves clients (the HTTP handlers, the /ws insert sessions) and is held to TAGS like any listener
+    // (issue #11779): "a tag somewhere" stayed green with the /ws tag removed, because the HTTP handler's tag remained
+    assertThat(modules).as("the classes of module server").containsKey("server");
+    tags.putAll(tagsIn(modules.get("server")));
+    assertThat(tags).as("the scan still reaches the tag of the HTTP request thread, AbstractServerHttpHandler#handleRequest")
+        .containsKey("server/http/handler/AbstractServerHttpHandler#handleRequest");
     for (final String module : pluggedIn)
       if (!NOT_A_LISTENER.containsKey(module)) {
         assertThat(modules).as("the classes of module " + module).containsKey(module);
@@ -121,9 +131,6 @@ class ProtocolContextCensusTest {
     assertThat(CompiledClasses.unreviewed(tags, TAGS)).as("a tag not in TAGS: an entry point gained a tag or a tag moved; "
         + "check every entry point of the module is still tagged, then list the tag with what it covers").isEmpty();
     assertThat(CompiledClasses.stale(tags, TAGS)).as("TAGS entries whose tag is gone: which entry point lost it?").isEmpty();
-
-    // The server itself: the HTTP handlers and the WebSocket insert sessions
-    assertThat(tagsIn(modules.get("server"))).as("server").isNotEmpty();
   }
 
   @Test

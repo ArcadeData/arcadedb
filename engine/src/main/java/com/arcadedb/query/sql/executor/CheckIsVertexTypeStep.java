@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
@@ -68,7 +67,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
         found = true;
       }
       if (!found) {
-        throw new CommandExecutionException("Type ' '" + this.targetClass + "' is not a Vertex type");
+        throw new SchemaException("Type '" + this.targetClass + "' is not a vertex type");
       }
 
       return new InternalResultSet();

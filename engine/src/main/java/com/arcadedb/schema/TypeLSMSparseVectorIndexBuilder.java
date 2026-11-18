@@ -128,7 +128,7 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
    */
   public TypeLSMSparseVectorIndexBuilder withPersistedMetadata(final JSONObject json) {
     if (json != null)
-      sparseMetadata().fromJSON(json);
+      readPersistedDefinition(sparseMetadata(), json);
     return this;
   }
 

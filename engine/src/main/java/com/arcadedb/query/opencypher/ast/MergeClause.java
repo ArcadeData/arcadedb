@@ -18,6 +18,9 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Represents a MERGE clause in a Cypher query.
  * Ensures a pattern exists in the graph: matches if it exists, creates if it doesn't.
@@ -27,21 +30,49 @@ package com.arcadedb.query.opencypher.ast;
  * - MERGE (a:Person {name: 'Alice'})-[r:KNOWS]->(b:Person {name: 'Bob'})
  * - MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = timestamp() ON MATCH SET n.updated = timestamp()
  * <p>
- * Supports ON CREATE SET and ON MATCH SET sub-clauses.
+ * Supports ON CREATE SET and ON MATCH SET sub-clauses. Each may be repeated: every repetition is kept as its own
+ * {@link SetClause} and applied in source order, so a later one reads the writes of an earlier one (issue #11691).
+ * {@link #getOnCreateSet()} / {@link #getOnMatchSet()} expose all the items of one branch as a single clause, for the
+ * analyses that only need to know what the branch reads and writes.
  */
 public class MergeClause {
   private final PathPattern pathPattern;
-  private final SetClause onCreateSet;
-  private final SetClause onMatchSet;
+  private final SetClause       onCreateSet;
+  private final SetClause       onMatchSet;
+  private final List<SetClause> onCreateActions;
+  private final List<SetClause> onMatchActions;
 
   public MergeClause(final PathPattern pathPattern) {
-    this(pathPattern, null, null);
+    this(pathPattern, List.of(), List.of());
   }
 
-  public MergeClause(final PathPattern pathPattern, final SetClause onCreateSet, final SetClause onMatchSet) {
+  public MergeClause(final PathPattern pathPattern, final List<SetClause> onCreateActions, final List<SetClause> onMatchActions) {
     this.pathPattern = pathPattern;
-    this.onCreateSet = onCreateSet;
-    this.onMatchSet = onMatchSet;
+    this.onCreateActions = onCreateActions;
+    this.onMatchActions = onMatchActions;
+    this.onCreateSet = combine(onCreateActions);
+    this.onMatchSet = combine(onMatchActions);
+  }
+
+  private static SetClause combine(final List<SetClause> actions) {
+    if (actions.isEmpty())
+      return null;
+    if (actions.size() == 1)
+      return actions.getFirst();
+    final List<SetClause.SetItem> items = new ArrayList<>();
+    for (final SetClause action : actions)
+      items.addAll(action.getItems());
+    return new SetClause(items);
+  }
+
+  /** The ON CREATE SET clauses in source order, each to be applied as a SET of its own. */
+  public List<SetClause> getOnCreateActions() {
+    return onCreateActions;
+  }
+
+  /** The ON MATCH SET clauses in source order, each to be applied as a SET of its own. */
+  public List<SetClause> getOnMatchActions() {
+    return onMatchActions;
   }
 
   public PathPattern getPathPattern() {

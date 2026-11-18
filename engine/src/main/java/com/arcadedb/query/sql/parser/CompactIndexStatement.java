@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.OutsideCallerTransaction;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
@@ -87,7 +88,7 @@ public class CompactIndexStatement extends DDLStatement {
         indexName = idx.getName();
         ++stepIndex;
         progress.onProgress("Compacting index '" + idx.getName() + "'", stepIndex, targetIndexes.size(), 0, -1);
-        if (compactIndex((IndexInternal) idx))
+        if (compactOutsideCallerTransaction(database, (IndexInternal) idx))
           compacted = true;
         compactedIndexes.add(idx.getName());
       }
@@ -107,6 +108,25 @@ public class CompactIndexStatement extends DDLStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * Runs {@link #compactIndex} with no transaction on the thread, which is how a background compaction runs (issue #11580).
+   * <p>
+   * The swap that ends an LSM-tree compaction ({@code LSMTreeIndex.splitIndex}) refuses to run while a transaction is active,
+   * and {@code POST /api/v1/command} runs every statement inside its auto-commit transaction, so the statement failed on the
+   * default HTTP path, inside a {@code sqlscript} and inside any {@code database.transaction(...)}. Compaction is not part of
+   * the caller's transaction anyway: it rewrites committed index pages, cannot be rolled back with it, and runs
+   * concurrently with other threads' transactions every time it is triggered in the background. So with a transaction open,
+   * the compaction runs on a thread of its own and this one waits for it, leaving the caller's transaction and everything in
+   * it (pending changes, locks, read snapshot) untouched: its commit finds the index migrated exactly as it would after a
+   * background compaction. Committing or rolling back the caller's transaction here instead would end work that is not this
+   * statement's to end. Without a transaction it runs inline, as it always has. The same rule as every maintenance statement,
+   * see {@link OutsideCallerTransaction}.
+   */
+  private static boolean compactOutsideCallerTransaction(final DatabaseInternal database, final IndexInternal idx)
+      throws Exception {
+    return OutsideCallerTransaction.call(database, "CompactIndex", true, () -> compactIndex(idx));
   }
 
   /**

@@ -76,7 +76,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
   private final    AtomicBoolean          legacyPrecisionWarned = new AtomicBoolean();
   // filled before the type is reachable and handed to the engine and to every query as it is: copy-on-write, so the
-  // sweep of Issue7299SchemaCopyOnWritePublicationTest does not have to take that ordering on trust (#9989)
+  // sweep of PolymorphicBucketCacheTest.SchemaCopyOnWritePublication does not have to take that ordering on trust (#9989)
   private final    List<ColumnDefinition> tsColumns            = new CopyOnWriteArrayList<>();
   // Replaced, never mutated in place: TimeSeriesMaintenanceScheduler iterates the list it read with no lock held.
   // Always an immutable copy, so no caller of getDownsamplingTiers() can mutate the published list either.

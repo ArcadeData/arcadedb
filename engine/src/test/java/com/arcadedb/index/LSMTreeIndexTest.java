@@ -298,6 +298,7 @@ class LSMTreeIndexTest extends TestHelper {
         }
       }
     }, true, 0);
+    rebuildIndexesFromRecords();
   }
 
   @Test
@@ -379,6 +380,7 @@ class LSMTreeIndexTest extends TestHelper {
         }
       }
     }, true, 0);
+    rebuildIndexesFromRecords();
   }
 
   @Test
@@ -423,6 +425,7 @@ class LSMTreeIndexTest extends TestHelper {
         }
       }
     });
+    rebuildIndexesFromRecords();
   }
 
   @Test
@@ -484,6 +487,7 @@ class LSMTreeIndexTest extends TestHelper {
         }
       }
     });
+    rebuildIndexesFromRecords();
   }
 
   @Test
@@ -603,6 +607,7 @@ class LSMTreeIndexTest extends TestHelper {
       }
 
     });
+    rebuildIndexesFromRecords();
   }
 
   @Test

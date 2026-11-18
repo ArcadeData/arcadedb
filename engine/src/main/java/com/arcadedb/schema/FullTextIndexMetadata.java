@@ -54,6 +54,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public static final String DEFAULT_ANALYZER = "org.apache.lucene.analysis.standard.StandardAnalyzer";
 
   /**
+   * The most indexed terms a fuzzy clause ({@code term~}, {@code term~1}, {@code term~2}) expands to, as in Lucene's FuzzyQuery
+   * (issue #12462): the best ones, by edit distance relative to the term length, then in term order.
+   */
+  public static final int DEFAULT_FUZZY_MAX_EXPANSIONS = 50;
+
+  /**
    * BM25 similarity: ranks with term-frequency, inverse document frequency and document-length normalization. Default for newly
    * created full-text indexes.
    */
@@ -97,7 +103,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * persisted corpus counters ({@code ft_*}) are deliberately absent - they are maintained by the index, not configured.
    */
   private static final Set<String> USER_METADATA_KEYS = Set.of("analyzer", "index_analyzer", "query_analyzer",
-      "allowLeadingWildcard", "defaultOperator", "similarity", "bm25_k1", "bm25_b");
+      "allowLeadingWildcard", "defaultOperator", "similarity", "bm25_k1", "bm25_b", "fuzzyMaxExpansions");
 
   // These scalar fields (analyzers, operator, wildcard flag, similarity, k1/b) are set once at index creation / schema load,
   // before any query-path read, so they need no volatile/synchronization (unlike the live corpus counters and the per-field
@@ -108,6 +114,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private          String              queryAnalyzerClass   = null;
   private          boolean             allowLeadingWildcard = false;
   private          String              defaultOperator      = "OR";
+  private          int                 fuzzyMaxExpansions   = DEFAULT_FUZZY_MAX_EXPANSIONS;
   // Per-field maps are concurrent: they are populated at index creation but read on the query path (getFieldBoost,
   // getAnalyzerClass) and iterated by writeToJSON on schema save, so a HashMap could throw ConcurrentModificationException.
   private final    Map<String, String> fieldAnalyzers       = new ConcurrentHashMap<>();
@@ -217,6 +224,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     copy.queryAnalyzerClass = queryAnalyzerClass;
     copy.allowLeadingWildcard = allowLeadingWildcard;
     copy.defaultOperator = defaultOperator;
+    copy.fuzzyMaxExpansions = fuzzyMaxExpansions;
     copy.fieldAnalyzers.putAll(fieldAnalyzers);
     copy.similarity = similarity;
     copy.bm25K1 = bm25K1;
@@ -244,6 +252,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     if (metadata.has("defaultOperator"))
       this.defaultOperator = metadata.getString("defaultOperator");
+
+    // Set directly, as defaultOperator is: a persisted definition was validated when it was written
+    this.fuzzyMaxExpansions = metadata.getInt("fuzzyMaxExpansions", DEFAULT_FUZZY_MAX_EXPANSIONS);
 
     // An index persisted before BM25 support has no "similarity" key: keep it on CLASSIC so an upgrade does not silently change
     // ranking. Route an explicit value through the validating setter so an unknown similarity in METADATA {...} is rejected.
@@ -347,6 +358,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (json.has("defaultOperator"))
       setDefaultOperator(json.getString("defaultOperator"));
 
+    if (json.has("fuzzyMaxExpansions"))
+      setFuzzyMaxExpansions(metadataInt(json, "fuzzyMaxExpansions"));
+
     // Route through the validating setters so an unknown similarity or an out-of-range k1/b in METADATA {...} is
     // reported at creation rather than silently scoring wrong.
     if (json.has("similarity"))
@@ -378,6 +392,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
       case "query_analyzer" -> queryAnalyzerClass;
       case "allowLeadingWildcard" -> allowLeadingWildcard;
       case "defaultOperator" -> defaultOperator;
+      case "fuzzyMaxExpansions" -> fuzzyMaxExpansions;
       case "similarity" -> similarity;
       case "bm25_k1" -> bm25K1;
       case "bm25_b" -> bm25B;
@@ -433,6 +448,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
       metadata.put("allowLeadingWildcard", true);
     if (!"OR".equalsIgnoreCase(defaultOperator))
       metadata.put("defaultOperator", defaultOperator);
+    if (fuzzyMaxExpansions != DEFAULT_FUZZY_MAX_EXPANSIONS)
+      metadata.put("fuzzyMaxExpansions", fuzzyMaxExpansions);
 
     for (final Map.Entry<String, String> entry : fieldAnalyzers.entrySet())
       metadata.put(entry.getKey() + ANALYZER_SUFFIX, entry.getValue());
@@ -538,6 +555,27 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public String getDefaultOperator() {
     return defaultOperator;
+  }
+
+  /**
+   * Returns the most indexed terms a fuzzy clause expands to (issue #12462), {@link #DEFAULT_FUZZY_MAX_EXPANSIONS} unless set.
+   */
+  public int getFuzzyMaxExpansions() {
+    return fuzzyMaxExpansions;
+  }
+
+  /**
+   * Sets the most indexed terms a fuzzy clause expands to: the best ones are kept, as Lucene's FuzzyQuery keeps its
+   * {@code maxExpansions} best ones.
+   *
+   * @param fuzzyMaxExpansions a positive number of terms
+   *
+   * @throws IllegalArgumentException if it is not positive, which Lucene's FuzzyQuery refuses too
+   */
+  public void setFuzzyMaxExpansions(final int fuzzyMaxExpansions) {
+    if (fuzzyMaxExpansions < 1)
+      throw new IllegalArgumentException("Full-text fuzzyMaxExpansions must be positive, got: " + fuzzyMaxExpansions);
+    this.fuzzyMaxExpansions = fuzzyMaxExpansions;
   }
 
   /**
@@ -759,6 +797,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public boolean claimStaleCheck() {
     return staleChecked.compareAndSet(false, true);
+  }
+
+  /**
+   * Arms the once-per-session check of the counters against the live data again, without the unconditional rescan of
+   * {@link #requireRescan()}: the next search compares them with a live count and rescans only when the two differ. For counters
+   * set rather than measured, such as the empty pair of a new index (issue #12367).
+   */
+  public void armStaleCheck() {
+    staleChecked.set(false);
   }
 
   /**

@@ -254,6 +254,24 @@ public abstract class PaginatedComponent extends Component {
   }
 
   /**
+   * How many pages a READ in the calling thread's transaction may find: the committed ones, and the ones the transaction allocated
+   * past them. {@link #getTotalPages()} answers with the transaction's own counter once it allocated a page, and that counter stops
+   * at the last page the transaction allocated, while other transactions commit pages past it (page numbers are reserved for each
+   * transaction from one shared counter). A read bounded by it stopped short of their records (issue #11787). Allocation keeps
+   * asking {@link #getTotalPages()}.
+   */
+  public int getReadablePageCount() {
+    final int committed = pageCount.get();
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      final Integer txPageCounter = tx.getPageCounter(fileId);
+      if (txPageCounter != null && txPageCounter > committed)
+        return txPageCounter;
+    }
+    return committed;
+  }
+
+  /**
    * True when {@code fileName} is the file of a component built under {@link #TEMP_EXT}, i.e. the output of an index
    * compaction that has not yet been published by {@link #removeTempSuffix()}.
    * <p>

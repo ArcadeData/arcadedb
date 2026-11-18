@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexException;
@@ -102,6 +103,64 @@ class SelectTargetPlanningTest extends TestHelper {
 
       final Set<RID> returned = collectRids(result);
       assertThat(returned).containsExactly(seeds.getFirst());
+    });
+  }
+
+  /**
+   * Issue #11767: a remote driver binds a RID as its string (JSON and gRPC string values), and a list of them is the target it
+   * names, as a single bound RID string already was. It was refused with "Cannot use collection as target".
+   */
+  @Test
+  void selectFromBoundCollectionOfRidStrings() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+
+      final ResultSet result = database.query("sql", "SELECT FROM :seeds",
+          Map.of("seeds", List.of(seeds.get(0).toString(), seeds.get(2).toString())));
+
+      assertThat(collectRids(result)).containsExactlyInAnyOrder(seeds.get(0), seeds.get(2));
+    });
+  }
+
+  /** Issue #11767: the TRAVERSE planner takes the same bound list of RID strings. */
+  @Test
+  void traverseFromBoundCollectionOfRidStrings() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+
+      final ResultSet result = database.query("sql", "SELECT FROM (TRAVERSE out('" + EDGE + "') FROM :seeds MAXDEPTH 1)",
+          Map.of("seeds", List.of(seeds.get(1).toString())));
+
+      assertThat(collectRids(result)).containsExactlyInAnyOrder(seeds.get(1), seeds.get(2));
+    });
+  }
+
+  /** Issue #11767: a string in the list that is not a RID is still refused, as any other non-record element is. */
+  @Test
+  void aBoundCollectionWithAStringThatIsNotARidIsStillRefused() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+
+      assertThatThrownBy(() -> database.query("sql", "SELECT FROM :seeds",
+          Map.of("seeds", List.of(seeds.getFirst().toString(), VERTEX))).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
+    });
+  }
+
+  /**
+   * Issue #11767: a string that passes the RID shape check but does not parse ("#1:2-3") is refused as a collection target by the
+   * SELECT and the TRAVERSE planner, rather than escaping as a NumberFormatException.
+   */
+  @Test
+  void aBoundCollectionWithAMalformedRidStringIsRefused() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+      final Map<String, Object> params = Map.of("seeds", List.of(seeds.getFirst().toString(), "#1:2-3"));
+
+      assertThatThrownBy(() -> database.query("sql", "SELECT FROM :seeds", params).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
+      assertThatThrownBy(() -> database.query("sql", "TRAVERSE out('" + EDGE + "') FROM :seeds", params).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
     });
   }
 
@@ -608,7 +667,7 @@ class SelectTargetPlanningTest extends TestHelper {
    * by name. When a concurrent {@code DROP INDEX} took the index away in between, both reads of the name raised the
    * {@code SchemaException} "Index with name ... was not found", which the re-planning of the statement
    * ({@code Statement.openResultSetPlanningAgainOnStaleIndex}) does not catch, so a read-only SELECT failed instead of being
-   * planned again (seen once in ~600k statements of {@code Issue9331Issue9332IndexDdlDuringReadsTest}).
+   * planned again (seen once in ~600k statements of {@code SelectStaleIndexTest.IndexDdlDuringReads}).
    */
   /** Regression test for issue #9331. */
   @Test
