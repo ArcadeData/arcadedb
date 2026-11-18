@@ -203,6 +203,18 @@ class CypherLabelWriteRedirectsEmittedRowsIssue10614Test extends TestHelper {
     final List<Result> profiled = rows("PROFILE " + query);
     assertThat(profiled).hasSize(1);
     assertLive(profiled.getFirst().getProperty("a"));
+
+    // The same over a star: the columns are the variables the row returns
+    database.transaction(() -> database.command("opencypher", "MATCH (n) SET n:L"));
+    final List<Result> star = rows("""
+        UNWIND range(1, 250) AS i
+        MATCH (a {id: 1})
+        WITH i, a, CASE WHEN i = 180 THEN a ELSE null END AS target
+        REMOVE target:L
+        WITH a
+        RETURN DISTINCT *""");
+    assertThat(star).hasSize(1);
+    assertLive(star.getFirst().getProperty("a"));
   }
 
   /** PROFILE drains the statement as well, and answers the same live rows. */

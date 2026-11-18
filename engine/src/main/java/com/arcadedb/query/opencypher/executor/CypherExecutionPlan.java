@@ -1271,18 +1271,12 @@ public class CypherExecutionPlan {
 
       if (rootStep != null) {
         try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
-          final List<Result> kept = new ArrayList<>();
           while (resultSet.hasNext()) {
             final Result row = resultSet.next();
             if (keepRows)
-              kept.add(row);
+              results.add(row);
           }
-          // A row produced before a later row's label write is answered with the live records, as execute() answers it (issue
-          // #10614)
-          if (LabelReplacements.redirectRows(context, kept))
-            ProjectReturnStep.removeDuplicatesOfDistinct(statement.getReturnClause(), kept);
-          for (final Result row : kept)
-            results.add(row);
+          redirectProfiledRows(context, results);
         } finally {
           // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
           LabelReplacements.endOfStatement(context);
@@ -1300,6 +1294,25 @@ public class CypherExecutionPlan {
     if (!statement.isReadOnly())
       results.setStatistics(context.getStatistics());
     return results;
+  }
+
+  /**
+   * Points the rows a profiled write kept at the live records, as {@code execute()} answers them (issue #10614): a row produced
+   * before a later row's label write still holds what that write deleted. The rows are taken out of {@code results} and put
+   * back only when the statement replaced something, so a profile without a label write pays one check and no copy.
+   */
+  private void redirectProfiledRows(final CommandContext context, final InternalResultSet results) {
+    if (!LabelReplacements.hasReplacements(context))
+      return;
+    final List<Result> rows = new ArrayList<>((int) results.countEntries());
+    while (results.hasNext())
+      rows.add(results.next());
+    results.close();
+    results.reset();
+    if (LabelReplacements.redirectRows(context, rows))
+      ProjectReturnStep.removeDuplicatesOfDistinct(statement.getReturnClause(), rows);
+    for (final Result row : rows)
+      results.add(row);
   }
 
   /**

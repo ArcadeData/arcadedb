@@ -168,6 +168,14 @@ public final class LabelReplacements {
   }
 
   /**
+   * Whether the statement {@code context} runs (or the enclosing one it inherited the map of) replaced any vertex so far,
+   * without creating the map when no write step asked for it.
+   */
+  public static boolean hasReplacements(final CommandContext context) {
+    return context != null && context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements replacements && !replacements.isEmpty();
+  }
+
+  /**
    * Points every row a statement is about to answer at the live records, when the statement replaced any (issue #10614).
    * A row leaves the write step as soon as it is written, so a LATER row's label write can delete a record it still holds:
    * a row waiting in a barrier further down (an ORDER BY, a DISTINCT, the drain of the statement itself) kept the deleted
@@ -180,8 +188,9 @@ public final class LabelReplacements {
    * now be the same row
    */
   public static boolean redirectRows(final CommandContext context, final Iterable<? extends Result> rows) {
-    if (context == null || !(context.getCachedValue(CONTEXT_KEY) instanceof LabelReplacements replacements) || replacements.isEmpty())
+    if (!hasReplacements(context))
       return false;
+    final LabelReplacements replacements = (LabelReplacements) context.getCachedValue(CONTEXT_KEY);
     boolean moved = false;
     for (final Result row : rows)
       moved |= replacements.redirect(row);
@@ -351,6 +360,7 @@ public final class LabelReplacements {
     if (row.isElement() && row instanceof ResultInternal internal) {
       final Document element = internal.getElement().orElse(null);
       final Object live = redirectValue(element);
+      // redirectValue answers a vertex with a vertex and an edge with an edge, and any other document with itself
       if (live != element) {
         internal.setElement((Document) live);
         moved = true;

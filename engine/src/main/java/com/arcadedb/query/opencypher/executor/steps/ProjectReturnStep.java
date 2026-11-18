@@ -193,6 +193,9 @@ public class ProjectReturnStep extends AbstractExecutionStep {
    * later row's write held the original, a row projected after it the replacement, and the DISTINCT kept both. Once both are
    * pointed at the live record they are the same row, which is what Neo4j, where a node keeps its identity, answers once.
    * Nothing to do for a statement whose RETURN is not DISTINCT.
+   * <p>
+   * The keys are not charged to the heap budget the streaming DISTINCT reserves from: they are built over rows the caller
+   * already holds in full (the drain of a write statement), and only when a label write moved one of them.
    */
   public static <R extends Result> void removeDuplicatesOfDistinct(final ReturnClause returnClause, final List<R> rows) {
     if (returnClause == null || !returnClause.isDistinct() || rows.size() < 2)
