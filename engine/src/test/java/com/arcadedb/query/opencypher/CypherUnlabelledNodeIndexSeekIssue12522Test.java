@@ -61,7 +61,8 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
   }
 
   private static List<String> paths() {
-    return List.of(DB_PATH, DB_PATH + "-noindex", DB_PATH + "-diamond", DB_PATH + "-mixed");
+    return List.of(DB_PATH, DB_PATH + "-noindex", DB_PATH + "-diamond", DB_PATH + "-mixed", DB_PATH + "-undeclared",
+        DB_PATH + "-multilabel");
   }
 
   /**
@@ -154,6 +155,44 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
       database.command("opencypher", "CREATE (r:Right {uuid: 'right-1'})");
       database.command("opencypher", "CREATE (d:Diamond {uuid: 'diamond-1'})");
     });
+    return database;
+  }
+
+  /**
+   * A schema whose index stands on a property the type does not declare, the way the graphiti benchmark builds it:
+   * the type of the key is then the one of the index, not the one of the schema.
+   */
+  private Database openUndeclaredProperty() {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH + "-undeclared");
+    final Database database = factory.create();
+    database.transaction(() -> {
+      // the index is created on a type that does not exist yet, the way the graphiti benchmark creates it: the
+      // type comes with the index, and the property is not declared
+      database.command("opencypher", "CREATE INDEX entity_uuid IF NOT EXISTS FOR (n:Entity) ON (n.uuid)");
+    });
+    assertThat(database.getSchema().getType("Entity").getPropertyIfExists("uuid"))
+        .as("the property of the index is not declared")
+        .isNull();
+    database.transaction(() -> database.command("opencypher", "CREATE (e:Entity {uuid: 'entity-1'})"));
+    return database;
+  }
+
+  /**
+   * A schema with a multi-label node: openCypher creates a composite type for it, and that type has two super
+   * types, so the fix keeps the walk of the whole database for the database.
+   */
+  private Database openMultiLabel() {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH + "-multilabel");
+    final Database database = factory.create();
+    database.transaction(() -> {
+      final var a = database.getSchema().createVertexType("A");
+      a.createProperty("uuid", String.class);
+      final var b = database.getSchema().createVertexType("B");
+      b.createProperty("uuid", String.class);
+      a.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+      b.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+    });
+    database.transaction(() -> database.command("opencypher", "CREATE (n:A:B {uuid: 'multi-1'})"));
     return database;
   }
 
@@ -290,6 +329,35 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
       assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("diamond-1"))).containsExactly("diamond-1");
       assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("left-1"))).containsExactly("left-1");
       assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("right-1"))).containsExactly("right-1");
+    }
+  }
+
+  @Test
+  void anIndexOnAnUndeclaredPropertyIsUsed() {
+    // the index stands on a property the type does not declare: the type of the key is the one of the index
+    try (final Database database = openUndeclaredProperty()) {
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("entity-1"));
+
+      assertThat(plan)
+          .as("an index on an undeclared property answers the pattern too\n%s", plan)
+          .contains("Entity[uuid]");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("entity-1")))
+          .containsExactly("entity-1");
+    }
+  }
+
+  @Test
+  void aMultiLabelNodeKeepsTheWalkOfTheWholeDatabase() {
+    // openCypher creates a composite type for a node with two labels, and that type has two super types: the
+    // two indexes of the branches would answer the vertices of the composite type twice, so the walk of the whole
+    // database answers the statement
+    try (final Database database = openMultiLabel()) {
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("multi-1"));
+
+      assertThat(plan)
+          .as("a database with a multi-label node keeps the walk of the whole database\n%s", plan)
+          .doesNotContain("[index:");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("multi-1"))).isNotEmpty();
     }
   }
 
