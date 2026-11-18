@@ -45,15 +45,10 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
   private static final int FAN_OUT = 500;
 
   private void createFan() {
-    database.getSchema().createVertexType("V");
-    database.getSchema().createEdgeType("F");
-    database.transaction(() -> {
-      database.command("opencypher", "UNWIND range(0, " + FAN_OUT + ") AS i CREATE (:V {k: i})");
-      database.command("opencypher", "MATCH (a:V {k: 0}), (b:V) WHERE b.k > 0 CREATE (a)-[:F]->(b)");
-    });
-    assertThat(countVertices()).isEqualTo(FAN_OUT + 1);
+    createFan(FAN_OUT);
   }
 
+  /** One vertex k = 0 with a relationship to each of the {@code fanOut} vertices k = 1..fanOut. */
   private void createFan(final int fanOut) {
     database.getSchema().createVertexType("V");
     database.getSchema().createEdgeType("F");
@@ -61,6 +56,7 @@ class CypherDetachDeleteTraversedNodeIssue12254Test extends TestHelper {
       database.command("opencypher", "UNWIND range(0, " + fanOut + ") AS i CREATE (:V {k: i})");
       database.command("opencypher", "MATCH (a:V {k: 0}), (b:V) WHERE b.k > 0 CREATE (a)-[:F]->(b)");
     });
+    assertThat(countVertices()).isEqualTo(fanOut + 1);
   }
 
   private long countEdges() {
