@@ -2359,6 +2359,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * asks the transaction's last indexed snapshot first, for the index only: an update saved earlier in this transaction moved
    * the index past the stored image.
    * <p>
+   * A record that was never loaded has no image to compare: it is read from the slot once the page is pinned, instead of
+   * loading itself, unpinned, when the cleanup asks its properties.
+   * <p>
    * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
    * and one comparison in place: nothing is allocated for it.
    */
@@ -2367,24 +2370,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
       return document;
     final Binary readImage = base.getBuffer();
-    if (readImage == null)
-      return document;
 
-    final boolean changedInSlot;
+    // A RECORD WITH NO BUFFER WAS NOT LOADED YET (lookupByRID(rid, false)): LEFT TO LOAD ITSELF WHEN THE CLEANUP ASKS ITS PROPERTIES,
+    // IT WOULD BE READ BEFORE ITS PAGE IS PINNED, WITH THE SAME WINDOW FOR A CONCURRENT COMMIT. IT IS READ FROM THE SLOT, PINNED
+    final boolean readSlot;
     try {
       final MutablePage page = bucket.pinRecordForDelete(rid);
-      changedInSlot = page != null && bucket.hasRecordChangedSinceRead(rid, page, readImage);
+      readSlot = page != null && (readImage == null || bucket.hasRecordChangedSinceRead(rid, page, readImage));
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on delete the record " + rid, e);
     }
 
     final Binary stored;
-    if (changedInSlot) {
-      final Binary current = bucket.getRecordForDeleteCleanup(rid);
+    if (readSlot) {
+      final Binary current;
+      try {
+        current = bucket.getRecordForDeleteCleanup(rid);
+      } catch (final RecordNotFoundException e) {
+        // THE DELETE ITSELF REPORTS IT, AS THE CONCURRENT DELETE IT IS WHEN THE RECORD WAS READ IN THIS TRANSACTION
+        return document;
+      }
       if (current == null)
         // A concurrent transaction deleted the record: the version check fails this delete at commit
         return document;
-      stored = current.copyOfContent();
+      // THE COPY DETACHES THE IMAGE FROM A PAGE THAT CHANGED UNDER THE CALLER'S; A RECORD READ HERE FIRST IS A VIEW, AS ANY READ IS
+      stored = readImage == null ? current : current.copyOfContent();
     } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
       readImage.rewind();
       stored = readImage;

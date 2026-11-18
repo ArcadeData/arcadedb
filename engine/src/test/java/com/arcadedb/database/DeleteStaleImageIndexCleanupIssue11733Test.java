@@ -209,6 +209,36 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     return check.get();
   }
 
+  /**
+   * A record handed out without loading it has no image yet: the delete reads it from the slot it pinned, not by letting the
+   * record load itself while the cleanup asks its properties.
+   */
+  @Test
+  void aDocumentNeverLoadedIsCleanedUpFromItsSlot() throws Exception {
+    final RID rid = newIndexedDocument();
+
+    database.begin();
+    final Document unloaded = (Document) database.lookupByRID(rid, false);
+    assertThat(((BaseRecord) unloaded).getBuffer()).as("the record must not be loaded yet").isNull();
+
+    final FutureTask<Integer> concurrent = new FutureTask<>(() -> {
+      database.transaction(() -> rid.asDocument().modify().set("v", 2).save());
+      final int[] committed = new int[1];
+      database.transaction(() -> committed[0] = rid.asDocument().getInteger("v"));
+      return committed[0];
+    });
+    new Thread(concurrent).start();
+    assertThat(concurrent.get()).as("the value the concurrent transaction committed").isEqualTo(2);
+
+    unloaded.delete();
+    assertThat(((BaseRecord) unloaded).getBuffer()).as("the cleanup must not load the caller's record").isNull();
+    database.commit();
+
+    assertThat(database.existsRecord(rid)).isFalse();
+    assertThat(entries("D[v]", 1)).isEmpty();
+    assertThat(entries("D[v]", 2)).isEmpty();
+  }
+
   /** A property assigned and never saved is not in the index: the delete removes the entry of the stored value. */
   @Test
   void aDocumentDeletedWithAnUnsavedChangeLeavesNoIndexEntry() {
