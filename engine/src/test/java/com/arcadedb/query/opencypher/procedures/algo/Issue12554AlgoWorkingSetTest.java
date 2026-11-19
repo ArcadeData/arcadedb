@@ -601,6 +601,36 @@ class Issue12554AlgoWorkingSetTest {
       assertThat(ids.getRID(database, i)).as("node %d", i).isEqualTo(scanOrder.get(i));
   }
 
+  /**
+   * A count that is too high on each of many buckets cannot add up to many times the budget: what each array may take is counted in the
+   * slots the table already holds. Eight buckets counted as a million hold one node each, which 2000 bytes load; counted by the nodes
+   * read, each array was allowed what the budget holds (125 slots, 1000 bytes) and the table took eight times the budget.
+   */
+  @Test
+  void aCountThatIsTooHighOnEachOfManyBucketsDoesNotAddUpToManyTimesTheBudget() {
+    for (int t = 0; t < 8; t++)
+      database.getSchema().createVertexType("Type" + t, 1);
+    database.transaction(() -> {
+      for (int t = 0; t < 8; t++)
+        database.newVertex("Type" + t).set("i", t).save();
+    });
+    final List<RID> scanOrder = new ArrayList<>();
+    GraphEngine.getAllVertices(database, null).forEachRemaining(vertex -> scanOrder.add(vertex.getIdentity()));
+    final AlgoWCC procedure = new AlgoWCC() {
+      @Override
+      long bucketCount(final Schema schema, final int bucketId) {
+        return 1_000_000L;
+      }
+    };
+
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 2000L);
+    final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
+
+    assertThat(ids.size()).isEqualTo(8);
+    for (int i = 0; i < scanOrder.size(); i++)
+      assertThat(ids.getRID(database, i)).as("node %d", i).isEqualTo(scanOrder.get(i));
+  }
+
   /** The slots a bucket did not use are on the heap while the next one is read: the doubling of the second is asked about with them. */
   @Test
   void theSlotsAnEarlierBucketDidNotUseAreCountedWhenALaterOneDoubles() {

@@ -1076,8 +1076,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         lastBucketId = rid.getBucketId();
         // Sized from what the bucket holds, within what the budget allows: the table is not grown by doubling and copied while it fills,
         // and a bucket with a few vertices holds an array of a few slots, so the 16 bytes a node is priced at cover what the table
-        // takes whatever the number of buckets
-        bucketCapacity = (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - loaded));
+        // takes whatever the number of buckets. What the budget allows is counted in the slots the table already holds, not in the
+        // nodes read: the arrays of the buckets before keep the slots they did not use, so a count that is too high on each of many
+        // buckets cannot add up to many times the budget. The new array is asked about beside them before it is allocated
+        bucketCapacity = (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - allocatedSlots));
+        memory.checkRoom(saturatingProduct(saturatingSum(allocatedSlots, bucketCapacity), LONG_BYTES), "the loaded graph",
+            "a bucket counted as " + bucketCapacity + " nodes");
         bucketLoaded = 0;
         allocatedSlots += bucketCapacity;
         lastBucketIdx = ids.registerBucket(lastBucketId, vertex.getTypeName(), bucketCapacity);
