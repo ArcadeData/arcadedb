@@ -6661,6 +6661,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * What the walk of a multi-page record keeps of a chunk until it assembles the record (issue #12370): the chunk's view as it
+   * is, or a copy of its bytes when the view holds an array more than twice the chunk's size. A view of an
+   * {@link ImmutablePage} shares the whole page array, which the walk would keep reachable until it ends, even once the page
+   * cache has evicted the page: a chain of small chunks on many pages would hold far more memory than the record itself. A
+   * chunk filling at least half of its page, the common case, is kept as a view and copied only once, into the record.
+   */
+  static Binary keptChunk(final Binary view) {
+    return view.getContent().length > 2L * view.size() ? view.copyOfContent() : view;
+  }
+
+  /**
    * Loads a multi-page record, validating that what it assembled is one committed state of the record and not a mix
    * of two.
    * <p>
@@ -6790,7 +6801,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
           if (chunks == chunkViews.length)
             chunkViews = Arrays.copyOf(chunkViews, chunks * 2);
-          chunkViews[chunks] = chunk;
+          chunkViews[chunks] = keptChunk(chunk);
           recordSize += chunkSize;
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
