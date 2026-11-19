@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The test injects a simulated CLOSED state via the test hook
  * {@link RaftHAServer#forceRaftStateForTesting(LifeCycle.State)}, waits for the
- * HealthMonitor to invoke {@link RaftHAServer#restartRatisIfNeeded()}, and then verifies
+ * HealthMonitor to invoke {@link RatisInPlaceRestart#restartRatisIfNeeded()}, and then verifies
  * that the follower successfully replicates subsequent writes from the leader.
  * <p>
  * Note: HealthMonitor is disabled in {@link BaseRaftHATest#onServerConfiguration} by default.

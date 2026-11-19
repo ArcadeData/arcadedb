@@ -40,10 +40,19 @@ public class SQLFunctionVectorVariance extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 1)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object vectorObj = params[0];
     if (vectorObj == null)

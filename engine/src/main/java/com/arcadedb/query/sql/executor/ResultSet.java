@@ -71,6 +71,19 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
   }
 
   /**
+   * The LIMIT the statement itself declares on the rows it returns, or 0 when it declares none or the language does not
+   * expose it. A consumer may raise a row cap of its own to it, never lower one below what it would allow anyway: the HTTP
+   * endpoints do, so a query asking for more rows than their default cap gets them (issues #5711, #12154).
+   * <p>
+   * Read from the execution plan by default, which is where SQL keeps it. A language that builds no
+   * {@link ExecutionPlan} for its rows (openCypher) answers it here instead, and a result set that wraps another one
+   * delegates it like the plan.
+   */
+  default int getStatementLimit() {
+    return getExecutionPlan().map(ExecutionPlan::getLimit).orElse(0);
+  }
+
+  /**
    * The facets of a {@code SELECT ... FACETS} query, over every record its WHERE matched whatever SKIP and LIMIT kept; null for any
    * other statement. Computed once: when the rows are exhausted, or by this call, which then reads the matches the rows did not reach
    * and ends the rows (read the rows first, then ask for the facets).

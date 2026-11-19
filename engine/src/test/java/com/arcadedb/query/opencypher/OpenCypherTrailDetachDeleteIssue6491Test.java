@@ -155,11 +155,11 @@ class OpenCypherTrailDetachDeleteIssue6491Test {
 
     final String query = """
         OPTIONAL MATCH (n1 {k8: false, id: 116}) <-[r1:rt7 {id: 76, k6: "I6"}]- ( {k6: "Dm"}) <-[r0 {k8: false}]- (n0:l7:l0:l4 {id: 66}) -[ {k8: true, k1: true}]-> (:l7:l10:l0 {k0: true}), ( {k11: -43316742}) <-[:rt9]- (n2:l0:l7) WHERE  (r1.k10 IS NULL) WITH *\s
-        CALL () { CALL db.schema.visualization() YIELD nodes AS alias0, relationships AS alias1 MATCH TRAIL (:l8:l7 {k11: 356654659, k6: "U"}) <-[]- (:l0:l7:l1:l2:l8) -[r2]-> (), (n3) <-[]- (n3), p0 = (n3) WHERE  ((toStringOrNull(n3.k10) STARTS WITH 'KO') XOR (toStringOrNull(n3.k10) <= toStringOrNull(r2.k6))) DETACH DELETE n3 WITH sum(toFloatOrNull(1)) AS alias2\s
+        CALL () { CALL db.schema.visualization() YIELD name AS alias0, type AS alias1 MATCH TRAIL (:l8:l7 {k11: 356654659, k6: "U"}) <-[]- (:l0:l7:l1:l2:l8) -[r2]-> (), (n3) <-[]- (n3), p0 = (n3) WHERE  ((toStringOrNull(n3.k10) STARTS WITH 'KO') XOR (toStringOrNull(n3.k10) <= toStringOrNull(r2.k6))) DETACH DELETE n3 WITH sum(toFloatOrNull(1)) AS alias2\s
         CALL () { UNWIND [] AS alias4 RETURN alias4 AS alias5 SKIP 0}
          RETURN collect(toStringOrNull(alias2)) AS alias7 SKIP 0
         UNION ALL
-        CALL db.schema() YIELD nodes AS alias9, relationships AS alias10 UNWIND [-1328417065,1617464201,1678765992] AS alias11 CREATE (:l5:l6:l4:l1:l7:l10:l9:l3 {k0: true, k3: false, k4: 1256807501, k11: -2128059805, id: 133, k6: "B", k10: "Oz", k7: -958726819, k8: true, k9: -1188316991}) FOREACH (elem704 IN ['A', 'B', 'C'] | CREATE (:l4 {k1: elem704})) WITH count(DISTINCT toFloatOrNull(1)) AS alias19 FOREACH (elem7731 IN range(4, 6) | CREATE (:l8 {k10: elem7731})) RETURN null AS alias7 SKIP 3}
+        CALL db.schema() YIELD name AS alias9, type AS alias10 UNWIND [-1328417065,1617464201,1678765992] AS alias11 CREATE (:l5:l6:l4:l1:l7:l10:l9:l3 {k0: true, k3: false, k4: 1256807501, k11: -2128059805, id: 133, k6: "B", k10: "Oz", k7: -958726819, k8: true, k9: -1188316991}) FOREACH (elem704 IN ['A', 'B', 'C'] | CREATE (:l4 {k1: elem704})) WITH count(DISTINCT toFloatOrNull(1)) AS alias19 FOREACH (elem7731 IN range(4, 6) | CREATE (:l8 {k10: elem7731})) RETURN null AS alias7 SKIP 3}
          WITH alias7, n0, n1, n2, r0, r1 WHERE r1 IS NOT NULL AND r0 IS NOT NULL AND n0 IS NOT NULL SET n0.k3 = TRUE, r0.k9 = -1701215515, r1.k2 = NULL RETURN n0, r0, alias7, n2.k5 AS alias24, toIntegerList(keys(n0)) AS alias25, valueType(r1.k7) AS alias26
         """;
 

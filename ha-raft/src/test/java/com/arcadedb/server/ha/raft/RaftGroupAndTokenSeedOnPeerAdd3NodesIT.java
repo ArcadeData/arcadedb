@@ -66,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The response shape for a seed that does not commit (issue #7521's {@code error}/{@code detail}/
  * {@code failedSeeds} and the 503 that replaced the original {@code warning} field) is pinned by
- * {@code Issue7521AddPeerSeedFailureIsReportedTest}, which needs no cluster.
+ * {@code PostAddPeerHandlerTest}, which needs no cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

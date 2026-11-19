@@ -135,10 +135,11 @@ class Issue9977MongoOwnTransactionTest {
     database.begin();
     database.newDocument("Witness").set("name", "caller").save();
 
-    // changing the immutable _id is refused (error 66) once the update's own transaction has begun
-    assertThatThrownBy(() -> wrapper.handleCommand(null, "update", new Document("update", "Coll").append("updates",
-        List.of(new Document("q", new Document("_id", "a")).append("u", new Document("$set", new Document("_id", "z"))))), null, null)).hasStackTraceContaining(
-        "_id");
+    // changing the immutable _id is refused (error 66) once the update's own transaction has begun: a write error of the statement
+    // (issue #11444)
+    final Document reply = wrapper.handleCommand(null, "update", new Document("update", "Coll").append("updates",
+        List.of(new Document("q", new Document("_id", "a")).append("u", new Document("$set", new Document("_id", "z"))))), null, null);
+    assertThat(writeErrorCode(reply)).isEqualTo(66);
 
     assertThat(database.isTransactionActive()).as("the caller's transaction must survive the failed update").isTrue();
     database.commit();
@@ -164,14 +165,23 @@ class Issue9977MongoOwnTransactionTest {
     database.begin();
     database.newDocument("Witness").set("name", "caller").save();
 
-    // the unique key the update takes belongs to a committed record: refused when the command's transaction commits
-    assertThatThrownBy(() -> wrapper.handleCommand(null, "update", new Document("update", "Coll").append("updates",
-        List.of(new Document("q", new Document("_id", "a")).append("u", new Document("$set", new Document("v", 2))))), null, null)).isNotNull();
+    // the unique key the update takes belongs to a committed record: refused when the command's transaction commits, a write error of
+    // the statement (issue #11444)
+    final Document reply = wrapper.handleCommand(null, "update", new Document("update", "Coll").append("updates",
+        List.of(new Document("q", new Document("_id", "a")).append("u", new Document("$set", new Document("v", 2))))), null, null);
+    assertThat(writeErrorCode(reply)).isEqualTo(11000);
+    assertThat(reply.get("nModified")).isEqualTo(0);
 
     assertThat(database.isTransactionActive()).as("the caller's transaction must survive the failed update").isTrue();
     database.commit();
 
     assertThat(count("Witness")).isEqualTo(1L);
+  }
+
+  private static int writeErrorCode(final Document reply) {
+    final List<Document> errors = (List<Document>) reply.get("writeErrors");
+    assertThat(errors).as("writeErrors of %s", reply).hasSize(1);
+    return ((Number) errors.getFirst().get("code")).intValue();
   }
 
   private long count(final String type) {

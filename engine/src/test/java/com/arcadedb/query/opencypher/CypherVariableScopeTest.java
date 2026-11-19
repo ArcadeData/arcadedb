@@ -209,7 +209,7 @@ class CypherVariableScopeTest {
   }
 
   /**
-   * Regression tests for issue #8104: {@code CypherSemanticValidator.validateVariableScope} skipped
+   * Regression tests for issue #8104: {@code VariableScopeValidator.validateVariableScope} skipped
    * {@code REMOVE} entirely, so a {@code REMOVE} naming a variable a preceding {@code WITH} had dropped -
    * or one that no clause ever bound - was accepted, removed nothing, and reported success instead of
    * raising {@code UndefinedVariable} the way Neo4j does.
