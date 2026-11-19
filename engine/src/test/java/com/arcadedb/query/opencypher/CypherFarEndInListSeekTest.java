@@ -195,6 +195,29 @@ class CypherFarEndInListSeekTest extends TestHelper {
   }
 
   /**
+   * A conjunct on the far end of the sought hop is decided right above it, whichever alternative answers the row, before the
+   * next hop multiplies the rows. Left above the last hop, it ran once per relationship of every far end.
+   */
+  @Test
+  void aConjunctOnTheFarEndIsDecidedBeforeTheNextHop() {
+    buildGraph();
+    final String statement = "MATCH (a:N {k: $h})-[r1:T]->(b:N)-[r2:T]->(c:N) WHERE b.k IN $ts AND b.m <> 'x4' "
+        + "RETURN b.k + c.k AS id, r2.p AS p ORDER BY id, p";
+
+    final String plan = explain(statement);
+    final int nextHop = plan.indexOf("ExpandAll(b)");
+    final int seekOrWalk = plan.indexOf("SeekOrWalkExpand(a)");
+    assertThat(nextHop).as(plan).isNotNegative();
+    assertThat(seekOrWalk).as(plan).isGreaterThan(nextHop);
+    assertThat(plan.indexOf("+ Filter [predicate=b.m != 'x4'", nextHop)).as(plan).isBetween(nextHop, seekOrWalk);
+
+    final List<String> keys = List.of("x2", "x3", "x4", "x5", "x30");
+    assertThat(rows(statement, "hub", keys)).containsExactly("x2y2/3", "x3y3/3", "x3y3/3", "x5y5/3");
+    for (final String hub : new String[] { "hub", "small" })
+      assertThat(rows(statement, hub, keys)).as(hub).isEqualTo(rows(statement.replace("b.k IN", "b.m IN"), hub, keys));
+  }
+
+  /**
    * The far end is sought: the pages read for 1, 10 and 200 keys do not grow with the degree of the hub. They used to be the
    * whole relationship list of the hub, and a vertex load per relationship.
    * <p>

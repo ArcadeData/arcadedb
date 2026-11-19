@@ -1674,7 +1674,9 @@ public class CypherOptimizer {
    * {@code p3} is bound: left above the last hop it ran once per row the last hop multiplies in, 24 times as often when
    * every person has 24 interests, instead of once per path.
    * <p>
-   * Only a chain of ExpandAll / ExpandInto / GAVExpandAll / GAVExpandInto hops above the anchor scan is rewritten; the caller
+   * Only a chain of ExpandAll / ExpandInto / SeekOrWalkExpand / GAVExpandAll / GAVExpandInto hops above the anchor scan is
+   * rewritten; a SeekOrWalkExpand binds its far end and relationship whichever alternative answers the row, so a conjunct on
+   * them sits above it, before the hops after it multiply the rows. The caller
    * leaves out a GAV chain the fusion takes, which places the conjuncts itself (issue #9938). Anything else (a join, a
    * variable-length hop) keeps the whole predicate at the top, and so does a conjunct that reads no pattern variable, or one
    * that reads a variable the chain does not bind.
@@ -1687,8 +1689,8 @@ public class CypherOptimizer {
       chain.add(op);
       if (op == anchorOperator)
         break;
-      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof GAVExpandAll || op instanceof GAVExpandInto
-          || op instanceof FilterOperator))
+      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof SeekOrWalkExpand || op instanceof GAVExpandAll
+          || op instanceof GAVExpandInto || op instanceof FilterOperator))
         return expression;
     }
     if (chain.size() < 2 || chain.getLast() != anchorOperator)
@@ -1705,6 +1707,9 @@ public class CypherOptimizer {
       } else if (op instanceof ExpandInto into) {
         addVariable(bound, into.getTargetVariable());
         addVariable(bound, into.getEdgeVariable());
+      } else if (op instanceof SeekOrWalkExpand seekOrWalk) {
+        addVariable(bound, seekOrWalk.getTargetVariable());
+        addVariable(bound, seekOrWalk.getEdgeVariable());
       } else if (op instanceof GAVExpandAll gavExpand) {
         addVariable(bound, gavExpand.getTargetVariable());
       } else if (op instanceof GAVExpandInto gavInto) {

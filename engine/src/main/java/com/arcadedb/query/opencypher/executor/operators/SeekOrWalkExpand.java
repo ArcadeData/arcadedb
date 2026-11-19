@@ -259,6 +259,16 @@ public class SeekOrWalkExpand extends AbstractPhysicalOperator {
     return sb.toString();
   }
 
+  /** The far end, which both alternatives bind. */
+  public String getTargetVariable() {
+    return farVariable;
+  }
+
+  /** The relationship variable both alternatives bind, or null when it is anonymous. */
+  public String getEdgeVariable() {
+    return walk.getEdgeVariable();
+  }
+
   public String getEdgeTrackingVar() {
     return edgeTrackingVar;
   }
