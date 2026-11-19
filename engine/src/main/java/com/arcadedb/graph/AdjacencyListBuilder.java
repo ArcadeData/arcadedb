@@ -93,6 +93,7 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
 
   /** The vertices of a build, numbered from 0: what a walk scans the edge lists of. */
   private interface Rows {
+    /** How many vertices there are to walk. */
     int size();
 
     /** Starts a pass: rows are then asked for in ascending order. */
@@ -122,7 +123,8 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
 
   /**
    * Vertices known by their RID alone: the row of a vertex is its id in the mapping, so the position of a row is read from the bucket's
-   * array, walking along it, and no vertex is loaded. A row whose record is gone since the mapping was made has no entries.
+   * array, walking along it (looked up for a reordered mapping, whose ids do not follow the buckets), and no vertex is loaded. A row
+   * whose record is gone since the mapping was made has no entries.
    */
   private static final class MappedRows implements Rows {
     private final NodeIdMapping ids;
@@ -149,6 +151,14 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
     @Override
     public void scan(final EdgeListScanner scanner, final int row, final Vertex.DIRECTION direction,
         final EdgeListScanner.EntryVisitor visitor) {
+      if (ids.isReordered()) {
+        // The ids of a reordered mapping are not in the order of its buckets: each row is looked up
+        final long packed = ids.getBucketIdxAndLocalId(row);
+        final int reorderedBucketIdx = NodeIdMapping.unpackBucketIdx(packed);
+        scanner.scan(ids.getBucketId(reorderedBucketIdx), ids.getPosition(reorderedBucketIdx, NodeIdMapping.unpackLocalId(packed)),
+            direction, visitor);
+        return;
+      }
       while (row >= bucketEnd) {
         bucketIdx++;
         bucketBase = bucketEnd;

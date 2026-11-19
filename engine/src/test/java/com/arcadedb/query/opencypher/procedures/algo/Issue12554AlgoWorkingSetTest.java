@@ -40,6 +40,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.ref.Reference;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -332,6 +333,39 @@ class Issue12554AlgoWorkingSetTest {
     }
   }
 
+  /** The buffers a supernode's row grows are priced before they are allocated: a budget that cannot hold the doubling refuses it. */
+  @Test
+  void theBuffersOfASupernodeRowArePricedBeforeTheyGrow() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> {
+      // The hub first: its row is the first one the build reads
+      final MutableVertex hub = database.newVertex("Node").set("i", -1).save();
+      for (int i = 0; i < 40; i++)
+        hub.newEdge("LINK", database.newVertex("Node").set("i", i).save()).set("w", 1.0).save();
+    });
+    final AlgoWCC procedure = new AlgoWCC();
+
+    // 41 nodes cost 656 bytes and the row headers of the weighted adjacency 2624: 3280. The hub's row outgrows the 16 entries its buffers
+    // start with at its 17th, and the doubling to 32 entries (384 bytes) is more than the 120 bytes left
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 3400L);
+    final GraphData refused = procedure.loadGraphFromRecords(database, null, context());
+    assertThatThrownBy(() -> refused.weightedAdjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH, "w"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the neighbour buffers of one node would need 384 bytes")
+        .hasMessageContaining("a row of more than 16 edge entries");
+
+    // Nothing is refused that fits
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024);
+    final GraphData accepted = procedure.loadGraphFromRecords(database, null, context());
+    final int[][] neighbors = accepted.weightedAdjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH,
+        "w").neighbors();
+    int longest = 0;
+    for (final int[] row : neighbors)
+      longest = Math.max(longest, row.length);
+    assertThat(longest).isEqualTo(40);
+  }
+
   /** The entries of a list are checkpointed too: a supernode's list is not one unabortable step. */
   @Test
   void theEntriesOfASupernodeAreCheckpointedToo() {
@@ -346,13 +380,81 @@ class Issue12554AlgoWorkingSetTest {
     final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
     final int[] last = new int[1];
 
-    // 31 rows alone count 31 steps: past step 40 the build is inside the list of the hub
-    assertThatThrownBy(() -> GraphEngine.buildAdjacencyList(ids, database, Vertex.DIRECTION.OUT, null, null, step -> {
-      last[0] = step;
-      if (step == 40)
-        throw new IllegalStateException("aborted at step 40");
-    })).isInstanceOf(IllegalStateException.class).hasMessage("aborted at step 40");
+    // The 31 rows of the counting pass are 31 steps, and its 30 entries 30 more: step 40 is inside the list of the hub, before the pass is
+    // over. Reaching the count of its entries means the checkpoint counted rows only, whatever the second pass would then have done
+    assertThatThrownBy(() -> GraphEngine.buildAdjacencyList(ids, database, Vertex.DIRECTION.OUT, null,
+        entries -> {
+          throw new AssertionError("the counting pass ended with " + entries + " entries: no checkpoint fell inside the hub's list");
+        }, step -> {
+          last[0] = step;
+          if (step == 40)
+            throw new IllegalStateException("aborted at step 40");
+        })).isInstanceOf(IllegalStateException.class).hasMessage("aborted at step 40");
     assertThat(last[0]).isEqualTo(40);
+  }
+
+  /**
+   * The frontier of the single-source search holds a node once, however many shorter ways reach it: every {@code u_i} lowers the same
+   * four targets, which a heap with one entry per relaxation held 4 x k entries of. The distances are the ones the entries gave.
+   */
+  @Test
+  void theSingleSourceSearchAnswersTheDistancesWhenManyNodesLowerTheSameTargets() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    final int k = 20;
+    final RID[] source = new RID[1];
+    final List<RID> middle = new ArrayList<>();
+    final List<RID> targets = new ArrayList<>();
+    database.transaction(() -> {
+      final MutableVertex s = database.newVertex("Node").set("name", "s").save();
+      source[0] = s.getIdentity();
+      for (int t = 0; t < 4; t++)
+        targets.add(database.newVertex("Node").set("name", "t" + t).save().getIdentity());
+      for (int i = 1; i <= k; i++) {
+        final MutableVertex u = database.newVertex("Node").set("name", "u" + i).save();
+        middle.add(u.getIdentity());
+        s.newEdge("LINK", u).set("w", (double) i).save();
+        for (final RID target : targets)
+          u.newEdge("LINK", target).set("w", (double) (3 * k - 2 * i)).save();
+      }
+    });
+
+    final Map<RID, Double> cost = new HashMap<>();
+    try (final Stream<Result> rows = new AlgoDijkstraSingleSource().execute(new Object[] { source[0].asVertex(), "LINK", "w" }, null,
+        context())) {
+      rows.forEach(row -> cost.put(row.<RID>getProperty("node"), row.<Number>getProperty("cost").doubleValue()));
+    }
+
+    assertThat(cost).hasSize(k + 4);
+    for (int i = 1; i <= k; i++)
+      assertThat(cost.get(middle.get(i - 1))).as("u%d", i).isEqualTo((double) i);
+    // The way through u_i costs i + 3k - 2i = 3k - i: the best is u_k, at 2k
+    for (final RID target : targets)
+      assertThat(cost.get(target)).isEqualTo((double) (2 * k));
+  }
+
+  /** The ids of a reordered mapping do not follow its buckets: a row is the vertex that has the id, not the one at that place. */
+  @Test
+  void theAdjacencyOfAReorderedMappingFollowsItsIds() {
+    database.getSchema().createVertexType("Node", 1);
+    database.getSchema().createEdgeType("LINK");
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      for (int i = 0; i < 2; i++)
+        rids[i] = database.newVertex("Node").set("i", i).save().getIdentity();
+      rids[0].asVertex().modify().newEdge("LINK", rids[1]).save();
+    });
+    final NodeIdMapping ids = new NodeIdMapping(1);
+    final int bucketIdx = ids.registerBucket(rids[0].getBucketId(), "Node", 2);
+    ids.addNode(bucketIdx, rids[0].getPosition());
+    ids.addNode(bucketIdx, rids[1].getPosition());
+    ids.compact();
+    // A is the second node and B the first
+    ids.applyReordering(new int[] { 1, 0 });
+
+    assertThat(ids.getGlobalId(rids[0])).isEqualTo(1);
+    assertThat(GraphEngine.buildAdjacencyList(ids, database, Vertex.DIRECTION.OUT, null, null, null)).isDeepEqualTo(new int[][] { {}, { 0 } });
+    assertThat(GraphEngine.buildAdjacencyList(ids, database, Vertex.DIRECTION.IN, null, null, null)).isDeepEqualTo(new int[][] { { 1 }, {} });
   }
 
   /** The adjacency of a graph loaded from the records is one of the graph-driven loops of a call: the command deadline stops it. */

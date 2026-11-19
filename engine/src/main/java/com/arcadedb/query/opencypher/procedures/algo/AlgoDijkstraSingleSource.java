@@ -33,7 +33,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -179,10 +178,10 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       return Stream.empty();
 
     // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra. Priced against the call's budget as the rows are built,
-    // with the distances and the reached ids beside them (issue #12554)
+    // with the distances, the reached ids and the frontier beside them (issue #12554)
     final MemoryBudget memory = graph.memory();
-    memory.reserve(saturatingSum(saturatingProduct(n, 2 * MATRIX_ROW_OVERHEAD_BYTES), saturatingProduct(n, DOUBLE_BYTES + INT_BYTES)),
-        "the weighted adjacency rows and the distances", n + " nodes");
+    memory.reserve(saturatingSum(saturatingProduct(n, 2 * MATRIX_ROW_OVERHEAD_BYTES), saturatingProduct(n, DOUBLE_BYTES + 3 * INT_BYTES)),
+        "the weighted adjacency rows and the search state", n + " nodes");
     final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
     final int[][] adjNeighbors = new int[n][];
     final double[][] adjWeights = new double[n][];
@@ -240,22 +239,36 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     Arrays.fill(dist, Double.POSITIVE_INFINITY);
     dist[src] = 0.0;
 
-    final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
-    heap.offer(new double[]{ 0.0, src });
+    // The frontier is an indexed binary heap over primitive arrays: a node is in it at most once, and a shorter way to it moves it up
+    // instead of adding an entry beside the stale one. A heap of one boxed entry per relaxation held up to one array per edge, which no
+    // reservation could see (issue #12554); this one is the two int arrays of the node count priced above
+    final int[] heap = new int[n];
+    final int[] where = new int[n];
+    Arrays.fill(where, -1);
+    int size = 1;
+    heap[0] = src;
+    where[src] = 0;
 
-    while (!heap.isEmpty()) {
-      final double[] entry = heap.poll();
-      final double d = entry[0];
-      final int u = (int) entry[1];
-      if (d > dist[u])
-        continue;
+    while (size > 0) {
+      final int u = heap[0];
+      where[u] = -1;
+      if (--size > 0) {
+        heap[0] = heap[size];
+        where[heap[0]] = 0;
+        siftDown(heap, where, dist, size, 0);
+      }
+      final double d = dist[u];
 
       for (int j = 0; j < adjNeighbors[u].length; j++) {
         final int v = adjNeighbors[u][j];
         final double newDist = d + adjWeights[u][j];
         if (newDist < dist[v]) {
           dist[v] = newDist;
-          heap.offer(new double[]{ newDist, v });
+          if (where[v] < 0) {
+            heap[size] = v;
+            where[v] = size++;
+          }
+          siftUp(heap, where, dist, where[v]);
         }
       }
     }
@@ -273,5 +286,40 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       r.setProperty("cost", dist[i]);
       return (Result) r;
     });
+  }
+
+  /** Moves the node at {@code i} up until its parent is not further away; {@code where[node]} is the position of a node in the heap. */
+  private static void siftUp(final int[] heap, final int[] where, final double[] key, final int start) {
+    int i = start;
+    final int node = heap[i];
+    while (i > 0) {
+      final int parent = (i - 1) >>> 1;
+      if (key[heap[parent]] <= key[node])
+        break;
+      heap[i] = heap[parent];
+      where[heap[i]] = i;
+      i = parent;
+    }
+    heap[i] = node;
+    where[node] = i;
+  }
+
+  /** Moves the node at {@code i} down until none of its children is nearer. */
+  private static void siftDown(final int[] heap, final int[] where, final double[] key, final int size, final int start) {
+    int i = start;
+    final int node = heap[i];
+    final int half = size >>> 1;
+    while (i < half) {
+      int child = 2 * i + 1;
+      if (child + 1 < size && key[heap[child + 1]] < key[heap[child]])
+        child++;
+      if (key[node] <= key[heap[child]])
+        break;
+      heap[i] = heap[child];
+      where[heap[i]] = i;
+      i = child;
+    }
+    heap[i] = node;
+    where[node] = i;
   }
 }
