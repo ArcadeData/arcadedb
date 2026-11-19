@@ -36,6 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code 0x7ff0000000000002}. It was read as an ordinary NaN measurement, so the ended series stayed in {@code up} as NaN for the
  * whole lookback, {@code sum(up)} became NaN and {@code count_over_time} counted the marker. The expected values are what
  * Prometheus v3.5.0 answers for the same samples, on the mutable layer and after compaction.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue11991StalenessMarkerTest extends TestHelper {
 

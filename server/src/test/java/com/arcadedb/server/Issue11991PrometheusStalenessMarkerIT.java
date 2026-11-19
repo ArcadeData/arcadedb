@@ -90,7 +90,8 @@ class Issue11991PrometheusStalenessMarkerIT extends BaseGraphServerTest {
 
   private JSONArray query(final int serverIndex, final String promQL, final long atSeconds) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getServerHttpUrl(serverIndex,
-        "/api/v1/ts/graph/prom/api/v1/query?query=" + URLEncoder.encode(promQL, StandardCharsets.UTF_8) + "&time=" + atSeconds))
+        "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1/query?query=" + URLEncoder.encode(promQL, StandardCharsets.UTF_8) + "&time="
+            + atSeconds))
         .toURL().openConnection();
     try {
       connection.setRequestMethod("GET");
@@ -107,8 +108,8 @@ class Issue11991PrometheusStalenessMarkerIT extends BaseGraphServerTest {
   }
 
   private void postPromWrite(final int serverIndex, final WriteRequest writeRequest) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URI(getServerHttpUrl(serverIndex, "/api/v1/ts/graph/prom/write"))
-        .toURL().openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        getServerHttpUrl(serverIndex, "/api/v1/ts/" + getDatabaseName() + "/prom/write")).toURL().openConnection();
     try {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", basicAuth());

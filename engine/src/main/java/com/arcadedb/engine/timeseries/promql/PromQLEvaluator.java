@@ -1058,8 +1058,13 @@ public class PromQLEvaluator {
 
   /**
    * Whether {@code value} is Prometheus' staleness marker (issue #11991): the NaN with bit pattern {@link #STALE_NAN_BITS}, which a
-   * Prometheus remote write sends when a series disappears. The store keeps a double's raw bits (Gorilla XOR on the sealed side), so
-   * the marker reads back as itself, apart from an ordinary NaN - which Prometheus answers as a value.
+   * Prometheus remote write sends when a series disappears. An ordinary NaN is a value, and Prometheus answers it as one.
+   * <p>
+   * The marker is told from an ordinary NaN by its bits, so it is there only where the store keeps a double's raw bits: the mutable
+   * layer, and a DOUBLE field sealed with {@code GORILLA_XOR} (the codec of the {@code value} column a remote write creates). It
+   * reads back as an ordinary NaN in a FLOAT column (the double is narrowed), in a DOUBLE field declared with the {@code DICTIONARY}
+   * codec (the sealed layer keeps it as the text {@code NaN}), and once downsampling has folded the block that holds it (the
+   * aggregate skips a NaN). A series ended in one of those is read as before the fix: a NaN sample until the lookback runs out.
    */
   static boolean isStaleMarker(final double value) {
     return Double.doubleToRawLongBits(value) == STALE_NAN_BITS;
