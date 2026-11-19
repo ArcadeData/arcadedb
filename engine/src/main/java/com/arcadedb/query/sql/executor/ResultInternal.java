@@ -144,8 +144,8 @@ public class ResultInternal implements Result {
    * a dropped value is never decoded, and a row with no name left is not read at all.
    */
   public static Map<String, Object> propertiesOf(final Result row, final Set<String> excluded) {
-    // Exact class only, as in copyBindings(): a subclass may override getPropertyNames() or getProperty() and answer a name
-    // differently from the content and element fields toPropertyMap() reads, so its rows keep the read by name
+    // EXACT CLASS ONLY, AS IN copyBindings(): A SUBCLASS MAY OVERRIDE getPropertyNames() OR getProperty() AND ANSWER A NAME
+    // DIFFERENTLY FROM THE content AND element FIELDS toPropertyMap() READS, SO ITS ROWS KEEP THE READ BY NAME
     if (row.getClass() != ResultInternal.class) {
       final Set<String> names = row.getPropertyNames();
       final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
