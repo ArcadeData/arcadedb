@@ -136,6 +136,100 @@ class Issue11754SetRemoveThroughExpressionTest extends TestHelper {
     }
   }
 
+  /** A list UNWIND hands to every row: the second row reads, through the list, what the first one wrote. */
+  @Test
+  void aSharedListReadsWhatAnEarlierRowWrote() {
+    database.transaction(() -> database.command("opencypher", """
+        MATCH (n:Node {id: 1})
+        WITH [n] AS ns
+        UNWIND [1, 2] AS i
+        SET (head(ns)).v = head(ns).v + 1""").close());
+
+    assertThat(committed(1)).containsEntry("v", 3);
+  }
+
+  /**
+   * Two SET clauses over one indexed list: the copy the second clause passes on holds what the first clause wrote on a later
+   * row, after the second clause had indexed the list.
+   */
+  @Test
+  void aCopyPassedOnByALaterClauseHoldsWhatAnEarlierClauseWrote() {
+    // More rows than a step pulls in one batch, so the second clause indexes the list before the first wrote all of it
+    final int count = 300;
+    database.transaction(() -> database.command("opencypher", "UNWIND range(0, $last) AS i CREATE (:Probe {i: i})",
+        Map.of("last", count - 1)).close());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Probe)
+          WITH n ORDER BY n.i
+          WITH collect(n) AS ns
+          UNWIND range(0, $last) AS k
+          SET (ns[k]).a = k
+          SET (last(ns)).b = k
+          WITH k, ns
+          RETURN k, [x IN ns | x.a] AS as""", Map.of("last", count - 1))) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          final int k = row.<Number>getProperty("k").intValue();
+          final List<Object> as = row.getProperty("as");
+          for (int i = 0; i <= k; i++)
+            assertThat(((Number) as.get(i)).intValue()).as("row %d, element %d", k, i).isEqualTo(i);
+        }
+      }
+    });
+  }
+
+  /** A dynamic key is read before the clause writes: the removal of the key property does not turn it into a null key. */
+  @Test
+  void aDynamicKeyIsReadBeforeTheClauseWrites() {
+    database.transaction(() -> database.command("opencypher", """
+        MATCH (n:Node {id: 1})
+        SET n.key = 'v'
+        WITH n, [n] AS ns
+        REMOVE n.key, (head(ns))[n.key]""").close());
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Node {id: 1}) RETURN n.key AS key, n.v AS v")) {
+      final Result row = rs.next();
+      assertThat(row.<Object>getProperty("key")).isNull();
+      assertThat(row.<Object>getProperty("v")).isNull();
+    }
+  }
+
+  /** The same property removed twice through one captured target is one removal. */
+  @Test
+  void aPropertyRemovedTwiceThroughOneTargetCountsOnce() {
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Node {id: 1})
+          WITH collect(n) AS ns
+          REMOVE (head(ns)).s, (head(ns)).s""")) {
+        while (rs.hasNext())
+          rs.next();
+        assertThat(rs.getStatistics().orElseThrow().getPropertiesSet()).isEqualTo(1);
+      }
+    });
+  }
+
+  /** A relationship target captured before a label removal re-created it: the property goes from the live relationship. */
+  @Test
+  void aRelationshipTargetFollowsALabelRemovalOfItsEndpoint() {
+    database.transaction(() -> database.command("opencypher", """
+        CREATE (:Node:Tmp {id: 5})-[:R {s: 'x', k: 1}]->(:Node {id: 6})""").close());
+
+    database.transaction(() -> database.command("opencypher", """
+        MATCH (a:Tmp {id: 5})-[r:R]->()
+        REMOVE a:Tmp, (CASE WHEN true THEN r END).s""").close());
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a {id: 5})-[r:R]->() RETURN labels(a) AS labels, r.s AS s, r.k AS k")) {
+      final Result row = rs.next();
+      assertThat(row.<List<String>>getProperty("labels")).containsExactly("Node");
+      assertThat(row.<Object>getProperty("s")).isNull();
+      assertThat(row.<Number>getProperty("k").intValue()).isEqualTo(1);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   /** A null target is a no-op, like SET (CASE ... END).p = x on a null. */
   @Test
   void removeThroughNullTargetIsANoOp() {

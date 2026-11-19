@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -145,7 +146,8 @@ public final class RowAliases {
       return live;
     }
 
-    if (value instanceof List<?> list) {
+    // A lazy range holds numbers only: walking it would cost its whole length for nothing
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
       List<Object> rebuilt = null;
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);

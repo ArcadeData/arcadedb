@@ -59,8 +59,9 @@ import java.util.NoSuchElementException;
 public class RemoveStep extends AbstractExecutionStep {
   private final RemoveClause removeClause;
   private final ExpressionEvaluator evaluator;
-  // Lines up the records the row's lists and maps hold with what the clause removed (issue #11754), across rows
-  private final HeldCollectionRefresher heldCollections = new HeldCollectionRefresher();
+  // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
+  // shared by every clause, resolved at the start of each row
+  private HeldCollectionRefresher heldCollections;
 
   public RemoveStep(final RemoveClause removeClause, final CommandContext context, final CypherFunctionFactory functionFactory) {
     super(context);
@@ -165,6 +166,10 @@ public class RemoveStep extends AbstractExecutionStep {
     // A node this clause already relabelled on an earlier row reaches this row as the deleted original: point
     // every alias of it at the live replacement before anything reads or writes through them.
     replacements.redirect(result);
+    // ...and the records the row holds in a list or a map at what this statement wrote so far, so a target or a key read
+    // through one answers with it (issue #11754)
+    heldCollections = HeldCollectionRefresher.of(context);
+    heldCollections.refresh(result);
 
     // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190). One of
     // its own per row committed a relabelled node in its new type, where the scan of the label put back met it again,
@@ -178,17 +183,27 @@ public class RemoveStep extends AbstractExecutionStep {
     // Allocated only for a clause that actually names a label or an expression target: the overwhelmingly common
     // REMOVE is property-only on a variable, and this runs once per row. WHICH record an expression target names
     // ("REMOVE (head(ns)).s") is a read too, answered from the pre-clause state like a label is (issue #11754).
+    // A dynamic key is a read too: "REMOVE n.key, (head(ns))[n.key]" names the key from the value the clause removes
     Object[] phase1 = null;
+    String[] keys = null;
     for (int i = 0; i < items.size(); i++) {
       final RemoveClause.RemoveItem item = items.get(i);
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS) {
         if (phase1 == null)
           phase1 = new Object[items.size()];
         phase1[i] = resolveLabels(item, result);
-      } else if (item.getTargetExpression() != null) {
+        continue;
+      }
+      if (item.getTargetExpression() != null) {
         if (phase1 == null)
           phase1 = new Object[items.size()];
         phase1[i] = resolveTarget(item, result);
+      }
+      if (item.getKeyExpression() != null) {
+        if (keys == null)
+          keys = new String[items.size()];
+        final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
+        keys[i] = keyValue != null ? keyValue.toString() : null; // a null key is a no-op
       }
     }
 
@@ -196,12 +211,13 @@ public class RemoveStep extends AbstractExecutionStep {
     for (int i = 0; i < items.size(); i++) {
       final RemoveClause.RemoveItem item = items.get(i);
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY) {
+        final String property = item.getKeyExpression() != null ? keys[i] : item.getProperty();
         if (item.getTargetExpression() == null)
-          removeProperty(item, result, result.getProperty(item.getVariable()));
+          removeProperty(item, result, result.getProperty(item.getVariable()), property);
         else
-          // A label removal earlier in this clause replaced the vertex the target named: follow it to the live record
-          removeProperty(item, result,
-              phase1[i] instanceof Vertex vertex ? replacements.resolve(vertex) : phase1[i]);
+          // A label removal earlier in this clause replaced the vertex the target named, or re-created the relationship
+          // it named: follow it to the live record
+          removeProperty(item, result, replacements.resolveValue(phase1[i]), property);
       } else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
         removeLabels(item, result, replacements, asLabelList(phase1[i]));
     }
@@ -230,9 +246,12 @@ public class RemoveStep extends AbstractExecutionStep {
    *
    * @param item   the remove item specifying the property
    * @param result the row being processed
-   * @param obj    the record the item removes the property from: what its variable binds, or what its target named
+   * @param obj      the record the item removes the property from: what its variable binds, or what its target named
+   * @param property the property to remove: the static name, or what the dynamic key evaluated to in phase 1, null for a
+   *                 null key, which removes nothing
    */
-  private void removeProperty(final RemoveClause.RemoveItem item, final Result result, final Object obj) {
+  private void removeProperty(final RemoveClause.RemoveItem item, final Result result, final Object obj,
+      final String property) {
     final String variable = item.getVariable();
     // #5795: reject a property removal targeting a node deleted earlier in the same query
     // instead of silently no-op'ing (which let the preceding DELETE commit while the REMOVE
@@ -248,27 +267,21 @@ public class RemoveStep extends AbstractExecutionStep {
       return;
     }
 
-    // Resolve the property name. For dynamic bracket syntax (REMOVE n[keyExpr]) the name is
-    // computed at runtime; otherwise it is the static dot-syntax property name.
-    final String property;
-    if (item.getKeyExpression() != null) {
-      final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
-      if (keyValue == null)
-        return; // null key is a no-op
-      property = keyValue.toString();
-    } else
-      property = item.getProperty();
+    if (property == null)
+      return; // null key is a no-op
 
     final Document doc = (Document) obj;
-
-    // Removing a property that isn't there is a no-op for Neo4j-compatible statistics: only
-    // count it when the property actually existed before the removal.
-    final boolean propertyExisted = doc.has(property);
 
     // Make document mutable. REMOVE writes no value computed from what the MATCH read, so a commit landing in between
     // leaves nothing to lose: the stale-read refusal (#8610) does not apply
     final MutableDocument mutableDoc = doc.modify();
     mutableDoc.clearBasedOnStaleRead();
+
+    // Removing a property that isn't there is a no-op for Neo4j-compatible statistics: only count it when the property
+    // existed before the removal. Asked of the copy being written, not of the record the row read: a target captured twice
+    // in one clause (REMOVE (head(ns)).s, (head(ns)).s) is the same read image both times, while the second removal finds
+    // the property gone
+    final boolean propertyExisted = mutableDoc.has(property);
 
     // Remove the property (setting to null removes it)
     mutableDoc.remove(property);

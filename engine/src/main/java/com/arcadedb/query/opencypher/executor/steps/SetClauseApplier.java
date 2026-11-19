@@ -86,8 +86,9 @@ public final class SetClauseApplier {
   // The records the clause reloaded while applying the current row (#8538), reused across rows. Not thread-safe, like
   // SetStep's writtenDocs: every SetStep and MergeStep builds its own applier and applies its rows one at a time.
   private       Set<RID>            reloadedRids;
-  // Lines up the records the row's lists and maps hold with what the clause wrote (issue #11754), across rows
-  private final HeldCollectionRefresher heldCollections = new HeldCollectionRefresher();
+  // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
+  // shared by every clause, resolved at the start of each apply()
+  private       HeldCollectionRefresher heldCollections;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
       final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites) {
@@ -131,6 +132,10 @@ public final class SetClauseApplier {
     // Pre-resolve any vertex aliases that were replaced by a label change on a prior row so that property-SET
     // operations (which go through resolveLatestDoc) observe the live vertex rather than the deleted original.
     labelReplacements.redirect(result);
+    // ...and the records the row holds in a list or a map at what this statement wrote so far, so the right-hand sides read
+    // it: an UNWIND hands the same list to every row, and the copy an earlier row lined up is not that list (issue #11754)
+    heldCollections = HeldCollectionRefresher.of(context);
+    heldCollections.refresh(result);
 
     final List<SetClause.SetItem> items = setClause.getItems();
     if (reloadedRids != null)
