@@ -137,7 +137,7 @@ message StreamQueryRequest {
   enum RetrievalMode {
     CURSOR = 0;          // run once, stream as you iterate
     MATERIALIZE_ALL = 1; // load all then emit in batches
-    PAGED = 2;           // re-issue with LIMIT/SKIP per batch
+    PAGED = 2;           // same as CURSOR: one execution, batch_size rows per batch (it used to re-issue with LIMIT/SKIP per batch)
   }
   RetrievalMode retrieval_mode = 6;
 

@@ -325,10 +325,18 @@ public final class OperationHeapLimit {
    * stays charged once. The operation estimates each element it holds ({@link #estimateEachElement()}).
    */
   public void replace(final Object removed, final Object added) {
+    replace(removed, added, 0L);
+  }
+
+  /**
+   * Like {@link #replace(Object, Object)}, with {@code besideDelta} bytes the operation holds beside the two elements and that change
+   * with them (the sort keys a top-K heap keeps with each row), adjusted in the same step.
+   */
+  public void replace(final Object removed, final Object added, final long besideDelta) {
     if (tracker == null)
       return;
     // Added first: a container both hold keeps a holder, so it is neither given back nor charged again
-    final long delta = shared.add(added) - shared.remove(removed);
+    final long delta = shared.add(added) - shared.remove(removed) + besideDelta;
     if (delta > 0)
       charge(delta);
     else

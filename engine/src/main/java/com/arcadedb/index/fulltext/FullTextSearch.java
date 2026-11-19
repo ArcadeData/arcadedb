@@ -36,6 +36,7 @@ import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import org.apache.lucene.search.FuzzyQuery;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -161,6 +162,11 @@ public class FullTextSearch {
    * still pushed down after each bucket's candidates are scored; a global top-K is contained in the union of those
    * now-comparable per-bucket top-K sets, so callers still sort and truncate a union of at most {@code buckets * limit}
    * entries.
+   * <p>
+   * A query that is a disjunction of terms - the common shape of a keyword search - takes {@link FullTextTopKSearch} instead
+   * (issue #12458): the postings are read once into primitive arrays, and MaxScore keeps the best {@code limit} against one
+   * threshold shared by every bucket, so the answer holds exactly {@code limit} entries (fewer when there are fewer matches), with
+   * the scores the general path computes.
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit) {
     return search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(null));
@@ -200,8 +206,27 @@ public class FullTextSearch {
     if (bucketIndexes.isEmpty() || (ridFilter != null && ridFilter.acceptsNothing()))
       return Map.of();
 
+    // A disjunction of terms is answered from the postings alone, read once, with one top-k threshold shared by the buckets
+    // (issue #12458); every other query shape matches first and scores after
+    final Map<RID, Float> disjunction = FullTextTopKSearch.search(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields,
+        ridFilter);
+    if (disjunction != null)
+      return disjunction;
+
+    return searchMatchingFirst(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter);
+  }
+
+  /**
+   * The general path of {@link #search(TypeIndex, String, int, WorkGuard, List, RIDFilter)}, for any query shape: every bucket is
+   * matched, then its matches scored. Package-private so a test can hold {@link FullTextTopKSearch} to it.
+   */
+  static Map<RID, Float> searchMatchingFirst(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
+      final int effectiveLimit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+    // A fuzzy clause expands to the best terms of the whole type, not to the best ones of each bucket (issue #12462)
+    final Map<FuzzyQuery, Set<String>> fuzzyExpansions = FullTextQueryExecutor.selectFuzzyExpansions(bucketIndexes, queryText, guard,
+        restrictedFields);
     if (bucketIndexes.size() > 1 && bucketIndexes.getFirst().isBM25())
-      return searchBM25(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter);
+      return searchBM25(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields, ridFilter, fuzzyExpansions);
 
     final Map<RID, Float> allResults = new HashMap<>();
 
@@ -210,8 +235,8 @@ public class FullTextSearch {
       // rejects changes no other bucket's scores
       if (ridFilter != null && !ridFilter.acceptsBucket(ftIndex.getAssociatedBucketId()))
         continue;
-      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex, guard, restrictedFields, ridFilter).search(queryText,
-          effectiveLimit)) {
+      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex, guard, restrictedFields, ridFilter)
+          .withFuzzyExpansions(fuzzyExpansions).search(queryText, effectiveLimit)) {
         mergeCursor(allResults, cursor, guard);
       }
     }
@@ -220,7 +245,8 @@ public class FullTextSearch {
   }
 
   private static Map<RID, Float> searchBM25(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
-      final int limit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+      final int limit, final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter,
+      final Map<FuzzyQuery, Set<String>> fuzzyExpansions) {
     // Pass one: match each bucket and count every scoring token's document frequency during the same posting walk, so global
     // statistics cost no extra scan. Matching stays bucket-local, preserving Lucene boolean/phrase/wildcard semantics; only the
     // corpus statistics are pooled. Both passes are needed because no bucket can be scored until every bucket has reported its
@@ -232,7 +258,7 @@ public class FullTextSearch {
 
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
       final FullTextQueryExecutor.BM25QueryMatch match = new FullTextQueryExecutor(ftIndex, guard, restrictedFields, null)
-          .collectBM25Matches(queryText);
+          .withFuzzyExpansions(fuzzyExpansions).collectBM25Matches(queryText);
       matches.add(match);
       for (final Map.Entry<String, Float> token : match.scoringTokens().entrySet())
         scoringTokens.merge(token.getKey(), token.getValue(), Math::max);
@@ -288,7 +314,7 @@ public class FullTextSearch {
    * limit. Matching already happened, so the result set is unaffected - dropped terms simply stop contributing score. Their
    * document frequencies are dropped too, keeping the context free of statistics it will never consult.
    */
-  private static void capScoringTokens(final LinkedHashMap<String, Float> scoringTokens,
+  static void capScoringTokens(final LinkedHashMap<String, Float> scoringTokens,
       final Map<String, Long> documentFrequencies, final int maxTerms) {
     if (scoringTokens.size() <= maxTerms)
       return;
@@ -431,7 +457,7 @@ public class FullTextSearch {
    * here, so what a user may not read is neither matched nor counted, and a wildcard is not expanded over the terms only such a
    * bucket holds.
    */
-  private static List<LSMTreeFullTextIndex> getBucketIndexes(final TypeIndex typeIndex) {
+  static List<LSMTreeFullTextIndex> getBucketIndexes(final TypeIndex typeIndex) {
     final List<LSMTreeFullTextIndex> indexes = new ArrayList<>();
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex && ftIndex.isBucketReadable())
@@ -442,9 +468,12 @@ public class FullTextSearch {
   private static Map<String, Float> collectScoringTokens(final List<LSMTreeFullTextIndex> bucketIndexes,
       final String queryText, final List<String> restrictedFields, final int maxTerms) {
     final TreeMap<String, Float> tokens = new TreeMap<>();
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+    final Map<FuzzyQuery, Set<String>> fuzzyExpansions = FullTextQueryExecutor.selectFuzzyExpansions(bucketIndexes, queryText, guard,
+        restrictedFields);
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
-      for (final Map.Entry<String, Float> token : new FullTextQueryExecutor(ftIndex, WorkGuard.forCommandDeadline(null),
-          restrictedFields, null).collectScoringTokens(queryText).entrySet())
+      for (final Map.Entry<String, Float> token : new FullTextQueryExecutor(ftIndex, guard, restrictedFields, null)
+          .withFuzzyExpansions(fuzzyExpansions).collectScoringTokens(queryText).entrySet())
         tokens.merge(token.getKey(), token.getValue(), Math::max);
 
     while (tokens.size() > maxTerms)
@@ -465,7 +494,7 @@ public class FullTextSearch {
     return first;
   }
 
-  private static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
+  static BM25ScoringContext createScoringContext(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Long> documentFrequencies) {
     final LSMTreeFullTextIndex first = bucketIndexes.getFirst();
     first.ensureTypeWideBM25Counters();
@@ -491,9 +520,9 @@ public class FullTextSearch {
   /**
    * Counts type-wide document frequencies with a dedicated posting scan, one scan per token per bucket. Used by the entry
    * points that have no matching pass to fold the counting into: the literal {@link #searchSimple} lookup, whose scoring pass
-   * visits only the tokens it was handed, and {@link #explainScoring}.
+   * visits only the tokens it was handed, {@link #explainScoring}, and the scoring of single records ({@link FullTextRecordScorer}).
    */
-  private static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
+  static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Float> scoringTokens, final WorkGuard guard) {
     documentFrequencyScanInvocations.incrementAndGet();
     guard.check();

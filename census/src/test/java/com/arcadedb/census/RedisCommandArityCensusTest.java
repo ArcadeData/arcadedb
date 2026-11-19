@@ -19,16 +19,14 @@
 package com.arcadedb.census;
 
 import com.arcadedb.redis.RedisCommandArity;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.Handle;
-import org.objectweb.asm.Label;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,40 +36,62 @@ import static org.assertj.core.api.Assertions.assertThat;
  * of argument counts both Redis surfaces enforce (#9059, #9161), so {@code SELECT} with no argument answered a Java
  * {@code IndexOutOfBoundsException} text and {@code PING a b} was accepted.
  * <p>
- * The census ranges over the authority: the commands each surface DISPATCHES, read from the compiled dispatch method (a string
- * {@code switch} compiles to one {@code String.equals} against each label, and an {@code "AUTH".equals(cmd)} test to the same
- * call), and checks each one against the table's key set. A command a surface dispatches is either in the table or listed below
- * with the reason it checks its own arguments.
+ * The census ranges over the authority: every word the {@code redisw} module compares a string with, in any method of any of its
+ * classes (a string {@code switch} compiles to one {@code String.equals} against each label, and an {@code "AUTH".equals(cmd)} or
+ * {@code "AUTH".equalsIgnoreCase(...)} test to the same call; the operands are read through {@link CallOperands}, so a word held in
+ * a local first, or compared with the value a call returned, is seen too). Each word is a command of the surface that compares it -
+ * in the table, or listed below with the reason it checks its own arguments - or is listed, with the method that compares it, as a
+ * word that is not a command name. The census used to read one hardcoded method per surface, so the batch-level dispatch of the
+ * query language ({@code executeMultipleCommands}: MULTI, EXEC, DISCARD) and any dispatch added to another method or class escaped
+ * it (#12024).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class RedisCommandArityCensusTest {
   private static final String MODULE = "redisw";
 
-  private static final String WIRE_CLASS  = "com/arcadedb/redis/RedisNetworkExecutor.class";
-  private static final String WIRE_METHOD = "executeCommand";
+  /** The RESP wire surface, every method of it: its commands are checked by {@code RedisCommandArity.checkWire}. */
+  private static final String WIRE_CLASS  = "redis/RedisNetworkExecutor";
+  /** The redis query language, every method of it: its commands are checked by {@code RedisCommandArity.checkQueryLanguage}. */
+  private static final String QUERY_CLASS = "redis/query/RedisQueryEngine";
 
-  private static final String QUERY_CLASS  = "com/arcadedb/redis/query/RedisQueryEngine.class";
-  private static final String QUERY_METHOD = "executeSingleCommandInternal";
-
-  /** Wire commands dispatched before the table is consulted, each checking its own shape. */
+  /**
+   * Wire commands dispatched before the table is consulted, each checking its own shape, and the test that probes that it does: an
+   * exemption is a claim about behaviour, so it names where the behaviour is pinned (issue #11783 found three exemptions whose
+   * reason was not true).
+   */
   private static final Map<String, String> WIRE_EXEMPT = Map.of(//
-      "AUTH", "accepted before authentication, so before the table check; auth() takes 1 or 2 arguments and refuses any other count",
-      "HELLO", "accepted before authentication; a variable list of options, parsed and refused by hello() itself");
+      "AUTH", "accepted before authentication, so before the table check; auth() takes 1 or 2 arguments and refuses any other count"
+          + " (Issue11783RedisHelloAndHashArityTest.authRefusesAnyOtherCount)",
+      "HELLO", "accepted before authentication; a variable list of options, every word parsed and refused by hello() itself"
+          + " (Issue11783RedisHelloAndHashArityTest, the hello* probes)");
 
-  /** Query-language commands whose shape differs from the wire one, so they are not in the shared table. */
-  private static final Map<String, String> QUERY_EXEMPT = Map.of(//
-      "HSET", "names an index or a RID instead of a bucket and checks its own forms",//
-      "HMSET", "names an index or a RID instead of a bucket and checks its own forms",//
-      "HGET", "names an index or a RID instead of a bucket and checks its own forms",//
-      "HMGET", "names an index or a RID instead of a bucket and checks its own forms",//
-      "HEXISTS", "names an index or a RID instead of a bucket and checks its own forms",//
-      "HDEL", "names an index or a RID instead of a bucket and checks its own forms");
+  /**
+   * Query-language words that are no command of a shape the table holds, each with the reason. The hash commands, whose index and
+   * RID forms differ from the wire shape, are not here: the table holds both forms (issue #11783).
+   */
+  private static final Map<String, String> QUERY_EXEMPT = Map.ofEntries(//
+      Map.entry("MULTI", "batch structure keyword of executeMultipleCommands, matched as a whole line, so it takes no arguments"),//
+      Map.entry("EXEC", "batch structure keyword of executeMultipleCommands, matched as a whole line, so it takes no arguments"),//
+      Map.entry("DISCARD", "batch structure keyword of executeMultipleCommands, matched as a whole line, so it takes no arguments"));
+
+  /** Words compared in a method that are not command names, and why. */
+  private record NotCommands(Set<String> words, String reason) {
+  }
+
+  /** The words compared in the module that are not command names, by the method ({@code class#method}) that compares them. */
+  private static final Map<String, NotCommands> NOT_COMMANDS = Map.of(//
+      WIRE_CLASS + "#set", new NotCommands(Set.of("NX", "XX", "GET", "EX", "PX", "EXAT", "PXAT", "KEEPTTL"), "the options of SET"),//
+      WIRE_CLASS + "#hello", new NotCommands(Set.of("AUTH", "SETNAME"), "the AUTH and SETNAME options of HELLO"),//
+      WIRE_CLASS + "#parseInlineCommand", new NotCommands(Set.of("POST", "HOST:"),
+          "the first words of an HTTP request sent to the port, refused as a cross-protocol request"),//
+      "redis/RedisCounterOperations#isNonFiniteSpelling", new NotCommands(Set.of("nan", "inf", "infinity"),
+          "the spellings of a non-finite number an increment refuses"));
 
   @Test
-  void everyCommandTheWireSwitchDispatchesHasAnArity() throws Exception {
-    final Set<String> dispatched = dispatchedCommands(CompiledClasses.byModule().get(MODULE), WIRE_CLASS, WIRE_METHOD);
-    assertThat(dispatched).as("the census must reach the commands RedisNetworkExecutor.executeCommand dispatches")
+  void everyCommandTheWireDispatchesHasAnArity() throws Exception {
+    final Set<String> dispatched = commandsOf(comparedWords(redisClasses()), WIRE_CLASS);
+    assertThat(dispatched).as("the census must reach the commands RedisNetworkExecutor dispatches")
         .contains("GET", "PING", "SELECT", "AUTH");
 
     final Set<String> missing = new TreeSet<>(dispatched);
@@ -84,38 +104,75 @@ class RedisCommandArityCensusTest {
 
   @Test
   void everyCommandTheQueryLanguageDispatchesHasAnArity() throws Exception {
-    final Set<String> dispatched = dispatchedCommands(CompiledClasses.byModule().get(MODULE), QUERY_CLASS, QUERY_METHOD);
-    assertThat(dispatched).as("the census must reach the commands RedisQueryEngine.executeSingleCommandInternal dispatches")
-        .contains("GET", "PING", "HGET");
+    final Set<String> dispatched = commandsOf(comparedWords(redisClasses()), QUERY_CLASS);
+    assertThat(dispatched).as("the census must reach the commands RedisQueryEngine dispatches, the batch-level ones included (#12024)")
+        .contains("GET", "PING", "HGET", "MULTI", "EXEC", "DISCARD");
 
+    // the hash commands, whose index and RID forms differ from the wire shape, are in the table with both forms (issue #11783):
+    // only the batch keywords are exempt
     final Set<String> missing = new TreeSet<>(dispatched);
-    missing.removeAll(RedisCommandArity.ramCommands());
+    missing.removeAll(RedisCommandArity.queryLanguageCommands());
     missing.removeAll(QUERY_EXEMPT.keySet());
     assertThat(missing).as(
-        "a command the redis query language dispatches with no entry in RedisCommandArity accepts any argument count (issue #11450)")
+        "a command the redis query language dispatches with no entry in RedisCommandArity accepts any argument count (issues #11450, #11783)")
         .isEmpty();
   }
 
   @Test
-  void theExemptionsAreStillDispatched() throws Exception {
-    // an exemption for a command nobody dispatches any more is a stale entry that could hide a new one under its name
-    final Map<String, byte[]> classes = CompiledClasses.byModule().get(MODULE);
-    assertThat(dispatchedCommands(classes, WIRE_CLASS, WIRE_METHOD)).containsAll(WIRE_EXEMPT.keySet());
-    assertThat(dispatchedCommands(classes, QUERY_CLASS, QUERY_METHOD)).containsAll(QUERY_EXEMPT.keySet());
+  void noOtherClassOfTheModuleComparesACommandName() throws Exception {
+    final Map<String, Set<String>> compared = comparedWords(redisClasses());
+    assertThat(compared.keySet()).as("the census must reach the comparisons of the classes besides the two surfaces")
+        .contains("redis/RedisCounterOperations#isNonFiniteSpelling");
+
+    final Map<String, Set<String>> unclassified = new TreeMap<>();
+    for (final Map.Entry<String, Set<String>> entry : compared.entrySet()) {
+      final String className = classOf(entry.getKey());
+      if (className.equals(WIRE_CLASS) || className.equals(QUERY_CLASS))
+        continue;
+      final Set<String> words = new TreeSet<>(entry.getValue());
+      words.removeAll(notCommandsOf(entry.getKey()));
+      if (!words.isEmpty())
+        unclassified.put(entry.getKey(), words);
+    }
+    assertThat(unclassified).as("a command dispatched outside RedisNetworkExecutor and RedisQueryEngine is checked by neither "
+        + "surface: dispatch it there, or list the word in NOT_COMMANDS with the reason it is not a command (#12024)").isEmpty();
   }
 
   @Test
-  void theScanSeesTheLabelsOfAStringSwitchAndAnEqualsTest() throws Exception {
+  void theExemptionsAreStillCompared() throws Exception {
+    // an exemption for a word nobody compares any more is a stale entry that could hide a new one under its name
+    final Map<String, Set<String>> compared = comparedWords(redisClasses());
+    assertThat(commandsOf(compared, WIRE_CLASS)).containsAll(WIRE_EXEMPT.keySet());
+    assertThat(commandsOf(compared, QUERY_CLASS)).containsAll(QUERY_EXEMPT.keySet());
+    for (final Map.Entry<String, NotCommands> entry : NOT_COMMANDS.entrySet())
+      assertThat(compared.getOrDefault(entry.getKey(), Set.of())).as("the words %s still compares (%s)", entry.getKey(),
+          entry.getValue().reason()).containsAll(entry.getValue().words());
+  }
+
+  @Test
+  void theScanSeesEveryShapeOfAComparison() throws Exception {
     // control: the shapes the census relies on, compiled by the same javac
-    final Set<String> seen = dispatchedCommands(CompiledClasses.ofTheProbes(), "com/arcadedb/census/RedisCommandArityCensusTest.class",
-        "probe");
-    assertThat(seen).containsExactlyInAnyOrder("ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON");
+    final Map<String, Set<String>> compared = comparedWords(CompiledClasses.ofTheProbes());
+    assertThat(compared.get("census/RedisCommandArityCensusTest#probe")).containsExactlyInAnyOrder("ALPHA", "BETA", "GAMMA", "DELTA",
+        "EPSILON", "ZETA", "ETA", "THETA", "IOTA", "KAPPA");
   }
 
   @SuppressWarnings("unused")
-  private static int probe(final String command) {
+  private static int probe(final String command, final List<Object> arguments) {
     if ("ALPHA".equals(command))
       return 0;
+    // COMPARED WITH THE VALUE A CALL RETURNED, WITH A WORD HELD IN A LOCAL FIRST, AND IGNORING THE CASE
+    if ("ZETA".equalsIgnoreCase((String) arguments.getFirst()))
+      return 4;
+    final String held = "ETA";
+    if (command.equals(held))
+      return 5;
+    if (command.equalsIgnoreCase("THETA"))
+      return 6;
+    // A WORD THAT CAN BE ONE OF TWO CONSTANTS, ONE PER BRANCH
+    final String either = arguments.size() > 1 ? "IOTA" : "KAPPA";
+    if (command.equals(either))
+      return 7;
     switch (command) {
     case "BETA":
       return 1;
@@ -130,89 +187,51 @@ class RedisCommandArityCensusTest {
     }
   }
 
-  /**
-   * The string constants compared with {@code String.equals} in {@code method} of {@code className}: the labels of a string switch
-   * ({@code cmd.equals("LABEL")}) and the receivers of a {@code "LABEL".equals(cmd)} test alike. A {@code static final String}
-   * constant is folded into an {@code LDC} by javac, so {@code cmd.equals(NAME)} is seen too; a name read from a field that is not
-   * a compile-time constant ({@code GETSTATIC}) is not, and a dispatch written that way would leave the census.
-   */
-  private static Set<String> dispatchedCommands(final Map<String, byte[]> classes, final String className, final String method) {
+  private static Map<String, byte[]> redisClasses() throws Exception {
+    final Map<String, byte[]> classes = CompiledClasses.byModule().get(MODULE);
     assertThat(classes).as("the census must read the " + MODULE + " module").isNotNull();
-    final byte[] bytes = classes.get(className);
-    assertThat(bytes).as("the census must find " + className).isNotNull();
+    return classes;
+  }
 
+  /** The words compared in the methods of {@code className}, less the ones listed as no command name for their method. */
+  private static Set<String> commandsOf(final Map<String, Set<String>> compared, final String className) {
     final Set<String> commands = new TreeSet<>();
-    final boolean[] found = { false };
-    new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
-      @Override
-      public MethodVisitor visitMethod(final int access, final String name, final String descriptor, final String signature,
-          final String[] exceptions) {
-        if (!method.equals(name))
-          return null;
-        found[0] = true;
-        return new MethodVisitor(Opcodes.ASM9) {
-          /** The constant pushed by the last two instructions, the other operand being the variable: null when neither was one. */
-          private String recent;
-          private int    sinceConstant = 2;
-
-          private void step() {
-            if (++sinceConstant > 1)
-              recent = null;
-          }
-
-          @Override
-          public void visitLdcInsn(final Object value) {
-            recent = value instanceof String s ? s : null;
-            sinceConstant = 0;
-          }
-
-          @Override
-          public void visitVarInsn(final int opcode, final int varIndex) {
-            step();
-          }
-
-          @Override
-          public void visitInsn(final int opcode) {
-            recent = null;
-          }
-
-          @Override
-          public void visitIntInsn(final int opcode, final int operand) {
-            recent = null;
-          }
-
-          @Override
-          public void visitTypeInsn(final int opcode, final String type) {
-            recent = null;
-          }
-
-          @Override
-          public void visitFieldInsn(final int opcode, final String owner, final String name, final String desc) {
-            recent = null;
-          }
-
-          @Override
-          public void visitJumpInsn(final int opcode, final Label label) {
-            recent = null;
-          }
-
-          @Override
-          public void visitMethodInsn(final int opcode, final String owner, final String name, final String desc,
-              final boolean isInterface) {
-            if (recent != null && "java/lang/String".equals(owner) && "equals".equals(name))
-              commands.add(recent);
-            recent = null;
-          }
-
-          @Override
-          public void visitInvokeDynamicInsn(final String name, final String desc, final Handle bootstrap,
-              final Object... bootstrapArguments) {
-            recent = null;
-          }
-        };
+    for (final Map.Entry<String, Set<String>> entry : compared.entrySet())
+      if (classOf(entry.getKey()).equals(className)) {
+        final Set<String> words = new TreeSet<>(entry.getValue());
+        words.removeAll(notCommandsOf(entry.getKey()));
+        commands.addAll(words);
       }
-    }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-    assertThat(found[0]).as("the census must reach the method " + method + " of " + className).isTrue();
+    assertThat(commands).as("the census must reach the comparisons of " + className).isNotEmpty();
     return commands;
+  }
+
+  private static Set<String> notCommandsOf(final String method) {
+    final NotCommands notCommands = NOT_COMMANDS.get(method);
+    return notCommands != null ? notCommands.words() : Set.of();
+  }
+
+  private static String classOf(final String method) {
+    return method.substring(0, method.indexOf('#'));
+  }
+
+  /**
+   * The string constants compared with {@code String.equals} or {@code String.equalsIgnoreCase} in each method of {@code classes},
+   * keyed {@code class#method} (lambdas folded into the method they are written in): the labels of a string switch
+   * ({@code cmd.equals("LABEL")}), the receiver of a {@code "LABEL".equals(cmd)} test and the argument of a
+   * {@code cmd.equalsIgnoreCase("LABEL")} alike, each operand followed back to what produced it. A {@code static final String}
+   * constant is folded into an {@code LDC} by javac, so {@code cmd.equals(NAME)} is seen too; a name read from a field that is not a
+   * compile-time constant ({@code GETSTATIC}) is not, and a dispatch written that way would leave the census.
+   */
+  private static Map<String, Set<String>> comparedWords(final Map<String, byte[]> classes) {
+    final Map<String, Set<String>> compared = new TreeMap<>();
+    for (final CallOperands.Site site : CallOperands.of(classes,
+        (owner, name, descriptor) -> "java/lang/String".equals(owner) && ("equals".equals(name) || "equalsIgnoreCase".equals(name))))
+      for (int operand = 0; operand < 2; operand++)
+        // EVERY CONSTANT THE OPERAND CAN BE, NOT ONLY A SINGLE ONE: A LOCAL ASSIGNED ON TWO BRANCHES (A TERNARY) HAS AN ORIGIN EACH
+        for (final AbstractInsnNode origin : site.operand(operand))
+          if (origin instanceof LdcInsnNode ldc && ldc.cst instanceof String word)
+            compared.computeIfAbsent(site.key(), k -> new TreeSet<>()).add(word);
+    return compared;
   }
 }

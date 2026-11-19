@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.vector;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.index.vector.VectorUtils;
@@ -65,14 +65,7 @@ public class VectorDistanceFunction implements StatelessFunction {
 
     return switch (metric) {
       case "EUCLIDEAN" -> (double) VectorUtils.l2Distance(a, b);
-      case "EUCLIDEAN_SQUARED" -> {
-        double sum = 0.0;
-        for (int i = 0; i < a.length; i++) {
-          final double diff = a[i] - b[i];
-          sum += diff * diff;
-        }
-        yield sum;
-      }
+      case "EUCLIDEAN_SQUARED" -> VectorUtils.squaredL2DistanceDouble(a, b);
       case "COSINE" -> 1.0 - (double) VectorUtils.cosineSimilarity(a, b);
       case "MANHATTAN" -> (double) VectorUtils.manhattanDistance(a, b);
       case "HAMMING" -> {
@@ -82,7 +75,7 @@ public class VectorDistanceFunction implements StatelessFunction {
             count++;
         yield (double) count;
       }
-      default -> throw new CommandExecutionException("vector_distance(): unsupported metric: " + metric
+      default -> throw new InvalidArgumentException("vector_distance(): unsupported metric: " + metric
           + ". Supported metrics: EUCLIDEAN, EUCLIDEAN_SQUARED, COSINE, MANHATTAN, HAMMING");
     };
   }
