@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -165,9 +166,11 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public Expression getExpandContent() {
-    if (functionCall.getParams().size() != 1) {
-      throw new CommandExecutionException("Invalid expand expression: " + functionCall.toString());
-    }
+    if (functionCall.getParams().size() != 1)
+      // the statement's error, answered like any other refusal of its text (issue #11850)
+      throw new CommandSemanticException(
+          "Invalid expand expression: " + functionCall + ". expand() takes exactly one argument, it was given "
+              + functionCall.getParams().size());
     return functionCall.getParams().getFirst();
   }
 

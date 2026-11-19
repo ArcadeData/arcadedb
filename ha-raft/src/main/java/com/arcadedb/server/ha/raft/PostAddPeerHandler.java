@@ -163,7 +163,7 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
    * <p>
    * Before this, a peer admitted through this route always got Ratis's default priority, while the same peer
    * declared in {@code arcadedb.ha.serverList} - or joined with {@code connect cluster}, which parses one such
-   * entry - could name any. That is not a cosmetic difference: {@link RaftHAServer#selectStepDownTargets} and
+   * entry - could name any. That is not a cosmetic difference: {@link StepDownTargets#selectStepDownTargets} and
    * Ratis's own election both read the live {@code RaftPeer.getPriority()}, and once ANY peer carries a positive
    * priority the priority-0 ones stop being electable. A witness added at runtime could therefore be elected
    * leader, which is the one thing declaring it a witness was meant to prevent.

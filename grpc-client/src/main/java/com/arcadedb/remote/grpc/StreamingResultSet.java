@@ -31,9 +31,11 @@ import java.util.logging.Level;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -120,10 +122,11 @@ class StreamingResultSet implements ResultSet {
    */
   protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
     List<Result> results = new ArrayList<>(queryResult.getRecordsCount());
+    final Set<String> absentTypes = new HashSet<>();
 
     for (GrpcRecord grpcRecord : queryResult.getRecordsList()) {
       // Use the existing grpcRecordToResult method from RemoteGrpcDatabase
-      Result result = db.grpcRecordToResult(grpcRecord);
+      Result result = db.grpcRecordToResult(grpcRecord, absentTypes);
       results.add(result);
     }
 

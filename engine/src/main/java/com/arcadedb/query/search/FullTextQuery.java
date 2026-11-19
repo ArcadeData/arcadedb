@@ -80,6 +80,26 @@ public final class FullTextQuery {
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
     if (limit < 1 || limit > MAX_LIMIT)
       throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT + ", got " + limit);
+
+    // The members that address the index are read when the search runs, after the database resolved: a member of another JSON
+    // shape raised a JSONException there, which no protocol surface answers as the caller's mistake (issue #11622). Whether they
+    // name an index is the schema's to say, in search()
+    requireText(args, "indexName");
+    requireText(args, "typeName");
+    final Object properties = args.opt("properties");
+    if (properties != null) {
+      if (!(properties instanceof JSONArray names))
+        throw new IllegalArgumentException("'properties' must be an array of property names");
+      for (int i = 0; i < names.length(); i++)
+        if (!(names.get(i) instanceof String))
+          throw new IllegalArgumentException("'properties' must contain only property names");
+    }
+  }
+
+  private static void requireText(final JSONObject args, final String name) {
+    final Object value = args.opt(name);
+    if (value != null && !(value instanceof String))
+      throw new IllegalArgumentException("'" + name + "' must be a string");
   }
 
   /**
@@ -223,8 +243,9 @@ public final class FullTextQuery {
     try {
       return FullTextSearch.resolveFullTextIndex(database, indexName);
     } catch (final SchemaException e) {
-      throw new IllegalArgumentException(
-          "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);
+      // still a schema refusal, with the indexes the caller can pick from (issue #11633)
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal, re-worded
+      throw new SchemaException("Full-text index '" + indexName + "' does not exist. " + describeAvailable(database));
     } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException(
           "Index '" + indexName + "' is not a full-text index. " + describeAvailable(database), e);
@@ -239,8 +260,9 @@ public final class FullTextQuery {
     try {
       return FullTextSearch.resolveFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
-      throw new IllegalArgumentException(
-          "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);
+      // still a schema refusal, with the indexes the caller can pick from (issue #11633)
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal, re-worded
+      throw new SchemaException("Full-text index '" + indexName + "' does not exist. " + describeAvailable(database));
     } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException(
           "Index '" + indexName + "' is not a full-text index. " + describeAvailable(database), e);

@@ -88,6 +88,11 @@ public class ProfilingResultSet implements ResultSet {
   }
 
   @Override
+  public int getStatementLimit() {
+    return delegate.getStatementLimit();
+  }
+
+  @Override
   public FacetResults getFacets() {
     return delegate.getFacets();
   }

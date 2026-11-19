@@ -17,6 +17,7 @@ package com.arcadedb.function;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
@@ -60,9 +61,9 @@ public interface FunctionLibraryDefinition<T extends FunctionDefinition> {
    *
    * @param functionName Name of the function to retrieve
    *
-   * @throws IllegalArgumentException If the function was not defined
+   * @throws UnknownFunctionException If the function was not defined (issue #11633)
    */
-  T getFunction(String functionName) throws IllegalArgumentException;
+  T getFunction(String functionName);
 
   /**
    * Returns true if the function was defined, otherwise false.
