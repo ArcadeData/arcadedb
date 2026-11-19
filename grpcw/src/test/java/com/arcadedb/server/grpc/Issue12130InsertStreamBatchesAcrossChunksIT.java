@@ -178,47 +178,197 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
     assertThat(acks[2].getErrorsList()).hasSize(1);
   }
 
+  /**
+   * A chunk that fails without a failed commit - here it changes the contract of the stream - loses the open batch only:
+   * the batch {@code 0..9}, committed with the first chunk, stands. Before the fix the rollback of the open (empty) batch
+   * moved every row of the stream to failed, so the summary said 0 inserted while 10 rows were stored.
+   */
+  @Test
+  void perBatchKeepsTheBatchesCommittedBeforeAChunkTheStreamRefuses() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final InsertSummary summary = insertStream(InsertOptions.TransactionMode.PER_BATCH, 10, 2, 10, 1);
+
+    assertThat(storedRows()).isEqualTo(10);
+    assertThat(summary.getReceived()).isEqualTo(20);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isEqualTo(10);
+    assertThat(summary.getFailed()).as("the rows of the refused chunk").isEqualTo(10);
+    assertThat(summary.getErrorsList()).hasSize(1);
+    assertThat(summary.getErrors(0).getCode()).isEqualTo("CONTRACT_VIOLATION");
+  }
+
+  /**
+   * Under {@code PER_STREAM} the open transaction is the whole stream, so a chunk failing part way through the stream
+   * takes the rows of the chunks before it too: nothing is stored and nothing is reported as inserted.
+   */
+  @Test
+  void perStreamLosesEveryRowWhenAChunkFails() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final InsertSummary summary = insertStream(InsertOptions.TransactionMode.PER_STREAM, 0, 3, 10, 2);
+
+    assertThat(storedRows()).isZero();
+    assertThat(summary.getReceived()).isEqualTo(30);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isZero();
+    assertThat(summary.getFailed()).as("the two chunks rolled back and the refused one").isEqualTo(30);
+    assertThat(summary.getErrorsList()).hasSize(1);
+    assertThat(summary.getErrors(0).getCode()).isEqualTo("CONTRACT_VIOLATION");
+  }
+
+  /**
+   * A failed chunk is acknowledged as failed and the session goes on: the chunk after it starts a new batch in a new
+   * transaction. The batch {@code 0..14} commits, the batch {@code 15..29} collides at {@code n = 25} and is lost, the
+   * rows {@code 30..39} are committed by {@code COMMIT}. Before the fix the session was left holding the transaction the
+   * failed commit had ended, so every row sent after the failed chunk failed too.
+   */
+  @Test
+  void insertBidirectionalGoesOnAfterAFailedBatch() throws Exception {
+    createRowTypeWithExistingRow(25);
+
+    final BidiSession session = new BidiSession(InsertOptions.TransactionMode.PER_BATCH, 15);
+    for (int c = 0; c < 2; c++)
+      assertThat(session.send(c, 10).getInserted()).isEqualTo(10);
+    assertThat(session.send(2, 10).getFailed()).as("the rolled-back batch 15..29").isEqualTo(15);
+
+    final BatchAck after = session.send(3, 10);
+    assertThat(after.getErrorsList()).as("the chunk after the failed one").isEmpty();
+    assertThat(after.getInserted()).isEqualTo(10);
+    assertThat(after.getFailed()).isZero();
+
+    final InsertSummary summary = session.commit();
+    assertThat(storedRows()).as("the batch 0..14 and the rows 30..39").isEqualTo(25);
+    assertThat(summary.getReceived()).isEqualTo(40);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isEqualTo(25);
+    assertThat(summary.getFailed()).isEqualTo(15);
+  }
+
+  /** The same under {@code PER_ROW}: the rows {@code 20..24} stand, the rest of their chunk is lost, the next chunk is applied. */
+  @Test
+  void insertBidirectionalGoesOnAfterAFailedRow() throws Exception {
+    createRowTypeWithExistingRow(25);
+
+    final BidiSession session = new BidiSession(InsertOptions.TransactionMode.PER_ROW, 0);
+    for (int c = 0; c < 2; c++)
+      assertThat(session.send(c, 10).getInserted()).isEqualTo(10);
+    assertThat(session.send(2, 10).getFailed()).isEqualTo(5);
+
+    final BatchAck after = session.send(3, 10);
+    assertThat(after.getErrorsList()).as("the chunk after the failed one").isEmpty();
+    assertThat(after.getInserted()).isEqualTo(10);
+
+    final InsertSummary summary = session.commit();
+    assertThat(storedRows()).isEqualTo(35);
+    assertThat(summary.getReceived()).isEqualTo(40);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isEqualTo(35);
+    assertThat(summary.getFailed()).isEqualTo(5);
+  }
+
+  /**
+   * A chunk can fail without a failed commit, which leaves the transaction open: here the target type is dropped under
+   * a {@code PER_STREAM} session. The rows {@code 0..9} of the open transaction are acknowledged as failed with the
+   * chunk that fails, so they are rolled back with it and the session goes on in a new transaction. Before the fix they
+   * stayed in the transaction for {@code COMMIT} to commit: rows the session had reported as failed, and here a commit
+   * that fails on the dropped type and takes the rows {@code 20..29}, acknowledged as inserted, with it.
+   */
+  @Test
+  void insertBidirectionalRollsBackTheRowsItReportsAsFailed() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final BidiSession session = new BidiSession(InsertOptions.TransactionMode.PER_STREAM, 0);
+    assertThat(session.send(0, 10).getInserted()).isEqualTo(10);
+
+    command("DROP TYPE " + typeName + " UNSAFE");
+    final BatchAck failed = session.send(1, 10);
+    assertThat(failed.getInserted()).isZero();
+    assertThat(failed.getFailed()).as("the rows 0..9 of the open transaction and the chunk never applied").isEqualTo(20);
+    assertThat(failed.getErrorsList()).hasSize(1);
+
+    command("CREATE DOCUMENT TYPE " + typeName);
+    assertThat(session.send(2, 10).getInserted()).isEqualTo(10);
+
+    final InsertSummary summary = session.commit();
+    assertThat(storedRows()).as("only the rows 20..29, sent after the failure").isEqualTo(10);
+    assertThat(summary.getReceived()).isEqualTo(30);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isEqualTo(10);
+    assertThat(summary.getFailed()).isEqualTo(20);
+  }
+
   /** Sends the chunks one by one, each after the acknowledgement of the previous one, then half-closes. */
   private BatchAck[] insertBidirectional(final InsertOptions.TransactionMode mode, final int serverBatchSize, final int chunks,
       final int rowsPerChunk) throws InterruptedException {
-    final BlockingQueue<InsertResponse> responses = new LinkedBlockingQueue<>();
-    final AtomicReference<Throwable> error = new AtomicReference<>();
-    final StreamObserver<InsertRequest> req = asyncStub.insertBidirectional(new StreamObserver<>() {
-      @Override
-      public void onNext(final InsertResponse value) {
-        responses.add(value);
-      }
-
-      @Override
-      public void onError(final Throwable t) {
-        error.set(t);
-      }
-
-      @Override
-      public void onCompleted() {
-      }
-    });
-
-    req.onNext(InsertRequest.newBuilder()
-        .setStart(Start.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
-            .setOptions(options(mode, serverBatchSize)).build()).build());
-    final InsertResponse started = responses.poll(10, TimeUnit.SECONDS);
-    assertThat(started).as("Started, error: %s", error.get()).isNotNull();
-    final String sessionId = started.getStarted().getSessionId();
-
+    final BidiSession session = new BidiSession(mode, serverBatchSize);
     final BatchAck[] acks = new BatchAck[chunks];
-    for (int c = 0; c < chunks; c++) {
-      req.onNext(InsertRequest.newBuilder().setChunk(chunk(sessionId, c, rowsPerChunk)).build());
-      final InsertResponse ack = responses.poll(10, TimeUnit.SECONDS);
-      assertThat(ack).as("BatchAck %s, error: %s", c, error.get()).isNotNull();
-      acks[c] = ack.getBatchAck();
-    }
-    req.onCompleted();
+    for (int c = 0; c < chunks; c++)
+      acks[c] = session.send(c, rowsPerChunk);
+    session.halfClose();
     return acks;
+  }
+
+  /** One {@code InsertBidirectional} call: every message waits for the answer to the previous one. */
+  private class BidiSession {
+    private final BlockingQueue<InsertResponse> responses = new LinkedBlockingQueue<>();
+    private final AtomicReference<Throwable>    error     = new AtomicReference<>();
+    private final StreamObserver<InsertRequest> req;
+    private final String                        sessionId;
+
+    BidiSession(final InsertOptions.TransactionMode mode, final int serverBatchSize) throws InterruptedException {
+      req = asyncStub.insertBidirectional(new StreamObserver<>() {
+        @Override
+        public void onNext(final InsertResponse value) {
+          responses.add(value);
+        }
+
+        @Override
+        public void onError(final Throwable t) {
+          error.set(t);
+        }
+
+        @Override
+        public void onCompleted() {
+        }
+      });
+      req.onNext(InsertRequest.newBuilder()
+          .setStart(Start.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+              .setOptions(options(mode, serverBatchSize)).build()).build());
+      sessionId = answer("Started").getStarted().getSessionId();
+    }
+
+    /** Sends the chunk {@code c}, whose sequence number is {@code c + 1}, and returns its acknowledgement. */
+    BatchAck send(final int c, final int rowsPerChunk) throws InterruptedException {
+      req.onNext(InsertRequest.newBuilder().setChunk(chunk(sessionId, c, rowsPerChunk)).build());
+      return answer("BatchAck " + c).getBatchAck();
+    }
+
+    InsertSummary commit() throws InterruptedException {
+      req.onNext(InsertRequest.newBuilder().setCommit(Commit.newBuilder().setSessionId(sessionId).build()).build());
+      final InsertResponse committed = answer("Committed");
+      assertThat(committed.hasCommitted()).as("Committed, got: %s", committed.getMsgCase()).isTrue();
+      req.onCompleted();
+      return committed.getCommitted().getSummary();
+    }
+
+    void halfClose() {
+      req.onCompleted();
+    }
+
+    private InsertResponse answer(final String what) throws InterruptedException {
+      final InsertResponse response = responses.poll(10, TimeUnit.SECONDS);
+      assertThat(response).as("%s, error: %s", what, error.get()).isNotNull();
+      return response;
+    }
   }
 
   private InsertSummary insertStream(final InsertOptions.TransactionMode mode, final int serverBatchSize, final int chunks,
       final int rowsPerChunk) throws InterruptedException {
+    return insertStream(mode, serverBatchSize, chunks, rowsPerChunk, -1);
+  }
+
+  /**
+   * The chunk {@code contractBreaker}, if any, changes the conflict mode of the stream, which the server refuses: a
+   * failure of the chunk that is not a failed commit and leaves the stream's transaction open.
+   */
+  private InsertSummary insertStream(final InsertOptions.TransactionMode mode, final int serverBatchSize, final int chunks,
+      final int rowsPerChunk, final int contractBreaker) throws InterruptedException {
     final CountDownLatch done = new CountDownLatch(1);
     final AtomicReference<InsertSummary> summary = new AtomicReference<>();
     final AtomicReference<Throwable> error = new AtomicReference<>();
@@ -241,8 +391,10 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
     });
 
     final InsertOptions options = options(mode, serverBatchSize);
+    final InsertOptions changed = options.toBuilder().setConflictMode(InsertOptions.ConflictMode.CONFLICT_IGNORE).build();
     for (int c = 0; c < chunks; c++)
-      req.onNext(chunk("issue-12130", c, rowsPerChunk).toBuilder().setOptions(options).setLast(c == chunks - 1).build());
+      req.onNext(chunk("issue-12130", c, rowsPerChunk).toBuilder().setOptions(c == contractBreaker ? changed : options)
+          .setLast(c == chunks - 1).build());
     req.onCompleted();
 
     assertThat(done.await(30, TimeUnit.SECONDS)).as("InsertStream should terminate within 30s").isTrue();

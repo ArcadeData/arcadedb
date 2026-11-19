@@ -4795,9 +4795,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   // acknowledgement alike, the totals first, while they still hold this chunk as it was applied
                   final long notApplied = c.getRowsCount() - perChunk.received;
                   ctx.totals.add(perChunk);
+                  // The client did send the rows the chunk never reached: counted as received, like insertStream
+                  // does, so the summary cannot report more rows failed than received
+                  ctx.totals.received += notApplied;
                   recordTransactionFailure(ctx.totals, ctx, notApplied, error);
                   recordTransactionFailure(perChunk, ctx, notApplied, error);
-                  ctx.forgetOpenRows();
+                  // Makes the above true and lets the session go on: the rows just declared failed are rolled back
+                  // if the failure left their transaction open, rather than committed by a later COMMIT, and the
+                  // next chunk gets a transaction of its own in place of the one that ended here
+                  ctx.restartTransaction();
                   // intentionally do not advance watermark on failure; client may replay safely
 
                   sendResponse.accept(InsertResponse.newBuilder()
@@ -5813,8 +5819,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       forgetOpenRows();
     }
 
+    /**
+     * Ends the transaction a failed chunk leaves behind and begins the next one, for a stream that goes on after the
+     * failure ({@code InsertBidirectional}). A failed commit has already ended the transaction, and without a new one every
+     * later chunk and the final {@code COMMIT} fail with "Transaction not begun"; any other failure leaves it open with
+     * rows the stream has just reported as failed, which a later commit would persist. A client transaction is neither
+     * rolled back nor replaced: it is the client's. Must run on the thread the transaction is bound to.
+     */
+    void restartTransaction() {
+      forgetOpenRows();
+      if (externalTransaction)
+        return;
+      abortTransaction();
+      if (!opts.getValidateOnly()) {
+        db.begin();
+        captureTransaction();
+      }
+    }
+
     /** The open transaction is over, committed or lost, and the next one starts empty. */
-    void forgetOpenRows() {
+    private void forgetOpenRows() {
       openInserted = 0;
       openUpdated = 0;
       inBatch = 0;
