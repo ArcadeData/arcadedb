@@ -43,6 +43,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import de.bwaldvogel.mongo.MongoBackend;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
@@ -68,6 +69,7 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.math.BigDecimal;
+import java.time.temporal.Temporal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
@@ -89,6 +91,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /** Stands for a property the record does not have, which differs from one it has with the value {@code null}. */
+  private static final Object ABSENT        = new Object();
+  /** What {@link #getPath} answers for a path that reaches no stored value, told apart from a stored null. */
+  private static final Object MISSING       = new Object();
   /**
    * The fields of a {@code createIndexes} specification this plugin honours ({@code key}, {@code name}, {@code unique}) or that
    * carry no semantics a built index could miss ({@code background} is a build-scheduling hint, {@code v} the index format
@@ -97,6 +103,31 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private static final Set<String> SUPPORTED_INDEX_OPTIONS = Set.of("key", "name", "unique", "background", "v", "ns");
   /** Boolean index options whose {@code false} is MongoDB's default, so asking for it asks for nothing this plugin lacks. */
   private static final Set<String> INDEX_OPTIONS_ACCEPTED_WHEN_FALSE = Set.of("sparse", "hidden");
+
+  private static final int          DOCUMENT_VALIDATION_FAILURE     = 121;
+  private static final int          NOT_IMPLEMENTED                 = 238;
+  private static final int          COMMAND_NOT_FOUND               = 59;
+  private static final int          TYPE_MISMATCH                   = 14;
+  private static final int          PATH_NOT_VIABLE                 = 28;
+  private static final int          IMMUTABLE_FIELD                 = 66;
+  private static final int          CONFLICTING_UPDATE_OPERATORS    = 40;
+  /** What the query matcher answers a {@code $and}/{@code $or}/{@code $nor} whose elements are not documents. */
+  private static final int          MALFORMED_LOGICAL_OPERATOR      = 14817;
+  /** The update operators this plugin applies. */
+  private static final Set<String>  SUPPORTED_UPDATE_OPERATORS      = Set.of("$set", "$unset", "$inc");
+  private static final String       SUPPORTED_UPDATE_OPERATORS_TEXT = "the supported ones are $set, $unset and $inc";
+  /** The update operators mongod has and this plugin does not apply: refused as not implemented, not as unknown (issue #11449). */
+  private static final Set<String>  MONGO_UPDATE_OPERATORS          = Set.of("$currentDate", "$min", "$max", "$mul", "$rename",
+      "$setOnInsert", "$addToSet", "$pop", "$pull", "$push", "$pullAll", "$bit");
+  /**
+   * The codes of a refusal mongod reports as an entry of {@code writeErrors} of an {@code insert} or {@code update}, going on with the
+   * other statements (issue #11444): the statement's own documents or values are refused (BadValue, FailedToParse, TypeMismatch,
+   * PathNotViable, ImmutableField, DocumentValidationFailure, NotImplemented, DuplicateKey, a malformed {@code $and}/{@code $or},
+   * ConflictingUpdateOperators).
+   */
+  private static final Set<Integer> STATEMENT_ERROR_CODES           = Set.of(ErrorCode.BadValue.getValue(), ErrorCode.FailedToParse.getValue(),
+      TYPE_MISMATCH, PATH_NOT_VIABLE, IMMUTABLE_FIELD, DOCUMENT_VALIDATION_FAILURE, NOT_IMPLEMENTED, ErrorCode.DuplicateKey.getValue(),
+      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS);
 
   // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
   protected volatile Database                        database;
@@ -192,11 +223,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       else if ("createIndexes".equalsIgnoreCase(command))
         return createIndexes(document);
       else {
-        LogManager.instance()
-            .log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command,
-                document);
-        throw new UnsupportedOperationException(
-          "Received unsupported command from MongoDB client '%s', (document=%s)".formatted(command, document));
+        // a client's request, not a server fault: the operator learns which commands clients ask for, without the document, which can
+        // carry stored data
+        LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, command);
+        // what mongod answers a command it does not have, and what drivers detect a command missing from a server by (issue #11449)
+        throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + command + "'");
       }
     } catch (final Exception e) {
       throw wireException("Error on executing MongoDB '" + command + "' command", e);
@@ -310,7 +341,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final ErrorCategory category = ErrorCategory.of(e);
     if (category == ErrorCategory.VALIDATION && CauseChain.find(e, ValidationException.class) instanceof ValidationException refused
         && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
-      return new MongoServerError(121, "DocumentValidationFailure", message, e);
+      return new MongoServerError(DOCUMENT_VALIDATION_FAILURE, "DocumentValidationFailure", message, e);
 
     return switch (category) {
       case RETRY -> new MongoServerError(112, "WriteConflict", message, e);
@@ -628,30 +659,37 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     builder.create();
   }
 
+  /**
+   * Handles the MongoDB {@code count} command (what {@code count()} and {@code estimatedDocumentCount()} send). A collection that does
+   * not exist counts 0, as on {@code mongod}, with its filter still validated (issue #11449). The count is a long: a type holds more
+   * documents than an int counts, and the reply carries it as {@code mongod} does, an int32 while it fits and an int64 past it.
+   */
   private Document countCollection(final Document document) throws MongoServerException {
     final String collectionName = document.get("count").toString();
-    database.countType(collectionName, false);
+    final Document queryObject = documentField(document, "query");
+    // read first: an invalid option is an error whether or not the collection exists
+    final long limit = getOptionalLong(document, "limit", -1L);
+    final long skip = getOptionalLong(document, "skip", 0L);
 
     final Document response = responseOk();
-
-    final MongoCollection<Long> collection = getCollection(collectionName);
-
-    if (collection == null) {
-      response.put("missing", Boolean.TRUE);
+    if (getCollection(collectionName) instanceof MongoDBCollectionWrapper collection)
+      response.put("n", wireNumber(collection.countDocuments(queryObject, skip, limit)));
+    else {
+      // nothing to count, but an invalid filter is an error whether or not the collection exists
+      new MongoFilter(database, queryObject);
       response.put("n", 0);
-    } else {
-      final Document queryObject = (Document) document.get("query");
-      final int limit = this.getOptionalNumber(document, "limit", -1);
-      final int skip = this.getOptionalNumber(document, "skip", 0);
-      response.put("n", collection.count(queryObject, skip, limit));
     }
-
     return response;
   }
 
+  /** A count as {@code mongod} puts it in a reply: an int32 while it fits, an int64 past it. */
+  static Number wireNumber(final long value) {
+    return value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE ? (Number) (int) value : (Number) value;
+  }
+
   private Document find(final Document document) throws MongoServerException {
-    final Document filter = (Document) document.get("filter");
-    final Document sort = (Document) document.get("sort");
+    final Document filter = documentField(document, "filter");
+    final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
     final int limit = this.getOptionalNumber(document, "limit", 0);
     final int skip = this.getOptionalNumber(document, "skip", 0);
@@ -668,10 +706,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     } else
       queryPayload = filter;
 
-    final Document projection = document.get("projection") instanceof Document p && !p.isEmpty() ? p : null;
-    if (projection != null)
-      // reject an invalid projection up front, even when no document would be projected
-      MongoDBToSqlTranslator.isInclusionProjection(projection, "_id");
+    // parsed up front, once: an invalid projection is refused even when no document would be projected (issue #12072)
+    final Document projectionFields = documentField(document, "projection");
+    final MongoProjection projection = projectionFields != null && !projectionFields.isEmpty() ? new MongoProjection(projectionFields) : null;
 
     final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
 
@@ -680,10 +717,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Document> documents = new ArrayList<>();
     for (Iterator<Document> it = result.iterator(); it.hasNext(); ) {
       final Document next = it.next();
-      documents.add(projection != null ? MongoDBToSqlTranslator.projectDocument(next, projection, "_id") : next);
+      documents.add(projection != null ? projection.apply(next) : next);
     }
 
     return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);
+  }
+
+  /**
+   * An optional field of a command that must be a document, as {@code mongod} declares it: a value of another type is refused
+   * (TypeMismatch), instead of being ignored or failing with an uncoded error.
+   */
+  private static Document documentField(final Document command, final String field) {
+    final Object value = command.get(field);
+    if (value == null || value instanceof Document)
+      return (Document) value;
+    throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+        "BSON field '" + field + "' is the wrong type '" + typeName(value) + "', expected type 'object'");
   }
 
   private Document insertDocument(final Channel channel, final Document query) throws MongoServerException {
@@ -710,24 +759,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             // FAST PATH: the whole batch in one transaction. n is what the engine stored, not what it was given (issue #9974)
             n = collection.insertDocumentsCountingStored(documents);
           } catch (final RuntimeException e) {
-            if (ErrorCategory.of(e) != ErrorCategory.DUPLICATED_KEY)
+            // a document refused on its own (a duplicated key, a declared constraint, a value that cannot be stored) is reported in
+            // writeErrors with the others kept, as mongod does (issue #11444): anything else is the command's failure
+            if (statementErrorCode(e) == null)
               throw e;
 
             // The batch was rolled back. MongoDB is not atomic across a batch, so insert the documents one by one to
-            // report each duplicate by index and keep the others (ordered: only the ones before the first failure)
+            // report each refusal by index and keep the others (ordered: only the ones before the first failure)
             for (int i = 0; i < documents.size(); i++) {
               final Document doc = documents.get(i);
               try {
                 n += collection.insertDocumentsCountingStored(List.of(doc));
-              } catch (final RuntimeException duplicate) {
-                if (ErrorCategory.of(duplicate) != ErrorCategory.DUPLICATED_KEY)
-                  throw duplicate;
-
-                final Document error = new Document();
-                error.put("index", i);
-                error.put("code", ErrorCode.DuplicateKey.getValue());
-                error.put("codeName", ErrorCode.DuplicateKey.getName());
-                error.put("errmsg", duplicateKeyMessage(collectionName, duplicate));
+              } catch (final RuntimeException refused) {
+                final Document error = writeError(i, collectionName, refused);
+                if (error == null)
+                  throw refused;
                 writeErrors.add(error);
                 if (isOrdered)
                   break;
@@ -878,10 +924,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document updateDocuments(final Document document) {
     final String collectionName = document.get("update").toString();
     final List<Document> updates = (List<Document>) document.get("updates");
+    // MongoDB's default is an ordered update: it stops at the first refused statement
+    final boolean ordered = document.get("ordered") == null || Utils.isTrue(document.get("ordered"));
 
     int n = 0;
     int nModified = 0;
     final List<Document> upserted = new ArrayList<>();
+    final List<Document> writeErrors = new ArrayList<>();
 
     if (updates != null) {
       // one regex budget for the whole command, whatever the number of entries
@@ -900,36 +949,61 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
       indexLock.lock();
-      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
-      final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
       try {
-        int index = 0;
-        for (final Document upd : updates) {
-          final Document q = (Document) upd.get("q");
-          final Document u = (Document) upd.get("u");
-          final boolean multi = Utils.isTrue(upd.get("multi"));
-          final boolean upsert = Utils.isTrue(upd.get("upsert"));
+        // FAST PATH: every statement in the command's OWN transaction, so a failure rolls back this one, never one the caller holds
+        // (issue #9977)
+        RuntimeException refused = null;
+        final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+        try {
+          for (int i = 0; i < updates.size(); i++) {
+            final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted);
+            n += updated.matched();
+            nModified += updated.modified();
+          }
+          tx.commit();
+        } catch (final RuntimeException e) {
+          // a statement refused on its own documents is reported in writeErrors with the others kept, as mongod does (issue #11444):
+          // anything else is the command's failure
+          if (statementErrorCode(e) == null)
+            throw e;
+          refused = e;
+        } finally {
+          tx.rollbackIfMine();
+        }
 
-          final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget);
-          n += updated.matched();
-          nModified += updated.modified();
-
-          // only a filter that matched nothing upserts: a match whose update a listener vetoed is not "no match", or the upsert
-          // would insert a second document for it (issue #9974)
-          if (updated.matched() == 0 && upsert) {
-            final Object id = executeUpsert(collectionName, q, u);
-            // a create a BeforeRecordCreateListener vetoed upserted nothing (issue #9974)
-            if (id != UPSERT_VETOED) {
-              final Document upDoc = new Document("index", index);
-              upDoc.put("_id", id);
-              upserted.add(upDoc);
+        if (refused != null) {
+          // The batch was rolled back. MongoDB is not atomic across the statements of a command, so run them again one by one, each
+          // in its own transaction, to report each refusal by index and keep the others (ordered: only the ones before the first).
+          // The statements that ran in the rolled-back transaction run again, so a record listener is called again for them: what it
+          // wrote in the transaction went with it, only state it keeps outside the transaction sees the call twice (the insert replay
+          // has always done the same)
+          n = 0;
+          nModified = 0;
+          upserted.clear();
+          for (int i = 0; i < updates.size(); i++) {
+            final int upsertedBefore = upserted.size();
+            final OwnTransaction statementTx = OwnTransaction.begin((DatabaseInternal) database);
+            try {
+              final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted);
+              statementTx.commit();
+              n += updated.matched();
+              nModified += updated.modified();
+            } catch (final RuntimeException e) {
+              final Document error = writeError(i, collectionName, e);
+              if (error == null)
+                throw e;
+              // the statement's upsert, if any, went with its transaction
+              while (upserted.size() > upsertedBefore)
+                upserted.removeLast();
+              writeErrors.add(error);
+              if (ordered)
+                break;
+            } finally {
+              statementTx.rollbackIfMine();
             }
           }
-          ++index;
         }
-        tx.commit();
       } finally {
-        tx.rollbackIfMine();
         indexLock.unlock();
       }
     }
@@ -939,8 +1013,104 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     response.put("nModified", nModified);
     if (!upserted.isEmpty())
       response.put("upserted", upserted);
+    if (!writeErrors.isEmpty())
+      response.put("writeErrors", writeErrors);
     markOkay(response);
     return response;
+  }
+
+  /**
+   * Runs one statement of an {@code update} command in the transaction the caller holds: the update of the documents its filter
+   * selects or, when it matched none and asks for it, the upsert, added to {@code upserted}.
+   */
+  private UpdateCount executeUpdateStatement(final String collectionName, final Document statement, final int index,
+      final MongoFilter.RegexBudget budget, final List<Document> upserted) {
+    final Document q = (Document) statement.get("q");
+    final Document u = updateOf(statement.get("u"));
+    final boolean multi = Utils.isTrue(statement.get("multi"));
+    final boolean upsert = Utils.isTrue(statement.get("upsert"));
+
+    final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget);
+
+    // only a filter that matched nothing upserts: a match whose update a listener vetoed is not "no match", or the upsert would insert
+    // a second document for it (issue #9974)
+    if (updated.matched() == 0 && upsert) {
+      final Object id = executeUpsert(collectionName, q, u);
+      // a create a BeforeRecordCreateListener vetoed upserted nothing (issue #9974)
+      if (id != UPSERT_VETOED) {
+        final Document upDoc = new Document("index", index);
+        upDoc.put("_id", id);
+        upserted.add(upDoc);
+      }
+    }
+    return updated;
+  }
+
+  /**
+   * The update document of a statement, checked before any record is read, as mongod parses it before running it (issue #11449): a
+   * replacement, or operators this plugin applies. An operator mongod has and this plugin lacks is {@code NotImplemented}, naming it;
+   * an operator mongod has not is {@code FailedToParse}, with mongod's own text.
+   */
+  static Document updateOf(final Object update) {
+    if (update instanceof List)
+      throw new MongoServerError(NOT_IMPLEMENTED, "NotImplemented", "Pipeline-style updates are not supported by ArcadeDB: " + SUPPORTED_UPDATE_OPERATORS_TEXT);
+    if (!(update instanceof Document u))
+      throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
+          "The update of a statement must be a document, found: " + (update == null ? "null" : update.getClass().getSimpleName()));
+    if (isReplacement(u))
+      return u;
+
+    for (final Map.Entry<String, Object> entry : u.entrySet()) {
+      final String op = entry.getKey();
+      if (!SUPPORTED_UPDATE_OPERATORS.contains(op)) {
+        if (MONGO_UPDATE_OPERATORS.contains(op))
+          throw new MongoServerError(NOT_IMPLEMENTED, "NotImplemented",
+              "Update operator '" + op + "' is not supported by ArcadeDB: " + SUPPORTED_UPDATE_OPERATORS_TEXT);
+        throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
+            "Unknown modifier: " + op + ". Expected a valid update modifier or pipeline-style update specified as an array");
+      }
+    }
+    // the operands and the paths they name are checked by checkUpdate (issue #12070)
+    return u;
+  }
+
+  /**
+   * The code and name mongod reports a statement refused on its own documents with, as an entry of {@code writeErrors}: a duplicated
+   * key, a document a declared constraint refuses, a value an operator cannot take ({@link #STATEMENT_ERROR_CODES}). {@code null} when
+   * the failure is the command's (a conflict to retry, a refused permission, a server fault), which fails the whole command.
+   */
+  private static MongoServerError statementErrorCode(final RuntimeException e) {
+    return wireException("", e) instanceof MongoServerError coded && STATEMENT_ERROR_CODES.contains(coded.getCode()) ? coded : null;
+  }
+
+  /**
+   * The {@code writeErrors} entry of a statement refused on its own documents (see {@link #statementErrorCode}), or {@code null} when
+   * the failure is the command's.
+   */
+  private Document writeError(final int index, final String collectionName, final RuntimeException e) {
+    final MongoServerError coded = statementErrorCode(e);
+    if (coded == null)
+      return null;
+
+    final String message;
+    if (ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      message = duplicateKeyMessage(collectionName, e);
+    else if (e instanceof MongoServerError own)
+      // text this plugin wrote about the request: it carries no stored data
+      message = own.getMessageWithoutErrorCode();
+    else {
+      // the engine's text can carry the stored value it refused: concealed in production mode
+      final Throwable refusal = CauseChain.find(e, ValidationException.class) instanceof ValidationException validation ? validation : e;
+      final String text = ErrorConcealment.clientMessage(plugin != null && plugin.isProductionMode(), this, "MongoDB", refusal.getMessage(), e);
+      message = coded.getCode() == DOCUMENT_VALIDATION_FAILURE ? "Document failed validation: " + text : text;
+    }
+
+    final Document error = new Document();
+    error.put("index", index);
+    error.put("code", coded.getCode());
+    error.putIfNotNull("codeName", coded.getCodeName());
+    error.put("errmsg", message);
+    return error;
   }
 
   /**
@@ -976,8 +1146,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final Object sample = hasId && id != null ? id : new ObjectId();
       // nothing to do when the index already holds this kind of key: no need to look for a match either
       // a key other than the _id is looked up through its index when it is a declared scalar field (see MongoFilter), else it is a scan
-      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)) || matchesAny(collectionName, q, budget))
+      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)))
         continue;
+      try {
+        if (matchesAny(collectionName, q, budget))
+          continue;
+      } catch (final RuntimeException e) {
+        // a filter refused on its own (an unknown operator) is the statement's error: it is refused again when the statement runs, and
+        // reported there at its index with the statements before it kept, instead of failing the whole command here (issue #11444)
+        if (statementErrorCode(e) == null)
+          throw e;
+        continue;
+      }
 
       if (samples == null)
         samples = new ArrayList<>();
@@ -997,7 +1177,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * What an update did, as MongoDB replies it: {@code n} the documents the filter matched, {@code nModified} the ones the engine
-   * changed. They differ when a {@code BeforeRecordUpdateListener} vetoes a write (issue #9974).
+   * changed. They differ when the update leaves a document as it was (issue #11445) and when a {@code BeforeRecordUpdateListener}
+   * vetoes a write (issue #9974).
    */
   private record UpdateCount(int matched, int modified) {
     private static final UpdateCount NONE = new UpdateCount(0, 0);
@@ -1007,41 +1188,73 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final MongoFilter.RegexBudget budget) {
     // built first: an invalid filter is an error whether or not the collection exists
     final MongoFilter filter = new MongoFilter(database, q, budget);
+    // so is an invalid update, whether or not a document would be updated (issue #12070)
+    if (u != null)
+      checkUpdate(u);
     if (!database.getSchema().existsType(collectionName) || u == null)
       return UpdateCount.NONE;
 
-    // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
-    // for any shape of data). Only an update without a filter stays one SQL UPDATE.
-    // a filter the SQL cannot answer exactly (see MongoFilter) also selects the records itself
-    if (isReplacement(u) || setsDottedPath(u) || touchesId(u) || !filter.isEmpty())
-      return executeUpdateOnRecords(collectionName, filter, u, multi);
-
-    final Map<String, Object> params = new HashMap<>();
-    final StringBuilder sql = new StringBuilder("UPDATE ").append(Identifier.quote(collectionName));
-    appendUpdateOperations(sql, params, u);
-    if (!multi)
-      sql.append(" LIMIT 1");
-
-    final int modified = executeCount(sql.toString(), params);
-    if (!multi && modified == 1)
-      return new UpdateCount(1, 1);
-    // The SQL count is what the engine changed. Without a filter every record matches, so the matched count is the type's own (an
-    // O(1) counter), and differs from the changed one only by the updates a listener vetoed
-    // Read after the update, so a concurrent insert or delete can move it: never below what was modified, never past an int
-    final long total = database.countType(collectionName, true);
-    final int matched = (int) Math.min(Integer.MAX_VALUE, multi ? total : Math.min(1, total));
-    return new UpdateCount(Math.max(matched, modified), modified);
+    // Every update, with or without a filter, is applied to each record the filter selects (the matcher verifies the candidates, so
+    // the answer is exact for any shape of data): only there can an update that leaves a document as it was be told from one that
+    // changed it, and skip the write (issue #11445). An update without a filter used to be one SQL UPDATE, which answered every
+    // matched record as modified and applied the operators with semantics of its own (SQL "+=" concatenated a string, issue #12070)
+    return executeUpdateOnRecords(collectionName, filter, u, multi);
   }
 
   /**
-   * Whether an update operator targets the {@code _id}: MongoDB's {@code _id} is immutable, which only the record path can check
-   * against the stored value.
+   * Refuses an operator update {@code mongod} refuses when it parses it, before any document is touched (issue #12070): an operand
+   * that is not a document, an {@code $inc} by an amount that is not a number, and two paths of which one is the other or lies below
+   * it ({@code {$set: {a: 1}, $unset: {a: ''}}}, {@code {$set: {a: 1}, $inc: {'a.b': 1}}}), which would otherwise be applied one after
+   * the other, the last one winning.
    */
-  private static boolean touchesId(final Document u) {
-    for (final Object operand : u.values())
-      if (operand instanceof Document fields && fields.containsKey("_id"))
-        return true;
-    return false;
+  private static void checkUpdate(final Document u) {
+    if (isReplacement(u))
+      return;
+    // every path named so far, and every proper prefix of them: a conflict is a path met in either set
+    final Set<String> paths = new HashSet<>();
+    final Set<String> prefixes = new HashSet<>();
+    for (final Map.Entry<String, Object> entry : u.entrySet()) {
+      final String op = entry.getKey();
+      if (!(entry.getValue() instanceof Document operand))
+        throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
+            "Modifiers operate on fields but we found type " + typeName(entry.getValue()) + " instead. For example: {$mod: {<field>: ...}} not {"
+                + op + ": " + entry.getValue() + "}");
+      for (final Map.Entry<String, Object> field : operand.entrySet()) {
+        final String path = field.getKey();
+        if ("$inc".equals(op) && !(field.getValue() instanceof Number))
+          throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch", "Cannot increment with non-numeric argument: {" + path + ": " + field.getValue() + "}");
+
+        if (paths.contains(path) || prefixes.contains(path))
+          throw conflict(path, path);
+        for (int dot = path.indexOf('.'); dot > 0; dot = path.indexOf('.', dot + 1)) {
+          final String prefix = path.substring(0, dot);
+          if (paths.contains(prefix))
+            throw conflict(path, prefix);
+          prefixes.add(prefix);
+        }
+        paths.add(path);
+      }
+    }
+  }
+
+  private static MongoServerError conflict(final String path, final String at) {
+    return new MongoServerError(CONFLICTING_UPDATE_OPERATORS, "ConflictingUpdateOperators", "Updating the path '" + path + "' would create a conflict at '" + at + "'");
+  }
+
+  /** The BSON type name of a value, for an error message. */
+  private static String typeName(final Object value) {
+    return switch (value) {
+      case null -> "null";
+      case String ignored -> "string";
+      case Boolean ignored -> "bool";
+      case Number ignored -> "number";
+      case List<?> ignored -> "array";
+      case Map<?, ?> ignored -> "object";
+      case com.arcadedb.database.Document ignored -> "object";
+      case Date ignored -> "date";
+      case Temporal ignored -> "date";
+      default -> value.getClass().getSimpleName();
+    };
   }
 
   /**
@@ -1053,21 +1266,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       if (!(op.getValue() instanceof Document fields) || !fields.containsKey("_id"))
         continue;
       if (!"$set".equals(op.getKey()) || (stored != null && !sameId(stored, idValue(fields.get("_id")))))
-        throw new MongoServerError(66, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
+        throw new MongoServerError(IMMUTABLE_FIELD, "ImmutableField", "Performing an update on the path '_id' would modify the immutable field '_id'");
     }
-  }
-
-  /**
-   * Whether any operator targets a dotted path. All of them go through the record path together, so {@code $set}, {@code $unset}
-   * and {@code $inc} behave the same (nested paths created, integral {@code $inc} kept integral) however they are combined.
-   */
-  private static boolean setsDottedPath(final Document u) {
-    for (final Object operand : u.values())
-      if (operand instanceof Document fields)
-        for (final String field : fields.keySet())
-          if (field.indexOf('.') >= 0)
-            return true;
-    return false;
   }
 
   private UpdateCount executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
@@ -1087,8 +1287,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
     final boolean replacement = isReplacement(u);
+    // the top-level properties the operators touch: only their values can change
+    final String[] touched = replacement ? null : touchedProperties(u);
     int vanished = 0;
-    int vetoed = 0;
+    int modified = 0;
     for (final RID rid : rids) {
       final MutableDocument record;
       try {
@@ -1103,18 +1305,78 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         ++vanished;
         continue;
       }
-      if (replacement)
+      final boolean changed;
+      if (replacement) {
+        final Map<String, Object> before = record.toMap(false);
         replaceContent(record, u);
-      else {
+        changed = !sameValue(before, record.propertiesAsMap());
+      } else {
         checkIdUntouched(record, u);
+        final Object[] before = new Object[touched.length];
+        for (int i = 0; i < touched.length; i++)
+          before[i] = record.getIfPresent(touched[i], ABSENT);
         applyOperatorsToDocument(record, u);
+        boolean anyChanged = false;
+        for (int i = 0; i < touched.length && !anyChanged; i++)
+          anyChanged = !sameValue(before[i], record.getIfPresent(touched[i], ABSENT));
+        changed = anyChanged;
       }
-      // matched, but changed only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
-      if (!record.saveReportingVeto())
-        ++vetoed;
+      // matched, but modified only when the update changed the document, as on mongod (issue #11445): a document left as it was is not
+      // written at all. And only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
+      if (changed && record.saveReportingVeto())
+        ++modified;
     }
-    final int matched = rids.size() - vanished;
-    return new UpdateCount(matched, matched - vetoed);
+    return new UpdateCount(rids.size() - vanished, modified);
+  }
+
+  /** The top-level properties the operators of {@code u} write: the head of each path. */
+  private static String[] touchedProperties(final Document u) {
+    final Set<String> heads = new LinkedHashSet<>();
+    for (final Object operand : u.values())
+      if (operand instanceof Document fields)
+        for (final String path : fields.keySet()) {
+          final int dot = path.indexOf('.');
+          heads.add(dot < 0 ? path : path.substring(0, dot));
+        }
+    return heads.toArray(new String[0]);
+  }
+
+  /**
+   * Whether two property values are the same, as mongod compares a document before and after an update: of the same type and value, a
+   * map or a list element by element. Anything this cannot compare (an embedded record against a map) reads as different, so a change
+   * is never missed: at worst a document left as it was is written and counted.
+   */
+  static boolean sameValue(final Object a, final Object b) {
+    // identity on purpose, not equals(): a dotted $set copies only the maps on its path and shares every other value by reference, so a
+    // no-op must not walk a large sibling list element by element to find it unchanged
+    if (a == b) // NOPMD: identity is the point, a value shared by reference is unchanged without walking it
+      return true;
+    // maps and lists first: Map.equals() ignores the order of the fields, which mongod does not, and a list compares its elements with it
+    if (a instanceof Map<?, ?> mapA && b instanceof Map<?, ?> mapB) {
+      if (mapA.size() != mapB.size())
+        return false;
+      // in iteration order: an embedded document whose fields were reordered is a different document on mongod, written and counted
+      final Iterator<? extends Map.Entry<?, ?>> entriesB = mapB.entrySet().iterator();
+      for (final Map.Entry<?, ?> entryA : mapA.entrySet()) {
+        final Map.Entry<?, ?> entryB = entriesB.next();
+        if (!Objects.equals(entryA.getKey(), entryB.getKey()) || !sameValue(entryA.getValue(), entryB.getValue()))
+          return false;
+      }
+      return true;
+    }
+    if (a instanceof List<?> listA && b instanceof List<?> listB) {
+      if (listA.size() != listB.size())
+        return false;
+      for (int i = 0; i < listA.size(); i++)
+        if (!sameValue(listA.get(i), listB.get(i)))
+          return false;
+      return true;
+    }
+    if (a instanceof byte[] bytesA && b instanceof byte[] bytesB)
+      return Arrays.equals(bytesA, bytesB);
+    // the values of one class compare by value (an Integer is never equal to a Long, the same 1 stored with another BSON type), the
+    // ABSENT marker and null by identity
+    return Objects.equals(a, b);
   }
 
   /**
@@ -1125,7 +1387,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Object storedId = record.get("_id");
     final Object newId = replacement.containsKey("_id") ? idValue(replacement.get("_id")) : storedId;
     if (storedId != null && !sameId(storedId, newId))
-      throw new MongoServerError(66, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
+      throw new MongoServerError(IMMUTABLE_FIELD, "ImmutableField", "After applying the update, the (immutable) field '_id' was found to have been altered");
 
     for (final String name : new ArrayList<>(record.getPropertyNames()))
       if (!"_id".equals(name))
@@ -1145,11 +1407,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
-    // Tracks the _id's own BSON type as seeded, independently of the hex string it ends up stored as: a client
-    // that filtered on an ObjectId gets an ObjectId back, but a client that filtered on a plain 24-hex-char String
-    // (indistinguishable from an ObjectId's hex once stored) must get that String type back, not a promoted one.
-    boolean idIsObjectId = false;
-
     // Seed the new document with the filter's top-level equalities, mirroring MongoDB upsert.
     if (q != null)
       for (final Map.Entry<String, Object> entry : q.entrySet()) {
@@ -1163,126 +1420,57 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             // a regex in the filter is a pattern to match, not a value to insert
             if (eqValue instanceof BsonRegularExpression)
               continue;
-            if ("_id".equals(field) && eqValue instanceof ObjectId)
-              idIsObjectId = true;
             record.set(field, MongoBsonValues.toStored(field, eqValue));
           }
         } else {
           if (value instanceof BsonRegularExpression)
             continue;
-          if ("_id".equals(field) && value instanceof ObjectId)
-            idIsObjectId = true;
           record.set(field, MongoBsonValues.toStored(field, value));
         }
       }
 
     if (isReplacement(u)) {
-      for (final Map.Entry<String, Object> entry : u.entrySet()) {
-        final Object value = entry.getValue();
-        // Last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides whatever type
-        // the filter seeded, rather than only ever promoting it to true and leaking a stale ObjectId flag if the
-        // replacement's own _id is some other type.
-        if ("_id".equals(entry.getKey()))
-          idIsObjectId = value instanceof ObjectId;
-        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), value));
-      }
-    } else {
-      final Boolean setIdIsObjectId = applyOperatorsToDocument(record, u);
-      if (setIdIsObjectId != null)
-        idIsObjectId = setIdIsObjectId;
-    }
+      // last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides what the filter seeded
+      for (final Map.Entry<String, Object> entry : u.entrySet())
+        record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), entry.getValue()));
+    } else
+      applyOperatorsToDocument(record, u);
 
     // has(), not get() == null: an explicit "_id": null in the filter/update is a legal (if unusual) BSON _id and
     // must be preserved, whereas a genuinely absent _id needs one generated.
-    if (!record.has("_id")) {
-      record.set("_id", new ObjectId().getHexData());
-      idIsObjectId = true;
-    }
+    if (!record.has("_id"))
+      record.set("_id", MongoBsonValues.toStored("_id", new ObjectId()));
 
     if (!record.saveReportingVeto())
       return UPSERT_VETOED;
 
-    final Object id = record.get("_id");
-    return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
+    // the stored _id tells an ObjectId from a String with the same hex (issue #12073): read back as a find would answer it
+    return MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"));
   }
 
   /**
-   * Applies the update operators to the record being upserted, returning whether an ObjectId-typed {@code _id} was
-   * seeded through {@code $set} - mirroring the same tracking the filter-seeding loop and the replacement branch in
-   * {@link #executeUpsert} already do, so the response reports {@code _id} back as an ObjectId regardless of which
-   * branch supplied it. {@code null} means {@code $set} never touched {@code _id} at all, so the caller should keep
-   * whatever the filter-seeding loop already determined instead of overriding it - unlike a plain {@code boolean}
-   * OR, this lets a non-{@code ObjectId} {@code $set}-supplied {@code _id} correctly override (rather than leak
-   * through) a {@code true} the filter already seeded.
+   * Applies the update operators to a record, in the order they are given: {@link #checkUpdate} has refused two of them on the same
+   * path, so the order cannot change the result.
    */
-  private Boolean applyOperatorsToDocument(final MutableDocument record, final Document u) {
-    Boolean idIsObjectId = null;
+  private void applyOperatorsToDocument(final MutableDocument record, final Document u) {
     for (final Map.Entry<String, Object> entry : u.entrySet()) {
       final String op = entry.getKey();
       final Document operand = (Document) entry.getValue();
       switch (op) {
       case "$set" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet()) {
-          final Object value = f.getValue();
-          if ("_id".equals(f.getKey()))
-            idIsObjectId = value instanceof ObjectId;
-          setPath(record, f.getKey(), "_id".equals(f.getKey()) ? idValue(value) : toMapValue(value));
-        }
+        for (final Map.Entry<String, Object> f : operand.entrySet())
+          setPath(record, f.getKey(), "_id".equals(f.getKey()) ? idValue(f.getValue()) : toMapValue(f.getValue()));
       }
       case "$unset" -> {
         for (final String f : operand.keySet())
           unsetPath(record, f);
       }
       case "$inc" -> {
-        for (final Map.Entry<String, Object> f : operand.entrySet())
-          // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
-          setPath(record, f.getKey(), MongoBsonValues.toStored(add(numberOf(getPath(record, f.getKey())), numberOf(f.getValue()))));
-      }
-      default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
-      }
-    }
-    return idIsObjectId;
-  }
-
-  /**
-   * Appends the update clauses for a BSON update document, binding every value it carries into {@code params} rather than
-   * spelling it into {@code sql}. Field names are the exception: SQL cannot bind a property name, so {@code $unset} and
-   * {@code $inc} quote theirs as identifiers.
-   * <p>
-   * {@code params} must be empty on entry and hold only generated placeholders afterwards: names are derived from the map's
-   * current size, so a pre-seeded map would silently reuse one. A caller that also appends a WHERE clause must share this
-   * same map, which continues the numbering instead of colliding with it.
-   */
-  static void appendUpdateOperations(final StringBuilder sql, final Map<String, Object> params, final Document u) {
-    assert params.isEmpty();
-
-    if (isReplacement(u)) {
-      sql.append(" CONTENT ");
-      MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(u, true));
-      return;
-    }
-
-    for (final Map.Entry<String, Object> entry : u.entrySet()) {
-      final String op = entry.getKey();
-      final Document operand = (Document) entry.getValue();
-      switch (op) {
-      case "$set" -> {
-        sql.append(" MERGE ");
-        MongoDBToSqlTranslator.bindStored(sql, params, documentToMap(operand, true));
-      }
-      case "$unset" -> {
-        sql.append(" REMOVE ");
-        int i = 0;
-        for (final String field : operand.keySet()) {
-          if (i++ > 0)
-            sql.append(", ");
-          sql.append(MongoDBToSqlTranslator.quoteFieldPath(field));
-        }
-      }
-      case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet()) {
-          sql.append(" SET ").append(MongoDBToSqlTranslator.quoteFieldPath(f.getKey())).append(" += ");
-          MongoDBToSqlTranslator.buildValue(sql, params, (Number) f.getValue());
+          final Object current = getPath(record, f.getKey());
+          final Number delta = (Number) f.getValue();
+          // toStored: a Decimal128 delta added to a missing field is a Number that must still become a DECIMAL
+          setPath(record, f.getKey(), MongoBsonValues.toStored(current == MISSING ? delta : inc(current, delta, record, f.getKey())));
         }
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
@@ -1368,21 +1556,33 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return copy;
   }
 
+  /**
+   * The value stored at a possibly dotted path, {@link #MISSING} where there is none: a stored null is a value, which {@code $inc}
+   * refuses, while a missing field is set to the amount.
+   */
   private static Object getPath(final MutableDocument record, final String path) {
     final int dot = path.indexOf('.');
     if (dot < 0)
-      return record.get(path);
+      return record.has(path) ? record.get(path) : MISSING;
 
-    Object current = record.get(path.substring(0, dot));
+    final String head = path.substring(0, dot);
+    if (!record.has(head))
+      return MISSING;
+    Object current = record.get(head);
     for (final String segment : path.substring(dot + 1).split("\\.")) {
-      if (current instanceof Map<?, ?> map)
-        current = map.get(keyNamed(map, segment));
-      else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
+      if (current instanceof Map<?, ?> map) {
+        final Object key = keyNamed(map, segment);
+        if (!map.containsKey(key))
+          return MISSING;
+        current = map.get(key);
+      } else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
         current = list.get(Integer.parseInt(segment));
-      else if (current instanceof com.arcadedb.database.Document embedded)
+      else if (current instanceof com.arcadedb.database.Document embedded) {
+        if (!embedded.has(segment))
+          return MISSING;
         current = embedded.get(segment);
-      else
-        return null;
+      } else
+        return MISSING;
     }
     return current;
   }
@@ -1416,11 +1616,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * MongoDB refuses to create a field below a scalar or an array (with a non-numeric key) instead of replacing it: doing so
-   * here would silently destroy the stored value.
+   * here would silently destroy the stored value. The refusal names the kind of the stored value, never the value: the text reaches
+   * the client in production mode too, and the value is stored data.
    */
   private static void requireEmbedded(final Object container, final String field) {
     if (container != null && !isEmbedded(container))
-      throw new MongoServerError(28, "PathNotViable", "Cannot create field '" + field + "' in element {" + container + "}");
+      throw new MongoServerError(PATH_NOT_VIABLE, "PathNotViable",
+          "Cannot create field '" + field + "' in an element of type " + (container instanceof List ? "array" : container.getClass().getSimpleName()));
   }
 
   /**
@@ -1432,10 +1634,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return Objects.equals(stored, replacement);
   }
 
-  private static Number numberOf(final Object value) {
-    if (value == null || value instanceof Number)
-      return (Number) value;
-    throw new MongoServerError(14, "TypeMismatch", "Cannot apply $inc to a value of non-numeric type");
+  /**
+   * {@code $inc} of a stored value, which must be a number: a null, a string, a boolean, an array, a date or a document is refused,
+   * as {@code mongod} refuses it (issue #12070). A Decimal128 stored tagged (a negative zero, NaN, an infinity) is a number.
+   */
+  private static Number inc(final Object stored, final Number delta, final MutableDocument record, final String path) {
+    final Object value = MongoBsonValues.isTagged(stored) ? MongoBsonValues.toBson(stored) : stored;
+    if (!(value instanceof Number current))
+      throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+          "Cannot apply $inc to a value of non-numeric type. {_id: " + record.get("_id") + "} has the field '" + path + "' of non-numeric type "
+              + typeName(value));
+    return add(current, delta, record);
   }
 
   private static boolean isEmbedded(final Object value) {
@@ -1453,23 +1662,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long), anything else is a double.
+   * {@code $inc}: integral operands stay integral (an int that overflows becomes a long, a long that overflows is refused as
+   * {@code mongod} refuses it, issue #12070), a decimal operand makes a decimal, anything else is a double.
    */
-  private static Number add(final Number current, final Number delta) {
-    if (current == null)
-      return delta;
+  private static Number add(final Number current, final Number delta, final MutableDocument record) {
     if (isIntegral(current) && isIntegral(delta)) {
       final long sum;
       try {
         sum = Math.addExact(current.longValue(), delta.longValue());
       } catch (final ArithmeticException e) {
-        // like MongoDB, an overflowing long becomes a double
-        return current.doubleValue() + delta.doubleValue();
+        throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(),
+            "Failed to apply $inc operations to current value ((NumberLong)" + current + ") for document {_id: " + record.get("_id") + "}");
       }
       return current instanceof Long || delta instanceof Long || sum > Integer.MAX_VALUE || sum < Integer.MIN_VALUE ? (Number) sum : (Number) (int) sum;
     }
     if (current instanceof BigDecimal || delta instanceof BigDecimal || current instanceof Decimal128 || delta instanceof Decimal128)
-      return MongoBsonValues.toBigDecimal(current).add(MongoBsonValues.toBigDecimal(delta));
+      return MongoBsonValues.addDecimal(current, delta);
     return current.doubleValue() + delta.doubleValue();
   }
 
@@ -1529,20 +1737,20 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * Converts a BSON document into the map bound as the payload of {@code UPDATE ... MERGE} / {@code ... CONTENT}. Insertion
-   * order is preserved so a replacement document reaches the record in wire order.
+   * Converts an embedded BSON document into the map a record stores. Insertion order is preserved so the document reaches the record
+   * in wire order.
    */
-  private static Map<String, Object> documentToMap(final Document doc, final boolean topLevel) {
+  private static Map<String, Object> documentToMap(final Document doc) {
     final Map<String, Object> map = LinkedHashMap.newLinkedHashMap(doc.size());
     for (final Map.Entry<String, Object> entry : doc.entrySet())
-      map.put(entry.getKey(), topLevel && "_id".equals(entry.getKey()) ? MongoBsonValues.toStored("_id", entry.getValue()) : toMapValue(entry.getValue()));
+      map.put(entry.getKey(), toMapValue(entry.getValue()));
     return map;
   }
 
   private static Object toMapValue(final Object value) {
     if (value instanceof Document document) {
       MongoBsonValues.checkNotReserved(document);
-      return documentToMap(document, false);
+      return documentToMap(document);
     } else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)
@@ -1561,6 +1769,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private int getOptionalNumber(final Document query, final String fieldName, final int defaultValue) {
     final Number limitNumber = (Number) query.get(fieldName);
     return limitNumber != null ? limitNumber.intValue() : defaultValue;
+  }
+
+  /**
+   * A numeric option of a command, {@code defaultValue} when it is absent or null; any other kind is refused as mongod refuses it.
+   */
+  private static long getOptionalLong(final Document query, final String fieldName, final long defaultValue) {
+    final Object value = query.get(fieldName);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof Number number)
+      return number.longValue();
+    throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+        "BSON field '" + fieldName + "' is the wrong type '" + typeName(value) + "', expected type 'number'");
   }
 
   private synchronized void clearLastStatus(final Channel channel) {

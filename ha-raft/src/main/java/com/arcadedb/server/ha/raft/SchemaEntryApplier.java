@@ -103,6 +103,18 @@ final class SchemaEntryApplier {
 
     final DatabaseInternal db = sm.databaseFor(decoded.databaseName());
 
+    // Issue #11946: an entry the previous session of this node already applied to the copy on disk, coming back with the replay
+    // that follows a restart. Its schema document is older than the copy's, and writing it took out of the schema what later
+    // entries added - an index, which a transaction committed through this node meanwhile then left out of its pages, on every
+    // node - until the replay reached them again. Its files, its renames and its document are already there, or superseded:
+    // only its pages are applied, which their versions keep idempotent.
+    final boolean appliedBefore = sm.appliedIndexes.appliedByPreviousSession(decoded.databaseName(), entryIndex)
+        && !createsAFileTheCopyHoldsUnderAnotherName(db, decoded.filesToAdd());
+    if (appliedBefore)
+      HALog.log(sm, HALog.DETAILED,
+          "Schema entry %d of database '%s' was applied by the previous session: keeping the schema and the files of the copy",
+          entryIndex, decoded.databaseName());
+
     HALog.log(sm, HALog.DETAILED,
         "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, schemaPayload=%s",
         decoded.databaseName(), entryIndex,
@@ -183,10 +195,12 @@ final class SchemaEntryApplier {
         sealedShardsOf(decoded), ArcadeStateMachine.SEALED_INSTALL_LOCK_TIMEOUT_MS)) {
       // Before anything that reads the schema this entry publishes: it names the renamed files by their new names
       // (issue #9762)
-      renameFiles(db, decoded.filesToRename());
+      if (!appliedBefore) {
+        renameFiles(db, decoded.filesToRename());
 
-      if (decoded.filesToAdd() != null)
-        sm.createNewFiles(db, decoded.filesToAdd());
+        if (decoded.filesToAdd() != null)
+          sm.createNewFiles(db, decoded.filesToAdd());
+      }
 
       // Install any TimeSeries sealed-store blobs BEFORE applying the WAL (issue #4382). The WAL
       // below carries the mutable-bucket clear; installing the sealed file first guarantees a query
@@ -199,10 +213,13 @@ final class SchemaEntryApplier {
       // data-loss window applySealedBlobs closes for a store that fits inline.
       applySealedChunks(db, decoded.sealedFileChunks());
 
-      if (decoded.schemaDelta() != null)
-        applySchemaDelta(db, decoded);
-      else if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
-        db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
+      // The copy of an entry applied before holds this document or a newer one
+      if (!appliedBefore) {
+        if (decoded.schemaDelta() != null)
+          applySchemaDelta(db, decoded);
+        else if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
+          db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
+      }
 
       // File ids this entry wrote pages into. The incremental refresh below re-runs the load hooks of the
       // already-registered components among them, which is what re-reads an LSM mutable index' page 0 - the full
@@ -266,7 +283,7 @@ final class SchemaEntryApplier {
       // the index - a schema write a replica may not perform - which failed the apply and escalated the
       // whole database to a snapshot resync. Retiring last closes that window: by then page 0 already
       // names the new file.
-      if (decoded.filesToRemove() != null)
+      if (!appliedBefore && decoded.filesToRemove() != null)
         for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
           db.getPageManager().deleteFile(db, fileEntry.getKey());
           db.getFileManager().dropFile(fileEntry.getKey());
@@ -286,7 +303,7 @@ final class SchemaEntryApplier {
       // only the files this entry created or wrote to, and refuses - returning false, having changed nothing - for
       // every entry whose effect it cannot express (a retired file, a compacted index, a bloom filter, a new
       // dictionary), which is what keeps the ordering guarantees of #4743 and #5443 on the full-rebuild path.
-      if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
+      if (!appliedBefore && !sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
         final LocalSchema schema = db.getSchema().getEmbedded();
         final IncrementalLoadRefusal refusal;
         if (!incrementalSchemaApplyEnabled())
@@ -453,6 +470,24 @@ final class SchemaEntryApplier {
   }
 
   /**
+   * Whether {@code filesToAdd} names a file id the copy holds under another name (issue #11946). A replayed entry at or below the
+   * position the previous session reached is then not one that session applied to this copy: it is an entry of a previous
+   * incarnation of the database, dropped and created again since, and its pages name by file id files the current copy uses for
+   * others. Skipping its file creation and applying its pages would write them into those files whenever their versions line up,
+   * so such an entry takes the full apply, whose {@link ArcadeStateMachine#createNewFiles} refuses the id and sends the database
+   * to the quarantine and the resync, before any of its pages or its document is applied.
+   */
+  private static boolean createsAFileTheCopyHoldsUnderAnotherName(final DatabaseInternal db, final Map<Integer, String> filesToAdd) {
+    if (filesToAdd == null)
+      return false;
+    for (final Map.Entry<Integer, String> file : filesToAdd.entrySet())
+      if (db.getFileManager().existsFile(file.getKey()) && !db.getFileManager().getFile(file.getKey()).getFileName()
+          .equals(file.getValue()))
+        return true;
+    return false;
+  }
+
+  /**
    * Moves the component files a schema entry renamed (issue #9762): a type rename on the leader moved its bucket and
    * index files under the new type name, and the schema this entry publishes names them so. Each file is renamed through
    * its component, the way the leader renamed it, so the component, the file manager and the file on disk all follow.
@@ -505,7 +540,7 @@ final class SchemaEntryApplier {
    * does not hold - for example a rolling upgrade shipping a type this node's build cannot construct - which is a
    * silent, permanent divergence on replicated data against one SEVERE log line.
    */
-  // Package-private rather than private so Issue6839TsSealedBlobRecoveryTest can drive the apply path directly:
+  // Package-private rather than private so SealedBlobRepairAndRefusalTest.EngineRepair can drive the apply path directly:
   // the recovery it pins is entirely inside this method, and a 3-node IT would only add flakiness to prove it.
   void applySealedBlobs(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedBlob> blobs)
       throws IOException {
@@ -967,7 +1002,7 @@ final class SchemaEntryApplier {
    * operator can turn the incremental refresh off on a running server and have the very next applied entry go back
    * to the full rebuild, without a restart.
    */
-  // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
+  // @VisibleForTesting - SchemaIncrementalApplyGateTest pins the "read per entry, never cached" half,
   // which is the half a reader cannot tell from the call site and which HaSchemaDeltaReplicationFullRebuildIT cannot show
   // (it sets the value once, at server start).
   boolean incrementalSchemaApplyEnabled() {

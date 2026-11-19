@@ -137,11 +137,7 @@ public class LogicalExpression implements BooleanExpression {
   }
 
   private static Boolean toBoolean(final Object value) {
-    if (value == null)
-      return null;
-    if (value instanceof Boolean)
-      return (Boolean) value;
-    return true;
+    return BooleanCoercionExpression.toPredicate(value);
   }
 
   @Override

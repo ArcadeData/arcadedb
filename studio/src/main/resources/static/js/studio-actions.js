@@ -83,7 +83,7 @@ var STUDIO_ACTIONS = new Set([
   "createGraphAnalyticalView", "createMaterializedView", "createTimeSeriesType", "createType", "cropSelection",
   "cutSelection", "deleteBackupAction", "deletePropertyFromRecord", "deleteRecord", "deleteSavedQuery",
   "deleteSelectedHistory", "displaySchema", "dropDatabase", "enableBackupConfig", "executeSavedQuery", "exportGraph",
-  "exportSettings", "filterFunctionReference", "filterHistoryEntries", "globalActivateTab",
+  "exportSettings", "filterFunctionReference", "filterHistoryEntries", "filterTypeSidebar", "globalActivateTab",
   "hideSelectedGraphElements", "importGraph", "importSampleDatabase", "importSettings", "insertFunctionSyntax",
   "invertVertexSelection", "loadDatabaseBackups", "loadDatabaseMetrics", "loadHistoryEntry", "loadNodeNeighbors",
   "loadPresenceMatrix", "loadQuickHistoryEntry", "loadSavedQuery", "loadStorageBuckets", "loadStorageDictionary",

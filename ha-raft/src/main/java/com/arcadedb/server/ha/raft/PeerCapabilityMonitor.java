@@ -25,7 +25,6 @@ import com.arcadedb.server.http.HttpServer;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -162,6 +161,11 @@ final class PeerCapabilityMonitor {
    * {@link PeerCapabilityRegistry#suspend} drops the belief without settling the report shadow, and
    * {@link #forgetUnanswered} settles it for whatever the second pass did not recover.
    * <p>
+   * One thing outlives an {@link PeerCapabilityRegistry.UnknownKind#UNREACHABLE} failure: the capabilities of the peer's last
+   * answer, which the gate of the framed {@code TX_ENTRY} sections still reads (issue #12122). A probe that got no answer says
+   * nothing about the build behind the peer id, and a peer that is merely down must not switch the #8686 refusal off for
+   * every other node. Every answer replaces them, and a 404 or a refused address drops them.
+   * <p>
    * <b>Two passes, because a shared address is still worth asking.</b> On a cluster that declares no {@code http}
    * ports, peers sharing a host have their endpoints derived onto one address (#6202, #6267) and
    * {@link PeerDialAddress} withholds it - correctly, for a request that acts on the peer it addressed. This one
@@ -198,8 +202,8 @@ final class PeerCapabilityMonitor {
       // already dropped by the time a peer lands in here (issue #7331); what this map defers is the REPORT, so a
       // peer that identifies itself in the second pass is never also WARNED ABOUT for the refusal that sent us
       // looking for it.
-      final Map<String, PeerCapabilityRegistry.Unknown> unanswered = new LinkedHashMap<>();
-      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints = new LinkedHashSet<>();
+      final Map<String, Unanswered> unanswered = new LinkedHashMap<>();
+      final Map<PeerDialAddress.SharedEndpoint, List<String>> sharedEndpoints = new LinkedHashMap<>();
 
       for (final RaftPeer peer : peers) {
         final RaftPeerId peerId = peer.getId();
@@ -215,14 +219,18 @@ final class PeerCapabilityMonitor {
           // round has no answer from, so whatever it said last is dropped now rather than after pass 2.
           // ADDRESS_REFUSED, not UNREACHABLE (issue #8655): the reason is this node's configuration, so it says
           // nothing about the peer and nothing about what another node's probe will get.
+          // A peer whose address is refused only because it is shared is still asked, at that address, below: the refusal is
+          // this node's configuration and not the peer's answer, so what it last answered stays held for the framed sections
+          // exactly as for a peer with an address of its own (issue #12122). One with no address to ask at all drops it, or
+          // nothing would ever end the hold.
           suspendPeer(generation, unanswered, peerId.toString(), dial.refusal(),
-              PeerCapabilityRegistry.UnknownKind.ADDRESS_REFUSED);
+              PeerCapabilityRegistry.UnknownKind.ADDRESS_REFUSED, dial.sharedEndpoint() != null);
           // A SET of the whole endpoint, so N peers collapsed onto one cost one probe and not N identical ones -
           // and two peers whose HTTP halves collide while their declared HTTPS halves do not still get a probe
           // each. Deduplicating on the HTTP address alone would have dropped the second peer's HTTPS endpoint,
           // which on an SSL cluster is the endpoint actually dialled (issue #7256).
           if (dial.sharedEndpoint() != null)
-            sharedEndpoints.add(dial.sharedEndpoint());
+            sharedEndpoints.computeIfAbsent(dial.sharedEndpoint(), k -> new ArrayList<>(2)).add(peerId.toString());
           continue;
         }
 
@@ -285,9 +293,10 @@ final class PeerCapabilityMonitor {
    * @return {@code false} when the round was interrupted and the caller must stand down without settling.
    */
   private boolean probeSharedEndpoints(final long generation,
-      final Set<PeerDialAddress.SharedEndpoint> sharedEndpoints, final List<String> peerIds,
-      final Map<String, PeerCapabilityRegistry.Unknown> unanswered, final String clusterToken) {
-    for (final PeerDialAddress.SharedEndpoint endpoint : sharedEndpoints) {
+      final Map<PeerDialAddress.SharedEndpoint, List<String>> sharedEndpoints, final List<String> peerIds,
+      final Map<String, Unanswered> unanswered, final String clusterToken) {
+    for (final Map.Entry<PeerDialAddress.SharedEndpoint, List<String>> shared : sharedEndpoints.entrySet()) {
+      final PeerDialAddress.SharedEndpoint endpoint = shared.getKey();
       try {
         final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(null, endpoint.httpAddress(),
             endpoint.httpsAddress(), clusterToken);
@@ -317,6 +326,16 @@ final class PeerCapabilityMonitor {
         LogManager.instance().log(ha, Level.FINE,
             "No peer identified itself at the shared address %s: %s", endpoint.httpAddress(),
             describeProbeFailure(e));
+        // A 404 there is an answer from a build without the capability route, and it cannot say which peer gave it: every peer
+        // behind the address gives up what it last answered, as a 404 on its own address would make it (issue #12122)
+        if (e instanceof PeerCapabilityQuery.RouteMissingException)
+          for (final String peerId : shared.getValue()) {
+            final Unanswered held = unanswered.get(peerId);
+            if (held != null && held.holdLastAnswer()) {
+              ha.peerCapabilities.suspend(generation, peerId, held.reason(), held.kind(), false);
+              unanswered.put(peerId, new Unanswered(held.reason(), held.kind(), false));
+            }
+          }
       }
     }
     return true;
@@ -339,16 +358,28 @@ final class PeerCapabilityMonitor {
    * into one log line rather than one per refresh period - {@link #forgetPeerCapabilities} answers on the
    * transition only.
    */
-  private void forgetUnanswered(final long generation, final Map<String, PeerCapabilityRegistry.Unknown> unanswered) {
-    for (final Map.Entry<String, PeerCapabilityRegistry.Unknown> entry : unanswered.entrySet())
+  private void forgetUnanswered(final long generation, final Map<String, Unanswered> unanswered) {
+    for (final Map.Entry<String, Unanswered> entry : unanswered.entrySet())
       forgetPeerCapabilities(generation, entry.getKey(), entry.getValue());
   }
 
+  /**
+   * Why a peer has no answer yet this round, and whether what it last answered stays held for the framed {@code TX_ENTRY}
+   * sections meanwhile (issue #12122): see {@link PeerCapabilityRegistry#forget(long, String, String, PeerCapabilityRegistry.UnknownKind, boolean)}.
+   */
+  private record Unanswered(String reason, PeerCapabilityRegistry.UnknownKind kind, boolean holdLastAnswer) {
+  }
+
   /** Drops the belief in {@code peerId} now and defers its report to the end of the round (issue #7331). */
-  private void suspendPeer(final long generation, final Map<String, PeerCapabilityRegistry.Unknown> unanswered,
+  private void suspendPeer(final long generation, final Map<String, Unanswered> unanswered,
       final String peerId, final String reason, final PeerCapabilityRegistry.UnknownKind kind) {
-    ha.peerCapabilities.suspend(generation, peerId, reason, kind);
-    unanswered.put(peerId, new PeerCapabilityRegistry.Unknown(reason, kind));
+    suspendPeer(generation, unanswered, peerId, reason, kind, PeerCapabilityRegistry.holdsLastAnswer(kind));
+  }
+
+  private void suspendPeer(final long generation, final Map<String, Unanswered> unanswered,
+      final String peerId, final String reason, final PeerCapabilityRegistry.UnknownKind kind, final boolean holdLastAnswer) {
+    ha.peerCapabilities.suspend(generation, peerId, reason, kind, holdLastAnswer);
+    unanswered.put(peerId, new Unanswered(reason, kind, holdLastAnswer));
   }
 
   private void recordPeerCapabilities(final long generation, final String peerId,
@@ -360,8 +391,7 @@ final class PeerCapabilityMonitor {
           new TreeSet<>(advertisement.capabilities()));
   }
 
-  private void forgetPeerCapabilities(final long generation, final String peerId,
-      final PeerCapabilityRegistry.Unknown unknown) {
+  private void forgetPeerCapabilities(final long generation, final String peerId, final Unanswered unknown) {
     final String reason = unknown.reason();
     // Reported on the TRANSITION into the failed state and not once per refresh period: a peer that is
     // permanently on an older build is the steady state of a half-finished rolling upgrade, and a line every five
@@ -372,10 +402,13 @@ final class PeerCapabilityMonitor {
     // The registry answers that question, because the shadow map deciding it has to be pruned by whatever prunes
     // the entry it shadows - held here, nothing pruned it, and a re-added peer's first advertisement was
     // suppressed against what it said before it left (issue #7301).
-    if (ha.peerCapabilities.forget(generation, peerId, reason, unknown.kind()))
+    if (ha.peerCapabilities.forget(generation, peerId, reason, unknown.kind(), unknown.holdLastAnswer()))
       LogManager.instance().log(ha, Level.WARNING,
-          "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be "
-              + "written to this cluster until it answers again", peerId, reason);
+          "Peer '%s' does not advertise any cluster capability (%s); optional wire-format sections will not be written to this "
+              + "cluster until it answers again%s", peerId, reason,
+          unknown.holdLastAnswer()
+              ? ", except the framed transaction sections it advertised in its last answer (issue #12122)"
+              : "");
   }
 
   /**
@@ -406,28 +439,37 @@ final class PeerCapabilityMonitor {
    * as a reason, so the next read finds none of them never asked. The same round also runs on the capability monitor and the two can
    * overlap, which is harmless for the reason given on {@link RaftHAServer#peersMissingCapabilityNow}: writes go through the registry's
    * generation guard and a capable verdict needs a peer's own answer.
+   * <p>
+   * {@code framedSection} reads {@link RaftHAServer#peersMissingFramedSection} instead of {@link RaftHAServer#peersMissingCapability}:
+   * true for the two framed sections ({@code tx-prepared-at-index}, {@code tx-fulltext-corpus-deltas}), so a peer that is only DOWN
+   * keeps what it last advertised and one node's outage does not switch them off for every other node (issue #12122); false for the
+   * record-level float form, which an older build cannot read whatever the framing.
    */
-  boolean allPeersSupportOnceAsked(final String capability) {
-    List<String> missing = ha.peersMissingCapability(capability);
+  boolean allPeersSupportOnceAsked(final String capability, final boolean framedSection) {
+    List<String> missing = peersMissing(capability, framedSection);
     if (missing.isEmpty())
       return true;
     if (!anyNeverAsked(missing))
       return false;
 
     synchronized (coldRegistryRound) {
-      missing = ha.peersMissingCapability(capability);
+      missing = peersMissing(capability, framedSection);
       if (missing.isEmpty())
         return true;
       if (anyNeverAsked(missing)) {
         final long startedAt = System.currentTimeMillis();
         refreshPeerCapabilities();
-        missing = ha.peersMissingCapability(capability);
+        missing = peersMissing(capability, framedSection);
         LogManager.instance().log(ha, Level.FINE,
             "Asked the peers never asked about the '%s' capability before a commit needed it (%d ms); still missing: %s",
             capability, System.currentTimeMillis() - startedAt, missing);
       }
     }
     return missing.isEmpty();
+  }
+
+  private List<String> peersMissing(final String capability, final boolean framedSection) {
+    return framedSection ? ha.peersMissingFramedSection(capability) : ha.peersMissingCapability(capability);
   }
 
   private boolean anyNeverAsked(final List<String> peerIds) {
@@ -438,12 +480,14 @@ final class PeerCapabilityMonitor {
   }
 
   /**
-   * Why each peer that has not proved it can decode {@code capability} has not, for a log line an operator can act on (issue
-   * #11196): a peer never asked yet, one that answered without it (an older build), and one that could not be reached are three
-   * different remedies.
+   * Why each peer that has not proved it can decode the framed section {@code capability} has not, for a log line an operator can
+   * act on (issue #11196): a peer never asked yet, one that answered without it (an older build), and one that could not be reached
+   * are three different remedies. Read as the section gate reads ({@link RaftHAServer#peersMissingFramedSection}, issue #12122), so a
+   * peer that is merely down and still counts as capable is not named as the reason the section is withheld. Only the two "section
+   * withheld" warnings of {@link RaftReplicatedDatabase} call it; a caller for a non-framed capability must not reuse it as is.
    */
   String explainMissingCapability(final String capability) {
-    final List<String> missing = ha.peersMissingCapability(capability);
+    final List<String> missing = ha.peersMissingFramedSection(capability);
     if (missing.isEmpty())
       return "no peer is missing it";
     final StringBuilder explanation = new StringBuilder();
@@ -669,7 +713,7 @@ final class PeerCapabilityMonitor {
    * @return {@code false} when the round was interrupted and the caller must stand down without settling
    */
   private boolean probeCandidateAddresses(final long generation, final List<RaftPeer> peers,
-      final Map<String, PeerCapabilityRegistry.Unknown> unanswered, final String clusterToken) {
+      final Map<String, Unanswered> unanswered, final String clusterToken) {
     // A candidate is an HTTP address, and the probe carries the cluster token: on a cluster that asked for SSL the token
     // must not go over plain HTTP to an address nobody has confirmed yet. There the HTTPS endpoints are what the peers
     // dial each other on, and an HTTP address is learnt only from an answer on it, never by probing a candidate

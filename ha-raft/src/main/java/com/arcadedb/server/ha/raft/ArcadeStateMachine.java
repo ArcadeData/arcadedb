@@ -81,6 +81,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -1292,7 +1293,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // refusal on the leader's target (issue #10689), and a replica commits its phase 1 locally, where nothing knows of it, so
     // its entry would be acknowledged during the download and destroyed by the swap. The leader's own commits are refused in
     // the database itself. Lock-free: one volatile read of the refusals. Repeated after the reservation below.
-    // Issue10965ReplicaEntryRefusedDuringRestoreClaimTest counts the databaseFor() lookups of this method (this one is the first,
+    // RestoreAndBackupProtectionTest.ReplicaEntryRefusedDuringRestoreClaim counts the databaseFor() lookups of this method (this one is the first,
     // the validation lookup below the second): adding a lookup before the reservation means updating that test.
     if (!isLocalOrigin && databaseName != null) {
       final NeedRetryException writesRefused = writesRefusedOnLeader(databaseForValidation(databaseName));
@@ -1781,8 +1782,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
       criticalHalt.triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e, e);
-      return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
+      return CompletableFuture.failedFuture(appliedEntryFailure(index, e));
     }
+  }
+
+  /**
+   * What the future of a COMMITTED entry fails with, never a bare {@link NeedRetryException} (issue #12365). Ratis wraps the
+   * failure of {@link #applyTransaction} in a {@link StateMachineException} for the submitter, exactly as it wraps the refusal
+   * {@link #startTransaction} and {@link #preAppendTransaction} raise BEFORE the entry is appended, and
+   * {@link com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter#refusedBeforeAppend} reads a
+   * {@link StateMachineException} whose direct cause is a {@link NeedRetryException} as that refusal: the submitter withdraws
+   * its commit and answers the client a {@link ConcurrentModificationException} for an entry the log holds and every node
+   * applies, so a client that retries writes it twice. {@code applyWithRetry} keeps every {@link NeedRetryException} inside, so
+   * only an unexpected escape reaches here; it is carried one level down, inside a {@link ReplicationException}, where the
+   * refusal test does not look and the submitter answers the outcome it cannot know.
+   */
+  static Exception appliedEntryFailure(final long index, final Throwable e) {
+    if (e instanceof NeedRetryException)
+      return new ReplicationException("The committed Raft log entry at index " + index + " failed while being applied: " + e.getMessage(), e);
+    return e instanceof Exception ex ? ex : new RuntimeException(e);
   }
 
   // CriticalHaltHandler holds the implementation of these; they stay here for the callers outside this class.
@@ -2723,6 +2741,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Runs a commit that publishes its pages here ahead of the log under the validation of the database, see
+   * {@link PageVersionLedger#publishOutsideTheLog}. The ledger's reservation hook is installed on the database first: the
+   * commit takes the validation lock before its version checks, through that hook, and a database no entry was validated
+   * on yet has none, so the commit would check and publish without the lock (issue #11921).
+   * <p>
+   * Under the Raft server's publication gate, on the state machine current there: an in-place restart replaces the state
+   * machine, and with it the ledger the validations use, only between publications (issue #11921). A caller that resolved
+   * this instance before such a restart publishes on the new one.
+   */
+  <T> T publishOutsideTheLog(final DatabaseInternal db, final Callable<T> commit) throws Exception {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return publishOnThisLedger(db, commit);
+    return raft.runPublication(() -> {
+      final ArcadeStateMachine current = raft.getStateMachine();
+      return (current != null ? current : this).publishOnThisLedger(db, commit);
+    });
+  }
+
+  private <T> T publishOnThisLedger(final DatabaseInternal db, final Callable<T> commit) throws Exception {
+    installReservations(db);
+    return pageVersions.publishOutsideTheLog(db.getName(), commit);
+  }
+
+  /**
    * The reservations the engine's phase-1 check consults, resolved through the Raft server on every call: an in-place
    * Ratis restart replaces the state machine, and with it the ledger, without closing the databases, so a hook bound
    * to one state machine instance would keep consulting a ledger nothing writes to any more.
@@ -2744,6 +2787,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return (current != null ? current : fallback).pageVersions.reservedVersion(databaseName, pageId.getFileId(),
           pageId.getPageNumber());
     }
+
+    @Override
+    public void beforeVersionChecks() {
+      final ArcadeStateMachine current = raft != null ? raft.getStateMachine() : null;
+      (current != null ? current : fallback).pageVersions.lockForPublication(databaseName);
+    }
   }
 
   /** The database an entry targets, or {@code null} when it cannot be resolved here (the entry is then refused). */
@@ -2760,13 +2809,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs
-   * the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
-   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}).
+   * Installs the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
+   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}), and a commit
+   * {@link #publishOutsideTheLog} runs takes the validation lock before its version checks.
    */
-  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+  private void installReservations(final DatabaseInternal db) {
     if (db.getEmbedded() instanceof LocalDatabase local && !(local.getPageVersionReservations() instanceof LedgerReservations))
       local.setPageVersionReservations(new LedgerReservations(local.getName(), raftHAServer, this));
+  }
+
+  /** The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs the ledger. */
+  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+    installReservations(db);
 
     final FileManager fileManager = db.getFileManager();
     final PageManager pageManager = db.getPageManager();
@@ -3319,7 +3373,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * MUST stay a strict mirror of that predicate: every condition it tests has a line here, and nothing else does. The
    * hand-off reads this list after the predicate and treats an empty one as "the gap closed in between", so a condition
    * the predicate reports and this list omits would make every hand-off a silent no-op.
-   * {@code Issue8529LeaderServiceGapHandOffTest} pins the two against each other for every condition.
+   * {@code LeadershipHandOffReachabilityTest} pins the two against each other for every condition.
    */
   List<String> describeLeaderServiceGaps() {
     final List<String> gaps = new ArrayList<>(4);

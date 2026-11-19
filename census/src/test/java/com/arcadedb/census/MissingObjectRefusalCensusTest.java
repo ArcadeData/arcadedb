@@ -97,6 +97,8 @@ class MissingObjectRefusalCensusTest {
 
   /** The reviewed constructions, as {@code class#method} relative to {@code com/arcadedb}, each with why it stays. */
   private static final Map<String, String> REVIEWED = new TreeMap<>(Map.ofEntries(//
+      Map.entry("bench/data/DatasetGenerator#loadWords",
+          "the word list the benchmark tool ships with is missing from its own jar: a packaging fault, not a name a caller looked up"),
       Map.entry("query/opencypher/query/OpenCypherQueryEngine#missingUser",
           "carries an IllegalArgumentException as its cause, which every protocol reads (VALIDATION), and keeps the message the "
               + "Cypher command() rewrap would otherwise replace"),
@@ -193,6 +195,9 @@ class MissingObjectRefusalCensusTest {
       Map.entry("server/ai/AiSchemaDigest#typeDetail", TOOL),
       Map.entry("mcp/tools/MCPToolUtils#unknownDatabase", TOOL),
       Map.entry("mcp/tools/SampleRecordsTool#resolveTypeNames", TOOL),
+      Map.entry("query/opencypher/parser/CypherSemanticValidator#validateYieldedOutputs",
+          "a column the YIELD names that the procedure (which exists) does not declare: the statement's own syntax error, worded "
+              + "as Neo4j words it (Unknown procedure output), not a missing procedure (issue #11975)"),
       Map.entry("query/opencypher/parser/VariableScopeValidator#checkExpressionScope", VARIABLE),
       Map.entry("query/opencypher/parser/VariableScopeValidator#checkPatternPredicateVariables", VARIABLE),
       Map.entry("query/opencypher/parser/VariableScopeValidator#checkVarNotShadowed", VARIABLE),

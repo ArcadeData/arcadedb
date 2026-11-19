@@ -78,10 +78,10 @@ final class SecurityEntryApplier {
    * ServerSecurity.isReplicatedDocumentDurable} says both are on disk, rewrites them from memory while the node applies
    * entries, and releases the hold above too once the document is durable again, so a fixed volume stops pinning the
    * log without waiting for the next user change.
-   * Pinned by {@code Issue10086SkippedEntryHoldsTheCheckpointTest} for the hold and its release, by
-   * {@code Issue7752SecurityDurabilityFloorTest} for the record and the retry, by
-   * {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} for the applied counters, which still move, and by
-   * {@code Issue7252SecurityEntryReplayAfterRestartTest} for both branches of the restart once a later entry has
+   * Pinned by {@code AppliedIndexCheckpointTest.AppliedIndexDurability.SkippedEntryHoldsTheCheckpoint} for the hold and its release, by
+   * {@code SecurityEntryApplyFailureTest} for the record and the retry, by
+   * {@code SecurityEntryApplyFailureTest} for the applied counters, which still move, and by
+   * {@code SecurityEntryApplyFailureTest} for both branches of the restart once a later entry has
    * superseded the failed one.
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
