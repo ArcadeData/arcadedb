@@ -58,6 +58,8 @@ class CypherCompositeIndexFullKeyChoiceIssue12557Test extends TestHelper {
     createTypeWithIndexes("EI", "(tenantId, name) NOTUNIQUE", "(id) NOTUNIQUE", "(tenantId, id) NOTUNIQUE");
     // a longer key that binds the same columns: the exact key is read as a lookup, the longer one as a prefix range
     createTypeWithIndexes("EL", "(tenantId, id, name) NOTUNIQUE", "(tenantId, id) NOTUNIQUE");
+    // a UNIQUE whole key that binds fewer columns than a longer key over the same leading columns
+    createTypeWithIndexes("EV", "(tenantId, id, name) NOTUNIQUE", "(tenantId, id) UNIQUE");
   }
 
   private void createType(final String type, final boolean wholeKeyFirst) {
@@ -130,11 +132,23 @@ class CypherCompositeIndexFullKeyChoiceIssue12557Test extends TestHelper {
   }
 
   @Test
+  void aUniqueWholeKeyIsChosenOverALongerKeyThatIsFullyBound() {
+    final String query = "MATCH (e:EV {tenantId: $t, id: $v, name: 'n5'}) RETURN e.id AS id";
+    final String plan = explain(query);
+    assertThat(plan).contains("NodeIndexSeek").contains("[tenantId,id]").doesNotContain("[tenantId,id,name]");
+    assertThat(ids(query, "EV-5")).containsExactly("EV-5");
+  }
+
+  @Test
   void theColumnsOfAKeyThePatternLeavesUnboundStayPrefixSeeks() {
-    // only the tenant is bound: a prefix range of whichever index leads with it, and the id is filtered above it
-    final String query = "MATCH (e:EA {tenantId: $t}) RETURN e.id AS id";
-    assertThat(explain(query)).contains("NodeIndexSeek").doesNotContain("NodeByLabelScan");
-    assertThat(ids(query, "x")).hasSize(PER_TENANT);
+    // only the tenant is bound: both indexes lead with it and tie, so the index name picks the same one for either creation order,
+    // and the id is filtered above the prefix range
+    for (final String type : List.of("EA", "EB")) {
+      final String query = "MATCH (e:" + type + " {tenantId: $t}) RETURN e.id AS id";
+      final String plan = explain(query);
+      assertThat(plan).as("plan of %s", type).contains("NodeIndexSeek").contains("[tenantId,id]").doesNotContain("NodeByLabelScan");
+      assertThat(ids(query, "x")).as("rows of %s", type).hasSize(PER_TENANT);
+    }
   }
 
   @Test

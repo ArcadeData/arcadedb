@@ -57,6 +57,9 @@ import java.util.Set;
  * Key Insight: Start from most selective node, expand outward
  */
 public class AnchorSelector {
+  /** The order that settles a tie between two indexes that read as many rows: by name, an index with none last */
+  private static final Comparator<String> INDEX_NAME_ORDER = Comparator.nullsLast(Comparator.naturalOrder());
+
   private final StatisticsProvider statisticsProvider;
   private final CostModel costModel;
 
@@ -548,7 +551,7 @@ public class AnchorSelector {
     final boolean heldWhole = heldColumns == held.getPropertyNames().size();
     if (candidateWhole != heldWhole)
       return candidateWhole;
-    return Comparator.nullsLast(Comparator.<String>naturalOrder()).compare(candidate.getIndexName(), held.getIndexName()) < 0;
+    return INDEX_NAME_ORDER.compare(candidate.getIndexName(), held.getIndexName()) < 0;
   }
 
   /** How many leading columns of the index key the query binds: the first one is the property being sought, and a gap ends the key. */
