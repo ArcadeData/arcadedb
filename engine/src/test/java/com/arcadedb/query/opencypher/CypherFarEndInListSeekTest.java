@@ -197,25 +197,35 @@ class CypherFarEndInListSeekTest extends TestHelper {
   /**
    * The far end is sought: the pages read for 1, 10 and 200 keys do not grow with the degree of the hub. They used to be the
    * whole relationship list of the hub, and a vertex load per relationship.
+   * <p>
+   * The bound separates a cost that follows the keys from one that follows the degree. The walk reads at least one page per
+   * relationship, so it reads at least 28,000 more on the 32,000-relationship hub than on the 4,000 one (8,013 pages for 1 key
+   * on the 4,000 hub before the fix). The seek reads what the keys need, the same on both hubs. An eighth of those 28,000
+   * pages is headroom for a deeper index level and for the lookups of background work on the shared page manager, and stays
+   * far below what a walk adds. The lookups count cache hits and misses alike, so a cold or warm cache does not move them.
    */
   @Test
   void costFollowsTheKeysNotTheDegree() {
     database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 0);
     createSchema();
-    hub("small", 4_000);
-    hub("large", 32_000);
+    final int smallDegree = 4_000;
+    final int largeDegree = 32_000;
+    hub("small", smallDegree);
+    hub("large", largeDegree);
 
     for (final int keys : new int[] { 1, 10, 200 }) {
       final long small = pages(FORWARD, "small", keys);
       final long large = pages(FORWARD, "large", keys);
-      assertThat(large).as("pages read for %d keys on a 32,000-relationship hub, against %d on a 4,000 one", keys, small)
-          .isLessThanOrEqualTo(small + 4);
+      assertThat(large).as("pages read for %d keys on a %d-relationship hub, against %d on a %d one", keys, largeDegree, small,
+          smallDegree).isLessThan(small + (largeDegree - smallDegree) / 8);
     }
   }
 
   /**
-   * A vertex with few relationships is walked: a long list costs fewer pages than it has keys, so no key is sought. One
-   * seek per key reads at least one page per key.
+   * A vertex with few relationships is walked, a hub with many is sought per key. One seek per key reads at least one page per
+   * key, so the bound between the two is the number of keys: walking 20 relationships reads a few pages per relationship,
+   * far fewer than 500, and seeking 500 keys reads 500 at least. The lookups count cache hits and misses alike, so a cold or
+   * warm cache does not move them.
    */
   @Test
   void aShortListOfRelationshipsIsWalked() {
@@ -226,7 +236,7 @@ class CypherFarEndInListSeekTest extends TestHelper {
 
     // 500 keys: 20 relationships are walked, 10,000 are more than 16 per key and the keys are sought
     final int keys = 500;
-    assertThat(pages(FORWARD, "few", keys)).as("pages read walking 20 relationships for %d keys", keys).isLessThan(keys / 10);
+    assertThat(pages(FORWARD, "few", keys)).as("pages read walking 20 relationships for %d keys", keys).isLessThan(keys);
     assertThat(pages(FORWARD, "many", keys)).as("pages read seeking %d keys", keys).isGreaterThanOrEqualTo(keys);
   }
 
