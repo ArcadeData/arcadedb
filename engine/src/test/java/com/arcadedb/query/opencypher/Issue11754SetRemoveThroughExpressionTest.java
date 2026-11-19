@@ -180,6 +180,48 @@ class Issue11754SetRemoveThroughExpressionTest extends TestHelper {
     });
   }
 
+  /** A two-element list shared by the rows of an UNWIND is one value too: the first row's copy reads the second row's write. */
+  @Test
+  void aSmallSharedListFollowsEveryWrite() {
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Node)
+          WITH collect(n) AS ns
+          UNWIND ns AS m
+          SET m.v = -2 * m.v
+          WITH head(collect(ns)) AS first, count(*) AS rows
+          RETURN rows, [x IN first WHERE x.v <> -2 * x.id | x.id] AS staleFirst""")) {
+        final Result row = rs.next();
+        assertThat(row.<Number>getProperty("rows").intValue()).isEqualTo(2);
+        assertThat(row.<List<Object>>getProperty("staleFirst")).isEmpty();
+      }
+    });
+  }
+
+  /** A write in a CALL body reaches the copy of a list the outer clauses indexed, on every row. */
+  @Test
+  void aCallBodyWriteReachesAnOuterIndexedCopy() {
+    final int count = 300;
+    database.transaction(() -> database.command("opencypher", "UNWIND range(0, $last) AS i CREATE (:Probe {i: i})",
+        Map.of("last", count - 1)).close());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Probe)
+          WITH n ORDER BY n.i
+          WITH collect(n) AS ns
+          UNWIND range(0, $last) AS k
+          SET (last(ns)).b = k
+          WITH ns, k
+          CALL (ns, k) { SET (ns[k]).a = k }
+          SET (head(ns)).c = k
+          WITH head(collect(ns)) AS first
+          RETURN [x IN first WHERE x.a IS NULL OR x.a <> x.i | x.i] AS stale""", Map.of("last", count - 1))) {
+        assertThat(rs.next().<List<Object>>getProperty("stale")).isEmpty();
+      }
+    });
+  }
+
   /** A dynamic key is read before the clause writes: the removal of the key property does not turn it into a null key. */
   @Test
   void aDynamicKeyIsReadBeforeTheClauseWrites() {
