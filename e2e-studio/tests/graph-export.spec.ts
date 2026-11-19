@@ -307,11 +307,11 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
     });
 
     console.log('Clipboard test result:', clipboardTest);
+    // A failure inside the page (no graph, a refused clipboard) comes back as a truthy `{ error }`,
+    // so the error is asserted absent rather than letting it skip the assertions that follow
     expect(clipboardTest).toBeTruthy();
-
-    if (clipboardTest && !clipboardTest.error) {
-      expect(clipboardTest.success).toBe(true);
-      expect(clipboardTest.matches).toBe(true);
-    }
+    expect(clipboardTest.error).toBeUndefined();
+    expect(clipboardTest.success).toBe(true);
+    expect(clipboardTest.matches).toBe(true);
   });
 });

@@ -672,14 +672,25 @@ public final class VectorUtils {
         final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
         final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
         final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
-        return VectorUtil.dotProduct(jv1, jv2);
-      } catch (final Exception e) {
-        // Fallback to scalar
+        final float simd = VectorUtil.dotProduct(jv1, jv2);
+        // JVector forms each product and the sum in float: a product beyond Float.MAX turns into an Infinity (and two of
+        // opposite sign into a NaN) that the scalar path, widening before multiplying, does not produce. A non-finite
+        // SIMD answer is the only symptom of that, so only that answer pays for the second pass (issue #12023)
+        if (Float.isFinite(simd))
+          return simd;
+      } catch (final Exception | AssertionError e) {
+        // Fallback to scalar. JVector asserts its answer is finite, so under -ea the overflow above is an AssertionError
       }
     }
+    return scalarDotProduct(v1, v2);
+  }
+
+  private static float scalarDotProduct(final float[] v1, final float[] v2) {
     double result = 0.0;
     for (int i = 0; i < v1.length; i++)
-      result += v1[i] * v2[i];
+      // Widen before multiplying, as scalarCosineSimilarity does: a float product overflows to Infinity for components
+      // whose true inner product is an ordinary float (issue #12023)
+      result += (double) v1[i] * v2[i];
     return (float) result;
   }
 
@@ -698,16 +709,27 @@ public final class VectorUtils {
       final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
       final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
       final float squaredDistance = squareL2Distance(jv1, jv2);
-      return (float) Math.sqrt(Math.max(0.0f, squaredDistance));
-    } catch (final Exception e) {
-      // Fallback to scalar implementation
-      double sum = 0.0;
-      for (int i = 0; i < v1.length; i++) {
-        final double diff = v1[i] - v2[i];
-        sum += diff * diff;
-      }
-      return (float) Math.sqrt(sum);
+      // JVector squares and sums in float, so a difference beyond ~1.8e19 overflows the SQUARE although the distance
+      // itself is an ordinary float: only a non-finite answer can be that, and only it pays for the scalar pass (#12023)
+      if (Float.isFinite(squaredDistance))
+        return (float) Math.sqrt(Math.max(0.0f, squaredDistance));
+    } catch (final Exception | AssertionError e) {
+      // Fallback to scalar implementation. JVector asserts its answer is finite, so under -ea an overflow is an AssertionError
     }
+    return (float) Math.sqrt(squaredL2DistanceDouble(v1, v2));
+  }
+
+  /**
+   * The squared Euclidean distance computed in double: every difference is widened before it is formed, so neither the
+   * difference nor its square can overflow a float on the way (issue #12023).
+   */
+  public static double squaredL2DistanceDouble(final float[] v1, final float[] v2) {
+    double sum = 0.0;
+    for (int i = 0; i < v1.length; i++) {
+      final double diff = (double) v1[i] - v2[i];
+      sum += diff * diff;
+    }
+    return sum;
   }
 
   /**
@@ -719,10 +741,12 @@ public final class VectorUtils {
    * @return the Manhattan distance
    */
   public static float manhattanDistance(final float[] v1, final float[] v2) {
-    float distance = 0.0f;
+    // Accumulate in double and widen before subtracting: a float difference of opposite-sign components, or a float
+    // running sum, overflows to Infinity although the distance is an ordinary float (issue #12023)
+    double distance = 0.0;
     for (int i = 0; i < v1.length; i++)
-      distance += Math.abs(v1[i] - v2[i]);
-    return distance;
+      distance += Math.abs((double) v1[i] - v2[i]);
+    return (float) distance;
   }
 
   /**

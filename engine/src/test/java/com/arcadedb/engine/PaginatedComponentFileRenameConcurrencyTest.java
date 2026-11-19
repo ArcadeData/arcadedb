@@ -150,6 +150,40 @@ class PaginatedComponentFileRenameConcurrencyTest {
     assertThat(pcf.isOpen()).isTrue();
   }
 
+  /**
+   * Issue #12234: {@code PageManager.flushPage} and the snapshot read {@code isOpen()} without the channel lock. A rename that
+   * reported the file closed while its name changed made the flush thread drop a committed page ("Cannot flush pages on disk
+   * because file ... is closed") and a snapshot leave the file out. Observed as a dictionary name lost across a reopen when the
+   * dictionary was relabelled right after registering it. A renamed file is open throughout.
+   */
+  @Test
+  void isOpenStaysTrueThroughoutARename() throws Exception {
+    final AtomicBoolean stop = new AtomicBoolean(false);
+    final AtomicBoolean sawClosed = new AtomicBoolean(false);
+    final CountDownLatch polling = new CountDownLatch(1);
+    final Thread poller = new Thread(() -> {
+      polling.countDown();
+      while (!stop.get())
+        if (!pcf.isOpen())
+          sawClosed.set(true);
+    }, "isOpen-poller");
+    poller.start();
+    await(polling);
+
+    final String nameA = pcf.getOSFile().getAbsolutePath();
+    final String nameB = tempDir.resolve("renamed." + FILE_ID + "." + PAGE_SIZE + ".v0.arc").toString();
+    try {
+      for (int i = 0; i < 2_000 && !sawClosed.get(); i++)
+        pcf.rename(i % 2 == 0 ? nameB : nameA);
+    } finally {
+      stop.set(true);
+      poller.join(10_000);
+    }
+
+    assertThat(sawClosed.get()).as("a concurrent reader saw the file closed while it was renamed").isFalse();
+    assertThat(pcf.isOpen()).isTrue();
+  }
+
   private static void await(final CountDownLatch latch) {
     try {
       latch.await();

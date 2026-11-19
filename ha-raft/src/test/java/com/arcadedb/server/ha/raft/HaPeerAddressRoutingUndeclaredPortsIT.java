@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * it, be refused again, and loop. Nothing is advertised instead; Bolt's ROUTE falls back to advertising this node as
  * READ/ROUTE and never as writer, and a gRPC refusal falls back to the leader's HTTP address. The check has to hold for
  * EVERY routing protocol, or the per-protocol divergence #6091 removed comes back. The positive derive (distinct hosts,
- * one shared port, a Kubernetes StatefulSet) is unit-tested in {@link Issue6183AmbiguousRoutingTest} and
+ * one shared port, a Kubernetes StatefulSet) is unit-tested in {@link PeerEndpointIdentityTest.AmbiguousRoutingTable} and
  * {@link RaftHAServerAddressParsingTest}, because an in-process cluster cannot produce distinct hosts.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

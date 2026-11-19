@@ -19,7 +19,6 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -41,10 +40,19 @@ public class SQLFunctionVectorL1Norm extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 1)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object vectorObj = params[0];
     if (vectorObj == null)
@@ -53,12 +61,12 @@ public class SQLFunctionVectorL1Norm extends SQLFunctionVectorAbstract {
     final float[] vector = toFloatArray(vectorObj);
 
     // Calculate L1 norm: sum of absolute values. An empty vector folds to 0, as vector.l2Norm answers (issue #11052)
-    float norm = 0.0f;
-    for (final float value : vector) {
+    // Summed in double: a float running sum overflows to Infinity before an ordinary float total is reached (issue #12023)
+    double norm = 0.0;
+    for (final float value : vector)
       norm += Math.abs(value);
-    }
 
-    return norm;
+    return (float) norm;
   }
 
 
