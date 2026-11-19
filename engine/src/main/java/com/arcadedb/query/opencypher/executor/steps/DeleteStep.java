@@ -20,10 +20,13 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -120,10 +123,15 @@ public class DeleteStep extends AbstractExecutionStep {
    *       its depth-first traverser keeps edge-segment cursors open across the rows it is still
    *       producing, so a {@code DETACH DELETE} of a bound node unlinks the edge chunks that same cursor
    *       is about to follow and the next {@code hasNext()} dereferences a removed segment record
-   *       (issue #7023).</li>
+   *       (issue #7023);</li>
+   *   <li>a {@code DETACH DELETE} behind a fixed-length relationship pattern (see
+   *       {@code EagerBarriers.detachDeleteNeedsEagerRead()}): the MATCH walks the edge list of a node while its rows are
+   *       still being produced, and the first row's DETACH removes the relationships of that list the walk has not
+   *       reached, so the rows they would have produced are lost without an error (issue #12254).</li>
    * </ul>
-   * Ordinary fixed-length connected patterns bind each row's variables independently and keep no cursor
-   * open across rows, so they are left on the cheaper streaming path.
+   * A fixed-length connected pattern read by a DELETE without DETACH, or by a DETACH DELETE that removes only the
+   * relationship the walk stands on, binds each row's variables independently and loses nothing to the rows before it, so
+   * it is left on the cheaper streaming path.
    * <p>
    * The cost of this path is the whole upstream row set held in memory at once (see
    * {@code materializedInput} below) rather than streamed - acceptable for the shapes this guards, but a
@@ -135,6 +143,9 @@ public class DeleteStep extends AbstractExecutionStep {
   // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
+
+  /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
+  private String[] rowVariables;
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -203,7 +214,7 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            heapLimit = OperationHeapLimit.of(context, "DELETE of a disconnected pattern");
+            heapLimit = OperationHeapLimit.of(context, "DELETE of the matched rows");
             try {
               while (prevResults.hasNext()) {
                 final Result row = prevResults.next();
@@ -249,6 +260,11 @@ public class DeleteStep extends AbstractExecutionStep {
                 mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
               }
             }
+
+            // A relationship the row binds and the DETACH took away with one of its endpoints is as deleted as one the
+            // clause names (#11688)
+            if (deleteClause.isDetach() && deleted.hasDeletedVertices() && inputResult instanceof ResultInternal mutableResult)
+              markCascadedRelationships(mutableResult, deletedVars);
 
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
@@ -309,6 +325,23 @@ public class DeleteStep extends AbstractExecutionStep {
         DeleteStep.this.close();
       }
     };
+  }
+
+  /**
+   * Replaces with a {@link DeletedEntityMarker} every relationship of {@code row} not named by the clause whose endpoint
+   * this statement deleted: the DETACH deleted it with the vertex. Only the row's own columns are read, never the edge
+   * lists of the deleted vertices, so the cost does not grow with their degree. The columns are the same for every row
+   * of the step, so their names are read once.
+   */
+  private void markCascadedRelationships(final ResultInternal row, final Set<String> deletedVars) {
+    if (rowVariables == null)
+      rowVariables = row.getPropertyNames().toArray(new String[0]);
+    for (final String variable : rowVariables) {
+      if (deletedVars.contains(variable))
+        continue;
+      if (row.getProperty(variable) instanceof Edge edge && deleted.wentWithDeletedVertex(edge))
+        row.setProperty(variable, new DeletedEntityMarker(edge.getTypeName()));
+    }
   }
 
   /**
@@ -535,8 +568,10 @@ public class DeleteStep extends AbstractExecutionStep {
     } else if (obj instanceof Map) {
       for (final Object value : ((Map<?, ?>) obj).values())
         collectDeleteTargets(value, edges, other);
-    } else
+    } else {
+      requireDeletable(obj);
       other.add(obj);
+    }
   }
 
   private Object resolveDeleteTarget(final String variable, final Result result) {
@@ -669,7 +704,20 @@ public class DeleteStep extends AbstractExecutionStep {
       // Delete each value in the map
       for (final Object value : ((Map<?, ?>) obj).values())
         deleteObject(value);
-    }
+    } else
+      requireDeletable(obj);
+  }
+
+  /**
+   * Refuses a DELETE target that is no entity - a number, a string, a boolean, a temporal (issue #11975): the statement used
+   * to run and delete nothing. A node, a relationship, a path, a record, null and an entity an earlier DELETE of the
+   * statement already removed are deletable, and so are the lists and maps holding them, which are unwrapped before this.
+   */
+  private static void requireDeletable(final Object obj) {
+    if (obj == null || obj instanceof Identifiable || obj instanceof Result || obj instanceof DeletedEntityMarker)
+      return;
+    throw new TypeMismatchException(
+        "Type mismatch: DELETE expects a node, a relationship or a path, but was " + CypherFunctionHelper.cypherTypeName(obj));
   }
 
   private static boolean hasEdges(final Vertex vertex) {
@@ -852,6 +900,20 @@ public class DeleteStep extends AbstractExecutionStep {
      */
     boolean claimJustRead(final Edge edge) {
       return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+    }
+
+    /** @return true when {@code edge} was deleted with an endpoint the statement deleted */
+    boolean wentWithDeletedVertex(final Edge edge) {
+      try {
+        return vertices.contains(edge.getOut()) || vertices.contains(edge.getIn());
+      } catch (final RecordNotFoundException e) {
+        // THE EDGE RECORD IS GONE ALREADY
+        return true;
+      }
+    }
+
+    boolean hasDeletedVertices() {
+      return !vertices.isEmpty();
     }
 
     boolean contains(final Object record) {

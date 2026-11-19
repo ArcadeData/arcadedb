@@ -24,7 +24,6 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -76,7 +75,7 @@ public class LabelCheckExpression implements BooleanExpression {
 
   /**
    * A check against static labels plus Cypher 25 dynamic {@code $(expr)} labels, each evaluated per row and appended to the
-   * static ones (a string is one label, a list is that many, {@code null} adds none, as on every other read path).
+   * static ones (a string is one label, a list is that many, anything else a type error, as on every other read path).
    */
   public LabelCheckExpression(final Expression variableExpression, final List<String> labels,
                               final List<Expression> dynamicLabels, final LabelOperator operator, final String text) {
@@ -95,7 +94,9 @@ public class LabelCheckExpression implements BooleanExpression {
   public LabelCheckExpression(final Expression variableExpression, final LabelPredicate predicate, final String text) {
     this.variableExpression = variableExpression;
     this.labels = List.of();
-    this.dynamicLabels = List.of();
+    // Not evaluated from here - the tree evaluates its own operands - but listed, so every analysis that walks the dynamic
+    // labels (scope validation, the expression walker, the variables a filter reads) sees the ones inside the tree too
+    this.dynamicLabels = predicate.dynamicExpressions();
     this.operator = LabelOperator.EXPRESSION;
     this.predicate = predicate;
     this.text = text;
@@ -120,9 +121,9 @@ public class LabelCheckExpression implements BooleanExpression {
 
     if (predicate != null) {
       if (value instanceof Vertex vertex)
-        return predicate.matchesVertexType(vertex.getType());
+        return predicate.matchesVertexType(vertex.getType(), result, context);
       if (value instanceof Edge edge)
-        return predicate.matchesEdgeType(edge.getType());
+        return predicate.matchesEdgeType(edge.getType(), result, context);
       return false;
     }
 
@@ -136,23 +137,12 @@ public class LabelCheckExpression implements BooleanExpression {
       return Labels.matches(vertex, labels, operator == LabelOperator.OR);
 
     if (value instanceof Edge edge) {
-      // For relationships, ":Type" is a type-equality predicate. With multiple
-      // labels, the OR operator (e.g. r:KNOWS|LIKES) checks if the edge is one
-      // of the listed types; a bare conjunction of type names cannot match an
-      // edge (which has exactly one type), so it evaluates to false.
-      // Polymorphic like the pattern [r:Type]: an edge of a type that extends the label matches (issue #9124).
-      if (labels.isEmpty() && !dynamicLabels.isEmpty())
-        // only a dynamic label that evaluated to null gets here: no constraint, as for a vertex
-        return true;
-      if (operator == LabelOperator.OR || labels.size() == 1) {
-        final DocumentType edgeType = edge.getType();
-        for (final String label : labels) {
-          if (edgeType.instanceOf(label))
-            return true;
-        }
-        return false;
-      }
-      return false;
+      // Polymorphic like the pattern [r:Type]: an edge of a type that extends the label matches (issue #9124). A disjunction
+      // (r:KNOWS|LIKES) holds when the edge type is an instance of one of the types, a conjunction (r:R&R, r:A&B) when it is an
+      // instance of every one of them, as the pattern [r:A&B] answers: it used to be false without a look at the types, so
+      // r:R&R was false for an R relationship the pattern matched (issue #12339). An empty conjunction - only a dynamic
+      // $([]) - holds, as it does for a vertex
+      return Labels.matches(edge.getType(), labels, operator == LabelOperator.OR);
     }
 
     return false;
@@ -160,39 +150,38 @@ public class LabelCheckExpression implements BooleanExpression {
 
   /**
    * {@code A|$(expr)}: {@code $(expr)} is {@code $all(expr)}, so a list value is ONE operand that requires every label in
-   * it, {@code A OR (B AND C)}, and an edge (exactly one type) can only satisfy a one-label operand. A dynamic operand that
-   * evaluates to null or to an empty list adds no operand; with no operand left at all there is no constraint, as for a
-   * conjunction.
+   * it, {@code A OR (B AND C)}, and an edge satisfies it when its type is an instance of every label in it. A dynamic
+   * operand that evaluates to an empty list is the empty conjunction, which every element satisfies.
    */
   private Object evaluateDisjunctionWithDynamicLabels(final Object value, final Result result, final CommandContext context) {
     if (!(value instanceof Vertex) && !(value instanceof Edge))
       return false;
 
-    boolean anyOperand = false;
-    for (final String label : labels) {
-      anyOperand = true;
-      if (matchesOperand(value, List.of(label)))
-        return true;
-    }
+    boolean matched = false;
+    for (final String label : labels)
+      if (matchesOperand(value, List.of(label))) {
+        matched = true;
+        break;
+      }
 
+    // every dynamic operand is evaluated, even past one that already matched: a value that is not a label is the same type
+    // error whatever the order of the operands (issue #12338)
     final List<String> operand = new ArrayList<>();
     for (final Expression dynamicLabel : dynamicLabels) {
       operand.clear();
       Labels.appendDynamicMatchLabels(operand, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(dynamicLabel, result, context));
-      if (operand.isEmpty())
-        continue;
-      anyOperand = true;
-      if (matchesOperand(value, operand))
-        return true;
+      if (!matched && matchesOperand(value, operand))
+        matched = true;
     }
-    return !anyOperand;
+    return matched;
   }
 
-  /** Whether a vertex has every label of the operand, or an edge is of its only type (polymorphic, issue #9124). */
+  /**
+   * Whether a vertex has every label of the operand, or an edge's type is an instance of every one of them (polymorphic,
+   * issues #9124 and #12339). The empty operand holds.
+   */
   private static boolean matchesOperand(final Object value, final List<String> operand) {
-    if (value instanceof Vertex vertex)
-      return Labels.matches(vertex, operand, false);
-    return operand.size() == 1 && ((Edge) value).getType().instanceOf(operand.getFirst());
+    return Labels.matches(value instanceof Vertex vertex ? vertex.getType() : ((Edge) value).getType(), operand, false);
   }
 
   private List<String> resolveLabels(final Result result, final CommandContext context) {
@@ -218,7 +207,11 @@ public class LabelCheckExpression implements BooleanExpression {
     return labels;
   }
 
-  /** The Cypher 25 dynamic {@code $(expr)} labels, evaluated per row; empty when there are none. */
+  /**
+   * The Cypher 25 dynamic {@code $(expr)} labels, evaluated per row; empty when there are none. For a check through a
+   * {@link LabelPredicate} tree these are the expressions of its {@link LabelPredicate.Dynamic} operands, which the tree
+   * evaluates itself.
+   */
   public List<Expression> getDynamicLabels() {
     return dynamicLabels;
   }

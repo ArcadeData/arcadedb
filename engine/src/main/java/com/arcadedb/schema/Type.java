@@ -1296,11 +1296,22 @@ public enum Type {
               // The declared type keeps the zone the text names, a region included (issue #8572)
               try {
                 return CypherDateTime.parse(valueAsString).getValue();
+              } catch (final TemporalUtil.InvalidTemporalTextException e) {
+                // An offset the zone does not have there: the general parse would keep the zone and replace the offset,
+                // storing another instant than the text states (issue #12298)
+                throw new IllegalArgumentException(e.getMessage(), e);
               } catch (final RuntimeException e) {
                 // not Cypher datetime text: the general parse below decides
               }
             }
-            return truncateToPropertyPrecision(DateUtils.parseZonedDateTime(database, valueAsString), property);
+            try {
+              // The general parse keeps the zone of a text that names one and treats its offset as a preference: a
+              // contradiction is refused here too (issue #12298)
+              return truncateToPropertyPrecision(
+                  TemporalUtil.requireOffsetMatchesZone(valueAsString, DateUtils.parseZonedDateTime(database, valueAsString)), property);
+            } catch (final TemporalUtil.InvalidTemporalTextException e) {
+              throw new IllegalArgumentException(e.getMessage(), e);
+            }
         }
       } else if (targetClass.equals(Instant.class)) {
         switch (value) {
