@@ -112,6 +112,7 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
 
     @Override
     public void restart() {
+      // Nothing to restart: a vertex of a list is found by its row, whatever the order the rows are asked for in
     }
 
     @Override

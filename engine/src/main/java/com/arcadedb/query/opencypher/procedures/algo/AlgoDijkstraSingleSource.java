@@ -71,6 +71,9 @@ import java.util.stream.Stream;
 public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
   public static final String NAME = "algo.dijkstra.singleSource";
 
+  /** Entries the row buffers start with: a row of that many or fewer is priced by the batch of entries reserved with the rows. */
+  private static final int INITIAL_ROW_BUFFER = 16;
+
   @Override
   public String getName() {
     return NAME;
@@ -164,9 +167,6 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       return (Result) r;
     });
   }
-
-  /** Entries the row buffers start with: a row of that many or fewer is priced by the batch of entries reserved with the rows. */
-  private static final int INITIAL_ROW_BUFFER = 16;
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir, final CommandContext context) {
