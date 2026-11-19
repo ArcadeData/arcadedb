@@ -20,16 +20,15 @@ package com.arcadedb.function.date;
 
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.utility.DateUtils;
 
-import java.text.SimpleDateFormat;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.Locale;
-import java.util.TimeZone;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Abstract base class for date functions.
@@ -40,10 +39,12 @@ import java.util.concurrent.TimeUnit;
 public abstract class AbstractDateFunction implements StatelessFunction {
   protected static final String NAMESPACE = "date";
 
-  /** The pattern APOC's date.format/date.parse/date.fields use when none is given (issue #12106). */
-  public static final String DEFAULT_FORMAT = "yyyy-MM-dd HH:mm:ss";
-
-  protected static final String UTC = "UTC";
+  // Common time units
+  public static final String UNIT_MS = "ms";
+  public static final String UNIT_S = "s";
+  public static final String UNIT_M = "m";
+  public static final String UNIT_H = "h";
+  public static final String UNIT_D = "d";
 
   /**
    * Returns the simple name without namespace prefix.
@@ -91,49 +92,35 @@ public abstract class AbstractDateFunction implements StatelessFunction {
   }
 
   /**
-   * The time unit an APOC unit name denotes (issue #12106): {@code ms}/{@code milli}/{@code millis}/{@code milliseconds},
-   * {@code s}/{@code second}/{@code seconds}, {@code m}/{@code minute}/{@code minutes}, {@code h}/{@code hour}/{@code hours},
-   * {@code d}/{@code day}/{@code days}, case-insensitive, plus ArcadeDB's {@code sec} and {@code min}. A null unit is
-   * milliseconds, as in APOC. Conversions go through {@link TimeUnit}, which saturates at {@link Long#MAX_VALUE} and
-   * {@link Long#MIN_VALUE} exactly like APOC does.
+   * Converts a unit string to milliseconds multiplier.
    */
-  protected static TimeUnit timeUnit(final Object unit) {
+  protected long unitToMillis(final String unit) {
     if (unit == null)
-      return TimeUnit.MILLISECONDS;
+      return 1; // default to milliseconds
 
-    return switch (unit.toString().toLowerCase(Locale.ROOT)) {
-      case "ms", "milli", "millis", "milliseconds" -> TimeUnit.MILLISECONDS;
-      case "s", "sec", "second", "seconds" -> TimeUnit.SECONDS;
-      case "m", "min", "minute", "minutes" -> TimeUnit.MINUTES;
-      case "h", "hour", "hours" -> TimeUnit.HOURS;
-      case "d", "day", "days" -> TimeUnit.DAYS;
-      default -> throw new IllegalArgumentException("The unit: " + unit + " is not correct");
+    return switch (unit.toLowerCase(Locale.ROOT)) {
+      case UNIT_MS, "millis", "milliseconds" -> 1L;
+      case UNIT_S, "sec", "seconds" -> 1000L;
+      case UNIT_M, "min", "minutes" -> 60_000L;
+      case UNIT_H, "hour", "hours" -> 3_600_000L;
+      case UNIT_D, "day", "days" -> 86_400_000L;
+      default -> throw new IllegalArgumentException("Unknown time unit: " + unit);
     };
   }
 
   /**
-   * The pattern argument at {@code index}, {@link #DEFAULT_FORMAT} when it is absent, null or empty, as in APOC.
+   * Gets a DateTimeFormatter for the given pattern, with default if null.
+   * <p>
+   * Delegates to {@link DateUtils#getFormatter(String)} rather than calling {@code DateTimeFormatter.ofPattern()}:
+   * that binds {@code Locale.getDefault(Locale.Category.FORMAT)}, so the same query would render a textual pattern
+   * field ({@code MMM}, {@code EEE}) differently on two nodes of the same cluster. A query result must not depend on
+   * which node answered it, so the locale is pinned exactly as it is for the storage formats (issue #7144). The
+   * delegation also reuses the bounded formatter cache instead of building one formatter per call.
    */
-  protected static String patternArgument(final Object[] args, final int index) {
-    final Object pattern = args.length > index ? args[index] : null;
-    return pattern == null || pattern.toString().isEmpty() ? DEFAULT_FORMAT : pattern.toString();
-  }
-
-  /**
-   * A new {@link SimpleDateFormat}, the formatter APOC's date.format/date.parse/date.toISO8601 use (issue #12106): its
-   * pattern letters, its lenient parsing (a prefix of the text is enough, a month 13 rolls over) and its Julian calendar
-   * before 1582. The time zone is {@code timezone} read by {@link TimeZone#getTimeZone(String)} (an unknown id is GMT),
-   * UTC when it is null or empty. The locale is pinned, so a textual field renders the same on every server (issue #7144).
-   * A new instance per call: the class is not thread-safe.
-   */
-  protected static SimpleDateFormat simpleDateFormat(final String pattern, final Object timezone) {
-    final SimpleDateFormat format;
-    try {
-      format = new SimpleDateFormat(pattern, Locale.ENGLISH);
-    } catch (final IllegalArgumentException e) {
-      throw new IllegalArgumentException("The pattern: " + pattern + " is not correct", e);
+  protected DateTimeFormatter getFormatter(final String format) {
+    if (format == null || format.isEmpty()) {
+      return DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     }
-    format.setTimeZone(TimeZone.getTimeZone(timezone == null || timezone.toString().isEmpty() ? UTC : timezone.toString()));
-    return format;
+    return DateUtils.getFormatter(format);
   }
 }

@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.date.ApocDateFields;
+import com.arcadedb.function.date.ApocDateParse;
 import com.arcadedb.function.date.DateFields;
 import com.arcadedb.function.date.DateParse;
 import com.arcadedb.query.sql.executor.Result;
@@ -584,36 +586,85 @@ class SqlTemporalComparisonTest {
           final Object epoch = new DateParse().execute(new Object[] { "2020-01-02T03:04:05+02:00", "ms", ISO_PATTERN }, null);
           assertThat(epoch).as("JVM zone " + jvmZone).isEqualTo(Instant.parse("2020-01-02T01:04:05Z").toEpochMilli());
         }
-        // a text without an offset is read in UTC, as APOC's apoc.date.parse reads it (issue #12106), whatever the JVM's zone
+        // a text without an offset is read in the JVM's zone, as it always was
         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"));
         assertThat(new DateParse().execute(new Object[] { "2020-01-02 03:04:05", "ms", "yyyy-MM-dd HH:mm:ss" }, null)).isEqualTo(
-            Instant.parse("2020-01-02T03:04:05Z").toEpochMilli());
+            Instant.parse("2020-01-01T18:04:05Z").toEpochMilli());
+      } finally {
+        TimeZone.setDefault(previous);
+      }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void dateFieldsAreTheFieldsOfTheInstantTheTextNames() {
+      final Map<String, Object> ownOffset = (Map<String, Object>) new DateFields().execute(
+          new Object[] { "2020-01-02T03:04:05+02:00", ISO_PATTERN }, null);
+      assertThat(ownOffset.get("hour")).as("the text's own offset when no zone is asked for").isEqualTo(3L);
+      assertThat(ownOffset.get("timezone")).isEqualTo("+02:00");
+
+      final Map<String, Object> inUtc = (Map<String, Object>) new DateFields().execute(
+          new Object[] { "2020-01-02T03:04:05+02:00", ISO_PATTERN, "UTC" }, null);
+      assertThat(inUtc.get("hour")).as("the same instant expressed in the zone asked for").isEqualTo(1L);
+      assertThat(inUtc.get("timezone")).isEqualTo("UTC");
+
+      final Map<String, Object> zoneLess = (Map<String, Object>) new DateFields().execute(
+          new Object[] { "2020-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss", "Asia/Tokyo" }, null);
+      assertThat(zoneLess.get("hour")).as("a text with no zone is read in the zone asked for").isEqualTo(3L);
+      assertThat(zoneLess.get("timezone")).isEqualTo("Asia/Tokyo");
+    }
+
+    /**
+     * apoc.date.parse reads a text without an offset in UTC, as APOC does, and one with an offset as the instant it names, whatever
+     * the JVM's zone (issue #12106): the answer must not depend on the server.
+     */
+    @Test
+    void apocDateParseDoesNotDependOnTheJvmZone() {
+      final TimeZone previous = TimeZone.getDefault();
+      try {
+        for (final String jvmZone : List.of("UTC", "Asia/Tokyo", "America/New_York")) {
+          TimeZone.setDefault(TimeZone.getTimeZone(jvmZone));
+          assertThat(new ApocDateParse().execute(new Object[] { "2020-01-02T03:04:05+02:00", "ms", ISO_PATTERN }, null)).as(
+              "JVM zone " + jvmZone).isEqualTo(Instant.parse("2020-01-02T01:04:05Z").toEpochMilli());
+          assertThat(new ApocDateParse().execute(new Object[] { "2020-01-02 03:04:05", "ms", "yyyy-MM-dd HH:mm:ss" }, null)).as(
+              "JVM zone " + jvmZone).isEqualTo(Instant.parse("2020-01-02T03:04:05Z").toEpochMilli());
+          assertThat(new ApocDateParse().execute(new Object[] { "2020-01-02 03:04:05", "ms", "yyyy-MM-dd HH:mm:ss", "Asia/Tokyo" }, null))
+              .as("JVM zone " + jvmZone).isEqualTo(Instant.parse("2020-01-01T18:04:05Z").toEpochMilli());
+        }
       } finally {
         TimeZone.setDefault(previous);
       }
     }
 
     /**
-     * Without a zone date.fields answers the fields written in the text under APOC's keys, and the zone UTC, as APOC does (issue
-     * #12106). The zone argument, an ArcadeDB extension, expresses the instant the text names in that zone.
+     * apoc.date.fields answers APOC's keys: without a zone the wall clock written in the text and the zone UTC, with one the
+     * instant the text names expressed in it, whatever the JVM's zone (issue #12106).
      */
     @Test
     @SuppressWarnings("unchecked")
-    void dateFieldsAreTheFieldsOfTheInstantTheTextNames() {
-      final Map<String, Object> ownOffset = (Map<String, Object>) new DateFields().execute(
-          new Object[] { "2020-01-02T03:04:05+02:00", ISO_PATTERN }, null);
-      assertThat(ownOffset.get("hours")).as("the wall clock written in the text when no zone is asked for").isEqualTo(3L);
-      assertThat(ownOffset.get("zoneid")).isEqualTo("UTC");
+    void apocDateFieldsDoNotDependOnTheJvmZone() {
+      final TimeZone previous = TimeZone.getDefault();
+      try {
+        for (final String jvmZone : List.of("UTC", "Asia/Tokyo", "America/New_York")) {
+          TimeZone.setDefault(TimeZone.getTimeZone(jvmZone));
+          final Map<String, Object> ownOffset = (Map<String, Object>) new ApocDateFields().execute(
+              new Object[] { "2020-01-02T03:04:05+02:00", ISO_PATTERN }, null);
+          assertThat(ownOffset.get("hours")).as("the wall clock written in the text, JVM zone " + jvmZone).isEqualTo(3L);
+          assertThat(ownOffset.get("zoneid")).isEqualTo("UTC");
 
-      final Map<String, Object> inUtc = (Map<String, Object>) new DateFields().execute(
-          new Object[] { "2020-01-02T03:04:05+02:00", ISO_PATTERN, "UTC" }, null);
-      assertThat(inUtc.get("hours")).as("the same instant expressed in the zone asked for").isEqualTo(1L);
-      assertThat(inUtc.get("zoneid")).isEqualTo("UTC");
+          final Map<String, Object> inUtc = (Map<String, Object>) new ApocDateFields().execute(
+              new Object[] { "2020-01-02T03:04:05+02:00", ISO_PATTERN, "UTC" }, null);
+          assertThat(inUtc.get("hours")).as("the same instant expressed in the zone asked for, JVM zone " + jvmZone).isEqualTo(1L);
+          assertThat(inUtc.get("zoneid")).isEqualTo("UTC");
 
-      final Map<String, Object> zoneLess = (Map<String, Object>) new DateFields().execute(
-          new Object[] { "2020-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss", "Asia/Tokyo" }, null);
-      assertThat(zoneLess.get("hours")).as("a text with no zone is read in the zone asked for").isEqualTo(3L);
-      assertThat(zoneLess.get("zoneid")).isEqualTo(ZoneId.of("Asia/Tokyo").getDisplayName(TextStyle.SHORT, Locale.ROOT));
+          final Map<String, Object> zoneLess = (Map<String, Object>) new ApocDateFields().execute(
+              new Object[] { "2020-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss", "Asia/Tokyo" }, null);
+          assertThat(zoneLess.get("hours")).as("a text with no zone is read in the zone asked for, JVM zone " + jvmZone).isEqualTo(3L);
+          assertThat(zoneLess.get("zoneid")).isEqualTo(ZoneId.of("Asia/Tokyo").getDisplayName(TextStyle.SHORT, Locale.ROOT));
+        }
+      } finally {
+        TimeZone.setDefault(previous);
+      }
     }
   }
 }

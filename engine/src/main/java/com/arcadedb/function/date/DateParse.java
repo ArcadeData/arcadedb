@@ -18,16 +18,16 @@
  */
 package com.arcadedb.function.date;
 
-import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.DateUtils;
 
-import java.text.ParseException;
-import java.util.concurrent.TimeUnit;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 
 /**
- * date.parse(text, unit = 'ms', format = 'yyyy-MM-dd HH:mm:ss', timezone = 'UTC') - Parse a date string to a timestamp in
- * {@code unit}, as APOC's apoc.date.parse does (issue #12106): a {@link java.text.SimpleDateFormat} pattern parsed
- * leniently from the start of the text, a text naming no zone read in {@code timezone}, a blank text is null.
+ * date.parse(dateStr, unit, format) - Parse date string to timestamp.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -44,12 +44,12 @@ public class DateParse extends AbstractDateFunction {
 
   @Override
   public int getMaxArgs() {
-    return 4;
+    return 3;
   }
 
   @Override
   public String getDescription() {
-    return "Parse a date string to a timestamp: date.parse(text, unit = 'ms', format = 'yyyy-MM-dd HH:mm:ss', timezone = 'UTC')";
+    return "Parse a date string to a timestamp using the specified format pattern";
   }
 
   @Override
@@ -57,19 +57,21 @@ public class DateParse extends AbstractDateFunction {
     if (args[0] == null)
       return null;
 
-    final String text = args[0].toString();
-    if (text.isBlank())
-      return null;
+    final String dateStr = args[0].toString();
+    final String unit = args.length > 1 && args[1] != null ? args[1].toString() : UNIT_MS;
+    final String format = args.length > 2 && args[2] != null ? args[2].toString() : null;
 
-    final TimeUnit unit = timeUnit(args.length > 1 ? args[1] : null);
-    final String pattern = patternArgument(args, 2);
-    final long millis;
     try {
-      millis = simpleDateFormat(pattern, args.length > 3 ? args[3] : null).parse(text).getTime();
-    } catch (final ParseException e) {
-      throw new InvalidArgumentException(getName() + "(): '" + InvalidArgumentException.quote(text) + "' cannot be parsed with the format '"
-          + InvalidArgumentException.quote(pattern) + "'", e);
+      final DateTimeFormatter formatter = getFormatter(format);
+      // The instant the text names when it names a zone or an offset, the one of the JVM's zone when it names none (issue #10596):
+      // the offset the pattern had just read used to be discarded, and the wall clock anchored to the JVM's zone instead
+      final ZonedDateTime zonedDateTime = DateUtils.parseZonedDateTimeWithFormat(dateStr, formatter, ZoneId.systemDefault());
+      final long millis = zonedDateTime.toInstant().toEpochMilli();
+
+      // Convert to requested unit
+      return millis / unitToMillis(unit);
+    } catch (final DateTimeParseException e) {
+      throw new IllegalArgumentException("Cannot parse date: " + dateStr + " with format: " + format, e);
     }
-    return unit.convert(millis, TimeUnit.MILLISECONDS);
   }
 }

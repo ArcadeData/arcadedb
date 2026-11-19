@@ -20,16 +20,17 @@ package com.arcadedb.function.date;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Date;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 /**
- * date.toISO8601(time, unit = 'ms') - A timestamp as an ISO 8601 string in UTC with millisecond precision
- * ({@code 2020-09-13T12:26:40.000Z}), as APOC's apoc.date.toISO8601 renders it (issue #12106).
+ * date.toISO8601(timestamp) - Convert timestamp to ISO 8601 string.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class DateToISO8601 extends AbstractDateFunction {
-  private static final String ISO_PATTERN = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+  private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_OFFSET_DATE_TIME;
 
   @Override
   protected String getSimpleName() {
@@ -43,12 +44,12 @@ public class DateToISO8601 extends AbstractDateFunction {
 
   @Override
   public int getMaxArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
   public String getDescription() {
-    return "Convert a timestamp to an ISO 8601 string in UTC with milliseconds: date.toISO8601(time, unit = 'ms')";
+    return "Convert a timestamp to ISO 8601 format string";
   }
 
   @Override
@@ -56,7 +57,9 @@ public class DateToISO8601 extends AbstractDateFunction {
     if (args[0] == null)
       return null;
 
-    final long millis = timeUnit(args.length > 1 ? args[1] : null).toMillis(toMillis(args[0]));
-    return simpleDateFormat(ISO_PATTERN, UTC).format(new Date(millis));
+    final long timestamp = toMillis(args[0]);
+    return Instant.ofEpochMilli(timestamp)
+        .atZone(ZoneId.systemDefault())
+        .format(ISO_FORMATTER);
   }
 }

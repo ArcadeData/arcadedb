@@ -21,6 +21,7 @@ package com.arcadedb.utility;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.function.date.ApocDateFormat;
 import com.arcadedb.function.date.DateFormat;
 import com.arcadedb.function.text.FormatFunction;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -294,8 +295,32 @@ class DateTimeFormattingRegressionTest {
     void sqlFormatFunctionsRenderInEnglish() {
       assertThat(new FormatFunction().execute(new Object[] { LocalDateTime.of(2026, 3, 4, 10, 20, 30), DATETIME_PATTERN }, null))
           .isEqualTo(ENGLISH_DATETIME);
-      // date.format() renders in UTC unless a time zone is given (issue #12106)
-      assertThat(new DateFormat().execute(new Object[] { 1772622030000L, "ms", DATE_PATTERN }, null)).isEqualTo("04 March 2026");
+      // date.format() renders in the machine's own time zone, so only the textual field is asserted here
+      assertThat(new DateFormat().execute(new Object[] { 1772622030000L, "ms", DATE_PATTERN }, null).toString())
+          .contains("March");
+    }
+
+    /**
+     * date.format() renders in the JVM's zone, apoc.date.format() in UTC unless a zone is given, as APOC does (issue #12106): each
+     * is pinned under a UTC and a non-UTC JVM zone, both in English under the foreign FORMAT locale.
+     */
+    @Test
+    void dateFormatFollowsTheJvmZoneAndApocDateFormatRendersInUtc() {
+      final TimeZone previous = TimeZone.getDefault();
+      try {
+        for (final String[] zone : new String[][] { { "UTC", "04 March 2026 11:00:30" }, { "Asia/Tokyo", "04 March 2026 20:00:30" },
+            { "America/Los_Angeles", "04 March 2026 03:00:30" } }) {
+          TimeZone.setDefault(TimeZone.getTimeZone(zone[0]));
+          assertThat(new DateFormat().execute(new Object[] { 1772622030000L, "ms", DATETIME_PATTERN }, null)).as("JVM zone " + zone[0])
+              .isEqualTo(zone[1]);
+          assertThat(new ApocDateFormat().execute(new Object[] { 1772622030000L, "ms", DATETIME_PATTERN }, null)).as("JVM zone " + zone[0])
+              .isEqualTo("04 March 2026 11:00:30");
+          assertThat(new ApocDateFormat().execute(new Object[] { 1772622030000L, "ms", DATETIME_PATTERN, "Asia/Tokyo" }, null))
+              .as("JVM zone " + zone[0]).isEqualTo("04 March 2026 20:00:30");
+        }
+      } finally {
+        TimeZone.setDefault(previous);
+      }
     }
 
     /** End to end: a record written with a textual schema pattern reads back the same under a foreign locale. */

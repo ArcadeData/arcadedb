@@ -22,12 +22,7 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * date.add(time, unit, addValue, addUnit) - Add {@code addValue} {@code addUnit} to a timestamp in {@code unit}, as APOC's
- * apoc.date.add does (issue #12106): the amount is converted to {@code unit} first, truncating toward zero and saturating
- * at the long range. A sum outside the long range is an error, where APOC wraps around.
- * <p>
- * The three-argument form date.add(timestamp, value, unit) adds {@code value} {@code unit} to a timestamp in milliseconds,
- * as ArcadeDB always did. APOC has no three-argument form, so the two cannot be confused.
+ * date.add(timestamp, value, unit) - Add time to timestamp.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -44,31 +39,27 @@ public class DateAdd extends AbstractDateFunction {
 
   @Override
   public int getMaxArgs() {
-    return 4;
+    return 3;
   }
 
   @Override
   public String getDescription() {
-    return "Add an amount of time to a timestamp: date.add(time, unit, addValue, addUnit), or date.add(timestamp, value, unit) "
-        + "on a timestamp in milliseconds";
+    return "Add a specified amount of time to a timestamp";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    final Object amount = args.length == 4 ? args[2] : args[1];
-    if (args[0] == null || amount == null)
+    if (args[0] == null)
       return null;
 
     final long timestamp = toMillis(args[0]);
     // Issue #10850: a whole number - longValue() read 1.5 hours as 1
-    final long value = CypherFunctionHelper.requireWholeNumberOrTextArgument(amount, getName(), "value");
+    final long value = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[1], getName(), "value");
+    final String unit = args[2] != null ? args[2].toString() : UNIT_MS;
 
     try {
-      if (args.length == 4)
-        return Math.addExact(timestamp, timeUnit(args[1]).convert(value, timeUnit(args[3])));
-
       // Use Math.multiplyExact and Math.addExact to prevent integer overflow
-      final long addMillis = Math.multiplyExact(value, timeUnit(args[2]).toMillis(1));
+      final long addMillis = Math.multiplyExact(value, unitToMillis(unit));
       return Math.addExact(timestamp, addMillis);
     } catch (final ArithmeticException e) {
       throw new IllegalArgumentException("Date arithmetic overflow: " + e.getMessage(), e);

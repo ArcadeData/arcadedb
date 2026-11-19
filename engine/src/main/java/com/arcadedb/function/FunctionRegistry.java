@@ -37,7 +37,9 @@ import java.util.stream.Collectors;
  * </p>
  * <p>
  * For Neo4j/APOC compatibility, functions can also be accessed using the "apoc." prefix.
- * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf".
+ * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf". A function registered under its own
+ * "apoc." name answers that name instead: "apoc.date.format" follows APOC while "date.format" keeps ArcadeDB's semantics
+ * (issue #12106).
  * </p>
  * <p>
  * Thread-safe: All operations use a ConcurrentHashMap for safe concurrent access.
@@ -100,7 +102,7 @@ public final class FunctionRegistry {
    * @return the function, or null if not found
    */
   public static Function get(final String name) {
-    return FUNCTIONS.get(normalizeApocName(name));
+    return FUNCTIONS.get(key(name));
   }
 
   /**
@@ -135,7 +137,7 @@ public final class FunctionRegistry {
    * @return true if the function is registered
    */
   public static boolean hasFunction(final String name) {
-    return FUNCTIONS.containsKey(normalizeApocName(name));
+    return FUNCTIONS.containsKey(key(name));
   }
 
   /**
@@ -172,6 +174,17 @@ public final class FunctionRegistry {
     if (lowerName.startsWith(APOC_PREFIX)) {
       return lowerName.substring(APOC_PREFIX.length());
     }
+    return lowerName;
+  }
+
+  /**
+   * The key {@code name} is registered under: its own lower-cased name when a function is registered under it, the name
+   * without the "apoc." prefix otherwise, so a function registered under its apoc. name answers that name (issue #12106).
+   */
+  private static String key(final String name) {
+    final String lowerName = name.toLowerCase(Locale.ROOT);
+    if (lowerName.startsWith(APOC_PREFIX) && !FUNCTIONS.containsKey(lowerName))
+      return lowerName.substring(APOC_PREFIX.length());
     return lowerName;
   }
 
@@ -260,7 +273,7 @@ public final class FunctionRegistry {
    * @return the unregistered function, or null if not found
    */
   public static Function unregister(final String name) {
-    return FUNCTIONS.remove(normalizeApocName(name));
+    return FUNCTIONS.remove(key(name));
   }
 
   /**
