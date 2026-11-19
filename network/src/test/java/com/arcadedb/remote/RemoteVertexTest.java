@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -270,6 +271,100 @@ class RemoteVertexTest {
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, 0))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void getVerticesPagedFetchesTheNextEdgePageWhenEveryVertexOfAPageWasDeleted() {
+    // the first page of edges is full, but both of its vertices were deleted before their query ran
+    final ResultSet edges1 = edgeResultSetOf(edgeResult(1, 1), edgeResult(2, 2));
+    final ResultSet vertices1 = resultSetOf();
+    final ResultSet edges2 = edgeResultSetOf(edgeResult(3, 3));
+    final ResultSet vertices2 = resultSetOf(vertexResult(3));
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class)))
+        .thenReturn(edges1, vertices1, edges2, vertices2);
+
+    final List<Vertex> collected = new ArrayList<>();
+    for (final Vertex v : remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, 2))
+      collected.add(v);
+
+    assertThat(collected).extracting(Vertex::getIdentity).containsExactly(new RID(1, 3));
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries).hasSize(4);
+    assertThat(queries.get(1)).contains("select from [#1:1, #1:2]");
+    assertThat(queries.get(2)).contains("outE(").contains("WHERE @rid > #3:2").contains("LIMIT 2");
+    assertThat(queries.get(3)).contains("select from [#1:3]");
+  }
+
+  @Test
+  void getVerticesPagedEndsCleanlyWhenTheEdgeCountIsAMultipleOfThePageSize() {
+    // a full page of edges, then an empty one: no vertex query for the empty page, and the iterator ends
+    final ResultSet edges1 = edgeResultSetOf(edgeResult(1, 1), edgeResult(2, 2));
+    final ResultSet vertices1 = resultSetOf(vertexResult(1), vertexResult(2));
+    final ResultSet edges2 = edgeResultSetOf();
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(edges1, vertices1, edges2);
+
+    final Iterator<Vertex> it = remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, 2).iterator();
+    final List<Vertex> collected = new ArrayList<>();
+    while (it.hasNext())
+      collected.add(it.next());
+
+    assertThat(collected).extracting(Vertex::getIdentity).containsExactly(new RID(1, 1), new RID(1, 2));
+    assertThat(it.hasNext()).isFalse();
+    assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries).hasSize(3);
+    assertThat(queries.get(2)).contains("WHERE @rid > #3:2").contains("LIMIT 2");
+  }
+
+  @Test
+  void getEdgesPagedEndsCleanlyWhenTheEdgeCountIsAMultipleOfThePageSize() {
+    final ResultSet page1 = edgeResultSetOf(edgeResult(1), edgeResult(2));
+    final ResultSet page2 = edgeResultSetOf(edgeResult(3), edgeResult(4));
+    final ResultSet page3 = edgeResultSetOf();
+    when(mockDatabase.queryUncounted(eq("sql"), any(String.class), any(Map.class))).thenReturn(page1, page2, page3);
+
+    final Iterator<Edge> it = remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 2).iterator();
+    final List<Edge> collected = new ArrayList<>();
+    while (it.hasNext())
+      collected.add(it.next());
+
+    assertThat(collected).extracting(Edge::getIdentity)
+        .containsExactly(new RID(3, 1), new RID(3, 2), new RID(3, 3), new RID(3, 4));
+    assertThat(it.hasNext()).isFalse();
+    assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
+    verify(mockDatabase, times(3)).queryUncounted(eq("sql"), any(String.class), any(Map.class));
+  }
+
+  @Test
+  void getVerticesPagedSplitsALargePageOfVertexRidsIntoBoundedQueries() {
+    final int pageSize = RemoteVertex.MAX_RIDS_PER_QUERY + 1;
+    final Result[] edgeResults = new Result[pageSize];
+    for (int i = 0; i < pageSize; i++)
+      edgeResults[i] = edgeResult(i, i);
+
+    final ResultSet edges1 = edgeResultSetOf(edgeResults);
+    final ResultSet vertices1 = resultSetOf(vertexResult(0));
+    final ResultSet vertices2 = resultSetOf(vertexResult(pageSize - 1));
+    final ResultSet edges2 = edgeResultSetOf();
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(edges1, vertices1, vertices2, edges2);
+
+    final List<Vertex> collected = new ArrayList<>();
+    for (final Vertex v : remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, pageSize))
+      collected.add(v);
+
+    assertThat(collected).extracting(Vertex::getIdentity).containsExactly(new RID(1, 0), new RID(1, pageSize - 1));
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries).hasSize(4);
+    assertThat(queries.get(1)).startsWith("select from [#1:0, ").endsWith(", #1:" + (pageSize - 2) + "]");
+    assertThat(queries.get(1).split(",")).hasSize(RemoteVertex.MAX_RIDS_PER_QUERY);
+    assertThat(queries.get(2)).isEqualTo("select from [#1:" + (pageSize - 1) + "]");
+    assertThat(queries.get(3)).contains("WHERE @rid > #3:" + (pageSize - 1));
   }
 
   // --- helpers ---

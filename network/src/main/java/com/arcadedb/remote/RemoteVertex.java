@@ -61,6 +61,12 @@ public class RemoteVertex {
    */
   public static final int DEFAULT_PAGE_SIZE = 2_000;
 
+  /**
+   * Most vertex RIDs {@link #getVerticesPaged} puts in one {@code select from [...]} query: a larger page of edges reads its
+   * vertices in several queries, so the query text and the request body stay bounded whatever page size the caller picks.
+   */
+  static final int MAX_RIDS_PER_QUERY = DEFAULT_PAGE_SIZE;
+
   public final Vertex         vertex;
   public final RemoteDatabase remoteDatabase;
 
@@ -154,7 +160,13 @@ public class RemoteVertex {
    * Returns a lazy iterator that transparently fetches edges in pages of {@code pageSize} elements over multiple HTTP calls.
    * Each page is one SQL query that resumes after the RID of the last edge of the previous page (issue #12191): the edges
    * the caller deletes while iterating, or another client deletes, do not move the next page, as an offset into the edge list
-   * did. {@link Vertex.DIRECTION#BOTH} reads the outgoing edges, then the incoming ones, as the embedded API does.
+   * did. {@link Vertex.DIRECTION#BOTH} reads the outgoing edges, then the incoming ones, as the embedded API does, so a
+   * self-loop is returned twice, once from each list.
+   * <p>
+   * Cost: the server cannot seek into the edge list of a vertex by RID, so every page reads all the edges of the vertex in
+   * the direction, filters them on the RID bound and keeps the first {@code pageSize} in a bounded top-K heap: O(E) record
+   * reads and O(E log pageSize) comparisons per page, O(E^2 / pageSize) reads over a full walk, the same reads per page as
+   * the SKIP form it replaces. A larger page size means fewer passes on a large hub.
    */
   public IterableGraph<Edge> getEdgesPaged(final Vertex.DIRECTION direction, final int pageSize, final String... edgeTypes) {
     checkPageSize(pageSize);
@@ -303,7 +315,9 @@ public class RemoteVertex {
 
   /**
    * Up to {@code limit} edges of {@code direction} ({@code OUT} or {@code IN}) in RID order, the ones after {@code after}, or
-   * from the first one when it is null.
+   * from the first one when it is null. The edge list carries no RID order the engine could seek on (it is newest first), so
+   * the server expands every edge and ORDER BY ... LIMIT keeps the smallest {@code limit} of the ones after the bound in a
+   * bounded heap rather than sorting them all.
    */
   private List<Edge> fetchEdgesAfter(final Vertex.DIRECTION direction, final String[] types, final RID after,
       final int limit) {
@@ -313,7 +327,8 @@ public class RemoteVertex {
     appendBoundTypes(query, types, params);
 
     query.append(") ) from ").append(vertex.getIdentity()).append(" )");
-    // a RID literal, not a parameter: a RID sent as a JSON parameter is bound as a string
+    // a RID literal, not a parameter: a RID sent as a JSON parameter is bound as a string. The literal is safe to inline:
+    // RID#toString always prints the controlled "#<bucket>:<position>" form of two numbers, nothing a caller can shape
     if (after != null)
       query.append(" WHERE @rid > ").append(after);
     query.append(" ORDER BY @rid LIMIT ").append(limit);
@@ -327,8 +342,9 @@ public class RemoteVertex {
   }
 
   /**
-   * The vertices on the other side of {@code edges}, in the order of the edges, read in one query. A vertex deleted since its
-   * edge was read is left out.
+   * The vertices on the other side of {@code edges}, in the order of the edges, read by RID at most
+   * {@link #MAX_RIDS_PER_QUERY} at a time so a large caller page size does not build an unbounded query. A vertex deleted
+   * since its edge was read is left out.
    */
   private List<Vertex> otherVertices(final Vertex.DIRECTION direction, final List<Edge> edges) {
     if (edges.isEmpty())
@@ -338,23 +354,19 @@ public class RemoteVertex {
     for (final Edge edge : edges)
       rids.add(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
 
-    final StringBuilder query = new StringBuilder("select from [");
-    boolean first = true;
-    for (final RID rid : rids) {
-      if (!first)
-        query.append(", ");
-      query.append(rid);
-      first = false;
-    }
-    query.append("]");
-
     final Map<RID, Vertex> byRid = new HashMap<>(rids.size());
-    try (final ResultSet rs = remoteDatabase.queryUncounted("sql", query.toString(), Collections.emptyMap())) {
-      while (rs.hasNext()) {
-        final Vertex v = rs.next().getVertex().get();
-        byRid.put(v.getIdentity(), v);
+    final StringBuilder query = new StringBuilder();
+    int inQuery = 0;
+    for (final RID rid : rids) {
+      // the same controlled "#<bucket>:<position>" literal as in fetchEdgesAfter
+      query.append(inQuery == 0 ? "select from [" : ", ").append(rid);
+      if (++inQuery == MAX_RIDS_PER_QUERY) {
+        readVertices(query, byRid);
+        inQuery = 0;
       }
     }
+    if (inQuery > 0)
+      readVertices(query, byRid);
 
     final List<Vertex> vertices = new ArrayList<>(edges.size());
     for (final Edge edge : edges) {
@@ -363,6 +375,18 @@ public class RemoteVertex {
         vertices.add(v);
     }
     return vertices;
+  }
+
+  /** Runs the {@code select from [rids} query built so far, closing the list, then empties the builder. */
+  private void readVertices(final StringBuilder query, final Map<RID, Vertex> byRid) {
+    query.append(']');
+    try (final ResultSet rs = remoteDatabase.queryUncounted("sql", query.toString(), Collections.emptyMap())) {
+      while (rs.hasNext()) {
+        final Vertex v = rs.next().getVertex().get();
+        byRid.put(v.getIdentity(), v);
+      }
+    }
+    query.setLength(0);
   }
 
   public boolean isConnectedTo(final Identifiable toVertex) {

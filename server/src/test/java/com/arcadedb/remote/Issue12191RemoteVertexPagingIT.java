@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -103,7 +105,7 @@ class Issue12191RemoteVertexPagingIT extends BaseGraphServerTest {
     final Iterator<Edge> it = remoteHub.getEdgesPaged(Vertex.DIRECTION.OUT, PAGE_SIZE).iterator();
 
     final Set<RID> yielded = new HashSet<>();
-    final List<RID> firstPage = new java.util.ArrayList<>();
+    final List<RID> firstPage = new ArrayList<>();
     for (int i = 0; i < PAGE_SIZE; i++) {
       final RID rid = it.next().getIdentity();
       firstPage.add(rid);
@@ -140,8 +142,46 @@ class Issue12191RemoteVertexPagingIT extends BaseGraphServerTest {
     assertThat(edges).hasSize(LEAVES);
 
     final Vertex leaf = database.query("sql", "select from V12191 where name = 'leaf' and i = 7").next().getVertex().get();
-    final List<Vertex> back = new java.util.ArrayList<>();
+    final List<Vertex> back = new ArrayList<>();
     leaf.getVertices(Vertex.DIRECTION.IN).forEach(back::add);
     assertThat(back).extracting(Vertex::getIdentity).containsExactly(hub.getIdentity());
+  }
+
+  @Test
+  void bothDirectionsReturnASelfLoopTwiceAsTheEmbeddedApiDoes() {
+    database.command("sql", "create edge E12191 from (select from V12191 where name = 'hub') to (select from V12191 where name = 'hub')");
+    final Vertex hub = hub();
+    final RID hubRid = hub.getIdentity();
+
+    // the embedded API reads the outgoing list, then the incoming one, so a self loop sits in both
+    final int[] embedded = new int[2];
+    final Database embeddedDatabase = getServerDatabase(0, getDatabaseName());
+    embeddedDatabase.transaction(() -> {
+      final Vertex embeddedHub = embeddedDatabase.lookupByRID(hubRid, true).asVertex();
+      for (final Edge e : embeddedHub.getEdges(Vertex.DIRECTION.BOTH))
+        if (e.getOut().equals(e.getIn()))
+          ++embedded[0];
+      for (final Vertex v : embeddedHub.getVertices(Vertex.DIRECTION.BOTH))
+        if (v.getIdentity().equals(hubRid))
+          ++embedded[1];
+    });
+    assertThat(embedded).containsExactly(2, 2);
+
+    final RemoteVertex remoteHub = new RemoteVertex(hub, database);
+    int selfLoopEdges = 0;
+    int total = 0;
+    for (final Edge e : remoteHub.getEdgesPaged(Vertex.DIRECTION.BOTH, PAGE_SIZE)) {
+      if (e.getOut().equals(e.getIn()))
+        ++selfLoopEdges;
+      ++total;
+    }
+    int selfNeighbours = 0;
+    for (final Vertex v : remoteHub.getVerticesPaged(Vertex.DIRECTION.BOTH, PAGE_SIZE))
+      if (v.getIdentity().equals(hubRid))
+        ++selfNeighbours;
+
+    assertThat(selfLoopEdges).isEqualTo(embedded[0]);
+    assertThat(selfNeighbours).isEqualTo(embedded[1]);
+    assertThat(total).isEqualTo(LEAVES + 2);
   }
 }
