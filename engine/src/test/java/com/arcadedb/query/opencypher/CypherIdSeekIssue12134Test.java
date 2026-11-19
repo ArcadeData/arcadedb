@@ -215,6 +215,43 @@ class CypherIdSeekIssue12134Test {
     assertThat(ints("MATCH (a)-[r:R]->(b) WHERE elementId(r) = $v RETURN a.i AS i", Map.of("v", "#-1:-1"))).isEmpty();
   }
 
+  @Test
+  void aNodeStepLookedUpByIdStillChecksItsSingleLabel() {
+    // after a WITH the step-by-step plan fetches the ids: a vertex of another label is not an N, static or dynamic
+    final Map<String, Object> params = Map.of("ids", List.of(nodeIds.get(3), otherId, nodeIds.get(5)), "label", "N");
+
+    final String query = "WITH 1 AS seed MATCH (a:N) WHERE elementId(a) IN $ids RETURN a.i AS i";
+    assertThat(plan(query, params)).contains("MATCH NODE (a:N) [id: ");
+    assertThat(ints(query, params)).containsExactlyInAnyOrder(3, 5);
+    assertThat(ints("MATCH (a:N) WHERE elementId(a) IN $ids WITH a MATCH (b:N) WHERE elementId(b) = $other RETURN b.i AS i",
+        Map.of("ids", List.of(nodeIds.get(3)), "other", otherId))).isEmpty();
+    assertSameAnswer("WITH 1 AS seed MATCH (a:$($label)) WHERE elementId(a) IN $ids RETURN a.i AS i",
+        "WITH 1 AS seed MATCH (a:$($label)) WHERE (elementId(a) IN $ids) = true RETURN a.i AS i", params);
+  }
+
+  @Test
+  void aTargetWhosePatternReadsTheSourceIsNotMatchedFirst() {
+    // b's inline map reads a: matched before a is bound it would reject every match
+    final Map<String, Object> params = Map.of("ids", List.of(nodeIds.get(12), nodeIds.get(30)));
+    final String query = "WITH 1 AS seed MATCH (a:N)-[:R]->(b:N {i: a.i + 1}) WHERE elementId(b) IN $ids RETURN a.i AS i";
+
+    assertThat(ints(query, params)).containsExactlyInAnyOrder(11, 29);
+    assertSameAnswer(query,
+        "WITH 1 AS seed MATCH (a:N)-[:R]->(b:N {i: a.i + 1}) WHERE (elementId(b) IN $ids) = true RETURN a.i AS i", params);
+  }
+
+  @Test
+  void theIdsAreLookedUpAsTheRowsArePulled() {
+    final Map<String, Object> params = Map.of("ids", nodeIds);
+    final String query = "MATCH (a) WHERE elementId(a) IN $ids RETURN a.i AS i LIMIT 2";
+    assertThat(plan(query, params)).contains("MATCH NODE (a) [id: ");
+
+    final long before = (long) database.getStats().get("readRecord");
+    assertThat(ints(query, params)).hasSize(2);
+    // a LIMIT stops the lookups: the step does not load every listed record before it returns the first row
+    assertThat((long) database.getStats().get("readRecord") - before).isLessThan(NODES);
+  }
+
   private void assertSameAnswer(final String seek, final String scan, final Map<String, Object> params) {
     assertThat(ints(seek, params)).as("%s with %s", seek, params).containsExactlyInAnyOrderElementsOf(ints(scan, params));
   }

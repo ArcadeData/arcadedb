@@ -626,18 +626,40 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return expr instanceof PropertyAccessExpression propAccess && variable.equals(propAccess.getVariableName());
   }
 
-  /** The records at {@code rids}, in order, without the ones that do not exist; labels and properties are checked by the caller. */
+  /**
+   * The records at {@code rids}, in order, without the ones that do not exist; labels and properties are checked by the caller.
+   * Looked up one at a time as the rows are pulled, so a LIMIT stops the lookups and the command deadline is checked before each.
+   */
   private Iterator<Identifiable> lookUpIds(final List<RID> rids) {
     if (rids.isEmpty())
       return Collections.emptyIterator();
-    final List<Identifiable> records = new ArrayList<>(rids.size());
-    for (final RID rid : rids)
-      try {
-        records.add(context.getDatabase().lookupByRID(rid, true));
-      } catch (final RecordNotFoundException e) {
-        // no record at that address: no node has that id
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    return new Iterator<>() {
+      private int          position = 0;
+      private Identifiable next     = null;
+
+      @Override
+      public boolean hasNext() {
+        while (next == null && position < rids.size()) {
+          guard.check();
+          try {
+            next = context.getDatabase().lookupByRID(rids.get(position++), true);
+          } catch (final RecordNotFoundException e) {
+            // no record at that address: no node has that id
+          }
+        }
+        return next != null;
       }
-    return records.iterator();
+
+      @Override
+      public Identifiable next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Identifiable result = next;
+        next = null;
+        return result;
+      }
+    };
   }
 
   private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
@@ -1482,8 +1504,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   private boolean matchesAllLabels(final Vertex vertex, final Result currentResult) {
     final List<String> labels = resolveEffectiveLabels(currentResult);
-    if (labels.size() <= 1)
-      return true; // Single label already filtered by iterator
+    // A single label was filtered by the type iterator, but not when the candidates were looked up by id (issue #12134)
+    if (labels.size() <= 1 && idSeek == null && dynamicIdExpression == null)
+      return true;
     return Labels.matches(vertex, labels, pattern.isLabelDisjunction());
   }
 

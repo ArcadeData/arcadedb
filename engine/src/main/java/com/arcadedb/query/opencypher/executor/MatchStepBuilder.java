@@ -353,14 +353,17 @@ final class MatchStepBuilder {
         }
 
         // Issue #12134: a single hop whose target the WHERE clause pins by id, and whose source it does not, starts from the target:
-        // one lookup by RID and a walk of its edges, instead of a scan of every source vertex and a filter on what it reaches
+        // one lookup by RID and a walk of its edges, instead of a scan of every source vertex and a filter on what it reaches.
+        // Not when the target's own pattern reads a row value (an inline map such as {x: a.x}, a dynamic label, an inline WHERE):
+        // matched first, it would read the source before the source is bound and reject the match
         if (!reversed && !sourceAlreadyBound && !isOptional && !pathPattern.hasPathVariable()
             && pathPattern.getRelationshipCount() == 1 && !pathPattern.getRelationship(0).isVariableLength()
             && !(pathPattern.getRelationship(0) instanceof QuantifiedPathPattern)) {
           final NodePattern targetNode = pathPattern.getLastNode();
           final String targetVar = targetNode.getVariable();
           if (targetVar != null && !targetVar.equals(sourceVar) && !boundVariables.contains(targetVar)
-              && !matchVariables.contains(targetVar) && CypherExecutionPlan.extractIdFilter(whereClause, targetVar) != null
+              && !matchVariables.contains(targetVar) && isRowIndependentPattern(targetNode)
+              && CypherExecutionPlan.extractIdFilter(whereClause, targetVar) != null
               && CypherExecutionPlan.extractIdFilter(whereClause, sourceVar) == null) {
             reversed = true;
             sourceNode = targetNode;
@@ -773,6 +776,17 @@ final class MatchStepBuilder {
       return pinned.isEmpty();
     }
     return true;
+  }
+
+  /**
+   * Whether everything a node pattern asks of its node can be checked before any other variable of its hop is bound: no dynamic
+   * label, no inline {@code WHERE}, no property map given as a whole parameter and no inline value that reads a variable
+   * (issue #12134).
+   */
+  private static boolean isRowIndependentPattern(final NodePattern node) {
+    if (node.hasDynamicLabels() || node.hasWhereExpression() || node.getPropertiesParameterName() != null)
+      return false;
+    return !node.hasProperties() || EdgeIndexSeedPlanner.isRowIndependent(node.getProperties());
   }
 
   /**
