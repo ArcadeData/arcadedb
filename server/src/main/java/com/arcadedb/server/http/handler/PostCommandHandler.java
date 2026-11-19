@@ -52,6 +52,7 @@ import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class PostCommandHandler extends AbstractQueryHandler {
@@ -59,12 +60,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
   // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
   private static final Pattern LINE_BREAK = Pattern.compile("\\R");
   /** The INTEGER_LITERAL and FLOATING_POINT_LITERAL tokens of the SQL lexer (SQLLexer.g4), the values a TIMEOUT clause takes. */
-  private static final Pattern NUMBER_LITERAL = Pattern.compile(//
-      "(?:[1-9][0-9]*|0[xX][0-9a-fA-F]+|0[0-7]*)[lL]?" //
-          + "|[0-9]+\\.[0-9]*(?:[eE][+-]?[0-9]+)?[fFdD]?" //
-          + "|\\.[0-9]+(?:[eE][+-]?[0-9]+)?[fFdD]?" //
-          + "|[0-9]+(?:[eE][+-]?[0-9]+[fFdD]?|(?:[eE][+-]?[0-9]+)?[fFdD])" //
-          + "|0[xX](?:[0-9a-fA-F]+\\.?|[0-9a-fA-F]*\\.[0-9a-fA-F]+)[pP][+-]?[0-9]+[fFdD]?");
+  private static final Pattern[] NUMBER_LITERAL_FORMS = { //
+      Pattern.compile("[1-9][0-9]*[lL]?"), //
+      Pattern.compile("0[xX][0-9a-fA-F]+[lL]?"), //
+      Pattern.compile("0[0-7]*[lL]?"), //
+      Pattern.compile("[0-9]+\\.[0-9]*(?:[eE][+-]?[0-9]+)?[fFdD]?"), //
+      Pattern.compile("\\.[0-9]+(?:[eE][+-]?[0-9]+)?[fFdD]?"), //
+      Pattern.compile("[0-9]+(?:[eE][+-]?[0-9]+[fFdD]?|(?:[eE][+-]?[0-9]+)?[fFdD])"), //
+      Pattern.compile("0[xX](?:[0-9a-fA-F]+\\.?|[0-9a-fA-F]*\\.[0-9a-fA-F]+)[pP][+-]?[0-9]+[fFdD]?") };
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -205,14 +208,17 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * The TIMEOUT clause a SELECT ends with ({@code TIMEOUT <ms> [RETURN | EXCEPTION]}), read on the SQL tokens so that whitespace and
    * comments between its words are skipped as the lexer skips them: {start of the TIMEOUT keyword, end of the token before it}, or
    * null when the text ends with no such clause. A word inside a string literal, a quoted identifier or a comment is not a token,
-   * and a number is one token in every spelling the lexer reads as one ({@code 5000L}, {@code 0x1388}, {@code 5e3}, {@code 5000.0}).
-   * One pass over the text.
+   * and a number is one token in every spelling the lexer reads as one ({@code 5000L}, {@code 0x1388}, {@code 5e3}, {@code 5000.0}),
+   * ending where the lexer ends it: {@code 5000RETURN} is the number {@code 5000} and the keyword {@code RETURN}. One pass over the
+   * text.
    */
   static int[] trailingTimeout(final String command) {
     final int length = command.length();
-    // THE LAST FOUR TOKENS, IN A RING INDEXED BY THE TOKEN COUNT
+    // THE LAST FOUR TOKENS, IN A RING INDEXED BY THE TOKEN COUNT, AND WHETHER EACH IS A NUMBER LITERAL
     final int[] starts = new int[4];
     final int[] ends = new int[4];
+    final boolean[] numbers = new boolean[4];
+    Matcher numberMatcher = null;
     int tokens = 0;
     int pos = 0;
     while (pos < length) {
@@ -233,13 +239,17 @@ public class PostCommandHandler extends AbstractQueryHandler {
           ++pos;
         continue;
       }
+      boolean number = false;
       if (c == '\'' || c == '"' || c == '`') {
         ++pos;
         while (pos < length && command.charAt(pos) != c)
           pos += command.charAt(pos) == '\\' ? 2 : 1;
         pos = Math.min(pos + 1, length);
       } else if (isAsciiDigit(c) || (c == '.' && pos + 1 < length && isAsciiDigit(command.charAt(pos + 1)))) {
-        pos = numberEnd(command, pos);
+        if (numberMatcher == null)
+          numberMatcher = NUMBER_LITERAL_FORMS[0].matcher(command);
+        pos = numberEnd(numberMatcher, start, length);
+        number = true;
       } else if (isWordChar(c)) {
         while (pos < length && isWordChar(command.charAt(pos)))
           ++pos;
@@ -247,6 +257,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
         ++pos;
       starts[tokens & 3] = start;
       ends[tokens & 3] = pos;
+      numbers[tokens & 3] = number;
       ++tokens;
     }
 
@@ -260,36 +271,22 @@ public class PostCommandHandler extends AbstractQueryHandler {
       return null;
     final int keyword = (tokens - clauseTokens) & 3;
     final int millis = (tokens - clauseTokens + 1) & 3;
-    if (!isToken(command, starts[keyword], ends[keyword], "timeout"))
-      return null;
-    if (!NUMBER_LITERAL.matcher(command).region(starts[millis], ends[millis]).matches())
+    if (!isToken(command, starts[keyword], ends[keyword], "timeout") || !numbers[millis])
       return null;
     return new int[] { starts[keyword], ends[(tokens - clauseTokens - 1) & 3] };
   }
 
   /**
-   * The end of the number literal starting at {@code start}: its digits, a fraction, an exponent with its sign, a type suffix and
-   * the digits of a hexadecimal number, as the SQL lexer reads them into one literal.
+   * The end of the number literal starting at {@code start}, read as the SQL lexer reads it: the longest prefix one of its number
+   * literal forms matches. What follows it is the next token, so a keyword written right after the number ({@code 5000RETURN}) is
+   * a token of its own, as it is to the lexer, while a word that is no keyword ({@code 5000abc}) leaves no clause to find.
    */
-  private static int numberEnd(final String command, final int start) {
-    final int length = command.length();
-    final boolean hex = start + 1 < length && command.charAt(start) == '0' && (command.charAt(start + 1) == 'x'
-        || command.charAt(start + 1) == 'X');
-    int pos = start;
-    while (pos < length) {
-      final char c = command.charAt(pos);
-      if (isWordChar(c) || c == '.')
-        ++pos;
-      else if ((c == '+' || c == '-') && pos > start && isExponentMark(command.charAt(pos - 1), hex))
-        ++pos;
-      else
-        break;
-    }
-    return pos;
-  }
-
-  private static boolean isExponentMark(final char c, final boolean hex) {
-    return hex ? c == 'p' || c == 'P' : c == 'e' || c == 'E';
+  private static int numberEnd(final Matcher matcher, final int start, final int length) {
+    int end = start + 1;
+    for (final Pattern form : NUMBER_LITERAL_FORMS)
+      if (matcher.usePattern(form).region(start, length).lookingAt() && matcher.end() > end)
+        end = matcher.end();
+    return end;
   }
 
   private static boolean isAsciiDigit(final char c) {

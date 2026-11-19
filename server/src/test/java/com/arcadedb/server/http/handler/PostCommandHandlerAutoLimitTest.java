@@ -220,6 +220,23 @@ class PostCommandHandlerAutoLimitTest {
       assertThat(PostCommandHandler.trailingTimeout("SELECT FROM V TIMEOUT " + notANumber)).as(notANumber).isNull();
   }
 
+  /** A number literal ends where the lexer ends it: a keyword written right after it is the next token, not part of the number. */
+  @Test
+  void aTrailingTimeoutActionWrittenRightAfterTheNumberIsFound() {
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5000RETURN", 21))
+        .isEqualTo("SELECT FROM V limit 21 TIMEOUT 5000RETURN");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5000EXCEPTION", 21))
+        .isEqualTo("SELECT FROM V limit 21 TIMEOUT 5000EXCEPTION");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5000Lreturn", 21))
+        .isEqualTo("SELECT FROM V limit 21 TIMEOUT 5000Lreturn");
+    assertThat(PostCommandHandler.withAutomaticLimit("SELECT FROM V TIMEOUT 5e3EXCEPTION", 21))
+        .isEqualTo("SELECT FROM V limit 21 TIMEOUT 5e3EXCEPTION");
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM V LIMIT 2 TIMEOUT 5000EXCEPTION", "sql", LIMIT, null)).isFalse();
+    // A word that is no keyword after the number is still no clause
+    assertThat(PostCommandHandler.trailingTimeout("SELECT FROM V TIMEOUT 5000abc")).isNull();
+    assertThat(PostCommandHandler.trailingTimeout("SELECT FROM V TIMEOUT 5000returns")).isNull();
+  }
+
   /** The clause is found in one pass: a long run of spaces (here inside a literal) costs no rescan from each of its characters. */
   @Test
   void findingTheTrailingTimeoutIsLinear() {

@@ -38,17 +38,20 @@ class SelectTimeoutOverHttpTest extends BaseGraphServerTest {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE Timed");
       executeCommand(serverIndex, "sql", "INSERT INTO Timed CONTENT [{\"n\": 1}, {\"n\": 2}, {\"n\": 3}]");
 
-      final Map<String, Integer> expectedRows = Map.of(//
-          "SELECT n FROM Timed TIMEOUT 5000", 3, //
-          "SELECT n FROM Timed TIMEOUT 5000 EXCEPTION", 3, //
-          "SELECT n FROM Timed ORDER BY n timeout 5000 return", 3, //
-          "SELECT n FROM (SELECT n FROM Timed) TIMEOUT 5000", 3, //
-          "SELECT n FROM Timed LIMIT 2 TIMEOUT 5000 EXCEPTION", 2, //
-          "SELECT n FROM Timed SKIP 1 LIMIT 1 TIMEOUT 5000 RETURN", 1, //
-          "SELECT n FROM Timed TIMEOUT /* budget */ 5000", 3, //
-          "SELECT n FROM Timed -- note\nTIMEOUT 5000", 3, //
-          "SELECT n FROM Timed TIMEOUT 5000L", 3, //
-          "SELECT n FROM Timed LIMIT 2 TIMEOUT 0x1388 RETURN", 2);
+      final Map<String, Integer> expectedRows = Map.ofEntries(//
+          Map.entry("SELECT n FROM Timed TIMEOUT 5000", 3), //
+          Map.entry("SELECT n FROM Timed TIMEOUT 5000 EXCEPTION", 3), //
+          Map.entry("SELECT n FROM Timed ORDER BY n timeout 5000 return", 3), //
+          Map.entry("SELECT n FROM (SELECT n FROM Timed) TIMEOUT 5000", 3), //
+          Map.entry("SELECT n FROM Timed LIMIT 2 TIMEOUT 5000 EXCEPTION", 2), //
+          Map.entry("SELECT n FROM Timed SKIP 1 LIMIT 1 TIMEOUT 5000 RETURN", 1), //
+          Map.entry("SELECT n FROM Timed TIMEOUT /* budget */ 5000", 3), //
+          Map.entry("SELECT n FROM Timed -- note\nTIMEOUT 5000", 3), //
+          Map.entry("SELECT n FROM Timed TIMEOUT 5000L", 3), //
+          Map.entry("SELECT n FROM Timed LIMIT 2 TIMEOUT 0x1388 RETURN", 2), //
+          // A keyword written right after the number is a token of its own to the lexer
+          Map.entry("SELECT n FROM Timed TIMEOUT 5000RETURN", 3), //
+          Map.entry("SELECT n FROM Timed LIMIT 2 TIMEOUT 5000EXCEPTION", 2));
       for (final Map.Entry<String, Integer> statement : expectedRows.entrySet()) {
         final JSONObject response = executeCommand(serverIndex, "sql", statement.getKey());
         assertThat(response).as("refused over HTTP: %s", statement.getKey()).isNotNull();
