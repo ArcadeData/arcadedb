@@ -41,7 +41,6 @@ import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.NumberUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -527,7 +526,8 @@ public class RedisNetworkExecutor extends Thread {
             break;
 
           default:
-            value.append("-Command not found");
+            // What Redis answers, with the ERR kind a client branches on: "-Command not found" made "Command" the kind (#11783)
+            value.append("-ERR unknown command '").append(errorEcho((String) cmd)).append('\'');
         }
 
       } catch (final Exception e) {
@@ -1077,33 +1077,48 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   /**
-   * Handles the {@code HELLO [protover [AUTH username password]]} handshake. Modern Redis clients use it
+   * Handles the {@code HELLO [protover [AUTH username password] [SETNAME clientname]]} handshake. Modern Redis clients use it
    * to authenticate and negotiate the protocol version in a single round-trip. Only the AUTH-carrying
    * form is accepted before authentication; a plain HELLO on an unauthenticated connection is rejected
    * with NOAUTH, matching Redis' own behaviour. Both RESP2 and RESP3 protocol versions are accepted but
    * the reply is always encoded as a RESP2 map (a flat array of key/value pairs).
+   * <p>
+   * The words are read as Redis reads them (issue #11783), and the whole command is checked before anything is done, so a
+   * malformed HELLO authenticates nobody: a protover that is not a 64-bit integer is refused as one, an integer other than 2 or 3
+   * with {@code NOPROTO}, and every word after it must be an {@code AUTH username password} or a {@code SETNAME clientname}
+   * option; any other word, or an option missing its values, is refused with {@code Syntax error in HELLO option '<word>'}. The
+   * client name is checked as Redis checks it and otherwise not used: this server has no {@code CLIENT} command to read it back,
+   * but the clients that send it (redis-py, Lettuce, go-redis) must not be refused for it.
    */
   private void hello(final List<Object> list) {
     int idx = 1;
 
     // Optional protocol version.
     if (list.size() > idx) {
-      final String maybeVersion = (String) list.get(idx);
-      if (NumberUtils.isIntegerNumber(maybeVersion)) {
-        final int proto = Integer.parseInt(maybeVersion);
-        if (proto < 2 || proto > 3)
-          throw RedisException.withKind("NOPROTO", "unsupported protocol version");
-        idx++;
-      }
+      final long proto = parseProtocolVersion((String) list.get(idx));
+      if (proto < 2 || proto > 3)
+        throw RedisException.withKind("NOPROTO", "unsupported protocol version");
+      idx++;
     }
 
-    // Optional AUTH <username> <password> option.
-    if (list.size() > idx && "AUTH".equalsIgnoreCase((String) list.get(idx))) {
-      if (list.size() < idx + 3)
-        // ERR is already respErrorPrefix()'s default kind, so the message no longer needs to repeat it.
-        throw new RedisException("Syntax error in HELLO");
-      final String userName = (String) list.get(idx + 1);
-      final String password = (String) list.get(idx + 2);
+    String userName = null;
+    String password = null;
+    for (; idx < list.size(); idx++) {
+      final String option = (String) list.get(idx);
+      final int moreArgs = list.size() - 1 - idx;
+      if ("AUTH".equalsIgnoreCase(option) && moreArgs >= 2) {
+        userName = (String) list.get(idx + 1);
+        password = (String) list.get(idx + 2);
+        idx += 2;
+      } else if ("SETNAME".equalsIgnoreCase(option) && moreArgs >= 1) {
+        checkClientName((String) list.get(idx + 1));
+        idx++;
+      } else
+        // ERR is already respErrorPrefix()'s default kind. The word is the client's own input, echoed on one line
+        throw new RedisException("Syntax error in HELLO option '" + errorEcho(option) + "'");
+    }
+
+    if (userName != null) {
       try {
         markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       } catch (final ServerSecurityException e) {
@@ -1129,6 +1144,43 @@ public class RedisNetworkExecutor extends Thread {
     respondValue("modules", true);
     appendCrLf();
     value.append("*0");
+  }
+
+  /**
+   * The protocol version of a HELLO, as Redis reads it: a signed 64-bit integer, or the error Redis answers for anything else.
+   * {@code NumberUtils.isIntegerNumber} took the empty string, a lone minus sign and a digit string beyond the int range, and
+   * {@code Integer.parseInt} then answered them with the text of its {@code NumberFormatException}; a word that was no number
+   * was skipped and read as an option (issue #11783).
+   */
+  private static long parseProtocolVersion(final String text) {
+    final long version;
+    try {
+      version = Long.parseLong(text);
+    } catch (final NumberFormatException e) {
+      throw new RedisException("Protocol version is not an integer or out of range");
+    }
+    // Redis' string2ll takes the canonical form only: parseLong also takes "+3", "03" and non-ASCII digits
+    if (!Long.toString(version).equals(text))
+      throw new RedisException("Protocol version is not an integer or out of range");
+    return version;
+  }
+
+  /**
+   * A word of the client echoed in an error reply, as Redis echoes it: at most 128 characters, and a line break, which would end
+   * the one-line RESP error and start a reply the client never asked for, turned into a space.
+   */
+  static String errorEcho(final String word) {
+    final String bounded = word.length() > 128 ? word.substring(0, 128) : word;
+    return bounded.replace('\r', ' ').replace('\n', ' ');
+  }
+
+  /** Refuses the client name Redis refuses:an empty one is allowed, a space, a newline or another special character is not. */
+  private static void checkClientName(final String name) {
+    for (int i = 0; i < name.length(); i++) {
+      final char c = name.charAt(i);
+      if (c < '!' || c > '~')
+        throw new RedisException("Client names cannot contain spaces, newlines or special characters.");
+    }
   }
 
   private void appendHelloEntry(final String key, final Object entryValue) {

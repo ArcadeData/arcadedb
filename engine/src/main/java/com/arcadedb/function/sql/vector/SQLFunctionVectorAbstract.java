@@ -208,20 +208,6 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
-   * Validates that the number of parameters matches expected count.
-   *
-   * @param params        Actual parameters
-   * @param expectedCount Expected parameter count
-   *
-   * @throws CommandSQLParsingException if count doesn't match
-   */
-  protected void validateParameterCount(final Object[] params, final int expectedCount) {
-    if (params == null || params.length != expectedCount) {
-      throw new CommandSQLParsingException(getSyntax());
-    }
-  }
-
-  /**
    * The SQL that resolves a vertex-identifier key to the vector stored on that vertex, shared by the two entry
    * points onto that lookup: {@code vector.neighbors} and the Neo4j-compatible
    * {@code db.index.vector.queryNodes} procedure. The key is bound as a parameter; all three schema names are

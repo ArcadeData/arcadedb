@@ -776,7 +776,7 @@ class VectorGraphPersistTest {
    * </ol>
    * The wrapper is a delegating proxy installed the way the HA plugin installs {@code RaftReplicatedDatabase}
    * ({@link LocalDatabase#setWrappedDatabaseInstance}); it counts the {@code commit()} calls it receives and can claim to
-   * be replicated. The end-to-end behaviour on a real cluster is covered by {@code Issue8905VectorBuildHATest} in the
+   * be replicated. The end-to-end behaviour on a real cluster is covered by {@code VectorBuildReplicatedInChunksHATest} in the
    * ha-raft module.
    */
   @Nested
