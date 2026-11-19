@@ -148,6 +148,14 @@ public class ConditionalStatement implements CypherStatement {
     return false;
   }
 
+  @Override
+  public boolean hasSchemaProcedureCall() {
+    for (final CypherStatement branch : getAllBranches())
+      if (branch.hasSchemaProcedureCall())
+        return true;
+    return false;
+  }
+
   private static void requireNotConditional(final CypherStatement branch) {
     if (branch instanceof ConditionalStatement)
       throw new IllegalArgumentException("A branch of a conditional query cannot be a conditional query");

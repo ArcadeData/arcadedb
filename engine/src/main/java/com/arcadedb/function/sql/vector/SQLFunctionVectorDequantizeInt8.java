@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorQuantizeInt8.QuantizationResult;
 import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.List;
@@ -56,10 +57,30 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  /**
+   * The accepted counts are 1 or 3, never 2, which a contiguous min..max cannot say. Every wrong count, the gap included, is
+   * refused here in one wording, so the call-site gate and this function never describe the accepted counts differently.
+   */
+  @Override
+  public void checkArity(final Object[] args) {
+    final int count = args == null ? 0 : args.length;
+    if (count != 1 && count != 3)
+      throw FunctionArity.mismatch(NAME, "1 or 3 arguments", count);
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 1)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // Object form: vectorDequantizeInt8(<result of vectorQuantizeInt8>) - min/max come from the result.
     if (params.length == 1) {
@@ -73,10 +94,7 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       return dequantize(qr.quantized(), qr.min(), qr.max());
     }
 
-    // 2-arg form is intentionally unsupported: either 1 (result object) or 3 (bytes, min, max).
-    if (params.length != 3)
-      throw new CommandSQLParsingException(getSyntax());
-
+    // Three arguments: checkArity() refused every other count.
     final Object quantizedObj = params[0];
     if (quantizedObj == null)
       return null;

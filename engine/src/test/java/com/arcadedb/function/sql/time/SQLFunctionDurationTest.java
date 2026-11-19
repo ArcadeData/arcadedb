@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
-import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,12 +69,18 @@ class SQLFunctionDurationTest {
   void durationWithInvalidTimeUnit() {
     // issue #11589: a unit nothing names is the caller's mistake, a client error, still carrying the parser's refusal
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5, "INVALID_UNIT" }, null)).isInstanceOf(
-        InvalidArgumentException.class).hasMessageContaining("'INVALID_UNIT'").hasCauseInstanceOf(SerializationException.class);
+        InvalidArgumentException.class).hasMessageContaining("'INVALID_UNIT'")
+        // issue #12020: the parser's own refusal is a client error too, shared with the precision() method
+        .cause().isInstanceOf(InvalidArgumentException.class).hasMessageContaining("Unsupported datetime precision");
   }
 
   @Test
   void durationWithIncorrectNumberOfParameters() {
+    // issue #12362: one argument is the openCypher form (an ISO-8601 text or a map), so a lone number is refused for its kind
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5 }, null)).isInstanceOf(
-        IllegalArgumentException.class).hasMessageContaining("duration() function expected 2 parameters: amount and time-unit");
+        InvalidArgumentException.class).hasMessageContaining("ISO-8601 duration text or a map");
+    // issue #11944: the declared 1..2 arity refuses a third argument with the uniform "expects" semantic error
+    assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5, "hour", 3 }, null)).isInstanceOf(
+        CommandSemanticException.class).hasMessageContaining("expects 1-2 arguments but got 3");
   }
 }

@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongHashSet;
+import com.arcadedb.utility.ScanPressureReporter;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Contains;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -390,12 +391,27 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
       return result;
     }
 
+    /** Whether {@code step} opened this scan: a clone shares the scan of the running step it was cloned from, which is not its to close. */
+    boolean isOpenedBy(final Object step) {
+      return step == ArcadeFilterByIndexStep.this;
+    }
+
     @Override
     public void close() {
       if (!closed) {
         closed = true;
-        if (cursor != null)
-          cursor.close();
+        // DROPPED, NOT ONLY RELEASED: A CLOSED TRAVERSAL THAT IS KEPT MUST NOT KEEP THE BATCH THE SCAN HAD READ
+        final Iterator<Record> scan = typeScan;
+        typeScan = null;
+        try {
+          if (cursor != null)
+            cursor.close();
+        } finally {
+          // #11639: A SCAN OF THE TYPE HOLDS THE BATCH IT READ AHEAD, TAKEN FROM THE JVM-WIDE POOL OF READ-AHEAD: GIVEN BACK NOW, NOT
+          // WHEN THE GARBAGE COLLECTOR FINDS A SCAN THE CALLER STOPPED BEFORE ITS END. THE SCAN IS NOT AutoCloseable
+          if (scan instanceof ScanPressureReporter reporter)
+            reporter.releaseReadAhead();
+        }
       }
     }
   }
@@ -476,7 +492,10 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   @Override
   public void reset() {
     super.reset();
-    // NOT CLOSED HERE: AbstractStep.clone() RESETS THE CLONE WHILE IT STILL SHARES THIS STEP'S ITERATOR
+    // A RESET DROPS THE SCAN IN HAND: GIVE IT BACK NOW INSTEAD OF WHEN THE GARBAGE COLLECTOR FINDS IT (#11639). ONLY A SCAN THIS STEP
+    // OPENED: AbstractStep.clone() RESETS THE CLONE WHILE IT STILL SHARES THE ITERATOR OF THE STEP IT WAS CLONED FROM
+    if (this.iterator instanceof ArcadeFilterByIndexStep<?, ?>.CandidateIterator scan && scan.isOpenedBy(this))
+      scan.close();
     this.head = null;
     this.done = false;
     this.iterator = EmptyIterator.instance();

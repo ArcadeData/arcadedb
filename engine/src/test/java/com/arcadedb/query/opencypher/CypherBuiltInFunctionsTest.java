@@ -70,10 +70,26 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     // registers procedures in the unified ProcedureRegistry.
     // Clear and reset both registries to ensure unified FunctionRegistry/ProcedureRegistry
     // are populated with the same instances (other tests may clear the unified registries).
+    // The SQL functions are registered once, by the DefaultSQLFunctionFactory singleton: load it before the snapshot and put
+    // them back after the reset, or every later test in the same JVM sees a registry without them (issue #11927).
+    DefaultSQLFunctionFactory.getInstance();
+    final List<Function> registeredBefore = new ArrayList<>(FunctionRegistry.getAllFunctions());
     FunctionRegistry.clear();
     ProcedureRegistry.clear();
     CypherFunctionRegistry.reset();
     CypherProcedureRegistry.reset();
+    for (final Function function : registeredBefore)
+      if (!FunctionRegistry.hasFunction(function.getName()))
+        FunctionRegistry.register(function);
+  }
+
+  /** Issue #11927: resetting the registries for this class must not leave the SQL functions out of the unified registry. */
+  @Test
+  void resettingTheRegistriesKeepsTheSqlFunctions() {
+    assertThat(FunctionRegistry.hasFunction("cypherRID")).isTrue();
+    ensureRegistriesLoaded();
+    assertThat(FunctionRegistry.hasFunction("cypherRID")).as("the SQL functions survive the reset").isTrue();
+    assertThat(FunctionRegistry.hasFunction("fulltext.searchFieldsMore")).isTrue();
   }
 
   // ===================== REGISTRY TESTS =====================

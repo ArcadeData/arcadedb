@@ -31,7 +31,9 @@ import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.List;
 
@@ -46,6 +48,7 @@ public class DeleteExecutionPlanner {
   private final Limit       limit;
   private final Batch       batch;
   private final boolean     unsafe;
+  private final boolean     deleteVertex;
   private final DmlSourcePlanKey sourcePlanKey;
 
   public DeleteExecutionPlanner(final DeleteStatement stm) {
@@ -57,10 +60,14 @@ public class DeleteExecutionPlanner {
     this.limit = stm.getLimit();
     this.batch = stm.getBatch();
     this.unsafe = stm.isUnsafe();
+    this.deleteVertex = stm.isDeleteVertex();
   }
 
   public DeleteExecutionPlan createExecutionPlan(final CommandContext context) {
     final DeleteExecutionPlan result = new DeleteExecutionPlan(context, 0);
+
+    if (deleteVertex)
+      checkVertexTarget(context);
 
     // THE SAMPLES OF A TIMESERIES TYPE ARE NOT RECORDS: THEY ARE DELETED BY THE ENGINE OF THE TYPE, BY TIME RANGE AND TAGS (issue #10342)
     final LocalTimeSeriesType tsType = timeSeriesTarget(fromClause, context);
@@ -89,6 +96,22 @@ public class DeleteExecutionPlanner {
       handleReturn(result, context, this.returnBefore);
     }
     return result;
+  }
+
+  /**
+   * {@code DELETE VERTEX} names a vertex type, or a target whose records are each checked by the {@link DeleteStep} (issue #11620).
+   * A type that is not a vertex type is refused before anything runs, so the answer does not depend on whether it holds records.
+   */
+  private void checkVertexTarget(final CommandContext context) {
+    if (fromClause.getItem().getIndex() != null)
+      throw new CommandExecutionException("Cannot apply VERTEX on a delete from index: it removes index entries, not vertices");
+    final Identifier identifier = fromClause.getItem().getIdentifier();
+    if (identifier == null)
+      return;
+    final DocumentType type = context.getDatabase().getSchema().getTypeOrNull(identifier.getStringValue());
+    if (type != null && !(type instanceof VertexType))
+      throw new CommandExecutionException(
+          "DELETE VERTEX cannot delete from the type '" + type.getName() + "': it is not a vertex type. Use DELETE FROM to delete its records");
   }
 
   /** The TIMESERIES type the statement deletes from, or {@code null} when its target is anything else. */
@@ -200,7 +223,7 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context, returnProjection, returnBefore));
+    result.chain(new DeleteStep(context, returnProjection, returnBefore, deleteVertex));
   }
 
   private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
@@ -80,6 +81,11 @@ class ClauseDispatcher {
    * @param astBuilder the AST builder
    */
   void dispatch(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder, final CypherASTBuilder astBuilder) {
+    // RETURN ends a query part: only its own ORDER BY / SKIP / LIMIT may follow it. Any other clause used to be accepted and
+    // the RETURN before it silently discarded, so `RETURN 1 AS id RETURN 0 AS id` answered id=0 (issue #11687)
+    if (builder.hasReturn() && ctx.orderBySkipLimitClause() == null)
+      throw new CommandParsingException("UnexpectedSyntax: RETURN can only be used at the end of the query, found '"
+          + CypherASTBuilder.getOriginalText(ctx) + "' after it");
     for (final Map.Entry<Function<Cypher25Parser.ClauseContext, ?>, ClauseHandler> entry : handlers.entrySet()) {
       final Object clauseCtx = entry.getKey().apply(ctx);
       if (clauseCtx != null) {

@@ -18,10 +18,14 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ServerPlugin;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RaftHAPluginTest {
 
@@ -48,5 +52,36 @@ class RaftHAPluginTest {
     // No configuration set, should not throw
     plugin.startService();
     assertThat(plugin.getRaftHAServer()).isNull();
+  }
+
+  /**
+   * Regression test for issue #8356, the security-replication siblings of the fix in
+   * {@code RaftReplicatedDatabase}: {@code RaftHAPlugin.replicateSecurityUsers/Groups/ApiTokens} all dereferenced
+   * {@code raftHAServer.getTransactionBroker()} directly. {@code raftHAServer} being non-null only proves the
+   * plugin has started - {@code RaftHAServer.stop()} clears its {@code transactionBroker} field separately, and
+   * can do so while the plugin's own {@code raftHAServer} reference is still set, the same shutdown window
+   * {@code RaftReplicatedDatabase}'s commit path raced.
+   * <p>
+   * Unlike the commit path, every method here already collapses any non-{@code TransactionException} into a
+   * {@code TransactionException} ({@code catch (Exception e)}), so the null broker still surfaces as one - just a
+   * clean, message-carrying one instead of a bare {@code NullPointerException} with no explanation.
+   */
+  @Nested
+  class RaftHAPluginNullTransactionBroker {
+
+    // Regression for #8356: RaftHAPluginNullTransactionBroker
+    @Test
+    void replicateSecurityUsersReportsANullBrokerInsteadOfThrowingNPE() {
+      final RaftHAPlugin plugin = new RaftHAPlugin();
+      // Detached, never started: no transaction broker, as after the HA stop this issue is about
+      final RaftHAServer raftServer = FakeRaftHAServer.detached();
+      plugin.setRaftHAServer(raftServer);
+
+      assertThatThrownBy(() -> plugin.replicateSecurityUsers("[]", null))
+          .isInstanceOf(TransactionException.class)
+          .isNotInstanceOf(NullPointerException.class)
+          .cause().isInstanceOf(NeedRetryException.class)
+          .hasMessageContaining("transaction broker");
+    }
   }
 }
