@@ -1293,7 +1293,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // refusal on the leader's target (issue #10689), and a replica commits its phase 1 locally, where nothing knows of it, so
     // its entry would be acknowledged during the download and destroyed by the swap. The leader's own commits are refused in
     // the database itself. Lock-free: one volatile read of the refusals. Repeated after the reservation below.
-    // Issue10965ReplicaEntryRefusedDuringRestoreClaimTest counts the databaseFor() lookups of this method (this one is the first,
+    // RestoreAndBackupProtectionTest.ReplicaEntryRefusedDuringRestoreClaim counts the databaseFor() lookups of this method (this one is the first,
     // the validation lookup below the second): adding a lookup before the reservation means updating that test.
     if (!isLocalOrigin && databaseName != null) {
       final NeedRetryException writesRefused = writesRefusedOnLeader(databaseForValidation(databaseName));
@@ -3373,7 +3373,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * MUST stay a strict mirror of that predicate: every condition it tests has a line here, and nothing else does. The
    * hand-off reads this list after the predicate and treats an empty one as "the gap closed in between", so a condition
    * the predicate reports and this list omits would make every hand-off a silent no-op.
-   * {@code Issue8529LeaderServiceGapHandOffTest} pins the two against each other for every condition.
+   * {@code LeadershipHandOffReachabilityTest} pins the two against each other for every condition.
    */
   List<String> describeLeaderServiceGaps() {
     final List<String> gaps = new ArrayList<>(4);

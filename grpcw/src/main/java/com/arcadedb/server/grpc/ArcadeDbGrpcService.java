@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Database;
@@ -2266,7 +2267,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
 
       final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
-      scso.setOnCancelHandler(() -> cancelled.set(true));
+      onCancel(scso, cancelled);
 
       final int batchSize = Math.max(1, request.getBatchSize());
       final String language = langOrDefault(request.getLanguage());
@@ -2647,6 +2648,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw e;
       }
     }
+  }
+
+  /**
+   * Sets {@code cancelled} when the client cancels the call. A server-streaming handler runs inside the call's half-close callback
+   * and keeps it until the stream ends, and gRPC delivers the call's other callbacks, the cancel handler included, on the same
+   * serialized executor: the handler set by {@code setOnCancelHandler} alone could only run once the stream was over. A stream the
+   * client cancelled therefore went on waiting for the transport to become ready until arcadedb.server.grpcStreamWriteTimeoutMs
+   * (60 s), holding its worker thread, its result set and its query admission slot, so that arcadedb.queryMaxConcurrent cancelled
+   * streams made every remote query wait. The call's context is cancelled as the cancel arrives, on the server's own executor
+   * and not on the call's serialized one (the gRPC server here has no executor of its own configured, so that is an unbounded
+   * cached pool and the cancel never queues behind a busy worker), and a listener with a direct executor sees it at once, as
+   * {@code GrpcAdmissionInterceptor} already does. The listener is not removed: the context is cancelled when the call ends,
+   * which clears its listeners, and outside a call the current context is the root one, which takes none.
+   */
+  private static void onCancel(final ServerCallStreamObserver<?> call, final AtomicBoolean cancelled) {
+    call.setOnCancelHandler(() -> cancelled.set(true));
+    Context.current().addListener(context -> cancelled.set(true), Runnable::run);
   }
 
   private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled, AtomicBoolean serverTimedOut) {
@@ -3870,7 +3888,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final ServerCallStreamObserver<TimeSeriesQueryResult> call = (ServerCallStreamObserver<TimeSeriesQueryResult>) resp;
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
-    call.setOnCancelHandler(() -> cancelled.set(true));
+    onCancel(call, cancelled);
     // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
     boolean terminated = false;
 
@@ -6293,19 +6311,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    // HA-forwarded rows are non-element projections; recover the type from the @type property.
+    // HA-forwarded rows are non-element projections; recover the type from the @type property. Not for a row with a column that
+    // holds a record (SELECT @rid, @type, @this): that row is a projection the query made, which a forwarded record never is, and
+    // typing it turned it into a record whose only property was the column (issue #12196)
     if (builder.getType().isEmpty()) {
       final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
-      if (typeProperty instanceof String typeName && !typeName.isEmpty())
+      if (typeProperty instanceof String typeName && !typeName.isEmpty() && !holdsRecordColumn(result))
         builder.setType(typeName);
     }
+
+    // Issue #12196: a Cypher row that returns a node or a relationship (RETURN n) is the element plus its alias column. It goes out
+    // as the element, its own properties, as the HTTP serializer sends it: the alias column alone made a record whose only
+    // property was "n"
+    final Document projectedElement = result.isElement()
+        && result.getMetadata(FinalProjectionStep.PROJECTION_NAME_METADATA) != null ? result.toElement() : null;
 
     // Iterate over ALL properties from the Result, including aliases.
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
     final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
-    for (String propertyName : result.getPropertyNames()) {
-      final Object value = result.getProperty(propertyName);
+    for (String propertyName : projectedElement != null ? projectedElement.getPropertyNames() : result.getPropertyNames()) {
+      final Object value = projectedElement != null ? projectedElement.get(propertyName) : result.getProperty(propertyName);
 
       if (debug)
         LogManager.instance()
@@ -6361,6 +6387,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return builder.build();
   }
 
+  /**
+   * Whether a column of {@code result} holds a record, a document with an identity (issue #12196). It walks the columns, but is asked
+   * only for a row with no type of its own that has a String {@code @type} column: a plain projection row never reaches it.
+   */
+  private static boolean holdsRecordColumn(final Result result) {
+    for (final String name : result.getPropertyNames())
+      if (result.getProperty(name) instanceof Document document && document.getIdentity() != null)
+        return true;
+    return false;
+  }
+
   private static boolean isExcluded(final Set<String> excluded, final String name) {
     return excluded != null && excluded.contains(name);
   }
@@ -6383,23 +6420,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         Object value = doc.get(propertyName);
 
-        if (value != null) {
-
-          if (debug)
-            LogManager.instance()
-                .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
-                    , summarizeJava(value),
-                    value.getClass());
-
-          GrpcValue gv = toGrpcValue(value);
-
-          if (debug)
-            LogManager.instance()
-                .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
-                    summarizeGrpc(gv));
-
-          builder.putProperties(propertyName, gv);
+        // A property stored as null is still a property of the record: it is sent as an unset value, as
+        // convertResultToGrpcRecord sends a null projection, so the client's has() and getPropertyNames() see it as the
+        // embedded API and the HTTP serializer ({"key": null}) do (issue #12197)
+        if (value == null) {
+          builder.putProperties(propertyName, GrpcValue.getDefaultInstance());
+          continue;
         }
+
+        if (debug)
+          LogManager.instance()
+              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
+                  , summarizeJava(value),
+                  value.getClass());
+
+        GrpcValue gv = toGrpcValue(value);
+
+        if (debug)
+          LogManager.instance()
+              .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
+                  summarizeGrpc(gv));
+
+        builder.putProperties(propertyName, gv);
       }
 
       // If this is an Edge, include @out / @in for convenience (string rid or link)

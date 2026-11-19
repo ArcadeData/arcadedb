@@ -48,6 +48,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The same holds when the object deleted differs from the indexed state because of this transaction alone: a property assigned
  * and never saved, or an update saved through another object of the same record.
+ * <p>
+ * Since issue #12472 the delete of a record read before a concurrent change is refused as a concurrent modification: the tests of
+ * that shape check that the refusal leaves the record and its entries as committed, and that the retry cleans them up.
  */
 class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
 
@@ -97,25 +100,36 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
 
   /**
    * The cleanup reads the record without firing the before-read events: a listener hiding the record would otherwise send the
-   * cleanup back to the image the caller read, and the entry the concurrent change added would stay.
+   * cleanup back to the object the caller holds, and the entry the concurrent change added would stay. Since issue #12472 a record
+   * read before the change is refused instead, so the slot is read for a record handed out without loading it.
    */
   @Test
   void aBeforeReadListenerHidingTheRecordDoesNotSendTheCleanupBackToTheImageRead() throws Exception {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("D");
-      database.command("sql", "CREATE PROPERTY D.v INTEGER");
-      database.command("sql", "CREATE INDEX ON D (v) NOTUNIQUE");
-    });
-    final RID[] rid = new RID[1];
-    database.transaction(() -> rid[0] = database.newDocument("D").set("v", 1).save().getIdentity());
+    final RID rid = newIndexedDocument();
 
-    final BeforeRecordReadListener hide = record -> !record.equals(rid[0]);
+    database.begin();
+    final Document unloaded = (Document) database.lookupByRID(rid, false);
+    final FutureTask<Integer> concurrent = new FutureTask<>(() -> {
+      database.transaction(() -> rid.asDocument().modify().set("v", 2).save());
+      final int[] committed = new int[1];
+      database.transaction(() -> committed[0] = rid.asDocument().getInteger("v"));
+      return committed[0];
+    });
+    new Thread(concurrent).start();
+    assertThat(concurrent.get()).as("the value the concurrent transaction committed").isEqualTo(2);
+
+    final BeforeRecordReadListener hide = record -> !record.equals(rid);
+    database.getEvents().registerListener(hide);
     try {
-      deleteAfterAConcurrentUpdate(rid[0], () -> database.getEvents().registerListener(hide));
+      unloaded.delete();
+      database.commit();
     } finally {
       database.getEvents().unregisterListener(hide);
+      if (database.isTransactionActive())
+        database.rollback();
     }
 
+    assertThat(database.existsRecord(rid)).isFalse();
     assertThat(entries("D[v]", 1)).isEmpty();
     assertThat(entries("D[v]", 2)).isEmpty();
   }
@@ -300,7 +314,11 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     return rid[0];
   }
 
-  /** Reads the record, lets another transaction set {@code v = 2} and commit, then deletes the record as it was read. */
+  /**
+   * Reads the record, lets another transaction set {@code v = 2} and commit, then deletes the record as it was read. Since issue
+   * #12472 that delete is refused, and leaves the record and its index entries as the concurrent transaction committed them; the
+   * retry reads the record again and deletes it, entries and EXTERNAL values included.
+   */
   private void deleteAfterAConcurrentUpdate(final RID rid) throws Exception {
     deleteAfterAConcurrentUpdate(rid, () -> {
     });
@@ -335,8 +353,20 @@ class DeleteStaleImageIndexCleanupIssue11733Test extends TestHelper {
     assertThat(concurrent.get()).as("the value the concurrent transaction committed").isEqualTo(2);
 
     beforeDelete.run();
-    readBefore.delete();
-    database.commit();
+    try {
+      assertThatThrownBy(readBefore::delete).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      database.rollback();
+    }
+    assertThat(database.existsRecord(rid)).isTrue();
+    final String indexName = rid.asDocument().getTypeName() + "[v]";
+    if (database.getSchema().existsIndex(indexName)) {
+      assertThat(entries(indexName, 1)).isEmpty();
+      assertThat(entries(indexName, 2)).containsExactly(rid);
+    }
+
+    // THE RETRY, WHICH READS THE RECORD AGAIN
+    database.transaction(() -> rid.asDocument(true).delete());
     assertThat(database.existsRecord(rid)).isFalse();
   }
 

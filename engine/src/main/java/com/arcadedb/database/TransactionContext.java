@@ -212,6 +212,8 @@ public class TransactionContext implements Transaction {
   // check addUpdatedRecord would have refused them with is made by the commit instead, under the lock, against the newest
   // committed image: the write is merged onto it when it changed only edge-list heads, refused otherwise.
   private       RidHashSet                            staleEdgeListWrites;
+  // #12472: records written to their page at once (the asynchronous executor) rather than deferred to the commit
+  private       RidHashSet                            immediateWrites;
   // #12320: the vertices whose outgoing / incoming edge-list head a traversal read off a vertex loaded from this transaction's
   // own image of its page, see trackEdgeListHeadReadFromOwnImage()
   private       RidHashSet                            outHeadsReadFromOwnImage;
@@ -419,14 +421,14 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
-  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the stripes of the relationships it created by a
+  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the keys of the relationships it created by a
   // match-or-create: the ones its commit checks, and the ones it marks. Primitive arrays grown on demand, null until the first
   private       long                                 mergedEdgeEpoch;
-  private       int[]                                mergedEdgeChecked;
+  private       long[]                               mergedEdgeChecked;
   private       int                                  mergedEdgeCheckedCount;
-  private       int[]                                mergedEdgeMarked;
+  private       long[]                               mergedEdgeMarked;
   private       int                                  mergedEdgeMarkedCount;
-  // #11482: the stripes are reserved in the registry, so they have to be marked committed or released when the transaction ends
+  // #11482: the keys are reserved in the registry, so they have to be marked committed or released when the transaction ends
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
@@ -773,6 +775,32 @@ public class TransactionContext implements Transaction {
    */
   public boolean hasWrittenRecords() {
     return !modifiedRecordsCache.isEmpty() || (updatedRecords != null && !updatedRecords.isEmpty());
+  }
+
+  /**
+   * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
+   * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
+   * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred
+   * update leaves the slot alone until the commit, so a slot that differs from the image is never its doing, whatever the record
+   * caches hold. Records nothing in the running statement: it answers a question and hands out no record.
+   */
+  public boolean isSlotWrittenInTransaction(final RID rid) {
+    if (immediateWrites != null && immediateWrites.contains(rid))
+      return true;
+    return isCreatedInTransaction(rid);
+  }
+
+  /**
+   * Remembers a record written to its page at once inside this transaction (the asynchronous executor), see
+   * {@link #isSlotWrittenInTransaction(RID)}. The writes of the commit itself (the flush of the deferred updates, the merges) are
+   * not remembered: they run after every delete of the transaction.
+   */
+  public void trackImmediateWrite(final RID rid) {
+    if (status != STATUS.BEGUN)
+      return;
+    if (immediateWrites == null)
+      immediateWrites = new RidHashSet();
+    immediateWrites.add(rid);
   }
 
   /**
@@ -5399,6 +5427,7 @@ public class TransactionContext implements Transaction {
     lightEdgeEntryChanges = null;
     newRecordRIDs = null;
     staleEdgeListWrites = null;
+    immediateWrites = null;
     outHeadsReadFromOwnImage = null;
     inHeadsReadFromOwnImage = null;
     mergedEdgeListBases = null;
@@ -5727,12 +5756,12 @@ public class TransactionContext implements Transaction {
     // Outside a transaction the read was not covered by the epoch its begin takes, and nothing would commit the relationship anyway
     if (from == null || to == null || !isActive())
       return;
-    final int own = MergedEdgeRegistry.stripeOf(from, to, type, matchedBy);
+    final long own = MergedEdgeRegistry.keyOf(from, to, type, matchedBy);
     mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, own);
     mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, own);
     if (matchedBy != null && !matchedBy.isEmpty())
       // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
-      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5743,7 +5772,7 @@ public class TransactionContext implements Transaction {
   public void checkMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5754,7 +5783,7 @@ public class TransactionContext implements Transaction {
   public void markMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5772,9 +5801,9 @@ public class TransactionContext implements Transaction {
     markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
   }
 
-  private static int[] append(int[] array, final int index, final int value) {
+  private static long[] append(long[] array, final int index, final long value) {
     if (array == null)
-      array = new int[4];
+      array = new long[4];
     else if (index == array.length)
       array = Arrays.copyOf(array, index * 2);
     array[index] = value;
