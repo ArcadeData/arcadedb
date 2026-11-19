@@ -366,7 +366,7 @@ class LightweightEdgeTypeTest extends TestHelper {
         assertThat(rs.hasNext()).isFalse();
       }
     });
-    assertThat(count("select count(*) as c from Follows")).isEqualTo(1);
+    assertThat(count("select count(@rid) as c from Follows")).isEqualTo(1);
 
     // with a SET, the existing edge is returned untouched, as IF NOT EXISTS does for a record-backed edge
     database.transaction(() -> {
@@ -374,7 +374,7 @@ class LightweightEdgeTypeTest extends TestHelper {
         assertThat(rs.next().getEdge().get().getIn()).isEqualTo(b);
       }
     });
-    assertThat(count("select count(*) as c from Follows")).isEqualTo(1);
+    assertThat(count("select count(@rid) as c from Follows")).isEqualTo(1);
 
     // one existing and one missing target: the existing edge is returned, the missing one created
     database.transaction(() -> {
@@ -383,7 +383,7 @@ class LightweightEdgeTypeTest extends TestHelper {
         assertThat(rs.stream().count()).isEqualTo(2);
       }
     });
-    assertThat(count("select count(*) as c from Follows")).isEqualTo(2);
+    assertThat(count("select count(@rid) as c from Follows")).isEqualTo(2);
     database.transaction(
         () -> assertThat(database.lookupByRID(a, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Follows")).isEqualTo(2));
   }
