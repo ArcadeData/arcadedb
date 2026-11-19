@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.exception.RecordNotFoundException;
 import org.junit.jupiter.api.Test;
@@ -91,6 +92,24 @@ class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
     database.rollback();
 
     // THE RECORD IS STILL THERE: THE EXCEPTION CAME FROM THE LISTENER, NOT FROM A CONCURRENT DELETE
+    assertThat(failure).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) failure).getRID()).isEqualTo(rids[1]);
+    assertThat(database.existsRecord(rids[1])).isTrue();
+  }
+
+  @Test
+  void anAfterDeleteListenerFailingWithTheSameRidFailsTheTruncate() {
+    final RID[] rids = createThree();
+    database.getSchema().getType("T").getEvents().registerListener((AfterRecordDeleteListener) record -> {
+      if (record.getIdentity().equals(rids[1]))
+        throw new RecordNotFoundException("Record " + rids[1] + " not found", rids[1]);
+    });
+
+    database.begin();
+    final RuntimeException failure = deleteAll(scanAll());
+    database.rollback();
+
+    // THE SLOT IS FREE ONLY BECAUSE THIS TRANSACTION DELETED THE RECORD BEFORE THE LISTENER RAN: NOT A CONCURRENT DELETE
     assertThat(failure).isInstanceOf(RecordNotFoundException.class);
     assertThat(((RecordNotFoundException) failure).getRID()).isEqualTo(rids[1]);
     assertThat(database.existsRecord(rids[1])).isTrue();
