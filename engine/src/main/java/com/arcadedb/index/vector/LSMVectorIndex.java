@@ -12428,7 +12428,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           deletedIds.add(vectorId);
         }
 
-        // Persist deletion tombstones
+        // Persist deletion tombstones. Written by a replay too, not held back like the in-memory tombstone: the page entry is
+        // part of the transaction's pages, which readers see only once the commit publishes them, and which go away with a
+        // rollback
         if (!deletedIds.isEmpty()) {
           persistDeletionTombstones(deletedIds, rid);
 

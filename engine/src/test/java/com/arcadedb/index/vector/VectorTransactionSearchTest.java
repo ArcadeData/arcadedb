@@ -1252,6 +1252,88 @@ class VectorTransactionSearchTest {
       }
     }
 
+    /**
+     * The publication of a replay that both retires and adds (issue #11962): what an update's replay journals, driven through
+     * the journal directly because the window between the replay and the commit's conclusion is inside one {@code commit()},
+     * where no test thread can step in. Nothing is visible before {@code publishIndexReplay()}, everything is after it, and a
+     * second conclusion of the same journal is refused.
+     */
+    @Test
+    void aPublicationRetiresAndAddsWhatItsReplayHeldBack() throws Exception {
+      withDatabase(db -> {
+        final LSMVectorIndex index = vectorIndex(db);
+        index.buildVectorGraphNow();
+
+        final RID target = ridOf(db, 1);
+        final VectorLocationIndex locations = index.residentLocationsForTest();
+        final int retired = locations.getVectorIdsForRid(target)[0];
+        final long offset = VectorLocationIndex.offsetOf(locations.getOffsetAndFlag(retired));
+        final int added = locations.getNextId();
+        locations.setNextId(added + 1);
+
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          // What the replay of an update journals: the committed vector retired, the new one added at its page entry
+          final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index);
+          undo.recordRetired(retired, target);
+          undo.recordAdded(added, target, offset,
+              VectorizationProvider.getInstance().getVectorTypeSupport().createFloatVector(embedding(1)));
+
+          assertThat(undo.retires(retired)).as("a second REMOVE of the same RID in this replay finds it retired").isTrue();
+          assertThat(locations.isLive(retired)).as("held back: the committed vector stays live until the commit concludes")
+              .isTrue();
+          assertThat(locations.isLive(added)).as("held back: the added vector has no location until the commit concludes")
+              .isFalse();
+
+          undo.publishIndexReplay();
+
+          final VectorLocationIndex published = index.residentLocationsForTest();
+          assertThat(published.isLive(retired)).as("the retired vector is tombstoned").isFalse();
+          assertThat(published.isLive(added)).as("the added vector is published").isTrue();
+          assertThat(published.getRid(added)).isEqualTo(target);
+          assertThat(index.findNeighborsFromVector(embedding(1), 5, 64).stream().map(Pair::getFirst))
+              .as("the record is found through the vector the publication added").contains(target);
+
+          assertThatThrownBy(undo::publishIndexReplay).as("a journal is concluded once")
+              .isInstanceOf(IllegalStateException.class);
+        } finally {
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
+      });
+    }
+
+    /**
+     * A retired id is tombstoned only where it still names the record its REMOVE resolved it for (issue #11962): a rebuild
+     * that republished the locations between the replay and the publication can have given the id to another record, or
+     * dropped it, and the publication must not tombstone what the commit never retired.
+     */
+    @Test
+    void aPublicationLeavesAnIdThatNoLongerNamesTheRetiredRecord() throws Exception {
+      withDatabase(db -> {
+        final LSMVectorIndex index = vectorIndex(db);
+        index.buildVectorGraphNow();
+
+        final RID retiredFor = ridOf(db, 1);
+        final RID other = ridOf(db, 2);
+        final VectorLocationIndex locations = index.residentLocationsForTest();
+        final int otherId = locations.getVectorIdsForRid(other)[0];
+
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index);
+          undo.recordRetired(otherId, retiredFor);
+
+          undo.publishIndexReplay();
+
+          assertThat(index.residentLocationsForTest().isLive(otherId))
+              .as("the id names another record now: the publication leaves it live").isTrue();
+          assertThat(index.findNeighborsFromVector(embedding(2), 5, 64).stream().map(Pair::getFirst)).contains(other);
+        } finally {
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
+      });
+    }
+
     private interface DatabaseTest {
       void run(Database db) throws Exception;
     }

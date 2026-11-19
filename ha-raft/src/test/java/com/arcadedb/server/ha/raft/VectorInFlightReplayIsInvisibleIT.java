@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Each test searches from {@link RaftReplicatedDatabase#TEST_PRE_DISPATCH_HOOK}, on another thread as a search on another
  * connection would, while the commit sits between its replay and its dispatch to Raft.
  */
-class Issue11962InFlightReplayIsInvisibleIT extends BaseRaftHATest {
+class VectorInFlightReplayIsInvisibleIT extends BaseRaftHATest {
   private static final int DIMENSIONS = 16;
   // Past the size below which a search rebuilds a graph that took a write on its own thread: that rebuild commits, and waits
   // for the file lock the commit in flight holds, so a search of a smaller graph cannot run inside the window at all
@@ -71,6 +71,7 @@ class Issue11962InFlightReplayIsInvisibleIT extends BaseRaftHATest {
     RaftReplicatedDatabase.TEST_PRE_DISPATCH_HOOK = null;
   }
 
+  // Regression for #11962: a vector whose commit is in flight is not answered by a search
   @Test
   void aVectorWhoseCommitIsInFlightIsNotAnswered() {
     final Database db = leaderDatabase();
@@ -86,6 +87,7 @@ class Issue11962InFlightReplayIsInvisibleIT extends BaseRaftHATest {
     assertThat(neighbours(db, index, inserted, 1)).as("and is answered once the commit completes").containsExactly(rid[0]);
   }
 
+  // Regression for #11962: an update in flight leaves the committed vector answered
   @Test
   void anUpdateInFlightLeavesTheCommittedVectorAnswered() {
     final Database db = leaderDatabase();
@@ -103,6 +105,7 @@ class Issue11962InFlightReplayIsInvisibleIT extends BaseRaftHATest {
         .containsExactly(target.getKey());
   }
 
+  // Regression for #11962: the vector of a refused commit is never answered
   @Test
   void aRefusedCommitIsNeverAnswered() {
     final Database db = leaderDatabase();
@@ -126,6 +129,7 @@ class Issue11962InFlightReplayIsInvisibleIT extends BaseRaftHATest {
    * sequence, and the pages the rebuild read did not hold it yet: the rebuild has to carry the publication over into the
    * location index it publishes, or the committed vector loses its location and no search finds it.
    */
+  // Regression for #11962: a commit published while a rebuild read the pages survives the rebuild's publish
   @Test
   void aCommitPublishedWhileARebuildReadThePagesSurvivesItsPublish() throws Exception {
     final Database db = leaderDatabase();
