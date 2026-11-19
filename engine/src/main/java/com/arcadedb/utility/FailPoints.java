@@ -18,8 +18,12 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.log.LogManager;
+
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Named points in the engine where a test can make an operation fail, stall or end the process, so a failure in the middle of a
@@ -29,6 +33,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * A test arms a point with {@link #arm}, and disarms it with {@link #disarm} or {@link #disarmAll}; a point can also be armed in a
  * child JVM from the system property {@code arcadedb.failPoints}, a comma-separated list of {@code name=action} where the action is
  * {@code throw} or {@code halt} (the exit code 73 a killed test child uses).
+ * <p>
+ * <b>For tests only.</b> The system property is not a setting: a server started with it fails or ends the process at the points it
+ * names, so it must never be set on a deployment. A point armed from it is logged as a WARNING when this class is loaded, so a
+ * property set by mistake shows in the log.
  */
 public final class FailPoints {
   /** Before a commit writes its WAL record: the transaction has validated its pages and holds its file locks. */
@@ -41,11 +49,24 @@ public final class FailPoints {
   public static final String COMMIT_AFTER_WAL      = "commit.afterWal";
   /** After a commit published its pages, before it releases its file locks. */
   public static final String COMMIT_AFTER_PUBLISH  = "commit.afterPublish";
-  /** When a record is written into a bucket page, inside the transaction. */
+  /**
+   * When a record is written into a bucket page, inside the transaction, once per record created: {@code LocalBucket.createRecord}
+   * and every record of {@code LocalBucket.createRecordsBulk} (the graph batch), whether the bulk appends it or hands it to the
+   * allocator. Not reached by the engine moving the content of an existing record behind a placeholder pointer, which creates no
+   * record.
+   */
   public static final String BUCKET_CREATE_RECORD  = "bucket.createRecord";
-  /** When a record is updated in a bucket page, inside the transaction. */
+  /**
+   * When a record is updated in a bucket page, inside the transaction, once per update ({@code LocalBucket.updateRecord}). Not
+   * reached again by the update rewriting the content behind a placeholder pointer.
+   */
   public static final String BUCKET_UPDATE_RECORD  = "bucket.updateRecord";
-  /** When a record is deleted from a bucket page, inside the transaction. */
+  /**
+   * When a record is deleted from a bucket page, inside the transaction, once per record deleted: {@code LocalBucket.deleteRecord}
+   * (both overloads) and {@code LocalBucket.retractRecord} (the engine undoing a write its indexing refused). Not reached by the
+   * delete freeing a placeholder content or the chunks of a multi-page record, nor by {@code CHECK DATABASE FIX} clearing a
+   * corrupted slot.
+   */
   public static final String BUCKET_DELETE_RECORD  = "bucket.deleteRecord";
 
   /** Exit code of {@link #HALT}, the one a killed test child reports. */
@@ -74,6 +95,11 @@ public final class FailPoints {
           default -> throw new IllegalArgumentException("Unknown fail point action '" + action + "' in " + entry);
         });
       }
+    if (active)
+      LogManager.instance().log(FailPoints.class, Level.WARNING,
+          "Fail points armed from the system property 'arcadedb.failPoints': %s. The property is for tests only: an armed point "
+              + "fails or ends the process when the engine reaches it. Remove it from the JVM options of any deployment",
+          new TreeSet<>(ARMED.keySet()));
   }
 
   private FailPoints() {

@@ -19,9 +19,13 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.index.CrashingChildJvm;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.CrashingChildJvm;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FailPoints;
 import org.junit.jupiter.api.AfterEach;
@@ -36,6 +40,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class FailPointCommitTest extends TestHelper {
   private static final int ACCOUNTS = 100;
   private static final int BALANCE  = 1_000;
+  /** Held so the level the child gives it is not lost with a collected logger. */
+  private static Logger    failPointsLogger;
 
   @AfterEach
   void disarm() {
@@ -91,6 +99,66 @@ class FailPointCommitTest extends TestHelper {
 
     assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS);
     assertThat(sum()).isEqualTo((long) ACCOUNTS * BALANCE);
+  }
+
+  /**
+   * The engine taking back a record its unique index refused deletes it through {@code LocalBucket.retractRecord}, which reaches
+   * the delete point too: a failure there marks the transaction rollback-only, so the refused record cannot be committed.
+   */
+  @Test
+  void theRetractionOfARefusedRecordReachesTheDeletePoint() {
+    createAccounts();
+    final AtomicInteger deletes = new AtomicInteger();
+    FailPoints.arm(FailPoints.BUCKET_DELETE_RECORD, point -> {
+      deletes.incrementAndGet();
+      FailPoints.THROW.run(point);
+    });
+
+    database.begin();
+    try {
+      // a key this transaction already holds is refused at the save, a committed one only at the commit
+      database.newDocument("Account").set("id", ACCOUNTS).set("balance", 5).save();
+      assertThatThrownBy(() -> database.newDocument("Account").set("id", ACCOUNTS).set("balance", 5).save())//
+          .isInstanceOf(DuplicatedKeyException.class);
+      FailPoints.disarmAll();
+      assertThat(deletes.get()).as("deletes reaching the point while the refused record was taken back").isEqualTo(1);
+      assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class);
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS);
+    assertThat(sum()).isEqualTo((long) ACCOUNTS * BALANCE);
+  }
+
+  /**
+   * The bulk write of the graph batch ({@code LocalBucket.createRecordsBulk}) reaches the create point once per record, both for
+   * the record handed to the allocator and for the ones appended after it on the page it opened.
+   */
+  @Test
+  void aBulkWriteReachesTheCreatePointOncePerRecord() {
+    createAccounts();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Transfer").getBuckets(false).getFirst();
+    final int records = 500;
+    final AtomicInteger creates = new AtomicInteger();
+    FailPoints.arm(FailPoints.BUCKET_CREATE_RECORD, point -> creates.incrementAndGet());
+
+    database.begin();
+    try {
+      final DatabaseInternal internal = (DatabaseInternal) database;
+      final Binary[] buffers = new Binary[records];
+      for (int i = 0; i < records; i++)
+        buffers[i] = internal.getSerializer().serialize(internal, database.newDocument("Transfer").set("amount", i));
+      final RID[] rids = new RID[records];
+      bucket.createRecordsBulk(buffers, 0, records, rids);
+
+      assertThat(rids).doesNotContainNull();
+      assertThat(creates.get()).as("records reaching the create point").isEqualTo(records);
+    } finally {
+      FailPoints.disarmAll();
+      database.rollback();
+    }
   }
 
   /** Transfers between accounts while every write point fails now and then: the balances always add up. */
@@ -173,10 +241,24 @@ class FailPointCommitTest extends TestHelper {
     assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + 1);
   }
 
-  /** The child: arms {@code args[1]} to halt the process, then commits a transaction that reaches it. */
+  /**
+   * The child: arms {@code args[1]} to halt the process, then commits a transaction that reaches it. With a third argument
+   * {@code property} the point is armed the way a launch line would arm it, from the system property {@code arcadedb.failPoints}
+   * set before anything loads {@link FailPoints}.
+   */
   public static void main(final String[] args) {
+    final boolean fromProperty = args.length > 2 && "property".equals(args[2]);
+    if (fromProperty) {
+      // the test log configuration lets only SEVERE through for com.arcadedb: initialize it first (it would reset the level set
+      // below), then let the WARNING of FailPoints reach the console. The class literal does not load the class
+      LogManager.instance().log(FailPointCommitTest.class, Level.FINE, "Child started");
+      failPointsLogger = Logger.getLogger(FailPoints.class.getName());
+      failPointsLogger.setLevel(Level.WARNING);
+      System.setProperty("arcadedb.failPoints", args[1] + "=halt");
+    }
     final Database database = new DatabaseFactory(args[0]).open();
-    FailPoints.arm(args[1], FailPoints.HALT);
+    if (!fromProperty)
+      FailPoints.arm(args[1], FailPoints.HALT);
     database.transaction(() -> {
       for (int i = 0; i < 1_000; i++)
         database.newDocument("Account").set("id", ACCOUNTS + i).set("balance", 1).save();
@@ -205,6 +287,24 @@ class FailPointCommitTest extends TestHelper {
     database = factory.open();
     assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + (recovered ? 1_000 : 0));
     assertThat(sum()).isEqualTo((long) ACCOUNTS * BALANCE + (recovered ? 1_000 - 10 : 0));
+  }
+
+  /** A point armed from the system property works like one armed by a test, and says so in the log of the process it runs in. */
+  @Tag("slow")
+  @Test
+  void aPointArmedFromTheSystemPropertyIsLoggedAndReached() throws Exception {
+    createAccounts();
+    final String path = database.getDatabasePath();
+    database.close();
+
+    final CrashingChildJvm.Result child = CrashingChildJvm.run(FailPointCommitTest.class, 300, path, FailPoints.COMMIT_AFTER_WAL,
+        "property");
+    assertThat(child.exitCode()).as("child output: %s", child.output()).isEqualTo(FailPoints.HALT_EXIT_CODE);
+    assertThat(child.output()).contains("Fail points armed from the system property 'arcadedb.failPoints': [commit.afterWal]")
+        .contains("for tests only");
+
+    database = factory.open();
+    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + 1_000);
   }
 
   private void createAccounts() {
