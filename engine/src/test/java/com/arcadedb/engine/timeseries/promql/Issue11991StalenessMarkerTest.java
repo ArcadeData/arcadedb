@@ -75,7 +75,9 @@ class Issue11991StalenessMarkerTest extends TestHelper {
     // the marker is not a sample of any range
     assertThat(byJob("count_over_time(up[1m])", T + 31_000)).containsEntry("a", 2.0).containsEntry("b", 3.0);
     assertThat(byJob("max_over_time(up[1m])", T + 31_000)).containsEntry("a", 1.0);
-    // a range holding nothing but the marker has no series for it
+    // a range holding nothing but the marker has no series for it: [5s] at T+31s is (T+26s, T+31s], and the only row of job a
+    // in it is the marker at T+30s (its last real sample is at T+15s), while job b has a real sample there
+    assertThat(byJob("count_over_time(up[5s])", T + 31_000)).containsEntry("b", 1.0);
     assertThat(byJob("count_over_time(up[5s])", T + 31_000)).doesNotContainKey("a");
   }
 
