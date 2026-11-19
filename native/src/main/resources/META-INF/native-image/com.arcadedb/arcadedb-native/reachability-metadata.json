@@ -619,6 +619,22 @@
       ]
     },
     {
+      "type": "com.arcadedb.integration.backup.Backup",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "com.arcadedb.database.Database",
+            "java.lang.String"
+          ]
+        },
+        {
+          "name": "backupDatabase",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "com.arcadedb.log.LogFormatter",
       "methods": [
         {
