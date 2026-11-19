@@ -2024,7 +2024,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code creationGap} entries were applied since the latest snapshot (the test of {@code RaftServerImpl.takeSnapshotAsync},
    * on the same two indexes): a node below the gap pays no fsync for a tick that purges nothing. An entry applied between
    * this test and Ratis's own can still take the checkpoint without the early pass; it then forces everything itself, as
-   * it did before.
+   * it did before. The same holds if a later Ratis decides differently: this test only chooses where the forcing is paid,
+   * a wrong answer costs one early pass too many or one stall on the apply thread, never the durability of the marker.
    *
    * @param creationGap the gap the snapshot request carries; not positive means Ratis's configured one, which is not
    *                    known here, so the files are forced
