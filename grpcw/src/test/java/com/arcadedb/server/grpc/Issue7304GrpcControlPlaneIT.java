@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
 import com.arcadedb.serializer.json.JSONObject;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -111,7 +112,9 @@ public class Issue7304GrpcControlPlaneIT extends BaseGrpcServerTest {
     assertThatThrownBy(() -> adminStub.alignDatabase(
         AlignDatabaseRequest.newBuilder().setCredentials(root()).setName(getDatabaseName()).build()))
         .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining(AlignDatabaseStatement.ALIGN_DATABASE_NOT_SUPPORTED);
+        .hasMessageContaining(AlignDatabaseStatement.ALIGN_DATABASE_NOT_SUPPORTED)
+        // The caller's request is refused, as HTTP answers it 400: not INTERNAL, a server fault (issue #12464)
+        .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
   }
 
   // -------------------------------------------------------------------------------------------

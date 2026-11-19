@@ -60,6 +60,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public static final int DEFAULT_FUZZY_MAX_EXPANSIONS = 50;
 
   /**
+   * The most a fuzzy clause may be set to expand to (issue #12505): Lucene's default max clause count
+   * ({@code IndexSearcher.getMaxClauseCount()}), which its FuzzyQuery clamps {@code maxExpansions} to, so ArcadeDB and Lucene
+   * answer the same for every accepted setting. A larger value is refused when an index is defined, and one persisted before
+   * this bound existed is read as this bound.
+   */
+  public static final int MAX_FUZZY_MAX_EXPANSIONS = 1024;
+
+  /**
    * BM25 similarity: ranks with term-frequency, inverse document frequency and document-length normalization. Default for newly
    * created full-text indexes.
    */
@@ -253,8 +261,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (metadata.has("defaultOperator"))
       this.defaultOperator = metadata.getString("defaultOperator");
 
-    // Set directly, as defaultOperator is: a persisted definition was validated when it was written
-    this.fuzzyMaxExpansions = metadata.getInt("fuzzyMaxExpansions", DEFAULT_FUZZY_MAX_EXPANSIONS);
+    // Set directly, as defaultOperator is: a persisted definition was validated when it was written. A value above the bound was
+    // accepted before it existed (issue #12505): clamp it as Lucene's FuzzyQuery does rather than refuse to open the index
+    this.fuzzyMaxExpansions = Math.min(metadata.getInt("fuzzyMaxExpansions", DEFAULT_FUZZY_MAX_EXPANSIONS), MAX_FUZZY_MAX_EXPANSIONS);
 
     // An index persisted before BM25 support has no "similarity" key: keep it on CLASSIC so an upgrade does not silently change
     // ranking. Route an explicit value through the validating setter so an unknown similarity in METADATA {...} is rejected.
@@ -568,13 +577,18 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Sets the most indexed terms a fuzzy clause expands to: the best ones are kept, as Lucene's FuzzyQuery keeps its
    * {@code maxExpansions} best ones.
    *
-   * @param fuzzyMaxExpansions a positive number of terms
+   * @param fuzzyMaxExpansions a positive number of terms, at most {@link #MAX_FUZZY_MAX_EXPANSIONS}
    *
-   * @throws IllegalArgumentException if it is not positive, which Lucene's FuzzyQuery refuses too
+   * @throws IllegalArgumentException if it is not positive, which Lucene's FuzzyQuery refuses too, or if it is above
+   *                                  {@link #MAX_FUZZY_MAX_EXPANSIONS}, which Lucene's FuzzyQuery clamps to (issue #12505)
    */
   public void setFuzzyMaxExpansions(final int fuzzyMaxExpansions) {
     if (fuzzyMaxExpansions < 1)
       throw new IllegalArgumentException("Full-text fuzzyMaxExpansions must be positive, got: " + fuzzyMaxExpansions);
+    if (fuzzyMaxExpansions > MAX_FUZZY_MAX_EXPANSIONS)
+      throw new IllegalArgumentException(
+          "Full-text fuzzyMaxExpansions must be at most " + MAX_FUZZY_MAX_EXPANSIONS + " (Lucene's max clause count), got: "
+              + fuzzyMaxExpansions);
     this.fuzzyMaxExpansions = fuzzyMaxExpansions;
   }
 
