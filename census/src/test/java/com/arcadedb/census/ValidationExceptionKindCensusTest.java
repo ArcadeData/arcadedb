@@ -56,6 +56,8 @@ class ValidationExceptionKindCensusTest {
           "the refusal of a TIMESERIES batch: one message for every row and column constraint the batch broke"),
       Map.entry("query/sql/executor/SaveElementStep#refuseViolation",
           "a TIMESERIES column constraint: TimeSeriesColumnConstraints answers its reason as one sentence for every constraint"),
+      Map.entry("serializer/BinarySerializer#checkLinkTarget",
+          "a record linking itself before it has a position (issue #11850): a limit of record creation, no constraint declared"),
       Map.entry("remote/RemoteExceptionRebuilder#<clinit>",
           "the table of names rebuilt from a message alone; both drivers rebuild a ValidationException with its kind ahead of it")));
 

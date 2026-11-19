@@ -219,7 +219,7 @@ public class CypherLiteralParameterizer extends LiteralParameterizer<ParsedQuery
   protected Object literalValue(final String text, final int start, final int end, final boolean withMinus,
       final boolean patternProperty) {
     final String token = text.substring(start, end);
-    final Object value = CypherExpressionBuilder.tryParseLiteral(withMinus ? "-" + token : token);
+    final Object value = LiteralParser.tryParseLiteral(withMinus ? "-" + token : token);
     if (value == null)
       throw new CommandParsingException("Not a literal: " + token);
     // the parser stores an inline pattern property that fits an int as an Integer (CypherASTBuilder.visitMap)

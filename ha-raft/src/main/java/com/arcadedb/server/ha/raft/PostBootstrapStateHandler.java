@@ -62,7 +62,7 @@ import java.util.logging.Level;
  * <p>
  * {@code snapshotTerm}/{@code snapshotIndex} (issue #8360) are this peer's own latest Raft snapshot marker -
  * {@link ArcadeStateMachine#getLatestSnapshotTermIndex()} - and are omitted (absent index -1) when this peer has
- * not taken one yet. A leader-driven install ({@code ArcadeStateMachine#installSnapshotFromLeader}) reads them from
+ * not taken one yet. A leader-driven install ({@code LeaderSnapshotInstall#installSnapshotFromLeader}) reads them from
  * the leader during the very same reconcile call this RPC already serves, so the follower registers the term the
  * leader will actually send as {@code previous} in its next {@code AppendEntries} (Ratis's
  * {@code LogAppender.getPreviousLog()} falls back to this same marker for an index no longer in the leader's log)
@@ -192,7 +192,7 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
         // Unwraps to the LocalDatabase under the HA wrapper (same pattern as #4144) and fingerprints the SETTLED copy
         // (issue #8843): the same reading the state machine and the election take of their own state.
         final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabaseForOperator(dbName),
-            ArcadeStateMachine.settleBudget(settleDeadline));
+            BootstrapDivergenceCheck.settleBudget(settleDeadline));
         if (local == null)
           continue;
 
