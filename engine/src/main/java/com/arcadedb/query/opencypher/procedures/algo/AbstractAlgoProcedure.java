@@ -2072,13 +2072,15 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
               continue;
             if (degree == scratchNeighbors.length) {
               // Priced before the arrays are allocated (issue #12554): a supernode row doubles them again and again, which the entries
-              // reserved once the row is read do not see. The new arrays are alive beside the old ones, which are reserved already, until
-              // the copy is made: the budget is asked whether they fit in full, reserving nothing. The buffers stay for the rows that
-              // follow, so what is reserved is the entries each growth adds, the length they reached at the end, and the copy of the
-              // row is charged beside it by the entries the caller reserves: nothing is counted twice
+              // reserved once the row is read do not see. The new arrays are alive beside the old ones, which are reserved already, and
+              // beside the rows read before this one that the caller has not reserved yet, until the copy is made: the budget is asked
+              // whether they fit in full, reserving nothing. The buffers stay for the rows that follow, so what is reserved is the entries
+              // each growth adds, the length they reached at the end, and the copy of the row is charged beside it by the entries the
+              // caller reserves: nothing is counted twice
               final int newLength = (int) Math.min(2L * degree, Integer.MAX_VALUE - 8L);
-              memory.checkRoom(saturatingProduct(newLength, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
-                  "a row of more than " + degree + " edge entries");
+              memory.checkRoom(saturatingProduct(saturatingSum(newLength, pendingEntries), INT_BYTES + DOUBLE_BYTES),
+                  "the neighbour buffers of one node", "a row of more than " + degree + " edge entries, " + pendingEntries
+                      + " more not reserved yet");
               memory.reserve(saturatingProduct(newLength - degree, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
                   "a row of more than " + degree + " edge entries");
               scratchNeighbors = Arrays.copyOf(scratchNeighbors, newLength);

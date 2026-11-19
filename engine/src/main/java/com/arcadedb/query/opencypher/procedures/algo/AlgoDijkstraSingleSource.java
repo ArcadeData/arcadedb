@@ -211,12 +211,13 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
             continue;
           if (count == nbrBuf.length) {
             // Priced before the buffers are allocated: a supernode doubles them again and again. The new ones are alive beside the old
-            // ones, which are reserved already, until the copy is made, so the budget is asked whether they fit in full, reserving
-            // nothing. The buffers stay for the rows that follow, so each growth is charged once, by the entries it adds, and the copy of
-            // a row is charged beside it with the batch below
+            // ones, which are reserved already, and beside the rows read before this one that are not reserved yet, until the copy is
+            // made, so the budget is asked whether they fit in full, reserving nothing. The buffers stay for the rows that follow, so each
+            // growth is charged once, by the entries it adds, and the copy of a row is charged beside it with the batch below
             final int newLength = (int) Math.min(2L * count, Integer.MAX_VALUE - 8L);
-            memory.checkRoom(saturatingProduct(newLength, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
-                "a row of more than " + count + " edge entries");
+            memory.checkRoom(saturatingProduct(saturatingSum(newLength, unpriced), INT_BYTES + DOUBLE_BYTES),
+                "the neighbour buffers of one node", "a row of more than " + count + " edge entries, " + unpriced
+                    + " more not reserved yet");
             memory.reserve(saturatingProduct(newLength - count, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
                 "a row of more than " + count + " edge entries");
             nbrBuf = Arrays.copyOf(nbrBuf, newLength);

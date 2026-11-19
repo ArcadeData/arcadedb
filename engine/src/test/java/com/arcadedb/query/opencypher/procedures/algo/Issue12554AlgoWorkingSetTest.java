@@ -333,10 +333,11 @@ class Issue12554AlgoWorkingSetTest {
     }
   }
 
-  /** A hub of 40 edges to 40 leaves, in one bucket so that the rows are read in the order they were created. */
-  private void createStar(final boolean hubFirst) {
+  /** A hub of 40 edges to 40 leaves, in one bucket so that the rows are read in the order they were created. Answers the hub. */
+  private RID createStar(final boolean hubFirst) {
     database.getSchema().createVertexType("Node", 1);
     database.getSchema().createEdgeType("LINK");
+    final RID[] hubRid = new RID[1];
     database.transaction(() -> {
       final List<MutableVertex> leaves = new ArrayList<>();
       MutableVertex hub = null;
@@ -348,7 +349,9 @@ class Issue12554AlgoWorkingSetTest {
         hub = database.newVertex("Node").set("i", -1).save();
       for (final MutableVertex leaf : leaves)
         hub.newEdge("LINK", leaf).set("w", 1.0).save();
+      hubRid[0] = hub.getIdentity();
     });
+    return hubRid[0];
   }
 
   /**
@@ -396,12 +399,20 @@ class Issue12554AlgoWorkingSetTest {
     createStar(false);
     final AlgoWCC procedure = new AlgoWCC();
 
-    // The 40 leaves come first: one entry each, 40 waiting to be reserved. The hub's buffers reach 64 entries, 3856, and its copy fits
-    // the 644 bytes left taken alone (480) but not with the 40 entries before it (960)
-    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 4500L))
+    // The 40 leaves come first: one entry each, 40 waiting to be reserved. The last doubling of the hub's buffers, to 64 entries (768
+    // bytes) beside the 40 entries (480) and the 3472 reserved, fits 4720. The buffers then reach 3856, and the copy of the row fits the
+    // bytes left taken alone (480) but not with the 40 entries before it (960, 4816)
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 4750L))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("the weighted adjacency list would need 960 bytes")
         .hasMessageContaining("a row of 40 edge entries, 40 more not reserved yet");
+
+    // The growth of the buffers has the same rows beside it: the new buffers alone, 32 entries (384 bytes), fit the 620 bytes left, but not
+    // with the 40 entries before the hub (864 bytes). Refused at the first doubling, not at the second when the reserved growth is used
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 3900L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the neighbour buffers of one node would need 864 bytes")
+        .hasMessageContaining("a row of more than 16 edge entries, 40 more not reserved yet");
 
     // Everything fits at 4816, with what the leaves reserve
     final int[][] neighbors = weightedAdjacencyUnder(procedure, 5000L);
@@ -409,6 +420,29 @@ class Issue12554AlgoWorkingSetTest {
     for (final int[] row : neighbors)
       longest = Math.max(longest, row.length);
     assertThat(longest).isEqualTo(40);
+  }
+
+  /**
+   * The single-source search keeps the same accounts through its own row build. 41 nodes cost 656 bytes and its rows and search state
+   * 3444 (84 bytes a node): 4100. The 40 leaves come first, one entry each, not reserved yet when the hub's buffers grow.
+   */
+  @Test
+  void theSingleSourceSearchChecksItsRowBuffersBesideTheRowsNotReservedYet() {
+    final RID hub = createStar(false);
+
+    // The new buffers alone, 32 entries (384 bytes), fit the 600 bytes left, but not with the 40 entries before the hub (864 bytes)
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 4700L);
+    assertThatThrownBy(() -> new AlgoDijkstraSingleSource().execute(new Object[] { hub.asVertex(), "LINK", "w", "BOTH" }, null, context()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the neighbour buffers of one node would need 864 bytes")
+        .hasMessageContaining("a row of more than 16 edge entries, 40 more not reserved yet");
+
+    // Everything fits at 5636: 4100, the buffers reaching 64 entries (576) and the 80 entries of the 40 edges (960)
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 6000L);
+    try (final Stream<Result> rows = new AlgoDijkstraSingleSource().execute(new Object[] { hub.asVertex(), "LINK", "w", "BOTH" }, null,
+        context())) {
+      assertThat(rows.count()).isEqualTo(40);
+    }
   }
 
   /** The weighted adjacency of the whole graph, with both directions, under the given working-memory budget. */
