@@ -27,7 +27,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link RaftHAServer#selectStepDownTargets} (issue #4808). The old {@code stepDown}
+ * Unit tests for {@link StepDownTargets#selectStepDownTargets} (issue #4808). The old {@code stepDown}
  * picked the first non-self peer in iteration order, ignoring Raft priority, follower lag, and whether
  * the peer was a priority-0 witness/replica that Ratis is told never to elect. These tests pin the new
  * selection so a {@code POST /cluster/stepdown} never hands leadership to an unsuitable node.
@@ -47,7 +47,7 @@ class RaftHAServerStepDownTargetTest {
   @Test
   void excludesSelf() {
     final List<RaftPeer> peers = List.of(peer("n0", 0), peer("n1", 0), peer("n2", 0));
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
     assertThat(ids(targets)).containsExactly("n1", "n2");
   }
 
@@ -55,14 +55,14 @@ class RaftHAServerStepDownTargetTest {
   void homogeneousDefaultPrioritiesKeepEveryFollowerEligible() {
     // The common deployment: no explicit priorities, so every peer is priority-0 and equally electable.
     final List<RaftPeer> peers = List.of(peer("n0", 0), peer("n1", 0), peer("n2", 0));
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
     assertThat(ids(targets)).containsExactlyInAnyOrder("n1", "n2");
   }
 
   @Test
   void prefersHighestPriorityPeer() {
     final List<RaftPeer> peers = List.of(peer("n0", 5), peer("n1", 1), peer("n2", 9), peer("n3", 3));
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
     // Ordered by descending priority: n2(9) > n3(3) > n1(1).
     assertThat(ids(targets)).containsExactly("n2", "n3", "n1");
   }
@@ -71,7 +71,7 @@ class RaftHAServerStepDownTargetTest {
   void skipsPriorityZeroWitnessWhenVotersExist() {
     // n2 is a priority-0 witness/replica; with positive-priority voters present it must never be a target.
     final List<RaftPeer> peers = List.of(peer("n0", 5), peer("n1", 3), peer("n2", 0));
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
     assertThat(ids(targets)).containsExactly("n1");
   }
 
@@ -84,7 +84,7 @@ class RaftHAServerStepDownTargetTest {
     monitor.updateReplicaMatchIndex("n1", 5L, 1L);    // lag 995 > threshold 10 -> lagging
     monitor.updateReplicaMatchIndex("n2", 1000L, 1L); // lag 0 -> healthy
 
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), monitor);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), monitor);
     assertThat(ids(targets)).containsExactly("n2");
   }
 
@@ -98,7 +98,7 @@ class RaftHAServerStepDownTargetTest {
     monitor.updateReplicaMatchIndex("n1", 1000L, 1L); // healthy
     monitor.updateReplicaMatchIndex("n2", 5L, 1L);    // lagging
 
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), monitor);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), monitor);
     assertThat(ids(targets)).containsExactly("n1");
   }
 
@@ -111,14 +111,14 @@ class RaftHAServerStepDownTargetTest {
     monitor.updateLeaderCommitIndex(1000L);
     monitor.updateReplicaMatchIndex("n1", 5L, 1L); // the only voter is lagging
 
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), monitor);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), monitor);
     assertThat(targets).isEmpty();
   }
 
   @Test
   void singleNodeClusterReturnsEmptyList() {
     final List<RaftPeer> peers = List.of(peer("n0", 0));
-    final List<RaftPeer> targets = RaftHAServer.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
+    final List<RaftPeer> targets = StepDownTargets.selectStepDownTargets(peers, RaftPeerId.valueOf("n0"), null);
     assertThat(targets).isEmpty();
   }
 }

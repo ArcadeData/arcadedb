@@ -55,6 +55,11 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    return subElement.setsSimilarity(context);
+  }
+
+  @Override
   public List<AndBlock> flatten() {
     return subElement.flatten();
   }

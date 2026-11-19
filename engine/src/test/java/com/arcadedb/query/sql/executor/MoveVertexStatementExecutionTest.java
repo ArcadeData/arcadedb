@@ -20,17 +20,20 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.parser.UpdateOperations;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -436,6 +439,134 @@ class MoveVertexStatementExecutionTest extends TestHelper {
       assertThat(moved.<Integer>getProperty("somefield")).isEqualTo(9);
       assertThat(moved.<String>getProperty("added")).isEqualTo("yes");
     }
+  }
+
+  /**
+   * Issue #12326: CONTENT with a parameter payload replaces the moved vertex's content, exactly as the literal form and
+   * {@code UPDATE ... CONTENT :param} do. It used to be accepted and silently ignored: the moved vertex kept its old fields.
+   */
+  @Test
+  void moveVertexWithParameterizedContent() {
+    final String typeA = "testMoveContentParamA";
+    final String typeB = "testMoveContentParamB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.setAutoTransaction(true);
+
+    database.command("sql", "CREATE VERTEX " + typeA + " CONTENT {\"caseId\":\"param\",\"keep\":1,\"old\":2}").close();
+
+    try (final ResultSet rs = database.command("sql",
+        "MOVE VERTEX (SELECT FROM " + typeA + " WHERE caseId = 'param') TO TYPE:" + typeB + " CONTENT :payload",
+        Map.of("payload", Map.of("caseId", "param", "newfield", 7)))) {
+      final Result moved = rs.next();
+      assertThat(moved.<Integer>getProperty("newfield")).isEqualTo(7);
+      assertThat(moved.hasProperty("keep")).isFalse();
+      assertThat(moved.hasProperty("old")).isFalse();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeB + " WHERE caseId = 'param'")) {
+      final Result stored = rs.next();
+      assertThat(stored.<Integer>getProperty("newfield")).isEqualTo(7);
+      assertThat(stored.hasProperty("keep")).isFalse();
+      assertThat(stored.hasProperty("old")).isFalse();
+      assertThat(rs.hasNext()).isFalse();
+    }
+    assertThat(countRecords(typeA)).isEqualTo(0);
+  }
+
+  /** Issue #12326: the positional form of the parameter payload is honoured too. */
+  @Test
+  void moveVertexWithPositionalParameterContent() {
+    final String typeA = "testMoveContentPosA";
+    final String typeB = "testMoveContentPosB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.setAutoTransaction(true);
+
+    final String rid = database.command("sql", "CREATE VERTEX " + typeA + " SET keep = 1").next().getIdentity().get().toString();
+
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " CONTENT ?",
+        new Object[] { Map.of("newfield", "yes") })) {
+      final Result moved = rs.next();
+      assertThat(moved.<String>getProperty("newfield")).isEqualTo("yes");
+      assertThat(moved.hasProperty("keep")).isFalse();
+    }
+  }
+
+  /**
+   * Issue #12326: a JSON array payload (literal or parameter) gives one item to each moved vertex, in order, as
+   * {@code UPDATE ... CONTENT [...]} does.
+   */
+  @Test
+  void moveVertexWithArrayContent() {
+    final String typeA = "testMoveContentArrayA";
+    final String typeB = "testMoveContentArrayB";
+    final String typeC = "testMoveContentArrayC";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.getSchema().createVertexType(typeC);
+    database.setAutoTransaction(true);
+
+    final String rid1 = database.command("sql", "CREATE VERTEX " + typeA + " SET keep = 1").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql",
+        "MOVE VERTEX (SELECT FROM " + rid1 + ") TO TYPE:" + typeB + " CONTENT [{\"item\": \"literal\"}]")) {
+      final Result moved = rs.next();
+      assertThat(moved.<String>getProperty("item")).isEqualTo("literal");
+      assertThat(moved.hasProperty("keep")).isFalse();
+    }
+
+    final String rid2 = database.command("sql", "CREATE VERTEX " + typeA + " SET keep = 2").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX (SELECT FROM " + rid2 + ") TO TYPE:" + typeC + " CONTENT :items",
+        Map.of("items", List.of(Map.of("item", "param"))))) {
+      final Result moved = rs.next();
+      assertThat(moved.<String>getProperty("item")).isEqualTo("param");
+      assertThat(moved.hasProperty("keep")).isFalse();
+    }
+  }
+
+  /** Issue #12326: a parameter payload that is not a map is refused, never silently ignored. */
+  @Test
+  void moveVertexWithInvalidParameterContentIsRefused() {
+    final String typeA = "testMoveContentBadA";
+    final String typeB = "testMoveContentBadB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.setAutoTransaction(true);
+
+    final String rid = database.command("sql", "CREATE VERTEX " + typeA + " SET keep = 1").next().getIdentity().get().toString();
+
+    assertThatThrownBy(() -> database.command("sql", "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " CONTENT :payload",
+        Map.of("payload", "not a map")).close()).isInstanceOf(CommandExecutionException.class);
+    assertThat(countRecords(typeA)).as("the failed move left the source in place").isEqualTo(1);
+    assertThat(countRecords(typeB)).isEqualTo(0);
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + rid)) {
+      assertThat(rs.next().<Integer>getProperty("keep")).as("the source kept its content").isEqualTo(1);
+    }
+  }
+
+  /** Counts the records of a type by scanning them, not from the cached bucket counter {@code countType()} reads. */
+  private long countRecords(final String typeName) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM " + typeName)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  /**
+   * Issue #12326: a CONTENT operation that reaches the planner with no payload is refused, for UPDATE and MOVE VERTEX alike,
+   * instead of chaining no step (UPDATE used to drop it silently). The grammar never builds one, so it is built by hand.
+   */
+  @Test
+  void contentWithoutPayloadIsRefused() {
+    final UpdateOperations op = new UpdateOperations();
+    op.type = UpdateOperations.TYPE_CONTENT;
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    assertThatThrownBy(() -> UpdateContentStep.of(op, "UPDATE", context)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("Missing payload for UPDATE ... CONTENT");
+    assertThatThrownBy(() -> UpdateContentStep.of(op, "MOVE VERTEX", context)).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("Missing payload for MOVE VERTEX ... CONTENT");
   }
 
   // ---- #7148: moving a vertex must not reverse incoming edges ----

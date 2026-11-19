@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -33,10 +34,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A client-supplied {@code String _id} of exactly 24 hex characters (issue #6955) used to be stored as the same bare hex string
- * as an {@code ObjectId _id}, so a plain {@code insertOne} followed by a {@code find} read it back as an {@code ObjectId}, and the
- * two were one value to the {@code _id} index and to filters. Since issue #12073 such a string is stored escaped: it reads back as
- * the {@code String} it was, next to the {@code ObjectId} with the same hex.
+ * Issue #6955, fixed by #12073: a client-supplied {@code String _id} that happens to be exactly 24 hex characters used to be stored
+ * as the same bare hex string as an {@code ObjectId}, and read back as one. Such a String is now stored escaped, so it reads back as
+ * the String it was and is a different key from the ObjectId. A bare hex {@code _id} already on disk (stored before, or written
+ * through SQL) keeps reading back as an ObjectId, the form it always had.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -73,15 +74,27 @@ public class MongoDBHexStringIdAmbiguityTest extends BaseMongoServerTest {
   }
 
   @Test
-  void hexLookingStringIdInsertedPlainRoundTripsAsAString() {
+  void hexLookingStringIdRoundTripsAsAString() {
     final String hexLookingId = "abcdef0123456789abcdef01";
     collection.insertOne(new Document("_id", hexLookingId).append("name", "x"));
-    collection.insertOne(new Document("_id", new ObjectId(hexLookingId)).append("name", "y"));
 
-    assertThat(collection.find(new Document("_id", hexLookingId)).first().get("name")).isEqualTo("x");
-    assertThat(collection.find(new Document("_id", hexLookingId)).first().get("_id")).isEqualTo(hexLookingId);
-    assertThat(collection.find(new Document("_id", new ObjectId(hexLookingId))).first().get("name")).isEqualTo("y");
-    assertThat(collection.find(new Document("_id", new ObjectId(hexLookingId))).first().get("_id")).isInstanceOf(ObjectId.class);
-    assertThat(collection.countDocuments()).isEqualTo(2);
+    final Document found = collection.find().first();
+
+    assertThat(found).isNotNull();
+    assertThat(found.get("_id")).isEqualTo(hexLookingId);
+    assertThat(collection.find(new Document("_id", hexLookingId)).first()).isNotNull();
+    assertThat(collection.find(new Document("_id", new ObjectId(hexLookingId))).first()).isNull();
+  }
+
+  @Test
+  void aBareHexIdOnDiskStillReadsAsAnObjectId() {
+    final String hex = "abcdef0123456789abcdef02";
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
+    db.transaction(() -> db.newDocument("doc").set("_id", hex).set("name", "legacy").save());
+
+    final Document found = collection.find(new Document("_id", new ObjectId(hex))).first();
+    assertThat(found).isNotNull();
+    assertThat(found.get("_id")).isEqualTo(new ObjectId(hex));
+    assertThat(found.get("name")).isEqualTo("legacy");
   }
 }

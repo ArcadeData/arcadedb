@@ -419,7 +419,7 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
     assertThat(c.deleteOne(Document.parse("{_id:2, tags:'b'}")).getDeletedCount()).isEqualTo(1);
     assertThat(ids(c, "{}")).containsExactly(1, 3);
     final List<Object> sorted = new ArrayList<>();
-    for (final Document d : c.find(Document.parse("{_id:{$in:[1,3]}, tags:'a'}")).sort(Document.parse("{version:-1}")))
+    for (final Document d : c.find(Document.parse("{_id:{$in:[1,3]}, tags:'a'}")).sort(Document.parse("{version:-1, _id:-1}")))
       sorted.add(d.get("_id"));
     assertThat(sorted).containsExactly(3, 1);
   }
@@ -466,7 +466,7 @@ class MongoDBFilterSemanticsTest extends BaseMongoServerTest {
   @Test
   void negationsOnAMixedTypeIdAreNotNarrowedAway() {
     final MongoCollection<Document> c = collection("mixedneg", "{_id:'1', k:'x'}", "{_id:2, k:'x'}", "{_id:3, k:'y'}");
-    // MongoDB: the string '1' is not the number 1, so $ne:1 keeps it; sorted by _id a number comes before a string (issue #12069)
+    // MongoDB: the string '1' is not the number 1, so $ne:1 keeps it
     assertThat(ids(c, "{_id:{$ne:1}, k:'x'}")).containsExactly(2, "1");
     assertThat(ids(c, "{_id:{$nin:[1]}, k:'x'}")).containsExactly(2, "1");
     assertThat(ids(c, "{_id:{$not:{$gt:2}}, k:'x'}")).containsExactly(2, "1");

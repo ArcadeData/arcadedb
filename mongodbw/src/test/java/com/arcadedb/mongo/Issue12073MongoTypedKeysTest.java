@@ -31,6 +31,7 @@ import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
+import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -138,10 +139,11 @@ class Issue12073MongoTypedKeysTest {
     assertThatThrownBy(() -> insert("Uniq", new Document("_id", 7))).isInstanceOf(DuplicatedKeyException.class);
     assertThatThrownBy(() -> insert("Uniq", new Document("_id", 8).append("a", null))).isInstanceOf(DuplicatedKeyException.class);
 
-    // an update that writes the value another document holds is refused, with or without a filter; one that frees it is not
-    assertThatThrownBy(() -> command("update", "Uniq", new Document("updates",
-        List.of(new Document("q", new Document("_id", 2)).append("u", new Document("$set", new Document("a", 1)))))))
-        .isInstanceOf(RuntimeException.class);
+    // an update that writes the value another document holds is refused, with or without a filter; one that frees it is not. The
+    // refusal is the statement's, answered as a write error (issue #11502)
+    assertThat(writeErrorCodes(command("update", "Uniq", new Document("updates",
+        List.of(new Document("q", new Document("_id", 2)).append("u", new Document("$set", new Document("a", 1))))))))
+        .containsExactly(ErrorCode.DuplicateKey.getValue());
     command("update", "Uniq", new Document("updates",
         List.of(new Document("q", new Document("_id", 1)).append("u", new Document("$set", new Document("a", 10))))));
     insert("Uniq", new Document("_id", 9).append("a", 1));
@@ -208,8 +210,8 @@ class Issue12073MongoTypedKeysTest {
   void anUpdateWithoutAFilterCannotWriteAKeyProperty() {
     insert("Reserved", new Document("_id", 1).append("a", 1));
     for (final String op : List.of("$set", "$unset", "$inc"))
-      assertThatThrownBy(() -> command("update", "Reserved", new Document("updates", List.of(new Document("q", new Document()).append("u",
-          new Document(op, new Document(MongoKeys.ID_KEY, 5))))))).as(op).isInstanceOf(MongoServerError.class);
+      assertThat(writeErrorCodes(command("update", "Reserved", new Document("updates", List.of(new Document("q", new Document()).append("u",
+          new Document(op, new Document(MongoKeys.ID_KEY, 5)))))))).as(op).containsExactly(ErrorCode.BadValue.getValue());
     assertThatThrownBy(() -> insert("Reserved", new Document("_id", 1))).isInstanceOf(DuplicatedKeyException.class);
   }
 
@@ -254,5 +256,14 @@ class Issue12073MongoTypedKeysTest {
     for (final Document document : find(collection, filter))
       ks.add(document.get("k"));
     return ks;
+  }
+
+  /** The codes of the statements an update command refused, which it answers as write errors (issue #11502). */
+  private static List<Integer> writeErrorCodes(final Document reply) {
+    final List<Integer> codes = new ArrayList<>();
+    if (reply.get("writeErrors") instanceof List<?> errors)
+      for (final Object error : errors)
+        codes.add(((Number) ((Document) error).get("code")).intValue());
+    return codes;
   }
 }

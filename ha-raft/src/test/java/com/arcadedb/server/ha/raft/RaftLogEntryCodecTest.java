@@ -18,19 +18,35 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.utility.FileUtils;
+import org.apache.ratis.proto.RaftProtos.LogEntryProto;
+import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
+import org.apache.ratis.protocol.Message;
+import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RaftLogEntryCodecTest {
 
@@ -592,5 +608,492 @@ class RaftLogEntryCodecTest {
     assertThat(decoded.walEntries()).isEmpty();
     assertThat(decoded.bucketDeltas()).isEmpty();
     assertThat(decoded.sealedFileBlobs()).isEmpty();
+  }
+
+  /**
+   * Regression test for issue #7138: Raft log entries carry no version field - the type byte is the whole
+   * envelope - and only {@code SCHEMA_ENTRY} tolerated trailing bytes. For the other five types an unknown
+   * trailing field was fatal, and fatal in the worst arm: {@code RaftLogEntryCodec.decode} runs OUTSIDE
+   * {@code applyWithRetry}, so the throw was neither a {@code NeedRetryException} nor a
+   * {@code ReplicationException} and could not be quarantined - it reached {@code catch (Throwable)} and halted
+   * the node, with the applied index deliberately not advanced so the halt repeated on every restart.
+   * <p>
+   * A newer leader adding one field to {@code DROP_DATABASE_ENTRY} would therefore have permanently halted every
+   * not-yet-upgraded peer: two nodes down during a rolling upgrade of a three-node cluster.
+   * <p>
+   * The fix gives every type the extension mechanism {@code SCHEMA_ENTRY} demonstrated the need for, framed so
+   * the corruption signal the old check existed for is kept rather than traded away: a deliberate extension
+   * carries {@code RaftLogEntryCodec.EXTENSION_MAGIC}, garbage does not.
+
+   */
+  @Nested
+  class EntryExtensionSection {
+
+    private static final String DB = "mydb";
+
+    /** What a future release adds: one more field on an entry type that has no extension mechanism today. */
+    private static ByteString dropDatabaseEntryFromANewerNode() {
+      return RaftLogEntryCodec.appendExtensionSection(RaftLogEntryCodec.encodeDropDatabaseEntry(DB),
+          "a field this version has never heard of".getBytes(StandardCharsets.UTF_8));
+    }
+
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void aFieldAppendedByANewerNodeIsSkippedInsteadOfHaltingTheDecoder() {
+      final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(dropDatabaseEntryFromANewerNode());
+
+      assertThat(decoded.type()).isEqualTo(RaftLogEntryType.DROP_DATABASE_ENTRY);
+      assertThat(decoded.databaseName()).isEqualTo(DB);
+    }
+
+    /**
+     * All five non-schema types, not just the one: the point of #7138 is that the constraint stops being per-type
+     * folklore, so a regression that reintroduced it for a single type has to fail here.
+     */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void everyEntryTypeToleratesATrailingExtensionSection() {
+      final byte[] future = new byte[] { 1, 2, 3, 4 };
+
+      assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
+          RaftLogEntryCodec.encodeTxEntry(DB, new byte[0], Map.of()), future)).type())
+          .isEqualTo(RaftLogEntryType.TX_ENTRY);
+
+      assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
+          RaftLogEntryCodec.encodeDropDatabaseEntry(DB), future)).type())
+          .isEqualTo(RaftLogEntryType.DROP_DATABASE_ENTRY);
+
+      assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
+          RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, true), future)).type())
+          .isEqualTo(RaftLogEntryType.INSTALL_DATABASE_ENTRY);
+
+      assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
+          RaftLogEntryCodec.encodeSecurityUsersEntry("[]"), future)).type())
+          .isEqualTo(RaftLogEntryType.SECURITY_USERS_ENTRY);
+
+      assertThat(RaftLogEntryCodec.decode(RaftLogEntryCodec.appendExtensionSection(
+          RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB, "fp", 42L), future)).type())
+          .isEqualTo(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY);
+    }
+
+    /** Several fields added over several releases stack up; a decoder skips all of them. */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void repeatedExtensionSectionsAreAllSkipped() {
+      ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(DB);
+      entry = RaftLogEntryCodec.appendExtensionSection(entry, new byte[] { 9 });
+      entry = RaftLogEntryCodec.appendExtensionSection(entry, new byte[0]);
+      entry = RaftLogEntryCodec.appendExtensionSection(entry, new byte[] { 7, 7, 7 });
+
+      assertThat(RaftLogEntryCodec.decode(entry).databaseName()).isEqualTo(DB);
+    }
+
+    /**
+     * The half that must NOT be traded away: tolerating anything trailing (what {@code SCHEMA_ENTRY} does) would
+     * make every type extensible but would stop reporting a truncated or corrupt entry at all.
+     */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void unframedTrailingBytesAreStillReportedAsCorruption() throws Exception {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      baos.write(RaftLogEntryCodec.encodeDropDatabaseEntry(DB).toByteArray());
+      baos.write(new byte[] { 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42 });
+
+      assertThatThrownBy(() -> RaftLogEntryCodec.decode(ByteString.copyFrom(baos.toByteArray())))
+          .isInstanceOf(RaftLogEntryDecodeException.class)
+          .hasMessageContaining("DROP_DATABASE_ENTRY")
+          .rootCause()
+          .hasMessageContaining("not an extension section");
+    }
+
+    /** A tail too short to even be a frame header is corruption, not an empty extension. */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void aTailTooShortForAFrameHeaderIsCorruption() throws Exception {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      baos.write(RaftLogEntryCodec.encodeDropDatabaseEntry(DB).toByteArray());
+      baos.write(new byte[] { 0x41, 0x44 });
+
+      assertThatThrownBy(() -> RaftLogEntryCodec.decode(ByteString.copyFrom(baos.toByteArray())))
+          .isInstanceOf(RaftLogEntryDecodeException.class)
+          .rootCause()
+          .hasMessageContaining("too few for an extension section header");
+    }
+
+    /** A frame whose length runs past the end of the entry is a truncation, and must not be skipped over. */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void anExtensionSectionTruncatedInFlightIsCorruption() throws Exception {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+      RaftLogEntryCodec.encodeDropDatabaseEntry(DB).writeTo(dos);
+      dos.writeInt(RaftLogEntryCodec.EXTENSION_MAGIC);
+      dos.writeInt(64);            // claims 64 bytes...
+      dos.write(new byte[] { 1 }); // ...and carries 1
+      dos.flush();
+
+      assertThatThrownBy(() -> RaftLogEntryCodec.decode(ByteString.copyFrom(baos.toByteArray())))
+          .isInstanceOf(RaftLogEntryDecodeException.class)
+          .rootCause()
+          .hasMessageContaining("extension section");
+    }
+
+    /**
+     * SCHEMA_ENTRY is EXCLUDED from the framing, not merely exempt from the check, and the difference is worth a
+     * test: its optional sections are unframed and positional, so a decoder that has consumed the file maps reads
+     * whatever comes next as the #4382 WAL section's count. A frame appended to one is therefore not skipped - the
+     * magic is read as that count and refused. Anyone extending SCHEMA_ENTRY has to add a section to its own
+     * mechanism instead, and this is what says so if they reach for the helper.
+     */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void aFrameAppendedToASchemaEntryIsNotAnExtensionSection() {
+      final ByteString schema = RaftLogEntryCodec.encodeSchemaEntry(DB, "{}", Map.of(), Map.of(),
+          Collections.emptyList(), Collections.emptyList());
+
+      assertThatThrownBy(() -> RaftLogEntryCodec.decode(
+          RaftLogEntryCodec.appendExtensionSection(schema, new byte[] { 1, 2, 3, 4 })))
+          .as("the frame header lands where the WAL section's count is read")
+          .isInstanceOf(RaftLogEntryDecodeException.class);
+    }
+
+    /** Control for the exclusion: a SCHEMA_ENTRY carrying only its own sections still decodes untouched. */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void aSchemaEntryWithItsOwnSectionsIsUnaffected() {
+      final ByteString schema = RaftLogEntryCodec.encodeSchemaEntry(DB, "{\"v\":1}", Map.of(), Map.of(),
+          Collections.emptyList(), Collections.emptyList());
+
+      final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(schema);
+      assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+      assertThat(decoded.databaseName()).isEqualTo(DB);
+    }
+
+    /**
+     * The second half of #7138: a decode failure on ONE database must not be a whole-node halt. It is isolable
+     * exactly like an apply error on that database, so the node quarantines it, resyncs it from the leader and
+     * keeps serving its other databases - and the entry is still never silently skipped.
+     */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void aCorruptEntryQuarantinesItsDatabaseInsteadOfHaltingTheNode() throws Exception {
+      final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      baos.write(RaftLogEntryCodec.encodeDropDatabaseEntry("db-A").toByteArray());
+      baos.write(new byte[] { 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42 });
+
+      final CompletableFuture<Message> future = sm.applyTransaction(entryAt(sm, ByteString.copyFrom(baos.toByteArray()), 5L));
+
+      assertThat(future.isCompletedExceptionally()).isTrue();
+      assertThat(sm.isHaltedAfterCriticalError())
+          .as("one unreadable entry must not stop every co-located database (issue #7138)")
+          .isFalse();
+      assertThat(sm.isDatabaseDiverged("db-A")).isTrue();
+      assertThat(sm.isDatabaseDiverged("db-B")).isFalse();
+    }
+
+    /**
+     * An entry whose ENVELOPE HEADER did not survive - it ends before the database name - is a decode failure like
+     * any other, so it is reported as one rather than as a generic unexpected error. It still halts, because it
+     * names no database to quarantine and so nothing a targeted resync could repair.
+     */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void anEntryTruncatedInsideItsHeaderIsADecodeFailureAndStillHalts() {
+      // A valid type byte and nothing after it: the database name's UTF read hits EOF.
+      final ByteString truncated = ByteString.copyFrom(new byte[] { RaftLogEntryType.TX_ENTRY.getId() });
+
+      assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
+          .isInstanceOf(RaftLogEntryDecodeException.class)
+          .hasMessageContaining("envelope header");
+
+      final ArcadeStateMachine sm = new ArcadeStateMachine();
+      final CompletableFuture<Message> future = sm.applyTransaction(entryAt(sm, truncated, 9L));
+
+      assertThat(future.isCompletedExceptionally()).isTrue();
+      assertThat(sm.isHaltedAfterCriticalError())
+          .as("no database name means nothing to quarantine, so the node-wide halt is the honest answer")
+          .isTrue();
+    }
+
+    /**
+     * Control for the arm above: an unknown TYPE is a different failure and still halts. #4798 is right that
+     * skipping a committed mutation nobody can read is a silent divergence, and nothing here loosens that.
+     */
+    // Regression for #7138: EntryExtensionSection
+    @Test
+    void anUnknownEntryTypeStillHaltsTheNode() {
+      final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+      final CompletableFuture<Message> future = sm.applyTransaction(
+          entryAt(sm, ByteString.copyFrom(new byte[] { (byte) 99, 0, 0 }), 7L));
+
+      assertThat(future.isCompletedExceptionally()).isTrue();
+      assertThat(sm.isHaltedAfterCriticalError()).isTrue();
+    }
+
+    private static TransactionContext entryAt(final ArcadeStateMachine sm, final ByteString payload, final long index) {
+      final LogEntryProto logEntry = LogEntryProto.newBuilder()
+          .setTerm(1L)
+          .setIndex(index)
+          .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build())
+          .build();
+      return TransactionContext.newBuilder().setStateMachine(sm).setLogEntry(logEntry).build();
+    }
+  }
+
+  /**
+   * Regression tests for issue #4743 round 4: a bulk load into a 3-node Raft cluster failed after ~500k
+   * vertices with the leader stepping down every ~130 s, every node answering {@code NotLeaderException}
+   * for the same request id, and phase-2 applies unconfirmed for 20 minutes - all with no CPU, disk or
+   * network pressure on any node.
+   * <p>
+   * The cause was an oversized Raft entry, produced two ways:
+   * <ul>
+   *   <li>a single transaction whose compressed WAL exceeded {@code arcadedb.ha.appendBufferSize} - 4MB at
+   *       the time, and the reporter's records were 4-6.5MB each, which for incompressible content maps
+   *       roughly 1:1 onto the entry (a 6MB random-content record measures 6.03MB encoded). The default has
+   *       since been raised to 32MB precisely because it sat below a single legitimate record;</li>
+   *   <li>index-compaction replication, which shipped the WHOLE newly compacted index as ONE synthetic
+   *       WAL entry inside ONE {@code SCHEMA_ENTRY} - 21.5MB for a 517k-key index, growing without bound
+   *       with the index size.</li>
+   * </ul>
+   * Ratis rejects a log entry above the appender byte limit with a {@code StateMachineException} whose
+   * {@code leaderShouldStepDown()} is {@code true}, so the leader steps down; the caller then retried the
+   * identical entry against the newly elected leader and toppled that one too, forever.
+   * <p>
+   * The pre-existing size check only looked at {@code arcadedb.ha.grpcMessageSizeMax} (128MB), two orders
+   * of magnitude above the limit that actually binds, so both entries sailed through it.
+
+   */
+  @Nested
+  class OversizedRaftEntry {
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void effectiveEntrySizeIsTheSmallerOfTheTwoRatisLimits() {
+      final ContextConfiguration cfg = new ContextConfiguration();
+
+      // Stock defaults: the appender byte limit binds, NOT grpcMessageSizeMax (128MB).
+      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(32L * 1024 * 1024);
+
+      // Raising only the appender limit above the gRPC cap makes the gRPC cap bind again.
+      cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "256MB");
+      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg))
+          .isEqualTo(cfg.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX));
+
+      // Lowering it below the gRPC cap makes THAT the effective ceiling again.
+      cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "8MB");
+      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(8L * 1024 * 1024);
+
+      // RaftPropertiesBuilder must agree: one definition, no drift between engine and ha-raft.
+      assertThat(RaftPropertiesBuilder.maxReplicatedEntrySize(cfg))
+          .isEqualTo(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg));
+    }
+
+    /**
+     * The default ceiling must sit above a single legitimate record, and the two coupled buffers must stay
+     * consistent. Ratis requires {@code writeBufferSize >= appendBufferSize + 8} and allocates the write
+     * buffer as a DIRECT ByteBuffer at startup, so the two defaults can only move together - a mismatch
+     * fails every HA server on boot with a ConfigurationException.
+     */
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void defaultBuffersAllowARealisticRecordAndStayConsistent() {
+      final ContextConfiguration cfg = new ContextConfiguration();
+      final long appendBuffer = FileUtils.getSizeAsNumber(cfg.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE));
+      final long writeBuffer = FileUtils.getSizeAsNumber(cfg.getValueAsString(GlobalConfiguration.HA_WRITE_BUFFER_SIZE));
+
+      // A 6.5MB incompressible record encodes to ~6.6MB; the default must clear that with real headroom, so
+      // a single record can never again be unreplicable out of the box (issue #4743).
+      assertThat(appendBuffer).as("the default entry ceiling must be well above one large record")
+          .isGreaterThanOrEqualTo(32L * 1024 * 1024);
+      assertThat(writeBuffer).as("Ratis rejects writeBufferSize < appendBufferSize + 8 at startup")
+          .isGreaterThanOrEqualTo(appendBuffer + 8);
+      // An oversized write buffer is pure off-heap waste: it is preallocated and never grows past need.
+      assertThat(writeBuffer).as("the write buffer should track the append buffer, not dwarf it")
+          .isLessThanOrEqualTo(appendBuffer * 2);
+      // The log segment must be able to hold a maximum-size entry.
+      assertThat(FileUtils.getSizeAsNumber(cfg.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE)))
+          .as("a maximum-size entry must fit a Raft log segment").isGreaterThanOrEqualTo(appendBuffer);
+      // And the gRPC frame cap must not be the binding limit by accident.
+      assertThat(cfg.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX))
+          .as("the gRPC cap must stay above the appender limit").isGreaterThanOrEqualTo(appendBuffer);
+
+      // The defaults must actually build a valid Ratis configuration.
+      assertThatNoException().isThrownBy(() -> RaftPropertiesBuilder.build(cfg));
+    }
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void oversizedEntryIsRejectedBeforeDispatchAndIsNotRetryable() {
+      final long cap = 1024L;
+      final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500,
+          500, 10_000, 100, cap, null);
+      try {
+        final Throwable thrown = org.assertj.core.api.Assertions
+            .catchThrowable(() -> committer.submitAndWait(new byte[(int) cap + 1]));
+
+        assertThat(thrown).isInstanceOf(ReplicatedEntryTooLargeException.class);
+        // The crux of #4743: retrying an oversized entry topples one leader per attempt, so this must
+        // NOT be a retryable error. GraphBatch and the HTTP layer both branch on NeedRetryException.
+        assertThat(thrown).isNotInstanceOf(NeedRetryException.class);
+        // The message must name the knob that actually binds, and its coupled companion.
+        assertThat(thrown).hasMessageContaining("arcadedb.ha.appendBufferSize")
+            .hasMessageContaining("arcadedb.ha.writeBufferSize")
+            .hasMessageContaining("maximum replicated Raft entry size");
+        assertThat(committer.maxEntrySize()).isEqualTo(cap);
+      } finally {
+        committer.stop();
+      }
+    }
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void entryExactlyAtTheCapIsAccepted() {
+      // Boundary: the check is "greater than", so an entry of exactly cap bytes must get past it (and
+      // then fail on the null RaftClient like any other dispatched entry).
+      final long cap = 1024L;
+      final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500,
+          500, 10_000, 100, cap, null);
+      try {
+        assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap]))
+            .isNotInstanceOf(ReplicatedEntryTooLargeException.class);
+      } finally {
+        committer.stop();
+      }
+    }
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void compactionSchemaEntryIsSplitIntoOrderedChunksThatEachFit() {
+      // Shape of the reporter's failure: one compacted index file serialized as many WAL chunks, plus the
+      // schema JSON that publishes it and the retired file to remove.
+      final long cap = 64 * 1024L;
+      final String schemaJson = "{\"types\":{\"Address\":{}}}";
+      final Map<Integer, String> filesToAdd = new LinkedHashMap<>();
+      filesToAdd.put(456, "Address_0_4157906202920600_456.v1.ptree");
+      final Map<Integer, String> filesToRemove = new LinkedHashMap<>();
+      filesToRemove.put(445, "Address_0_4157857925972376_445.v1.ptree");
+
+      final List<byte[]> wal = new ArrayList<>();
+      final List<Map<Integer, Integer>> deltas = new ArrayList<>();
+      for (int i = 0; i < 40; i++) {
+        // Incompressible payload so the encoded size tracks the raw size (a compressible pattern would
+        // make every chunk fit and prove nothing).
+        final byte[] chunk = new byte[8 * 1024];
+        for (int b = 0; b < chunk.length; b++)
+          chunk[b] = (byte) ((i * 31 + b * 17 + (b >> 3)) ^ (b * 7));
+        wal.add(chunk);
+        deltas.add(Collections.emptyMap());
+      }
+
+      final ByteString single = RaftLogEntryCodec.encodeSchemaEntry("graph", schemaJson, filesToAdd,
+          filesToRemove, wal, deltas, Collections.emptyList());
+      assertThat(single.size()).as("the unsplit entry must be over the cap for this test to mean anything")
+          .isGreaterThan((int) cap);
+
+      final List<ByteString> chunks = RaftTransactionBroker.splitSchemaEntry("graph", schemaJson, filesToAdd,
+          filesToRemove, wal, deltas, Collections.emptyList(), cap, single.size());
+
+      assertThat(chunks).hasSizeGreaterThan(1);
+      for (final ByteString chunk : chunks)
+        assertThat(chunk.size()).as("every chunk must be replicable").isLessThanOrEqualTo((int) cap);
+
+      // Ordering contract: files first (so pages have somewhere to land), publication last.
+      final List<RaftLogEntryCodec.DecodedEntry> decoded = new ArrayList<>();
+      for (final ByteString chunk : chunks)
+        decoded.add(RaftLogEntryCodec.decode(chunk));
+
+      assertThat(decoded.getFirst().filesToAdd()).isEqualTo(filesToAdd);
+      assertThat(decoded.getFirst().schemaJson()).isEmpty();
+      assertThat(decoded.getLast().schemaJson()).isEqualTo(schemaJson);
+      assertThat(decoded.getLast().filesToRemove()).isEqualTo(filesToRemove);
+      for (int i = 1; i < decoded.size(); i++)
+        assertThat(decoded.get(i).filesToAdd()).as("only the first chunk creates files").isEmpty();
+      for (int i = 0; i < decoded.size() - 1; i++) {
+        assertThat(decoded.get(i).schemaJson()).as("only the last chunk publishes the schema").isEmpty();
+        assertThat(decoded.get(i).filesToRemove()).as("only the last chunk removes files").isEmpty();
+      }
+
+      // No WAL entry may be lost or reordered: the pages must arrive exactly once, in order.
+      final List<byte[]> reassembled = new ArrayList<>();
+      for (final RaftLogEntryCodec.DecodedEntry e : decoded)
+        reassembled.addAll(e.walEntries());
+      assertThat(reassembled).hasSameSizeAs(wal);
+      for (int i = 0; i < wal.size(); i++)
+        assertThat(reassembled.get(i)).isEqualTo(wal.get(i));
+    }
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void unsplittableSchemaEntryFailsWithActionableErrorInsteadOfTopplingTheLeader() {
+      // A schema JSON that alone blows the cap cannot be chunked. Failing the DDL once, naming the knob,
+      // beats dispatching an entry that makes every elected leader step down in turn.
+      final long cap = 4096L;
+      final String hugeSchema = "x".repeat((int) cap * 2);
+      final ByteString single = RaftLogEntryCodec.encodeSchemaEntry("graph", hugeSchema,
+          Collections.emptyMap(), Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(),
+          Collections.emptyList());
+
+      assertThatThrownBy(() -> RaftTransactionBroker.splitSchemaEntry("graph", hugeSchema,
+          Collections.emptyMap(), Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(),
+          Collections.emptyList(), cap, single.size()))
+          .isInstanceOf(ReplicatedEntryTooLargeException.class)
+          .isNotInstanceOf(NeedRetryException.class)
+          .hasMessageContaining("cannot be split")
+          .hasMessageContaining("arcadedb.ha.appendBufferSize");
+    }
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void schemaEntrySplitKeepsBucketDeltasAlignedWithTheirWalEntry() {
+      // The codec pairs walEntries[i] with bucketDeltas[i]; regrouping must not shift that pairing, or a
+      // follower would apply one transaction's page deltas to another's record counts.
+      final long cap = 8 * 1024L;
+      final List<byte[]> wal = new ArrayList<>();
+      final List<Map<Integer, Integer>> deltas = new ArrayList<>();
+      for (int i = 0; i < 12; i++) {
+        final byte[] payload = new byte[2 * 1024];
+        for (int b = 0; b < payload.length; b++)
+          payload[b] = (byte) ((i * 131 + b * 37) ^ (b << 1));
+        wal.add(payload);
+        deltas.add(Map.of(100 + i, i));
+      }
+
+      final ByteString single = RaftLogEntryCodec.encodeSchemaEntry("graph", "{}", Collections.emptyMap(),
+          Collections.emptyMap(), wal, deltas, Collections.emptyList());
+      final List<ByteString> chunks = RaftTransactionBroker.splitSchemaEntry("graph", "{}",
+          Collections.emptyMap(), Collections.emptyMap(), wal, deltas, Collections.emptyList(), cap,
+          single.size());
+      assertThat(chunks).hasSizeGreaterThan(1);
+
+      final List<Map<Integer, Integer>> reassembled = new ArrayList<>();
+      for (final ByteString chunk : chunks)
+        reassembled.addAll(RaftLogEntryCodec.decode(chunk).bucketDeltas());
+      assertThat(reassembled).isEqualTo(deltas);
+    }
+
+    // Regression for #4743: OversizedRaftEntry
+    @Test
+    void oversizedEntryMessageIsNotMisleadingAboutTheGrpcCap() {
+      // The old message told operators to raise arcadedb.ha.grpcMessageSizeMax, which for the default
+      // configuration changes nothing at all: the appender limit is 32x smaller. Keep that advice from
+      // creeping back in as the primary remedy.
+      final long cap = 512L;
+      final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500,
+          500, 10_000, 100, cap, null);
+      try {
+        final Throwable thrown = org.assertj.core.api.Assertions
+            .catchThrowable(() -> committer.submitAndWait("x".repeat((int) cap + 1).getBytes(StandardCharsets.UTF_8)));
+        final String message = thrown.getMessage();
+        assertThat(message.indexOf("arcadedb.ha.appendBufferSize"))
+            .as("appendBufferSize must be named before grpcMessageSizeMax as the remedy")
+            .isLessThan(message.lastIndexOf("arcadedb.ha.grpcMessageSizeMax"));
+      } finally {
+        committer.stop();
+      }
+    }
   }
 }

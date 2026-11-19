@@ -50,10 +50,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The gap matters because the checker's repair path is not an ordinary write. Three things about it are specific
  * to a replicated database and none of them are exercised by the engine's own {@code CheckDatabase*Test}s:
  * <ul>
- *   <li>{@code CheckDatabaseStatement} is not idempotent, so on a follower {@code RaftReplicatedDatabase.command}
- *   forwards the whole statement to the leader over HTTP - with or without {@code FIX}. The check therefore only
- *   ever inspects the LEADER's pages, and every repair has to reach the other nodes as replicated WAL rather than
- *   by each node repairing itself;</li>
+ *   <li>{@code CheckDatabaseStatement} with {@code FIX} is not idempotent, so on a follower
+ *   {@code RaftReplicatedDatabase.command} forwards the whole statement to the leader over HTTP. The repair therefore
+ *   inspects the LEADER's pages, and every repair has to reach the other nodes as replicated WAL rather than by each
+ *   node repairing itself. Without {@code FIX} the check runs on the follower it was sent to, and reports that node's
+ *   files (issues #12347, #12348);</li>
  *   <li>{@code GraphDatabaseChecker.checkVertices} accumulates an entire type's repair in ONE transaction, which
  *   under Raft becomes ONE log entry - {@code RaftTransactionBroker.replicateTransaction} submits it whole, with
  *   no equivalent of the schema-entry splitter added for issue #4743;</li>

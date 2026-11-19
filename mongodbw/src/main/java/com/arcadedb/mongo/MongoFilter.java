@@ -30,8 +30,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
-import de.bwaldvogel.mongo.backend.DefaultQueryMatcher;
-import de.bwaldvogel.mongo.backend.QueryMatcher;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 
@@ -52,8 +50,10 @@ import java.util.regex.PatternSyntaxException;
  * The SQL comparisons the translator relies on are not MongoDB's: they coerce across types ({@code n = 5} matches {@code "5"}
  * and {@code true}), see an array as one opaque value (so {@code tags = 'a'} never matches {@code ['a', 'b']}, and
  * {@code tags <> 'a'} matches it) and answer {@code IS DEFINED} on a nested path from the wrong set. A filter that can hit any of
- * those is therefore evaluated on the document, by the matcher of the MongoDB emulation the plugin is built on, which implements
- * MongoDB's own rules: type brackets, array traversal, {@code $elemMatch}, {@code $all}, {@code $size}, dotted paths, ordering.
+ * those is therefore evaluated on the document, by {@link MongoQueryMatcher}, which implements the rules of {@code mongod}: type
+ * brackets, array traversal, {@code $elemMatch}, {@code $all}, {@code $size}, dotted paths, ordering. It replaced the matcher of the
+ * MongoDB emulation the plugin is built on, which answers differently from {@code mongod} on paths through arrays and on several
+ * operators (issue #12074).
  * <p>
  * SQL still has a part: a filter that is on the {@code _id}, alone or under {@code $and} / {@code $or} (a batch lookup by key), or has
  * an {@code _id} conjunct, reads its candidates through the unique index on the {@code _id}, and the matcher then tests the whole
@@ -73,8 +73,6 @@ import java.util.regex.PatternSyntaxException;
  * <p>
  * Every other filter reads the whole type.
  * <p>
- * Known leniency of the matcher: a regular expression is also tested against the string form of a number, which MongoDB does not.
- * <p>
  * Regular expressions are searched through {@link TimeBoundRegex}, bounded by {@code arcadedb.command.regexTimeout} with one
  * deadline per filter, exactly like the SQL {@code MATCHES} the plugin used to rely on.
  *
@@ -89,7 +87,7 @@ final class MongoFilter {
   private final Document     filter;
   private final Document     idPart;
   private final Document     normalized;
-  private final QueryMatcher matcher;
+  private final MongoQueryMatcher matcher;
   private final Set<String>  properties;
 
   MongoFilter(final Database database, final Document filter) {
@@ -114,7 +112,9 @@ final class MongoFilter {
       this.properties = Set.of();
     } else {
       this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database));
-      this.matcher = new DefaultQueryMatcher();
+      this.matcher = new MongoQueryMatcher();
+      // a malformed filter is refused here, as mongod refuses it when it parses it, even when no document is ever tested
+      this.matcher.validate(normalized);
       this.properties = new HashSet<>();
       collectProperties(normalized, properties);
     }
@@ -498,8 +498,9 @@ final class MongoFilter {
 
   /**
    * Prepares a query document for the matcher: a regular expression, however it is spelled, becomes a {@link BoundedRegex}. The
-   * operands keep their BSON type: the matcher sees the record as the client reads it ({@link MongoDBToSqlTranslator#toMatchDocument}),
-   * so an ObjectId matches an ObjectId and a string a string, on the {@code _id} too (issue #12073).
+   * operands keep their BSON type, and so does the stored {@code _id} the matcher reads (an ObjectId is an ObjectId, a String a
+   * String, see {@link MongoDBToSqlTranslator#toMatchDocument}), so an ObjectId and the String with the same hex are two values
+   * (issue #12073).
    */
   private static Document normalizeQuery(final Document query, final RegexBudget deadline) {
     final Document result = new Document();
@@ -817,9 +818,9 @@ final class MongoFilter {
     }
 
     /**
-     * Assumes the matcher only calls {@link Matcher#find()} on what it gets back (true of the mongo-java-server this plugin is
-     * built on): the answer is computed here, so only "found or not" is carried. Tests over every regex-bearing operator pin it
-     * when the library is upgraded.
+     * Assumes the matcher only calls {@link Matcher#find()} on what it gets back (true of {@link MongoQueryMatcher}, and of the
+     * mongo-java-server matcher an aggregation {@code $match} still runs through): the answer is computed here, so only "found or
+     * not" is carried. Tests over every regex-bearing operator pin it.
      */
     @Override
     public Matcher matcher(final String string) {
