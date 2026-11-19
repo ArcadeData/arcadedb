@@ -341,8 +341,7 @@ public final class FacetFallbackScanner {
       return;
     }
     final double d = raw instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
-    // -0.0 and 0.0 are one value, as for a DOUBLE column
-    value.doubleValue(d == 0d ? 0d : d);
+    value.doubleValue(d);
   }
 
   /** A raw value as it is, for a STATS facet to fold as SQL does: null is missing. */

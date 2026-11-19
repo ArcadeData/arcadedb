@@ -19,7 +19,9 @@
 package com.arcadedb.mongo;
 
 import de.bwaldvogel.mongo.bson.BsonTimestamp;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.LegacyUUID;
+import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.junit.jupiter.api.Test;
@@ -95,5 +97,41 @@ class MongoBsonValuesTest {
     assertThat(MongoBsonValues.toBigDecimal(Long.MAX_VALUE)).isEqualByComparingTo(new BigDecimal(Long.MAX_VALUE));
     assertThatThrownBy(() -> MongoBsonValues.toBigDecimal(Double.NaN)).isInstanceOf(MongoServerError.class);
     assertThatThrownBy(() -> MongoBsonValues.toBigDecimal(Double.POSITIVE_INFINITY)).isInstanceOf(MongoServerError.class);
+  }
+
+  // issue #12073: the Decimal128 values a DECIMAL has no form for are stored tagged with their bits and read back as they were
+  @Test
+  void specialDecimalsRoundTripThroughTheirBits() {
+    for (final Decimal128 decimal : new Decimal128[] { Decimal128.NaN, Decimal128.POSITIVE_INFINITY, Decimal128.NEGATIVE_INFINITY,
+        Decimal128.NEGATIVE_ZERO }) {
+      final Object stored = MongoBsonValues.toStored(decimal);
+      assertThat(MongoBsonValues.isTagged(stored)).as("%s", decimal).isTrue();
+      assertThat(MongoBsonValues.toBson(stored)).as("%s", decimal).isEqualTo(decimal);
+    }
+    // an ordinary value stays a DECIMAL, which SQL compares as a number
+    assertThat(MongoBsonValues.toStored(new Decimal128(new BigDecimal("1.50")))).isEqualTo(new BigDecimal("1.50"));
+    assertThat(MongoBsonValues.toStored(Decimal128.POSITIVE_ZERO)).isEqualTo(BigDecimal.ZERO);
+  }
+
+  @Test
+  void decimalSumFollowsTheIeeeRulesForSpecialValues() {
+    assertThat(MongoBsonValues.addDecimal(Decimal128.NaN, 1)).isEqualTo(Decimal128.NaN);
+    assertThat(MongoBsonValues.addDecimal(Decimal128.NEGATIVE_INFINITY, 1)).isEqualTo(Decimal128.NEGATIVE_INFINITY);
+    assertThat(MongoBsonValues.addDecimal(Decimal128.POSITIVE_INFINITY, Decimal128.NEGATIVE_INFINITY)).isEqualTo(Decimal128.NaN);
+    assertThat(MongoBsonValues.addDecimal(Decimal128.POSITIVE_INFINITY, Double.NaN)).isEqualTo(Decimal128.NaN);
+    assertThat(MongoBsonValues.addDecimal(Decimal128.NEGATIVE_ZERO, 1)).isEqualTo(BigDecimal.ONE);
+  }
+
+  // issue #12073: the bound of a filter on the _id carries the stored form of the _id, a hex String escaped
+  @Test
+  void idFilterBindsTheStoredFormOfTheId() {
+    final String hex = "5f0000000000000000000001";
+    assertThat(MongoBsonValues.toBound(MongoBsonValues.idFilter(new ObjectId(hex)))).isEqualTo(hex);
+    assertThat(MongoBsonValues.toBound(MongoBsonValues.idFilter(hex))).isEqualTo("$str:" + hex);
+    assertThat(MongoBsonValues.toBound(MongoBsonValues.idFilter("abc"))).isEqualTo("abc");
+    assertThat(MongoBsonValues.toBound(MongoBsonValues.idFilter(3))).isEqualTo(3);
+    assertThat(MongoBsonValues.idFilter(null)).isNull();
+    assertThat(MongoBsonValues.toStored("_id", hex)).isEqualTo("$str:" + hex);
+    assertThat(MongoBsonValues.toStored("_id", new ObjectId(hex))).isEqualTo(hex);
   }
 }

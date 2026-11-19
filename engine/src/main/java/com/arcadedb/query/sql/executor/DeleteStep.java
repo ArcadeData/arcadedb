@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.RidHashSet;
@@ -42,9 +43,11 @@ public class DeleteStep extends AbstractExecutionStep {
   private final Projection returning;
   // WHETHER THE STATEMENT ANSWERS THE DELETED RECORDS (RETURN BEFORE, RETURNING) RATHER THAN THEIR COUNT
   private final boolean    returnsRecords;
+  // DELETE VERTEX (issue #11620): a record that is not a vertex is refused, before anything is deleted for it
+  private final boolean    vertexOnly;
 
   public DeleteStep(final CommandContext context) {
-    this(context, null, false);
+    this(context, null, false, false);
   }
 
   /**
@@ -53,11 +56,13 @@ public class DeleteStep extends AbstractExecutionStep {
    *                       for a record the delete removed, never for one a listener vetoed
    * @param returnsRecords whether the deleted records are answered ({@code RETURN BEFORE}, {@code RETURNING}): a record answered
    *                       whole, whose type has EXTERNAL properties, is then answered as a copy taken before the delete
+   * @param vertexOnly     whether the statement is a {@code DELETE VERTEX}: a record that is not a vertex is then refused
    */
-  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords) {
+  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly) {
     super(context);
     this.returning = returning;
     this.returnsRecords = returnsRecords;
+    this.vertexOnly = vertexOnly;
   }
 
   @Override
@@ -73,9 +78,10 @@ public class DeleteStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (result.isElement()) {
-            final Record record = result.getElement().get();
+            final Document record = result.getElement().get();
             if (deletedByAnEarlierRow(deleted, record))
               return null;
+            checkIsVertex(record);
             final Result answer = beforeImage(context, result);
             return database.deleteRecordReportingVeto(record) ? answer : null;
           }
@@ -86,6 +92,7 @@ public class DeleteStep extends AbstractExecutionStep {
             if (deletedByAnEarlierRow(deleted, identifiable))
               return null;
             if (identifiable.getRecord() instanceof Record record) {
+              checkIsVertex(record);
               final Result answer = beforeImage(context, result);
               return database.deleteRecordReportingVeto(record) ? answer : null;
             }
@@ -97,6 +104,12 @@ public class DeleteStep extends AbstractExecutionStep {
         }
       }
     };
+  }
+
+  private void checkIsVertex(final Record record) {
+    if (vertexOnly && !(record instanceof Vertex))
+      throw new CommandExecutionException(
+          "DELETE VERTEX cannot delete the record " + record.getIdentity() + ": it is not a vertex. Use DELETE FROM to delete it");
   }
 
   /**
@@ -141,7 +154,9 @@ public class DeleteStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
-    result.append(returning != null ? "+ DELETE RETURNING " + returning : "+ DELETE");
+    result.append(vertexOnly ? "+ DELETE VERTEX" : "+ DELETE");
+    if (returning != null)
+      result.append(" RETURNING ").append(returning);
     if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
 

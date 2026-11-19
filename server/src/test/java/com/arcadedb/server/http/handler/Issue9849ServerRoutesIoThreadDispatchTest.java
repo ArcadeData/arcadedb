@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 
 /**
  * Issue #9849: every route of {@code arcadedb-server} is held to a verdict on whether it may block the Undertow IO thread, the
- * assertion {@code Issue7621BlockingHandlersWorkerThreadTest} has made for the {@code arcadedb-ha-raft} routes since issue #7621.
+ * assertion {@code BlockingHandlersWorkerThreadTest} has made for the {@code arcadedb-ha-raft} routes since issue #7621.
  * <p>
  * Until now the server's own routes were covered by four hand-maintained lists (issues #7684, #7722, #7785 and a by-name test in
  * the HA module) over 69 handler classes, the shape whose weakness that test names as the reason its first two sweeps missed
