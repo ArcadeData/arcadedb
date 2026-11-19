@@ -694,23 +694,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     validateNoParameterProperties(List.of(pathPattern), "MERGE");
 
-    // Parse ON CREATE SET and ON MATCH SET actions
-    SetClause onCreateSet = null;
-    SetClause onMatchSet = null;
+    // Parse ON CREATE SET and ON MATCH SET actions: each repetition stays a SET of its own, applied in order
+    final List<SetClause> onCreateActions = new ArrayList<>(1);
+    final List<SetClause> onMatchActions = new ArrayList<>(1);
 
     for (final Cypher25Parser.MergeActionContext actionCtx : ctx.mergeAction()) {
       final SetClause setClause = visitSetClause(actionCtx.setClause());
 
-      if (actionCtx.CREATE() != null) {
-        // ON CREATE SET
-        onCreateSet = setClause;
-      } else if (actionCtx.MATCH() != null) {
-        // ON MATCH SET
-        onMatchSet = setClause;
-      }
+      if (actionCtx.CREATE() != null)
+        onCreateActions.add(setClause);
+      else if (actionCtx.MATCH() != null)
+        onMatchActions.add(setClause);
     }
 
-    return new MergeClause(pathPattern, onCreateSet, onMatchSet);
+    return new MergeClause(pathPattern, onCreateActions, onMatchActions);
   }
 
   @Override
@@ -849,25 +846,30 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse DISTINCT flag
     final boolean distinct = body.DISTINCT() != null;
 
-    // Parse WHERE clause (applied after projection)
+    boolean aggregating = false;
+    for (final ReturnClause.ReturnItem item : items)
+      if (!item.isStar() && item.getExpression().containsAggregation()) {
+        aggregating = true;
+        break;
+      }
+
+    // Parse WHERE clause (applied after projection). A WHERE that repeats a grouping key reads the projected column
+    // (issue #12245), as ORDER BY does below
+    // The rewrite runs on the predicate as written, before the canonicalization that may reorder it (1 < n.id becomes
+    // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
     if (ctx.whereClause() != null) {
-      whereClause = visitWhereClause(ctx.whereClause());
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+          items, distinct || aggregating);
+      whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
     }
 
     // Parse ORDER BY, SKIP, LIMIT from returnBody
     OrderByClause orderByClause = null;
-    if (body.orderBy() != null) {
+    if (body.orderBy() != null)
       // An ORDER BY item that repeats a projected expression sorts on the projected column
       // (#5283 for DISTINCT, #5286 for aggregation)
-      boolean aggregating = false;
-      for (final ReturnClause.ReturnItem item : items)
-        if (item.getExpression().containsAggregation()) {
-          aggregating = true;
-          break;
-        }
       orderByClause = ProjectedOrderByNormalizer.normalize(visitOrderBy(body.orderBy()), items, distinct || aggregating);
-    }
 
     Expression skip = null;
     if (body.skip() != null) {
@@ -1015,8 +1017,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
-    // Parse the WHERE condition as a boolean expression, then simplify boolean constants
+    // Parse the WHERE condition as a boolean expression, check its operands, then simplify boolean constants
     final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
   }
@@ -1030,6 +1033,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
     // Grammar: FILTER WHERE? expression
     final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
   }
@@ -1220,7 +1224,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // A negation, the wildcard or a mix of '&' and '|': the pattern keeps the labels every match must carry, so the
     // planner can still pick a label scan, and the whole expression is checked as a predicate on the node (#8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       labels = labelPredicate.requiredLabels();
@@ -1231,11 +1235,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Label expression (static labels + Cypher 25 dynamic $(expression) labels)
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
-      final List<Cypher25Parser.ExpressionContext> dynCtxs = ParserUtils.collectDynamicLabelContexts(ctx.labelExpression());
-      if (!dynCtxs.isEmpty()) {
-        dynamicLabels = new ArrayList<>(dynCtxs.size());
-        for (final Cypher25Parser.ExpressionContext dynCtx : dynCtxs)
-          dynamicLabels.add(expressionBuilder.parseExpression(dynCtx));
+      dynamicLabels = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressionBuilder::parseExpression);
+      // A read pattern also checks the dynamic labels as a predicate on the node, which every consumer evaluates; the steps
+      // that read getDynamicLabels() (the anchor scan, the variable-length target) keep using them to narrow what they
+      // walk. A write clause resolves them itself (issue #11776)
+      if (dynamicLabels != null && writeClause == null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, labels, dynamicLabels, ctx.labelExpression());
+        // (n:A|$(expr)): the static labels alone are not a filter, so they join the dynamic list. Every consumer that
+        // reads the static list (hop target, pattern comprehension) would otherwise reject what $(expr) admits
+        if (labelDisjunction && labels != null && !labels.isEmpty()) {
+          dynamicLabels = ParserUtils.staticLabelsFirst(labels, dynamicLabels);
+          labels = null;
+        }
       }
     }
 
@@ -1276,7 +1289,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // variable-length relationship the predicate rides the inline WHERE, which every expansion evaluates per hop, so
     // each relationship of the path is checked (#9117).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressionBuilder::parseExpression);
     if (labelPredicate != null) {
       rejectLabelExpressionInWriteClause(ctx.labelExpression());
       final List<String> required = labelPredicate.requiredLabels();
@@ -1286,6 +1299,16 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
+      // [r:$(expr)] in a read pattern: no static type filter can say it, so the whole type list is checked per relationship
+      // through its inline predicate, which every hop kind evaluates. A write clause keeps refusing it (issue #11776)
+      final List<Expression> dynamicTypes = writeClause == null ?
+          ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressionBuilder::parseExpression) : null;
+      if (dynamicTypes != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, types, dynamicTypes, ctx.labelExpression());
+        types = null;
+      }
     }
 
     // Properties

@@ -189,7 +189,7 @@ class TimeSeriesEngineTest extends TestHelper {
   // {@code db.commit()} (the {@code db.isReplicated()} early-release branch is not taken), so the
   // HA-only CME-retry path is NOT exercised here. This test verifies that the standalone locking
   // path remains correct - concurrent appends + compaction lose no data. The actual CME-retry path
-  // introduced by the fix is covered by the HA integration test {@code Issue4458TsWalVersionGapIT}.
+  // introduced by the fix is covered by the HA integration test {@code TimeSeriesWalVersionGapIT}.
 
   // Resets the static fault-injection hooks used by the #4458, #10970 and #9716 tests below.
   @AfterEach
@@ -1267,7 +1267,7 @@ class TimeSeriesEngineTest extends TestHelper {
   // This class pins the CRASH-RECOVERY door, the one a repair is most likely to meet: a {@code .ts.sealed} is most
   // often damaged by a crash during compaction, which is precisely when {@code isCompactionInProgress()} is true on
   // reopen, so the retry that installs a good sealed file runs straight into this block. The sibling doors are
-  // pinned by {@code Issue6839TsSealedBlobRecoveryTest} (sealed-store construction, and the multi-shard unwind).
+  // pinned by {@code SealedBlobRepairAndRefusalTest.EngineRepair} (sealed-store construction, and the multi-shard unwind).
   // <p>
   // The failure is injected with a BROKEN SYMLINK at the {@code .ts.sealed.tmp} path {@code truncateToBlockCount}
   // writes through: {@code File.exists()} follows the link and answers false, so {@code TimeSeriesSealedStore}'s

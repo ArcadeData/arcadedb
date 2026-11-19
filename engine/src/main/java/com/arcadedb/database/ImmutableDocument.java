@@ -625,10 +625,25 @@ public class ImmutableDocument extends BaseDocument {
         notFound);
   }
 
+  /** Whether the record wants to know that its lazily read content came from the transaction's own image of its page (#12320). */
+  protected boolean tracksReadsFromOwnImage() {
+    return false;
+  }
+
+  /** Called when the content read lazily came from the transaction's own image of its page, see {@link #tracksReadsFromOwnImage()}. */
+  protected void contentReadFromOwnImage() {
+    // nothing to do for a document
+  }
+
   /** The content of a record handed out without it, read now: see {@link #missingGraphRecord} for a record that is gone. */
   private Binary readContentOfLazyRecord() {
     try {
-      return database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      final TransactionContext tx = tracksReadsFromOwnImage() ? ((DatabaseInternal) database).getTransactionIfExists() : null;
+      final long ownImageReads = tx != null ? tx.getOwnImageReads() : 0L;
+      final Binary content = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      if (tx != null && tx.getOwnImageReads() != ownImageReads)
+        contentReadFromOwnImage();
+      return content;
     } catch (final RecordNotFoundException e) {
       throw missingGraphRecord((DatabaseInternal) database, rid, reachedAtCommit, e);
     }

@@ -667,7 +667,7 @@ final class MongoQueryMatcher {
   }
 
   /** The order of {@code mongod} over any two values: by type bracket first, then within it; arrays and documents in order. */
-  private static int compareValues(final Object a, final Object b) {
+  static int compareValues(final Object a, final Object b) {
     final int bracketA = bracket(a);
     final int bracketB = bracket(b);
     if (bracketA != bracketB)
@@ -675,7 +675,7 @@ final class MongoQueryMatcher {
     if (a instanceof Number na && b instanceof Number nb)
       return compareNumbers(na, nb);
     if (a instanceof String sa && b instanceof String sb)
-      return sa.compareTo(sb);
+      return compareStrings(sa, sb);
     if (a instanceof Document da && b instanceof Document db)
       return compareDocuments(da, db);
     if (a instanceof List<?> la && b instanceof List<?> lb)
@@ -698,7 +698,7 @@ final class MongoQueryMatcher {
       final Map.Entry<String, Object> eb = ib.next();
       int comparison = Integer.compare(bracket(ea.getValue()), bracket(eb.getValue()));
       if (comparison == 0)
-        comparison = ea.getKey().compareTo(eb.getKey());
+        comparison = compareStrings(ea.getKey(), eb.getKey());
       if (comparison == 0)
         comparison = compareValues(ea.getValue(), eb.getValue());
       if (comparison != 0)
@@ -716,6 +716,26 @@ final class MongoQueryMatcher {
         return comparison;
     }
     return Integer.compare(a.size(), b.size());
+  }
+
+  /**
+   * Strings in the order of their UTF-8 bytes, which is the order of their code points, as {@code mongod} compares them without a
+   * collation. {@link String#compareTo} compares UTF-16 units instead, which differs only between a surrogate (a code point above
+   * U+FFFF) and a unit from U+E000 to U+FFFF: the surrogate is the larger code point.
+   */
+  static int compareStrings(final String a, final String b) {
+    final int common = Math.min(a.length(), b.length());
+    for (int i = 0; i < common; i++) {
+      final char ca = a.charAt(i);
+      final char cb = b.charAt(i);
+      if (ca != cb) {
+        final boolean surrogateA = Character.isSurrogate(ca);
+        if (surrogateA != Character.isSurrogate(cb))
+          return surrogateA ? 1 : -1;
+        return ca - cb;
+      }
+    }
+    return a.length() - b.length();
   }
 
   /** The type bracket of a value, in the order {@code mongod} sorts them: it compares only within one. */

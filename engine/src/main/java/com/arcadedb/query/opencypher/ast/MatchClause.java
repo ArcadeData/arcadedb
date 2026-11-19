@@ -202,6 +202,28 @@ public class MatchClause {
     return false;
   }
 
+  /**
+   * True when any path pattern of any given MATCH clause holds a relationship, of any length ({@code (a)-[r]->(b)}); a pattern
+   * of lone nodes does not.
+   * <p>
+   * A relationship is expanded by walking the edge list of the node it starts from while the rows of that node are still
+   * being produced, so a write clause following it with no intervening aggregation can change the list under the walk: a
+   * {@code DETACH DELETE} of the node, or of the node at the other end, removes the relationships the walk has not reached
+   * yet and the rows they would have produced are never read (issue #12254).
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the write clause in question
+   * @return true when at least one of them has a relationship pattern
+   */
+  public static boolean hasRelationshipPatterns(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.pathPatterns)
+        if (path.getRelationshipCount() > 0)
+          return true;
+    return false;
+  }
+
   private static boolean computeDisconnected(final List<PathPattern> pathPatterns) {
     if (pathPatterns.size() < 2)
       return false;

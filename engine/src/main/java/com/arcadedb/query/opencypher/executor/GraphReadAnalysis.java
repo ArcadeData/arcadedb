@@ -490,6 +490,8 @@ final class GraphReadAnalysis {
 
     @Override
     protected BooleanExpression visitLabelCheck(final LabelCheckExpression expr) {
+      for (final Expression dynamicLabel : expr.getDynamicLabels())
+        rewrite(dynamicLabel);
       return descend(expr, expr.getVariableExpression());
     }
 
