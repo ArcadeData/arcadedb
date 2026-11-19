@@ -95,6 +95,54 @@ class BackupRetentionManagerTest {
       assertThat(files.get(i).exists()).isFalse();
   }
 
+  /**
+   * Issue #11736: a backup cut by a crash leaves its archive under the partial name. The policy never counts it, and the next
+   * prune deletes it once it has gone unwritten long enough to belong to no running backup.
+   */
+  @Test
+  void partialArchivesAreNeverCountedAndStaleOnesAreDeleted() throws Exception {
+    final List<File> files = createBackupFiles(3, LocalDateTime.now().minusDays(1));
+    final File stale = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().minusDays(2).format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+    assertThat(stale.setLastModified(System.currentTimeMillis() - BackupRetentionManager.STALE_PARTIAL_MILLIS - 60_000)).isTrue();
+    final File running = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+
+    final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
+    final DatabaseBackupConfig.RetentionConfig retention = new DatabaseBackupConfig.RetentionConfig();
+    retention.setMaxFiles(2);
+    config.setRetention(retention);
+
+    assertThat(retentionManager.applyRetention(DATABASE_NAME, config)).isEqualTo(1);
+
+    assertThat(files.get(0)).doesNotExist();
+    assertThat(files.get(1)).exists();
+    assertThat(files.get(2)).exists();
+    assertThat(stale).as("left by a backup that was cut").doesNotExist();
+    assertThat(running).as("a backup may still be writing it").exists();
+    assertThat(retentionManager.getBackupCount(DATABASE_NAME)).isEqualTo(2);
+  }
+
+  /** Issue #11736: stale partial archives are pruned even when the database has no retention policy. */
+  @Test
+  void stalePartialArchivesAreDeletedWithoutRetentionPolicy() throws Exception {
+    final List<File> files = createBackupFiles(3, LocalDateTime.now().minusDays(1));
+    final File stale = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().minusDays(2).format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+    assertThat(stale.setLastModified(System.currentTimeMillis() - BackupRetentionManager.STALE_PARTIAL_MILLIS - 60_000)).isTrue();
+    final File running = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+
+    final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
+
+    assertThat(retentionManager.applyRetention(DATABASE_NAME, config)).isZero();
+
+    assertThat(stale).as("left by a backup that was cut").doesNotExist();
+    assertThat(running).as("a backup may still be writing it").exists();
+    for (final File file : files)
+      assertThat(file).exists();
+  }
+
   @Test
   void tieredRetentionHourly() throws Exception {
     // Create backups for the last 48 hours (one per hour)

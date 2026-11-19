@@ -142,7 +142,7 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
 
           // Add properties from right result (skip join variable if already present)
           for (final String prop : currentRightResult.getPropertyNames()) {
-            if (!joinedResult.getPropertyNames().contains(prop)) {
+            if (!joinedResult.listsProperty(prop)) {
               joinedResult.setProperty(prop, currentRightResult.getProperty(prop));
             }
           }

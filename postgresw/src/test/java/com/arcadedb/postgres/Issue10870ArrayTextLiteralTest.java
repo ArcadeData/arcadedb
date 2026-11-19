@@ -20,12 +20,17 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
@@ -154,6 +159,17 @@ class Issue10870ArrayTextLiteralTest {
     // a date element decodes to the LocalDate it names (issue #11956)
     values.put(PostgresType.ARRAY_DATE, Arrays.asList(LocalDate.of(2024, 2, 29), null));
     values.put(PostgresType.ARRAY_TIMESTAMP, Arrays.asList(LocalDateTime.of(2024, 2, 29, 13, 14, 15, 123456000), null));
+    // the array types of #12449
+    values.put(PostgresType.ARRAY_TIME, Arrays.asList(LocalTime.of(13, 14, 15, 123456000), null, LocalTime.MIDNIGHT));
+    values.put(PostgresType.ARRAY_TIMETZ, Arrays.asList(OffsetTime.of(13, 14, 15, 500000000, ZoneOffset.ofHoursMinutes(5, 30)), null,
+        OffsetTime.of(1, 0, 0, 0, ZoneOffset.ofHours(-2))));
+    values.put(PostgresType.ARRAY_TIMESTAMPTZ, Arrays.asList(ZonedDateTime.of(2024, 2, 29, 13, 14, 15, 123456000, ZoneOffset.UTC), null));
+    values.put(PostgresType.ARRAY_INTERVAL, Arrays.asList(new CypherDuration(14, 3, 4 * 3600 + 5 * 60 + 6, 500000000L), null,
+        new CypherDuration(-14, -3, -1, 0), new CypherDuration(0, 0, 0, 0)));
+    values.put(PostgresType.ARRAY_JSONB, Arrays.asList("{\"k\":1}", null, "[1,\"a,b\"]"));
+    values.put(PostgresType.ARRAY_NAME, Arrays.asList("pg_class", null, "a b"));
+    values.put(PostgresType.ARRAY_OID, Arrays.asList(1L, null, 4294967295L));
+    values.put(PostgresType.ARRAY_INT2VECTOR, Arrays.asList("1 3", null, "2"));
 
     for (final PostgresType type : PostgresType.values()) {
       if (!type.isArrayType())

@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * asserted: that instalments actually went out - otherwise the test would pass on the old code and prove nothing -
  * and that all three nodes end up with a complete, queryable index.
  * <p>
- * Sibling of {@code Issue6136SchemaWalInstalmentTest}, which pins the entry shape without a cluster.
+ * Sibling of {@code SchemaWalInstalmentTest}, which pins the entry shape without a cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

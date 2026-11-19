@@ -18,18 +18,29 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.antlr.SQLASTBuilder;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #11796: TRUNCATE RECORD is recognised only to be refused while it is parsed, with a message naming the statements that do
+ * its job, instead of parsing, planning and failing every time with a bare UnsupportedOperationException.
+ */
 class TruncateRecordStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  void plain() {
-    checkRightSyntax("TRUNCATE RECORD #12:0");
-    checkRightSyntax("truncate record #12:0");
-    checkRightSyntax("TRUNCATE RECORD [#12:0]");
-    checkRightSyntax("TRUNCATE RECORD [ #12:0 ]");
-    checkRightSyntax("TRUNCATE RECORD [ #12:0, #12:1, #12:2 ]");
+  void refusedWhileParsed() {
+    for (final String query : new String[] { "TRUNCATE RECORD #12:0", "truncate record #12:0", "TRUNCATE RECORD [#12:0]",
+        "TRUNCATE RECORD [ #12:0 ]", "TRUNCATE RECORD [ #12:0, #12:1, #12:2 ]" })
+      assertThatThrownBy(() -> new SQLAntlrParser(null).parse(query)).as(query).isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining(SQLASTBuilder.TRUNCATE_RECORD_NOT_SUPPORTED);
+  }
 
+  @Test
+  void malformedIsStillASyntaxError() {
     checkWrongSyntax("TRUNCATE RECORD");
     checkWrongSyntax("TRUNCATE RECORD #12:0, #12:1, #12:2 ");
   }

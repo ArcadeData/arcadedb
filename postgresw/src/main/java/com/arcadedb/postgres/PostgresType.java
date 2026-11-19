@@ -22,22 +22,38 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.google.gson.Strictness;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -48,6 +64,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -72,6 +90,15 @@ public enum PostgresType {
   TEXT(25, "text", 0, 1009, String.class, -1, value -> value),
   BPCHAR(1042, "bpchar", 0, 1014, String.class, -1, value -> value),
   JSON(114, "json", 0, 199, JSONObject.class, -1, PostgresType::parseJsonText),
+  // The types a driver binds a zoned datetime, a time of day, a duration or a Jsonb wrapper as (issue #11960): each one used to
+  // fail the Bind with "not supported for deserializing". They are read as parameters only, into the engine's ZONED_DATETIME,
+  // LOCAL_TIME, OFFSET_TIME, DURATION and the json value; this protocol never announces a column under them. typarray names the
+  // array type PostgreSQL builds on each, which is a row of pg_type too (issue #12449).
+  TIMESTAMPTZ(1184, "timestamptz", 0, 1185, ZonedDateTime.class, 8, value -> parseTimestampTzText(value)),
+  TIME(1083, "time", 0, 1183, LocalTime.class, 8, value -> parseTimeText(value)),
+  TIMETZ(1266, "timetz", 0, 1270, OffsetTime.class, 12, value -> parseTimeTzText(value)),
+  INTERVAL(1186, "interval", 0, 1187, CypherDuration.class, 16, value -> parseIntervalText(value)),
+  JSONB(3802, "jsonb", 0, 3807, JSONObject.class, -1, PostgresType::parseJsonText),
   // The type PostgreSQL has for a blob, and the only honest answer for a byte[] (issue #6411). A byte[] used
   // to be typed as "char"[] (OID 1002) by getTypeForValue and as varchar (OID 1043) by getTypeFromArcade, so
   // a BINARY column's OID depended on whether the result set happened to be empty - and neither answer was
@@ -109,13 +136,23 @@ public enum PostgresType {
       value -> parseArrayFromString(value, PostgresType::parseTimestampText)),
   // The types a client looks up in pg_type by name while it sets up a connection or reads metadata, though this protocol never announces
   // a column under them (issue #11027): every identifier column of the real catalog is name, and pgjdbc answers getMax*NameLength()
-  // and getClientInfoProperties() from the typlen of the row called "name". Each is a scalar here (typelem 0) whatever PostgreSQL says
-  // of name and int2vector, so that none of them is taken for an array; the announced OID of an identifier column stays varchar.
-  // typarray is 0 for all three, where PostgreSQL has 1003, 1028 and 1006: this protocol reads no array of them, and a typarray must
-  // name a row pg_type has (issue #10592).
-  NAME(19, "name", 0, 0, String.class, 64, value -> value),
-  OID(26, "oid", 0, 0, Long.class, 4, value -> Long.parseLong(value)),
-  INT2VECTOR(22, "int2vector", 0, 0, String.class, -1, value -> value);
+  // and getClientInfoProperties() from the typlen of the row called "name"; the announced OID of an identifier column stays varchar.
+  // name and int2vector carry the typelem PostgreSQL gives them, "char" and int2 (issue #12449), without being arrays of this protocol:
+  // name is a fixed-length string, int2vector a vector with a text format of its own, so neither is read or written as one.
+  NAME(19, "name", 18, 1003, String.class, 64, value -> value, false),
+  OID(26, "oid", 0, 1028, Long.class, 4, value -> Long.parseLong(value)),
+  INT2VECTOR(22, "int2vector", 21, 1006, String.class, -1, value -> value, false),
+  // The array types of the scalars above that had none (issue #12449), each named by its scalar's typarray. As the ones of #10592,
+  // this protocol never announces them for a column: it reads them as parameters and lists them in pg_type.
+  ARRAY_TIMESTAMPTZ(1185, "_timestamptz", 1184, 0, Collection.class, -1,
+      value -> parseArrayFromString(value, PostgresType::parseTimestampTzText)),
+  ARRAY_TIME(1183, "_time", 1083, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseTimeText)),
+  ARRAY_TIMETZ(1270, "_timetz", 1266, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseTimeTzText)),
+  ARRAY_INTERVAL(1187, "_interval", 1186, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseIntervalText)),
+  ARRAY_JSONB(3807, "_jsonb", 3802, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_NAME(1003, "_name", 19, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_OID(1028, "_oid", 26, 0, Collection.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
+  ARRAY_INT2VECTOR(1006, "_int2vector", 22, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s));
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -144,8 +181,9 @@ public enum PostgresType {
     names.put("character", BPCHAR);
     names.put("decimal", NUMERIC);
     names.put("timestamp without time zone", TIMESTAMP);
-    // No "timestamp with time zone" on purpose: timestamptz is a different type from timestamp, and this
-    // protocol has none. Mapping it here would answer a client asking for one with the wrong OID.
+    names.put("timestamp with time zone", TIMESTAMPTZ);
+    names.put("time without time zone", TIME);
+    names.put("time with time zone", TIMETZ);
 
     return Map.copyOf(names);
   }
@@ -158,10 +196,211 @@ public enum PostgresType {
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
   private static final long              POSTGRES_EPOCH_SECONDS      = 946684800L;
   private static final long              POSTGRES_EPOCH_DAYS         = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+  // An offset as a client writes it after a time: +02, +02:00, +02:00:00 or Z (lenient parsing takes all of them); the compact
+  // +0200 and +020000 are given their colons first by withOffsetColons.
+  private static final DateTimeFormatter OFFSET_FORMATTER          = new DateTimeFormatterBuilder().parseLenient()
+      .appendOffset("+HH:MM:ss", "Z").toFormatter();
+  private static final Pattern           COMPACT_OFFSET            = Pattern.compile("([+-]\\d{2})(\\d{2})(\\d{2})?$");
+  // STRICT: a date the calendar does not have (2024-02-30) is refused, not moved to the last day of the month
+  private static final DateTimeFormatter TIMESTAMPTZ_FORMATTER     = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_DATE).appendLiteral('T').append(DateTimeFormatter.ISO_LOCAL_TIME)
+      .optionalStart().append(OFFSET_FORMATTER).optionalEnd().toFormatter().withResolverStyle(ResolverStyle.STRICT);
+  private static final DateTimeFormatter TIMETZ_FORMATTER          = new DateTimeFormatterBuilder()
+      .append(DateTimeFormatter.ISO_LOCAL_TIME).append(OFFSET_FORMATTER).toFormatter();
+  // What PostgreSQL writes for a time, a timetz and a timestamptz (issue #12449): the seconds always, a fraction of at most six digits
+  // without trailing zeros, and an offset of hours, with the minutes only when there are some (+02, +05:30)
+  private static final DateTimeFormatter POSTGRES_TIME_OUTPUT        = new DateTimeFormatterBuilder().appendPattern("HH:mm:ss")
+      .appendFraction(ChronoField.NANO_OF_SECOND, 0, 6, true).toFormatter();
+  private static final DateTimeFormatter POSTGRES_TIMETZ_OUTPUT      = new DateTimeFormatterBuilder().append(POSTGRES_TIME_OUTPUT)
+      .appendOffset("+HH:mm", "+00").toFormatter();
+  private static final DateTimeFormatter POSTGRES_TIMESTAMPTZ_OUTPUT = new DateTimeFormatterBuilder().appendPattern("uuuu-MM-dd ")
+      .append(POSTGRES_TIMETZ_OUTPUT).toFormatter();
 
   /**
-   * Parses an inbound json value. A list of documents is sent to the client as a json array (issue #5366), so
-   * the same payload must be accepted back: an array yields a List, anything else a {@link JSONObject}.
+   * A timestamptz parameter (issue #11960): {@code 2024-02-29 13:14:15.123456+02} as PostgreSQL and pgjdbc write it, or the ISO
+   * form with a {@code T}. The offset is kept; a text without one is read as UTC, the zone this protocol reports for the session.
+   */
+  private static ZonedDateTime parseTimestampTzText(final String value) {
+    final String text = value.trim();
+    final String iso = text.length() > 10 && text.charAt(10) == ' ' ? text.substring(0, 10) + 'T' + text.substring(11) : text;
+    try {
+      final var parsed = TIMESTAMPTZ_FORMATTER.parseBest(withOffsetColons(iso.replace(" ", "")), OffsetDateTime::from,
+          LocalDateTime::from);
+      return parsed instanceof OffsetDateTime offset ? offset.toZonedDateTime() : ((LocalDateTime) parsed).atZone(ZoneOffset.UTC);
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("TIMESTAMPTZ", value, e);
+    }
+  }
+
+  private static LocalTime parseTimeText(final String value) {
+    try {
+      return LocalTime.parse(value.trim());
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("TIME", value, e);
+    }
+  }
+
+  private static OffsetTime parseTimeTzText(final String value) {
+    try {
+      return OffsetTime.parse(withOffsetColons(value.trim().replace(" ", "")), TIMETZ_FORMATTER);
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("TIMETZ", value, e);
+    }
+  }
+
+  /** {@code +0200} as {@code +02:00} and {@code +020000} as {@code +02:00:00}, the forms the lenient offset parser reads. */
+  private static String withOffsetColons(final String text) {
+    final Matcher matcher = COMPACT_OFFSET.matcher(text);
+    if (!matcher.find())
+      return text;
+    final String colons = matcher.group(1) + ':' + matcher.group(2) + (matcher.group(3) != null ? ':' + matcher.group(3) : "");
+    return text.substring(0, matcher.start()) + colons;
+  }
+
+  private static final BigDecimal MICROS_PER_SECOND = BigDecimal.valueOf(1_000_000L);
+  private static final BigDecimal MICROS_PER_DAY    = BigDecimal.valueOf(86_400_000_000L);
+  // The digits an interval amount may have on either side of the point. Far more than any interval holds (PostgreSQL counts months
+  // and days in an int32 and the rest in int64 microseconds), and few enough that no scaling of an amount costs anything: an
+  // exponent such as 1e100000000 would otherwise make setScale build a number of a hundred million digits.
+  private static final int        MAX_AMOUNT_DIGITS = 18;
+  private static final String     ISO_AMOUNT        = "([-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))";
+  private static final Pattern    ISO_INTERVAL      = Pattern.compile(
+      "([-+])?P(?:" + ISO_AMOUNT + "Y)?(?:" + ISO_AMOUNT + "M)?(?:" + ISO_AMOUNT + "W)?(?:" + ISO_AMOUNT + "D)?(?:T(?:" + ISO_AMOUNT
+          + "H)?(?:" + ISO_AMOUNT + "M)?(?:" + ISO_AMOUNT + "S)?)?", Pattern.CASE_INSENSITIVE);
+  private static final String[]   ISO_UNITS         = { "years", "months", "weeks", "days", "hours", "minutes", "seconds" };
+  // the year-month field of the SQL-standard form, 1-2 for one year and two months
+  private static final Pattern    YEAR_MONTH_FIELD  = Pattern.compile("([-+]?)(\\d+)-(\\d+)");
+
+  /**
+   * An interval parameter (issue #11960) in the forms PostgreSQL reads: ISO 8601 ({@code P1DT5S}, and the alternative
+   * {@code P0001-02-03T04:05:06}), the postgres style psycopg sends ({@code 1 day 0:00:05}, {@code -1 day 23:59:55}), the verbose one
+   * pgjdbc sends ({@code 0 years 0 mons 1 days 0 hours 0 mins 5.0 secs}, {@code @ 1 day ago}), the signed sql_standard one
+   * ({@code +1 day +5 second +0 microsecond}) and the SQL-standard fields ({@code 1-2} for one year two months, {@code 3 4:05:06}
+   * for three days and a time, a lone number for seconds). A fraction of a month spills into days of 30 and a fraction of a day into
+   * hours, as in PostgreSQL, in the ISO form too. The result is the engine's DURATION value.
+   */
+  static CypherDuration parseIntervalText(final String value) {
+    final String text = value.trim();
+    final long[] monthsAndDays = new long[2];
+    BigDecimal micros = BigDecimal.ZERO;
+    boolean negate = false;
+    try {
+      if (text.startsWith("P") || text.startsWith("-P") || text.startsWith("+P") || text.startsWith("p")) {
+        final Matcher iso = ISO_INTERVAL.matcher(text);
+        if (!iso.matches())
+          // the alternative format, P0001-02-03T04:05:06, whose fields are whole numbers
+          try {
+            return CypherDuration.parse(text);
+          } catch (final RuntimeException e) {
+            throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
+          }
+        boolean any = false;
+        for (int i = 0; i < ISO_UNITS.length; i++) {
+          final String amount = iso.group(i + 2);
+          if (amount != null) {
+            micros = micros.add(addAmount(amount(amount), ISO_UNITS[i], monthsAndDays, value));
+            any = true;
+          }
+        }
+        if (!any)
+          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
+        negate = "-".equals(iso.group(1));
+      } else {
+        final String[] tokens = (text.startsWith("@") ? text.substring(1) : text).trim().toLowerCase(Locale.ENGLISH).split("\\s+");
+        int count = tokens.length;
+        negate = count > 0 && tokens[count - 1].equals("ago");
+        if (negate)
+          count--;
+        if (count == 0 || tokens[0].isEmpty())
+          throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value);
+
+        for (int i = 0; i < count; i++) {
+          final String token = tokens[i];
+          final Matcher yearMonth = YEAR_MONTH_FIELD.matcher(token);
+          if (yearMonth.matches()) {
+            final BigDecimal months = amount(yearMonth.group(2)).multiply(BigDecimal.valueOf(12)).add(amount(yearMonth.group(3)));
+            micros = micros.add(addMonths("-".equals(yearMonth.group(1)) ? months.negate() : months, monthsAndDays));
+          } else if (token.indexOf(':') >= 0)
+            micros = micros.add(timeOfIntervalInMicros(token));
+          else if (i + 1 >= count)
+            // a lone trailing number is seconds, as PostgreSQL reads '5'
+            micros = micros.add(amount(token).multiply(MICROS_PER_SECOND));
+          else if (tokens[i + 1].indexOf(':') >= 0)
+            // a number before the time field is the day field: 3 4:05:06
+            micros = micros.add(addDays(amount(token), monthsAndDays));
+          else {
+            final BigDecimal amount = amount(token);
+            micros = micros.add(addAmount(amount, tokens[++i], monthsAndDays, value));
+          }
+        }
+      }
+      final long totalMicros = micros.setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+      final int sign = negate ? -1 : 1;
+      return new CypherDuration(sign * monthsAndDays[0], sign * monthsAndDays[1], sign * Math.floorDiv(totalMicros, 1_000_000L),
+          sign * Math.floorMod(totalMicros, 1_000_000L) * 1_000L);
+    } catch (final NumberFormatException | ArithmeticException e) {
+      throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value, e);
+    }
+  }
+
+  /** Adds {@code amount} of {@code unit}: whole months and days into {@code monthsAndDays}, the rest answered in microseconds. */
+  private static BigDecimal addAmount(final BigDecimal amount, final String unit, final long[] monthsAndDays, final String value) {
+    return switch (unit) {
+      // a fraction of a year is rounded to whole months, as PostgreSQL does (1.1 years is 13 months), not spilled into days
+      case "year", "years", "y", "yr", "yrs" ->
+          addMonths(amount.multiply(BigDecimal.valueOf(12)).setScale(0, RoundingMode.HALF_EVEN), monthsAndDays);
+      case "mon", "mons", "month", "months" -> addMonths(amount, monthsAndDays);
+      case "week", "weeks", "w" -> addDays(amount.multiply(BigDecimal.valueOf(7)), monthsAndDays);
+      case "day", "days", "d" -> addDays(amount, monthsAndDays);
+      case "hour", "hours", "h", "hr", "hrs" -> amount.multiply(BigDecimal.valueOf(3_600_000_000L));
+      case "minute", "minutes", "min", "mins", "m" -> amount.multiply(BigDecimal.valueOf(60_000_000L));
+      case "second", "seconds", "sec", "secs", "s" -> amount.multiply(MICROS_PER_SECOND);
+      case "millisecond", "milliseconds", "msec", "msecs", "ms" -> amount.multiply(BigDecimal.valueOf(1_000L));
+      case "microsecond", "microseconds", "usec", "usecs", "us" -> amount;
+      default -> throw new IllegalArgumentException("Cannot parse INTERVAL text value: " + value + " (unknown unit '" + unit + "')");
+    };
+  }
+
+  /** One number of an interval, refused before any arithmetic when it has more digits than {@link #MAX_AMOUNT_DIGITS} allows. */
+  private static BigDecimal amount(final String token) {
+    final BigDecimal amount = new BigDecimal(token);
+    if (amount.scale() > MAX_AMOUNT_DIGITS || amount.precision() - amount.scale() > MAX_AMOUNT_DIGITS)
+      throw new IllegalArgumentException("INTERVAL amount out of range: " + (token.length() > 40 ? token.substring(0, 40) + "..." : token));
+    return amount;
+  }
+
+  /** Adds the whole months to {@code monthsAndDays[0]} and answers the microseconds of what a fraction spills into days of 30. */
+  private static BigDecimal addMonths(final BigDecimal months, final long[] monthsAndDays) {
+    final BigDecimal whole = months.setScale(0, RoundingMode.DOWN);
+    monthsAndDays[0] += whole.longValueExact();
+    return addDays(months.subtract(whole).multiply(BigDecimal.valueOf(30)), monthsAndDays);
+  }
+
+  /** Adds the whole days to {@code monthsAndDays[1]} and answers the fraction of a day in microseconds. */
+  private static BigDecimal addDays(final BigDecimal days, final long[] monthsAndDays) {
+    final BigDecimal whole = days.setScale(0, RoundingMode.DOWN);
+    monthsAndDays[1] += whole.longValueExact();
+    return days.subtract(whole).multiply(MICROS_PER_DAY);
+  }
+
+  /** The {@code [-]h:mm[:ss[.ffffff]]} part of an interval in microseconds, signed as written. */
+  private static BigDecimal timeOfIntervalInMicros(final String token) {
+    final boolean negative = token.startsWith("-");
+    final String unsigned = negative || token.startsWith("+") ? token.substring(1) : token;
+    final String[] parts = unsigned.split(":");
+    if (parts.length < 2 || parts.length > 3)
+      throw new IllegalArgumentException("Cannot parse INTERVAL time '" + token + "'");
+    BigDecimal micros = amount(parts[0]).multiply(BigDecimal.valueOf(3_600_000_000L))
+        .add(amount(parts[1]).multiply(BigDecimal.valueOf(60_000_000L)));
+    if (parts.length == 3)
+      micros = micros.add(amount(parts[2]).multiply(MICROS_PER_SECOND));
+    return negative ? micros.negate() : micros;
+  }
+
+  /**
+   * Parses an inbound json or jsonb value. A list of documents is sent to the client as a json array (issue #5366), so
+   * the same payload must be accepted back: an array yields a List, an object a {@link JSONObject}, and a scalar document (a
+   * number, a string, {@code true}, {@code false} or {@code null}, which PostgreSQL accepts as json too) its value.
    */
   private static Object parseJsonText(final String value) {
     if (value == null)
@@ -169,7 +408,38 @@ public enum PostgresType {
     final String trimmed = value.trim();
     if (!trimmed.isEmpty() && trimmed.charAt(0) == '[')
       return new JSONArray(trimmed).toList();
-    return new JSONObject(value);
+    if (!trimmed.isEmpty() && trimmed.charAt(0) == '{')
+      return new JSONObject(value);
+    return parseJsonScalar(trimmed);
+  }
+
+  /**
+   * A scalar json document, read strictly: the whole text must be one JSON value, so {@code not_json} (an unquoted string a
+   * lenient reader would take as one) is refused, and so is an empty document, which PostgreSQL refuses too and which the parser
+   * would otherwise answer as a JSON null. Converted to its Java value by the same reader that converts a JSON array's elements, so
+   * a number has the type it would have inside an array.
+   */
+  private static Object parseJsonScalar(final String text) {
+    if (text.isEmpty())
+      throw new IllegalArgumentException("Invalid input syntax for type json: the document is empty");
+    try {
+      final JsonReader reader = new JsonReader(new StringReader(text));
+      reader.setStrictness(Strictness.STRICT);
+      final JsonElement element = JsonParser.parseReader(reader);
+      if (reader.peek() != JsonToken.END_DOCUMENT)
+        throw new IllegalArgumentException("Invalid input syntax for type json: '" + abbreviate(text) + "'");
+      final JsonArray holder = new JsonArray(1);
+      holder.add(element);
+      return new JSONArray(holder).toList().getFirst();
+    } catch (final IllegalArgumentException e) {
+      throw e;
+    } catch (final IOException | RuntimeException e) {
+      throw new IllegalArgumentException("Invalid input syntax for type json: '" + abbreviate(text) + "'", e);
+    }
+  }
+
+  private static String abbreviate(final String text) {
+    return text.length() > 40 ? text.substring(0, 40) + "..." : text;
   }
 
   /**
@@ -531,16 +801,26 @@ public enum PostgresType {
   public final  int                      code;
   /** pg_type.typname, the name PostgreSQL itself gives {@link #code}. */
   public final  String                   typeName;
-  /** pg_type.typelem: the OID of the element type for an array type, 0 for a scalar. */
+  /**
+   * pg_type.typelem: the OID of the element type for an array type, 0 for a scalar except {@link #NAME} and {@link #INT2VECTOR}, which
+   * PostgreSQL also gives one. {@link #isArrayType()} says which types are arrays of this protocol.
+   */
   public final  int                      elementCode;
   /** pg_type.typarray: the OID of the array type built on a scalar, 0 for an array type. */
   public final  int                      arrayCode;
   public final  Class<?>                 cls;
   public final  int                      size;
   private final Function<String, Object> textParser;
+  private final boolean                  array;
 
+  /** A type that is an array exactly when it names an element type, which is every type but {@link #NAME} and {@link #INT2VECTOR}. */
   PostgresType(final int code, final String typeName, final int elementCode, final int arrayCode, final Class<?> cls,
       final int size, Function<String, Object> textParser) {
+    this(code, typeName, elementCode, arrayCode, cls, size, textParser, elementCode != 0);
+  }
+
+  PostgresType(final int code, final String typeName, final int elementCode, final int arrayCode, final Class<?> cls,
+      final int size, Function<String, Object> textParser, final boolean array) {
     this.code = code;
     this.typeName = typeName;
     this.elementCode = elementCode;
@@ -548,6 +828,7 @@ public enum PostgresType {
     this.cls = cls;
     this.size = size;
     this.textParser = textParser;
+    this.array = array;
   }
 
   /**
@@ -571,6 +852,9 @@ public enum PostgresType {
       case CHAR -> "\"char\"";
       case BOOLEAN -> "boolean";
       case TIMESTAMP -> "timestamp without time zone";
+      case TIMESTAMPTZ -> "timestamp with time zone";
+      case TIME -> "time without time zone";
+      case TIMETZ -> "time with time zone";
       case VARCHAR -> "character varying";
       case BPCHAR -> "character";
       default -> typeName;
@@ -692,6 +976,31 @@ public enum PostgresType {
   }
 
   /**
+   * A lazy multi-value as the list of its elements, any other value as it is (issue #11957): the {@link Iterable} that
+   * {@code out()}, {@code in()}, {@code outE()} and {@code inE()} answer, or the {@link Iterator} of a nested result set. A
+   * column holding one is then typed and serialized like any other collection (a json array of the records, a text[] of
+   * scalars), the way the gRPC encoder sends it as a list since #11044, where the serializer, which has no arm for a
+   * non-collection iterable, used to send its identity string ({@code com.arcadedb.graph.GraphEngine$10@72d8f43f}) in a
+   * column announced as json. An {@link Iterator} is walked once: the caller keeps the list rather than the iterator.
+   */
+  public static Object materializeLazyMultiValue(final Object value) {
+    final Iterator<?> iterator;
+    if (value instanceof Collection<?>)
+      return value;
+    else if (value instanceof Iterable<?> iterable)
+      iterator = iterable.iterator();
+    else if (value instanceof Iterator<?> it)
+      iterator = it;
+    else
+      return value;
+
+    final List<Object> list = new ArrayList<>();
+    while (iterator.hasNext())
+      list.add(iterator.next());
+    return list;
+  }
+
+  /**
    * Maps an ArcadeDB schema Type to a PostgreSQL type, resolving the element type of a LIST from the
    * property's declared "OF" clause.
    *
@@ -797,7 +1106,10 @@ public enum PostgresType {
   public String toText(final PostgresType pgType, final Object value) {
     String serializedValue = null;
     final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
-    if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
+    final String temporalText = temporalText(pgType, value);
+    if (temporalText != null) {
+      serializedValue = temporalText;
+    } else if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
       // The column was announced as a json document holding an array (issue #5366): emit a real JSON array
       // instead of a Postgres array literal, so the payload matches the announced OID.
       serializedValue = serializeCollectionAsJson(
@@ -846,6 +1158,79 @@ public enum PostgresType {
       serializedValue = value.toString();
     }
     return serializedValue;
+  }
+
+  /**
+   * The text PostgreSQL writes for a value of a time, timetz, timestamptz or interval type (issue #12449), or null when {@code type}
+   * is none of them or the value is not one it can be read as, so that every other value keeps the text it had.
+   */
+  private static String temporalText(final PostgresType type, final Object value) {
+    if (value == null || type == null)
+      return null;
+    return switch (type) {
+      case TIME -> value instanceof LocalTime time ? time.format(POSTGRES_TIME_OUTPUT) : null;
+      case TIMETZ -> value instanceof OffsetTime time ? time.format(POSTGRES_TIMETZ_OUTPUT) : null;
+      case TIMESTAMPTZ -> value instanceof ZonedDateTime zoned ? zoned.format(POSTGRES_TIMESTAMPTZ_OUTPUT)
+          : value instanceof OffsetDateTime offset ? offset.format(POSTGRES_TIMESTAMPTZ_OUTPUT) : null;
+      case INTERVAL -> value instanceof CypherDuration duration ? intervalText(duration) : null;
+      default -> null;
+    };
+  }
+
+  /**
+   * An interval in PostgreSQL's default output style ({@code IntervalStyle = postgres}): {@code 1 year 2 mons 3 days 04:05:06.5}, each
+   * field only when it is not zero, {@code 00:00:00} for the empty interval, a unit in the plural unless its amount is exactly 1, and
+   * each field carrying its own sign, which is what {@link #parseIntervalText} and every driver read back.
+   */
+  static String intervalText(final CypherDuration duration) {
+    final StringBuilder text = new StringBuilder(32);
+    appendIntervalField(text, duration.getMonths() / 12, "year");
+    appendIntervalField(text, duration.getMonths() % 12, "mon");
+    appendIntervalField(text, duration.getDays(), "day");
+    final long micros = intervalMicros(duration);
+    if (micros != 0 || text.isEmpty()) {
+      if (!text.isEmpty())
+        text.append(' ');
+      if (micros < 0)
+        text.append('-');
+      final long magnitude = Math.abs(micros);
+      final long hours = magnitude / 3_600_000_000L;
+      final long minutes = magnitude / 60_000_000L % 60;
+      final long seconds = magnitude / 1_000_000L % 60;
+      final long fraction = magnitude % 1_000_000L;
+      if (hours < 10)
+        text.append('0');
+      text.append(hours).append(':');
+      if (minutes < 10)
+        text.append('0');
+      text.append(minutes).append(':');
+      if (seconds < 10)
+        text.append('0');
+      text.append(seconds);
+      if (fraction != 0) {
+        final String digits = Long.toString(1_000_000L + fraction).substring(1);
+        int end = digits.length();
+        while (digits.charAt(end - 1) == '0')
+          --end;
+        text.append('.').append(digits, 0, end);
+      }
+    }
+    return text.toString();
+  }
+
+  private static void appendIntervalField(final StringBuilder text, final long amount, final String unit) {
+    if (amount == 0)
+      return;
+    if (!text.isEmpty())
+      text.append(' ');
+    text.append(amount).append(' ').append(unit);
+    if (amount != 1)
+      text.append('s');
+  }
+
+  /** The part of an interval below a day, in microseconds, as PostgreSQL stores it (the nanoseconds past a microsecond are dropped). */
+  private static long intervalMicros(final CypherDuration duration) {
+    return duration.getSeconds() * 1_000_000L + Math.floorDiv(duration.getNanosAdjustment(), 1_000);
   }
 
   /**
@@ -910,8 +1295,47 @@ public enum PostgresType {
       final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
       typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
     }
+    // the binary formats of the types whose array types #12449 adds, which a binary array of them is made of: the reverse of
+    // deserializeBinary
+    case TIME -> {
+      typeBuffer.putInt(8);
+      typeBuffer.putLong(toLocalTimeValue(value).toNanoOfDay() / 1_000L);
+    }
+    case TIMETZ -> {
+      final OffsetTime time = toOffsetTimeValue(value);
+      typeBuffer.putInt(12);
+      typeBuffer.putLong(time.toLocalTime().toNanoOfDay() / 1_000L);
+      // seconds WEST of UTC, the sign PostgreSQL stores
+      typeBuffer.putInt(-time.getOffset().getTotalSeconds());
+    }
+    case TIMESTAMPTZ -> {
+      final OffsetDateTime instant = toOffsetDateTimeValue(value);
+      typeBuffer.putInt(8);
+      typeBuffer.putLong((instant.toEpochSecond() - POSTGRES_EPOCH_SECONDS) * 1_000_000L + instant.getNano() / 1_000L);
+    }
+    case INTERVAL -> {
+      final CypherDuration duration = value instanceof CypherDuration d ? d : parseIntervalText(value.toString());
+      typeBuffer.putInt(16);
+      typeBuffer.putLong(intervalMicros(duration));
+      typeBuffer.putInt((int) duration.getDays());
+      typeBuffer.putInt((int) duration.getMonths());
+    }
+    case JSONB -> {
+      // jsonb_send: a version byte (1) ahead of the json text
+      final byte[] json = (value instanceof String text ? text : toText(JSON, value)).getBytes(DatabaseFactory.getDefaultCharset());
+      typeBuffer.putInt(json.length + 1);
+      typeBuffer.putByte((byte) 1);
+      typeBuffer.putByteArray(json);
+    }
+    case OID -> {
+      // an unsigned 32-bit number: 4294967295 travels as the bits of -1
+      typeBuffer.putInt(4);
+      typeBuffer.putInt((int) toNumber(value).longValue());
+    }
+    case INT2VECTOR -> putInt2VectorBinary(typeBuffer, value);
     case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC, ARRAY_SMALLINT,
-         ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> {
+         ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP, ARRAY_TIMESTAMPTZ, ARRAY_TIME, ARRAY_TIMETZ, ARRAY_INTERVAL,
+         ARRAY_JSONB, ARRAY_NAME, ARRAY_OID, ARRAY_INT2VECTOR -> {
       final Collection<?> elements = value instanceof Collection<?> collection ? collection
           : value.getClass().isArray() ? convertPrimitiveArrayToCollection(value) : null;
       if (elements == null)
@@ -969,6 +1393,54 @@ public enum PostgresType {
     typeBuffer.putInt(lengthPosition, typeBuffer.position() - lengthPosition - 4);
   }
 
+  /**
+   * An int2vector in binary, which is what int2vectorsend writes: the array format of its int2 elements, with a lower bound of 0. The
+   * value is the {@code 1 3} text this protocol reads one as, or a collection of numbers.
+   */
+  private void putInt2VectorBinary(final Binary typeBuffer, final Object value) {
+    final List<Short> elements = new ArrayList<>();
+    if (value instanceof Collection<?> collection)
+      for (final Object element : collection)
+        elements.add(toNumber(element).shortValue());
+    else
+      for (final String element : value.toString().trim().split("\\s+"))
+        if (!element.isEmpty())
+          elements.add(Short.parseShort(element));
+
+    typeBuffer.putInt(20 + elements.size() * 6 - (elements.isEmpty() ? 8 : 0));
+    typeBuffer.putInt(elements.isEmpty() ? 0 : 1);
+    typeBuffer.putInt(0);
+    typeBuffer.putInt(SMALLINT.code);
+    if (!elements.isEmpty()) {
+      typeBuffer.putInt(elements.size());
+      typeBuffer.putInt(0);
+      for (final Short element : elements) {
+        typeBuffer.putInt(2);
+        typeBuffer.putShort(element);
+      }
+    }
+  }
+
+  private static LocalTime toLocalTimeValue(final Object value) {
+    return value instanceof LocalTime time ? time : parseTimeText(value.toString());
+  }
+
+  private static OffsetTime toOffsetTimeValue(final Object value) {
+    return value instanceof OffsetTime time ? time : parseTimeTzText(value.toString());
+  }
+
+  private static OffsetDateTime toOffsetDateTimeValue(final Object value) {
+    return switch (value) {
+      case OffsetDateTime offset -> offset;
+      case ZonedDateTime zoned -> zoned.toOffsetDateTime();
+      case Instant instant -> instant.atOffset(ZoneOffset.UTC);
+      case Date date -> date.toInstant().atOffset(ZoneOffset.UTC);
+      // a timestamp without a zone is the UTC wall time this protocol reports for the session
+      case LocalDateTime local -> local.atOffset(ZoneOffset.UTC);
+      default -> parseTimestampTzText(value.toString()).toOffsetDateTime();
+    };
+  }
+
   /** The element type of an array type: its {@code typelem}, the one place the pairing is declared. */
   private static PostgresType elementTypeOf(final PostgresType arrayType) {
     final PostgresType element = arrayType.isArrayType() ? byCode(arrayType.elementCode) : null;
@@ -1017,6 +1489,8 @@ public enum PostgresType {
       return "{}";
 
     StringBuilder sb = new StringBuilder("{");
+    // the element of a time[], timetz[], timestamptz[] or interval[] is written as the scalar is (issue #12449)
+    final PostgresType elementType = pgType != null && pgType.isArrayType() ? byCode(pgType.elementCode) : null;
     boolean first = true;
     for (Object element : collection) {
       if (!first) {
@@ -1042,6 +1516,8 @@ public enum PostgresType {
       } else if (pgType == ARRAY_DATE && element instanceof Date date) {
         // a date[] element is the date alone, as the scalar DATE is written: the time of day is not part of the value
         appendQuoted(sb, date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE));
+      } else if (elementType != null && temporalText(elementType, element) instanceof String temporal) {
+        appendQuoted(sb, temporal);
       } else if (element instanceof Character) {
         // A Postgres array literal quotes an element with the DOUBLE quote and nothing else: a single quote is
         // an ordinary data character there, so wrapping the character in single quotes (issue #7801) shipped
@@ -1402,16 +1878,22 @@ public enum PostgresType {
         final int days = buffer.getInt();
         yield LocalDate.ofEpochDay(POSTGRES_EPOCH_DAYS + days);
       }
-      case TIMESTAMP -> {
-        // PostgreSQL binary TIMESTAMP: int64 microseconds since 2000-01-01T00:00:00Z
+      // PostgreSQL binary TIMESTAMP: int64 microseconds since 2000-01-01T00:00:00Z
+      case TIMESTAMP -> fromPostgresEpochMicros(buffer.getLong());
+      // timestamptz is the same count of an instant, with no zone on the wire: read at UTC (issue #11960)
+      case TIMESTAMPTZ -> fromPostgresEpochMicros(buffer.getLong()).atZone(ZoneOffset.UTC);
+      // time: int64 microseconds since midnight; timetz adds an int32 zone offset in seconds WEST of UTC (the sign PostgreSQL stores)
+      case TIME -> LocalTime.ofNanoOfDay(buffer.getLong() * 1_000L);
+      case TIMETZ -> {
+        final LocalTime time = LocalTime.ofNanoOfDay(buffer.getLong() * 1_000L);
+        yield OffsetTime.of(time, ZoneOffset.ofTotalSeconds(-buffer.getInt()));
+      }
+      // interval: int64 microseconds, int32 days, int32 months
+      case INTERVAL -> {
         final long microseconds = buffer.getLong();
-        long secs = POSTGRES_EPOCH_SECONDS + microseconds / 1_000_000L;
-        int nanos = (int) (microseconds % 1_000_000L) * 1000;
-        if (nanos < 0) {
-          secs -= 1;
-          nanos += 1_000_000_000;
-        }
-        yield LocalDateTime.ofEpochSecond(secs, nanos, ZoneOffset.UTC);
+        final int days = buffer.getInt();
+        final int months = buffer.getInt();
+        yield new CypherDuration(months, days, Math.floorDiv(microseconds, 1_000_000L), Math.floorMod(microseconds, 1_000_000L) * 1_000L);
       }
       case BYTEA -> valueAsBytes.clone();
       case NUMERIC -> parseNumericBinary(buffer);
@@ -1423,12 +1905,28 @@ public enum PostgresType {
         // (json_send emits it verbatim); the length is already provided by the Bind message.
         yield parseJsonText(new String(valueAsBytes, DatabaseFactory.getDefaultCharset()));
       }
+      case JSONB -> {
+        // jsonb_send writes a version byte (1) ahead of the json text
+        if (valueAsBytes.length == 0 || valueAsBytes[0] != 1)
+          throw new PostgresProtocolException("Unsupported binary jsonb version " + (valueAsBytes.length == 0 ? "(empty)" : valueAsBytes[0]));
+        yield parseJsonText(new String(valueAsBytes, 1, valueAsBytes.length - 1, DatabaseFactory.getDefaultCharset()));
+      }
       case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC,
-           ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> deserializeBinaryArray(buffer);
-      // catalog-only types (issue #11027): listed in pg_type for clients to look up, never bound as a parameter, as before they existed
-      case NAME, OID, INT2VECTOR ->
-          throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
+           ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP, ARRAY_TIMESTAMPTZ, ARRAY_TIME,
+           ARRAY_TIMETZ, ARRAY_INTERVAL, ARRAY_JSONB, ARRAY_NAME, ARRAY_OID, ARRAY_INT2VECTOR -> deserializeBinaryArray(buffer);
+      // namesend writes the bytes of the name, as text does
+      case NAME -> new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
+      // an oid is an UNSIGNED 32-bit number: read into a long, as the text format reads it, so 4294967295 is not -1
+      case OID -> Integer.toUnsignedLong(buffer.getInt());
+      // int2vectorsend writes the array format of int2[], and the text format reads it as its "1 2 3" text: read the same way
+      case INT2VECTOR -> deserializeBinaryArray(buffer).stream().map(String::valueOf).collect(Collectors.joining(" "));
     };
+  }
+
+  /** A PostgreSQL binary timestamp, microseconds since 2000-01-01T00:00:00 UTC, as the UTC wall time it names. */
+  private static LocalDateTime fromPostgresEpochMicros(final long microseconds) {
+    return LocalDateTime.ofEpochSecond(POSTGRES_EPOCH_SECONDS + Math.floorDiv(microseconds, 1_000_000L),
+        (int) Math.floorMod(microseconds, 1_000_000L) * 1000, ZoneOffset.UTC);
   }
 
   private static List<Object> deserializeBinaryArray(ByteBuffer buffer) {
@@ -1493,9 +1991,17 @@ public enum PostgresType {
     // a "char"[] element is the single byte the scalar is, read as the Character the text format reads (issue #10870)
     if (elemOid == CHAR.code)
       return (char) (buf.get() & 0xFF);
-    // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592): read as the scalar is, not as its bytes' text
-    if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code)
+    // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592), and of the temporal, oid and int2vector
+    // arrays (issue #12449): read as the scalar is, not as its bytes' text
+    if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code || elemOid == TIMESTAMPTZ.code || elemOid == TIME.code
+        || elemOid == TIMETZ.code || elemOid == INTERVAL.code || elemOid == OID.code || elemOid == INT2VECTOR.code)
       return deserializeBinary(elemOid, bytes);
+    // a jsonb[] element is its json text, as a json[] element and the text format of both read it, after jsonb_send's version byte
+    if (elemOid == JSONB.code) {
+      if (bytes.length == 0 || bytes[0] != 1)
+        throw new PostgresProtocolException("Unsupported binary jsonb version " + (bytes.length == 0 ? "(empty)" : bytes[0]));
+      return new String(bytes, 1, bytes.length - 1, DatabaseFactory.getDefaultCharset());
+    }
     // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
     return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
@@ -1504,9 +2010,9 @@ public enum PostgresType {
    * Checks if this type is an array type.
    */
   public boolean isArrayType() {
-    // an array type is the one that names an element type: read off the pairing every constant declares, so a new array constant
-    // cannot be left out of a list of them (issue #10592)
-    return elementCode != 0;
+    // an array type is one that names an element type, read off the pairing every constant declares so that a new array constant
+    // cannot be left out of a list of them (issue #10592); name and int2vector name one without being arrays (issue #12449)
+    return array;
   }
 
   /**

@@ -2450,12 +2450,14 @@ class PostgresTypeTest {
         assertThat(PostgresType.byCode(type.arrayCode).elementCode).as("the element of the array of %s", type.typeName)
             .isEqualTo(type.code);
       }
-      if (type.elementCode != 0) {
+      if (type.elementCode != 0)
         assertThat(PostgresType.byCode(type.elementCode)).as("the element type of %s", type.typeName).isNotNull();
+      // only an array is its element's array: name and int2vector name an element too, "char" and int2 (issue #12449)
+      if (type.isArrayType())
         assertThat(PostgresType.byCode(type.elementCode).arrayCode).as("the array of the element of %s", type.typeName)
             .isEqualTo(type.code);
-      }
-      assertThat(type.isArrayType()).as(type.typeName).isEqualTo(type.elementCode != 0);
+      final boolean namesAnElementWithoutBeingAnArray = type == PostgresType.NAME || type == PostgresType.INT2VECTOR;
+      assertThat(type.isArrayType()).as(type.typeName).isEqualTo(type.elementCode != 0 && !namesAnElementWithoutBeingAnArray);
     }
   }
 
