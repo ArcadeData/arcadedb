@@ -460,7 +460,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   final VoterQuarantineCheck voterQuarantine = new VoterQuarantineCheck(this);
   final AppliedIndexWaits appliedWaits = new AppliedIndexWaits(this);
   // The Raft index the last create or drop of each database this node submitted committed at (review of #11739): the bookmark
-  // that command is answered with, see recordDatabaseEntryIndex(). One entry per database name ever created or dropped here
+  // that command is answered with, see recordDatabaseEntryIndex(). Taken out by the answer that reads it, so it holds only the
+  // commands still being answered, not every database name ever created or dropped here
   private final ConcurrentHashMap<String, Long> databaseEntryIndexes = new ConcurrentHashMap<>();
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
@@ -3902,9 +3903,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       databaseEntryIndexes.merge(databaseName, index, Math::max);
   }
 
-  /** The index {@link #recordDatabaseEntryIndex} recorded last for {@code databaseName}, or {@code -1}. */
-  public long getDatabaseEntryIndex(final String databaseName) {
-    return databaseEntryIndexes.getOrDefault(databaseName, -1L);
+  /**
+   * Takes out the index {@link #recordDatabaseEntryIndex} recorded for {@code databaseName}, or answers {@code -1} when there is
+   * none. Removed on read so the map does not keep every name ever created or dropped (review of #11739). Two commands on the
+   * same name answered at once can have one take the other's, higher, index, which is still at or past its own entry; the other
+   * then falls back on the commit index, which is what the bookmark was before.
+   */
+  public long takeDatabaseEntryIndex(final String databaseName) {
+    final Long index = databaseEntryIndexes.remove(databaseName);
+    return index != null ? index : -1L;
   }
 
   /**

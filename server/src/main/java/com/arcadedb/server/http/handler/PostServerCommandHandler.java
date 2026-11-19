@@ -107,8 +107,14 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else
       checkRootUser(user);
 
+    // The database a `create database` or `drop database` names, resolved once: their answers carry the bookmark of issue #11739.
+    // Null for every other command
+    final boolean createsDatabase = command_lc.startsWith(CREATE_DATABASE);
+    final String bookmarkedDatabase = createsDatabase ? extractTarget(command, CREATE_DATABASE)
+        : command_lc.startsWith(DROP_DATABASE) ? extractTarget(command, DROP_DATABASE) : null;
+
     // Write commands that must run on the leader: forward if this node is a replica
-    if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
+    if (bookmarkedDatabase != null ||
         command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
         command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
         command_lc.startsWith(IMPORT_DATABASE)) {
@@ -119,22 +125,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       if (forwarded == LeaderCommandForwarder.STREAMED)
         return null;
       if (forwarded != null) {
-        if (forwarded.getCode() == 200) {
-          if (command_lc.startsWith(CREATE_DATABASE))
-            awaitForwardedEntryApplied(forwarded, extractTarget(command, CREATE_DATABASE), true);
-          else if (command_lc.startsWith(DROP_DATABASE))
-            awaitForwardedEntryApplied(forwarded, extractTarget(command, DROP_DATABASE), false);
-        }
+        if (forwarded.getCode() == 200 && bookmarkedDatabase != null)
+          awaitForwardedEntryApplied(forwarded, bookmarkedDatabase, createsDatabase);
         return forwarded;
       }
     }
 
     if (command_lc.startsWith(SHUTDOWN))
       shutdownServer(extractTarget(command, SHUTDOWN));
-    else if (command_lc.startsWith(CREATE_DATABASE))
-      createDatabase(extractTarget(command, CREATE_DATABASE));
-    else if (command_lc.startsWith(DROP_DATABASE))
-      dropDatabase(extractTarget(command, DROP_DATABASE));
+    else if (createsDatabase)
+      createDatabase(bookmarkedDatabase);
+    else if (bookmarkedDatabase != null)
+      dropDatabase(bookmarkedDatabase);
     else if (command_lc.startsWith(CLOSE_DATABASE))
       closeDatabase(extractTarget(command, CLOSE_DATABASE));
     else if (command_lc.startsWith(OPEN_DATABASE))
@@ -180,10 +182,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     }
 
     final ExecutionResponse answer = new ExecutionResponse(200, response.toString());
-    if (command_lc.startsWith(CREATE_DATABASE))
-      emitBookmark(answer, extractTarget(command, CREATE_DATABASE));
-    else if (command_lc.startsWith(DROP_DATABASE))
-      emitBookmark(answer, extractTarget(command, DROP_DATABASE));
+    if (bookmarkedDatabase != null)
+      emitBookmark(answer, bookmarkedDatabase);
     return answer;
   }
 
@@ -509,13 +509,16 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * bookmark (issue #11739): at least the index the command's entry committed at, and this node's commit index when that is
    * higher. The commit index alone can stand below the entry when the leadership moved during the submission and another leader
    * committed it (review of #11739). A client carries it to read its own write from another node, and a follower that forwarded
-   * the command waits on it (see {@link #awaitForwardedEntryApplied}). Nothing on a server without HA, which has no index.
+   * the command waits on it (see {@link #awaitForwardedEntryApplied}). Carried to a node that has not installed the database yet,
+   * it is not reached: {@link DatabaseAbstractHandler} resolves the database before it reads {@code X-ArcadeDB-Read-After}, so
+   * that node answers 404, and the client retries or sends the request to the leader (the OpenAPI description of the header in
+   * {@code CoreApiSpec} says so). Nothing on a server without HA, which has no index.
    */
   private void emitBookmark(final ExecutionResponse answer, final String databaseName) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null)
       return;
-    final long bookmark = Math.max(ha.getCommitIndex(), ha.getDatabaseEntryIndex(databaseName));
+    final long bookmark = Math.max(ha.getCommitIndex(), ha.takeDatabaseEntryIndex(databaseName));
     if (bookmark >= 0)
       answer.setHeader(COMMIT_INDEX_HEADER_NAME, String.valueOf(bookmark));
   }
