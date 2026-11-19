@@ -1596,15 +1596,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
       }
 
-      // An entry of an incarnation of this database that a drop removed and a later create replaced (issue #11919): the
-      // replay of a log from a snapshot marker older than that drop. Its effect is superseded by the drop, and applied it
-      // would reach the copy the later create made - the old create is skipped because the name exists, its schema
-      // entries reload the old schema over the new files, and its drop renames the new copy away. Skipped like an entry
-      // the copy already carries (issue #8579): nothing is applied, the applied position still advances.
-      final boolean ofEarlierIncarnation = !namesNoDatabase && appliedIndexes.isOfEarlierIncarnation(decoded.databaseName(), index);
-
       // Not applied to a copy an install is replacing (issue #7958): see installApplyGates.
-      final InstallApplyGate installGate = ofEarlierIncarnation ? null : replacement.enterInstallApplyGate(decoded.databaseName(), index);
+      final InstallApplyGate installGate = replacement.enterInstallApplyGate(decoded.databaseName(), index);
       if (installGate != null && index <= installGate.installedIndex()) {
         // Covered by a snapshot an install already brought this database's copy to (issue #8577): this is either
         // this node's own pre-install local log being replayed after a restart, or a duplicate notification.
@@ -1619,6 +1612,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
             index, decoded.databaseName(), installGate.installedIndex());
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
       }
+      // An entry of an incarnation of this database that a drop removed and a later create replaced (issue #11919): the
+      // replay of a log from a snapshot marker older than that drop. Its effect is superseded by the drop, and applied it
+      // would reach the copy the later create made - the old create is skipped because the name exists, its schema
+      // entries reload the old schema over the new files, and its drop renames the new copy away. Skipped like an entry
+      // the copy already carries (issue #8579): nothing is applied, the applied position still advances. Decided under the
+      // install gate: an install that acquires a copy records its boundary before it releases the gate, so an entry that
+      // waited for that install reads the boundary the install recorded, not the one before it
+      final boolean ofEarlierIncarnation = !namesNoDatabase && appliedIndexes.isOfEarlierIncarnation(decoded.databaseName(), index);
       // Already in the copy an install just put in place (issue #8579): the leader that served it had applied this
       // entry before capturing the copy, so applying it again would at best redo what the copy carries, and at worst
       // roll a newer copy back to an older state until the replay catches up (a schema document is written whole).

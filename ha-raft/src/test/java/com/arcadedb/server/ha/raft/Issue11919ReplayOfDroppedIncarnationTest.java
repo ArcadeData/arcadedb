@@ -42,8 +42,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -205,24 +208,10 @@ class Issue11919ReplayOfDroppedIncarnationTest {
   void theDropOfAnEarlierIncarnationLeavesACopyAcquiredFromTheLeader() throws Exception {
     // The leader served the copy at index 20, after the drop at index 12 and the create at index 13 of the incarnation
     // the copy holds; this node, a follower installing a Raft snapshot, still applies the entries above its install boundary
-    final HttpServer leader = HttpServer.create(new InetSocketAddress(0), 0);
-    leader.createContext("/api/v1/ha/snapshot/" + DB, exchange -> {
-      final byte[] zip = zipWith("data.dat", "copy");
-      exchange.getResponseHeaders().add(SnapshotManager.APPLIED_INDEX_HEADER, "20");
-      exchange.sendResponseHeaders(200, zip.length);
-      exchange.getResponseBody().write(zip);
-      exchange.close();
-    });
-    leader.start();
+    final HttpServer leader = leaderServingTheCopyAt(20);
     final ArcadeStateMachine sm = newStateMachine();
     try {
-      sm.runUnderInstallGate(DB, FIRST - 1, () -> {
-        final Path staging = serverDir.resolve(".staging");
-        Files.createDirectories(staging);
-        SnapshotInstaller.downloadWithRetry(DB, staging, "localhost:" + leader.getAddress().getPort(), null, 1, 10);
-        final Database acquired = server.createDatabase(DB, ComponentFile.MODE.READ_WRITE);
-        acquired.transaction(() -> acquired.getSchema().createDocumentType(CURRENT));
-      });
+      sm.runUnderInstallGate(DB, FIRST - 1, () -> acquireTheCopy(leader));
     } finally {
       leader.stop(0);
     }
@@ -234,6 +223,73 @@ class Issue11919ReplayOfDroppedIncarnationTest {
     assertThat(server.existsDatabase(DB)).isTrue();
     assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
         .as("the drop at index %d is of an incarnation the copy served at index 20 already replaced", DROP).isTrue();
+  }
+
+  @Test
+  void aDropWaitingForTheAcquisitionReadsTheBoundaryItRecords() throws Exception {
+    // The drop of the earlier incarnation arrives while the copy is being acquired: it waits on the install gate, and must
+    // read the boundary the acquisition records before it releases the gate, not the one it would have read before waiting
+    final HttpServer leader = leaderServingTheCopyAt(20);
+    final ArcadeStateMachine sm = newStateMachine();
+    final CountDownLatch installing = new CountDownLatch(1);
+    final CountDownLatch dropWaiting = new CountDownLatch(1);
+    final ExecutorService threads = Executors.newFixedThreadPool(2);
+    ArcadeStateMachine.applyWaitsForInstallForTesting = name -> dropWaiting.countDown();
+    try {
+      final Future<?> install = threads.submit(() -> {
+        sm.runUnderInstallGate(DB, FIRST - 1, () -> {
+          installing.countDown();
+          awaitLatch(dropWaiting);
+          acquireTheCopy(leader);
+        });
+        return null;
+      });
+      assertThat(installing.await(30, TimeUnit.SECONDS)).isTrue();
+      final Future<?> drop = threads.submit(() -> apply(sm, RaftLogEntryCodec.encodeDropDatabaseEntry(DB), DROP));
+      install.get(60, TimeUnit.SECONDS);
+      drop.get(60, TimeUnit.SECONDS);
+    } finally {
+      ArcadeStateMachine.applyWaitsForInstallForTesting = null;
+      threads.shutdownNow();
+      leader.stop(0);
+    }
+
+    assertThat(server.existsDatabase(DB)).isTrue();
+    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+        .as("the drop at index %d waited for the copy served at index 20, which already replaced its incarnation", DROP).isTrue();
+  }
+
+  /** A leader that serves a copy of {@link #DB} it reports as of applied index {@code servedAt}. */
+  private static HttpServer leaderServingTheCopyAt(final long servedAt) throws IOException {
+    final HttpServer leader = HttpServer.create(new InetSocketAddress(0), 0);
+    leader.createContext("/api/v1/ha/snapshot/" + DB, exchange -> {
+      final byte[] zip = zipWith("data.dat", "copy");
+      exchange.getResponseHeaders().add(SnapshotManager.APPLIED_INDEX_HEADER, Long.toString(servedAt));
+      exchange.sendResponseHeaders(200, zip.length);
+      exchange.getResponseBody().write(zip);
+      exchange.close();
+    });
+    leader.start();
+    return leader;
+  }
+
+  /** The install: downloads the leader's copy and stands in for it with a database holding {@link #CURRENT}. */
+  private void acquireTheCopy(final HttpServer leader) throws IOException {
+    final Path staging = serverDir.resolve(".staging");
+    Files.createDirectories(staging);
+    SnapshotInstaller.downloadWithRetry(DB, staging, "localhost:" + leader.getAddress().getPort(), null, 1, 10);
+    final Database acquired = server.createDatabase(DB, ComponentFile.MODE.READ_WRITE);
+    acquired.transaction(() -> acquired.getSchema().createDocumentType(CURRENT));
+  }
+
+  private static void awaitLatch(final CountDownLatch latch) throws IOException {
+    try {
+      if (!latch.await(30, TimeUnit.SECONDS))
+        throw new IOException("timed out waiting for the drop to wait on the install gate");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException(e);
+    }
   }
 
   private Path raftDir() throws IOException {
