@@ -29,6 +29,7 @@ import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.schema.DocumentType;
@@ -138,11 +139,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     this.positions = positions;
     this.positionIndex = positionsFrom;
     this.positionsEnd = positionsTo;
-    this.totalPages = bucket.pageCount.get();
-
-    final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.fileId);
-    if (txPageCounter != null && txPageCounter > totalPages)
-      this.totalPages = txPageCounter;
+    this.totalPages = bucket.getReadablePageCount();
 
     if (toPage > -1 && toPage < this.totalPages) {
       if (!forwardDirection)
@@ -229,6 +226,9 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         document.setContentPageVersion(pageVersion);
       document.setReadInTransaction(readInTransaction);
     }
+    // #12320: a vertex read from the transaction's own image of its page carries the heads of that image
+    if (currentPageImage != null && record instanceof ImmutableVertex vertex)
+      vertex.markReadFromOwnImage();
     return database.invokeAfterReadEvents(record);
   }
 
