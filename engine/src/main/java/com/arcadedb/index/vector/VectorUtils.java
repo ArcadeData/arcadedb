@@ -665,7 +665,7 @@ public final class VectorUtils {
     private boolean computeScorableNorm() {
       try {
         final VectorFloat<?> form = simd();
-        final float norm = io.github.jbellis.jvector.vector.VectorUtil.dotProduct(form, form);
+        final float norm = VectorUtil.dotProduct(form, form);
         return norm >= 0x1p-63f && norm <= 0x1p63f;
       } catch (final Exception | AssertionError e) {
         // The scalar sum, as the cosine falls back to it. JVector asserts its answer is finite, so under -ea the overflow
