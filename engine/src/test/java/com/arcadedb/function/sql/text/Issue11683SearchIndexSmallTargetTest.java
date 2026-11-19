@@ -62,11 +62,17 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
   /** Queries every row of which is decided on its record. */
   private static final List<String> PER_RECORD = List.of(//
       "alpha", "zeta", "alpha beta", "alpha beta gamma delta", "zeta epsilon delta gamma beta alpha", "+alpha +beta",
-      "+alpha -gamma", "+zeta -alpha", "\"alpha beta\"", "\"beta zeta\"", "alpha^3 beta gamma^0.5", "+delta (alpha zeta)",
-      "alpha (+beta -zeta)", "alpha missingword", "content:alpha zeta");
+      "+alpha -gamma", "+zeta -alpha", "alpha^3 beta gamma^0.5", "+delta (alpha zeta)",
+      "alpha (+beta -zeta)", "alpha missingword", "content:alpha zeta",
+      // a MUST_NOT clause beside SHOULD clauses excludes from its own group only (issue #12474)
+      "alpha -beta", "(zeta -beta) delta", "zeta -(beta -gamma)");
 
-  /** Queries the record alone does not decide: the complete search answers them, as before. */
-  private static final List<String> COMPLETE = List.of("alph*", "zet?", "alpha -beta", "-alpha", "alpah~", "missingword");
+  /**
+   * Queries the record alone does not decide: the complete search answers them, as before. A phrase of several terms needs the
+   * positions of its terms, which the keys of the record's postings do not hold (issue #12165).
+   */
+  private static final List<String> COMPLETE = List.of("alph*", "zet?", "-alpha", "+alpha +(-beta)", "alpah~", "missingword",
+      "\"alpha beta\"", "\"beta zeta\"");
 
   @ParameterizedTest
   @ValueSource(ints = { 1, 4 })
@@ -99,7 +105,7 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
     createCorpus("Art", buckets, true);
     final List<RID> sample = sample("Art");
 
-    for (final String query : List.of("alpha", "title:alpha", "title:alpha body:beta gamma", "body:\"alpha zeta\"",
+    for (final String query : List.of("alpha", "title:alpha", "title:alpha body:beta gamma", "body:alpha",
         "+title:beta -body:gamma", "zeta title:zeta^2 body:delta")) {
       final Map<RID, Float> complete = completeAnswer("SEARCH_INDEX('Art[title,body]', :q)", "Art", query);
       final long before = FullTextFunctionSearch.getCompleteSearchesForTesting();
@@ -132,14 +138,14 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
 
     for (final String query : PER_RECORD)
       assertScoredOnItsOwn(content, query, null, docs);
-    for (final String query : List.of("alpha", "title:alpha", "title:alpha body:beta gamma", "body:\"alpha zeta\"",
+    for (final String query : List.of("alpha", "title:alpha", "title:alpha body:beta gamma", "body:alpha",
         "+title:beta -body:gamma", "zeta title:zeta^2 body:delta", "zeta epsilon delta gamma beta alpha"))
       assertScoredOnItsOwn(titleAndBody, query, null, arts);
     for (final List<String> fields : List.of(List.of("title"), List.of("body"), List.of("title", "body")))
-      for (final String query : List.of("alpha beta", "zeta", "+gamma -alpha", "\"beta zeta\" delta^2"))
+      for (final String query : List.of("alpha beta", "zeta", "+gamma -alpha", "beta zeta delta^2"))
         assertScoredOnItsOwn(titleAndBody, query, fields, arts);
 
-    for (final String query : List.of("alph*", "zet?", "alpha -beta", "-alpha", "alpah~", "/al.*/"))
+    for (final String query : List.of("alph*", "zet?", "-alpha", "+alpha +(-beta)", "alpah~", "/al.*/", "\"alpha beta\""))
       assertThat(FullTextRecordScorer.prepare(content, query, null, WorkGuard.forCommandDeadline(null))).as(query).isNull();
   }
 

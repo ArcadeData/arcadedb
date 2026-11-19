@@ -222,11 +222,14 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
   }
 
   @Override
-  public Iterator<Edge> edges(final Direction direction, final String... edgeLabels) {
+  public Iterator<Edge> edges(final Direction direction, final String... labels) {
     // A terminated statement stops here, at every step of a traversal, and every so often inside a supernode (#9689)
     ArcadeGraph.checkNotTerminated();
     // A REMOVED VERTEX HAS NO EDGES: ITS RECORD STILL POINTS TO THE LISTS ITS DELETE FREED (#10196)
     if (isRemoved())
+      return Collections.emptyIterator();
+    final String[] edgeLabels = withoutNullLabels(labels);
+    if (edgeLabels == null)
       return Collections.emptyIterator();
     // READ AS THE TRAVERSAL PULLS THEM: AN EXISTENCE TEST OR A limit() OVER A SUPERNODE STOPS AT THE FIRST ENTRIES (#10308)
     final Iterator<com.arcadedb.graph.Edge> source = (edgeLabels.length == 0 ?
@@ -240,16 +243,42 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     };
   }
 
+  /**
+   * The labels a step names, without the null ones, or null when it named only null labels, which no edge carries: the step then
+   * matches nothing. That is how TinkerGraph, the reference implementation, reads {@code out(null)} and {@code bothE(null, 'x')},
+   * where the null label reached the edge-type lookups of the engine and failed them with a {@code NullPointerException}
+   * (issue #11886). The array is copied only when it holds a null.
+   */
+  static String[] withoutNullLabels(final String[] labels) {
+    int nulls = 0;
+    for (final String label : labels)
+      if (label == null)
+        nulls++;
+    if (nulls == 0)
+      return labels;
+    if (nulls == labels.length)
+      return null;
+    final String[] named = new String[labels.length - nulls];
+    int i = 0;
+    for (final String label : labels)
+      if (label != null)
+        named[i++] = label;
+    return named;
+  }
+
   /** Filters out deleted edges. A lightweight edge has no record to look for: it exists as long as the vertex lists it (#9142). */
   private boolean exists(final com.arcadedb.graph.Edge edge) {
     return edge instanceof LightEdge || graph.getDatabase().existsRecord(edge.getIdentity());
   }
 
   @Override
-  public Iterator<Vertex> vertices(final Direction direction, final String... edgeLabels) {
+  public Iterator<Vertex> vertices(final Direction direction, final String... labels) {
     // A terminated statement stops here, at every step of a traversal, and every so often inside a supernode (#9689)
     ArcadeGraph.checkNotTerminated();
     if (isRemoved())
+      return Collections.emptyIterator();
+    final String[] edgeLabels = withoutNullLabels(labels);
+    if (edgeLabels == null)
       return Collections.emptyIterator();
     // CSR fast path: use GAV provider when available for O(1) neighbor lookup. Pinned, so the node id, the neighbours and their
     // RIDs come from one snapshot whatever the view does meanwhile (issue #10415)

@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -60,7 +61,7 @@ public final class ProcedureSchemaTypes {
       final DocumentType type = schema.getTypeOrNull(name);
       // a type the caller may not read is answered as one that does not exist, or the difference tells it exists (#11197)
       if (type == null || !SecurityHelper.isReadable(database, type))
-        throw new IllegalArgumentException(
+        throw new SchemaException(
             procedureName + "(): " + expected + " '" + name + "' does not exist" + (edges ? edgePropertyHint(database, name) : ""));
       if (edges ? !(type instanceof EdgeType) : !(type instanceof VertexType))
         throw new IllegalArgumentException(procedureName + "(): '" + name + "' is not a " + expected + ", it is " + describeKind(type));

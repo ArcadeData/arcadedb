@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.planner;
 
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CreateClause;
@@ -44,6 +45,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.SimpleCypherStatement;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
@@ -447,6 +449,43 @@ public final class CypherEagernessAnalyzer {
         case REMOVE -> needsBarrierAfterMerge((RemoveClause) innerClause.getClause());
         case MERGE -> needsBarrierAfterMerge((MergeClause) innerClause.getClause());
         case FOREACH -> needsBarrierAfterMerge((ForeachClause) innerClause.getClause());
+        default -> false;
+      };
+      if (conflicts)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * A {@code CALL { ... }} subquery body that, at any nesting depth or in any branch of a UNION, writes what a MERGE before it
+   * matches on: the body runs once per row the MERGE hands over, so streamed, the MERGE of the next row already sees what the
+   * body wrote for the previous one and matches nothing it matched the row before (issue #12520: {@code UNWIND range(1, 101) AS
+   * i MERGE (:A)-[:R]->(:B {k: false}) CALL (*) { ... SET e.k = true }} created a second pair of nodes, and only the 101st row
+   * saw the write because the pull batches carry 100). It is the subquery counterpart of {@link #needsBarrierAfterMerge(SetClause)}:
+   * a body is the clauses it holds, and each is weighed as the same clause of the outer statement would be. A write procedure
+   * call is opaque and conflicts with every MERGE read; a body that kept no clause order cannot be weighed and does too.
+   */
+  public boolean needsBarrierAfterMerge(final CypherStatement body) {
+    if (body == null || body.isReadOnly() || !mergeReadsAnything())
+      return false;
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (needsBarrierAfterMerge(branch))
+          return true;
+      return false;
+    }
+    final List<ClauseEntry> clauses = body.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty())
+      return true;
+    for (final ClauseEntry clause : clauses) {
+      final boolean conflicts = switch (clause.getType()) {
+        case SET -> needsBarrierAfterMerge((SetClause) clause.getClause());
+        case REMOVE -> needsBarrierAfterMerge((RemoveClause) clause.getClause());
+        case MERGE -> needsBarrierAfterMerge((MergeClause) clause.getClause());
+        case FOREACH -> needsBarrierAfterMerge((ForeachClause) clause.getClause());
+        case SUBQUERY -> needsBarrierAfterMerge(((SubqueryClause) clause.getClause()).getInnerStatement());
+        case CALL -> SimpleCypherStatement.isWriteProcedureCall((CallClause) clause.getClause());
         default -> false;
       };
       if (conflicts)

@@ -286,10 +286,15 @@ class CypherLabelExpressionIssue8992Test {
     assertThat(column("MATCH (n) WHERE n:!`Event Message`&!A&!B&!C RETURN n.id AS id", "id")).containsExactly(4);
   }
 
+  /** A dynamic label under the new operators is evaluated per row, and answers what the same static label does (issue #12339). */
   @Test
-  void dynamicLabelCannotBeCombinedWithTheNewOperators() {
-    assertThatThrownBy(() -> column("MATCH (n:!$('A')) RETURN n.id AS id", "id"))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("dynamic label");
+  void dynamicLabelCombinesWithTheNewOperators() {
+    for (final String[] pair : new String[][] { { "!A", "!$('A')" }, { "A&!B", "$('A')&!$('B')" }, { "(A|B)&!C", "($('A')|B)&!$('C')" },
+        { "%&!A", "%&!$(['A'])" } }) {
+      final List<Object> expected = column("MATCH (n:" + pair[0] + ") RETURN n.id AS id ORDER BY id", "id");
+      assertThat(column("MATCH (n:" + pair[1] + ") RETURN n.id AS id ORDER BY id", "id")).as(pair[1]).isEqualTo(expected);
+      assertThat(column("MATCH (n) WHERE n:" + pair[1] + " RETURN n.id AS id ORDER BY id", "id")).as(pair[1]).isEqualTo(expected);
+    }
   }
 
   // ---- writes cannot act on an expression that only a read can answer --------------------------------------------

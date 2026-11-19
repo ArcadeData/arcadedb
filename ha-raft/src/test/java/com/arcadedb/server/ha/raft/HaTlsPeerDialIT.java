@@ -56,14 +56,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * two-node {@link BaseRaftHASslTest} cluster with the default subject alternative names.
  * <p>
  * Everything these dials DECIDE is already unit-tested against recording clients - which address, which scheme, which
- * client ({@code Issue7508LeaderForwardSchemeTest}, {@code Issue7508LeaderHttpsEndpointTest},
- * {@link Issue7563PlaintextPeerDialSchemeTest}). Four things only appear once a handshake actually happens, and no
+ * client ({@code Issue7508LeaderForwardSchemeTest}, {@code PeerEndpointIdentityTest.LeaderHttpsEndpoint},
+ * {@link PeerDialSafetyTest.PlaintextPeerDialScheme}). Four things only appear once a handshake actually happens, and no
  * recording client can reach any of them:
  * <ul>
  * <li><b>hostname verification.</b> The endpoint is taken from {@code arcadedb.ha.serverList} or derived from the
  * peer's Raft host; a certificate issued for a different name than the one the dial asks for fails at handshake time,
  * and a test that never handshakes cannot notice. The name check itself is pinned by
- * {@link Issue7836HaTlsWrongCertificateNameIT}.</li>
+ * {@link HaTlsWrongCertificateNameIT}.</li>
  * <li><b>the truststore, in anger.</b> {@code SnapshotInstaller.buildSSLContext} falls back to
  * {@code SSLContext.getDefault()} when none is configured, which is the state a test JVM is normally in - so a
  * genuinely misconfigured truststore and a correct one are indistinguishable until one is configured and a peer that
@@ -194,7 +194,7 @@ class HaTlsPeerDialIT extends BaseRaftHASslTest {
    * The {@code POST} itself is deliberately not issued: it would stop a node mid-suite, because
    * {@code ServerControlPlane.shutdownServer("")} ends in {@code System.exit}. What is proved here is that the
    * transport the command would travel on is TLS and that it works. The CREDENTIAL it carries was the separate
-   * question, fixed in issue #7837 and covered by {@code Issue7837RemoteShutdownCredentialIT}.
+   * question, fixed in issue #7837 and covered by {@code RemoteShutdownCredentialIT}.
    */
   @Test
   void theRemoteShutdownDialResolvesAndHandshakesThePeersEncryptedEndpoint() throws Exception {

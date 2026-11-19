@@ -336,7 +336,7 @@ public class RefusedWriteTest {
    * produced this gap.
    * <p>
    * The {@code commit1stPhase} rows here are the engine-level pin; the replicated wrapper's own two call sites
-   * are pinned in {@code Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest} in the {@code ha-raft}
+   * are pinned in {@code ReplicatedCommitOutcomeTest.RollbackOnlyRefusedOnTheReplicatedCommitPath} in the {@code ha-raft}
    * module.
    *
    * @author Roberto Franchini (r.franchini@arcadedata.com)
