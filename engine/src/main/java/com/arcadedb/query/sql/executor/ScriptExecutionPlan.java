@@ -24,6 +24,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.parser.BreakStatement;
@@ -131,14 +132,25 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * {@link DDLStatement} that answers {@link DDLStatement#isBulkSchemaScopeSafe(DatabaseInternal)}, so a script that
    * mixes in DML, that contains a rebuild/refresh/truncate/compaction, or that indexes or repartitions a type which
    * already exists, keeps the pre-existing one-session-per-statement behaviour.
+   * <p>
+   * THE ASYNC WORKERS ARE QUIESCED BEFORE THE FRAME OPENS, NOT INSIDE IT. The frame is the database write lock, held
+   * across the whole script, and a statement in it that builds an index ({@code CREATE INDEX}, a {@code CREATE TYPE}
+   * with a super type or a unique constraint, a super type added by {@code ALTER TYPE}) waits for every worker to
+   * commit its open batch. A worker's commit takes the read lock this thread's write lock excludes, so the wait never
+   * ended, and every write behind the script queued on the lock for good. The statement run on its own already asks
+   * outside its frame ({@code CreateTypeAbstractStatement}); the batch is one frame, so it asks once, here. A nested
+   * quiescence on this thread rides on this one, and a database that never used async has nothing to park.
    */
   private void doExecute(final int n) {
     if (executed)
       return;
 
-    if (batchableAsOneSchemaSession())
-      context.getDatabase().getSchema().bulkChange(() -> doExecuteInternal(n));
-    else
+    if (batchableAsOneSchemaSession()) {
+      final DatabaseInternal database = context.getDatabase();
+      try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
+        database.getSchema().bulkChange(() -> doExecuteInternal(n));
+      }
+    } else
       doExecuteInternal(n);
   }
 

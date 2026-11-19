@@ -616,6 +616,22 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * Hands the commit lock the calling thread holds on {@code fileId}, a file the compaction running on this thread has just
+   * created, to that compaction, which releases it once the entry publishing the compaction is accepted or the compaction
+   * fails (issue #12236). Until that entry is applied no other node has the file, so a commit that wrote into it and reached
+   * the log first shipped pages every other node skipped, and the next commit on those pages was refused cluster-wide as a
+   * WAL version gap. Held, the lock makes such a commit wait for the entry instead. Standalone, and outside a replicated
+   * compaction, nothing takes the lock over.
+   *
+   * @param fileId the file the caller locked and created
+   *
+   * @return true when the lock was taken over and the caller must not release it, false when the caller releases it
+   */
+  default boolean keepLockedUntilCompactionIsPublished(final int fileId) {
+    return false;
+  }
+
+  /**
    * Returns true if this node is the current leader (or always true when not replicated, i.e. standalone).
    * Used by engine-internal background work (e.g. the TimeSeries maintenance scheduler) to keep
    * destructive maintenance leader-only without a compile dependency on the HA module.

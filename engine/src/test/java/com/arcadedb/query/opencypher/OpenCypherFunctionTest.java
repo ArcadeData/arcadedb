@@ -679,7 +679,7 @@ class OpenCypherFunctionTest extends TestHelper {
           MATCH (p:Person {name:'Alice'}) \
           OPTIONAL MATCH (p)-[:HAS_FRIEND]->(f:Person) \
           WITH p, collect(f) AS friends \
-          RETURN p.scores[toInteger(avg(size(friends)))] AS selectedScore""");
+          RETURN p AS person, p.scores[toInteger(avg(size(friends)))] AS selectedScore""");
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("selectedScore").longValue()).isEqualTo(85L);
     } finally {

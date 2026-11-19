@@ -309,6 +309,14 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     }
   }
 
+  /** Whether a step names a null label, which the view lookups cannot take (issue #11886). */
+  private static boolean hasNullLabel(final String[] labels) {
+    for (final String label : labels)
+      if (label == null)
+        return true;
+    return false;
+  }
+
   /**
    * Whether the traversal emits nothing whatever it is fed: it ends with a {@code limit(0)}, which lets no traverser through. The
    * steps in front of it still run, once for each traverser the traversal is offered, before the {@code limit(0)} stops it: whoever
@@ -482,7 +490,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
     final List<Step> steps = traversal.getSteps();
     for (int i = 0; i < steps.size(); i++) {
       final Step step = steps.get(i);
-      if (step instanceof VertexStep<?> vertexStep && vertexStep.returnsVertex()) {
+      // A null label is left to ArcadeVertex, which reads it as a label no edge carries (issue #11886)
+      if (step instanceof VertexStep<?> vertexStep && vertexStep.returnsVertex() && !hasNullLabel(vertexStep.getEdgeLabels())) {
         final String[] edgeLabels = vertexStep.getEdgeLabels();
         // Pinned when the traversal is about to run: the step maps, walks and maps back in one snapshot for the whole traversal,
         // whatever the view does meanwhile (issue #10415)
@@ -588,6 +597,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         continue;
 
       final String[] edgeLabels = vertexStep.getEdgeLabels();
+      if (hasNullLabel(edgeLabels))
+        continue;
       // Pinned, as for the vertex steps above (issue #10415)
       final GraphTraversalProvider provider = GraphViewPins.pinAlone(edgeLabels.length == 0
           ? GraphTraversalProviderRegistry.findProvider(db)

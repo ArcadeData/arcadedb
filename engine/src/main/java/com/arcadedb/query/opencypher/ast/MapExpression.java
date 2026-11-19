@@ -74,6 +74,17 @@ public class MapExpression implements Expression {
     return false;
   }
 
+  /**
+   * An aggregate nested in an entry ({@code {c: size(collect(x))}}) makes the map an aggregation too (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    for (final Expression expr : entries.values())
+      if (expr.containsAggregation())
+        return true;
+    return false;
+  }
+
   @Override
   public String getText() {
     return text;

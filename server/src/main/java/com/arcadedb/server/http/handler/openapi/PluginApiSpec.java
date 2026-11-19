@@ -1009,7 +1009,7 @@ public class PluginApiSpec implements OpenApiContributor {
         "UNPUBLISHED_SCHEMA_CHANGE", "LOCAL_RECOVERY_INCOMPLETE", "UNAVAILABLE_UNIQUE_INDEX", "EMPTY_DICTIONARY"));
     // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read
     // from DivergenceCause for the same reason the alert severities are - this module cannot see ha-raft - and
-    // Issue7577ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
+    // ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
     schema.addProperty("divergenceCauses", SpecBuilders.mapOf(cause,
         "Why each quarantined database was quarantined, keyed by database name. Same keys as 'divergedDatabases'"));
     schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(

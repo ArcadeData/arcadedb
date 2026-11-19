@@ -204,6 +204,7 @@
         <module>package</module>
         <module>e2e</module>
         <module>load-tests</module>
+        <module>bench</module>
         <module>e2e-ha</module>
     </modules>
 
@@ -507,7 +508,7 @@
                     <publishingServerId>central</publishingServerId>
                     <autoPublish>true</autoPublish>
                     <excludeArtifacts>
-                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-e2e-ha,arcadedb-gremlin-it,arcadedb-gremlin-consumer-it,arcadedb-load-tests
+                        arcadedb-coverage,arcadedb-e2e,arcadedb-e2e-perf,arcadedb-e2e-ha,arcadedb-gremlin-it,arcadedb-gremlin-consumer-it,arcadedb-load-tests,arcadedb-bench
                     </excludeArtifacts>
                 </configuration>
             </plugin>

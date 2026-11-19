@@ -202,7 +202,7 @@ class OldRatisServerTerminationTest {
     final AtomicLong now = new AtomicLong(1_000_000L);
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
     registry.setClock(now::get);
-    final ToLongFunction<String> lastAnswered = RaftHAServer.peerLastAnsweredAt(registry);
+    final ToLongFunction<String> lastAnswered = PeerChannelRecovery.peerLastAnsweredAt(registry);
 
     assertThat(lastAnswered.applyAsLong("peer-1")).isEqualTo(-1L);
 

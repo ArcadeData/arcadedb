@@ -1317,9 +1317,9 @@ class CypherIndexOrderingTest {
       assertThat(column(query, Map.of("after", key(10)))).containsExactly(key(13), key(12), key(11));
       assertThat(profile(query, Map.of("after", key(10)))).contains("index order").contains("+ ORDER BY ");
 
-      // The filter of the WITH still picks the rows its LIMIT counts
+      // The WHERE of the WITH filters the page its LIMIT took from the index (issue #11762): keys 6, 7 and 8, of which only 7 has n = 0
       assertThat(column("MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key LIMIT 3 WHERE d.n = 0 RETURN d.key AS k",
-          Map.of("after", key(0)))).containsExactly(key(7), key(14), key(21));
+          Map.of("after", key(5)))).containsExactly(key(7));
     }
 
     @Test

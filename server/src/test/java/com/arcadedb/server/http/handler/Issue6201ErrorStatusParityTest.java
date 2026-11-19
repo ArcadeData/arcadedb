@@ -72,6 +72,7 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -533,14 +534,25 @@ class Issue6201ErrorStatusParityTest {
     }
   }
 
-  /** Every other failure is sent without a Retry-After: the header belongs to the refusals that state a back-off. */
+  /**
+   * The Retry-After of every other failure. A retryable 503 states a back-off since issues #12440 and #12441: at once for a refusal
+   * that clears by itself, one second for a server too busy to start the request. A database closed under the request states none,
+   * since how long it stays closed is an operator's decision, and neither does any failure that is not retryable.
+   */
   @Test
-  void noOtherFailureIsSentWithARetryAfter() {
+  void onlyARetryableRefusalIsSentWithARetryAfter() {
+    final Map<String, String> retryAfter = Map.of(//
+        "ConcurrentModificationException", "0",//
+        "DatabaseIsReopeningException", "0",//
+        "TimeSeriesWalkCoarsenedException", "0",//
+        "QueryHeapBudgetExceededException", "1",//
+        "VectorGraphBuildRefusedException", "1",//
+        "QueryAdmissionException", "1");
     for (final MappedFailure failure : MAPPED_FAILURES)
       if (!failure.name().equals("RequestStillInFlightException") && !failure.name().equals("RetryLaterException"))
         assertThat(handle(failure.factory().get()).responseHeaders.getFirst("Retry-After"))
-            .as("%s must not carry a Retry-After", failure.name())
-            .isNull();
+            .as("the Retry-After of %s", failure.name())
+            .isEqualTo(retryAfter.get(failure.name()));
   }
 
   /**
