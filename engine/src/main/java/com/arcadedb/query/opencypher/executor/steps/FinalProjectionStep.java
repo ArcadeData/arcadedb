@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -149,12 +150,32 @@ public class FinalProjectionStep extends AbstractExecutionStep {
     if (returnAll || starWithItems) {
       // RETURN * - pass through the query's own variables. Bindings the executor generated for
       // anonymous pattern elements are execution state, not variables the caller asked for, so they
-      // stay out of the row (issue #5444).
+      // stay out of the row (issue #5444). The variables are sorted by name, as Neo4j answers them and as
+      // ReturnScope declares them: the order the plan bound them in is not one a caller can rely on (issue #11557).
+      // The items written after a star whose scope is only known now follow them, in their written order.
+      final Set<String> inputNames = inputResult.getPropertyNames();
+      final String[] variables = new String[inputNames.size()];
+      int variableCount = 0;
+      for (final String prop : inputNames)
+        if (!InternalVariables.isInternal(prop) && !requestedProperties.contains(prop))
+          variables[variableCount++] = prop;
+      Arrays.sort(variables, 0, variableCount);
+
       Document singleDocument = null;
       int documentCount = 0;
       int projectedCount = 0;
-      for (final String prop : inputResult.getPropertyNames()) {
-        if (InternalVariables.isInternal(prop))
+      for (int i = 0; i < variableCount; i++) {
+        final Object value = inputResult.getProperty(variables[i]);
+        result.setProperty(variables[i], value);
+        projectedCount++;
+        if (value instanceof Document doc) {
+          result.setMetadata(PROJECTION_NAME_METADATA, variables[i]);
+          singleDocument = doc;
+          documentCount++;
+        }
+      }
+      for (final String prop : requestedProperties) {
+        if (!inputResult.hasProperty(prop))
           continue;
         final Object value = inputResult.getProperty(prop);
         result.setProperty(prop, value);

@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -137,13 +138,13 @@ class Issue10763HasLabelCountAgreesWithScanTest {
   @Test
   void aWriteToABucketThatDoesNotExistIsRefusedByName() {
     assertThatThrownBy(() -> database.transaction(() -> graph.addVertex("bucket:NoSuchBucket_0")))
-        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("NoSuchBucket_0");
+        .isInstanceOf(SchemaException.class).hasMessageContaining("NoSuchBucket_0");
     assertThatThrownBy(() -> database.transaction(() -> graph.addVertex("bucket:Orphan")))
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Orphan");
     assertThatThrownBy(() -> database.transaction(() -> {
       final Vertex v = graph.addVertex("Movie");
       v.addEdge("bucket:NoSuchBucket_0", v);
-    })).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("NoSuchBucket_0");
+    })).isInstanceOf(SchemaException.class).hasMessageContaining("NoSuchBucket_0");
     assertThatThrownBy(() -> database.transaction(() -> {
       final Vertex v = graph.addVertex("Movie");
       v.addEdge("bucket:Movie_0", v);
