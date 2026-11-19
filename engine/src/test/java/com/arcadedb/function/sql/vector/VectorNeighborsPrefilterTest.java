@@ -561,6 +561,165 @@ class VectorNeighborsPrefilterTest {
   }
 
   /**
+   * Issue #12578: the where option listed its candidates through an index for {@code tenant = :t} and not for
+   * {@code tenant IN :tenants}, the same lookup repeated, so a search scoped to a set of tenants walked the graph and loaded a
+   * record per candidate: 68 ms against 4 ms on 150 tenants of 400 relationships.
+   * <p>
+   * One {@code IN} of constants is now looked up once per value and the listings are merged, under the same bound as one
+   * equality.
+   */
+  @Nested
+  class WhereInListing extends TestHelper {
+    private static final int     RECORDS = 2_000;
+    // 50 tenants of 40 records: two of them are 4% of the records and five are 10%, under the 20% threshold; fifteen are not
+    private static final int     TENANTS = 50;
+    private static final float[] QUERY   = { 0.9f, 0.1f, 0.3f, 0.5f };
+
+    private void seed() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
+        database.command("sql", "CREATE PROPERTY Doc.tenant INTEGER");
+        database.command("sql", "CREATE PROPERTY Doc.color STRING");
+        database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
+      });
+      final Random random = new Random(12578);
+      database.transaction(() -> {
+        for (int i = 0; i < RECORDS; i++)
+          database.newDocument("Doc")
+              .set("tenant", i % TENANTS)
+              .set("color", i % 2 == 0 ? "red" : "blue")
+              .set("embedding", new float[] { random.nextFloat(), random.nextFloat(), random.nextFloat(), random.nextFloat() })
+              .save();
+      });
+      database.command("sql", "CREATE INDEX ON Doc (tenant) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'EUCLIDEAN' }");
+    }
+
+    @Test
+    void aSetOfTenantsIsAnsweredFromTheIndexLikeOneTenant() {
+      seed();
+
+      for (final List<Integer> tenants : List.of(List.of(3), List.of(3, 7), List.of(3, 7, 11, 19, 23))) {
+        final long plansBefore = preFilterSearches();
+        final List<Result> rows = neighbors("{ where: 'tenant IN :tenants' }", Map.of("tenants", tenants), 400);
+
+        // Whether each bucket takes the plan is the walk's call, from its own estimate of the predicate's selectivity: two
+        // tenants take it in both, five in at least one. The answer is the same either way
+        assertThat(preFilterSearches() - plansBefore).as("%s takes the pre-filter plan", tenants)
+            .isGreaterThanOrEqualTo(tenants.size() <= 2 ? 2 : 1);
+        assertThat(rids(rows)).as("%s", tenants).hasSize(tenants.size() * RECORDS / TENANTS)
+            .containsExactlyInAnyOrderElementsOf(reference(tenants));
+      }
+    }
+
+    @Test
+    void aLiteralListAndARepeatedValueAreAnsweredTheSame() {
+      seed();
+      final List<RID> expected = reference(List.of(3, 7));
+
+      long plansBefore = preFilterSearches();
+      assertThat(rids(neighbors("{ where: 'tenant IN [3, 7]' }", Map.of(), 400))).containsExactlyInAnyOrderElementsOf(expected);
+      assertThat(preFilterSearches() - plansBefore).as("a literal list takes the plan").isEqualTo(2);
+
+      plansBefore = preFilterSearches();
+      assertThat(rids(neighbors("{ where: 'tenant IN :tenants' }", Map.of("tenants", List.of(3, 7, 3, 7)), 400)))
+          .containsExactlyInAnyOrderElementsOf(expected);
+      assertThat(preFilterSearches() - plansBefore).as("a repeated value takes the plan").isEqualTo(2);
+    }
+
+    @Test
+    void aSetOfTenantsLoadsFarFewerRecordsThanTheWalk() {
+      seed();
+      final Map<String, Object> params = Map.of("tenants", List.of(3, 7));
+
+      final long plannedBefore = readRecords();
+      final List<RID> planned = rids(neighbors("{ where: 'tenant IN :tenants' }", params, 10));
+      final long plannedReads = readRecords() - plannedBefore;
+
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
+      try {
+        final long walkBefore = readRecords();
+        assertThat(rids(neighbors("{ where: 'tenant IN :tenants' }", params, 10))).containsExactlyElementsOf(planned);
+        final long walkReads = readRecords() - walkBefore;
+        assertThat(plannedReads).as("records read by the listing, %d, and by the walk, %d", plannedReads, walkReads)
+            .isLessThan(walkReads);
+      } finally {
+        database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+            GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
+      }
+    }
+
+    /** Whatever the index cannot list stays the per-candidate test's, with the answer the test gives. */
+    @Test
+    void whatTheIndexCannotListIsStillAnsweredByTheTest() {
+      seed();
+      final List<Integer> many = new ArrayList<>();
+      for (int t = 0; t < 15; t++)
+        many.add(t);
+
+      // fifteen tenants keep 30% of the records, more than the threshold: the walk answers
+      final long plansBefore = preFilterSearches();
+      assertThat(rids(neighbors("{ where: 'tenant IN :tenants' }", Map.of("tenants", many), 600)))
+          .containsExactlyInAnyOrderElementsOf(reference(many));
+      assertThat(preFilterSearches() - plansBefore).isZero();
+
+      // NOT IN, an IN beside an equality on the same property, and an IN beside a conjunct the index does not hold
+      final List<Integer> notIn = new ArrayList<>();
+      for (int t = 2; t < TENANTS; t++)
+        notIn.add(t);
+      assertThat(rids(neighbors("{ where: 'tenant NOT IN :tenants' }", Map.of("tenants", notIn), 400)))
+          .containsExactlyInAnyOrderElementsOf(reference("tenant IN [0, 1]"));
+      assertThat(rids(neighbors("{ where: 'tenant IN :tenants AND tenant = 7' }", Map.of("tenants", List.of(3, 7)), 400)))
+          .containsExactlyInAnyOrderElementsOf(reference("tenant = 7"));
+      assertThat(rids(neighbors("{ where: 'tenant IN :tenants AND color = \"red\"' }", Map.of("tenants", List.of(3, 7)), 400)))
+          .containsExactlyInAnyOrderElementsOf(reference("tenant IN [3, 7] AND color = 'red'"));
+    }
+
+    private List<RID> reference(final List<Integer> tenants) {
+      return reference("tenant IN " + tenants);
+    }
+
+    /** The reference answer: the records the condition selects, found by a scan and not by the index. */
+    private List<RID> reference(final String condition) {
+      final List<RID> scope = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT @rid FROM Doc WHERE " + condition + " AND (tenant + 0) >= 0")) {
+        rs.forEachRemaining(r -> scope.add(r.getProperty("@rid")));
+      }
+      return scope;
+    }
+
+    private List<Result> neighbors(final String options, final Map<String, Object> params, final int k) {
+      final Map<String, Object> all = new HashMap<>(params);
+      all.put("q", QUERY);
+      final List<Result> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql",
+          "SELECT expand(`vector.neighbors`('Doc[embedding]', :q, " + k + ", " + options + "))", all)) {
+        rs.forEachRemaining(rows::add);
+      }
+      return rows;
+    }
+
+    private static List<RID> rids(final List<Result> rows) {
+      final List<RID> out = new ArrayList<>(rows.size());
+      for (final Result r : rows)
+        out.add(r.getProperty("@rid"));
+      return out;
+    }
+
+    private long readRecords() {
+      return ((Number) database.getStats().get("readRecord")).longValue();
+    }
+
+    private long preFilterSearches() {
+      long total = 0;
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+      for (final IndexInternal bucketIndex : index.getIndexesOnBuckets())
+        total += ((Number) bucketIndex.getStats().getOrDefault("preFilterSearches", 0L)).longValue();
+      return total;
+    }
+  }
+
+  /**
    * Issue #10973: {@code vectorNeighbors} read the record of every neighbour to make its row, before the outer query had said
    * which properties it wants, so {@code SELECT @rid FROM (SELECT expand(vectorNeighbors(...)))} filled the page cache with
    * every result record, and a quantized index, whose walk reads no document, saved nothing through SQL. A row now reads its
