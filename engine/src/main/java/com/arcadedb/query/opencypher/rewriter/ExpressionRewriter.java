@@ -23,6 +23,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Abstract base class for AST expression rewriters.
  * Provides a visitor pattern for traversing and transforming expression trees.
@@ -199,19 +204,34 @@ public abstract class ExpressionRewriter {
    * <p>
    * Two live types reach this today: {@code TernaryLogicalExpression}, which the general expression
    * parser builds for a top-level {@code AND}/{@code OR}/{@code XOR}/{@code NOT}, and
-   * {@code ChainedPropertyAccessExpression}, which this dispatch has no arm for.
+   * {@code ChainedPropertyAccessExpression}, which this dispatch has no arm for. The default rewrites
+   * their operands (issue #12337); they are handled here rather than given an arm of their own so a
+   * fail-closed override keeps receiving them.
    */
   protected Object visitUnknown(final Object expression) {
+    if (expression instanceof TernaryLogicalExpression ternary) {
+      final Expression left = rewriteExpressionChild(ternary.getLeft());
+      final Expression right = rewriteExpressionChild(ternary.getRight());
+      if (left == ternary.getLeft() && right == ternary.getRight())
+        return expression;
+      return right == null ? new TernaryLogicalExpression(ternary.getOperator(), left) :
+          new TernaryLogicalExpression(ternary.getOperator(), left, right);
+    }
+    if (expression instanceof ChainedPropertyAccessExpression chained) {
+      final Expression base = rewriteExpressionChild(chained.getBaseExpression());
+      return base == chained.getBaseExpression() ? expression : new ChainedPropertyAccessExpression(base, chained.getPropertyName());
+    }
     return expression;
   }
 
   /**
    * Rewrite a boolean coercion expression (wraps an Expression as a BooleanExpression).
-   * Default: return as-is (the wrapped expression is a leaf-level value).
+   * Default: recursively rewrite the wrapped expression.
    * Note: BooleanCoercionExpression implements BooleanExpression, not Expression.
    */
   protected BooleanExpression visitBooleanCoercion(final BooleanCoercionExpression expr) {
-    return expr;
+    final Expression inner = rewriteExpressionChild(expr.getExpression());
+    return inner == expr.getExpression() ? expr : new BooleanCoercionExpression(inner);
   }
 
   /**
@@ -297,8 +317,9 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite elements.
    */
   protected Expression visitList(final ListExpression expr) {
-    // TODO: Implement when ListExpression exposes getElements()
-    return expr;
+    final List<Expression> elements = rewriteExpressionList(expr.getElements());
+    // The source text is kept: it is what names the column, as for every rewritten node
+    return elements == expr.getElements() ? expr : new ListExpression(elements, expr.getText());
   }
 
   /**
@@ -306,8 +327,18 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite values.
    */
   protected Expression visitMap(final MapExpression expr) {
-    // TODO: Implement when MapExpression exposes getEntries()
-    return expr;
+    final Map<String, Expression> entries = expr.getEntries();
+    Map<String, Expression> rewritten = null;
+    for (final Map.Entry<String, Expression> entry : entries.entrySet()) {
+      final Expression value = entry.getValue();
+      final Expression newValue = rewriteExpressionChild(value);
+      if (newValue != value) {
+        if (rewritten == null)
+          rewritten = new LinkedHashMap<>(entries);
+        rewritten.put(entry.getKey(), newValue);
+      }
+    }
+    return rewritten == null ? expr : new MapExpression(rewritten, expr.getText());
   }
 
   /**
@@ -316,8 +347,11 @@ public abstract class ExpressionRewriter {
    * Note: InExpression implements BooleanExpression, not Expression.
    */
   protected BooleanExpression visitIn(final InExpression expr) {
-    // TODO: Implement when InExpression exposes getExpression() and getList()
-    return expr;
+    final Expression expression = rewriteExpressionChild(expr.getExpression());
+    final List<Expression> list = rewriteExpressionList(expr.getList());
+    if (expression == expr.getExpression() && list == expr.getList())
+      return expr;
+    return new InExpression(expression, list);
   }
 
   /**
@@ -326,8 +360,8 @@ public abstract class ExpressionRewriter {
    * Note: IsNullExpression implements BooleanExpression, not Expression.
    */
   protected BooleanExpression visitIsNull(final IsNullExpression expr) {
-    // TODO: Implement when IsNullExpression exposes getExpression()
-    return expr;
+    final Expression expression = rewriteExpressionChild(expr.getExpression());
+    return expression == expr.getExpression() ? expr : new IsNullExpression(expression, expr.isNot());
   }
 
   /**
@@ -336,17 +370,38 @@ public abstract class ExpressionRewriter {
    * Note: StringMatchExpression implements BooleanExpression, not Expression.
    */
   protected BooleanExpression visitStringMatch(final StringMatchExpression expr) {
-    // TODO: Implement when StringMatchExpression exposes getLeft() and getRight()
-    return expr;
+    final Expression expression = rewriteExpressionChild(expr.getExpression());
+    final Expression pattern = rewriteExpressionChild(expr.getPattern());
+    if (expression == expr.getExpression() && pattern == expr.getPattern())
+      return expr;
+    return new StringMatchExpression(expression, pattern, expr.getMatchType());
   }
 
   /**
    * Rewrite a CASE expression.
-   * Default: recursively rewrite all alternatives and else expression.
+   * Default: recursively rewrite the operand, every WHEN and THEN, and the ELSE. The operand placeholder a comparison-form
+   * WHEN reads ({@code WHEN > 5}) is a leaf, so the rebuilt alternatives keep pointing at the holder handed to the copy.
    */
   protected Expression visitCase(final CaseExpression expr) {
-    // TODO: Implement when CaseExpression exposes alternatives
-    return expr;
+    final Expression operand = rewriteExpressionChild(expr.getCaseExpression());
+    final Expression elseExpression = rewriteExpressionChild(expr.getElseExpression());
+
+    final List<CaseAlternative> alternatives = expr.getAlternatives();
+    List<CaseAlternative> rewritten = null;
+    for (int i = 0; i < alternatives.size(); i++) {
+      final CaseAlternative alternative = alternatives.get(i);
+      final Expression when = rewriteExpressionChild(alternative.getWhenExpression());
+      final Expression then = rewriteExpressionChild(alternative.getThenExpression());
+      if (when != alternative.getWhenExpression() || then != alternative.getThenExpression()) {
+        if (rewritten == null)
+          rewritten = new ArrayList<>(alternatives);
+        rewritten.set(i, new CaseAlternative(when, then, alternative.isPredicate() ? alternative.getWhenText() : null));
+      }
+    }
+
+    if (operand == expr.getCaseExpression() && elseExpression == expr.getElseExpression() && rewritten == null)
+      return expr;
+    return new CaseExpression(operand, rewritten != null ? rewritten : alternatives, elseExpression, expr.getOperandHolder());
   }
 
   /**
@@ -354,8 +409,22 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite filter and map expressions.
    */
   protected Expression visitListComprehension(final ListComprehensionExpression expr) {
-    // TODO: Implement when ListComprehensionExpression exposes expressions
-    return expr;
+    final Expression list = rewriteExpressionChild(expr.getListExpression());
+    final Expression where = rewriteInScope(expr.getWhereExpression(), expr.getVariable(), null);
+    final Expression map = rewriteInScope(expr.getMapExpression(), expr.getVariable(), null);
+    if (list == expr.getListExpression() && where == expr.getWhereExpression() && map == expr.getMapExpression())
+      return expr;
+    return new ListComprehensionExpression(expr.getVariable(), list, where, map, expr.getText());
+  }
+
+  /**
+   * Rewrites a child evaluated in a scope that binds {@code localVariable} (and {@code secondLocalVariable} when not null),
+   * such as the WHERE and the projection of {@code [x IN list WHERE ... | ...]}. The default rewrites it like any other
+   * child; a rewriter that renames variables overrides it so a local that shadows, or would capture, a name it rewrites is
+   * left alone.
+   */
+  protected Expression rewriteInScope(final Expression child, final String localVariable, final String secondLocalVariable) {
+    return rewriteExpressionChild(child);
   }
 
   /**
@@ -372,8 +441,12 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite initial value and accumulator expression.
    */
   protected Expression visitReduce(final ReduceExpression expr) {
-    // TODO: Implement when ReduceExpression exposes expressions
-    return expr;
+    final Expression initial = rewriteExpressionChild(expr.getInitialValue());
+    final Expression list = rewriteExpressionChild(expr.getListExpression());
+    final Expression step = rewriteInScope(expr.getReduceExpression(), expr.getAccumulatorVariable(), expr.getIteratorVariable());
+    if (initial == expr.getInitialValue() && list == expr.getListExpression() && step == expr.getReduceExpression())
+      return expr;
+    return new ReduceExpression(expr.getAccumulatorVariable(), initial, expr.getIteratorVariable(), list, step, expr.getText());
   }
 
   /**
@@ -389,8 +462,11 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite predicate expression.
    */
   protected Expression visitListPredicate(final ListPredicateExpression expr) {
-    // TODO: Implement when ListPredicateExpression exposes predicate
-    return expr;
+    final Expression list = rewriteExpressionChild(expr.getListExpression());
+    final Expression where = rewriteInScope(expr.getWhereExpression(), expr.getVariable(), null);
+    if (list == expr.getListExpression() && where == expr.getWhereExpression())
+      return expr;
+    return new ListPredicateExpression(expr.getPredicateType(), expr.getVariable(), list, where, expr.getText());
   }
 
   /**
@@ -406,8 +482,11 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite list and index expressions.
    */
   protected Expression visitListIndex(final ListIndexExpression expr) {
-    // TODO: Implement when ListIndexExpression exposes getList() and getIndex()
-    return expr;
+    final Expression list = rewriteExpressionChild(expr.getListExpression());
+    final Expression index = rewriteExpressionChild(expr.getIndexExpression());
+    if (list == expr.getListExpression() && index == expr.getIndexExpression())
+      return expr;
+    return new ListIndexExpression(list, index);
   }
 
   /**
@@ -415,8 +494,12 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite list and slice bounds.
    */
   protected Expression visitListSlice(final ListSliceExpression expr) {
-    // TODO: Implement when ListSliceExpression exposes expressions
-    return expr;
+    final Expression list = rewriteExpressionChild(expr.getListExpression());
+    final Expression from = rewriteExpressionChild(expr.getFromExpression());
+    final Expression to = rewriteExpressionChild(expr.getToExpression());
+    if (list == expr.getListExpression() && from == expr.getFromExpression() && to == expr.getToExpression())
+      return expr;
+    return new ListSliceExpression(list, from, to);
   }
 
   /**
@@ -425,8 +508,11 @@ public abstract class ExpressionRewriter {
    * Note: RegexExpression implements BooleanExpression, not Expression.
    */
   protected BooleanExpression visitRegex(final RegexExpression expr) {
-    // TODO: Implement when RegexExpression exposes getExpression() and getPattern()
-    return expr;
+    final Expression expression = rewriteExpressionChild(expr.getExpression());
+    final Expression pattern = rewriteExpressionChild(expr.getPattern());
+    if (expression == expr.getExpression() && pattern == expr.getPattern())
+      return expr;
+    return new RegexExpression(expression, pattern);
   }
 
   /**
@@ -434,18 +520,66 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite inner expression.
    */
   protected Expression visitBooleanWrapper(final BooleanWrapperExpression expr) {
-    // TODO: Implement when BooleanWrapperExpression exposes getInner()
+    // A predicate in value position (ORDER BY n:A, RETURN n.x IS NULL) is held by this wrapper, so a rewrite that does not
+    // descend here never reaches it (issue #12337)
+    final BooleanExpression inner = expr.getBooleanExpression();
+    final Object rewritten = rewrite(inner);
+    if (rewritten != inner && rewritten instanceof BooleanExpression newInner)
+      return new BooleanWrapperExpression(newInner);
     return expr;
   }
 
   /**
-   * Rewrite a label check expression (e.g., n:Person).
-   * Default: recursively rewrite base expression.
+   * Rewrite a label check expression (e.g., n:Person, n:A|$(expr), n:!A).
+   * Default: rewrite the subject and every dynamic {@code $(expr)} label; the static labels, the operator, the label
+   * predicate and the source text are kept (issue #12337: left untouched, a label check of a variable a collapsing
+   * projection renamed was not re-pointed at its output column and failed as an undefined variable).
    * Note: LabelCheckExpression implements BooleanExpression, not Expression.
    */
   protected BooleanExpression visitLabelCheck(final LabelCheckExpression expr) {
-    // TODO: Implement when LabelCheckExpression exposes getExpression()
-    return expr;
+    final Expression subject = expr.getVariableExpression();
+    final Expression newSubject = rewriteExpressionChild(subject);
+
+    final List<Expression> dynamicLabels = expr.getDynamicLabels();
+    final List<Expression> newDynamicLabels = rewriteExpressionList(dynamicLabels);
+
+    if (newSubject == subject && newDynamicLabels == dynamicLabels)
+      return expr;
+
+    if (expr.getPredicate() != null)
+      return new LabelCheckExpression(newSubject, expr.getPredicate(), expr.getText());
+    return new LabelCheckExpression(newSubject, expr.getLabels(), newDynamicLabels, expr.getOperator(), expr.getText());
+  }
+
+  /**
+   * Rewrites a child held as an {@link Expression}, keeping the original when the rewrite produced anything else (a
+   * {@link BooleanExpression} that is not also an {@link Expression} cannot take its place).
+   */
+  protected Expression rewriteExpressionChild(final Expression child) {
+    if (child == null)
+      return null;
+    final Object rewritten = rewrite(child);
+    return rewritten instanceof Expression expression ? expression : child;
+  }
+
+  /**
+   * Rewrites every element with {@link #rewriteExpressionChild}, returning the very same list when no element changed so the
+   * caller can keep its node.
+   */
+  protected List<Expression> rewriteExpressionList(final List<Expression> elements) {
+    if (elements == null)
+      return null;
+    List<Expression> rewritten = null;
+    for (int i = 0; i < elements.size(); i++) {
+      final Expression element = elements.get(i);
+      final Expression newElement = rewriteExpressionChild(element);
+      if (newElement != element) {
+        if (rewritten == null)
+          rewritten = new ArrayList<>(elements);
+        rewritten.set(i, newElement);
+      }
+    }
+    return rewritten == null ? elements : rewritten;
   }
 
   /**
@@ -453,8 +587,20 @@ public abstract class ExpressionRewriter {
    * Default: recursively rewrite projection expressions.
    */
   protected Expression visitMapProjection(final MapProjectionExpression expr) {
-    // TODO: Implement when MapProjectionExpression exposes projections
-    return expr;
+    final List<MapProjectionExpression.ProjectionElement> elements = expr.getElements();
+    List<MapProjectionExpression.ProjectionElement> rewritten = null;
+    for (int i = 0; i < elements.size(); i++) {
+      final MapProjectionExpression.ProjectionElement element = elements.get(i);
+      if (!element.isKeyExpression())
+        continue;
+      final Expression value = rewriteExpressionChild(element.getExpression());
+      if (value != element.getExpression()) {
+        if (rewritten == null)
+          rewritten = new ArrayList<>(elements);
+        rewritten.set(i, new MapProjectionExpression.ProjectionElement(element.getKey(), value));
+      }
+    }
+    return rewritten == null ? expr : new MapProjectionExpression(expr.getVariableName(), rewritten, expr.getText());
   }
 
   /**

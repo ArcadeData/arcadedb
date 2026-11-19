@@ -78,10 +78,19 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 4;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 4)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object source = params[0];
     final Object queryRaw = params[1];

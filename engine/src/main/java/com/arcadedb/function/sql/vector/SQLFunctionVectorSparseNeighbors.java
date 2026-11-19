@@ -83,10 +83,19 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   }
 
   @Override
+  public int getMinArgs() {
+    return 4;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 5;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 4 || params.length > 5)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
     validateNotNull(params[0], NAME + " index name");

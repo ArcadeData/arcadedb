@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
@@ -132,6 +133,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // A rejected argument must not read as a server fault: an empty database name, an unparseable setting value or a
       // backup file name outside the backup directory are all the caller's to fix
       RefusalArm.generic(IllegalArgumentException.class, Status.Code.INVALID_ARGUMENT),
+      // The statement an admin RPC runs on the caller's behalf, refused by the database: today the ALIGN DATABASE refusal of
+      // #11796 (a CommandSemanticException), out of AlignDatabase. HTTP answers every CommandParsingException 400, and the data
+      // plane answers the same statement sent through ExecuteCommand INVALID_ARGUMENT (ErrorCategory.PARSING); without this arm
+      // the RPC answered INTERNAL, a server fault, and production mode concealed the sentence that says why (issue #12464).
+      // An ArcadeDB-authored sentence: the only statements this service runs are ones the control plane wrote
+      RefusalArm.own(CommandParsingException.class, Status.Code.INVALID_ARGUMENT),
       // The operation cannot run in this server's configuration at all - HA not enabled, connect cluster unsupported -
       // rather than having been attempted and failed. Only that subtype: a plain CommandExecutionException from here
       // means the operation ran and failed (a backup archive that could not be deleted), which is INTERNAL, not a

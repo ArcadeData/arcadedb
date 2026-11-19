@@ -29,6 +29,7 @@ import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -69,16 +70,33 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
   public static final  String VERIFY_SENSOR = "verify";
   private static final Logger logger        = LoggerFactory.getLogger(TimeSeriesDatabaseWrapper.class);
 
+  /** Points the server accepted, on every protocol. */
+  static final String INSERTED_POINTS = "arcadedb.test.ts.inserted.points";
+  /**
+   * Points the server did not store, on every protocol: every line of a refused line protocol batch, the dropped lines of a partial
+   * write, the one point of a failed SQL INSERT.
+   */
+  static final String FAILED_POINTS   = "arcadedb.test.ts.inserted.points.error";
+  /**
+   * One sample per ingestion call, retries included: a line protocol call carries up to 500 points and a SQL call one, so the
+   * timings of two protocols are not comparable (see {@link #ingestSeries}).
+   */
+  static final String INGEST_REQUESTS = "arcadedb.test.ts.ingest.requests";
+
   private final ServerWrapper  server;
   private final Protocol       protocol;
   private final RemoteDatabase db;
-  private final Timer          pointsTimer;
+  private final Timer          requestTimer;
+  private final Counter        insertedPoints;
+  private final Counter        failedPoints;
 
   public TimeSeriesDatabaseWrapper(final ServerWrapper server, final Protocol protocol) {
     this.server = server;
     this.protocol = protocol;
     this.db = connect(protocol);
-    this.pointsTimer = Metrics.timer("arcadedb.test.ts.inserted.points");
+    this.requestTimer = Metrics.timer(INGEST_REQUESTS);
+    this.insertedPoints = Metrics.counter(INSERTED_POINTS);
+    this.failedPoints = Metrics.counter(FAILED_POINTS);
   }
 
   private RemoteDatabase connect(final Protocol protocol) {
@@ -209,7 +227,9 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
    * Note: the protocols are intentionally not throughput-comparable. {@code LINE_PROTOCOL} batches
    * up to 500 points per HTTP call, while the SQL protocols send one {@code INSERT} per round-trip
    * (one transaction per point) - the per-row SQL path is kept deliberately so it exercises the
-   * single-row append path under concurrency. Treat per-protocol timings as independent.
+   * single-row append path under concurrency. Treat per-protocol timings ({@value #INGEST_REQUESTS}, one sample per call) as
+   * independent. The point meters do compare: {@value #INSERTED_POINTS} and {@value #FAILED_POINTS} count points on every
+   * protocol, so a refused batch of 500 lines adds 500 to the error counter, not 1 (issue #11654).
    */
   public void ingestSeries(final String sensorId, final String region, final long fromTs, final int count) {
     if (protocol == Protocol.LINE_PROTOCOL) {
@@ -220,20 +240,21 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
         sb.append(lineFor(sensorId, region, fromTs + i, 15.0 + (i % 20), 40.0 + (i % 30))).append('\n');
         if (++inBatch == batchSize) {
           final String body = sb.toString();
-          pointsTimer.record(() -> postLineProtocol(body));
+          requestTimer.record(() -> postLineProtocol(body, batchSize));
           sb.setLength(0);
           inBatch = 0;
         }
       }
       if (inBatch > 0) {
         final String body = sb.toString();
-        pointsTimer.record(() -> postLineProtocol(body));
+        final int points = inBatch;
+        requestTimer.record(() -> postLineProtocol(body, points));
       }
     } else {
       for (int i = 0; i < count; i++) {
         final int idx = i;
         final long ts = fromTs + i;
-        pointsTimer.record(() -> insertSql(sensorId, region, ts, 15.0 + (idx % 20), 40.0 + (idx % 30)));
+        requestTimer.record(() -> insertSql(sensorId, region, ts, 15.0 + (idx % 20), 40.0 + (idx % 30)));
       }
     }
   }
@@ -251,9 +272,9 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
   private void ingestPoint(final String sensorId, final String region, final long ts, final double temperature,
       final double humidity) {
     if (protocol == Protocol.LINE_PROTOCOL)
-      postLineProtocol(lineFor(sensorId, region, ts, temperature, humidity));
+      requestTimer.record(() -> postLineProtocol(lineFor(sensorId, region, ts, temperature, humidity), 1));
     else
-      insertSql(sensorId, region, ts, temperature, humidity);
+      requestTimer.record(() -> insertSql(sensorId, region, ts, temperature, humidity));
   }
 
   private static String lineFor(final String sensorId, final String region, final long ts, final double temperature,
@@ -269,24 +290,38 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
           "INSERT INTO " + TYPE_NAME + " SET ts = ?, sensor_id = ?, region = ?, temperature = ?, humidity = ?",
           ts, sensorId, region, temperature, humidity);
     } catch (final Exception e) {
-      Metrics.counter("arcadedb.test.ts.inserted.points.error").increment();
+      failedPoints.increment();
       logger.error("SQL ingest error at ts {}: {}", ts, e.getMessage());
+      return;
     }
+    insertedPoints.increment();
   }
 
   /**
-   * Posts one line protocol batch, retrying while the server answers 503: the server marks a conflict it cannot resolve itself
-   * (a transaction prepared before a schema change, a compaction race) as retryable, and a client that gives up on it loses the
-   * batch (issue #10970).
+   * Posts one line protocol batch of {@code points} lines, retrying while the server answers 503: the server marks a conflict it
+   * cannot resolve itself (a transaction prepared before a schema change, a compaction race) as retryable, and a client that gives
+   * up on it loses the batch (issue #10970).
+   * <p>
+   * The point meters move by points, not by calls (issue #11654). A 204 inserted every line. A 400 partial write names how many
+   * samples the server wrote, and those are committed, so they count as inserted and the rest of the batch as lost. Any other
+   * failure - a 503 still answered on the last attempt, another status, no answer - counts the whole batch as lost.
    */
-  private void postLineProtocol(final String body) {
+  private void postLineProtocol(final String body, final int points) {
     final int maxAttempts = 10;
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        final int status = postLineProtocolOnce(body);
-        if (status == 204)
+        final LineProtocolAnswer answer = postLineProtocolOnce(body);
+        if (answer.status() == 204) {
+          insertedPoints.increment(points);
           return;
-        if (status != 503 || attempt == maxAttempts)
+        }
+        if (answer.status() == 400) {
+          final int written = writtenInPartialWrite(answer.body(), points);
+          insertedPoints.increment(written);
+          failedPoints.increment(points - written);
+          return;
+        }
+        if (answer.status() != 503 || attempt == maxAttempts)
           break;
         logger.info("Line protocol write answered 503 (attempt {}/{}), retrying", attempt, maxAttempts);
         sleep(500L * attempt);
@@ -294,11 +329,28 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
         break;
       }
     }
-    Metrics.counter("arcadedb.test.ts.inserted.points.error").increment();
+    failedPoints.increment(points);
   }
 
-  /** Returns the HTTP status, 204 on success; a non-204 status is logged with the server's answer. */
-  private int postLineProtocolOnce(final String body) throws IOException {
+  /**
+   * Reads the {@code written} count of a 400 partial-write answer, clamped to the batch: 0 when the answer carries none, as for a
+   * 400 that refused the request before writing anything (an empty body).
+   */
+  static int writtenInPartialWrite(final String answerBody, final int points) {
+    if (answerBody == null || answerBody.isBlank())
+      return 0;
+    try {
+      return Math.clamp(new JSONObject(answerBody).getInt("written", 0), 0, points);
+    } catch (final RuntimeException e) {
+      return 0;
+    }
+  }
+
+  private record LineProtocolAnswer(int status, String body) {
+  }
+
+  /** Returns the HTTP status, 204 on success, with the server's answer to any other status, which is logged. */
+  private LineProtocolAnswer postLineProtocolOnce(final String body) throws IOException {
     HttpURLConnection conn = null;
     try {
       final URL url = URI.create(
@@ -314,8 +366,8 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
         os.write(body.getBytes(StandardCharsets.UTF_8));
       }
       final int status = conn.getResponseCode();
+      String err = "";
       if (status != 204) {
-        String err = "";
         final InputStream errorStream = conn.getErrorStream();
         if (errorStream != null) {
           try (errorStream) {
@@ -324,7 +376,7 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
         }
         logger.error("Line protocol ingest error: HTTP {} {}", status, err);
       }
-      return status;
+      return new LineProtocolAnswer(status, err);
     } catch (final IOException e) {
       logger.error("Line protocol ingest error: {}", e.getMessage());
       throw e;
