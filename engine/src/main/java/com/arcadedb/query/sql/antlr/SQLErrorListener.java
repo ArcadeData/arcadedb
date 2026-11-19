@@ -31,6 +31,20 @@ import java.util.Locale;
  */
 public class SQLErrorListener extends BaseErrorListener {
 
+  /**
+   * The most characters of the offending line the message quotes.
+   * <p>
+   * The message travels to the client in a field with a hard size limit: over gRPC the metadata a peer receives is capped at
+   * 16 KB, and the whole quoted line went into it, so a statement whose line was longer than about 12 KB was answered with
+   * a transport failure instead of the syntax error. The budget keeps the message inside what every transport can carry.
+   */
+  static final int QUOTE_BUDGET = 4 * 1024;
+
+  /**
+   * The characters before the failing character the quote keeps, so the caret points into the quoted text.
+   */
+  static final int QUOTE_WINDOW = 512;
+
   private final String sqlText;
 
   public SQLErrorListener(final String sqlText) {
@@ -66,12 +80,13 @@ public class SQLErrorListener extends BaseErrorListener {
       final String[] lines = sqlText.split("\n");
       if (line > 0 && line <= lines.length) {
         final String errorLine = lines[line - 1];
+        final Snippet snippet = snippetOf(errorLine, charPositionInLine);
         errorMessage.append("\n");
-        errorMessage.append(errorLine);
+        errorMessage.append(snippet.text);
         errorMessage.append("\n");
 
-        // Add a caret (^) pointing to the error position
-        for (int i = 0; i < charPositionInLine; i++) {
+        // The caret points at the failing character, under the quoted text
+        for (int i = 0; i < snippet.caretOffset; i++) {
           errorMessage.append(" ");
         }
         errorMessage.append("^");
@@ -79,6 +94,51 @@ public class SQLErrorListener extends BaseErrorListener {
     }
 
     throw new CommandSQLParsingException(errorMessage.toString());
+  }
+
+  /**
+   * The offending line of the statement, quoted within a budget of characters, and where the
+   * caret that points at the failing character goes under it.
+   * <p>
+   * The line is quoted whole so the caret under it points at the character that failed, but a line can be longer than any
+   * budget: a statement that is one long line (a generated {@code INSERT}, a wide {@code CREATE}) carries every character
+   * of it into the message, and the message travels to the client in a field with a hard size limit - over gRPC the
+   * metadata a peer receives is capped at 16 KB, so a statement longer than about 12 KB was answered with a transport
+   * failure instead of the syntax error that named the offending character. The budget keeps the message inside what every
+   * transport can carry.
+   * <p>
+   * The window around the failing character is kept: the quote starts {@code QUOTE_WINDOW} characters before it and ends
+   * {@code QUOTE_BUDGET} characters after it, so the caret still points into the quoted text. The caret is placed under
+   * the quoted text and not under the original column: padding it to the original column would put back every character
+   * the budget removed.
+   */
+  private static Snippet snippetOf(final String errorLine, final int charPositionInLine) {
+    if (errorLine.length() <= QUOTE_BUDGET)
+      return new Snippet(errorLine, Math.max(0, Math.min(charPositionInLine, errorLine.length() - 1)));
+
+    final int position = Math.max(0, Math.min(charPositionInLine, errorLine.length() - 1));
+    final int start = Math.max(0, position - QUOTE_WINDOW);
+    final int end = Math.min(errorLine.length(), start + QUOTE_BUDGET);
+    final StringBuilder out = new StringBuilder(QUOTE_BUDGET + 32);
+    if (start > 0)
+      out.append("...");
+    out.append(errorLine, start, end);
+    if (end < errorLine.length())
+      out.append("...");
+    return new Snippet(out.toString(), position - start + (start > 0 ? 3 : 0));
+  }
+
+  /**
+   * A quoted piece of the offending line and where the caret goes under it.
+   */
+  private static final class Snippet {
+    private final String text;
+    private final int caretOffset;
+
+    private Snippet(final String text, final int caretOffset) {
+      this.text = text;
+      this.caretOffset = caretOffset;
+    }
   }
 
   /**
