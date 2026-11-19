@@ -21,16 +21,16 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.index.lsm.LegacyKeyIndexes;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.index.lsm.LSMTreeIndex;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,12 +42,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * missed them, MERGE created a second node, a uniqueness constraint let a copy in, and a delete left the entry behind.
  * <p>
  * The entries are written here as an older build wrote them: the canonical entry of each record is replaced with the
- * {@code List.toString()} text of its list.
+ * {@code List.toString()} text of its list, and the schema entry of the index loses the marker this build writes for an index whose
+ * keys are all canonical, as a database an older build wrote has none.
  */
 class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
 
   @Test
-  void legacyEntriesAreFoundMergedAndRemoved() {
+  void legacyEntriesAreFoundMergedAndRemoved() throws IOException {
     database.command("opencypher", "CREATE INDEX FOR (n:U) ON (n.v)");
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:U {id: 0, v: $v})", Map.of("v", List.of(1.5, 2.0)));
@@ -84,7 +85,7 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
   }
 
   @Test
-  void uniqueConstraintRefusesACopyOfALegacyKey() {
+  void uniqueConstraintRefusesACopyOfALegacyKey() throws IOException {
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE n.v IS UNIQUE");
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:K {id: 0, v: $v})", Map.of("v", List.of(1.5, 2.0)));
@@ -111,7 +112,7 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
    * of the list is no holder of the STRING, for a seek or for the uniqueness check (PR #12166 review).
    */
   @Test
-  void aStringSpelledLikeAnOldListKeyIsNotTheList() {
+  void aStringSpelledLikeAnOldListKeyIsNotTheList() throws IOException {
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE n.v IS UNIQUE");
     database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 0, v: $v})", Map.of("v", List.of(1.5, 2.0))));
     writeLegacyEntries("K[v]", "K");
@@ -124,50 +125,12 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
   }
 
   /**
-   * A seek reads the canonical key and then the old one. A commit between the two reads that moves the record's entry from the old
-   * key to the canonical one ([1.0] rewritten as [1], one key) must not hide the record from the seek (PR #12166 review).
-   */
-  @Test
-  void aCommitBetweenTheTwoReadsOfASeekHidesNoRecord() throws Exception {
-    database.command("opencypher", "CREATE INDEX FOR (n:U) ON (n.v)");
-    database.transaction(() -> database.command("opencypher", "CREATE (:U {id: 0, v: $v})", Map.of("v", List.of(1.0))));
-    writeLegacyEntries("U[v]", "U");
-    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("U[v]");
-
-    final AtomicBoolean moved = new AtomicBoolean();
-    LSMTreeIndex.betweenLegacyProbesForTesting = () -> {
-      if (!moved.compareAndSet(false, true))
-        return;
-      final Thread writer = new Thread(() -> database.transaction(
-          () -> database.command("opencypher", "MATCH (n:U {id: 0}) SET n.v = $v", Map.of("v", List.of(1L)))));
-      writer.start();
-      try {
-        writer.join();
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-      }
-    };
-    try {
-      final List<RID> found = new ArrayList<>();
-      try (final IndexCursor cursor = index.get(new Object[] { List.of(1.0) })) {
-        while (cursor.hasNext())
-          found.add(cursor.next().getIdentity());
-      }
-      assertThat(moved.get()).isTrue();
-      assertThat(found).hasSize(1);
-    } finally {
-      LSMTreeIndex.betweenLegacyProbesForTesting = null;
-    }
-    assertThat(checkDatabaseErrors()).isZero();
-  }
-
-  /**
    * An old entry is found by the spelling it was written with, as the build that wrote it found it. Another spelling of the same
    * list ([1.5, 2] for an entry written for [1.5, 2.0]) is one key only once the index is rebuilt, which writes every entry under
    * the canonical key (#11777 was that gap in the old builds).
    */
   @Test
-  void rebuildKeysTheLegacyEntriesCanonically() {
+  void rebuildKeysTheLegacyEntriesCanonically() throws IOException {
     database.command("opencypher", "CREATE INDEX FOR (n:U) ON (n.v)");
     database.transaction(() -> database.command("opencypher", "CREATE (:U {id: 0, v: $v})", Map.of("v", List.of(1.5, 2.0))));
     writeLegacyEntries("U[v]", "U");
@@ -185,7 +148,7 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
    * an old entry holds the key whatever scale the lookup gives it (PR #12166 review).
    */
   @Test
-  void legacyHolderOfACompositeKeyMatchesUnderTheIndexComparator() {
+  void legacyHolderOfACompositeKeyMatchesUnderTheIndexComparator() throws IOException {
     database.command("sql", "CREATE VERTEX TYPE C");
     database.command("sql", "CREATE PROPERTY C.d DECIMAL");
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:C) REQUIRE (n.v, n.d) IS UNIQUE");
@@ -193,15 +156,17 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
     database.transaction(() -> rid[0] = database.newVertex("C").set("id", 0).set("v", List.of(1.5, 2.0))
         .set("d", new BigDecimal("1.0")).save().getIdentity());
 
-    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("C[v,d]");
+    final TypeIndex written = (TypeIndex) database.getSchema().getIndexByName("C[v,d]");
     database.transaction(() -> {
-      for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+      for (final IndexInternal bucketIndex : written.getIndexesOnBuckets())
         if (bucketIndex.getAssociatedBucketId() == rid[0].getBucketId()) {
           bucketIndex.remove(new Object[] { List.of(1.5, 2.0), new BigDecimal("1.0") }, rid[0]);
           bucketIndex.put(new Object[] { "[1.5, 2.0]", new BigDecimal("1.0") }, new RID[] { rid[0] });
         }
     });
+    reopenAsAnOlderBuildLeftIt();
 
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("C[v,d]");
     final List<RID> found = new ArrayList<>();
     try (final IndexCursor cursor = typeIndex.get(new Object[] { List.of(1.5, 2.0), new BigDecimal("1.00") })) {
       while (cursor.hasNext())
@@ -218,7 +183,7 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
    * Replaces, in the bucket indexes of {@code indexName}, each record's entry with the one a build before #11615 wrote for it:
    * a list keyed by {@code List.toString()}.
    */
-  private void writeLegacyEntries(final String indexName, final String typeName) {
+  private void writeLegacyEntries(final String indexName, final String typeName) throws IOException {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(indexName);
     final List<String> written = new ArrayList<>();
     database.transaction(() -> {
@@ -248,6 +213,14 @@ class UndeclaredIndexLegacyListKeyIssue12160Test extends TestHelper {
       assertThat(written).isNotEmpty();
       assertThat(keys).containsAll(written).doesNotContain("[1.5, 2]", "[1]");
     }
+    reopenAsAnOlderBuildLeftIt();
+  }
+
+  /** Reopens the database with the schema entries an older build writes: without the marker of an index whose keys are all canonical. */
+  private void reopenAsAnOlderBuildLeftIt() throws IOException {
+    database.close();
+    LegacyKeyIndexes.forgetCanonicalKeys(getDatabasePath());
+    database = factory.open();
   }
 
   private long checkDatabaseErrors() {

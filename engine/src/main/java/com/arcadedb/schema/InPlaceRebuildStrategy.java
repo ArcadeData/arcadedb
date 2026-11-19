@@ -184,6 +184,20 @@ abstract class InPlaceRebuildStrategy {
         final LSMTreeIndex lsmTree, final Document record) {
       loader.add(lsmTree, record);
     }
+
+    /**
+     * Every entry is under its canonical key now, an entry an older build wrote included (issues #12160 and #12233): the index stops
+     * reading the old spellings, and says so in its schema entry. Persisted after the swap, so that a stop in between reopens the index
+     * still reading them, which costs a lookup and loses nothing.
+     */
+    @Override
+    void afterBucketIndexRebuilt(final DatabaseInternal database, final IndexInternal index) {
+      final LSMTreeIndex lsmTree = (LSMTreeIndex) index;
+      if (!lsmTree.mayHoldLegacyKeys())
+        return;
+      lsmTree.markKeysCanonical();
+      database.getSchema().getEmbedded().saveConfiguration();
+    }
   }
 
   /**

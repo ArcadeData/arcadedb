@@ -21,10 +21,12 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.index.lsm.LegacyKeyIndexes;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,14 +42,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * constraint let a copy in and CHECK DATABASE reported them.
  * <p>
  * The entries are written here as 26.9.1 wrote them: the canonical entry of each record is replaced with the
- * {@code Double.toString()} text of its number.
+ * {@code Double.toString()} text of its number, and the schema entry of the index loses the marker this build writes for an index
+ * whose keys are all canonical, as a database 26.9.1 wrote has none.
  */
 class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
 
   private static final List<Double> OLD_SPELLED = List.of(1.0, -0.0, 1e300);
 
   @Test
-  void legacyNumberEntriesAreFoundMergedAndRemoved() {
+  void legacyNumberEntriesAreFoundMergedAndRemoved() throws IOException {
     database.command("opencypher", "CREATE INDEX FOR (n:U) ON (n.v)");
     database.transaction(() -> {
       for (int i = 0; i < OLD_SPELLED.size(); i++)
@@ -82,7 +85,7 @@ class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
   }
 
   @Test
-  void uniqueConstraintRefusesACopyOfALegacyNumber() {
+  void uniqueConstraintRefusesACopyOfALegacyNumber() throws IOException {
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE n.v IS UNIQUE");
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:K {id: 0, v: 1.0})");
@@ -108,7 +111,7 @@ class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
    * is no holder of the STRING, for a seek or for the uniqueness check (PR #12166 review).
    */
   @Test
-  void aStringSpelledLikeAnOldNumberKeyIsNotTheNumber() {
+  void aStringSpelledLikeAnOldNumberKeyIsNotTheNumber() throws IOException {
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:K) REQUIRE n.v IS UNIQUE");
     database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 0, v: 1.0})"));
     writeLegacyEntries("K[v]", "K");
@@ -122,7 +125,7 @@ class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
 
   /** After REBUILD INDEX every entry is under the canonical key: 1.0 and 1 are one key again. */
   @Test
-  void rebuildKeysTheLegacyNumbersCanonically() {
+  void rebuildKeysTheLegacyNumbersCanonically() throws IOException {
     database.command("opencypher", "CREATE INDEX FOR (n:U) ON (n.v)");
     database.transaction(() -> database.command("opencypher", "CREATE (:U {id: 0, v: 1.0})"));
     writeLegacyEntries("U[v]", "U");
@@ -139,7 +142,7 @@ class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
    * Replaces, in the bucket indexes of {@code indexName}, the entry of each record holding a double with the one 26.9.1 wrote
    * for it: the number keyed by {@code Double.toString()}.
    */
-  private void writeLegacyEntries(final String indexName, final String typeName) {
+  private void writeLegacyEntries(final String indexName, final String typeName) throws IOException {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(indexName);
     database.transaction(() -> {
       try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid, v FROM " + typeName)) {
@@ -165,6 +168,9 @@ class UndeclaredIndexLegacyNumberKeyIssue12233Test extends TestHelper {
       }
       assertThat(keys).contains("1.0").doesNotContain("1");
     }
+    database.close();
+    LegacyKeyIndexes.forgetCanonicalKeys(getDatabasePath());
+    database = factory.open();
   }
 
   private long checkDatabaseErrors() {
