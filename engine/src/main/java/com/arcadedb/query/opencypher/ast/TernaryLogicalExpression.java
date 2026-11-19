@@ -145,12 +145,7 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private static Boolean toBoolean(final Object value) {
-    if (value == null)
-      return null;
-    if (value instanceof Boolean)
-      return (Boolean) value;
-    // Non-null, non-boolean values are truthy in Cypher
-    return true;
+    return BooleanCoercionExpression.toPredicate(value);
   }
 
   public Operator getOperator() {
@@ -168,6 +163,12 @@ public class TernaryLogicalExpression implements Expression {
   @Override
   public boolean isAggregation() {
     return false;
+  }
+
+  /** An aggregate under AND, OR, XOR or NOT makes the item an aggregation, not a grouping key (issue #11597). */
+  @Override
+  public boolean containsAggregation() {
+    return left.containsAggregation() || right != null && right.containsAggregation();
   }
 
   @Override

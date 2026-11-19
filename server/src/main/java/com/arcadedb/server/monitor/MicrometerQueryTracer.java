@@ -58,9 +58,33 @@ public final class MicrometerQueryTracer implements QueryTracer {
         .lowCardinalityKeyValue("type", type != null ? type : "query")
         .highCardinalityKeyValue("db.statement", query != null ? query : "");
     observation.start();
-    final Observation.Scope scope = observation.openScope();
+    return new ObservedSpan(observation, observation.openScope());
+  }
 
-    return () -> {
+  /**
+   * The span of one execution. A failure is recorded on the observation before it stops (issue #11638): the tracing handler turns
+   * it into the ERROR status and the exception event of the exported span, which a span stopped with no error never carries.
+   */
+  private static final class ObservedSpan implements Span {
+    private final Observation       observation;
+    private final Observation.Scope scope;
+
+    private ObservedSpan(final Observation observation, final Observation.Scope scope) {
+      this.observation = observation;
+      this.scope = scope;
+    }
+
+    @Override
+    public void error(final Throwable error) {
+      try {
+        observation.error(error);
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.WARNING, "Error recording the failure on the query tracing observation", t);
+      }
+    }
+
+    @Override
+    public void close() {
       // A failure finalizing the optional span must never disturb the query path.
       try {
         scope.close();
@@ -72,6 +96,6 @@ public final class MicrometerQueryTracer implements QueryTracer {
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.WARNING, "Error stopping query tracing observation", t);
       }
-    };
+    }
   }
 }

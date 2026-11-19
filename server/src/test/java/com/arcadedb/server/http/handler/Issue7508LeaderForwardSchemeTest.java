@@ -289,7 +289,7 @@ class Issue7508LeaderForwardSchemeTest {
   // Entry point 3 used to be LeaderProxy, and it never ran: nothing constructed the class, so the branch driven
   // here described no request any server had served. It was deleted with issue #7528, and with it the third arm of
   // this test. The two entry points above are the whole of the follower-to-leader HTTP relay; the SQL write forward
-  // in RaftReplicatedDatabase is the third and is covered by Issue7508LeaderHttpsEndpointTest in ha-raft.
+  // in RaftReplicatedDatabase is the third and is covered by PeerEndpointIdentityTest.LeaderHttpsEndpoint in ha-raft.
   // ---------------------------------------------------------------------------------------------------------------
 
   // ---------------------------------------------------------------------------------------------------------------

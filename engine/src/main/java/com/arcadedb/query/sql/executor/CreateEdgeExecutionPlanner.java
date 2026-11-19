@@ -113,7 +113,7 @@ public class CreateEdgeExecutionPlanner {
     handleApplyDefaults(result, context);
     handleSave(result, targetBucketName, context);
     handleConnectEdge(result, context);
-    //TODO implement batch, wait and retry
+    // RETRY/WAIT re-run the whole plan, so they live in CreateEdgeStatement's execution, not in a step (issue #11448)
     return result;
   }
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.map;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.LinkedHashMap;
@@ -52,21 +53,20 @@ public class MapFromPairs extends AbstractMapFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (!(args[0] instanceof List)) {
+    // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, and is the same LIST to every list function (issue #11582)
+    final List<Object> pairs = CypherFunctionHelper.asListOrNull(args[0]);
+    if (pairs == null) {
       throw new IllegalArgumentException("map.fromPairs() requires a list of pairs");
     }
 
-    final List<?> pairs = (List<?>) args[0];
     final Map<String, Object> result = new LinkedHashMap<>();
 
     for (final Object pair : pairs) {
-      if (pair instanceof List) {
-        final List<?> p = (List<?>) pair;
-        if (p.size() >= 2) {
-          final Object key = p.get(0);
-          if (key != null) {
-            result.put(key.toString(), p.get(1));
-          }
+      final List<Object> p = CypherFunctionHelper.asListOrNull(pair);
+      if (p != null && p.size() >= 2) {
+        final Object key = p.get(0);
+        if (key != null) {
+          result.put(key.toString(), p.get(1));
         }
       }
     }

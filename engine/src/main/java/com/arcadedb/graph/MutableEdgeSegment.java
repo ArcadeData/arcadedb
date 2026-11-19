@@ -19,6 +19,8 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.*;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -31,6 +33,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   public static final byte RECORD_TYPE = 3;
   public static final int CONTENT_START_POSITION =
           Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
+  /** How many times a walk re-reads the committed image of a segment whose previous one a concurrent commit deleted (#11713). */
+  private static final int MAX_CHAIN_RESYNC_ATTEMPTS = 3;
   private final RID NULL_RID;
 
   private int bufferSize;
@@ -591,9 +595,87 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
    */
   @Override
   public EdgeSegment getPrevious() {
+    return getPrevious((char) 0);
+  }
+
+  /**
+   * @param walkMark the mark of the walk ({@link DatabaseInternal#graphWalkMark()}), or 0 for a caller with none, which then takes
+   *                 one when it needs it
+   */
+  @Override
+  public EdgeSegment getPrevious(final char walkMark) {
+    final RID previousRID = previousRIDInTransaction(this);
+    if (previousRID == null)
+      return null;
+    try {
+      return (EdgeSegment) database.lookupByRID(previousRID, true);
+    } catch (final RecordNotFoundException e) {
+      return previousOfCommittedImage(previousRID, e, walkMark);
+    }
+  }
+
+  /**
+   * The segment before this one as the newest committed image of this segment names it, for a walk whose image of this segment is
+   * older than a commit that deleted the segment it points at (issue #11713). A walk reads a segment as it stood when it reached
+   * it: a transaction that commits in between can empty the segment behind it, delete it, and relink the committed image of this
+   * one around it. The pointer of the walk's image then names a segment that is gone, and the walk goes on from the one the chain
+   * was relinked to: the entries of the deleted segment were removed by that same commit, so none is lost.
+   * <p>
+   * Three answers that are not a segment:
+   * <ul>
+   * <li>the image read again still names the missing segment: with no commit in flight or published since the walk began the
+   * chain itself is broken, not raced, and the {@link RecordNotFoundException} is reported as it always was (CHECK DATABASE
+   * repairs it); otherwise the image is one that predates the delete or is only half published, and the conflict is answered
+   * (see {@link ImmutableDocument#missingGraphRecord});</li>
+   * <li>this segment was deleted too, or the newest image keeps naming segments that disappear before they are read: the walk has
+   * lost its place in the chain, which is a conflict with a concurrent writer and is answered with the retryable
+   * {@link ConcurrentModificationException};</li>
+   * <li>the committed image is the end of the chain.</li>
+   * </ul>
+   * Under REPEATABLE_READ the image a lookup answers is the one the transaction pinned, and a segment the transaction wrote is its
+   * own copy: both can still name the missing segment, and both get the conflict when a commit was published since the walk
+   * began, since the chain they began on cannot be served.
+   */
+  private EdgeSegment previousOfCommittedImage(final RID missingPrevious, final RecordNotFoundException notFound,
+      final char walkMark) {
+    final RID self = getIdentity();
+    if (self == null)
+      throw notFound;
+
+    RID missing = missingPrevious;
+    for (int attempt = 0; attempt < MAX_CHAIN_RESYNC_ATTEMPTS; ++attempt) {
+      final EdgeSegment committed;
+      try {
+        committed = (EdgeSegment) database.lookupByRID(self, true);
+      } catch (final RecordNotFoundException selfGone) {
+        throw new ConcurrentModificationException(
+            "Edge segment " + self + " was deleted by a concurrent transaction while it was walked: retry the operation", selfGone);
+      }
+
+      final RID previous = previousRIDInTransaction(committed);
+      if (previous == null)
+        return null;
+      if (previous.equals(missing))
+        // THE IMAGE READ AGAIN STILL NAMES THE MISSING SEGMENT. THAT IS A BROKEN CHAIN ONLY WHEN NO COMMIT WAS IN FLIGHT OR PUBLISHED
+        // SINCE THE WALK BEGAN: THE IMAGE CAN BE THE TRANSACTION'S OWN COPY, A PAGE IT PINNED (REPEATABLE_READ), OR THE PAGE OF A
+        // COMMIT THAT HAS PUBLISHED THE DELETE BUT NOT YET THE RELINK, AND THEN IT IS A CONFLICT TO RETRY
+        throw ImmutableDocument.missingGraphRecord(database, missing, walkMark != 0 ? walkMark : database.graphWalkMark(), notFound);
+
+      try {
+        return (EdgeSegment) database.lookupByRID(previous, true);
+      } catch (final RecordNotFoundException goneAgain) {
+        // ANOTHER COMMIT DELETED THE SEGMENT THE NEWEST IMAGE NAMED BEFORE IT COULD BE READ: LOOK AGAIN
+        missing = previous;
+      }
+    }
+    throw new ConcurrentModificationException("Edge segments behind " + self
+        + " keep being deleted by concurrent transactions while they are walked: retry the operation", notFound);
+  }
+
+  /** The pointer of {@code segment} resolved through the segments the open transaction deleted, see {@link #getPrevious()}. */
+  private RID previousRIDInTransaction(final EdgeSegment segment) {
     final TransactionContext tx = database.getTransactionIfExists();
-    final RID previousRID = tx != null ? tx.resolveDeletedEdgeSegment(getPreviousRID()) : getPreviousRID();
-    return previousRID == null ? null : (EdgeSegment) database.lookupByRID(previousRID, true);
+    return tx != null ? tx.resolveDeletedEdgeSegment(segment.getPreviousRID()) : segment.getPreviousRID();
   }
 
   @Override

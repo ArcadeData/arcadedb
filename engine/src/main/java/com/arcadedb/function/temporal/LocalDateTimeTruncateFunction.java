@@ -54,6 +54,10 @@ public class LocalDateTimeTruncateFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
+    // issue #11589: a null unit or a null temporal value is a null answer, as Cypher propagates a null argument, not a
+    // NullPointerException or a type error
+    if (args[0] == null || args[1] == null)
+      return null;
     final String unit = args[0].toString();
     final LocalDateTime dt;
     if (args[1] instanceof CypherLocalDateTime)
@@ -77,7 +81,7 @@ public class LocalDateTimeTruncateFunction implements StatelessFunction {
     if (CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
     if (args.length >= 3 && args[2] instanceof Map)
-      truncated = CypherFunctionHelper.applyDateTimeMap(truncated, (Map<String, Object>) args[2]);
+      truncated = CypherFunctionHelper.applyDateTimeMap(truncated, (Map<String, Object>) args[2], false);
     return new CypherLocalDateTime(truncated);
   }
 }

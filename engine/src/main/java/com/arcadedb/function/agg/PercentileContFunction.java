@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.agg;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
@@ -67,10 +67,10 @@ public class PercentileContFunction implements StatelessFunction, HeapBufferingF
     checkArity(args);
     if (percentile < 0) {
       if (args[1] == null)
-        throw new CommandExecutionException("percentileCont() percentile argument must not be null");
+        throw new InvalidArgumentException("percentileCont() percentile argument must not be null");
       percentile = CypherFunctionHelper.requireNumberArgument(args[1], getName()).doubleValue();
       if (percentile < 0.0 || percentile > 1.0)
-        throw new CommandExecutionException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
+        throw new InvalidArgumentException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
     }
     if (args[0] instanceof Number number) {
       values.add(number);
