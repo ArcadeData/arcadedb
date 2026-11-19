@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -82,7 +83,7 @@ final class ArcadeLabels {
       return label;
 
     if (schema.getBucketByNameIfExists(bucketName) == null)
-      throw new IllegalArgumentException("Bucket '" + bucketName + "' does not exist");
+      throw new SchemaException("Bucket '" + bucketName + "' does not exist");
     final DocumentType type = schema.getTypeByBucketName(bucketName);
     if (type == null)
       throw new IllegalArgumentException("Bucket '" + bucketName + "' does not belong to any type");

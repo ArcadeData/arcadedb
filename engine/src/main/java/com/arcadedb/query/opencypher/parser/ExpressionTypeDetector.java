@@ -171,18 +171,12 @@ class ExpressionTypeDetector {
    * Returns null if not a list predicate.
    */
   Expression tryParseListPredicates(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.ListItemsPredicateContext listPredCtx = ParseTreeSearch.findListItemsPredicateRecursive(ctx);
-    if (listPredCtx != null) {
-      // Only return list predicate if it covers the entire expression.
-      // Otherwise, it's a sub-expression (e.g., none(...) = false) and should
-      // be handled by comparison/arithmetic parsing instead.
-      final String predText = listPredCtx.getText();
-      final String exprText = ctx.getText();
-      if (predText.length() >= exprText.length() - 2) // allow for whitespace
-        return builder.parseListItemsPredicate(listPredCtx);
-    }
-
-    return null;
+    // Only a list predicate whose parse-tree span covers the entire expression is the expression. Otherwise it is a
+    // sub-expression (none(...) = false) left to the comparison/arithmetic parsing. The length tolerance this used to
+    // compare texts with (len >= exprText.length() - 2) swallowed a trailing two-character operator such as "=a" or
+    // "<>b" and silently dropped it, the defect #5342 removed from the comprehensions (issue #12327).
+    final Cypher25Parser.ListItemsPredicateContext listPredCtx = findSpanning(ctx, Cypher25Parser.ListItemsPredicateContext.class);
+    return listPredCtx != null ? builder.parseListItemsPredicate(listPredCtx) : null;
   }
 
   /**
@@ -310,13 +304,11 @@ class ExpressionTypeDetector {
     // Otherwise, [date({...})] would be parsed as date() because findFunctionInvocationRecursive
     // finds the nested function call inside the list. For cases like tail([1,2,3]),
     // the function is at the top level and will be caught below.
+    // Top-level only when its span is the whole expression, by tokens rather than by a text-length tolerance (issue #12327)
+    final Cypher25Parser.ListLiteralContext fullListCtx = findSpanning(ctx, Cypher25Parser.ListLiteralContext.class);
+    if (fullListCtx != null)
+      return builder.parseListLiteral(fullListCtx);
     final Cypher25Parser.ListLiteralContext listCtx = ParseTreeSearch.findListLiteralRecursive(ctx);
-    if (listCtx != null) {
-      final String listText = listCtx.getText();
-      final String exprText = ctx.getText();
-      if (listText.length() >= exprText.length() - 2) // Top-level list (allow for whitespace)
-        return builder.parseListLiteral(listCtx);
-    }
 
     // Function invocations
     final Cypher25Parser.FunctionInvocationContext funcCtx = ParseTreeSearch.findFunctionInvocationRecursive(ctx);
