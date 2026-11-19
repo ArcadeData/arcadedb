@@ -298,10 +298,14 @@ final class NTriplesStatement {
     if (pos < line.length() && line.charAt(pos) == '@') {
       final int tagBegin = pos;
       ++pos;
-      while (pos < line.length() && (Character.isLetterOrDigit(line.charAt(pos)) || line.charAt(pos) == '-')) {
+      // A BCP 47 TAG IS ASCII ([A-Za-z0-9-]): A NON-ASCII LETTER OR DIGIT IN IT REFUSES THE ROW RATHER THAN CUT THE TAG SHORT
+      while (pos < line.length() && isLanguageTagChar(line.charAt(pos))) {
         ++pos;
         checkTermLength();
       }
+      if (pos < line.length() && Character.isLetterOrDigit(line.charAt(pos)))
+        throw new ImportException("Invalid language tag at column " + (tagBegin + 1) + ", a tag is ASCII letters, digits and "
+            + "'-' only: " + line);
       buffer.append(line, tagBegin, pos);
       literalLanguage = line.substring(tagBegin + 1, pos);
     } else if (line.startsWith("^^<", pos)) {
@@ -314,6 +318,10 @@ final class NTriplesStatement {
       return literal + "^^<" + datatype + ">";
     }
     return buffer.toString();
+  }
+
+  private static boolean isLanguageTagChar(final char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
   }
 
   /**

@@ -19,8 +19,10 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedProperty;
 import com.arcadedb.integration.importer.AnalyzedSchema;
@@ -39,6 +41,7 @@ import com.univocity.parsers.csv.CsvParserSettings;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.Reader;
+import java.util.Iterator;
 import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
@@ -60,7 +63,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
   /**
    * The key property an RDF source resolves its subject and object IRIs against when the caller named none. A
    * DEFAULT, not an invariant: nothing on this path requires the literal {@code "id"} - whatever name is in force is
-   * used consistently for the vertex property, its index and the {@code newEdgeByKeys} lookup - so an explicit
+   * used consistently for the vertex property, its index and the lookup of every term by it - so an explicit
    * {@code -typeIdProperty} / {@code WITH typeIdProperty = ...} wins over it (issue #7891).
    */
   public static final String DEFAULT_TYPE_ID_PROPERTY = "id";
@@ -220,6 +223,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
       txOpen[0] = resolvesTransaction;
       ownTx[0] = ImporterTransactions.currentTransaction(database);
 
+      // THE STATEMENT INDEX: 0-BASED, BLANK AND COMMENT LINES NOT COUNTED, THE SAME NUMBER THE CSV PARSER THIS REPLACES GAVE A
+      // ROW (IT SKIPPED BOTH TOO). skipEntries IS MEASURED AGAINST IT, AND AN ERROR NAMES IT AS THAT: THE PHYSICAL LINE IS NOT
+      // KNOWN HERE, SINCE Parser HAS ALREADY DROPPED THE SOURCE'S LEADING COMMENT BLOCK
       long line = -1;
       // BOUNDED: A LINE LONGER THAN ANY STATEMENT WITHIN maxPropertySize IS NOT KEPT WHOLE, AND IS REFUSED BELOW AS A ROW ERROR
       while (statement.readLine(reader)) {
@@ -248,32 +254,26 @@ public class RDFImporterFormat extends CSVImporterFormat {
           // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). ANY RUN OF
           // WHITESPACE OR OF THE SEPARATOR BETWEEN TERMS IS ONE GAP (ISSUE #8159).
           if (statement.lineTooLong())
-            throw new ImportException("Row at line " + line + " is " + statement.lineLength() + " characters long, more than a "
-                + "statement of terms within maxPropertySize=" + statement.maxLength() + " can be: " + text.substring(0, 80) + "...");
+            throw new ImportException(rowAt(line) + " is " + statement.lineLength() + " characters long, more than a statement of "
+                + "terms within maxPropertySize=" + statement.maxLength() + " can be: " + text.substring(0, 80) + "...");
           final int found = statement.parse(text, terms);
           if (found < 3)
-            throw new ImportException(
-                "Row at line " + line + " has " + found + " term(s), fewer than the 3 an RDF statement "
-                    + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
+            throw new ImportException(rowAt(line) + " has " + found + " term(s), fewer than the 3 an RDF statement "
+                + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
 
-          final String v1Id = terms[0];
           final String edgeLabel = terms[1];
-          final String v2Id = terms[2];
 
-          if (statement.objectIsLiteral())
-            createLiteralVertexIfAbsent(database, settings.vertexTypeName, typeIdProperty, v2Id, statement);
+          // ONE INDEX LOOKUP PER TERM. THE VERTEX OF A LITERAL OBJECT IS RESOLVED FIRST, WITH ITS VALUE WHEN IT IS CREATED, AND
+          // HANDED TO THE EDGE AS IT IS: newEdgeByKeys WOULD HAVE LOOKED THE SAME KEY UP A SECOND TIME, ON THE TERMS THAT ARE
+          // USUALLY THE MAJORITY OF A FILE'S OBJECTS
+          final Vertex literal = statement.objectIsLiteral() ?
+              literalVertex(database, settings.vertexTypeName, typeIdProperty, terms[2], statement) :
+              null;
+          final Vertex subject = vertexByKey(database, settings.vertexTypeName, typeIdProperty, terms[0]);
+          final Vertex object = literal != null ? literal : vertexByKey(database, settings.vertexTypeName, typeIdProperty, terms[2]);
 
           // CREATE AN EDGE
-          database.newEdgeByKeys(settings.vertexTypeName,
-              new String[] { typeIdProperty },
-              new Object[] { v1Id },
-              settings.vertexTypeName,
-              new String[] { typeIdProperty },
-              new Object[] { v2Id }, true,
-              settings.edgeTypeName,
-              true,
-              LABEL_PROPERTY,
-              edgeLabel);
+          subject.newEdge(settings.edgeTypeName, object, LABEL_PROPERTY, edgeLabel);
 
           context.createdEdges.incrementAndGet();
 
@@ -330,7 +330,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
       reportSkippedEntries(route, context, skipped);
 
       // In a finally rather than in a catch: a malformed row (a read of the source throwing) or a
-      // newEdgeByKeys() failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
+      // vertex or edge creation failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
       // and an Error - an OutOfMemoryError is the one a large import can realistically raise - would too.
       if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
         txOpen[0] = false;
@@ -366,19 +366,31 @@ public class RDFImporterFormat extends CSVImporterFormat {
   }
 
   /**
-   * Creates the vertex of the literal object of the statement just parsed, keyed by {@code key} (its canonical N-Triples form),
-   * with its decoded value, language tag and datatype, unless a vertex with that key already exists.
+   * The vertex of the literal object of the statement just parsed, keyed by {@code key} (its canonical N-Triples form): the
+   * one already there, else a new one with its decoded value, language tag and datatype.
    */
-  private static void createLiteralVertexIfAbsent(final DatabaseInternal database, final String typeName,
-      final String typeIdProperty, final String key, final NTriplesStatement statement) {
-    if (database.lookupByKey(typeName, typeIdProperty, key).hasNext())
-      return;
+  private static Vertex literalVertex(final DatabaseInternal database, final String typeName, final String typeIdProperty,
+      final String key, final NTriplesStatement statement) {
+    final Iterator<Identifiable> found = database.lookupByKey(typeName, typeIdProperty, key);
+    if (found.hasNext())
+      return found.next().getIdentity().asVertex();
     final MutableVertex vertex = database.newVertex(typeName);
     vertex.set(typeIdProperty, key);
     setUnlessKey(vertex, typeIdProperty, LITERAL_VALUE_PROPERTY, statement.objectLexical());
     setUnlessKey(vertex, typeIdProperty, LITERAL_LANGUAGE_PROPERTY, statement.objectLanguage());
     setUnlessKey(vertex, typeIdProperty, LITERAL_DATATYPE_PROPERTY, statement.objectDatatype());
-    vertex.save();
+    return vertex.save();
+  }
+
+  /** The vertex keyed by {@code key}: the one already there, else a new one carrying only the key. */
+  private static Vertex vertexByKey(final DatabaseInternal database, final String typeName, final String typeIdProperty,
+      final String key) {
+    final Iterator<Identifiable> found = database.lookupByKey(typeName, typeIdProperty, key);
+    if (found.hasNext())
+      return found.next().getIdentity().asVertex();
+    final MutableVertex vertex = database.newVertex(typeName);
+    vertex.set(typeIdProperty, key);
+    return vertex.save();
   }
 
   /** A literal's property, never written over the key property a caller may have named like it. */
@@ -389,8 +401,12 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
   /**
    * The vertex type the subjects and objects are keyed into, created with its key property and unique index when the database
-   * does not have it yet. {@code newEdgeByKeys} looks every term up by that index, so an import into a database without the
-   * type failed with "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
+   * does not have it yet. Every term is looked up by that index, so an import into a database without the type failed with
+   * "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
+   * <p>
+   * Created before the import's transaction is resolved, and inside the caller's when the caller holds one: a schema change
+   * is not transactional in ArcadeDB, so the type and its index stay when the import fails, is rolled back, or the caller
+   * rolls its own transaction back. They are empty then, and the next import uses them as it would have created them.
    */
   private static void ensureVertexType(final DatabaseInternal database, final String typeName, final String typeIdProperty) {
     if (database.getSchema().existsType(typeName))
@@ -407,6 +423,11 @@ public class RDFImporterFormat extends CSVImporterFormat {
   private String termSeparator(final ImporterSettings settings) {
     final String delimiter = delimiterFor(settings);
     return "\\t".equals(delimiter) ? "\t" : delimiter;
+  }
+
+  /** How an error names the statement: by its index, said as such, since it is not the physical line of the source. */
+  private static String rowAt(final long statementIndex) {
+    return "Row at line " + statementIndex + " (0-based, blank and comment lines not counted)";
   }
 
   private static boolean isBlankOrComment(final String text) {

@@ -92,8 +92,8 @@ class RDFImporterFormatCommitCadenceTest {
 
   /**
    * The value that makes the load refuse the row that carries it ({@code maxPropertySize}: an {@link ImportException}
-   * since the statements are read as N-Triples, issue #12049), which is what induces the mid-file failure the durability assertions need: only edges an
-   * intermediate commit already made durable can survive it.
+   * since the statements are read as N-Triples, issue #12049), which is what induces the mid-file failure the
+   * durability assertions need: only edges an intermediate commit already made durable can survive it.
    */
   private static final String ROW_THAT_ABORTS_THE_PARSE = "v99,rel,TOOLONGVALUEHERE";
 

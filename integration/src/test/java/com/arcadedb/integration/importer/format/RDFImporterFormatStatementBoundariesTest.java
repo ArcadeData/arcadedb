@@ -163,14 +163,143 @@ class RDFImporterFormatStatementBoundariesTest {
     assertThat(edges()).containsEntry("http://a/p", "http://a/s>http://a/o");
   }
 
+  /**
+   * A comma-delimited triple file that relied on CSV quoting: a quoted cell is an N-Triples literal now, kept with its quotes
+   * in the key (it was the unquoted {@code a, b}), its unquoted text in {@code value}. The comma inside the quotes stays in it.
+   */
+  @Test
+  void quotedCommaDelimitedCellIsALiteral() throws Exception {
+    load(new RDFImporterFormat(","), settings(), """
+        <http://a/s>,<http://a/p>,"a, b"
+        """);
+
+    assertThat(edges()).containsOnly(Map.entry("http://a/p", "http://a/s>\"a, b\""));
+    assertThat(valueOf("\"a, b\"")).isEqualTo("a, b");
+  }
+
+  /**
+   * A CSV doubled quote ({@code ""}) is not an N-Triples escape: the literal ends at the first quote. In the object the literal
+   * is cut there and the rest of the line ignored, as anything after the third term is; in the subject the row is left short
+   * and refused. A valid N-Triples file escapes the quote ({@code \"}), which {@code Issue12049RdfLiteralTermsTest} covers.
+   */
+  @Test
+  void csvDoubledQuoteEndsTheLiteral() throws Exception {
+    load(new RDFImporterFormat(","), settings(), "<http://a/s>,<http://a/p>,\"say \"\"hi\"\"\"\n");
+    assertThat(edges()).containsOnly(Map.entry("http://a/p", "http://a/s>\"say \""));
+    assertThat(valueOf("\"say \"")).isEqualTo("say ");
+
+    assertThatThrownBy(() -> load(new RDFImporterFormat(","), settings(), """
+        "a""b",<http://a/p>,<http://a/o>
+        """)).isInstanceOf(ImportException.class).hasMessageContaining("has 1 term(s)");
+  }
+
+  /**
+   * An error names the statement by its 0-based index, blank and comment lines not counted (the number the CSV parser gave a
+   * row), and says so: the physical line is not what it counts.
+   */
+  @Test
+  void errorNamesTheStatementIndexAndSaysSo() {
+    assertThatThrownBy(() -> load(new RDFImporterFormat(" "), settings(), """
+        # a comment
+        <http://a/s> <http://a/p> <http://a/o> .
+        # another comment
+
+        <http://a/s> <http://a/p>
+        """)).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Row at line 1 (0-based, blank and comment lines not counted) has 2 term(s)");
+  }
+
+  /** A language tag is ASCII letters, digits and '-' (BCP 47): a non-ASCII letter in it refuses the row. */
+  @Test
+  void nonAsciiLanguageTagIsRefused() throws Exception {
+    load(new RDFImporterFormat(" "), settings(), """
+        <http://a/s> <http://a/p> "colour"@en-GB .
+        """);
+    assertThat(keys()).containsExactlyInAnyOrder("http://a/s", "\"colour\"@en-GB");
+
+    assertThatThrownBy(() -> load(new RDFImporterFormat(" "), settings(), """
+        <http://a/s> <http://a/p> "chat"@fr\u00E7 .
+        """)).isInstanceOf(ImportException.class).hasMessageContaining("Invalid language tag");
+  }
+
+  /** The graph term of an N-Quads statement is ignored, as it was: the statement is its first three terms. */
+  @Test
+  void nQuadsGraphTermIsIgnored() throws Exception {
+    load(new RDFImporterFormat(" "), settings(), """
+        <http://a/s> <http://a/p> <http://a/o> <http://a/g> .
+        <http://a/s> <http://a/q> "x"@en <http://a/g> .
+        """);
+
+    assertThat(keys()).containsExactlyInAnyOrder("http://a/s", "http://a/o", "\"x\"@en");
+    assertThat(edges()).containsOnly(Map.entry("http://a/p", "http://a/s>http://a/o"), Map.entry("http://a/q", "http://a/s>\"x\"@en"));
+  }
+
+  /**
+   * An empty database and a transaction the caller holds: the vertex type and its unique index are created inside it, the
+   * edges are left staged in it, and the caller's commit makes them durable.
+   */
+  @Test
+  void callerOwnedTransactionOnAnEmptyDatabase() throws Exception {
+    assertThat(database.getSchema().existsType("Node")).isFalse();
+
+    database.begin();
+    load(new RDFImporterFormat(" "), settings(), """
+        <http://a/s> <http://a/p> "v" .
+        <http://a/s> <http://a/q> <http://a/o> .
+        """, true);
+    assertThat(database.isTransactionActive()).as("the caller's transaction is left open").isTrue();
+    database.commit();
+
+    assertThat(database.getSchema().getType("Node").getPolymorphicIndexByProperties("id").isUnique()).isTrue();
+    assertThat(edges()).containsOnly(Map.entry("http://a/p", "http://a/s>\"v\""), Map.entry("http://a/q", "http://a/s>http://a/o"));
+    assertThat(valueOf("\"v\"")).isEqualTo("v");
+  }
+
+  /**
+   * A schema change is not transactional: the type and index created for the import stay, empty, when the caller rolls its
+   * transaction back and when the import fails in a transaction of its own.
+   */
+  @Test
+  void typeAndIndexSurviveARolledBackImport() throws Exception {
+    database.begin();
+    load(new RDFImporterFormat(" "), settings(), """
+        <http://a/s> <http://a/p> <http://a/o> .
+        """, true);
+    database.rollback();
+
+    assertThat(database.getSchema().getType("Node").getPolymorphicIndexByProperties("id").isUnique()).isTrue();
+    assertThat(keys()).isEmpty();
+
+    database.getSchema().dropType("Node");
+    assertThatThrownBy(() -> load(new RDFImporterFormat(" "), settings(), """
+        <http://a/s> <http://a/p> <http://a/o> .
+        <http://a/s> <http://a/p>
+        """)).isInstanceOf(ImportException.class);
+
+    assertThat(database.getSchema().getType("Node").getPolymorphicIndexByProperties("id").isUnique()).isTrue();
+    assertThat(keys()).isEmpty();
+    assertThat(edges()).isEmpty();
+  }
+
   private ImporterContext load(final RDFImporterFormat format, final ImporterSettings settings, final String content)
       throws Exception {
+    return load(format, settings, content, false);
+  }
+
+  private ImporterContext load(final RDFImporterFormat format, final ImporterSettings settings, final String content,
+      final boolean callerTransaction) throws Exception {
     final byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
     final Parser parser = new Parser(new Source("test.nt", new ByteArrayInputStream(bytes), bytes.length, false, null, null), 0);
     final ImporterContext context = new ImporterContext();
-    context.callerTransactionActiveOnEntry = false;
+    context.callerTransactionActiveOnEntry = callerTransaction;
     format.load(null, null, parser, (DatabaseInternal) database, context, settings);
     return context;
+  }
+
+  private String valueOf(final String key) {
+    try (final ResultSet rs = database.query("sql", "SELECT value FROM Node WHERE id = ?", key)) {
+      return rs.next().getProperty("value");
+    }
   }
 
   private static ImporterSettings settings() {

@@ -274,7 +274,7 @@ public class SourceDiscovery {
    * The sibling of {@link #resolveDelimiter} one line up, and it used to be the unguarded half of the pair: the
    * detection arm assigned {@code settings.typeIdProperty = "id"} unconditionally, so recognising N-Triples silently
    * discarded an explicit choice that names a real schema artefact - the property, its index and the
-   * {@code newEdgeByKeys} lookup all follow it - and did so without the INFO line the discarded delimiter gets
+   * lookup of every term all follow it - and did so without the INFO line the discarded delimiter gets
    * (issue #7891).
    */
   static String resolveTypeIdProperty(final String userTypeIdProperty) {
