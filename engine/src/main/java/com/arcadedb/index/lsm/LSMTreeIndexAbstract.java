@@ -734,11 +734,14 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * <li>a list, by {@code List.toString()} before #11615: {@code [1.5, 2.0]} where the canonical key is {@code [1.5, 2]}
    * (issue #12160).</li>
    * </ul>
-   * Both are the text {@code Type.convert} still gives such a value without a property. An array was keyed by its identity text
-   * then, which no seek ever found: it has no old key to look under.
+   * The old text is rebuilt with {@link Type#convertIndexKeyOrNull} to STRING, which still turns a list or a number into the text
+   * those builds wrote. Arrays have no old text to look under: those builds keyed an array by its identity text
+   * ({@code [I@1b6d3586}), which differs for every array instance, so no seek ever found such an entry.
    *
-   * @param keys          the keys as given to the index
-   * @param convertedKeys the same keys after {@link #convertKeysToDeclaredTypes}
+   * @param keys          the keys as the caller gave them, before any conversion: the list or the number itself
+   * @param convertedKeys the same keys after {@link #convertKeysToDeclaredTypes}, as the index stores them today
+   *
+   * @return a copy of {@code convertedKeys} with each key that had an old text replaced by that text, or null when no key had one
    */
   Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
     if (keys == null || convertedKeys == null)

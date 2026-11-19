@@ -23,7 +23,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.EmptyIndexCursor;
@@ -86,17 +85,8 @@ final class LSMTreeIndexLegacyKeys {
    */
   private static IndexCursor withLegacyEntries(final LSMTreeIndex index, final Object[] convertedKeys, final Object[] legacyKeys,
       final int limit) {
-    final PageManager pageManager = index.getDatabase().getPageManager();
-    for (int attempt = 0; attempt < ConsistentKeyLookup.MAX_ATTEMPTS; attempt++) {
-      final long before = pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
-      if ((before & 1) != 0)
-        continue;
-      final List<IndexCursorEntry> entries = readWithLegacyEntries(index, convertedKeys, legacyKeys, limit);
-      if (pageManager.getPublicationSequence() == before)
-        return toCursor(index, convertedKeys, entries, limit);
-    }
-    final List<IndexCursorEntry> entries = ConsistentKeyLookup.readAgainstOneCommit(pageManager,
-        () -> readWithLegacyEntries(index, convertedKeys, legacyKeys, limit), "Lookup on index '" + index.getName() + "'");
+    final List<IndexCursorEntry> entries = ConsistentKeyLookup.readConsistently(index.getDatabase().getPageManager(), index.getName(),
+        () -> readWithLegacyEntries(index, convertedKeys, legacyKeys, limit));
     return toCursor(index, convertedKeys, entries, limit);
   }
 

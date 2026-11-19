@@ -1290,6 +1290,10 @@ public class TransactionIndexContext {
    * by too (issues #12160 and #12233): the entries such a build wrote keep that text until the index is rebuilt, so the check on the
    * canonical key alone let a copy of an old value in. A holder found under the old text is a duplicate only when it holds this
    * value: the old text of a list or a number is also the key of a STRING spelled the same way, which is another value.
+   * <p>
+   * Cost, paid only while an index of the type may hold such entries: one record load per unique STRING key starting with a bracket,
+   * a sign or a digit, to learn whether its record holds a list or a number ({@link LSMTreeIndex#legacyKeysOf}), plus one per holder
+   * found under the old text. Every other key pays nothing, and {@code REBUILD INDEX} ends the cost for good.
    *
    * @param withLegacyKeys the indexes that may hold such entries, {@link #indexesWithLegacyKeys}
    */
