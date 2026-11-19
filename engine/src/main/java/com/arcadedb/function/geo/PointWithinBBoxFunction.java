@@ -106,16 +106,8 @@ public class PointWithinBBoxFunction implements StatelessFunction {
         null;
   }
 
-  private boolean isGeographic(final Object value) {
-    if (!(value instanceof Map<?, ?> map))
-      return false;
-    final Object crs = map.get("crs");
-    if (crs instanceof String s) {
-      if (CypherPointFunction.isGeographicCrs(s))
-        return true;
-      if (CypherPointFunction.isCartesianCrs(s))
-        return false;
-    }
-    return map.containsKey("longitude") && map.containsKey("latitude") && !map.containsKey("x");
+  // The same classification point.distance() makes, so a raw map without a crs is geographic for both functions or for neither
+  private static boolean isGeographic(final Object value) {
+    return value instanceof Map<?, ?> map && CypherPointDistanceFunction.isGeographic(map);
   }
 }

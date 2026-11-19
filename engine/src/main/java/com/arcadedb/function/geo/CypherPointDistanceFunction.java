@@ -117,7 +117,7 @@ public class CypherPointDistanceFunction implements StatelessFunction {
    * Prefers the explicit {@code crs} field set by {@code point()}; falls back to the presence of
    * {@code longitude}/{@code latitude} keys for raw maps that carry no {@code crs}.
    */
-  private static boolean isGeographic(final Map<?, ?> p) {
+  static boolean isGeographic(final Map<?, ?> p) {
     final Object crs = p.get("crs");
     if (crs instanceof String s) {
       if (CypherPointFunction.isGeographicCrs(s))

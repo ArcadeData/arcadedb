@@ -90,4 +90,19 @@ class CypherPointDistance3dIssue12273Test extends TestHelper {
     assertThat(value("point.withinBBox(" + raw
         + ", point({longitude:0,latitude:0,height:0}), point({longitude:2,latitude:2,height:10}))")).isEqualTo(false);
   }
+
+  // A raw map with no crs that carries longitude/latitude and x: both functions read it as geographic, so withinBBox takes
+  // the height point.distance() takes rather than calling it a Cartesian point against a geographic box
+  @Test
+  void withinBBoxClassifiesARawMapWithoutCrsLikeDistance() {
+    final String box = ", point({longitude:0,latitude:0,height:0}), point({longitude:2,latitude:2,height:10}))";
+    final String highAbove = "{longitude:1, latitude:1, x:1, y:1, height:50, z:5}";
+    assertThat(distance("point.distance(" + highAbove + ", point({longitude:1,latitude:1,height:0}))")).isCloseTo(50.0,
+        within(0.001));
+    assertThat(value("point.withinBBox(" + highAbove + box)).isEqualTo(false);
+
+    final String inside = "{longitude:1, latitude:1, x:1, y:1, height:5, z:50}";
+    assertThat(distance("point.distance(" + inside + ", point({longitude:1,latitude:1,height:0}))")).isCloseTo(5.0, within(0.001));
+    assertThat(value("point.withinBBox(" + inside + box)).isEqualTo(true);
+  }
 }
