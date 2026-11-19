@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -164,8 +165,11 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         try {
           // The archive holds the database as committed, never the caller's pending changes, so it is written outside the
           // caller's transaction, which stays as it was (issue #11781): it used to be rolled back first, losing its writes
+          // Looked up here, not inside the lambda: native-image only registers a reflective lookup it can fold, and it
+          // cannot fold one whose Class arrives as a captured lambda field, so the method was missing from the image
+          final Method backupDatabase = clazz.getMethod("backupDatabase");
           final String backupFile = OutsideCallerTransaction.call(context.getDatabase(), "BackupDatabase", false,
-              () -> (String) clazz.getMethod("backupDatabase").invoke(backup));
+              () -> (String) backupDatabase.invoke(backup));
 
           // PRUNE THE DIRECTORY JUST WRITTEN INTO (issue #9844). The statement is the other on-demand entry point next to the
           // control plane's 'trigger backup', which prunes since #7472, and it wrote into the same directory without ever
