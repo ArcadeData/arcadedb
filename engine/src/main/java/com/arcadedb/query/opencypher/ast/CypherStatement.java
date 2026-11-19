@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+
 import java.util.List;
 
 /**
@@ -114,6 +116,17 @@ public interface CypherStatement {
    * @return true if contains REMOVE
    */
   default boolean hasRemove() {
+    return false;
+  }
+
+  /**
+   * Returns true if this statement calls a procedure that changes the schema ({@link CypherProcedure#isSchemaProcedure()}),
+   * which makes it a schema change for HA routing and the operation-type gates, as the SQL DDL statement it mirrors (issue
+   * #11438). Defaults to false for non-query (control/admin/DDL/session) statements.
+   *
+   * @return true if it calls a schema-changing procedure
+   */
+  default boolean hasSchemaProcedureCall() {
     return false;
   }
 

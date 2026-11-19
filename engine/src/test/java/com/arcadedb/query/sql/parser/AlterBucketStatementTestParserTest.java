@@ -18,14 +18,30 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.antlr.SQLASTBuilder;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #11796: ALTER BUCKET is recognised only to be refused while it is parsed, with a message naming it, instead of parsing,
+ * planning and failing every time with a bare UnsupportedOperationException.
+ */
 class AlterBucketStatementTestParserTest extends AbstractParserTest {
 
   @Test
-  void plain() {
-    checkRightSyntax("ALTER BUCKET Foo name bar");
-    checkRightSyntax("alter bucket Foo name bar");
-    checkRightSyntax("alter bucket Foo* name bar");
+  void refusedWhileParsed() {
+    for (final String query : new String[] { "ALTER BUCKET Foo name bar", "alter bucket Foo name bar", "alter bucket Foo* name bar",
+        "ALTER BUCKET Foo CUSTOM k = 'v'" })
+      assertThatThrownBy(() -> new SQLAntlrParser(null).parse(query)).as(query).isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining(SQLASTBuilder.ALTER_BUCKET_NOT_SUPPORTED);
+  }
+
+  @Test
+  void malformedIsStillASyntaxError() {
+    checkWrongSyntax("ALTER BUCKET");
+    checkWrongSyntax("ALTER BUCKET Foo");
   }
 }
