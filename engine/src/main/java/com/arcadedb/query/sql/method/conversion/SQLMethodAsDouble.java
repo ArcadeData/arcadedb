@@ -40,7 +40,6 @@ public class SQLMethodAsDouble extends AbstractSQLMethod {
       final Object[] params) {
     if (value instanceof Number number)
       return number.doubleValue();
-    final String text = numericTextOrNull(value);
-    return text != null ? Double.valueOf(text) : null;
+    return parseNumberOrNull(value, Double::valueOf);
   }
 }

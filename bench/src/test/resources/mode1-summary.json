@@ -1,0 +1,24 @@
+{
+  "olap": {
+    "outcome": "<Outcome.SUCCESS: 'success'>",
+    "algorithms": {
+      "BFS": {"processing_time": 1.84, "success": true},
+      "PR": {"processing_time": 12.37, "success": true},
+      "WCC": {"processing_time": 4.52, "success": true},
+      "CDLP": {"processing_time": 21.9, "success": true},
+      "LCC": {"processing_time": 48.15, "success": false},
+      "SSSP": {"processing_time": 6.08, "success": true}
+    }
+  },
+  "oltp": {
+    "outcome": "<Outcome.SUCCESS: 'success'>",
+    "algorithms": {
+      "BFS": {"processing_time": 3.21, "success": true},
+      "PR": {"processing_time": 25.4, "success": true},
+      "WCC": {"processing_time": 9.77, "success": true},
+      "CDLP": {"processing_time": 40.12, "success": true},
+      "LCC": {"processing_time": 95.6, "success": true},
+      "SSSP": {"processing_time": 11.3, "success": true}
+    }
+  }
+}

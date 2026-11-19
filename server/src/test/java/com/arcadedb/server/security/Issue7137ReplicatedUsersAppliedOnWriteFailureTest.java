@@ -51,8 +51,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the node either, so the next entry moves the applied counter past it and any snapshot taken afterwards puts it
  * out of replay range for good. The operator's instruction does not depend on which of those happened: reissue
  * the user change on the leader once the volume is fixed. See {@code ArcadeStateMachine.applySecurityUsersEntry},
- * {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} and
- * {@code Issue7252SecurityEntryReplayAfterRestartTest}, which pin the two halves of it.
+ * {@code SecurityEntryApplyFailureTest} and
+ * {@code SecurityEntryApplyFailureTest}, which pin the two halves of it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -38,8 +38,46 @@ final class VariableScopeValidator {
   private VariableScopeValidator() {
   }
 
+  /**
+   * The variables in scope. It is OPEN after a {@code CALL ... YIELD *} of a call with no declared signature (a SQL function
+   * used as a procedure, a {@code DEFINE FUNCTION}): the call binds the columns of the rows it answers, which only running it
+   * tells, so every name is taken as defined until a projection resets the scope with {@link #clear()} (issue #12124). A copy
+   * keeps the openness, so an ORDER BY, a list comprehension or a subquery body reads the same scope.
+   * <p>
+   * Only {@link #contains(Object)} answers for the open state, which is the one question this validator asks of a scope. A bulk
+   * query ({@code containsAll}, {@code retainAll}, iteration) sees only the names added, so a new check must go through
+   * {@code contains}.
+   */
+  static final class Scope extends HashSet<String> {
+    private boolean open;
+
+    Scope() {
+    }
+
+    Scope(final Collection<String> names) {
+      super(names);
+      if (names instanceof Scope scope)
+        open = scope.open;
+    }
+
+    void open() {
+      open = true;
+    }
+
+    @Override
+    public boolean contains(final Object name) {
+      return open || super.contains(name);
+    }
+
+    @Override
+    public void clear() {
+      open = false;
+      super.clear();
+    }
+  }
+
   static void validateVariableScope(final CypherStatement statement) {
-    validateVariableScope(statement, new HashSet<>(), Set.of());
+    validateVariableScope(statement, new Scope(), Set.of());
   }
 
   /**
@@ -100,6 +138,14 @@ final class VariableScopeValidator {
               break;
             }
           }
+          // The WHERE of a WITH filters the projected rows. It sees the projected names and, unless the WITH collapses
+          // rows (aggregation, DISTINCT), the incoming variables too, the same rule ORDER BY follows. It was never
+          // walked, so a name no clause bound filtered every row out, and a CALL subquery inside an EXISTS / COUNT /
+          // COLLECT body escaped the export check of issue #11689. In a collapsing WITH, what repeats a grouping key was
+          // rewritten to read its column first (ProjectedOrderByNormalizer#normalizeWhere, issue #12245)
+          if (withClause.getWhereClause() != null)
+            checkBooleanExpressionScope(withClause.getWhereClause().getConditionExpression(),
+                withWhereScope(withClause, scope, hasWildcard));
           if (hasWildcard) {
             // WITH * keeps all variables in scope.
             // First validate all extra item expressions against the incoming scope (no scope
@@ -196,6 +242,10 @@ final class VariableScopeValidator {
               final List<String> yieldAllFields = CypherSemanticValidator.resolveYieldAllFieldNames(callClause);
               if (yieldAllFields != null)
                 scope.addAll(yieldAllFields);
+              else if (scope instanceof Scope open)
+                // a call with no declared signature (a SQL function, a DEFINE FUNCTION) binds the columns its rows carry,
+                // known only when it runs: any name is accepted until a projection closes the scope (issue #12124)
+                open.open();
             } else
               for (final CallClause.YieldItem item : callClause.getYieldItems())
                 scope.add(item.getOutputName());
@@ -220,8 +270,16 @@ final class VariableScopeValidator {
                   final CypherStatement body = subqueryClause.getInnerStatement();
                   final Set<String> exported = ReturnScope.scopeAtReturn(
                       body instanceof UnionStatement union ? union.getQueries().getFirst() : body);
-                  if (exported != null)
+                  if (exported != null) {
+                    // The star cannot export an outer name the body declared afresh: one it did not import is a new
+                    // variable there, and exporting it would overwrite the outer one on the rows the body answers only
+                    // (issue #12387). Every UNION branch must have imported it, since each binds the column on its own
+                    for (final String exportedName : exported)
+                      if (outerScope.contains(exportedName) && !importedByEveryBranch(subqueryClause, exportedName, outerScope))
+                        throw new CommandParsingException(
+                            "VariableAlreadyBound: Variable '" + exportedName + "' already declared in outer scope");
                     scope.addAll(exported);
+                  }
                 } else {
                   final String exportedName = item.getAlias() != null ? item.getAlias()
                       : item.getExpression() instanceof VariableExpression variable ? variable.getVariableName() : null;
@@ -320,9 +378,19 @@ final class VariableScopeValidator {
   private static void validateDeleteClauseScope(final DeleteClause deleteClause, final Set<String> scope) {
     if (deleteClause == null || deleteClause.isEmpty())
       return;
-    for (final String var : deleteClause.getVariables())
-      if (CypherSemanticValidator.isValidVariableName(var) && !scope.contains(var))
-        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+    final List<String> targets = deleteClause.getVariables();
+    final List<Expression> expressions = deleteClause.getExpressions();
+    for (int i = 0; i < targets.size(); i++) {
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      if (expression != null)
+        // every variable the target reads, wherever it sits in the expression ([a, missing], (missing), CASE ...), issue #12259
+        checkExpressionScope(expression, scope);
+      else {
+        final String var = targets.get(i);
+        if (CypherSemanticValidator.isValidVariableName(var) && !scope.contains(var))
+          throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+      }
+    }
   }
 
   /**
@@ -339,6 +407,11 @@ final class VariableScopeValidator {
       final String var = item.getVariable();
       if (CypherSemanticValidator.isValidVariableName(var) && !scope.contains(var))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+      final Expression target = item.getTargetExpression();
+      if (target != null) {
+        checkExpressionScope(target, scope);
+        checkSetReceiverIsNotAMap(target);
+      }
       if (item.getKeyExpression() != null)
         checkExpressionScope(item.getKeyExpression(), scope);
       if (item.hasLabelExpressions())
@@ -366,9 +439,9 @@ final class VariableScopeValidator {
     Set<String> explicitSeed = null;
     if (scopeVariables != null) {
       if (scopeVariables.size() == 1 && "*".equals(scopeVariables.get(0)))
-        explicitSeed = new HashSet<>(outerScope);
+        explicitSeed = new Scope(outerScope);
       else {
-        explicitSeed = new HashSet<>();
+        explicitSeed = new Scope();
         for (final String v : scopeVariables) {
           if (CypherSemanticValidator.isValidVariableName(v) && !outerScope.contains(v))
             throw new CommandSemanticException("UndefinedVariable: Variable '" + v + "' not defined");
@@ -390,15 +463,15 @@ final class VariableScopeValidator {
     final Set<String> seed;
     final Set<String> imported;
     if (explicitSeed != null) {
-      seed = new HashSet<>(explicitSeed);
+      seed = new Scope(explicitSeed);
       imported = explicitSeed;
     } else if (startsWithImportingWith(branch)) {
       // The importing WITH may reference outer variables; it then resets the scope to its projections,
       // so exposing the whole outer scope here does not leak variables past the WITH.
-      seed = new HashSet<>(outerScope);
+      seed = new Scope(outerScope);
       imported = importedNamesFromLeadingWith(branch, outerScope);
     } else {
-      seed = new HashSet<>();
+      seed = new Scope();
       imported = Set.of();
     }
 
@@ -408,6 +481,74 @@ final class VariableScopeValidator {
     shadowed.removeAll(imported);
 
     validateVariableScope(branch, seed, shadowed);
+  }
+
+  /**
+   * Whether every branch of the subquery body still holds the imported outer {@code name} at its RETURN, so its {@code RETURN *}
+   * hands back the outer variable rather than a value of its own.
+   */
+  private static boolean importedByEveryBranch(final SubqueryClause clause, final String name, final Set<String> outerScope) {
+    final CypherStatement body = clause.getInnerStatement();
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (!keepsImportedBinding(branch, clause.getScopeVariables(), name, outerScope))
+          return false;
+      return true;
+    }
+    return keepsImportedBinding(body, clause.getScopeVariables(), name, outerScope);
+  }
+
+  /**
+   * Follows {@code name} through the clauses of one branch: it starts as the outer variable when the explicit scope list imports
+   * it, or when the branch opens with a {@code WITH} (the importing one, walked as the first clause). A {@code WITH} that does not
+   * forward it as itself ({@code WITH name}, {@code WITH name AS name}, {@code WITH *}) drops or replaces it, so {@code WITH 1 AS z}
+   * or {@code WITH b AS z} binds a value of the body's own, which is also what {@code SubqueryStep} imports at runtime. An
+   * {@code UNWIND}, a {@code LOAD CSV} or a procedure {@code YIELD} under that name re-binds it too (issue #12387).
+   */
+  private static boolean keepsImportedBinding(final CypherStatement branch, final List<String> scopeVariables, final String name,
+      final Set<String> outerScope) {
+    boolean live;
+    if (scopeVariables != null)
+      live = scopeVariables.size() == 1 && "*".equals(scopeVariables.get(0)) ? outerScope.contains(name) : scopeVariables.contains(name);
+    else
+      live = startsWithImportingWith(branch);
+    final List<ClauseEntry> clauses = branch.getClausesInOrder();
+    if (clauses == null)
+      return live;
+    for (final ClauseEntry entry : clauses) {
+      if (!live)
+        return false;
+      switch (entry.getType()) {
+        case WITH -> {
+          final WithClause with = entry.getTypedClause();
+          boolean forwarded = false;
+          for (final ReturnClause.ReturnItem item : with.getItems())
+            if (item.isStar() || (item.getExpression() instanceof VariableExpression variable && name.equals(variable.getVariableName())
+                && (item.getAlias() == null || name.equals(item.getAlias())))) {
+              forwarded = true;
+              break;
+            }
+          live = forwarded;
+        }
+        case UNWIND -> live = !name.equals(((UnwindClause) entry.getTypedClause()).getVariable());
+        case LOAD_CSV -> live = !name.equals(((LoadCSVClause) entry.getTypedClause()).getVariable());
+        case CALL -> {
+          final CallClause call = entry.getTypedClause();
+          if (call != null && call.hasYield()) {
+            if (call.isYieldAll()) {
+              final List<String> fields = CypherSemanticValidator.resolveYieldAllFieldNames(call);
+              live = fields == null || !fields.contains(name);
+            } else
+              for (final CallClause.YieldItem item : call.getYieldItems())
+                if (name.equals(item.getOutputName()))
+                  live = false;
+          }
+        }
+        default -> {
+        }
+      }
+    }
+    return live;
   }
 
   /**
@@ -540,7 +681,7 @@ final class VariableScopeValidator {
   private static void validatePlainOrderByScope(final List<ReturnClause.ReturnItem> items, final OrderByClause orderBy,
       final Set<String> scope) {
     final Set<String> projectedNames = new HashSet<>();
-    final Set<String> orderByScope = new HashSet<>(scope);
+    final Set<String> orderByScope = new Scope(scope);
     for (final ReturnClause.ReturnItem item : items) {
       projectedNames.add(item.getOutputName());
       if (item.getAlias() != null)
@@ -557,6 +698,22 @@ final class VariableScopeValidator {
       if (item.getExpressionAST() != null)
         checkExpressionScope(item.getExpressionAST(), orderByScope);
     }
+  }
+
+  /**
+   * The names the WHERE of {@code withClause} may read: the projected ones, plus the incoming {@code scope} when the WITH
+   * keeps its input rows ({@code WITH *}, or neither aggregating nor DISTINCT). The copy is a {@link Scope}, so an incoming
+   * scope left open by a {@code CALL ... YIELD *} stays open for the WHERE (issue #12124).
+   */
+  private static Set<String> withWhereScope(final WithClause withClause, final Set<String> scope, final boolean hasWildcard) {
+    final boolean collapsing = !hasWildcard && (withClause.hasAggregations() || withClause.isDistinct());
+    final Set<String> whereScope = collapsing ? new Scope() : new Scope(scope);
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (item.getAlias() != null)
+        whereScope.add(item.getAlias());
+      else if (item.getExpression() instanceof VariableExpression variable)
+        whereScope.add(variable.getVariableName());
+    return whereScope;
   }
 
   private static boolean hasStar(final List<ReturnClause.ReturnItem> items) {
@@ -632,7 +789,7 @@ final class VariableScopeValidator {
       final ListComprehensionExpression lce = (ListComprehensionExpression) expr;
       checkExpressionScope(lce.getListExpression(), scope);
       // The variable introduces a new scope binding for the inner expressions
-      final Set<String> innerScope = new HashSet<>(scope);
+      final Set<String> innerScope = new Scope(scope);
       innerScope.add(lce.getVariable());
       if (lce.getWhereExpression() != null)
         checkExpressionScope(lce.getWhereExpression(), innerScope);
@@ -651,7 +808,7 @@ final class VariableScopeValidator {
       // The pattern binds its own variables (and the optional path variable) for the WHERE and the projection only.
       // Without this branch an unbound name after | evaluated to null per match instead of being refused (issue #11686)
       final PathPattern path = pce.getPathPattern();
-      final Set<String> innerScope = new HashSet<>(scope);
+      final Set<String> innerScope = new Scope(scope);
       if (pce.getPathVariable() != null)
         innerScope.add(pce.getPathVariable());
       if (path != null) {
@@ -670,7 +827,7 @@ final class VariableScopeValidator {
       final ListPredicateExpression lpe = (ListPredicateExpression) expr;
       checkExpressionScope(lpe.getListExpression(), scope);
       // The variable introduces a new scope binding for the WHERE expression
-      final Set<String> innerScope = new HashSet<>(scope);
+      final Set<String> innerScope = new Scope(scope);
       innerScope.add(lpe.getVariable());
       if (lpe.getWhereExpression() != null)
         checkExpressionScope(lpe.getWhereExpression(), innerScope);
@@ -684,7 +841,7 @@ final class VariableScopeValidator {
       checkExpressionScope(reduce.getInitialValue(), scope);
       checkExpressionScope(reduce.getListExpression(), scope);
       // The accumulator and iterator variables introduce a new scope binding for the reduce expression
-      final Set<String> innerScope = new HashSet<>(scope);
+      final Set<String> innerScope = new Scope(scope);
       innerScope.add(reduce.getAccumulatorVariable());
       innerScope.add(reduce.getIteratorVariable());
       checkExpressionScope(reduce.getReduceExpression(), innerScope);
@@ -693,7 +850,7 @@ final class VariableScopeValidator {
       checkExpressionScope(allReduce.getListExpression(), scope);
       // Same binding as ReduceExpression above; the predicate is evaluated in the same inner scope, since
       // it references the accumulator/iterator by name, not by the value the reduce step gives them.
-      final Set<String> innerScope = new HashSet<>(scope);
+      final Set<String> innerScope = new Scope(scope);
       innerScope.add(allReduce.getAccumulatorVariable());
       innerScope.add(allReduce.getIteratorVariable());
       checkExpressionScope(allReduce.getReduceExpression(), innerScope);
@@ -719,9 +876,9 @@ final class VariableScopeValidator {
       return;
     if (parsedSubquery instanceof UnionStatement union) {
       for (final CypherStatement branch : union.getQueries())
-        validateVariableScope(branch, new HashSet<>(outerScope), Set.of());
+        validateVariableScope(branch, new Scope(outerScope), Set.of());
     } else
-      validateVariableScope(parsedSubquery, new HashSet<>(outerScope), Set.of());
+      validateVariableScope(parsedSubquery, new Scope(outerScope), Set.of());
   }
 
   private static void checkBooleanExpressionScope(final BooleanExpression boolExpr, final Set<String> scope) {
@@ -753,8 +910,10 @@ final class VariableScopeValidator {
       }
     } else if (boolExpr instanceof IsNullExpression) {
       checkExpressionScope(((IsNullExpression) boolExpr).getExpression(), scope);
-    } else if (boolExpr instanceof LabelCheckExpression) {
-      checkExpressionScope(((LabelCheckExpression) boolExpr).getVariableExpression(), scope);
+    } else if (boolExpr instanceof LabelCheckExpression labelCheck) {
+      checkExpressionScope(labelCheck.getVariableExpression(), scope);
+      for (final Expression dynamicLabel : labelCheck.getDynamicLabels())
+        checkExpressionScope(dynamicLabel, scope);
     } else if (boolExpr instanceof BooleanCoercionExpression) {
       // A WHERE body that is a bare expression coerced to boolean (e.g. any()/all()/none()/single()
       // list predicates, a boolean-typed property, or a comprehension) is scope-checked as a plain
@@ -847,7 +1006,10 @@ final class VariableScopeValidator {
       if (rel instanceof QuantifiedPathPattern group) {
         checkBooleanExpressionScope(group.getInnerWhere(), scope);
         checkGroupWhereScope(group.getInnerPattern(), scope);
-      }
+      } else if (rel.getWhereExpression() != null)
+        // A relationship's inline predicate, a dynamic type [r:$(expr)] included, is not hoisted into the clause WHERE:
+        // an undefined name in it would otherwise evaluate to null and match every relationship (issue #11776)
+        checkBooleanExpressionScope(rel.getWhereExpression(), scope);
   }
 
   private static void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
