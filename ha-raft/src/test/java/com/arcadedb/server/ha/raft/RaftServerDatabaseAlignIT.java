@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -67,8 +69,8 @@ class RaftServerDatabaseAlignIT extends BaseRaftHATest {
 
     final Database database = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     assertThatThrownBy(() -> database.command("sql", "align database"))
-        .isInstanceOf(UnsupportedOperationException.class)
-        .hasMessageContaining("Align Database not supported");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(AlignDatabaseStatement.ALIGN_DATABASE_NOT_SUPPORTED);
   }
 
   @Test

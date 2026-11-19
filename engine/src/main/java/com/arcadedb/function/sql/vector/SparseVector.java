@@ -147,25 +147,24 @@ public class SparseVector {
     final Map<Integer, Float> smallerMap = this.getNonZeroCount() <= other.getNonZeroCount() ? this.values : other.values;
     final Map<Integer, Float> largerMap = smallerMap == this.values ? other.values : this.values;
 
-    float result = 0.0f;
+    // Widen before multiplying and sum in double, as the dense VectorUtils.dotProduct does (issue #12023)
+    double result = 0.0;
     for (final Map.Entry<Integer, Float> entry : smallerMap.entrySet()) {
       final Float otherValue = largerMap.get(entry.getKey());
-      if (otherValue != null) {
-        result += entry.getValue() * otherValue;
-      }
+      if (otherValue != null)
+        result += (double) entry.getValue() * otherValue;
     }
 
-    return result;
+    return (float) result;
   }
 
   /**
    * Calculate magnitude (L2 norm).
    */
   public float magnitude() {
-    float sumSquares = 0.0f;
-    for (final float value : values.values()) {
-      sumSquares += value * value;
-    }
+    double sumSquares = 0.0;
+    for (final float value : values.values())
+      sumSquares += (double) value * value;
     return (float) Math.sqrt(sumSquares);
   }
 

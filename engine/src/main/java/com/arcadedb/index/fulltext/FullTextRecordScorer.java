@@ -83,7 +83,7 @@ public final class FullTextRecordScorer {
     final List<LSMTreeFullTextIndex> indexes = FullTextSearch.getBucketIndexes(typeIndex);
     if (indexes.isEmpty())
       // the search answers nothing
-      return new FullTextRecordScorer(Map.of(), (keys, excluded) -> false, Map.of(), null);
+      return new FullTextRecordScorer(Map.of(), keys -> false, Map.of(), null);
 
     final LSMTreeFullTextIndex first = indexes.getFirst();
     if (!first.isBM25() || first.getFullTextMetadata() == null)
@@ -173,8 +173,7 @@ public final class FullTextRecordScorer {
     if (undecided[0])
       return UNDECIDED;
 
-    final boolean[] excluded = new boolean[1];
-    if (!matcher.matches(postings.keySet(), excluded) || excluded[0])
+    if (!matcher.matches(postings.keySet()))
       return NO_MATCH;
 
     // computeBM25Scores, for one record: the same operands in the same order
