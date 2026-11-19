@@ -916,10 +916,12 @@ class MaterializedViewRegressionTest {
     @Test
     void aFailedCreationLeavesNoBackingTypeBehind() {
       database.command("sql", "CREATE TIMESERIES TYPE S TIMESTAMP ts TAGS (h STRING) FIELDS (v DOUBLE) SHARDS 1");
-      insert(H0 + 1_000, "not a number", 1);
+      insert(H0 + 1_000, "a", 1);
 
+      // an unknown digest algorithm is the statement's mistake whatever the data holds, so the first refresh fails for sure (a
+      // non-numeric text no longer does: asLong() answers null for it, issue #12527)
       final Throwable failure = catchThrowable(() -> database.command("sql",
-          "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1h', ts) AS hr, h.asLong() AS n, sum(v) AS total FROM S GROUP BY hr, n"));
+          "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1h', ts) AS hr, h.hash('NO-SUCH-DIGEST') AS n, sum(v) AS total FROM S GROUP BY hr, n"));
 
       assertThat(failure).as("the first refresh has to fail, or this test proves nothing").isNotNull();
       assertThat(database.getSchema().existsContinuousAggregate("A")).isFalse();
