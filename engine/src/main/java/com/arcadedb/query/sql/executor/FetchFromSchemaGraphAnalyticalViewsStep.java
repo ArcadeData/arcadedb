@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Returns an Result containing metadata regarding the graph analytical views.
@@ -42,7 +43,17 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
 
   @Override
   protected void fetchListing(final CommandContext context) {
-    final Database database = context.getDatabase();
+    describeAll(context.getDatabase(), r -> {
+      result.add(r);
+      context.setVariable("current", r);
+    });
+  }
+
+  /**
+   * One row per view, ordered by name ignoring case: its definition, with the live figures (status, counts, memory) when it is
+   * built. Shared with the Cypher procedure {@code db.analyticalView.list} (issue #11438), so both list the same figures.
+   */
+  public static void describeAll(final Database database, final Consumer<ResultInternal> sink) {
     final JSONObject extension = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
     if (extension != null) {
       final List<String> names = new ArrayList<>(extension.keySet());
@@ -51,7 +62,6 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
       for (final String name : names) {
         final JSONObject gavDef = extension.getJSONObject(name);
         final ResultInternal r = new ResultInternal(database);
-        result.add(r);
 
         r.setProperty("name", gavDef.getString("name"));
         r.setProperty("vertexTypes", jsonArrayToList(gavDef.getJSONArray("vertexTypes", null)));
@@ -101,7 +111,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
         if (buildError != null)
           r.setProperty("buildError", GraphAnalyticalView.describeBuildError(buildError));
 
-        context.setVariable("current", r);
+        sink.accept(r);
       }
     }
   }

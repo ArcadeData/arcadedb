@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 
 import java.util.HashSet;
 import java.util.Iterator;
@@ -112,14 +113,22 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   public CheckDatabaseStatement() {
   }
 
+  /**
+   * A check that repairs nothing reports on the node that runs it (issues #12347, #12348): on a replica it used to be forwarded to
+   * the leader like any write, so a replica whose record counter or index had drifted was reported clean, the leader's files
+   * being the ones inspected. FIX and COMPRESS write, so they keep going to the leader, whose repairs replicate.
+   */
+  @Override
+  public boolean inspectsTheLocalNode() {
+    return !fix && !compress;
+  }
+
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "check database");
 
-    if (context.getDatabase().isTransactionActive())
-      context.getDatabase().rollback();
-
+    // No rollback of the caller's transaction (issue #11781): DatabaseChecker.check() runs outside it when one is open
     if (!records.isEmpty() && (!types.isEmpty() || !buckets.isEmpty()))
       // Checked HERE, before the RIDs are resolved, even though DatabaseChecker.check() guards it too: resolving
       // first means a scope whose RIDs do not resolve reports "none of them resolves to a RID" for a statement
@@ -138,6 +147,8 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     if (reclaimUnreferencedFiles && !fix)
       // Same refusal, same reason: RECLAIM UNREFERENCED FILES removes files and must say so explicitly.
       throw new IllegalArgumentException(RECLAIM_UNREFERENCED_FILES_WITHOUT_FIX_ERROR);
+
+    checkRepairAllowed(context);
 
     final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);
@@ -175,6 +186,28 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * A check that repairs is a maintenance write, gated by {@link DATABASE_ACCESS#UPDATE_SCHEMA} like {@code REBUILD INDEX} and
+   * {@code COMPACT INDEX} (issue #11797): FIX rebuilds indexes, relinks edge lists and deletes records, COMPRESS rewrites pages,
+   * and the checker works on the wrapped database through the buckets, so no per-type grant is ever asked on the way. Asked HERE,
+   * before the checker exists, because nothing below this point asks. A check that only reports stays a read. No-op with no bound
+   * user (embedded, HA replication apply).
+   */
+  private void checkRepairAllowed(final CommandContext context) {
+    if (!fix && !compress)
+      return;
+
+    try {
+      context.getDatabase().checkPermissionsOnDatabase(DATABASE_ACCESS.UPDATE_SCHEMA);
+    } catch (final SecurityException ignored) {
+      // NOT CHAINED: THE HTTP LAYER APPENDS THE CAUSE'S MESSAGE TO THE DETAIL IT SENDS
+      throw new SecurityException(
+          "User '" + context.getDatabase().getCurrentUserName() + "' is not allowed to run CHECK DATABASE " + (fix ? "FIX" : "COMPRESS")
+              + ": it repairs the database whatever the user's per-type grants, so it requires the '"
+              + DATABASE_ACCESS.UPDATE_SCHEMA.name + "' database permission. CHECK DATABASE without FIX and COMPRESS only reports");
+    }
   }
 
   /** Package-private seam for tests: lets a test inject a checker whose {@code check()} fails mid-run. */

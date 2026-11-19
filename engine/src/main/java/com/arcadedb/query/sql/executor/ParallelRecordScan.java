@@ -74,7 +74,9 @@ public final class ParallelRecordScan {
    */
   public static ParallelRecordScan plan(final CommandContext context, final String typeName, final Supplier<RowMapper> mapperPerUnit) {
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
-    final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().sorted().toArray();
+    // IN THE ORDER OF THE TYPE'S BUCKET LIST, AS THE SEQUENTIAL LABEL SCAN (iterateType) MEETS THEM, NOT SORTED BY ID: A ROW'S
+    // POSITION BREAKS THE TIES OF A PARALLEL TOP K, WHICH MUST KEEP THE ROWS THE SEQUENTIAL SCAN MEETS FIRST (ISSUE #11873)
+    final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().toArray();
     final List<ExecutionStep> steps = new ArrayList<>(bucketIds.length);
     for (final int bucketId : bucketIds)
       if (bucketId > 0) // as the SQL planner's scan steps do
@@ -84,7 +86,10 @@ public final class ParallelRecordScan {
     return scan == null ? null : new ParallelRecordScan(scan);
   }
 
-  /** The rows, in the order a sequential scan would return them. Closing the result set stops the workers. */
+  /**
+   * The rows, in the order the sequential openCypher label scan would return them: bucket by bucket in the order of the type's
+   * bucket list. Closing the result set stops the workers.
+   */
   public ResultSet pull(final CommandContext context) {
     return scan.pull(context, Integer.MAX_VALUE);
   }
@@ -114,6 +119,17 @@ public final class ParallelRecordScan {
   /** How many workers the scan runs, the caller included. */
   public int getWorkerCount() {
     return scan.getWorkerCount();
+  }
+
+  /**
+   * How many workers a parallel scan of the buckets {@code bucketIds}, planned now for the command {@code context} belongs to,
+   * would run on: 1 when it would stay sequential, under a row of an enclosing statement included, as {@link #plan} decides.
+   * What an index range weighs a scan of the type by (issues #8333, #11873).
+   */
+  public static int plannedWorkers(final CommandContext context, final List<Integer> bucketIds) {
+    if (!ParallelTypeScan.isAllowed(context))
+      return 1;
+    return ParallelTypeScan.plannedWorkers(context.getDatabase(), bucketIds);
   }
 
   static void warnSkipped(final int bucketId, final long skipped) {
