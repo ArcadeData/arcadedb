@@ -217,19 +217,18 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   /**
    * Sets the A* search the APOC path finders run to walk {@code pattern}: through the {@code direction} and
-   * {@code edgeTypeNames} options when its alternatives share a direction (an alternative without a marker walks
-   * {@code unmarked}), which keeps the graph analytical view's fast path, and through the pattern itself when they mix
-   * directions.
+   * {@code edgeTypeNames} options when its alternatives share a direction, which keeps the graph analytical view's fast
+   * path, and through the pattern itself when they mix directions. A direction argument beside the pattern is applied to it
+   * first ({@link RelationshipPattern#withUnmarked}), so that a mixed pattern walks its unmarked alternatives in it too.
    */
   protected static void configureSearch(final SQLFunctionAstar astar, final Map<String, Object> options,
-      final RelationshipPattern pattern, final Vertex.DIRECTION unmarked) {
-    final Vertex.DIRECTION common = pattern.commonDirection();
-    if (common == null) {
+      final RelationshipPattern pattern) {
+    final Vertex.DIRECTION direction = pattern.commonDirection();
+    if (direction == null) {
       options.put("direction", Vertex.DIRECTION.BOTH.name());
       astar.setRelationshipPattern(pattern);
       return;
     }
-    final Vertex.DIRECTION direction = common == Vertex.DIRECTION.BOTH ? unmarked : common;
     options.put("direction", direction.name());
     final String[] types = pattern.typesFor(direction == Vertex.DIRECTION.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
     if (types != null && types.length > 0)
@@ -2076,15 +2075,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   /**
    * Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String)} for the APOC path finders: the edges are the ones
-   * {@code pattern} follows, its alternatives without a direction marker in {@code dir}, and an edge without the weight property
-   * weighs {@code missingWeight}, APOC's {@code defaultWeight} (issue #12103).
+   * {@code pattern} follows (a direction argument beside it already applied, see {@link #configureSearch}), and an edge
+   * without the weight property weighs {@code missingWeight}, APOC's {@code defaultWeight} (issue #12103).
    */
-  protected WeightedPath attachEdges(final List<RID> pathRids, final RelationshipPattern pattern, final Vertex.DIRECTION dir,
-      final String weightProperty, final double missingWeight) {
-    final Vertex.DIRECTION common = pattern.commonDirection();
-    if (common == null)
+  protected WeightedPath attachEdges(final List<RID> pathRids, final RelationshipPattern pattern, final String weightProperty,
+      final double missingWeight) {
+    final Vertex.DIRECTION direction = pattern.commonDirection();
+    if (direction == null)
       return attachEdges(pathRids, null, Vertex.DIRECTION.BOTH, weightProperty, true, pattern, missingWeight);
-    final Vertex.DIRECTION direction = common == Vertex.DIRECTION.BOTH ? dir : common;
     final String[] types = pattern.typesFor(direction == Vertex.DIRECTION.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
     return attachEdges(pathRids, types != null && types.length > 0 ? types : null, direction, weightProperty, true, null,
         missingWeight);

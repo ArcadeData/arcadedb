@@ -94,7 +94,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     options.put("emptyIfMaxDepth", true);
     // Same default as algo.dijkstra: without the geographic properties A* behaves identically to it
     final SQLFunctionAstar astar = new SQLFunctionAstar();
-    configureSearch(astar, options, pattern, Vertex.DIRECTION.BOTH);
+    configureSearch(astar, options, pattern);
 
     // Geographic heuristic coordinates
     if (args.length > 4 && args[4] != null && args.length > 5 && args[5] != null) {
@@ -113,7 +113,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     }
 
     // The A* function returns vertex RIDs only: rebuild the edges between them for the weight and the relationships
-    final WeightedPath weighted = attachEdges(pathRids, pattern, Vertex.DIRECTION.BOTH, weightProperty, EdgeWeight.MISSING);
+    final WeightedPath weighted = attachEdges(pathRids, pattern, weightProperty, EdgeWeight.MISSING);
     final TraversalPath path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
     final double totalWeight = weighted.weight();
 

@@ -88,6 +88,29 @@ class RelationshipPatternTest extends TestHelper {
   }
 
   @Test
+  void withUnmarkedGivesTheUnmarkedAlternativesTheDirection() {
+    final RelationshipPattern mixed = RelationshipPattern.parse("test", "KNOWS>|LIKES|<FOLLOWS");
+    assertThat(mixed.withUnmarked(IN).entries()).containsExactly(new Entry("KNOWS", OUT), new Entry("LIKES", IN),
+        new Entry("FOLLOWS", IN));
+    assertThat(mixed.withUnmarked(IN).typesFor(OUT)).containsExactly("KNOWS");
+    // the parsed pattern is not changed
+    assertThat(mixed.entries().get(1)).isEqualTo(new Entry("LIKES", BOTH));
+    assertThat(mixed.withUnmarked(BOTH)).isSameAs(mixed);
+
+    // every alternative carries a marker: nothing to change
+    final RelationshipPattern marked = RelationshipPattern.parse("test", "KNOWS>|<LIKES");
+    assertThat(marked.withUnmarked(OUT)).isSameAs(marked);
+    // one shared direction once applied: the search can say it with the direction option
+    assertThat(RelationshipPattern.parse("test", "KNOWS>|LIKES").withUnmarked(OUT).commonDirection()).isEqualTo(OUT);
+
+    // the empty pattern is every relationship in that direction
+    final RelationshipPattern every = RelationshipPattern.parse("test", "").withUnmarked(OUT);
+    assertThat(every.entries()).containsExactly(new Entry(null, OUT));
+    assertThat(every.typesFor(OUT)).isEmpty();
+    assertThat(every.typesFor(IN)).isNull();
+  }
+
+  @Test
   void bothMarkersOnOneAlternativeAreRefused() {
     assertThatThrownBy(() -> RelationshipPattern.parse("node.degree", "LIKES|<KNOWS>"))
         .isInstanceOf(IllegalArgumentException.class)

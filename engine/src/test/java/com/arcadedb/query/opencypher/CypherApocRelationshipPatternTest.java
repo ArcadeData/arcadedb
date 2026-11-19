@@ -243,6 +243,23 @@ class CypherApocRelationshipPatternTest {
     }
 
     @Test
+    void dijkstraWalksTheUnmarkedAlternativesOfAMixedPatternInTheTextDirection() {
+      // 'KNOWS>|LIKES' with IN: KNOWS outgoing to b, then LIKES incoming only, (c)-[:LIKES {w: 1}]->(b); walking LIKES both
+      // ways took the (a)-[:LIKES]->(c) shortcut (weight 1) and reported (b)-[:LIKES {w: 0.5}]->(c)
+      final Result in = row("CALL algo.dijkstra(a, c, 'KNOWS>|LIKES', 'w', 'IN') YIELD path, weight" + TYPES_AND_WEIGHTS
+          + ", weight");
+      assertThat(in.<List<Object>>getProperty("t")).containsExactly("KNOWS", "LIKES");
+      assertThat(in.<List<Object>>getProperty("w")).containsExactly(1.0, 1.0);
+      assertThat(in.<Number>getProperty("weight").doubleValue()).isEqualTo(2.0);
+
+      // with OUT every alternative is outgoing: the (a)-[:LIKES]->(c) shortcut
+      final Result out = row("CALL algo.dijkstra(a, c, 'KNOWS>|LIKES', 'w', 'OUT') YIELD path, weight" + TYPES_AND_WEIGHTS
+          + ", weight");
+      assertThat(out.<List<Object>>getProperty("t")).containsExactly("LIKES");
+      assertThat(out.<Number>getProperty("weight").doubleValue()).isEqualTo(1.0);
+    }
+
+    @Test
     void aCommaSeparatesAlternativesToo() {
       final Result path = row("CALL apoc.algo.dijkstra(a, c, 'KNOWS>,<LIKES', 'w') YIELD path, weight" + TYPES_AND_WEIGHTS
           + ", weight");

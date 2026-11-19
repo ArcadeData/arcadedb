@@ -157,6 +157,28 @@ public final class RelationshipPattern {
     return common == null ? Vertex.DIRECTION.BOTH : common;
   }
 
+  /**
+   * This pattern with the alternatives that carry no direction marker followed in {@code direction} only: the direction
+   * argument ArcadeDB accepts beside the pattern. An empty pattern becomes every relationship in {@code direction}
+   * ({@code '>'} or {@code '<'}); {@code this} for {@code BOTH} or when every alternative carries a marker.
+   */
+  public RelationshipPattern withUnmarked(final Vertex.DIRECTION direction) {
+    if (direction == Vertex.DIRECTION.BOTH)
+      return this;
+    if (entries.isEmpty())
+      return new RelationshipPattern(List.of(new Entry(null, direction)));
+    List<Entry> restricted = null;
+    for (int i = 0; i < entries.size(); i++) {
+      final Entry entry = entries.get(i);
+      if (entry.direction() != Vertex.DIRECTION.BOTH)
+        continue;
+      if (restricted == null)
+        restricted = new ArrayList<>(entries);
+      restricted.set(i, new Entry(entry.type(), direction));
+    }
+    return restricted == null ? this : new RelationshipPattern(restricted);
+  }
+
   /** Whether {@code edge}, met on {@code direction} from the node at hand, is one the pattern follows. */
   public boolean follows(final Edge edge, final Vertex.DIRECTION direction) {
     final String[] types = typesFor(direction);

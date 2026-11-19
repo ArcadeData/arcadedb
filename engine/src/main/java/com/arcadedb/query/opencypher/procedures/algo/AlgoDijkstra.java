@@ -90,7 +90,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final RelationshipPattern pattern = extractRelationshipPattern(args[2], context);
+    final RelationshipPattern relTypes = extractRelationshipPattern(args[2], context);
     final String weightProperty = extractString(args[3], "weightProperty");
 
     // APOC's defaultWeight; APOC defaults it to NaN, which leaves ArcadeDB's rule, an edge without a weight weighs 1
@@ -106,12 +106,15 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
       throw new IllegalArgumentException(getName() + "(): the fifth argument is the default weight (a number) or the direction (IN, OUT or "
           + "BOTH), got " + fifth.getClass().getSimpleName());
 
+    // the direction applies to the alternatives without a marker, a mixed pattern's included
+    final RelationshipPattern pattern = relTypes.withUnmarked(unmarked);
+
     final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
 
     // Use ArcadeDB's existing A* implementation (Dijkstra internally uses A*)
     final SQLFunctionAstar astar = new SQLFunctionAstar().setMissingWeight(missingWeight);
-    configureSearch(astar, options, pattern, unmarked);
+    configureSearch(astar, options, pattern);
     final Object[] params = new Object[] { startNode, endNode, weightProperty, options };
     final LinkedList<RID> pathRids = astar.execute(null, null, null, params, context);
 
@@ -120,7 +123,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
 
     // The A* implementation returns vertices only. Traverse the edges between consecutive
     // vertices to reconstruct the path's total weight and to expose the relationships.
-    final WeightedPath weighted = attachEdges(pathRids, pattern, unmarked, weightProperty, missingWeight);
+    final WeightedPath weighted = attachEdges(pathRids, pattern, weightProperty, missingWeight);
 
     // Build path representation including edges
     final TraversalPath path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
