@@ -800,7 +800,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
       // The types the labels select are the types of an unlabelled node narrowed down, and a property they pin is answered by the
       // index of the buckets of those types the same way (issue #12522)
-      final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, labels);
+      final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, rowProperties, labels);
       if (indexed != null)
         return indexed;
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
@@ -815,7 +815,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // database, and only the buckets no index covers are walked (issue #12522). The candidates of that branch
     // report themselves in candidatesDependOnTheRow, which isRowIndependentFullScan() reads: the walk below is
     // the one it relies on to be the same for every row.
-    final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, labels);
+    final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, rowProperties, labels);
     if (indexed != null)
       return indexed;
 
@@ -999,9 +999,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * they used to be walked once and cached (issues #6602, #8695): when one of them holds a record, the walk of the types answers the
    * statement instead.
    *
-   * @param labels the labels of the pattern, none for an unlabelled node
+   * @param rowProperties the inline property map resolved for this row ({@link InlineProperties#resolveAll}), so the value sought
+   *                      is the value every candidate is checked with (issue #12179)
+   * @param labels        the labels of the pattern, none for an unlabelled node
    */
-  private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult, final List<String> labels) {
+  private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult,
+      final Map<String, Object> rowProperties, final List<String> labels) {
     if (pattern.hasDynamicLabels())
       return null; // the types are only known per row
 
@@ -1010,7 +1013,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
       final Object declared = entry.getValue();
       rowDependent |= declared instanceof Expression expression && !RowIndependentValues.isRowIndependent(expression);
-      final Object value = InlineProperties.resolve(declared, currentInputResult, context);
+      final Object value = rowProperties.get(entry.getKey());
       if (value == null) {
         // A null equals nothing: no vertex matches this row. For a value the row decides the next row has its own candidates, so
         // the none of this one must not be cached for it, nor the walk of every vertex stand in for the seek of the rows after it

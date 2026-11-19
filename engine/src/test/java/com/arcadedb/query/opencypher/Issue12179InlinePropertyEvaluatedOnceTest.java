@@ -111,4 +111,18 @@ class Issue12179InlinePropertyEvaluatedOnceTest extends TestHelper {
       assertThat(count("UNWIND range(1, 2000) AS j MATCH (a:" + type + ") WHERE a.k = toInteger(rand() * 10) RETURN count(a) AS n"))
           .as(type).isBetween(1700L, 2300L);
   }
+
+  /**
+   * A node that names no type is sought in the index of each bucket it reads (issue #12522), with the value resolved once for the
+   * row: the one every candidate is then checked with. Plain is emptied so no bucket is walked and the index answers every row.
+   */
+  @Test
+  void unlabelledNodeIsSoughtWithTheValueOfTheRow() {
+    database.transaction(() -> database.command("sql", "DELETE FROM Plain"));
+    assertThat(count("UNWIND range(1, 2000) AS j MATCH (a {k: toInteger(rand() * 10)}) RETURN count(a) AS n")).isEqualTo(2000L);
+
+    calls.set(0);
+    assertThat(count("UNWIND range(1, 100) AS j MATCH (a {k: " + CALL + "(j % 10)}) RETURN count(a) AS n")).isEqualTo(100L);
+    assertThat(calls.get()).isEqualTo(100);
+  }
 }
