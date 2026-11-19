@@ -760,13 +760,94 @@ class SelectTargetPlanningTest extends TestHelper {
     inner.setParent(outer);
     assertThat(ParallelTypeScan.isAllowed(inner)).as("a FROM-subquery or a LET of the whole statement: no row yet").isTrue();
 
-    outer.setVariable("current", new ResultInternal());
+    outer.setVariable("current", new ResultInternal(Map.of("n", 1)));
     assertThat(ParallelTypeScan.isAllowed(inner)).as("run once per row of the enclosing scan").isFalse();
 
     final BasicCommandContext deeper = new BasicCommandContext();
     deeper.setDatabase(db);
     deeper.setParent(inner);
     assertThat(ParallelTypeScan.isAllowed(deeper)).as("a row anywhere up the chain").isFalse();
+
+    // A bare row between the subquery and the real row (a SELECT without a target nested in a per-row subquery) hides nothing
+    inner.setVariable("current", new ResultInternal(db));
+    assertThat(ParallelTypeScan.isAllowed(deeper)).as("a real row above a bare one").isFalse();
+  }
+
+  // ---- #12537: a subquery under a SELECT without a target scans in parallel ----
+  /*
+   * Issue #12537: a SELECT without a target runs its projection on a bare row (EmptyDataGeneratorStep), which it binds as
+   * {@code current}. Since #10609 any {@code current} up the chain made a subquery scan on one thread, so the filter of
+   * {@code SELECT expand(vector.neighbors(..., { filter: (SELECT @rid FROM T WHERE ...).@rid }))} lost the parallel scan a
+   * standalone query gets, about 20 ms per query on 100k records. The bare row holds nothing a worker could read concurrently.
+   */
+
+  /** Regression test for issue #12537. */
+  @Test
+  void aStatementUnderTheBareRowOfASelectWithoutTargetMayScanInParallel() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final BasicCommandContext outer = new BasicCommandContext();
+    outer.setDatabase(db);
+
+    // THE ROW THE ENGINE ITSELF GIVES A SELECT WITHOUT A TARGET, BOUND AS `current` BY THE STEP THAT PRODUCES IT
+    final EmptyDataGeneratorStep step = new EmptyDataGeneratorStep(1, outer);
+    final Result bare = step.syncPull(outer, 1).next();
+    assertThat(outer.getVariable("current")).as("the step binds its row as current").isSameAs(bare);
+
+    final BasicCommandContext inner = new BasicCommandContext();
+    inner.setDatabase(db);
+    inner.setParent(outer);
+    assertThat(ParallelTypeScan.isAllowed(inner)).as("a subquery in the projection of a SELECT without a target").isTrue();
+
+    ((ResultInternal) bare).setProperty("n", 1);
+    assertThat(ParallelTypeScan.isAllowed(inner)).as("a row that holds a value is a real row").isFalse();
+
+    database.getSchema().createDocumentType("Row12537");
+    outer.setVariable("current", new ResultInternal(database.newDocument("Row12537")));
+    assertThat(ParallelTypeScan.isAllowed(inner)).as("a row that holds a record is a real row").isFalse();
+  }
+
+  /** Regression test for issue #12537: the filter subquery answers the same as the same subquery bound by a LET. */
+  @Test
+  void aVectorNeighborsFilterSubqueryUnderASelectWithoutTargetAnswersAsItsLetForm() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc12537 BUCKETS 4");
+      database.command("sql", "CREATE PROPERTY Doc12537.embedding ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON Doc12537 (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'COSINE' }");
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < ROWS; i++)
+        database.newDocument("Doc12537").set("grp", i % 100)
+            .set("embedding", new float[] { i % 7 + 1, i % 3 + 1, i % 5 + 1, i % 11 + 1 }).save();
+    });
+
+    final float[] vector = { 1.0f, 2.0f, 3.0f, 1.0f };
+    final Set<RID> inScope = new HashSet<>();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid FROM Doc12537 WHERE grp < 5")) {
+      rs.forEachRemaining(r -> inScope.add(r.getProperty("@rid")));
+    }
+    assertThat(inScope).hasSize(ROWS / 20);
+
+    final Set<RID> filtered = neighbours12537("""
+        SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: (SELECT @rid FROM Doc12537 WHERE grp < 5).@rid }))""",
+        vector);
+    final Set<RID> viaLet = neighbours12537("""
+        SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: $f.@rid }))
+        LET $f = (SELECT @rid FROM Doc12537 WHERE grp < 5)""", vector);
+
+    assertThat(filtered).hasSize(20).isEqualTo(viaLet);
+    assertThat(inScope).containsAll(filtered);
+
+    try (final ResultSet rs = database.query("sql", "SELECT (SELECT count() AS c FROM Doc12537 WHERE grp < 5)[0].c AS c")) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo((long) inScope.size());
+    }
+  }
+
+  private Set<RID> neighbours12537(final String sql, final float[] vector) {
+    final Set<RID> rids = new HashSet<>();
+    try (final ResultSet rs = database.query("sql", sql, vector)) {
+      rs.forEachRemaining(r -> rids.add(r.getIdentity().orElseThrow()));
+    }
+    return rids;
   }
 
   // ---- #10655: a filtered scan reuses a rejected candidate ----
