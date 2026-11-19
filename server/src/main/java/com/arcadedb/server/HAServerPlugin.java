@@ -920,6 +920,16 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * The Raft index at which the install or drop entry this node last submitted for {@code databaseName} committed, or {@code -1}
+   * when it submitted none (review of #11739). The bookmark of {@code create database} and {@code drop database} is at least this
+   * index: {@link #getCommitIndex()} read after the submission can stand below the entry when another leader committed it. The
+   * default, for non-HA setups, knows no index.
+   */
+  default long getDatabaseEntryIndex(final String databaseName) {
+    return -1L;
+  }
+
+  /**
    * Holds {@code databaseName} for a restore that has claimed it on this server (issue #10974): from now until
    * {@link #releaseReplicatedWritesForRestore}, writes other nodes replicate to it through this one are refused with a
    * retryable error, and the call returns once the ones already accepted - which no local commit wait sees - are applied here,

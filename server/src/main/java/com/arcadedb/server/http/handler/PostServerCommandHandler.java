@@ -180,8 +180,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     }
 
     final ExecutionResponse answer = new ExecutionResponse(200, response.toString());
-    if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE))
-      emitBookmark(answer);
+    if (command_lc.startsWith(CREATE_DATABASE))
+      emitBookmark(answer, extractTarget(command, CREATE_DATABASE));
+    else if (command_lc.startsWith(DROP_DATABASE))
+      emitBookmark(answer, extractTarget(command, DROP_DATABASE));
     return answer;
   }
 
@@ -504,17 +506,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   /**
    * Stamps the leader's answer to {@code create database} and {@code drop database} with the {@code X-ArcadeDB-Commit-Index}
-   * bookmark (issue #11739): the highest index it has committed, which is at or past the entry it has just replicated for the
-   * command. A client carries it to read its own write from another node, and a follower that forwarded the command waits on it
-   * (see {@link #awaitForwardedEntryApplied}). Nothing on a server without HA, which has no index.
+   * bookmark (issue #11739): at least the index the command's entry committed at, and this node's commit index when that is
+   * higher. The commit index alone can stand below the entry when the leadership moved during the submission and another leader
+   * committed it (review of #11739). A client carries it to read its own write from another node, and a follower that forwarded
+   * the command waits on it (see {@link #awaitForwardedEntryApplied}). Nothing on a server without HA, which has no index.
    */
-  private void emitBookmark(final ExecutionResponse answer) {
+  private void emitBookmark(final ExecutionResponse answer, final String databaseName) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null)
       return;
-    final long committed = ha.getCommitIndex();
-    if (committed >= 0)
-      answer.setHeader(COMMIT_INDEX_HEADER_NAME, String.valueOf(committed));
+    final long bookmark = Math.max(ha.getCommitIndex(), ha.getDatabaseEntryIndex(databaseName));
+    if (bookmark >= 0)
+      answer.setHeader(COMMIT_INDEX_HEADER_NAME, String.valueOf(bookmark));
   }
 
   /**

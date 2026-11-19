@@ -423,6 +423,43 @@ class DropDatabaseApplyTest {
     }
 
     /**
+     * Review of #11739: with the rename refused, {@code stageForDeletion} deletes inline, and a delete the filesystem refuses is
+     * logged and returns with the directory still there. The apply then fails instead of ending the close: the database stays
+     * unavailable rather than reopened from the copy the cluster dropped, and the failure takes the path that keeps the entry
+     * replayable.
+     */
+    @Test
+    void aDirectoryTheInlineDeleteLeftBehindFailsTheApplyAndKeepsTheCloseMark() throws Exception {
+      assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+      assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+      final ArcadeStateMachine sm = start();
+      deleter.close();
+      deleter = new DeferredDatabaseDeleter() {
+        @Override
+        Path rename(final Path directory) {
+          return null;
+        }
+      };
+      sm.setDeferredDatabaseDeleter(deleter);
+      new ServerControlPlane(server).closeDatabase(DB_NAME);
+
+      final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databaseDirectory);
+      // its files cannot be unlinked, so the directory cannot be removed either
+      Files.setPosixFilePermissions(databaseDirectory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+      try {
+        assertThatThrownBy(() -> applyDrop(sm, DB_NAME)).isInstanceOf(UncheckedIOException.class).hasMessageContaining(DB_NAME);
+      } finally {
+        Files.setPosixFilePermissions(databaseDirectory, original);
+      }
+
+      assertThat(Files.isDirectory(databaseDirectory)).as("precondition: the inline delete left the directory").isTrue();
+      assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark stays while the files do").isTrue();
+      assertThat(server.isDatabaseOfServer(DB_NAME)).isTrue();
+      assertThat(coordinator().isInProgress(DB_NAME)).as("the failed apply must release the slot it took").isFalse();
+    }
+
+    /**
      * Deregistered but still open in this JVM - a close that failed half way: the instance is closed before its
      * directory is renamed, rather than left holding handles on files that are gone.
      */

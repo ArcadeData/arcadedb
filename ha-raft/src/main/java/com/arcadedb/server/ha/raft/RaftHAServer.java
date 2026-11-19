@@ -459,6 +459,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   final RatisInPlaceRestart inPlaceRestart = new RatisInPlaceRestart(this);
   final VoterQuarantineCheck voterQuarantine = new VoterQuarantineCheck(this);
   final AppliedIndexWaits appliedWaits = new AppliedIndexWaits(this);
+  // The Raft index the last create or drop of each database this node submitted committed at (review of #11739): the bookmark
+  // that command is answered with, see recordDatabaseEntryIndex(). One entry per database name ever created or dropped here
+  private final ConcurrentHashMap<String, Long> databaseEntryIndexes = new ConcurrentHashMap<>();
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
@@ -3886,6 +3889,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // See getLastAppliedIndex: degrade to "unknown" during an in-place restart (issue #5271).
       return -1;
     }
+  }
+
+  /**
+   * Records that the install or drop entry this node submitted for {@code databaseName} committed at {@code index} (review of
+   * #11739). The answer to {@code create database} and {@code drop database} is bookmarked with it: this node's commit index,
+   * read once the submission returned, can stand below the entry when the leadership moved during the submission and another
+   * leader committed it.
+   */
+  void recordDatabaseEntryIndex(final String databaseName, final long index) {
+    if (index >= 0)
+      databaseEntryIndexes.merge(databaseName, index, Math::max);
+  }
+
+  /** The index {@link #recordDatabaseEntryIndex} recorded last for {@code databaseName}, or {@code -1}. */
+  public long getDatabaseEntryIndex(final String databaseName) {
+    return databaseEntryIndexes.getOrDefault(databaseName, -1L);
   }
 
   /**

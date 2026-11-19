@@ -598,6 +598,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public long getDatabaseEntryIndex(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getDatabaseEntryIndex(databaseName) : -1L;
+  }
+
+  @Override
   public void holdReplicatedWritesForRestore(final String databaseName) {
     final RaftHAServer raft = raftHAServer;
     if (raft != null)

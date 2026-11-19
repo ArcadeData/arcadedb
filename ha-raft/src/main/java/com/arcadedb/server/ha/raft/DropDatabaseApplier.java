@@ -28,6 +28,7 @@ import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.ha.raft.ArcadeStateMachine.InstallApplyGate;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -175,6 +176,10 @@ final class DropDatabaseApplier {
       // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
       staged = databaseDirectory == null ? null : deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
       absent = databaseDirectory == null;
+      // The inline fallback of stageForDeletion logs a delete it could not finish and returns: the directory must be gone
+      // before the close mark is cleared below, or a request reopens the copy the cluster dropped once the filesystem recovers
+      if (databaseDirectory != null && staged == null)
+        confirmDeletedInline(databaseName, databaseDirectory);
       // Deregistered again now that the directory is gone from under its name (issue #11739). A drop ends the close that a
       // `close database` asked for, and only removeDatabase ends it: the branch above for a closed database left the mark
       // standing, so GET /exists kept answering true, and a request kept being refused as closed, for a database the cluster
@@ -214,6 +219,27 @@ final class DropDatabaseApplier {
     sm.baselines.evictBootstrapBaseline(databaseName);
     clearDroppedDatabaseQuarantine(databaseName);
     HALog.log(sm, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
+  }
+
+  /**
+   * Fails the apply when the inline deletion {@code stageForDeletion} fell back to left {@code directory} behind (review of
+   * #11739): {@code FileUtils.deleteRecursively} logs what it could not delete and returns. Thrown before the close mark is
+   * cleared, the database stays unavailable, and a plain runtime exception takes the {@code handleUnexpectedApplyError} path
+   * (see {@link #closedDatabaseDirectory}), which keeps the entry replayable until the filesystem is repaired.
+   *
+   * @throws UncheckedIOException when the directory is still there, or the filesystem cannot say whether it is
+   */
+  private static void confirmDeletedInline(final String databaseName, final Path directory) {
+    try {
+      Files.readAttributes(directory, BasicFileAttributes.class);
+    } catch (final NoSuchFileException e) {
+      return;
+    } catch (final IOException e) {
+      throw new UncheckedIOException(
+          "Cannot tell whether the files of dropped database '" + databaseName + "' at '" + directory + "' are gone", e);
+    }
+    throw new UncheckedIOException("The files of dropped database '" + databaseName + "' at '" + directory + "' could not be deleted",
+        new FileSystemException(directory.toString(), null, "still present after the inline deletion"));
   }
 
   /**

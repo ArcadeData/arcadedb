@@ -26,6 +26,9 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.apache.ratis.proto.RaftProtos.LogEntryProto;
+import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -123,24 +126,48 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
   /**
    * The bookmark the issue asks for: the leader answers {@code create database} and {@code drop database} with the
-   * {@code X-ArcadeDB-Commit-Index} it has committed, which is at or past the entry of the command it just ran.
+   * {@code X-ArcadeDB-Commit-Index} it has committed, which is at or past the entry of the command it just ran. Each bookmark is
+   * compared with the index of its own entry, read from the leader's Raft log, not with the other bookmark: a pair of bookmarks
+   * each one short of its entry would still be ordered.
    */
   @Test
   void theLeaderAnswersTheCreationAndTheDropWithTheBookmark() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final long before = lastRaftLogIndex(leader);
 
     final HttpResponse<String> created = send(leaderIndex, "/server",
         new JSONObject().put("command", "create database " + BOOKMARKED_DATABASE)).get(30, TimeUnit.SECONDS);
     assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
-    final long createdAt = bookmarkOf(created);
-    assertThat(createdAt).as("the leader's answer to create database carries the bookmark").isGreaterThan(0);
+    final long createEntry = entryIndexAfter(leader, before, RaftLogEntryType.INSTALL_DATABASE_ENTRY, BOOKMARKED_DATABASE);
+    assertThat(bookmarkOf(created)).as("the bookmark of create database covers its install entry, at %d", createEntry)
+        .isGreaterThanOrEqualTo(createEntry);
 
     final HttpResponse<String> dropped = send(leaderIndex, "/server",
         new JSONObject().put("command", "drop database " + BOOKMARKED_DATABASE)).get(30, TimeUnit.SECONDS);
     assertThat(dropped.statusCode()).as("drop database failed: %s", dropped.body()).isEqualTo(200);
-    assertThat(bookmarkOf(dropped)).as("the leader's answer to drop database carries a bookmark past the creation's")
-        .isGreaterThan(createdAt);
+    final long dropEntry = entryIndexAfter(leader, createEntry, RaftLogEntryType.DROP_DATABASE_ENTRY, BOOKMARKED_DATABASE);
+    assertThat(bookmarkOf(dropped)).as("the bookmark of drop database covers its drop entry, at %d", dropEntry)
+        .isGreaterThanOrEqualTo(dropEntry);
+  }
+
+  /** The index of the first {@code type} entry for {@code database} in {@code server}'s Raft log after {@code afterIndex}. */
+  private static long entryIndexAfter(final RaftHAServer server, final long afterIndex, final RaftLogEntryType type,
+      final String database) throws Exception {
+    final RaftLog log = server.getRaftDivision().getRaftLog();
+    final long last = log.getLastEntryTermIndex().getIndex();
+    for (long i = afterIndex + 1; i <= last; i++) {
+      final LogEntryProto entry = log.get(i);
+      if (entry == null || !entry.hasStateMachineLogEntry())
+        continue;
+      final ByteString data = entry.getStateMachineLogEntry().getLogData();
+      if (data.isEmpty() || RaftLogEntryType.fromId(data.byteAt(0)) != type)
+        continue;
+      if (database.equals(RaftLogEntryCodec.decode(data).databaseName()))
+        return i;
+    }
+    throw new AssertionError("no " + type + " entry for '" + database + "' in the leader's log after index " + afterIndex);
   }
 
   /** Not a database command: a command the follower does not forward answers without a bookmark. */
@@ -287,7 +314,8 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
   /**
    * Holds {@code serverIndex}'s apply thread off {@code database} until {@code release} counts down: the install apply gate is
    * the lock it takes before applying any entry for a database, the install and drop entries included. The leader still
-   * commits with the other follower.
+   * commits with the other follower. Once it returns, releasing the holder is the caller's; when the gate is not taken in time
+   * (or the wait is interrupted) the holder is released here, since the caller never gets it to release.
    */
   private Thread holdApply(final int serverIndex, final String database, final CountDownLatch release)
       throws InterruptedException {
@@ -306,7 +334,17 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
       }
     }, "issue11739-follower-gate");
     holder.start();
-    assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
+    boolean taken = false;
+    try {
+      taken = held.await(30, TimeUnit.SECONDS);
+    } finally {
+      if (!taken) {
+        // A holder that takes the gate late would otherwise block the follower's apply for the rest of the 60 s teardown
+        release.countDown();
+        holder.join(TimeUnit.SECONDS.toMillis(30));
+      }
+    }
+    assertThat(taken).as("the apply gate of '%s' on server %d was not taken in time", database, serverIndex).isTrue();
     return holder;
   }
 
