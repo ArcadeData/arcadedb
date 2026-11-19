@@ -3054,7 +3054,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Downsamples blocks older than cutoffTs to the given granularity.
-   * Blocks already at the target resolution or coarser are left untouched (idempotency).
+   * Blocks already downsampled to the target granularity or coarser, which their marker says, are left untouched
+   * (idempotency); every other block is rewritten once, whatever the spacing of its samples (issue #11984).
    * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs,
@@ -3079,7 +3080,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         toKeep.add(entry);
         continue;
       }
-      // Check if block is already at target resolution and must be left untouched (idempotency).
+      // Check if block must be left untouched (idempotency).
       // 1. A single-sample block can never be reduced further.
       // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
       //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
