@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * A snapshot never carries the projection: installing one on a follower drops the follower's projection and rebuilds it with reason
  * {@code snapshot_install} over the installed files, then the Raft apply keeps it current (plan 3, Task 23). The install goes through
- * the real {@link SnapshotInstaller} path against the open, registered database, as {@code Issue4749SnapshotInstallClosesRegisteredDatabaseIT}.
+ * the real {@link SnapshotInstaller} path against the open, registered database, as {@code SnapshotInstallClosesRegisteredDatabaseIT}.
  */
 class ColumnarSnapshotInstallRebuildIT extends ColumnarHATestSupport {
   /** No time-driven flush: the generations the test compares move only by the flushes it asks for, and by the rebuild. */
