@@ -102,7 +102,7 @@ public class MoveVertexExecutionPlanner {
           throw new CommandExecutionException("Missing payload for MOVE VERTEX ... MERGE: " + op);
         break;
       case UpdateOperations.TYPE_CONTENT:
-        plan.chain(new UpdateContentStep(op.getJson(), ctx));
+        plan.chain(UpdateContentStep.of(op, "MOVE VERTEX", ctx));
         break;
       case UpdateOperations.TYPE_PUT:
       case UpdateOperations.TYPE_INCREMENT:

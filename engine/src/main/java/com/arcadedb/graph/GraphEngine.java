@@ -1074,7 +1074,7 @@ public class GraphEngine {
       // vertex that no longer exists surfaces - one frame before the head-chunk lookup the catch below was written
       // for. A multi-page vertex body whose continuation chunk is not visible yet reaches here too, and that one IS
       // the publication window, so the two are separated by the RID the not-found names rather than by the site.
-      headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+      headRID = direction == Vertex.DIRECTION.OUT ? vertex.peekOutEdgesHeadChunk() : vertex.peekInEdgesHeadChunk();
     } catch (final RecordNotFoundException e) {
       if (vertexRID != null && vertexRID.equals(e.getRID()))
         throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
@@ -1143,7 +1143,7 @@ public class GraphEngine {
       // this list would be inventing a diagnosis, which is the whole thing #6586 is about not doing.
       throw e;
     }
-    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.peekOutEdgesHeadChunk() : mutable.peekInEdgesHeadChunk();
     if (reloadedHead != null)
       return getOrCreateEdgeList(mutable, direction);
 
@@ -1190,7 +1190,7 @@ public class GraphEngine {
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
-    RID inEdgesHeadChunk = toVertex.getInEdgesHeadChunk();
+    RID inEdgesHeadChunk = toVertex.peekInEdgesHeadChunk();
 
     EdgeSegment inChunk = null;
     if (inEdgesHeadChunk != null)
@@ -1217,7 +1217,7 @@ public class GraphEngine {
   }
 
   public EdgeSegment createOutEdgeChunk(final MutableVertex fromVertex) {
-    RID outEdgesHeadChunk = fromVertex.getOutEdgesHeadChunk();
+    RID outEdgesHeadChunk = fromVertex.peekOutEdgesHeadChunk();
 
     EdgeSegment outChunk = null;
     if (outEdgesHeadChunk != null)
