@@ -3939,26 +3939,36 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // A cap is the heap gate's answer for a search-decided build that does not fit with the full cache (issue #11497).
       // Applied as a ceiling on the size computed here, never as the size itself: the corpus can have shrunk since the
       // gate measured it, and the cap is the most the heap allowed, not an amount the build has to claim.
-      final int computedBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
-      final int graphBuildCacheSize = buildCacheCapacityCap > 0 ?
-          Math.min(computedBuildCacheSize, buildCacheCapacityCap) : computedBuildCacheSize;
+      //
+      // Sized and charged in one step, under the lock every search cache sizes itself under (issue #12544): a search cache
+      // published between the reading this size is taken of and the charge would plan on the same heap as the build. The
+      // allocations and the preload stay outside, so a search waits for arithmetic only.
+      final int graphBuildCacheSize;
+      final int quantizedCapacity;
+      synchronized (SEARCH_CACHE_SIZING_LOCK) {
+        final int computedBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
+        graphBuildCacheSize = buildCacheCapacityCap > 0 ?
+            Math.min(computedBuildCacheSize, buildCacheCapacityCap) : computedBuildCacheSize;
+
+        // Issue #10543: an INT8/BINARY corpus that this budget cannot hold as float vectors is kept as the quantized rows
+        // the pages store, which are a quarter (INT8) to a thirty-second (BINARY) of the size, and the build reads the
+        // rest from the pages into a scratch vector. Floats are the worse use of the same budget for a corpus that does
+        // not fit: a miss dequantized into a new array that was published into the cache, evicting another, and at
+        // 13.8M x 768 that churn pinned the heap at 17-24 GB and slowed the build to one vector every five seconds.
+        // A corpus the float cache does hold is left alone: its vectors are read with no dequantization at all.
+        quantizedCapacity = inlineQuantization && graphBuildCacheSize < expectedSize
+            ? quantizedBuildCapacity(graphBuildCacheSize, expectedSize) : 0;
+
+        // Published before the preload below fills the cache, so a search cache sized or grown on another index of the
+        // database from now on is charged what this build is about to take
+        chargeGraphBuildCache(graphBuildCachePlannedBytes(graphBuildCacheSize, quantizedCapacity, expectedSize));
+      }
       lastGraphBuildCacheSize = graphBuildCacheSize;
       // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
       final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
 
-      // Issue #10543: an INT8/BINARY corpus that this budget cannot hold as float vectors is kept as the quantized rows
-      // the pages store, which are a quarter (INT8) to a thirty-second (BINARY) of the size, and the build reads the
-      // rest from the pages into a scratch vector. Floats are the worse use of the same budget for a corpus that does
-      // not fit: a miss dequantized into a new array that was published into the cache, evicting another, and at
-      // 13.8M x 768 that churn pinned the heap at 17-24 GB and slowed the build to one vector every five seconds.
-      // A corpus the float cache does hold is left alone: its vectors are read with no dequantization at all.
-      final int quantizedCapacity = inlineQuantization && graphBuildCacheSize < expectedSize
-          ? quantizedBuildCapacity(graphBuildCacheSize, expectedSize) : 0;
       if (quantizedCapacity > 0)
         quantizedBuildStore = QuantizedBuildVectors.create(metadata.quantizationType, metadata.dimensions, quantizedCapacity);
-      // Published before the preload below fills the cache, so a search cache sized or grown on another index of the database
-      // from now on is charged what this build is about to take (issue #12544)
-      chargeGraphBuildCache(graphBuildCachePlannedBytes(graphBuildCacheSize, quantizedCapacity, expectedSize));
       // Reused by every candidate that does not end up in the store, and for the reconstruction that checks one
       final byte[] validationRow = quantizedBuildStore != null ?
           new byte[QuantizedBuildVectors.rowBytes(metadata.quantizationType, metadata.dimensions)] : null;
