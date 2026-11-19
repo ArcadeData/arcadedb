@@ -60,12 +60,18 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
    */
   static final int VISITED_ENTRY_BYTES = 24;
 
-  // The visited set is the buffer a TRAVERSE holds for its whole life: one entry per record reached, released only when
-  // the step closes. Its bytes are charged to the heap budget all queries share (issue #9792); the frontier is not counted
-  // apart, as it never holds a record the visited set does not. It is not capped in number by
-  // queryMaxHeapElementsAllowedPerOp: an entry is a couple of primitives, not the ~2KB element that cap is sized on, so a
-  // traversal of a large graph would fail it with heap to spare.
-  private OperationHeapLimit visitedLimit;
+  // What a TRAVERSE holds is charged to the heap budget all queries share, in two parts:
+  // - the visited set, the buffer it holds for its whole life: one entry per record reached, released only when the step
+  //   closes (issue #9792);
+  // - the frontier, the rows queued to expand (entryPoints) and the rows expanded but not handed downstream yet (results). It
+  //   never holds a record the visited set does not, but that holds in count, not in bytes: a row holds its record and its
+  //   own $path and $stack, one identity per hop, far more than the visited entry of the same record. Each row is charged
+  //   when it is queued and given back when it leaves: handed downstream, dropped as stale or filtered out, or when the step
+  //   closes (issue #10115).
+  // Neither is capped in number by queryMaxHeapElementsAllowedPerOp: a visited entry is a couple of primitives, not the ~2KB
+  // element that cap is sized on, so a traversal of a large graph would fail it with heap to spare, and the frontier holds
+  // no record the visited set does not.
+  private OperationHeapLimit heapLimit;
 
   public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
       final WhereClause postFilter,
@@ -110,6 +116,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
         }
         localFetched++;
         final Result result = results.removeFirst();
+        releaseFrontier(result);
         if (result.isElement())
           markTraversed(result.getElement().get().getIdentity());
         return result;
@@ -127,15 +134,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected final boolean markTraversed(final RID rid) {
     if (!traversed.add(rid))
       return false;
-    if (visitedLimit == null)
-      visitedLimit = OperationHeapLimit.of(context, "visited records", "TRAVERSE");
-    try {
-      visitedLimit.charge(visitedEntryBytes());
-    } catch (final RuntimeException e) {
-      // THE QUERY FAILS, POSSIBLY BEFORE ITS CALLER HOLDS A RESULT SET TO CLOSE: GIVE THE HEAP BACK NOW
-      visitedLimit.release();
-      throw e;
-    }
+    charge(heapLimit(), visitedEntryBytes());
     return true;
   }
 
@@ -144,10 +143,52 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
     return VISITED_ENTRY_BYTES;
   }
 
+  /**
+   * Charges the heap budget for {@code entry}, just queued in the frontier: past the budget the query fails rather than the
+   * frontier growing until the heap is exhausted. The row keeps what it was charged, which {@link #releaseFrontier(Result)}
+   * gives back when it leaves.
+   */
+  protected final void chargeFrontier(final Result entry) {
+    final OperationHeapLimit limit = heapLimit();
+    if (!limit.isCharging() || !(entry instanceof TraverseResult row))
+      return;
+    // THE ROW AND THE SLOT OF THE DEQUE OR THE LIST THAT HOLDS IT
+    final long bytes = HeapEstimator.estimateTraverseEntry(row) + HeapEstimator.REFERENCE_BYTES;
+    charge(limit, bytes);
+    row.frontierBytes += bytes;
+  }
+
+  /**
+   * Gives back what {@code entry} was charged when it was queued in the frontier, which it has now left: handed downstream,
+   * dropped as stale, or filtered out.
+   */
+  protected final void releaseFrontier(final Result entry) {
+    if (heapLimit != null && entry instanceof TraverseResult row && row.frontierBytes > 0L) {
+      heapLimit.release(row.frontierBytes);
+      row.frontierBytes = 0L;
+    }
+  }
+
+  private OperationHeapLimit heapLimit() {
+    if (heapLimit == null)
+      heapLimit = OperationHeapLimit.of(context, "visited records", "TRAVERSE");
+    return heapLimit;
+  }
+
+  private static void charge(final OperationHeapLimit limit, final long bytes) {
+    try {
+      limit.charge(bytes);
+    } catch (final RuntimeException e) {
+      // THE QUERY FAILS, POSSIBLY BEFORE ITS CALLER HOLDS A RESULT SET TO CLOSE: GIVE THE HEAP BACK NOW
+      limit.release();
+      throw e;
+    }
+  }
+
   @Override
   public void close() {
-    if (visitedLimit != null)
-      visitedLimit.release();
+    if (heapLimit != null)
+      heapLimit.release();
     super.close();
   }
 
