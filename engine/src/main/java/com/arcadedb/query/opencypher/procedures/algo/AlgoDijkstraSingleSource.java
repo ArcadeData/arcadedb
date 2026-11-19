@@ -210,9 +210,13 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
           if (!EdgeWeight.isWalkable(weight))
             continue;
           if (count == nbrBuf.length) {
-            // Priced before the buffers are allocated: a supernode doubles them again and again. They stay for the rows that follow, so
-            // each growth is charged once, by the entries it adds, and the copy of a row is charged beside it with the batch below
+            // Priced before the buffers are allocated: a supernode doubles them again and again. The new ones are alive beside the old
+            // ones, which are reserved already, until the copy is made, so the budget is asked whether they fit in full, reserving
+            // nothing. The buffers stay for the rows that follow, so each growth is charged once, by the entries it adds, and the copy of
+            // a row is charged beside it with the batch below
             final int newLength = (int) Math.min(2L * count, Integer.MAX_VALUE - 8L);
+            memory.checkRoom(saturatingProduct(newLength, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+                "a row of more than " + count + " edge entries");
             memory.reserve(saturatingProduct(newLength - count, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
                 "a row of more than " + count + " edge entries");
             nbrBuf = Arrays.copyOf(nbrBuf, newLength);
@@ -223,9 +227,11 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
           count++;
         }
       }
-      // The copy of a long row is refused before it is made when the budget cannot hold it; the batch below reserves it
-      if (count > INITIAL_ROW_BUFFER && count > memory.capacityFor(INT_BYTES + DOUBLE_BYTES))
-        memory.extendCapacity(count, INT_BYTES + DOUBLE_BYTES, "the weighted adjacency list", "a row of " + count + " edge entries");
+      // The copy of a long row is refused before it is made when the budget cannot hold it beside the rows still waiting to be
+      // reserved; the batch below reserves it, so nothing is reserved here
+      if (count > INITIAL_ROW_BUFFER)
+        memory.checkRoom(saturatingProduct(saturatingSum(unpriced, count), INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list",
+            "a row of " + count + " edge entries, " + unpriced + " more not reserved yet");
       adjNeighbors[i] = Arrays.copyOf(nbrBuf, count);
       adjWeights[i] = Arrays.copyOf(wtBuf, count);
       unpriced += count;

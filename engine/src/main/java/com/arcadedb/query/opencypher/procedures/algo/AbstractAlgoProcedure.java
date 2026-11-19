@@ -581,6 +581,28 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
+     * Refuses the call, before anything is allocated, if {@code bytes} more than are reserved do not fit the budget, and reserves
+     * nothing. For an allocation that lives beside what is reserved for a while and is then replaced or charged by the caller: the
+     * new array of a growing buffer while the old one is still referenced, or the copy of a row whose entries the caller reserves with
+     * the rest once it has the row. The charge of what is kept stays {@link #reserve}'s, so nothing is counted twice.
+     *
+     * @param bytes     what the allocation takes, on top of what is reserved
+     * @param component what is about to be allocated, for the error message
+     * @param detail    the counts that sized it, for the error message
+     */
+    public void checkRoom(final long bytes, final String component, final String detail) {
+      if (limit < 0)
+        return;
+      if (auto && !sizedFromHeap)
+        sizeFromHeap();
+      final long total = saturatingSum(reserved, bytes);
+      if (total > limit)
+        throw refusal(bytes, component, detail);
+      if (sizedFromHeap)
+        ensureAllocatable(total, bytes, component, detail);
+    }
+
+    /**
      * Takes back from the page cache what a working set of {@code total} bytes needs, and refuses the call when the cache
      * could not give it: the cache was counted in the budget, and holding its pages while allocating past the free heap is
      * the out-of-memory error the budget exists to prevent. The cache gives back less than it was counted for when other
@@ -1956,7 +1978,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           // produce the same multiset of (neighbour, weight) pairs for a node.
           if (fallback == null)
             fallback = new RecordRowReader();
-          edges = fallback.readRow(guard, i, dir, weightProperty, types);
+          edges = fallback.readRow(guard, i, dir, weightProperty, types, entries);
         }
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
@@ -1992,7 +2014,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       long totalEntries = 0;
 
       for (int i = 0; i < nodeCount; i++) {
-        final NodeEdgeWeights row = reader.readRow(guard, i, dir, weightProperty, relTypes);
+        final NodeEdgeWeights row = reader.readRow(guard, i, dir, weightProperty, relTypes, entries);
         neighbors[i] = row.neighbors();
         weights[i] = row.weights();
         entries += row.neighbors().length;
@@ -2025,8 +2047,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       private double[] scratchWeights   = new double[INITIAL_ROW_BUFFER];
       private int      edgeStep;
 
+      /**
+       * @param pendingEntries the entries of the rows already read that the caller has not reserved yet: they are on the heap, and the
+       *                       copy of this row comes on top of them
+       */
       private NodeEdgeWeights readRow(final WorkGuard guard, final int i, final Vertex.DIRECTION dir,
-          final String weightProperty, final String[] relTypes) {
+          final String weightProperty, final String[] relTypes, final long pendingEntries) {
         final Vertex vertex = getVertex(i);
         if (vertex == null)
           // Deleted since the CSR was built: no edges to read, and every other caller in this package skips it.
@@ -2046,10 +2072,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
               continue;
             if (degree == scratchNeighbors.length) {
               // Priced before the arrays are allocated (issue #12554): a supernode row doubles them again and again, which the entries
-              // reserved once the row is read do not see. The buffers stay for the rows that follow, so each growth is charged once, by
-              // the entries it adds: what is charged at the end is the length they reached, and the copy of the row is charged beside
-              // it by the entries the caller reserves, which is what the call holds together at the peak
+              // reserved once the row is read do not see. The new arrays are alive beside the old ones, which are reserved already, until
+              // the copy is made: the budget is asked whether they fit in full, reserving nothing. The buffers stay for the rows that
+              // follow, so what is reserved is the entries each growth adds, the length they reached at the end, and the copy of the
+              // row is charged beside it by the entries the caller reserves: nothing is counted twice
               final int newLength = (int) Math.min(2L * degree, Integer.MAX_VALUE - 8L);
+              memory.checkRoom(saturatingProduct(newLength, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+                  "a row of more than " + degree + " edge entries");
               memory.reserve(saturatingProduct(newLength - degree, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
                   "a row of more than " + degree + " edge entries");
               scratchNeighbors = Arrays.copyOf(scratchNeighbors, newLength);
@@ -2064,10 +2093,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             GhostEdgeReporter.reportSkipped(rnf);
           }
         }
-        // The copy of a long row is the largest allocation of the walk: it is refused before it is made when the budget cannot hold it.
-        // Nothing is reserved here, the caller reserves the entries of the row once it has it, so that they are not charged twice
-        if (degree > INITIAL_ROW_BUFFER && degree > memory.capacityFor(INT_BYTES + DOUBLE_BYTES))
-          memory.extendCapacity(degree, INT_BYTES + DOUBLE_BYTES, "the weighted adjacency list", "a row of " + degree + " edge entries");
+        // The copy of a long row is the largest allocation of the walk: it is refused before it is made when the budget cannot hold it
+        // beside the rows still waiting to be reserved. Nothing is reserved here, the caller reserves the entries of the row with the
+        // others once it has it, so that they are not charged twice
+        if (degree > INITIAL_ROW_BUFFER)
+          memory.checkRoom(saturatingProduct(saturatingSum(pendingEntries, degree), INT_BYTES + DOUBLE_BYTES),
+              "the weighted adjacency list", "a row of " + degree + " edge entries, " + pendingEntries + " more not reserved yet");
         return new NodeEdgeWeights(Arrays.copyOf(scratchNeighbors, degree), Arrays.copyOf(scratchWeights, degree));
       }
     }

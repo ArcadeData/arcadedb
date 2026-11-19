@@ -333,36 +333,78 @@ class Issue12554AlgoWorkingSetTest {
     }
   }
 
-  /** The buffers a supernode's row grows are priced before they are allocated: a budget that cannot hold the doubling refuses it. */
-  @Test
-  void theBuffersOfASupernodeRowArePricedBeforeTheyGrow() {
-    database.getSchema().createVertexType("Node");
+  /** A hub of 40 edges to 40 leaves, in one bucket so that the rows are read in the order they were created. */
+  private void createStar(final boolean hubFirst) {
+    database.getSchema().createVertexType("Node", 1);
     database.getSchema().createEdgeType("LINK");
     database.transaction(() -> {
-      // The hub first: its row is the first one the build reads
-      final MutableVertex hub = database.newVertex("Node").set("i", -1).save();
+      final List<MutableVertex> leaves = new ArrayList<>();
+      MutableVertex hub = null;
+      if (hubFirst)
+        hub = database.newVertex("Node").set("i", -1).save();
       for (int i = 0; i < 40; i++)
-        hub.newEdge("LINK", database.newVertex("Node").set("i", i).save()).set("w", 1.0).save();
+        leaves.add(database.newVertex("Node").set("i", i).save());
+      if (!hubFirst)
+        hub = database.newVertex("Node").set("i", -1).save();
+      for (final MutableVertex leaf : leaves)
+        hub.newEdge("LINK", leaf).set("w", 1.0).save();
     });
+  }
+
+  /**
+   * The buffers a supernode's row grows are priced before they are allocated: the new ones must fit beside the old ones, and what
+   * is kept is charged once. 41 nodes cost 656 bytes and the row headers of the weighted adjacency 2624: 3280.
+   */
+  @Test
+  void theBuffersOfASupernodeRowArePricedBeforeTheyGrow() {
+    createStar(true);
     final AlgoWCC procedure = new AlgoWCC();
 
-    // 41 nodes cost 656 bytes and the row headers of the weighted adjacency 2624: 3280. The hub's row outgrows the 16 entries its buffers
-    // start with at its 17th, and the 16 entries the growth to 32 adds (192 bytes) are more than the 120 bytes left
+    // The hub's row outgrows the 16 entries its buffers start with at its 17th. The new buffers, 32 entries of 12 bytes (384), are
+    // alive beside the old ones, which are reserved already: they do not fit the 120 bytes left
     assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 3400L))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("the neighbour buffers of one node would need 192 bytes")
+        .hasMessageContaining("the neighbour buffers of one node would need 384 bytes")
         .hasMessageContaining("a row of more than 16 edge entries");
 
-    // The buffers reach 64 entries, 576 bytes more than they started with: 3856. The copy of the hub's row, 40 entries of 12 bytes, is
-    // refused before it is made when the 144 bytes left cannot hold it, and it is the row that is named, not the batch of entries
-    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 4000L))
+    // The 16 entries the growth adds (192) fit the 220 bytes left, but the new buffers beside the old ones (384) do not: refused before
+    // the allocation, not at the next doubling when the reserved growth has used the budget
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 3500L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the neighbour buffers of one node would need 384 bytes")
+        .hasMessageContaining("a row of more than 16 edge entries");
+
+    // The buffers reach 64 entries, 576 bytes more than they started with: 3856, the last doubling (768 beside the 3472 reserved) fitting
+    // 4240. The copy of the hub's row, 40 entries of 12 bytes, is refused before it is made when the 444 bytes left cannot hold it
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 4300L))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("the weighted adjacency list would need 480 bytes")
-        .hasMessageContaining("a row of 40 edge entries");
+        .hasMessageContaining("a row of 40 edge entries, 0 more not reserved yet");
 
     // A budget that holds all of it accepts the call: 3856, and the 80 entries of the two ends of its 40 edges, 960 bytes, make 4816.
     // The buffers are charged once, not again with the row they were copied into
     final int[][] neighbors = weightedAdjacencyUnder(procedure, 4900L);
+    int longest = 0;
+    for (final int[] row : neighbors)
+      longest = Math.max(longest, row.length);
+    assertThat(longest).isEqualTo(40);
+  }
+
+  /** The rows read before a long one, whose entries are not reserved yet, are on the heap beside its copy. */
+  @Test
+  void theCopyOfALongRowIsCheckedBesideTheRowsNotReservedYet() {
+    createStar(false);
+    final AlgoWCC procedure = new AlgoWCC();
+
+    // The 40 leaves come first: one entry each, 40 waiting to be reserved. The hub's buffers reach 64 entries, 3856, and its copy fits
+    // the 644 bytes left taken alone (480) but not with the 40 entries before it (960)
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 4500L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the weighted adjacency list would need 960 bytes")
+        .hasMessageContaining("a row of 40 edge entries, 40 more not reserved yet");
+
+    // Everything fits at 4816, with what the leaves reserve
+    final int[][] neighbors = weightedAdjacencyUnder(procedure, 5000L);
     int longest = 0;
     for (final int[] row : neighbors)
       longest = Math.max(longest, row.length);
