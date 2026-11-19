@@ -19,6 +19,7 @@
 package com.arcadedb.census;
 
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -172,8 +173,39 @@ final class CallOperands {
     }
   }
 
+  /**
+   * One lambda or method reference: the analysed method its {@code invokedynamic} is in, the instruction, and the method it is
+   * implemented by. The values it captures are the first operands of that method, the receiver first when the implementation is
+   * an instance method ({@code args::getString}, or a lambda that reads {@code this}).
+   */
+  record Capture(Method in, InvokeDynamicInsnNode insn, Handle implementation) {
+    /** The instructions that produced captured value {@code index}. */
+    Set<AbstractInsnNode> captured(final int index) {
+      return in.stackBefore(insn, Type.getArgumentTypes(insn.desc).length - 1 - index);
+    }
+
+    int capturedCount() {
+      return Type.getArgumentTypes(insn.desc).length;
+    }
+
+    /** Whether the implementation takes a receiver, which is then captured value 0. */
+    boolean implementedByInstanceMethod() {
+      return implementation.getTag() != Opcodes.H_INVOKESTATIC && implementation.getTag() != Opcodes.H_NEWINVOKESPECIAL;
+    }
+
+    /** The capture {@code insn} of {@code in} is, or null when it is no lambda or method reference, or captures nothing. */
+    static Capture of(final Method in, final InvokeDynamicInsnNode insn) {
+      if (!LAMBDA_METAFACTORY.equals(insn.bsm.getOwner()) || Type.getArgumentTypes(insn.desc).length == 0 || insn.bsmArgs.length < 2
+          || !(insn.bsmArgs[1] instanceof Handle implementation))
+        return null;
+      return new Capture(in, insn, implementation);
+    }
+  }
+
   private CallOperands() {
   }
+
+  private static final String LAMBDA_METAFACTORY = "java/lang/invoke/LambdaMetafactory";
 
   /** Every call {@code matcher} accepts in {@code classes}, with its analysed method. */
   static List<Site> of(final Map<String, byte[]> classes, final CompiledClasses.CallMatcher matcher) {

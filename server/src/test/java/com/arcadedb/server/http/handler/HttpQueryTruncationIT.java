@@ -268,14 +268,124 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
 
   @Test
   void aCypherQueryTruncatedByTheDefaultCapIsReported() throws Exception {
-    // Cypher exposes no execution plan on the query path, so its own LIMIT cannot be read back: the cap still
-    // applies, but the response says so instead of looking complete.
+    // A Cypher query with no LIMIT of its own is capped by the default, and the response says so instead of looking
+    // complete.
     final JSONObject response = query(new JSONObject()
         .put("language", "opencypher")
         .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i"));
 
     assertThat(response.getJSONArray("result").length()).isEqualTo(CAP);
     assertThat(response.getBoolean("truncated")).isTrue();
+  }
+
+  /**
+   * Issue #12154: a LIMIT written in openCypher raises the default cap as SQL's does, whether it is a literal or a
+   * parameter, on both endpoints, and on the profiled and write paths too.
+   */
+  @Test
+  void aCypherLimitAboveTheDefaultCapIsHonored() throws Exception {
+    for (final String endpoint : List.of("query", "command")) {
+      assertCypherRows(post(endpoint, new JSONObject()
+          .put("language", "opencypher")
+          .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS)), TOTAL_ROWS, TOTAL_ROWS);
+
+      assertCypherRows(post(endpoint, new JSONObject()
+          .put("language", "opencypher")
+          .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT $p")
+          .put("params", new JSONObject().put("p", TOTAL_ROWS - 2))), TOTAL_ROWS - 2, TOTAL_ROWS - 2);
+
+      assertCypherRows(post(endpoint, new JSONObject()
+          .put("language", "cypher")
+          .put("command", "UNWIND range(1, 1000) AS i RETURN i LIMIT " + TOTAL_ROWS)), TOTAL_ROWS, TOTAL_ROWS);
+    }
+  }
+
+  @Test
+  void aCypherLimitIsOnlyARaiseNeverACut() throws Exception {
+    // A LIMIT smaller than the default cap is enforced by the engine: the cap reported stays the default
+    assertCypherRows(query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT 5")), 5, CAP);
+
+    // A LIMIT above the cap on a smaller result: every row, nothing truncated
+    assertCypherRows(query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") WHERE n.i < 10 RETURN n.i AS i LIMIT 1000")), 10, 1000);
+
+    // A LIMIT in a WITH bounds nothing the RETURN answers: the default cap still applies, and says so
+    final JSONObject withLimit = query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") WITH n LIMIT 1000 RETURN n.i AS i"));
+    assertThat(withLimit.getJSONArray("result").length()).isEqualTo(CAP);
+    assertThat(withLimit.getBoolean("truncated")).isTrue();
+
+    // The request 'limit' still wins over the query's own LIMIT
+    final JSONObject requestWins = query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS)
+        .put("limit", 10));
+    assertThat(requestWins.getJSONArray("result").length()).isEqualTo(10);
+    assertThat(requestWins.getInt("limit")).isEqualTo(10);
+  }
+
+  @Test
+  void aCypherLimitRaisesTheCapOnTheWriteProfiledAndUnionPaths() throws Exception {
+    // A write statement is drained by the engine before it returns: its RETURN LIMIT still raises the cap
+    assertCypherRows(command(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") SET n.seen = true RETURN n.i AS i LIMIT " + TOTAL_ROWS)), TOTAL_ROWS,
+        TOTAL_ROWS);
+
+    // The timed streaming run of 'profileExecution: detailed'
+    assertCypherRows(command(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS)
+        .put("profileExecution", "detailed")), TOTAL_ROWS, TOTAL_ROWS);
+
+    // PROFILE, which drains the rows into heap with the profile attached
+    assertCypherRows(command(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "PROFILE MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS)), TOTAL_ROWS, TOTAL_ROWS);
+
+    // UNION ALL of two limited branches answers up to the sum of the two
+    assertCypherRows(query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT 30 UNION ALL MATCH (n:" + TYPE_NAME
+            + ") RETURN n.i AS i LIMIT 30")), TOTAL_ROWS, TOTAL_ROWS);
+
+    // LIMIT 0 bounds a branch to no rows: it does not unbound the union
+    assertCypherRows(query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT 0 UNION ALL MATCH (n:" + TYPE_NAME
+            + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS)), TOTAL_ROWS, TOTAL_ROWS);
+
+    // A branch without a LIMIT bounds nothing, so the union does not either
+    final JSONObject unbounded = query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT 30 UNION ALL MATCH (n:" + TYPE_NAME
+            + ") RETURN n.i AS i"));
+    assertThat(unbounded.getJSONArray("result").length()).isEqualTo(CAP);
+    assertThat(unbounded.getBoolean("truncated")).isTrue();
+  }
+
+  @Test
+  void theGetEndpointHonorsTheCypherLimit() throws Exception {
+    final String url = getServerHttpUrl("/api/v1/query/") + getDatabaseName() + "/opencypher/"
+        + URLEncoder.encode("MATCH (n:" + TYPE_NAME + ") RETURN n.i AS i LIMIT " + TOTAL_ROWS, StandardCharsets.UTF_8)
+        .replace("+", "%20");
+    final HttpResponse<String> response = client.send(HttpRequest.newBuilder().uri(new URI(url)).GET()
+        .setHeader("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
+        .build(), BodyHandlers.ofString());
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertCypherRows(new JSONObject(response.body()), TOTAL_ROWS, TOTAL_ROWS);
+  }
+
+  private static void assertCypherRows(final JSONObject response, final int rows, final int limit) {
+    assertThat(response.getJSONArray("result").length()).isEqualTo(rows);
+    assertThat(response.getInt("returned")).isEqualTo(rows);
+    assertThat(response.getInt("limit")).isEqualTo(limit);
+    assertThat(response.getBoolean("truncated")).isFalse();
   }
 
   @Test

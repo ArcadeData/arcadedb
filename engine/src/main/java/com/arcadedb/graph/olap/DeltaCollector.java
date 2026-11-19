@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.OrderedAfterCommitCallback;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -66,20 +67,20 @@ class DeltaCollector
   private final GraphAnalyticalView view;
   private final String              callbackKey;
 
-  // Only used in SYNCHRONOUS and ASYNCHRONOUS modes: per-thread delta tracking.
-  // Uses ConcurrentHashMap keyed by thread ID instead of ThreadLocal to allow complete
-  // cleanup on close() — ThreadLocal entries leak in long-lived thread pools (e.g., HTTP server).
-  private final ConcurrentHashMap<Long, TxDelta> perThreadDeltas;
-  // Only used with perThreadDeltas: the sources of the edges each thread's open transaction created or deleted. A full
-  // build that opens its watch while such a transaction is still open registers them (issue #8378): the transaction
-  // reported them before any watch existed, and its commit can still land before the new scan reads the source.
-  private final ConcurrentHashMap<Long, Set<RID>> inFlightEdgeSources;
+  // SYNCHRONOUS and ASYNCHRONOUS modes collect the changes of each transaction in a TransactionChanges the TRANSACTION keeps
+  // (TransactionContext.putDerived), never one per thread: a transaction whose statements run on different threads (an HTTP
+  // session, one request per statement on whichever worker is free) made changes the view never heard of (issue #11794)
+  private final boolean                 collectsChanges;
+  // The open transactions that created or deleted an edge the view follows. A full build that opens its watch while such a
+  // transaction is still open registers their sources (issue #8378): the transaction reported them before any watch existed,
+  // and its commit can still land before the new scan reads the source
+  private final Set<TransactionChanges> inFlightTransactions;
 
   DeltaCollector(final GraphAnalyticalView view) {
     this.view = view;
     this.callbackKey = "gav-delta-" + (view.getName() != null ? view.getName() : "anon-" + ANONYMOUS_COUNTER.getAndIncrement());
-    this.perThreadDeltas = view.getUpdateMode() != GraphAnalyticalView.UpdateMode.OFF ? new ConcurrentHashMap<>() : null;
-    this.inFlightEdgeSources = perThreadDeltas != null ? new ConcurrentHashMap<>() : null;
+    this.collectsChanges = view.getUpdateMode() != GraphAnalyticalView.UpdateMode.OFF;
+    this.inFlightTransactions = collectsChanges ? ConcurrentHashMap.newKeySet() : null;
   }
 
   @Override
@@ -89,17 +90,18 @@ class DeltaCollector
       return;
     }
 
-    if (perThreadDeltas != null) {
+    if (collectsChanges) {
       // SYNCHRONOUS/ASYNCHRONOUS: collect detailed changes
-      final TxDelta delta = getOrCreateDelta();
-      if (record instanceof Vertex vertex)
-        delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
-      else if (record instanceof Edge edge) {
-        watchEdgeSource(edge.getOut());
-        delta.addEdge(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
-            extractMaterialisedEdgeProperties(edge)));
+      final TransactionChanges changes = changesOfTransaction();
+      if (record instanceof Vertex vertex) {
+        if (changes != null)
+          changes.delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
+      } else if (record instanceof Edge edge) {
+        watchEdgeSource(changes, edge.getOut());
+        if (changes != null)
+          changes.delta.addEdge(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
+              extractMaterialisedEdgeProperties(edge)));
       }
-      scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
     }
@@ -110,22 +112,20 @@ class DeltaCollector
     if (!isRelevant(record))
       return;
 
-    if (perThreadDeltas != null) {
+    if (collectsChanges) {
       // SYNCHRONOUS/ASYNCHRONOUS: collect property changes
-      if (record instanceof Vertex vertex) {
-        final TxDelta delta = getOrCreateDelta();
-        delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
-        scheduleSyncCallback(delta);
-      } else if (record instanceof Edge edge) {
+      final TransactionChanges changes = changesOfTransaction();
+      if (changes == null)
+        return;
+      if (record instanceof Vertex vertex)
+        changes.delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
+      else if (record instanceof Edge edge)
         // Reported with its new values rather than as a bare "something changed" flag: an edge the overlay
         // itself holds carries its values there and can simply take the new ones, while an edge in the base
         // CSR is addressed by a column slot nothing maps back from its RID and needs the rebuild the flag used
         // to force unconditionally. DeltaOverlay.merge() is where the two are told apart, since it is what
         // knows which edges the overlay holds. See issues #4513 and #6315.
-        final TxDelta delta = getOrCreateDelta();
-        trackEdgeUpdate(delta, edge);
-        scheduleSyncCallback(delta);
-      }
+        trackEdgeUpdate(changes.delta, edge);
     } else {
       scheduleAsyncCallback();
     }
@@ -136,19 +136,19 @@ class DeltaCollector
     if (!isRelevant(record))
       return;
 
-    if (perThreadDeltas != null) {
+    if (collectsChanges) {
       // SYNCHRONOUS/ASYNCHRONOUS: collect deletions
-      final TxDelta delta = getOrCreateDelta();
-      if (record instanceof Vertex vertex)
-        delta.deletedVertices.add(vertex.getIdentity());
-      else if (record instanceof Edge edge) {
-        watchEdgeSource(edge.getOut());
+      final TransactionChanges changes = changesOfTransaction();
+      if (record instanceof Vertex vertex) {
+        if (changes != null)
+          changes.delta.deletedVertices.add(vertex.getIdentity());
+      } else if (record instanceof Edge edge) {
+        watchEdgeSource(changes, edge.getOut());
         // An edge this transaction created is no change to the committed state once it deletes it (issue #10305). A lightweight
         // edge has no RID of its own to take back, its changes being matched by the pair of vertices they join
-        if (edge instanceof LightEdge || !delta.cancelAddedEdge(edge.getIdentity()))
-          delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
+        if (changes != null && (edge instanceof LightEdge || !changes.delta.cancelAddedEdge(edge.getIdentity())))
+          changes.delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
       }
-      scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
     }
@@ -165,12 +165,12 @@ class DeltaCollector
       return;
     }
 
-    if (perThreadDeltas != null) {
-      final TxDelta delta = getOrCreateDelta();
-      watchEdgeSource(edge.getOut());
+    if (collectsChanges) {
+      final TransactionChanges changes = changesOfTransaction();
+      watchEdgeSource(changes, edge.getOut());
       // No properties to materialise: a lightweight edge has none
-      delta.addEdge(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
-      scheduleSyncCallback(delta);
+      if (changes != null)
+        changes.delta.addEdge(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
     } else
       scheduleAsyncCallback();
   }
@@ -225,38 +225,63 @@ class DeltaCollector
     return false;
   }
 
-  // The callback captures the live `delta` reference, not a snapshot. Subsequent record events
-  // in the same transaction append to the same delta. addAfterCommitCallbackIfAbsent ensures
-  // the callback is registered only once (keyed by callbackKey), and the frozen copy is made
-  // at commit time — after all record events have fired — so it captures the complete delta set.
-  private void scheduleSyncCallback(final TxDelta delta) {
+  /**
+   * The changes the current transaction made so far, created and registered with it on its first change: kept by the
+   * transaction (issue #11794), so every statement of it adds to the same changes whichever thread runs it, and they go with
+   * the transaction however it ends. Null when no transaction is active, or the database is closing: nothing is committed then.
+   */
+  private TransactionChanges changesOfTransaction() {
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
-      if (dbInternal.isTransactionActive()) {
-        // The delta holds what the statement did, and keeps it: a statement that fails cannot be taken back (issue #10346)
-        dbInternal.getTransaction().markStatementUnrestorable("it changed records a graph analytical view follows");
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, new CommittedDeltaCallback(delta));
+      if (!dbInternal.isTransactionActive())
+        return null;
+      final TransactionContext tx = dbInternal.getTransaction();
+      // The delta holds what the statement did, and keeps it: a statement that fails cannot be taken back (issue #10346)
+      tx.markStatementUnrestorable("it changed records a graph analytical view follows");
+      TransactionChanges changes = (TransactionChanges) tx.getDerived(this);
+      if (changes == null) {
+        changes = new TransactionChanges();
+        tx.putDerived(this, changes);
+        tx.addAfterCommitCallbackIfAbsent(callbackKey, changes);
       }
+      return changes;
     } catch (final DatabaseIsClosedException e) {
       LogManager.instance().log(this, Level.FINE, "Delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Delta collection failed for GraphAnalyticalView '%s'", e, view.getName());
     }
+    return null;
   }
 
   /**
-   * Reports the transaction's delta to the view once it committed, in the order the transactions committed (issue #10249): the
-   * transaction takes its place in the view's {@link CommitOrderGate} at the commit point, while it still holds its file locks,
-   * and delivers through it. A transaction that never reaches the commit point (it had nothing to write) has no place and
-   * delivers straight away.
+   * What one transaction changed in the graph the view follows, kept by the transaction itself ({@link TransactionContext#putDerived})
+   * and reported to the view once it committed, in the order the transactions committed (issue #10249): the transaction takes its
+   * place in the view's {@link CommitOrderGate} at the commit point, while it still holds its file locks, and delivers through it.
+   * A transaction that never reaches the commit point (it had nothing to write) has no place and delivers straight away.
+   * <p>
+   * The transaction closes it when it ends, before its after-commit callbacks run. Its edge sources stay in flight past a commit
+   * that reached the commit point, until the view has the change ({@link #run} or {@link #onAbandoned}); any other end (a
+   * rollback, a commit with nothing written) takes them out there.
    */
-  private final class CommittedDeltaCallback implements OrderedAfterCommitCallback {
-    private final TxDelta                delta;
+  private final class TransactionChanges implements OrderedAfterCommitCallback, AutoCloseable {
+    private final    TxDelta               delta = new TxDelta();
+    // Read by a build opening its watch on another thread (registerInFlightEdgeSources), hence concurrent. Null until the
+    // transaction reports an edge
+    private volatile Set<RID>              edgeSources;
+    // Set at the commit point: from there on the transaction reports the change, or abandons it, after it closed this
+    private volatile boolean               committing;
     // Written at the commit point, by the thread publishing the pages, and read by the committing thread afterwards
     private volatile CommitOrderGate.Place place;
 
-    private CommittedDeltaCallback(final TxDelta delta) {
-      this.delta = delta;
+    private void watchEdgeSource(final RID source) {
+      Set<RID> sources = edgeSources;
+      if (sources == null) {
+        // Only one thread runs a statement of the transaction at a time
+        sources = ConcurrentHashMap.newKeySet();
+        edgeSources = sources;
+        inFlightTransactions.add(this);
+      }
+      sources.add(source);
     }
 
     private TxDelta freeze() {
@@ -274,6 +299,7 @@ class DeltaCollector
 
     @Override
     public void onCommitPoint() {
+      committing = true;
       // A place already taken stays: it is the earlier one, and a second would be left unreleased at the head of the line
       if (place != null)
         return;
@@ -283,10 +309,14 @@ class DeltaCollector
 
     @Override
     public void onAbandoned() {
-      final CommitOrderGate.Place abandoned = place;
-      if (abandoned != null) {
-        place = null;
-        view.getCommitOrder().abandon(abandoned, view::onCommittedDelta);
+      try {
+        final CommitOrderGate.Place abandoned = place;
+        if (abandoned != null) {
+          place = null;
+          view.getCommitOrder().abandon(abandoned, view::onCommittedDelta);
+        }
+      } finally {
+        inFlightTransactions.remove(this);
       }
     }
 
@@ -300,8 +330,6 @@ class DeltaCollector
         onAbandoned();
         throw t;
       }
-      final long threadId = Thread.currentThread().threadId();
-      perThreadDeltas.remove(threadId);
       try {
         final CommitOrderGate.Place taken = place;
         if (taken != null)
@@ -311,8 +339,15 @@ class DeltaCollector
       } finally {
         // Only now: until the view has the change, a build that opens its watch must still take this transaction's sources as
         // in flight (see registerInFlightEdgeSources), as it may wait behind the changes committed before it
-        inFlightEdgeSources.remove(threadId);
+        inFlightTransactions.remove(this);
       }
+    }
+
+    @Override
+    public void close() {
+      // The transaction ended. Past the commit point the change is still on its way to the view: run() or onAbandoned() follow
+      if (!committing)
+        inFlightTransactions.remove(this);
     }
   }
 
@@ -330,32 +365,14 @@ class DeltaCollector
     }
   }
 
-  private TxDelta getOrCreateDelta() {
-    final long tid = Thread.currentThread().threadId();
-    final TxDelta existing = perThreadDeltas.get(tid);
-    if (existing != null) {
-      // If there's an existing delta but the commit callback is no longer registered
-      // (because a previous transaction rolled back and reset() cleared the callback keys),
-      // discard the stale delta to avoid leaking rolled-back changes into this transaction.
-      final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
-      if (dbInternal.isTransactionActive() && !dbInternal.getTransaction().hasCallbackKey(callbackKey)) {
-        existing.clear();
-        inFlightEdgeSources.remove(tid);
-      }
-      return existing;
-    }
-    final TxDelta fresh = new TxDelta();
-    perThreadDeltas.put(tid, fresh);
-    return fresh;
-  }
-
   /**
-   * Records, before the transaction commits, that it creates or deletes an edge leaving {@code source}: in this
-   * thread's in-flight set first, then in the watch of a build in flight. Written in that order, and read in the
-   * opposite one by {@link #registerInFlightEdgeSources}, so a build opening its watch concurrently misses neither.
+   * Records, before the transaction commits, that it creates or deletes an edge leaving {@code source}: in the transaction's
+   * in-flight sources first, then in the watch of a build in flight. Written in that order, and read in the opposite one by
+   * {@link #registerInFlightEdgeSources}, so a build opening its watch concurrently misses neither.
    */
-  private void watchEdgeSource(final RID source) {
-    inFlightEdgeSources.computeIfAbsent(Thread.currentThread().threadId(), k -> ConcurrentHashMap.newKeySet()).add(source);
+  private void watchEdgeSource(final TransactionChanges changes, final RID source) {
+    if (changes != null)
+      changes.watchEdgeSource(source);
     view.watchEdgeSource(source);
   }
 
@@ -365,22 +382,23 @@ class DeltaCollector
    * costs an observation and changes no answer.
    */
   void registerInFlightEdgeSources(final BuildWatch watch) {
-    if (inFlightEdgeSources == null)
+    if (inFlightTransactions == null)
       return;
-    for (final Set<RID> sources : inFlightEdgeSources.values())
-      for (final RID source : sources)
-        watch.watchSource(source);
+    for (final TransactionChanges changes : inFlightTransactions) {
+      final Set<RID> sources = changes.edgeSources;
+      if (sources != null)
+        for (final RID source : sources)
+          watch.watchSource(source);
+    }
   }
 
   /**
-   * Releases all per-thread delta state. Must be called when the collector is deregistered
-   * to prevent memory leaks in long-lived thread pools (e.g., HTTP server threads).
+   * Forgets the transactions in flight. Called when the collector is deregistered: the changes each transaction collected go
+   * with the transaction.
    */
   void close() {
-    if (perThreadDeltas != null)
-      perThreadDeltas.clear();
-    if (inFlightEdgeSources != null)
-      inFlightEdgeSources.clear();
+    if (inFlightTransactions != null)
+      inFlightTransactions.clear();
   }
 
   /**

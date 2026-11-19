@@ -21,6 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.OutsideCallerTransaction;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -29,6 +31,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.Map;
 
 public class AlignDatabaseStatement extends SimpleExecStatement {
+  /** The refusal of ALIGN DATABASE on a database that cannot align its replicas, which is every database today (issue #11796). */
+  public static final String ALIGN_DATABASE_NOT_SUPPORTED =
+      "ALIGN DATABASE is not supported by this database: a replica of a Raft cluster is realigned by the cluster itself, by log "
+          + "replay or by installing a snapshot of the leader, and a database with no replicas has nothing to align. CHECK "
+          + "DATABASE run on a node inspects that node's copy";
+
   public AlignDatabaseStatement() {
   }
 
@@ -37,12 +45,18 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "align database");
 
-    if (context.getDatabase().isTransactionActive())
-      context.getDatabase().rollback();
-
     final DatabaseInternal database = context.getDatabase().getWrappedDatabaseInstance();
 
-    final Map<String, Object> commandResult = database.alignToReplicas();
+    final Map<String, Object> commandResult;
+    try {
+      // Outside the caller's transaction, never by rolling it back (issue #11781)
+      commandResult = OutsideCallerTransaction.execute(database, "AlignDatabase", false, database::alignToReplicas);
+    } catch (final UnsupportedOperationException e) {
+      // No database implements it: with Raft a replica is realigned by log replay or a snapshot installation. Refused as the
+      // statement's error (a 400 over HTTP) with a message saying so, not a bare UnsupportedOperationException, which answered
+      // 500 and read to a client as a transient server fault (issue #11796)
+      throw new CommandSemanticException(ALIGN_DATABASE_NOT_SUPPORTED, e);
+    }
 
     result.setPropertiesFromMap(commandResult);
 
