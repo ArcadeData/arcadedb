@@ -1,0 +1,333 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher.procedures.algo;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.NodeIdMapping;
+import com.arcadedb.query.opencypher.procedures.algo.AbstractAlgoProcedure.GraphData;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.VertexType;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.lang.ref.Reference;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #12554: {@code algo.pagerank} and {@code algo.wcc} reserved about a tenth of the heap a call held, so the working-memory budget
+ * did not protect the server: two calls at once ran out of memory instead of the second being refused.
+ * <p>
+ * The call held every vertex it loaded as a record object and indexed them in a boxed {@code HashMap}: about 250 bytes a vertex,
+ * priced at 96. The graph is now held as the RIDs of its vertices alone, numbered in a primitive table, and priced at that.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue12554AlgoWorkingSetTest {
+  private static final String DB_PATH = "./target/databases/test-issue-12554-algo-working-set";
+
+  private Database database;
+
+  @BeforeEach
+  void setup() {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
+  }
+
+  @AfterEach
+  void teardown() {
+    if (database != null && database.isOpen())
+      database.drop();
+  }
+
+  /** {@code vertices} vertices of {@code Node}, every vertex linked to two others. */
+  private void createRing(final int vertices) {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    final RID[] rids = new RID[vertices];
+    final int batch = 10_000;
+    for (int from = 0; from < vertices; from += batch) {
+      final int start = from;
+      database.transaction(() -> {
+        for (int i = start; i < Math.min(vertices, start + batch); i++)
+          rids[i] = database.newVertex("Node").set("i", i, "name", "node" + i).save().getIdentity();
+      });
+    }
+    for (int from = 0; from < vertices; from += batch) {
+      final int start = from;
+      database.transaction(() -> {
+        for (int i = start; i < Math.min(vertices, start + batch); i++) {
+          final MutableVertex v = rids[i].asVertex().modify();
+          v.newEdge("LINK", rids[(i + 1) % vertices]).save();
+          v.newEdge("LINK", rids[(int) (((long) i * 31 + 7) % vertices)]).save();
+        }
+      });
+    }
+  }
+
+  private BasicCommandContext context() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    return context;
+  }
+
+  private static long usedHeapAfterCollection() {
+    final Runtime runtime = Runtime.getRuntime();
+    long used = Long.MAX_VALUE;
+    // The reading settles once a collection frees nothing more: the smallest of a few is the live set
+    for (int i = 0; i < 5; i++) {
+      System.gc();
+      try {
+        Thread.sleep(30);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      used = Math.min(used, runtime.totalMemory() - runtime.freeMemory());
+    }
+    return used;
+  }
+
+  /**
+   * One call to have the pages in the cache: what is measured is what a call holds, not what it caused to be read. A method of its own,
+   * so that nothing of the call is still referenced from a slot of the caller's frame when the heap is read.
+   */
+  private void warmThePageCache(final Supplier<AbstractAlgoProcedure> procedure) {
+    try (final Stream<Result> stream = procedure.get().execute(new Object[0], null, context())) {
+      stream.count();
+    }
+  }
+
+  /** The heap a call keeps once it has answered: its stream is held, as the statement holds it until the rows are read. */
+  private long heapHeldByTheCall(final Supplier<AbstractAlgoProcedure> procedure) {
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024 * 1024);
+    warmThePageCache(procedure);
+    final long before = usedHeapAfterCollection();
+    final Stream<Result> stream = procedure.get().execute(new Object[0], null, context());
+    final long after = usedHeapAfterCollection();
+    Reference.reachabilityFence(stream);
+    stream.close();
+    return after - before;
+  }
+
+  /** The smallest budget the call is accepted with: what it reserves. */
+  private long reservedByTheCall(final Supplier<AbstractAlgoProcedure> procedure) {
+    long refused = 1L;
+    long accepted = 512L * 1024 * 1024;
+    while (accepted - refused > 4096) {
+      final long budget = refused + (accepted - refused) / 2;
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, budget);
+      boolean fits;
+      try (final Stream<Result> stream = procedure.get().execute(new Object[0], null, context())) {
+        fits = true;
+      } catch (final IllegalArgumentException e) {
+        assertThat(e.getMessage()).contains("bytes allowed");
+        fits = false;
+      }
+      if (fits)
+        accepted = budget;
+      else
+        refused = budget;
+    }
+    return accepted;
+  }
+
+  @Test
+  void pageRankReservesWhatItHolds() {
+    final int vertices = 100_000;
+    createRing(vertices);
+
+    final long held = heapHeldByTheCall(AlgoPageRank::new);
+    final long reserved = reservedByTheCall(AlgoPageRank::new);
+
+    // The measurement has to have reached the call: it holds the RID of every vertex at least
+    assertThat(held).as("heap held by algo.pagerank, measured").isGreaterThan(8L * vertices);
+    assertThat(held).as("heap held by algo.pagerank on %d vertices", vertices).isLessThanOrEqualTo(reserved);
+  }
+
+  @Test
+  void wccReservesWhatItHolds() {
+    final int vertices = 100_000;
+    createRing(vertices);
+
+    final long held = heapHeldByTheCall(AlgoWCC::new);
+    final long reserved = reservedByTheCall(AlgoWCC::new);
+
+    // The measurement has to have reached the call: it holds the RID of every vertex at least
+    assertThat(held).as("heap held by algo.wcc, measured").isGreaterThan(8L * vertices);
+    assertThat(held).as("heap held by algo.wcc on %d vertices", vertices).isLessThanOrEqualTo(reserved);
+  }
+
+  /** A budget below what the call reserves refuses it, with the client error naming what it was asked for. */
+  @Test
+  void aBudgetBelowTheReservationRefusesTheCall() {
+    createRing(5_000);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 20_000L);
+
+    assertThatThrownBy(() -> new AlgoWCC().execute(new Object[0], null, context()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the loaded graph")
+        .hasMessageContaining("bytes allowed");
+    assertThatThrownBy(() -> new AlgoPageRank().execute(new Object[0], null, context()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("bytes allowed");
+  }
+
+  /** The nodes of a loaded graph are numbered in scan order: type by type, bucket by bucket, position by position. */
+  @Test
+  void aLoadedGraphNumbersItsNodesInScanOrder() {
+    final VertexType first = database.getSchema().createVertexType("First", 3);
+    final VertexType second = database.getSchema().createVertexType("Second", 2);
+    database.getSchema().createEdgeType("LINK");
+    final List<RID> scanOrder = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 40; i++)
+        database.newVertex(first.getName()).set("i", i).save();
+      for (int i = 0; i < 30; i++)
+        database.newVertex(second.getName()).set("i", i).save();
+    });
+    GraphEngine.getAllVertices(database, null).forEachRemaining(vertex -> scanOrder.add(vertex.getIdentity()));
+
+    final GraphData graph = new AlgoWCC().loadGraphFromRecords(database, null, context());
+
+    assertThat(graph.nodeCount).isEqualTo(70);
+    for (int i = 0; i < scanOrder.size(); i++) {
+      assertThat(graph.getRID(i)).as("node %d", i).isEqualTo(scanOrder.get(i));
+      assertThat(graph.indexOf(scanOrder.get(i))).as("index of %s", scanOrder.get(i)).isEqualTo(i);
+      assertThat(graph.getVertex(i).getIdentity()).isEqualTo(scanOrder.get(i));
+    }
+    assertThat(graph.indexOf(new RID(first.getBuckets(false).getFirst().getFileId(), 123_456L))).isEqualTo(-1);
+  }
+
+  /** The adjacency built from the id table is the one built from the loaded records, whatever the direction and the edge types. */
+  @Test
+  void theAdjacencyOfTheIdTableIsTheAdjacencyOfTheLoadedRecords() {
+    database.getSchema().createVertexType("First", 3);
+    database.getSchema().createVertexType("Second", 2);
+    database.getSchema().createEdgeType("KNOWS");
+    database.getSchema().buildEdgeType().withName("ONEWAY").withBidirectional(false).create();
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 60; i++)
+        rids.add(database.newVertex(i % 3 == 0 ? "Second" : "First").set("i", i).save().getIdentity());
+      for (int i = 0; i < 60; i++) {
+        final MutableVertex source = rids.get(i).asVertex().modify();
+        source.newEdge("KNOWS", rids.get((i * 7 + 3) % 60)).save();
+        source.newEdge("ONEWAY", rids.get((i * 11 + 5) % 60)).save();
+        if (i % 4 == 0)
+          source.newEdge("KNOWS", rids.get(i)).save();
+      }
+    });
+
+    final AlgoWCC procedure = new AlgoWCC();
+    final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
+    final List<Vertex> vertices = new ArrayList<>();
+    GraphEngine.getAllVertices(database, null).forEachRemaining(vertices::add);
+    final Map<RID, Integer> index = GraphEngine.buildRidIndex(vertices);
+    assertThat(ids.size()).isEqualTo(vertices.size());
+
+    final long[] entries = new long[1];
+    for (final Vertex.DIRECTION direction : Vertex.DIRECTION.values())
+      for (final String[] types : new String[][] { null, { "KNOWS" }, { "ONEWAY" }, { "KNOWS", "ONEWAY" } }) {
+        final int[][] expected = GraphEngine.buildAdjacencyList(vertices, index, direction, types);
+        final int[][] actual = GraphEngine.buildAdjacencyList(ids, database, direction, types, count -> entries[0] = count, null);
+
+        assertThat(actual).as("%s %s", direction, types == null ? "all types" : String.join(",", types)).isDeepEqualTo(expected);
+        long total = 0;
+        for (final int[] row : expected)
+          total += row.length;
+        assertThat(entries[0]).as("entries counted before the fill").isEqualTo(total);
+      }
+  }
+
+  /** The rows of a build are checkpointed, so a guard can abort a build over a large graph. */
+  @Test
+  void theBuildOfTheAdjacencyCanBeAborted() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        database.newVertex("Node").set("i", i).save();
+    });
+    final AlgoWCC procedure = new AlgoWCC();
+    final List<Integer> checkpoints = new ArrayList<>();
+
+    assertThatThrownBy(() -> GraphEngine.buildAdjacencyList(procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database)),
+        database, Vertex.DIRECTION.BOTH, null, null, row -> {
+          checkpoints.add(row);
+          if (row == 7)
+            throw new IllegalStateException("aborted at row 7");
+        })).isInstanceOf(IllegalStateException.class).hasMessage("aborted at row 7");
+    assertThat(checkpoints).containsExactly(0, 1, 2, 3, 4, 5, 6, 7);
+  }
+
+  /** The adjacency of a graph loaded from the records is one of the graph-driven loops of a call: the command deadline stops it. */
+  @Test
+  void theAdjacencyOfALoadedGraphStopsAtTheCommandDeadline() {
+    createRing(100);
+    final GraphData graph = new AlgoWCC().loadGraphFromRecords(database, null, context());
+
+    // A deadline in 1970: the first row about to be walked is refused
+    assertThatThrownBy(() -> graph.adjacency(WorkGuard.forDeadline("algo.test()", 1L), Vertex.DIRECTION.BOTH))
+        .isInstanceOf(TimeoutException.class)
+        .hasMessageContaining("algo.test()");
+    assertThat(graph.adjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH).length).isEqualTo(100);
+  }
+
+  /** A vertex deleted after the graph was loaded is no node any more: it reads as gone, and the adjacency skips it. */
+  @Test
+  void aVertexDeletedAfterTheLoadIsSkipped() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    final RID[] rids = new RID[3];
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        rids[i] = database.newVertex("Node").set("i", i).save().getIdentity();
+      rids[0].asVertex().modify().newEdge("LINK", rids[1]).save();
+      rids[1].asVertex().modify().newEdge("LINK", rids[2]).save();
+    });
+
+    final GraphData graph = new AlgoWCC().loadGraphFromRecords(database, null, context());
+    final int middle = graph.indexOf(rids[1]);
+    database.transaction(() -> rids[2].asVertex().delete());
+
+    assertThat(graph.getVertex(graph.indexOf(rids[2]))).isNull();
+    final int[][] adjacency = graph.adjacency(Vertex.DIRECTION.OUT);
+    assertThat(adjacency.length).isEqualTo(3);
+    assertThat(adjacency[graph.indexOf(rids[0])]).containsExactly(middle);
+  }
+}

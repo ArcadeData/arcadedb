@@ -30,11 +30,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -170,48 +168,63 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir, final CommandContext context) {
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
+    final GraphData graph = loadGraphFromRecords(db, null, context);
 
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final Integer startIdxObj = ridToIdx.get(startNode.getIdentity());
-    if (startIdxObj == null)
+    final int src = graph.indexOf(startNode.getIdentity());
+    if (src < 0)
       return Stream.empty();
-    final int src = startIdxObj;
 
-    // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra
+    // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra. Priced against the call's budget as the rows are built,
+    // with the distances and the reached ids beside them (issue #12554)
+    final MemoryBudget memory = graph.memory();
+    memory.reserve(saturatingSum(saturatingProduct(n, 2 * MATRIX_ROW_OVERHEAD_BYTES), saturatingProduct(n, DOUBLE_BYTES + INT_BYTES)),
+        "the weighted adjacency rows and the distances", n + " nodes");
     final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
     final int[][] adjNeighbors = new int[n][];
     final double[][] adjWeights = new double[n][];
+    // One growable primitive buffer per column, reused across every node and copied out at its exact size
+    int[] nbrBuf = new int[16];
+    double[] wtBuf = new double[16];
+    long unpriced = 0;
     for (int i = 0; i < n; i++) {
-      final Vertex v = vertices.get(i);
-      final List<int[]> nbrs = new ArrayList<>();
-      final List<Double> wts = new ArrayList<>();
-      // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
-      for (final Edge edge : edgesOf(context, v, dir, relTypes)) {
-        if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
-          continue;
-        final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);
-        final Integer nbrIdx = ridToIdx.get(neighborRid);
-        if (nbrIdx == null)
-          continue;
-        // the rule every weighted path finder shares (issue #9443): a NaN weight used to slip past `weight < 0`
-        final double weight = weightProperty != null ? EdgeWeight.of(edge.get(weightProperty)) : EdgeWeight.MISSING;
-        if (!EdgeWeight.isWalkable(weight))
-          continue;
-        nbrs.add(new int[]{ nbrIdx });
-        wts.add(weight);
+      // A vertex deleted since the graph was loaded has no edges
+      final Vertex v = graph.getVertex(i);
+      int count = 0;
+      if (v != null) {
+        // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
+        for (final Edge edge : edgesOf(context, v, dir, relTypes)) {
+          if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
+            continue;
+          final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);
+          final int nbrIdx = neighborRid != null ? graph.indexOf(neighborRid) : -1;
+          if (nbrIdx < 0)
+            continue;
+          // the rule every weighted path finder shares (issue #9443): a NaN weight used to slip past `weight < 0`
+          final double weight = weightProperty != null ? EdgeWeight.of(edge.get(weightProperty)) : EdgeWeight.MISSING;
+          if (!EdgeWeight.isWalkable(weight))
+            continue;
+          if (count == nbrBuf.length) {
+            nbrBuf = Arrays.copyOf(nbrBuf, count << 1);
+            wtBuf = Arrays.copyOf(wtBuf, count << 1);
+          }
+          nbrBuf[count] = nbrIdx;
+          wtBuf[count] = weight;
+          count++;
+        }
       }
-      adjNeighbors[i] = new int[nbrs.size()];
-      adjWeights[i] = new double[wts.size()];
-      for (int j = 0; j < nbrs.size(); j++) {
-        adjNeighbors[i][j] = nbrs.get(j)[0];
-        adjWeights[i][j] = wts.get(j);
+      adjNeighbors[i] = Arrays.copyOf(nbrBuf, count);
+      adjWeights[i] = Arrays.copyOf(wtBuf, count);
+      unpriced += count;
+      if (unpriced >= ADJACENCY_CHECKPOINT_ENTRIES / 3 || (i & 1023) == 1023) {
+        memory.reserve(saturatingProduct(unpriced, INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list", unpriced + " edge entries");
+        unpriced = 0;
       }
     }
+    memory.reserve(saturatingProduct(unpriced, INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list", unpriced + " edge entries");
 
     // Dijkstra purely in-memory
     final double[] dist = new double[n];
@@ -247,7 +260,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
     return Arrays.stream(reached, 0, reachable).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i).getIdentity());
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("cost", dist[i]);
       return (Result) r;
     });

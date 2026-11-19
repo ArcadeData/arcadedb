@@ -163,16 +163,20 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     }
 
     // Fall back to OLTP path
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
-    if (vertices.isEmpty())
+    final GraphData graph = loadGraphFromRecords(db, null, context);
+    final int n = graph.nodeCount;
+    if (n == 0)
       return Stream.empty();
-    final int n = vertices.size();
-    final Labelling labelling = initialLabelling(n, property -> i -> vertices.get(i).get(property), tieBreakProperty, seedProperty,
-        fixedSeeds);
+    // A vertex read when its property is asked for, which is the only thing a record is needed for here; one deleted since the graph was
+    // loaded has none (issue #12554)
+    final Labelling labelling = initialLabelling(n, property -> i -> {
+      final Vertex vertex = graph.getVertex(i);
+      return vertex != null ? vertex.get(property) : null;
+    }, tieBreakProperty, seedProperty, fixedSeeds);
     // Build adjacency once to avoid repeated OLTP traversal
-    final int[][] adj = buildAdjacencyList(vertices, buildRidIndex(vertices), direction, null);
+    final int[][] adj = graph.adjacency(guard, direction);
     final int[] labels = propagate(adj, labelling, maxIterations, guard);
-    return results(n, i -> vertices.get(i).getIdentity(), labels, labelling);
+    return results(n, graph::getRID, labels, labelling);
   }
 
   /**
