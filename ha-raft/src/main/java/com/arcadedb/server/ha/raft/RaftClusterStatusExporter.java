@@ -103,11 +103,11 @@ class RaftClusterStatusExporter {
     }
 
     static FollowerReplicationState of(final Map<String, Object> state) {
-      return new FollowerReplicationState(RaftHAServer.followerStateIndex(state, "matchIndex"),
-          RaftHAServer.hasFollowerStateIndex(state, "matchIndex"),
-          RaftHAServer.followerStateIndex(state, "nextIndex"),
-          RaftHAServer.hasFollowerStateIndex(state, "nextIndex"),
-          RaftHAServer.followerStateIndex(state, "lastRpcElapsedMs"));
+      return new FollowerReplicationState(ReplicationStatistics.followerStateIndex(state, "matchIndex"),
+          ReplicationStatistics.hasFollowerStateIndex(state, "matchIndex"),
+          ReplicationStatistics.followerStateIndex(state, "nextIndex"),
+          ReplicationStatistics.hasFollowerStateIndex(state, "nextIndex"),
+          ReplicationStatistics.followerStateIndex(state, "lastRpcElapsedMs"));
     }
   }
 

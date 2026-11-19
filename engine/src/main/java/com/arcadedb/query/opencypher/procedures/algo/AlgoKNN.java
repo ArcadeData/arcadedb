@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -39,6 +39,11 @@ import java.util.stream.Stream;
  * </p>
  * <p>
  * Jaccard similarity: {@code |N(u) ∩ N(v)| / |N(u) ∪ N(v)|}
+ * </p>
+ * <p>
+ * Only two nodes that share a neighbour have a similarity above zero, so each node is compared with the
+ * nodes two hops away, found by walking its neighbours' rows, rather than with every other node of the
+ * graph: the work is the sum of the two-hop walks and the memory linear in the graph (issue #12172).
  * </p>
  * <p>
  * Parameters:
@@ -108,47 +113,65 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     // per-node top-k arrays directly off an unclamped rawK risks a multi-GB allocation attempt
     // for a huge k (e.g. algo.knn(2147483648)).
     final int k = Math.min(rawK, n);
-    final int[][] adj = graph.adjacency(dir, relTypes);
+    // No neighbour asked for: nothing to list (and no top-k slot to compare a candidate against)
+    if (k == 0)
+      return Stream.empty();
 
-    // Build BitSets for O(1) intersection: a nodeCount x nodeCount bit matrix, reserved before the first BitSet
-    // is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] neighborSets = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
+    // |N(u)| and |N(v)| in the union count every entry, a parallel edge included; the intersection counts distinct neighbours
+    final int[][] adj = graph.adjacency(dir, relTypes);
+    final int[] degree = new int[n];
+    for (int i = 0; i < n; i++)
+      degree[i] = adj[i].length;
+    toDistinctNeighbours(adj, guard);
+    // v lists w in its row exactly as often as w lists v in its row of the opposite direction: the walk from u reaches every v
+    // that shares a neighbour with it through that row (issue #12172)
+    final int[][] back;
+    if (dir == Vertex.DIRECTION.BOTH)
+      back = adj;
+    else {
+      back = graph.adjacency(dir == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT, relTypes);
+      toDistinctNeighbours(back, guard);
     }
+
+    // The degrees, the shared-neighbour count of every node u reaches, the nodes it reached, and the top-k of u: reused from node to
+    // node
+    graph.memory().reserve(saturatingSum(saturatingProduct(3L * n, INT_BYTES), saturatingProduct(k, INT_BYTES + DOUBLE_BYTES)),
+        "the shared-neighbour counters", n + " nodes, k=" + k);
+    final int[] shared = new int[n];
+    final int[] reached = new int[n];
+    final double[] topSim = new double[k];
+    final int[] topIdx = new int[k];
 
     final List<Result> results = new ArrayList<>();
 
     for (int u = 0; u < n; u++) {
-      // Every node is compared against every other, so this is O(V²) bit-set intersections with nothing but the
-      // graph to size it (issue #6302). One u is already a full pass over the other n - 1 nodes, which is more
-      // than enough to swallow an unthrottled check.
+      // One u walks its two-hop neighbourhood, which a supernode makes as long as the graph (issue #6302): checked per node
       guard.check();
-      if (adj[u].length == 0)
+      if (degree[u] == 0)
         continue;
 
-      // Find top-k neighbours by Jaccard similarity (avoid duplicate pairs by requiring v > u)
-      // We collect all candidates and pick top-k
-      double[] topSim = new double[k];
-      int[] topIdx = new int[k];
+      // Only a node two hops away shares a neighbour with u, so only those are candidates: the walk counts, for each, how many
+      // distinct neighbours of u it lists
+      int reachedCount = 0;
+      for (final int w : adj[u])
+        for (final int v : back[w]) {
+          if (v == u)
+            continue;
+          if (shared[v]++ == 0)
+            reached[reachedCount++] = v;
+        }
+      // Met in ascending order, as a scan of every node meets them: equal similarities keep the same node
+      Arrays.sort(reached, 0, reachedCount);
+
+      // Find top-k neighbours by Jaccard similarity
       int topCount = 0;
       double minTop = 0.0;
 
-      for (int v = 0; v < n; v++) {
-        if (v == u || adj[v].length == 0)
-          continue;
-
-        // Jaccard = |intersection| / |union|
-        final BitSet intersection = (BitSet) neighborSets[u].clone();
-        intersection.and(neighborSets[v]);
-        final int inter = intersection.cardinality();
-        if (inter == 0)
-          continue;
-        final int union = adj[u].length + adj[v].length - inter;
+      for (int c = 0; c < reachedCount; c++) {
+        final int v = reached[c];
+        final int inter = shared[v];
+        shared[v] = 0;
+        final int union = degree[u] + degree[v] - inter;
         final double jaccard = union == 0 ? 0.0 : (double) inter / union;
 
         if (jaccard <= 0.0)

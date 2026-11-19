@@ -697,4 +697,46 @@ class SegmentRoundTripTest {
     assertThat(SegmentFormat.segmentFileName(0x1fL)).isEqualTo("seg-000000000000001f.acs");
     assertThat(SegmentFormat.deadFileName(0x1fL, 3)).isEqualTo("seg-000000000000001f.dead.3");
   }
+
+  @Test
+  void segmentWriterFinishPreservesNegativeZeroAndExcludesNanBounds() throws IOException {
+    final Path file = dir.resolve("nan-negzero.acs");
+    try (final SegmentWriter writer = new SegmentWriter(file, 1, MAX_RECORDS_IN_PAGE, new ColumnDefinition[] { SCORE }, 16)) {
+      final RowValues row = new RowValues(1);
+      row.present[0] = true;
+
+      // Row 0: -10.0
+      row.doubles[0] = -10.0;
+      writer.addRow(0, 1, row);
+
+      // Row 1: Double.NaN
+      row.doubles[0] = Double.NaN;
+      writer.addRow(1, 1, row);
+
+      // Row 2: -0.0
+      row.doubles[0] = -0.0;
+      writer.addRow(2, 1, row);
+
+      writer.finish();
+    }
+
+    try (final SegmentReader reader = SegmentReader.open(file, null)) {
+      assertThat(Double.longBitsToDouble(reader.minLong("score"))).isEqualTo(-10.0);
+      assertThat(Double.doubleToRawLongBits(Double.longBitsToDouble(reader.maxLong("score"))))
+          .isEqualTo(Double.doubleToRawLongBits(-0.0));
+    }
+
+    final Path nanOnlyFile = dir.resolve("nan-only.acs");
+    try (final SegmentWriter writer = new SegmentWriter(nanOnlyFile, 2, MAX_RECORDS_IN_PAGE, new ColumnDefinition[] { SCORE }, 16)) {
+      final RowValues row = new RowValues(1);
+      row.present[0] = true;
+      row.doubles[0] = Double.NaN;
+      writer.addRow(0, 1, row);
+      writer.finish();
+    }
+
+    try (final SegmentReader reader = SegmentReader.open(nanOnlyFile, null)) {
+      assertThat(reader.minLong("score")).isGreaterThan(reader.maxLong("score"));
+    }
+  }
 }

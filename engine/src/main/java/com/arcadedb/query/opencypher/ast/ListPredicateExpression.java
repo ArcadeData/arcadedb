@@ -174,12 +174,9 @@ public class ListPredicateExpression implements Expression {
         iterResult.setProperty(prop, baseResult.getProperty(prop));
     iterResult.setProperty(variable, item);
 
-    final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, iterResult, context);
-    if (filterValue == null)
-      return null;
-    if (filterValue instanceof Boolean)
-      return (Boolean) filterValue;
-    return null;
+    // a non-Boolean WHERE value is a type error, as in every other predicate position (issue #11760)
+    return BooleanCoercionExpression.toPredicate(
+        OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, iterResult, context));
   }
 
   /**

@@ -23,9 +23,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
@@ -921,6 +925,247 @@ class VectorDeltaScanTest {
           db.drop();
         }
       }
+    }
+
+    /**
+     * Regression for #12379: the auto-sized budget is the database's, not each index's. A type has one vector index per
+     * bucket, and each of them planned on the whole percent for itself, so 66 bucket indexes of a 3 GB heap kept payloads
+     * worth several times the heap. What the other indexes hold is charged first: with a budget of the other bucket's
+     * payloads plus 30, this one may keep 30.
+     */
+    @Test
+    void theAutoSizedBudgetIsSharedByTheVectorIndexesOfTheDatabase() {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+        final Database db = factory.create();
+        try {
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE, 0);
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT, 1);
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
+          db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, Integer.MAX_VALUE);
+          db.transaction(() -> {
+            final var type = db.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(2).create();
+            type.createProperty("id", Type.INTEGER);
+            type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+            db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+                + ", \"similarity\": \"EUCLIDEAN\" }");
+          });
+          insert(db, 0, RECORDS);
+
+          final IndexInternal[] buckets = db.getSchema().getType("Doc").getPolymorphicIndexByProperties("vector")
+              .getIndexesOnBuckets();
+          assertThat(buckets).hasSize(2);
+          final LSMVectorIndex index = (LSMVectorIndex) buckets[0];
+          final long otherResident = ((LSMVectorIndex) buckets[1]).getStats().get("deltaResidentVectors");
+          assertThat(otherResident).as("precondition: the other bucket's buffer holds payloads").isPositive();
+
+          final long bytesPerVector = VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
+          // 1% of this ceiling is the other bucket's payloads plus 30, and all of it is free
+          final long maxHeap = (otherResident + 30) * bytesPerVector * 100;
+
+          assertThat(index.computeDeltaPayloadCapacity(maxHeap, maxHeap))
+              .as("the payloads of the other vector index are charged to the same budget").isEqualTo(30);
+        } finally {
+          db.drop();
+        }
+      }
+    }
+
+    /**
+     * The other arm of the same arithmetic (#12379): once the other indexes hold more than the whole budget, there is
+     * nothing left for this one, and the answer is zero rather than a negative number or its own full share.
+     */
+    @Test
+    void theAutoSizedBudgetIsZeroOnceTheOtherIndexesAreAlreadyPastIt() {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+        final Database db = factory.create();
+        try {
+          createTwoBucketSchema(db, 0);
+          insert(db, 0, RECORDS);
+
+          final LSMVectorIndex[] buckets = bucketIndexes(db);
+          final long otherResident = buckets[1].getStats().get("deltaResidentVectors");
+          assertThat(otherResident).as("precondition: the other bucket's buffer holds payloads").isGreaterThan(1L);
+
+          // 1% of this ceiling is one payload less than the other bucket already holds
+          final long maxHeap = (otherResident - 1) * VectorHeapBudget.bytesPerCachedVector(DIMENSIONS) * 100;
+
+          assertThat(buckets[0].computeDeltaPayloadCapacity(maxHeap, maxHeap))
+              .as("the other vector index alone is past the budget they share").isZero();
+        } finally {
+          db.drop();
+        }
+      }
+    }
+
+    /**
+     * What #12379 is about, through the write path: the vector indexes of a database fill ONE budget. The heap is
+     * pinned so the share is {@value #BUDGET} payloads; two bucket indexes written in turn keep exactly that many
+     * between them, where each kept its own {@value #BUDGET} before. The room is reserved per payload, so the total is
+     * exact whatever the order the two fill in, and it is handed back when the entries leave.
+     */
+    @Test
+    void theVectorIndexesOfADatabaseFillOneBudgetTogether() {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+        final Database db = factory.create();
+        try {
+          createTwoBucketSchema(db, 0);
+
+          final long bytesPerVector = VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
+          final LSMVectorIndex[] buckets = bucketIndexes(db);
+          // 1% of this ceiling is BUDGET payloads, and all of it is free
+          for (final LSMVectorIndex bucket : buckets)
+            bucket.pinDeltaPayloadHeapForTest(BUDGET * bytesPerVector * 100, BUDGET * bytesPerVector * 100);
+
+          insert(db, 0, RECORDS);
+
+          for (final LSMVectorIndex bucket : buckets)
+            assertThat(bucket.getStats().get("deltaVectorsCount"))
+                .as("precondition: both buckets received more entries than the whole budget").isGreaterThan((long) BUDGET);
+          assertThat(buffered(buckets)).as("the bound drops payloads, never entries").isEqualTo((long) RECORDS);
+          assertThat(resident(buckets))
+              .as("the two indexes keep the budget between them, not the budget each (issue #12379)")
+              .isEqualTo((long) BUDGET);
+          assertThat(ledgerBytes(db)).as("and that is what the database's ledger says they hold")
+              .isEqualTo(BUDGET * bytesPerVector);
+          for (final LSMVectorIndex bucket : buckets)
+            assertThat(bucket.getStats().get("deltaResidentVectorsCapacity"))
+                .as("with the share used up, an index may hold what it holds and nothing more")
+                .isEqualTo(bucket.getStats().get("deltaResidentVectors"));
+
+          // An entry without a payload is read back from the pages, whichever bucket declined it
+          for (final int probe : new int[] { 0, BUDGET + 1, RECORDS / 2, RECORDS - 1 })
+            assertThat(idOf(db, nearestAcross(db, buckets, embedding(probe))))
+                .as("record %d is the nearest neighbour of its own vector, payload on the heap or not", probe)
+                .isEqualTo(probe);
+
+          db.transaction(() -> db.command("sql", "DELETE FROM Doc"));
+          assertThat(resident(buckets)).as("precondition: the deletions emptied the buffers").isZero();
+          assertThat(ledgerBytes(db)).as("the room of the entries that left is given back to the ledger").isZero();
+
+          insert(db, RECORDS, RECORDS * 2);
+          assertThat(resident(buckets)).as("and can be filled again, once").isEqualTo((long) BUDGET);
+        } finally {
+          db.drop();
+        }
+      }
+    }
+
+    /**
+     * An explicit {@code deltaCacheSize} is a number of vectors per index, as documented, and the shared heap budget
+     * does not apply to it (#12379): both bucket indexes keep their {@value #BUDGET}, whatever the other holds.
+     */
+    @Test
+    void anExplicitSizeStaysPerIndex() {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+        final Database db = factory.create();
+        try {
+          createTwoBucketSchema(db, BUDGET);
+          insert(db, 0, RECORDS);
+
+          for (final LSMVectorIndex bucket : bucketIndexes(db)) {
+            assertThat(bucket.getStats().get("deltaVectorsCount"))
+                .as("precondition: the bucket received more entries than its budget").isGreaterThan((long) BUDGET);
+            assertThat(bucket.getStats().get("deltaResidentVectorsCapacity")).isEqualTo((long) BUDGET);
+            assertThat(bucket.getStats().get("deltaResidentVectors")).isEqualTo((long) BUDGET);
+          }
+        } finally {
+          db.drop();
+        }
+      }
+    }
+
+    /**
+     * The ledger must not outlive what it counts (#12379): an index instance that stops being the schema's gives back
+     * what it charged. A schema reload retires every instance and publishes successors, and a dropped index is gone;
+     * after each, the ledger holds exactly the payloads of the indexes the schema publishes now. A charge left behind
+     * would make the surviving indexes decline payloads for room the heap has, for as long as the database is open.
+     */
+    @Test
+    void anIndexThatIsRetiredOrDroppedGivesItsShareBack() throws Exception {
+      try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+        final Database db = factory.create();
+        try {
+          createTwoBucketSchema(db, 0);
+          insert(db, 0, RECORDS);
+
+          final long bytesPerVector = VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
+          final LSMVectorIndex[] before = bucketIndexes(db);
+          assertThat(resident(before)).as("precondition: the buffers hold payloads").isPositive();
+          assertThat(ledgerBytes(db)).isEqualTo(resident(before) * bytesPerVector);
+
+          ((LocalSchema) db.getSchema().getEmbedded()).load(ComponentFile.MODE.READ_WRITE, true);
+
+          final LSMVectorIndex[] after = bucketIndexes(db);
+          assertThat(after[0]).as("precondition: the reload published new instances").isNotSameAs(before[0]);
+          assertThat(ledgerBytes(db))
+              .as("the retired instances no longer count, only what their successors hold")
+              .isEqualTo(resident(after) * bytesPerVector);
+
+          insert(db, RECORDS, RECORDS + 50);
+          assertThat(ledgerBytes(db)).isEqualTo(resident(bucketIndexes(db)) * bytesPerVector);
+
+          db.getSchema().dropIndex(db.getSchema().getType("Doc").getPolymorphicIndexByProperties("vector").getName());
+          assertThat(ledgerBytes(db)).as("a dropped index holds nothing").isZero();
+        } finally {
+          db.drop();
+        }
+      }
+    }
+
+    /** The fixture of #12379 in small: one vector property on a type with two buckets, so two vector indexes. */
+    private static void createTwoBucketSchema(final Database db, final int deltaCacheSize) {
+      db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE, deltaCacheSize);
+      db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT, 1);
+      // No rebuild may drain the buffers while the assertions look at them
+      db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
+      db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, Integer.MAX_VALUE);
+      db.transaction(() -> {
+        final var type = db.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(2).create();
+        type.createProperty("id", Type.INTEGER);
+        type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+        db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+            + ", \"similarity\": \"EUCLIDEAN\" }");
+      });
+    }
+
+    private static LSMVectorIndex[] bucketIndexes(final Database db) {
+      final IndexInternal[] buckets = db.getSchema().getType("Doc").getPolymorphicIndexByProperties("vector")
+          .getIndexesOnBuckets();
+      assertThat(buckets).as("precondition: one vector index per bucket").hasSize(2);
+      return new LSMVectorIndex[] { (LSMVectorIndex) buckets[0], (LSMVectorIndex) buckets[1] };
+    }
+
+    private static long resident(final LSMVectorIndex[] indexes) {
+      long resident = 0;
+      for (final LSMVectorIndex index : indexes)
+        resident += index.getStats().get("deltaResidentVectors");
+      return resident;
+    }
+
+    private static long buffered(final LSMVectorIndex[] indexes) {
+      long buffered = 0;
+      for (final LSMVectorIndex index : indexes)
+        buffered += index.getStats().get("deltaVectorsCount");
+      return buffered;
+    }
+
+    private static long ledgerBytes(final Database db) {
+      return ((LocalDatabase) ((DatabaseInternal) db).getEmbedded()).getVectorDeltaPayloadLedger().bytes();
+    }
+
+    /** The nearest neighbour of {@code query} over every bucket index, as the type-level search would merge them. */
+    private static RID nearestAcross(final Database db, final LSMVectorIndex[] indexes, final float[] query) {
+      final List<Pair<RID, Float>> hits = new ArrayList<>();
+      db.transaction(() -> {
+        for (final LSMVectorIndex index : indexes)
+          hits.addAll(index.findNeighborsFromVector(query, 1));
+      });
+      assertThat(hits).as("precondition: the search found something").isNotEmpty();
+      Pair<RID, Float> best = hits.getFirst();
+      for (final Pair<RID, Float> hit : hits)
+        if (hit.getSecond() < best.getSecond())
+          best = hit;
+      return best.getFirst();
     }
 
     private static void createSchema(final Database db, final int deltaCacheSize) {

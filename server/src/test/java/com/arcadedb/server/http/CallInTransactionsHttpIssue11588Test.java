@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -68,8 +69,11 @@ class CallInTransactionsHttpIssue11588Test extends BaseGraphServerTest {
 
       connection = post(serverIndex, "command", sessionId, cypher(STATEMENT.formatted(label)));
       try {
-        assertThat(connection.getResponseCode()).isGreaterThanOrEqualTo(400);
-        assertThat(readError(connection)).contains("can only be executed in an implicit transaction");
+        // the client's transaction state is the cause: 409 Conflict, not the 500 of a server fault (issue #12161)
+        assertThat(connection.getResponseCode()).isEqualTo(409);
+        final String error = readError(connection);
+        assertThat(error).contains("can only be executed in an implicit transaction");
+        assertThat(error).contains(ImplicitTransactionRequiredException.class.getName());
       } finally {
         connection.disconnect();
       }
