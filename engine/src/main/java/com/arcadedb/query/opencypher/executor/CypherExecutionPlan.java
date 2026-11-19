@@ -637,8 +637,11 @@ public class CypherExecutionPlan {
       // Each branch runs through this same method with the REAL outerContext, so it takes the non-union path below and
       // does its own inherit (issue #6977). The UNION itself inherits the map too, under the same gate, only to key its rows:
       // a replaced node held as the original by one branch and as the replacement by a later one is one row (issue #10614)
-      if (outerContext != null && !statement.isReadOnly())
+      if (outerContext != null && !statement.isReadOnly()) {
         LabelReplacements.inherit(ctx, outerContext);
+        // A write in the body of a CALL reaches the copies of lists and maps the outer clauses indexed (issue #11754)
+        HeldCollectionRefresher.inherit(ctx, outerContext);
+      }
       final UnionStep unionStep = new UnionStep(branchPlans, removeDuplicates,
           branchPlan -> branchPlan.executeWithSeedRow(seedRow, outerContext, batchSize), ctx);
       return unionStep.syncPull(ctx, batchSize);
@@ -658,6 +661,9 @@ public class CypherExecutionPlan {
       // deleted (issue #6977). Same gate as the statistics above - a read-only body performs no label write and
       // must not make the enclosing statement allocate a map for one.
       LabelReplacements.inherit(context, outerContext);
+      // ...and so does the refresher of the lists and maps the statement holds: a write in the body has to reach the copies
+      // the outer clauses indexed (issue #11754)
+      HeldCollectionRefresher.inherit(context, outerContext);
     }
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);

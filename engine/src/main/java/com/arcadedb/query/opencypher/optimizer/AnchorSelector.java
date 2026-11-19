@@ -34,6 +34,7 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,6 +58,9 @@ import java.util.Set;
  * Key Insight: Start from most selective node, expand outward
  */
 public class AnchorSelector {
+  /** The order that settles a tie between two indexes that read as many rows: by name, an index with none last */
+  private static final Comparator<String> INDEX_NAME_ORDER = Comparator.nullsLast(Comparator.naturalOrder());
+
   private final StatisticsProvider statisticsProvider;
   private final CostModel costModel;
 
@@ -520,9 +524,14 @@ public class AnchorSelector {
   }
 
   /**
-   * Same as {@link #findIndexForProperty(List, String, boolean)} for an equality seek, whose key is built from {@code pinned}, the
-   * properties the query holds equal to a value. A hash index answers an exact key only, so a composite one whose key the query
-   * cannot fill is skipped: the seek would have to read it as a prefix range (issue #9236).
+   * The index an equality seek on {@code propertyName} reads: of the indexes that lead with it, the one whose key the query binds
+   * furthest, since that is the one that narrows the candidates most. The key is built from {@code pinned}, the properties the
+   * query holds equal to a value. A hash index answers an exact key only, so a composite one whose key the query cannot fill is
+   * skipped: the seek would have to read it as a prefix range (issue #9236).
+   * <p>
+   * Taking the first index that leads with the property made {@code (tenantId, name)} shadow {@code (tenantId, id)} for a pattern
+   * that binds {@code tenantId} and {@code id}: the seek read the whole tenant and filtered {@code id} row by row, and which of the
+   * two won depended on the order the schema listed them in (issue #12557).
    *
    * @param indexes      list of available indexes
    * @param propertyName property to search for
@@ -533,13 +542,47 @@ public class AnchorSelector {
       final Set<String> pinned) {
     if (indexes == null)
       return null;
+    IndexStatistics best = null;
     for (final IndexStatistics index : indexes) {
       if (!index.isOrdered() && !fillsKey(index, propertyName, pinned))
         continue;
-      if (leadsWithProperty(index, propertyName))
-        return index;
+      if (!leadsWithProperty(index, propertyName))
+        continue;
+      if (best == null || readsFewerRows(index, best, pinned))
+        best = index;
     }
-    return null;
+    return best;
+  }
+
+  /**
+   * Whether an equality seek of {@code candidate} reads fewer rows than one of {@code held}, both leading with the property being
+   * sought: the one that resolves a single entry (a unique index whose whole key is bound) first, then the one whose key is bound
+   * over more columns, then the one that is read as an exact lookup rather than as the range of a prefix. A tie goes to the index
+   * named first, so the same schema is always planned the same way whatever order it lists its indexes in.
+   */
+  private static boolean readsFewerRows(final IndexStatistics candidate, final IndexStatistics held, final Set<String> pinned) {
+    final int candidateColumns = boundColumns(candidate, pinned);
+    final int heldColumns = boundColumns(held, pinned);
+    final boolean candidateSingle = resolvesOneRow(candidate, candidateColumns);
+    final boolean heldSingle = resolvesOneRow(held, heldColumns);
+    if (candidateSingle != heldSingle)
+      return candidateSingle;
+    if (candidateColumns != heldColumns)
+      return candidateColumns > heldColumns;
+    final boolean candidateWhole = candidateColumns == candidate.getPropertyNames().size();
+    final boolean heldWhole = heldColumns == held.getPropertyNames().size();
+    if (candidateWhole != heldWhole)
+      return candidateWhole;
+    return INDEX_NAME_ORDER.compare(candidate.getIndexName(), held.getIndexName()) < 0;
+  }
+
+  /** How many leading columns of the index key the query binds: the first one is the property being sought, and a gap ends the key. */
+  private static int boundColumns(final IndexStatistics index, final Set<String> pinned) {
+    final List<String> columns = index.getPropertyNames();
+    int bound = 1;
+    while (bound < columns.size() && pinned.contains(columns.get(bound)))
+      bound++;
+    return bound;
   }
 
   /** Same as {@link #findIndexForProperty(List, String, boolean)}, skipping the indexes that cannot be read in key order (a hash index). */
