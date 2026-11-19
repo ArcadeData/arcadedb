@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * already behind.
  * <p>
  * What issue #7834 actually asks for - one seeder per admission instead of two, on two nodes, under two
- * monitors - is pinned in {@code Issue7834SingleSecuritySeederTest}.
+ * monitors - is pinned in {@code MembershipSecuritySeederTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

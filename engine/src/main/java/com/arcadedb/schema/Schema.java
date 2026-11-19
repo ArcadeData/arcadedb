@@ -22,6 +22,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
@@ -528,9 +529,9 @@ public interface Schema {
    *
    * @param name Function library to search
    *
-   * @throws IllegalArgumentException if the library is not defined
+   * @throws UnknownFunctionException if the library is not defined (a statement calling a function nothing answers, issue #11633)
    */
-  FunctionLibraryDefinition getFunctionLibrary(String name) throws IllegalArgumentException;
+  FunctionLibraryDefinition getFunctionLibrary(String name);
 
   /**
    * Returns a function defined in a library.
@@ -540,9 +541,9 @@ public interface Schema {
    *
    * @return The function definition if found
    *
-   * @throws IllegalArgumentException if the library or the function is not defined
+   * @throws UnknownFunctionException if the library or the function is not defined
    */
-  FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
+  FunctionDefinition getFunction(String libraryName, String functionName);
 
   /**
    * Returns a defensive copy of a named schema extension (module-specific configuration stored in schema.json).

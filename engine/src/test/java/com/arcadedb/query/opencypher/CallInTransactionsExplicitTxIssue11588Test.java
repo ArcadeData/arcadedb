@@ -20,7 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,7 +49,7 @@ class CallInTransactionsExplicitTxIssue11588Test extends TestHelper {
     try {
       database.command("opencypher", "CREATE (:X {i: 0})");
       assertThatThrownBy(() -> database.command("opencypher", STATEMENT))
-          .isInstanceOf(CommandExecutionException.class)
+          .isInstanceOf(ImplicitTransactionRequiredException.class)
           .hasMessageContaining("implicit transaction");
     } finally {
       database.rollback();
@@ -79,7 +79,7 @@ class CallInTransactionsExplicitTxIssue11588Test extends TestHelper {
     database.begin();
     try {
       assertThatThrownBy(() -> database.command("opencypher", STATEMENT))
-          .isInstanceOf(CommandExecutionException.class)
+          .isInstanceOf(ImplicitTransactionRequiredException.class)
           .hasMessageContaining("implicit transaction");
     } finally {
       database.rollback();
@@ -106,7 +106,7 @@ class CallInTransactionsExplicitTxIssue11588Test extends TestHelper {
     ((DatabaseInternal) database).getTransaction().setClientManaged(true);
     try {
       assertThatThrownBy(() -> database.command("opencypher", STATEMENT))
-          .isInstanceOf(CommandExecutionException.class)
+          .isInstanceOf(ImplicitTransactionRequiredException.class)
           .hasMessageContaining("implicit transaction");
     } finally {
       database.rollback();
