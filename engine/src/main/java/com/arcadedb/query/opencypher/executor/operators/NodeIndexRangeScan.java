@@ -30,13 +30,16 @@ import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
@@ -99,6 +102,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
    * thread per cached plan, weakly keyed on this operator, so it goes with the plan.
    */
   private final ThreadLocal<Boolean> servedByScan = new ThreadLocal<>();
+  /** Whether the calling thread's last execution served the range by a parallel label scan. Same lifetime as {@link #servedByScan}. */
+  private final ThreadLocal<Boolean> servedInParallel = new ThreadLocal<>();
+  /**
+   * The WHERE predicates that read only this scan's variable, evaluated on every vertex the scan serves (issue #11873). Only an
+   * adaptive scan takes them: a label scan serving a large range evaluates them in the workers of a parallel scan, as a
+   * filtered {@link NodeByLabelScan} does, rather than handing every vertex of the label to a Filter on the calling thread.
+   */
+  private BooleanExpression whereFilter;
 
   /**
    * Create a range scan operator from range predicates.
@@ -146,6 +157,47 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   }
 
   /**
+   * Adds a WHERE predicate that reads only this scan's variable, evaluated on every vertex the scan serves. Several pushed
+   * predicates are ANDed together.
+   */
+  public void pushDownFilter(final BooleanExpression filter) {
+    this.whereFilter = whereFilter == null ?
+        filter : new LogicalExpression(LogicalExpression.Operator.AND, whereFilter, filter);
+  }
+
+  /**
+   * Whether an execution of this scan can be served by a parallel scan of the label (issue #11873): an adaptive scan, whose
+   * rows come in no order the statement can see, that holds the predicates a vertex must pass.
+   */
+  public boolean mayServeInParallel() {
+    return adaptive && !readsEntriesFirst && !indexOrdered && whereFilter != null;
+  }
+
+  /**
+   * Plans this execution of the scan for a consumer that takes its rows in the workers of a parallel scan, as
+   * {@link NodeByLabelScan#planParallelRows} does for a label (issue #11873): the scan reads the range as it does to decide
+   * how to serve it, and when it would give way to a label scan, that scan runs in parallel with this scan's predicates and
+   * {@code extraFilters} evaluated in the workers.
+   *
+   * @return the scan, or {@code null} when this execution is served sequentially: the range is better served by the index, a
+   * predicate is not one the workers can evaluate, or the parallel scan declines (disabled, in a transaction, too small).
+   * The sequential execution decides again
+   */
+  public ParallelRecordScan planParallelRows(final CommandContext context, final List<BooleanExpression> extraFilters) {
+    if (!mayServeInParallel() || !ParallelSafeExpressions.isParallelSafe(whereFilter, variable))
+      return null;
+    BooleanExpression filter = whereFilter;
+    for (final BooleanExpression extra : extraFilters) {
+      if (!ParallelSafeExpressions.isParallelSafe(extra, variable))
+        return null;
+      filter = new LogicalExpression(LogicalExpression.Operator.AND, filter, extra);
+    }
+    try (final RangeRows rows = open(context, 0)) {
+      return rows.planParallelLabelScan(filter);
+    }
+  }
+
+  /**
    * Makes the scan read the record addresses of its whole range before it serves the first row, and serve them in the
    * order it read them (issue #10251, the Halloween problem). The plan asks for it when the statement writes a key of the
    * index: a write moves the record's entry inside the index the scan is walking, and the moved entry lands ahead of the
@@ -172,6 +224,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
      * ascending scan, where the first rows of the index are the answer.
      */
     LAST_FROM_LABEL,
+    /**
+     * The index does not hold them and they sort first: before the index entries, found by a scan of the label that keeps
+     * only them (issue #11701). Only for a descending scan, where the first rows of the index come right after them. The
+     * scan stops as soon as the LIMIT is reached, but when fewer vertices than that lack a key it reads the whole label,
+     * as SQL's ascending order does for the same reason: it is still a filter that builds no row for a vertex with a key,
+     * against the sort of every row of the label it replaces. A MANDATORY NOTNULL property or an index with NULL_STRATEGY
+     * INDEX leaves nothing to scan for.
+     */
+    FIRST_FROM_LABEL,
     /** The index holds them (NULL_STRATEGY INDEX) and the statement excludes them: the entries with a null key are skipped. */
     SKIPPED_IN_INDEX,
     /**
@@ -205,10 +266,22 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    return open(context, nRecords);
+  }
+
+  /** The rows of one execution, which can also plan the parallel label scan of {@link #planParallelRows}. */
+  private interface RangeRows extends ResultSet {
+    /** @return the parallel scan of the label filtered by {@code filter}, or {@code null} when the range is not served by one */
+    ParallelRecordScan planParallelLabelScan(BooleanExpression filter);
+  }
+
+  private RangeRows open(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    return new ResultSet() {
+    final BooleanExpression filter = whereFilter;
+    final boolean parallelFilter = filter != null && ParallelSafeExpressions.isParallelSafe(filter, variable);
+    return new RangeRows() {
       private IndexCursor cursor = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
@@ -223,10 +296,16 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       // Adaptive mode: records served in physical order, or every vertex of the label
       private PhysicalOrderRidFetcher fetcher;
       private Iterator<Record> labelScan;
-      // Index order with the null keys last: the label scan that follows the index, for the vertices it does not hold
+      // A label scan serving the range in the workers of a parallel scan, which evaluate the pushed predicates (issue #11873)
+      private ResultSet parallelRows;
+      // Binds each vertex served and passes it through the pushed predicates
+      private final NodeByLabelScan.VertexRowFilter rows = new NodeByLabelScan.VertexRowFilter(variable, filter);
+      // Index order with the null keys last (first, descending): the label scan that follows (precedes) the index, for the
+      // vertices it does not hold
       private Iterator<Record> nullKeyScan;
       // Index order of an index that holds the null keys: the pass that reads them, from the start of the index
       private IndexCursor nullKeyCursor;
+      // The null keys a pass that precedes the values reads (from the index, or from the label) are all read
       private boolean nullKeysDone = false;
       // The entries of the index with a value are all read
       private boolean valuesDone = false;
@@ -271,6 +350,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
         if (!opened) {
           opened = true;
+          servedInParallel.set(false);
           if (!resolveIndexAndBounds()) {
             finished = true;
             return;
@@ -288,7 +368,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         } else if (entryBuckets != null) {
           serveEntries(n);
           return;
-        } else if (fetcher != null || labelScan != null) {
+        } else if (fetcher != null || labelScan != null || parallelRows != null) {
           fetchAdaptively(n);
           return;
         }
@@ -333,11 +413,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         while (buffer.size() < n && nextEntry < entries) {
           guard.check();
           final int i = nextEntry++;
+          final Vertex vertex;
           try {
-            addVertex(context.getDatabase().newRID(entryBuckets[i], entryPositions[i]).asVertex());
+            vertex = context.getDatabase().newRID(entryBuckets[i], entryPositions[i]).asVertex();
           } catch (final RecordNotFoundException e) {
             // DELETED SINCE THE RANGE WAS READ: NOTHING TO MATCH
+            continue;
           }
+          // OUTSIDE THE CATCH: A RECORD THE PUSHED PREDICATE READS AND FINDS GONE FAILS THE QUERY, AS IN A FILTER (ISSUE #11873)
+          addVertex(vertex);
         }
         if (nextEntry >= entries) {
           finished = true;
@@ -379,6 +463,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         // A null key sorts lowest in the index: descending, the vertices that have one come before the values
         if (nullKeys == NullKeys.PLACED_FROM_INDEX && !ascending && !readNullKeyEntries(n))
           return;
+        // Descending, the vertices the index does not hold because they have no key come first too, from the label
+        if (nullKeys == NullKeys.FIRST_FROM_LABEL && !nullKeysDone) {
+          if (!fetchNullKeys(n))
+            return;
+          nullKeysDone = true;
+        }
 
         // Fetch up to n matching vertices, in key order
         while (!valuesDone && buffer.size() < n && cursor.hasNext()) {
@@ -399,9 +489,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           if (nullKeys == NullKeys.PLACED_FROM_INDEX && ascending) {
             if (readNullKeyEntries(n))
               finished = true;
-          } else if (nullKeys == NullKeys.LAST_FROM_LABEL)
-            fetchNullKeys(n);
-          else
+          } else if (nullKeys == NullKeys.LAST_FROM_LABEL) {
+            if (fetchNullKeys(n))
+              finished = true;
+          } else
             finished = true;
         }
       }
@@ -439,10 +530,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       }
 
       /**
-       * The vertices of the label with no value for the key, after the index entries: the index does not hold them,
-       * and a null sorts last. Only an ascending scan with no bound asks for them.
+       * The vertices of the label with no value for the key, which the index does not hold: after the index entries
+       * ascending, where a null sorts last, and before them descending. Only a scan with no bound asks for them.
+       *
+       * @return true when they are all read, false when the buffer filled before
        */
-      private void fetchNullKeys(final int n) {
+      private boolean fetchNullKeys(final int n) {
         if (nullKeyScan == null)
           nullKeyScan = context.getDatabase().iterateType(label, true);
         while (buffer.size() < n && nullKeyScan.hasNext()) {
@@ -451,8 +544,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           if (vertex.get(propertyName) == null)
             addVertex(vertex);
         }
-        if (!nullKeyScan.hasNext())
-          finished = true;
+        if (nullKeyScan.hasNext())
+          return false;
+        nullKeyScan = null;
+        return true;
       }
 
       /**
@@ -462,15 +557,46 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
        * range scan to run
        */
       private boolean chooseAdaptively() {
+        final PhysicalOrderRidFetcher.Outcome outcome = readRangeToDecide();
+        if (outcome == null)
+          return false;
+
+        if (outcome == PhysicalOrderRidFetcher.Outcome.SCAN) {
+          fetcher.close();
+          fetcher = null;
+          // Every vertex of the label, passed through the pushed predicates and the pattern's WHERE downstream, exactly as
+          // what the index returns is, so the rows that survive are the same. With predicates the workers can evaluate,
+          // the label is scanned in parallel and the rows come back filtered, in the order the sequential scan reads them
+          final ParallelRecordScan parallelScan = parallelFilter ?
+              ParallelRecordScan.plan(context, label, () -> new NodeByLabelScan.VertexRowFilter(variable, filter)) : null;
+          if (parallelScan != null) {
+            parallelRows = parallelScan.pull(context);
+            servedInParallel.set(true);
+          } else
+            labelScan = context.getDatabase().iterateType(label, true);
+          servedByScan.set(true);
+        } else
+          servedByScan.set(false);
+        return true;
+      }
+
+      /**
+       * Reads the first pass over the range into {@link #fetcher}, up to the share of the label above which a label scan
+       * serves the range better: a scan in parallel gives way sooner, as SQL's does (issue #8333), and the scan runs in
+       * parallel only when the workers can evaluate the pushed predicates (issue #11873).
+       *
+       * @return how the range is best served, or {@code null} when the label's buckets keep no record count to decide by
+       */
+      private PhysicalOrderRidFetcher.Outcome readRangeToDecide() {
         // Read per execution, not at planning: the plan is cached, and buckets can be added to the type in between
         final DocumentType type = context.getDatabase().getSchema().getType(label);
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
           bucketIds.add(bucket.getFileId());
-        // A label scan runs on this thread alone
-        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, 1);
+        final int scanWorkers = parallelFilter ? ParallelRecordScan.plannedWorkers(context, bucketIds) : 1;
+        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, scanWorkers);
         if (scanThreshold < 0)
-          return false;
+          return null;
 
         fetcher = new PhysicalOrderRidFetcher(() -> {
           final IndexCursor pass = openCursor();
@@ -486,20 +612,37 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             }
           };
         }, scanThreshold);
+        return fetcher.start(guard);
+      }
 
-        if (fetcher.start(guard) == PhysicalOrderRidFetcher.Outcome.SCAN) {
-          fetcher.close();
-          fetcher = null;
-          // Every vertex of the label: the pattern's WHERE is evaluated downstream on each of them, exactly as it is
-          // on what the index returns, so the rows that survive are the same
-          labelScan = context.getDatabase().iterateType(label, true);
+      @Override
+      public ParallelRecordScan planParallelLabelScan(final BooleanExpression rowFilter) {
+        // THIS RESULT SET ONLY DECIDES: IT IS CLOSED RIGHT AFTER, AND THE ROWS ARE SERVED BY THE SCAN IT RETURNS OR BY ANOTHER EXECUTION
+        opened = true;
+        if (!parallelFilter || !resolveIndexAndBounds())
+          return null;
+        if (readRangeToDecide() != PhysicalOrderRidFetcher.Outcome.SCAN)
+          return null;
+        final ParallelRecordScan parallelScan = ParallelRecordScan.plan(context, label,
+            () -> new NodeByLabelScan.VertexRowFilter(variable, rowFilter));
+        if (parallelScan != null) {
           servedByScan.set(true);
-        } else
-          servedByScan.set(false);
-        return true;
+          servedInParallel.set(true);
+        }
+        return parallelScan;
       }
 
       private void fetchAdaptively(final int n) {
+        if (parallelRows != null) {
+          while (buffer.size() < n && parallelRows.hasNext()) {
+            guard.check();
+            buffer.add(parallelRows.next());
+          }
+          if (!parallelRows.hasNext())
+            finished = true;
+          return;
+        }
+
         if (labelScan != null) {
           while (buffer.size() < n && labelScan.hasNext()) {
             guard.check();
@@ -520,12 +663,17 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             return;
           }
           guard.check();
+          final Vertex vertex;
           try {
-            addIndexed((Identifiable) entry);
+            vertex = resolveIndexed((Identifiable) entry);
           } catch (final RecordNotFoundException e) {
             // An entry that is not a stored record's address is resolved here, and can be gone since the index answered:
             // nothing to match. A record the fetcher loaded itself arrives resolved, a deleted one already skipped
+            continue;
           }
+          // OUTSIDE THE CATCH: A RECORD THE PUSHED PREDICATE READS AND FINDS GONE FAILS THE QUERY, AS IN A FILTER (ISSUE #11873)
+          if (vertex != null)
+            addVertex(vertex);
         }
       }
 
@@ -534,12 +682,24 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
        * hierarchy, which is rejected from its bucket without being loaded (issue #8834).
        */
       private void addIndexed(final Identifiable identifiable) {
+        final Vertex vertex = resolveIndexed(identifiable);
+        if (vertex != null)
+          addVertex(vertex);
+      }
+
+      /**
+       * The vertex an index entry names, to match; {@code null} when it is rejected from its bucket or collected for the first
+       * pass instead. Throws {@link RecordNotFoundException} for a vertex deleted since the index answered: only resolving the
+       * entry may, the predicate evaluated on the vertex afterwards must not be mistaken for it.
+       */
+      private Vertex resolveIndexed(final Identifiable identifiable) {
         if (inheritedIndex && !Labels.carriesLabel(context.getDatabase().getSchema(), identifiable, label))
-          return;
-        if (collecting)
+          return null;
+        if (collecting) {
           collect(identifiable);
-        else
-          addVertex(identifiable.asVertex());
+          return null;
+        }
+        return identifiable.asVertex();
       }
 
       private void addVertex(final Vertex vertex) {
@@ -547,9 +707,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           collect(vertex);
           return;
         }
-        final ResultInternal result = new ResultInternal();
-        result.setProperty(variable, vertex);
-        buffer.add(result);
+        final Result row = rows.map(vertex, context);
+        if (row != null)
+          buffer.add(row);
       }
 
       /**
@@ -700,6 +860,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           fetcher.close();
           fetcher = null;
         }
+        // The workers of a parallel scan stop when its result set is closed
+        if (parallelRows != null) {
+          parallelRows.close();
+          parallelRows = null;
+        }
+        rows.forgetRejected();
         releaseEntries();
       }
     };
@@ -746,6 +912,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     if (indexOrdered)
       sb.append(ascending ? " [index order" : " [index order, descending").append(switch (nullKeys) {
         case LAST_FROM_LABEL -> ", then null keys]";
+        case FIRST_FROM_LABEL -> ", after null keys]";
         case PLACED_FROM_INDEX -> ", null keys from the index]";
         default -> "]";
       });
@@ -756,6 +923,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       sb.append(scan == null ? " [physical order, or label scan on a large range]" :
           scan ? " [served by label scan: large range]" : " [served in physical order]");
     }
+    if (whereFilter != null)
+      sb.append(" [filter: ").append(whereFilter.getText()).append("]");
+    if (Boolean.TRUE.equals(servedInParallel.get()))
+      sb.append(" [parallel]");
     sb.append("\n");
 
     return sb.toString();

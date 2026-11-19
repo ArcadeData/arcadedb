@@ -20,10 +20,13 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -31,6 +34,7 @@ import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -119,10 +123,15 @@ public class DeleteStep extends AbstractExecutionStep {
    *       its depth-first traverser keeps edge-segment cursors open across the rows it is still
    *       producing, so a {@code DETACH DELETE} of a bound node unlinks the edge chunks that same cursor
    *       is about to follow and the next {@code hasNext()} dereferences a removed segment record
-   *       (issue #7023).</li>
+   *       (issue #7023);</li>
+   *   <li>a {@code DETACH DELETE} behind a fixed-length relationship pattern (see
+   *       {@code EagerBarriers.detachDeleteNeedsEagerRead()}): the MATCH walks the edge list of a node while its rows are
+   *       still being produced, and the first row's DETACH removes the relationships of that list the walk has not
+   *       reached, so the rows they would have produced are lost without an error (issue #12254).</li>
    * </ul>
-   * Ordinary fixed-length connected patterns bind each row's variables independently and keep no cursor
-   * open across rows, so they are left on the cheaper streaming path.
+   * A fixed-length connected pattern read by a DELETE without DETACH, or by a DETACH DELETE that removes only the
+   * relationship the walk stands on, binds each row's variables independently and loses nothing to the rows before it, so
+   * it is left on the cheaper streaming path.
    * <p>
    * The cost of this path is the whole upstream row set held in memory at once (see
    * {@code materializedInput} below) rather than streamed - acceptable for the shapes this guards, but a
@@ -134,6 +143,9 @@ public class DeleteStep extends AbstractExecutionStep {
   // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
+
+  /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
+  private String[] rowVariables;
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -202,7 +214,7 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            heapLimit = OperationHeapLimit.of(context, "DELETE of a disconnected pattern");
+            heapLimit = OperationHeapLimit.of(context, "DELETE of the matched rows");
             try {
               while (prevResults.hasNext()) {
                 final Result row = prevResults.next();
@@ -248,6 +260,11 @@ public class DeleteStep extends AbstractExecutionStep {
                 mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
               }
             }
+
+            // A relationship the row binds and the DETACH took away with one of its endpoints is as deleted as one the
+            // clause names (#11688)
+            if (deleteClause.isDetach() && deleted.hasDeletedVertices() && inputResult instanceof ResultInternal mutableResult)
+              markCascadedRelationships(mutableResult, deletedVars);
 
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
@@ -308,6 +325,23 @@ public class DeleteStep extends AbstractExecutionStep {
         DeleteStep.this.close();
       }
     };
+  }
+
+  /**
+   * Replaces with a {@link DeletedEntityMarker} every relationship of {@code row} not named by the clause whose endpoint
+   * this statement deleted: the DETACH deleted it with the vertex. Only the row's own columns are read, never the edge
+   * lists of the deleted vertices, so the cost does not grow with their degree. The columns are the same for every row
+   * of the step, so their names are read once.
+   */
+  private void markCascadedRelationships(final ResultInternal row, final Set<String> deletedVars) {
+    if (rowVariables == null)
+      rowVariables = row.getPropertyNames().toArray(new String[0]);
+    for (final String variable : rowVariables) {
+      if (deletedVars.contains(variable))
+        continue;
+      if (row.getProperty(variable) instanceof Edge edge && deleted.wentWithDeletedVertex(edge))
+        row.setProperty(variable, new DeletedEntityMarker(edge.getTypeName()));
+    }
   }
 
   /**
@@ -402,18 +436,17 @@ public class DeleteStep extends AbstractExecutionStep {
     final List<Expression> expressions = deleteClause.getExpressions();
     for (int i = 0; i < variables.size(); i++) {
       final String variable = variables.get(i);
-      final Object obj;
-      if (expressions != null && i < expressions.size() && expressions.get(i) != null
-          && isFunctionLikeTarget(variable)) {
-        obj = expressions.get(i).evaluate(row, context);
-      } else {
-        obj = resolveDeleteTarget(variable, row);
-      }
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      // Decided on the parsed expression, never on the text, which the parser hands over with its whitespace stripped: a plain
+      // variable is read off the row, anything else ([a][0], [a, b], (a), l[i], CASE ...) is evaluated (issue #12259)
+      // (a) is a plain variable too: looked up by its name, not by the text
+      final String name = expression instanceof VariableExpression plain ? plain.getVariableName() : expression == null ? variable : null;
+      final Object obj = name != null ? resolveDeleteTarget(name, row) : expression.evaluate(row, context);
       if (obj == null)
         continue;
       collectDeleteTargets(obj, edges, other);
-      if (deletedVars != null && !variable.contains(".") && !variable.contains("[") && !variable.contains("("))
-        deletedVars.add(variable);
+      if (deletedVars != null && name != null && !name.contains(".") && !name.contains("[") && !name.contains("("))
+        deletedVars.add(name);
     }
   }
 
@@ -443,20 +476,12 @@ public class DeleteStep extends AbstractExecutionStep {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
         if (entry.detach() || hasNoEdges(v)) {
-          if (entry.detach()) {
-            // DETACH removes connected relationships; count each one not already deleted so
-            // relationships-deleted matches Neo4j (the ones already deleted are not in the lists any more).
-            // A self-loop is in both lists: read once, by its identity, every edge collected (and numbered) before the
-            // first of them is deleted (#10008)
-            final EdgeIdentitySet seen = new EdgeIdentitySet();
-            final List<Edge> connected = new ArrayList<>();
-            for (final Edge edge : collectConnectedEdges(v))
-              if (seen.add(edge.getIdentity()))
-                connected.add(edge);
-            for (final Edge edge : connected)
-              if (deleted.claimJustRead(edge))
-                deleteEdgeStatic(edge, stats);
-          }
+          if (entry.detach())
+            try {
+              detachEdges(v, deleted, stats);
+            } catch (final RecordNotFoundException ignored) {
+              // vertex was already removed by the batch flush: the delete below finds it gone too
+            }
           try {
             v.delete();
             stats.incNodesDeleted();
@@ -493,20 +518,6 @@ public class DeleteStep extends AbstractExecutionStep {
 
   private static List<Edge> incomingUnidirectionalEdges(final Vertex v) {
     return IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) v.getDatabase(), v.getIdentity());
-  }
-
-  private static List<Edge> collectConnectedEdges(final Vertex v) {
-    final List<Edge> edges = new ArrayList<>();
-    try {
-      for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT))
-        edges.add(e);
-      for (final Edge e : v.getEdges(Vertex.DIRECTION.IN))
-        edges.add(e);
-      edges.addAll(incomingUnidirectionalEdges(v));
-    } catch (final RecordNotFoundException ignored) {
-      // vertex was already removed by the batch flush - return what was collected so far
-    }
-    return edges;
   }
 
   private static void deleteObjectStatic(final Object obj, final DeletedSoFar deleted, final QueryStatistics stats) {
@@ -557,23 +568,10 @@ public class DeleteStep extends AbstractExecutionStep {
     } else if (obj instanceof Map) {
       for (final Object value : ((Map<?, ?>) obj).values())
         collectDeleteTargets(value, edges, other);
-    } else
+    } else {
+      requireDeletable(obj);
       other.add(obj);
-  }
-
-  /** True when the textual target looks like a function call - needs Expression-based evaluation. */
-  private static boolean isFunctionLikeTarget(final String variable) {
-    final int paren = variable.indexOf('(');
-    if (paren <= 0)
-      return false;
-    // Ensure the parenthesis is not preceded by a dot (e.g. a.b() would still be unusual).
-    // A leading identifier followed by '(' is the marker we care about.
-    for (int i = 0; i < paren; i++) {
-      final char c = variable.charAt(i);
-      if (!Character.isJavaIdentifierPart(c))
-        return false;
     }
-    return true;
   }
 
   private Object resolveDeleteTarget(final String variable, final Result result) {
@@ -706,7 +704,20 @@ public class DeleteStep extends AbstractExecutionStep {
       // Delete each value in the map
       for (final Object value : ((Map<?, ?>) obj).values())
         deleteObject(value);
-    }
+    } else
+      requireDeletable(obj);
+  }
+
+  /**
+   * Refuses a DELETE target that is no entity - a number, a string, a boolean, a temporal (issue #11975): the statement used
+   * to run and delete nothing. A node, a relationship, a path, a record, null and an entity an earlier DELETE of the
+   * statement already removed are deletable, and so are the lists and maps holding them, which are unwrapped before this.
+   */
+  private static void requireDeletable(final Object obj) {
+    if (obj == null || obj instanceof Identifiable || obj instanceof Result || obj instanceof DeletedEntityMarker)
+      return;
+    throw new TypeMismatchException(
+        "Type mismatch: DELETE expects a node, a relationship or a path, but was " + CypherFunctionHelper.cypherTypeName(obj));
   }
 
   private static boolean hasEdges(final Vertex vertex) {
@@ -744,7 +755,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
   /**
    * Deletes a vertex from the graph.
-   * If detach is true, deletes all connected relationships first.
+   * With DETACH its relationships are counted first and deleted with it (see {@link #detachEdges}).
    *
    * A relationship removed both by DETACH and by an explicit edge delete in the same statement is counted only once,
    * through {@link #deleted}.
@@ -754,8 +765,7 @@ public class DeleteStep extends AbstractExecutionStep {
    */
   private void deleteVertex(final Vertex vertex, final boolean edgesChecked) {
     if (deleteClause.isDetach()) {
-      // DETACH DELETE: Remove all connected relationships first
-      deleteAllEdges(vertex);
+      detachEdges(vertex, deleted, context.getStatistics());
     } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
       if (hasEdges(vertex))
@@ -768,41 +778,34 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   /**
-   * Deletes all edges connected to a vertex.
-   *
-   * Edges already removed and counted earlier in the same statement (by an explicit DELETE or another vertex's DETACH
-   * pass, see {@link #deleted}) are not in its lists any more; the ones read here exist, and are deleted.
-   *
-   * @param vertex vertex whose edges should be deleted
+   * The relationship half of DETACH DELETE, run right before {@code vertex.delete()}: counts every relationship of the vertex
+   * the statement has not deleted yet, and leaves deleting them to the vertex delete.
+   * <p>
+   * Issue #11681: each relationship used to be deleted here with {@code edge.delete()}, which also removed it from the
+   * vertex's own list. On a hub that list is striped and every removal scanned a stripe for the entry, so the statement grew
+   * faster than the number of relationships, all to maintain a list {@code GraphEngine.deleteVertex} drops whole a moment
+   * later. That delete disconnects each relationship from its far endpoint only (#5760) and reports each one to the delete
+   * listeners and triggers, once.
+   * <p>
+   * A relationship of a unidirectional type that ends in the vertex is stored on its source only: it is deleted here, from
+   * the source's list, which leaves the vertex delete nothing to find for it (#8676).
+   * <p>
+   * Each relationship is counted once: a self-loop is in both lists and is read once by its identity, and parallel
+   * lightweight edges of one type over one pair are as many relationships as there are twins (#10008). The lists are only
+   * read here, so every edge meets the precondition of {@link DeletedSoFar#claimJustRead}; one an earlier DELETE of the
+   * statement removed is not in them any more.
    */
-  private void deleteAllEdges(final Vertex vertex) {
-    // Collect connected edges in both directions, de-duplicating self-loops (which appear in both
-    // OUT and IN) so a self-loop relationship is deleted and counted exactly once.
-    // An EdgeIdentitySet, not a set of RIDs: parallel lightweight edges of one type over the same pair share their RID,
-    // and a self-loop's twins are as many relationships as there are twins (#10008)
-    final List<Edge> edgesToDelete = new ArrayList<>();
+  private static void detachEdges(final Vertex vertex, final DeletedSoFar deleted, final QueryStatistics stats) {
     final EdgeIdentitySet seen = new EdgeIdentitySet();
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
-      if (seen.add(edge.getIdentity()))
-        edgesToDelete.add(edge);
-    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
-      if (seen.add(edge.getIdentity()))
-        edgesToDelete.add(edge);
-    for (final Edge edge : incomingUnidirectionalEdges(vertex))
-      if (seen.add(edge.getIdentity()))
-        edgesToDelete.add(edge);
-    final QueryStatistics stats = context.getStatistics();
-    for (final Edge edge : edgesToDelete) {
-      // Skip any relationship already removed and counted by an explicit DELETE in the same statement.
-      if (!deleted.claimJustRead(edge))
-        continue;
-      try {
-        edge.delete();
+      if (seen.add(edge.getIdentity()) && deleted.claimJustRead(edge))
         stats.incRelationshipsDeleted();
-      } catch (final RecordNotFoundException ignored) {
-        // already removed (e.g. a shared edge deleted when the other endpoint was detached) - do not count again
-      }
-    }
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      if (seen.add(edge.getIdentity()) && deleted.claimJustRead(edge))
+        stats.incRelationshipsDeleted();
+    for (final Edge edge : incomingUnidirectionalEdges(vertex))
+      if (seen.add(edge.getIdentity()) && deleted.claimJustRead(edge))
+        deleteEdgeStatic(edge, stats);
   }
 
   /**
@@ -897,6 +900,20 @@ public class DeleteStep extends AbstractExecutionStep {
      */
     boolean claimJustRead(final Edge edge) {
       return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+    }
+
+    /** @return true when {@code edge} was deleted with an endpoint the statement deleted */
+    boolean wentWithDeletedVertex(final Edge edge) {
+      try {
+        return vertices.contains(edge.getOut()) || vertices.contains(edge.getIn());
+      } catch (final RecordNotFoundException e) {
+        // THE EDGE RECORD IS GONE ALREADY
+        return true;
+      }
+    }
+
+    boolean hasDeletedVertices() {
+      return !vertices.isEmpty();
     }
 
     boolean contains(final Object record) {

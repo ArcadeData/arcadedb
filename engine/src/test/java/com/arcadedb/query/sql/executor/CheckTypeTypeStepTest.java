@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 
 import org.junit.jupiter.api.Test;
@@ -65,6 +65,6 @@ class CheckTypeTypeStepTest {
         TestHelper.createRandomType(db).getName(), context);
 
       step.syncPull(context, 20);
-    })).isInstanceOf(CommandExecutionException.class);
+    })).isInstanceOf(SchemaException.class).hasMessageContaining("is not a subtype of");
   }
 }

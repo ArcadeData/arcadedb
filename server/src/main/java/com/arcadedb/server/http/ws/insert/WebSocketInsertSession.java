@@ -21,7 +21,6 @@ package com.arcadedb.server.http.ws.insert;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -371,9 +370,8 @@ public class WebSocketInsertSession {
    */
   private void applyUnderTransaction(final JSONArray records, final int rows, final ChunkCounts counts) {
     DatabaseContext.INSTANCE.init(database, externalSession != null ? externalSession.transaction : transaction);
-    // The key lookups below are real SQL: tagged with the transport they serve so they are metered as such,
-    // which is the misattribution issue #7407 found on the gRPC streaming inserts.
-    ProtocolContext.set("ws");
+    // The key lookups below are real SQL, metered by the transport they serve (the misattribution issue #7407 found on the
+    // gRPC streaming inserts): the thread is tagged by WebSocketInsertProtocol around the whole frame (issue #11779).
     try {
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).setCurrentUser(user.getDatabaseUser(database));
 
@@ -428,7 +426,6 @@ public class WebSocketInsertSession {
       default -> throw new IllegalStateException("Unsupported transaction mode " + options.transactionMode);
       }
     } finally {
-      ProtocolContext.clear();
       DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
     }
   }

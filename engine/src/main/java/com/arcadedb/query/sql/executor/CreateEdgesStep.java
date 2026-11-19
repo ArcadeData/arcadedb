@@ -179,7 +179,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               // The check above read an edge list a concurrent CREATE EDGE ... IF NOT EXISTS may be appending the same edge to (#11482)
               final TransactionContext tx = context.getDatabase().getTransactionIfExists();
               if (tx != null)
-                tx.addMergedEdge(currentFrom.getIdentity(), currentTo.getIdentity(), edgeType.getName(), null);
+                tx.addMergedEdgeBetweenExistingNodes(currentFrom.getIdentity(), currentTo.getIdentity(), edgeType.getName(), null);
             }
 
             // Store vertices for later connection after save

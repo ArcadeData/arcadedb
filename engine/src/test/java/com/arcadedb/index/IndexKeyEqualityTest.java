@@ -553,6 +553,7 @@ class IndexKeyEqualityTest {
           assertThat(rs.hasNext()).as("the SQL equality predicate must agree with Index.get()").isFalse();
         }
       });
+      rebuildIndexesFromRecords();
     }
 
     /**
@@ -578,6 +579,7 @@ class IndexKeyEqualityTest {
         assertThat(found).containsExactly(resurrected[0]);
         assertThat(index.countEntries()).isEqualTo(1);
       });
+      rebuildIndexesFromRecords();
     }
 
     private RangeIndex rangeIndex() {

@@ -49,8 +49,11 @@ public class IsEmptyFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
-    if (args[0] instanceof List)
-      return ((List<?>) args[0]).isEmpty();
+    // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES (a numeric list nested in an HTTP parameter) is a primitive array: read
+    // it as the LIST it is, exactly as size() does, instead of refusing it with a message naming LIST<ANY> (issue #11582)
+    final List<Object> list = CypherFunctionHelper.asListOrNull(args[0]);
+    if (list != null)
+      return list.isEmpty();
     if (args[0] instanceof String)
       return ((String) args[0]).isEmpty();
     if (args[0] instanceof Map)
