@@ -23,6 +23,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import org.junit.jupiter.api.Test;
 
@@ -30,38 +32,114 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * A {@code TRUNCATE} that runs in its caller's transaction deletes what its scan found, one record at a time. A record a
- * concurrent transaction deleted and committed after the scan found it is already gone, which is what the truncate wants:
- * it used to fail the whole statement with a {@code RecordNotFoundException} for a record the statement never named
- * (issue #11731).
+ * A {@code TRUNCATE} deletes what its scan found, one record at a time. A record a concurrent transaction deleted and
+ * committed after the scan found it used to fail the whole statement with a {@code RecordNotFoundException} for a record the
+ * statement never named, which no caller retries (issue #11731). It is the conflict a {@code DELETE FROM} reports in the same
+ * position: a retryable {@code ConcurrentModificationException}, and the retry truncates what is left.
  */
 class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
 
   @Test
-  void aRecordAnotherTransactionDeletedAfterTheScanIsSkipped() throws InterruptedException, ExecutionException {
-    final RID[] rids = createThree();
+  void aRecordAnotherTransactionDeletedAfterTheScanIsARetryableConflict() {
+    final RID[] rids = createThree(false);
 
     database.begin();
     final List<Record> found = scanAll();
 
     // ANOTHER TRANSACTION DELETES ONE OF THE RECORDS THE SCAN FOUND AND COMMITS, BEFORE THE TRUNCATE REACHES IT
-    final FutureTask<Void> concurrent = new FutureTask<>(() -> database.transaction(() -> rids[1].asDocument().delete()), null);
-    new Thread(concurrent).start();
-    concurrent.get();
+    deleteInAnotherTransaction(rids[1]);
 
-    assertThat(deleteAll(found)).isNull();
+    final RuntimeException failure = deleteAll(found);
+    database.rollback();
+
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class).isInstanceOf(NeedRetryException.class);
+    assertThat(failure.getCause()).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) failure.getCause()).getRID()).isEqualTo(rids[1]);
+
+    // THE RETRY READS AGAIN, NO LONGER SEES THE RECORD AND DELETES THE REST
+    database.begin();
+    final List<Record> left = new ArrayList<>();
+    database.scanType("T", false, left::add);
+    assertThat(left).hasSize(2);
+    assertThat(deleteAll(left)).isNull();
     database.commit();
 
-    assertThat(database.query("sql", "SELECT count(@rid) AS c FROM T").next().<Long>getProperty("c")).isZero();
+    assertThat(countAll()).isZero();
+  }
+
+  @Test
+  void truncateTypeInTheCallerTransactionRacingADeleteIsARetryableConflict() {
+    statementRacingADelete(false, "TRUNCATE TYPE T UNSAFE", true);
+  }
+
+  @Test
+  void truncateTypeInItsOwnTransactionRacingADeleteIsARetryableConflict() {
+    statementRacingADelete(false, "TRUNCATE TYPE T UNSAFE", false);
+  }
+
+  @Test
+  void truncateOfAVertexTypeRacingADeleteIsARetryableConflict() {
+    statementRacingADelete(true, "TRUNCATE TYPE T UNSAFE", true);
+  }
+
+  @Test
+  void truncateBucketInTheCallerTransactionRacingADeleteIsARetryableConflict() {
+    statementRacingADelete(false, null, true);
+  }
+
+  @Test
+  void truncateBucketInItsOwnTransactionRacingADeleteIsARetryableConflict() {
+    statementRacingADelete(false, null, false);
+  }
+
+  /**
+   * Runs the statement itself. The concurrent delete is committed from a before-delete listener of the first record the
+   * statement deletes, on a record its scan has not reached yet: after the scan read the page, before the delete gets there.
+   *
+   * @param statement {@code null} for the {@code TRUNCATE BUCKET} of the bucket holding the records
+   */
+  private void statementRacingADelete(final boolean vertices, final String statement, final boolean inCallerTransaction) {
+    final RID[] rids = createThree(vertices);
+    final String sql = statement != null ?
+        statement :
+        "TRUNCATE BUCKET " + database.getSchema().getBucketById(rids[0].getBucketId()).getName();
+
+    final AtomicReference<RID> victim = new AtomicReference<>();
+    database.getSchema().getType("T").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
+      final RID first = record.getIdentity();
+      if (victim.compareAndSet(null, first.equals(rids[2]) ? rids[0] : rids[2]))
+        deleteInAnotherTransaction(victim.get());
+      return true;
+    });
+
+    if (inCallerTransaction)
+      database.begin();
+    try {
+      assertThatThrownBy(() -> database.command("sql", sql)).isInstanceOf(ConcurrentModificationException.class)
+          .hasMessageContaining(victim.get().toString());
+    } finally {
+      if (inCallerTransaction)
+        database.rollback();
+    }
+
+    // NOTHING OF THE FAILED ATTEMPT IS LEFT BEHIND: THE TWO RECORDS THE CONCURRENT TRANSACTION DID NOT DELETE ARE STILL THERE
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(countAll()).isEqualTo(2);
+
+    // THE RETRY, AS THE HTTP HANDLER RUNS IT FOR A ConcurrentModificationException
+    database.command("sql", sql);
+    assertThat(countAll()).isZero();
   }
 
   @Test
   void anotherRecordFoundMissingDuringTheDeleteFailsTheTruncate() {
-    final RID[] rids = createThree();
+    final RID[] rids = createThree(false);
     final RID elsewhere = new RID(rids[0].getBucketId(), 1_000_000L);
     database.getSchema().getType("T").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
       if (record.getIdentity().equals(rids[1]))
@@ -80,7 +158,7 @@ class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
 
   @Test
   void aListenerRefusingTheDeleteWithTheSameRidFailsTheTruncate() {
-    final RID[] rids = createThree();
+    final RID[] rids = createThree(false);
     database.getSchema().getType("T").getEvents().registerListener((BeforeRecordDeleteListener) record -> {
       if (record.getIdentity().equals(rids[1]))
         throw new RecordNotFoundException("Record " + rids[1] + " not found", rids[1]);
@@ -99,7 +177,7 @@ class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
 
   @Test
   void anAfterDeleteListenerFailingWithTheSameRidFailsTheTruncate() {
-    final RID[] rids = createThree();
+    final RID[] rids = createThree(false);
     database.getSchema().getType("T").getEvents().registerListener((AfterRecordDeleteListener) record -> {
       if (record.getIdentity().equals(rids[1]))
         throw new RecordNotFoundException("Record " + rids[1] + " not found", rids[1]);
@@ -115,14 +193,36 @@ class TruncateConcurrentDeleteIssue11731Test extends TestHelper {
     assertThat(database.existsRecord(rids[1])).isTrue();
   }
 
-  private RID[] createThree() {
-    database.transaction(() -> database.getSchema().createDocumentType("T"));
+  private RID[] createThree(final boolean vertices) {
+    database.transaction(() -> {
+      if (vertices)
+        database.getSchema().createVertexType("T");
+      else
+        database.getSchema().createDocumentType("T");
+    });
     final RID[] rids = new RID[3];
     database.transaction(() -> {
       for (int i = 0; i < rids.length; i++)
-        rids[i] = database.newDocument("T").set("v", i).save().getIdentity();
+        rids[i] = (vertices ? database.newVertex("T") : database.newDocument("T")).set("v", i).save().getIdentity();
     });
     return rids;
+  }
+
+  private void deleteInAnotherTransaction(final RID rid) {
+    final FutureTask<Void> concurrent = new FutureTask<>(() -> database.transaction(() -> rid.getRecord().delete()), null);
+    new Thread(concurrent).start();
+    try {
+      concurrent.get();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException(e);
+    } catch (final ExecutionException e) {
+      throw new IllegalStateException(e.getCause());
+    }
+  }
+
+  private long countAll() {
+    return database.query("sql", "SELECT count(@rid) AS c FROM T").next().<Long>getProperty("c");
   }
 
   private List<Record> scanAll() {

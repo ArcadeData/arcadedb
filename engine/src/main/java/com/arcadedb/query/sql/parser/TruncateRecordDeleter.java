@@ -20,12 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.OwnTransaction;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 
 import java.util.function.Predicate;
@@ -103,21 +101,20 @@ final class TruncateRecordDeleter {
     // before that swallowing catch sees it, stop the scan and hand it back to the caller to surface.
     final RuntimeException[] failure = { null };
     final long[] count = { 0 };
+    // looked up once per transaction, not per record: only a batch commit below changes the transaction under the scan
+    final long[] readIn = { beginSequence(db) };
     scan.run(record -> {
       try {
-        try {
-          record.delete();
-        } catch (final RecordNotFoundException e) {
-          // A concurrent transaction deleted it after the scan found it and committed: it is gone, which is what the truncate is
-          // for. Failing the statement here reported a record it never named as not found (issue #11731). Another record found
-          // missing during this delete (by a listener, a cascade) is a failure of the delete, which the scan must surface, and
-          // so is this record's own RID named by a listener that refused the delete, the slot still holding the record then, or
-          // by a listener that runs after this transaction freed the slot: the delete was this transaction's own
-          final RID rid = record.getIdentity();
-          if (!rid.equals(e.getRID()) || isDeletedByThisTransaction(db, rid) || isPresent(db, rid))
-            throw e;
-          return true;
-        }
+        // The scan read this record from its bucket in the transaction the delete runs in, and says so: scanType and scanBucket
+        // leave the read marker unset, so a record a concurrent transaction deleted and committed after the scan found it
+        // failed the statement with a RecordNotFoundException naming a record the statement never named, which nothing
+        // retries (issue #11731). Marked, its delete raises the retryable ConcurrentModificationException a DELETE FROM
+        // gets in the same position (#8984, #10263 for an edge). It is not skipped instead: by the time the slot is found
+        // empty the before-delete listeners ran and the index removals of the record are in the transaction, and a skip
+        // would commit them for a record this transaction did not delete
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(readIn[0]);
+        record.delete();
         if (own != null && batchSize > 0 && ++count[0] % batchSize == 0) {
           // ownership is dropped BEFORE the commit and taken back after it, as RepairTransaction does: a commit that throws has
           // already disposed of its context, and what is left on the thread then belongs to the caller (issue #9977)
@@ -125,6 +122,7 @@ final class TruncateRecordDeleter {
           own[0] = null;
           inFlight.commit();
           own[0] = OwnTransaction.begin((DatabaseInternal) db);
+          readIn[0] = beginSequence(db);
         }
         return true;
       } catch (final RuntimeException e) {
@@ -135,22 +133,10 @@ final class TruncateRecordDeleter {
     return failure[0];
   }
 
-  /**
-   * Whether the slot of {@code rid} still holds a record, read through the current transaction and bypassing its record cache,
-   * which may still hold the instance the scan found. A bucket that is not an engine bucket, or that is gone, cannot say the
-   * slot is free: it answers "present", so the failure is surfaced instead of being read as a concurrent delete.
-   */
-  private static boolean isPresent(final Database db, final RID rid) {
-    return !(db.getSchema().getBucketByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket) || bucket.isRecordPresent(rid);
-  }
-
-  /**
-   * Whether the current transaction freed the slot of {@code rid} itself: a {@link RecordNotFoundException} naming it then comes
-   * from what ran after the delete (an after-delete listener), not from a concurrent transaction that deleted it first.
-   */
-  private static boolean isDeletedByThisTransaction(final Database db, final RID rid) {
+  /** The begin sequence of the transaction the deletes run in, -1 when there is none. */
+  private static long beginSequence(final Database db) {
     final TransactionContext transaction = ((DatabaseInternal) db).getTransactionIfExists();
-    return transaction != null && transaction.isDeletedInTransaction(rid);
+    return transaction != null ? transaction.getBeginSequence() : -1;
   }
 
   /**
