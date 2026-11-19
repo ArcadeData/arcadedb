@@ -600,7 +600,12 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   /**
    * The values of {@code prop IN <constants>}: a parameter or a literal list of at most {@link #MAX_IN_VALUES} non-null
    * values. Null for anything else - {@code NOT IN}, a subquery, a value of the record, an empty or a longer list, a null in
-   * it - which the per-candidate test decides.
+   * it, and a {@link Set} - which the per-candidate test decides.
+   * <p>
+   * A set is left to the test because the test reads it differently from a list: a record's property is looked up in a set by
+   * a hash probe that converts nothing, while each item of a list is compared the way {@code =} compares (the item converted to
+   * the property's type). An index key is built the second way, so a set of {@code "1"} on an INTEGER property would list the
+   * records the test refuses.
    */
   private List<Object> constantsOf(final InCondition in) {
     if (in.not || in.getRightStatement() != null)
@@ -612,7 +617,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     if (!constant)
       return null;
     final Object value = in.evaluateRight((Result) null, context);
-    final Collection<?> values = value instanceof Collection<?> collection ? collection
+    final Collection<?> values = value instanceof Set ? null
+        : value instanceof Collection<?> collection ? collection
         : value instanceof Object[] array ? Arrays.asList(array) : null;
     if (values == null || values.isEmpty() || values.size() > MAX_IN_VALUES || values.stream().anyMatch(Objects::isNull))
       return null;

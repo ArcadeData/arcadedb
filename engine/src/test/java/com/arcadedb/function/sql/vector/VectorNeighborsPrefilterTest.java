@@ -42,6 +42,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -580,6 +581,9 @@ class VectorNeighborsPrefilterTest {
         database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
         database.command("sql", "CREATE PROPERTY Doc.tenant INTEGER");
         database.command("sql", "CREATE PROPERTY Doc.color STRING");
+        database.command("sql", "CREATE PROPERTY Doc.weight DOUBLE");
+        database.command("sql", "CREATE PROPERTY Doc.serial LONG");
+        database.command("sql", "CREATE PROPERTY Doc.day DATE");
         database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
       });
       final Random random = new Random(12578);
@@ -588,10 +592,16 @@ class VectorNeighborsPrefilterTest {
           database.newDocument("Doc")
               .set("tenant", i % TENANTS)
               .set("color", i % 2 == 0 ? "red" : "blue")
+              .set("weight", (double) (i % TENANTS))
+              .set("serial", (i % TENANTS) * 10_000_000_000L)
+              .set("day", LocalDate.of(2024, 1, 1).plusDays(i % TENANTS))
               .set("embedding", new float[] { random.nextFloat(), random.nextFloat(), random.nextFloat(), random.nextFloat() })
               .save();
       });
       database.command("sql", "CREATE INDEX ON Doc (tenant) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON Doc (weight) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON Doc (serial) NOTUNIQUE");
+      database.command("sql", "CREATE INDEX ON Doc (day) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'EUCLIDEAN' }");
     }
 
@@ -609,6 +619,47 @@ class VectorNeighborsPrefilterTest {
             .isGreaterThanOrEqualTo(tenants.size() <= 2 ? 2 : 1);
         assertThat(rids(rows)).as("%s", tenants).hasSize(tenants.size() * RECORDS / TENANTS)
             .containsExactlyInAnyOrderElementsOf(reference(tenants));
+      }
+    }
+
+    /**
+     * The listing must answer what the test on each record answers, for every kind of value an {@code IN} can hold, as a list
+     * and as a set: the same search with the plan on and with it off ({@code PREFILTER_MAX_SELECTIVITY} 0, every candidate
+     * tested). A set is read by the test as a hash probe that converts nothing, a list as {@code =} reads each item, so the two
+     * can answer differently for one value, and the listing has to follow whichever the test follows.
+     */
+    @Test
+    void everyKindOfValueInAListOrASetAnswersWhatThePredicateTestedOnEachRecordAnswers() {
+      seed();
+
+      final Object[][] cases = {
+          { "tenant", List.of(3) }, { "tenant", List.of(3L) }, { "tenant", List.of(3.0d) }, { "tenant", List.of("3") },
+          { "tenant", List.of(3, "x") }, { "tenant", List.of("x") }, { "tenant", List.of(true) }, { "tenant", List.of(3.5d) },
+          { "tenant", List.of(3, "7") }, { "tenant", List.of("3", "7") }, { "tenant", List.of(3L, 7.0d) },
+          { "weight", List.of(3) }, { "weight", List.of(3L) }, { "weight", List.of(3.0f) }, { "weight", List.of("3") },
+          { "weight", List.of("3.0") }, { "weight", List.of(2.9999999d) }, { "weight", List.of(3, "7.0") },
+          { "serial", List.of(30_000_000_000L) }, { "serial", List.of(3.0e10d) }, { "serial", List.of("30000000000") },
+          { "serial", List.of(30_000_000_000L, 3.0e10f) },
+          { "day", List.of(LocalDate.of(2024, 1, 4)) }, { "day", List.of("2024-01-04") },
+          { "day", List.of(LocalDateTime.of(2024, 1, 4, 0, 0)) }, { "day", List.of(LocalDateTime.of(2024, 1, 4, 10, 30)) },
+          { "day", List.of(20240104) }, { "day", List.of(LocalDate.of(2024, 1, 4), "2024-01-09") } };
+
+      for (final Object[] c : cases) {
+        final List<?> asList = (List<?>) c[1];
+        for (final Object value : List.of(asList, new LinkedHashSet<>(asList))) {
+          final String options = "{ where: '" + c[0] + " IN :values' }";
+          final Map<String, Object> params = Map.of("values", value);
+          final Set<RID> planned = new HashSet<>(rids(neighbors(options, params, 400)));
+
+          database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
+          try {
+            final Set<RID> tested = new HashSet<>(rids(neighbors(options, params, 400)));
+            assertThat(planned).as("%s IN %s (%s)", c[0], value, value.getClass().getSimpleName()).isEqualTo(tested);
+          } finally {
+            database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+                GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
+          }
+        }
       }
     }
 
