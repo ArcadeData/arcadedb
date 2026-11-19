@@ -92,6 +92,50 @@ class Issue11754SetRemoveThroughExpressionTest extends TestHelper {
     assertThat(committed(2)).containsEntry("s", "b");
   }
 
+  /** A parenthesised plain variable is that variable, so REMOVE (n).s writes through the row's own binding. */
+  @Test
+  void removeThroughParenthesisedVariable() {
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Node {id: 1})
+          REMOVE (n).s
+          RETURN n.s AS s""")) {
+        assertThat(rs.next().<Object>getProperty("s")).isNull();
+      }
+    });
+
+    assertThat(committed(1)).containsEntry("s", null);
+  }
+
+  /**
+   * A label removal ahead of an expression target in the same clause replaces the vertex the target named in phase 1: the
+   * property is removed from the replacement, not from the deleted original.
+   */
+  @Test
+  void removeLabelAndPropertyThroughExpressionInOneClause() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Node:Tmp {id: 3, s: 'c'})").close());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Node {id: 3})
+          WITH n, collect(n) AS ns
+          REMOVE n:Tmp, (head(ns)).s
+          RETURN labels(n) AS labels, n.s AS s, head(ns).s AS hs""")) {
+        final Result row = rs.next();
+        assertThat(row.<List<String>>getProperty("labels")).containsExactly("Node");
+        assertThat(row.<Object>getProperty("s")).isNull();
+        assertThat(row.<Object>getProperty("hs")).isNull();
+      }
+    });
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n {id: 3}) RETURN labels(n) AS labels, n.s AS s")) {
+      final Result row = rs.next();
+      assertThat(row.<List<String>>getProperty("labels")).containsExactly("Node");
+      assertThat(row.<Object>getProperty("s")).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   /** A null target is a no-op, like SET (CASE ... END).p = x on a null. */
   @Test
   void removeThroughNullTargetIsANoOp() {

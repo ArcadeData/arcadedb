@@ -68,6 +68,8 @@ public final class HeldCollectionRefresher {
 
   /** Records that the current clause wrote {@code record}: the version every collection holding it must answer with. */
   public void written(final Document record) {
+    // An index is built only while something is indexed, and a build already starts from every write the transaction
+    // made, so nothing needs logging before. A record with no identity cannot be in any index: positions are keyed by RID
     if (!indexed.isEmpty() && record.getIdentity() != null)
       log.add(record);
   }
