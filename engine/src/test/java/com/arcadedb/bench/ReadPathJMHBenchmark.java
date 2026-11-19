@@ -23,7 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.Index;
-
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -57,8 +57,16 @@ import java.util.concurrent.TimeUnit;
  * these paths cannot be read from it. JMH can: it runs the same operation in a loop, warms the JIT up and forks its own JVM, so
  * the difference between two builds is the difference between the two numbers and not the noise of the host.
  * <p>
- * Run it with {@code mvn -pl engine test -Dtest=ReadPathJMHBenchmark} (the benchmark's {@code main} runs the JMH runner), or from
- * an IDE, which has JMH support. The numbers are nanoseconds per operation.
+ * Surefire does not run it: the class has no JUnit test, and a {@code main} is not a test. Start the JMH runner in its own JVM
+ * with the compiled test classes and the test dependencies on the classpath, from the repository root. {@code proc=full} makes
+ * javac run the JMH annotation processor, which a JDK from 23 on skips by default, and without which JMH finds no benchmark:
+ * <pre>
+ * mvn -pl engine -am test-compile -Dmaven.compiler.proc=full
+ * mvn -q -pl engine dependency:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=target/test.cp
+ * java --add-modules jdk.incubator.vector -cp engine/target/test-classes:engine/target/classes:$(cat engine/target/test.cp) \
+ *   com.arcadedb.bench.ReadPathJMHBenchmark
+ * </pre>
+ * or run {@code main} from an IDE. The numbers are nanoseconds per operation.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
@@ -135,7 +143,8 @@ public class ReadPathJMHBenchmark {
   /** The lookup of a key in a UNIQUE index, and the load of the record it points at. */
   @Benchmark
   public void indexLookup(final Data state, final Blackhole blackhole) {
-    blackhole.consume(state.index.get(new Object[] { "name-42" }));
+    final IndexCursor cursor = state.index.get(new Object[] { "name-42" });
+    blackhole.consume(cursor.next().getRecord());
   }
 
   /** The read of a record that spans several pages: the chain of its chunks is assembled. */
