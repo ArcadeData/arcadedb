@@ -179,9 +179,16 @@ public enum ErrorCategory {
       // a CommandExecutionException, which no rule classifies, so a misspelled SQL function was a server fault (issue #11314)
       new Rule(UnknownFunctionException.class, PARSING),
       new Rule(ValidationException.class, VALIDATION),
+      // a CommandExecutionException, which no rule classifies: a TRUNCATE or DROP of a type that holds records, a DROP of an
+      // indexed property, refused for what the database holds now, was a server fault on every protocol (issue #11803)
+      new Rule(ObjectInUseException.class, VALIDATION),
+      // a CommandExecutionException too: CALL { ... } IN TRANSACTIONS inside the caller's own transaction (issue #12161)
+      new Rule(ImplicitTransactionRequiredException.class, VALIDATION),
       new Rule(QueryNotIdempotentException.class, VALIDATION),
       // every runtime type error, InvalidPropertyTypeException among them (issue #11211)
       new Rule(TypeMismatchException.class, VALIDATION),
+      // a function or procedure argument whose value the callee is not defined for, a CommandExecutionException too (issue #11589)
+      new Rule(InvalidArgumentException.class, VALIDATION),
       new Rule(IllegalArgumentException.class, VALIDATION),
       new Rule(TimeoutException.class, TIMEOUT) };
 

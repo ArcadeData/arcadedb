@@ -19,6 +19,7 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
@@ -148,7 +149,7 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   public T getFunction(final String functionName) {
     final T f = functions.get(functionName);
     if (f == null)
-      throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+      throw new UnknownFunctionException(functionName, "Function '" + functionName + "' not defined");
     return f;
   }
 

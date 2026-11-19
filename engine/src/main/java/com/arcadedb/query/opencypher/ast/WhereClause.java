@@ -200,6 +200,8 @@ public class WhereClause {
       collectExpressionVariables(regexExpr.getPattern(), vars);
     } else if (expr instanceof LabelCheckExpression labelCheck) {
       collectExpressionVariables(labelCheck.getVariableExpression(), vars);
+      for (final Expression dynamicLabel : labelCheck.getDynamicLabels())
+        collectExpressionVariables(dynamicLabel, vars);
     } else if (expr instanceof PatternPredicateExpression patternPredicate) {
       // The variables a pattern predicate reads are the ones its nodes and relationships name; the text only yields
       // the var.property ones, and a bare (a)-[:T]-(b) names none (issue #9282)

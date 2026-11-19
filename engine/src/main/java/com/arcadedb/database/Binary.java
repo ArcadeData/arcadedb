@@ -49,6 +49,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public static final  int FLOAT_SERIALIZED_SIZE    = 4;
   public static final  int DOUBLE_SERIALIZED_SIZE   = 8;
   private final static int DEFAULT_ALLOCATION_CHUNK = 512;
+  // The largest array the JVM reliably allocates: a geometric growth is clamped to it, never below what is needed
+  private final static int MAX_ARRAY_SIZE           = Integer.MAX_VALUE - 8;
 
   protected       boolean       autoResizable       = true;
   protected       byte[]        content;
@@ -967,10 +969,16 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
       if (!autoResizable)
         throw new IllegalArgumentException("Cannot resize the buffer (autoResizable=false)");
 
+      // At least half again the current capacity, rounded up to the allocation chunk. Rounding up to the chunk alone
+      // copied the whole buffer once per chunk written, so writing or assembling N bytes in small pieces cost O(N^2 / chunk):
+      // a multi-page record read or a large record written took about the square of its size (issue #11709)
+      final int needed = offset + bytesToWrite;
+      final int currentCapacity = content.length - buffer.arrayOffset();
+      final long wanted = Math.max(needed, (long) currentCapacity + (currentCapacity >> 1));
       final int newSize;
-      if (offset + bytesToWrite > allocationChunkSize) {
-        newSize = (((offset + bytesToWrite) / allocationChunkSize) + 1) * allocationChunkSize;
-      } else
+      if (wanted > allocationChunkSize)
+        newSize = (int) Math.max(needed, Math.min(MAX_ARRAY_SIZE, ((wanted / allocationChunkSize) + 1) * allocationChunkSize));
+      else
         newSize = allocationChunkSize;
 
       final byte[] newContent = new byte[newSize];

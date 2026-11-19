@@ -498,9 +498,12 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     assertIndexHolds("DI[k]");
   }
 
-  /** A record deleted whose content changed only where a delete does not depend on it (a vertex's edge lists) is deleted. */
+  /**
+   * A vertex whose edge lists a commit changed after its read is refused with a retryable conflict (issue #12472), as any other
+   * record a concurrent commit changed: the edge committed in between stays, and so does the vertex, for the retry to delete.
+   */
   @Test
-  void deleteOfAVertexWhoseEdgesChangedAfterItsReadGoesOn() {
+  void deleteOfAVertexWhoseEdgesChangedAfterItsReadIsARetryableConflict() {
     database.transaction(() -> database.command("sql", "INSERT INTO R SET k = 'other'").close());
     final boolean committed = runWithConcurrentCommit(
         "CREATE EDGE E FROM (SELECT FROM R WHERE k = 'other') TO (SELECT FROM R WHERE k = 'r0')", () -> {
@@ -509,10 +512,10 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
           read.delete();
         });
 
-    assertThat(committed).isTrue();
-    assertThat(recordsOf("R")).isEqualTo(1);
-    assertThat(recordsOf("E")).as("the edge committed in between went with the vertex").isZero();
-    assertIndexHolds("R[k]", "other");
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("R")).isEqualTo(2);
+    assertThat(recordsOf("E")).as("the edge committed in between stays").isEqualTo(1);
+    assertIndexHolds("R[k]", "other", "r0");
   }
 
   private void assertIndexHolds(final String index, final String... keys) {

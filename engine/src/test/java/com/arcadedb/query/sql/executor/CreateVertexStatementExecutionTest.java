@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
@@ -29,7 +29,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -104,13 +104,9 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
-    try {
-      final ResultSet result = database.command("sql", "create vertex " + className + " set name = 'name1'");
-      fail("");
-    } catch (final CommandExecutionException e1) {
-    } catch (final Exception e2) {
-      fail("");
-    }
+    // a type of the wrong kind is the caller's mistake, refused as a schema error with a well-formed name (issue #11803)
+    assertThatThrownBy(() -> database.command("sql", "create vertex " + className + " set name = 'name1'"))
+        .isInstanceOf(SchemaException.class).hasMessage("Type '" + className + "' is not a vertex type");
   }
 
   @Test

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.util;
 
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.io.ByteArrayInputStream;
@@ -90,7 +91,8 @@ public class UtilDecompress extends AbstractUtilFunction {
         default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
       };
     } catch (final IOException e) {
-      throw new RuntimeException("Error decompressing data", e);
+      // issue #11589: bytes that are not what the algorithm wrote are the caller's mistake
+      throw new InvalidArgumentException("Error decompressing data: " + e.getMessage(), e);
     }
   }
 

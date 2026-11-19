@@ -302,7 +302,7 @@ public class ImmutableDocument extends BaseDocument {
    * delete that follows finds it gone and reports it as it always did (issue #8984).
    * <p>
    * With no transaction open there is no page image to pin to, as for {@link #prepareForModify(String)}: the delete opens its own
-   * implicit transaction and checks there, in {@link #prepareForDelete()}, that the content is still the one read.
+   * implicit transaction, where it refuses a record a concurrent commit changed since it was read (issue #12472).
    *
    * @return whether the content now differs from the one read, or no content had been read
    */
@@ -322,31 +322,6 @@ public class ImmutableDocument extends BaseDocument {
     }
     return readImage == null || current != readImage && (current.size() != readImage.size() || !readImage.isSameRegionAs(0, current, 0,
         readImage.size()));
-  }
-
-  /**
-   * Called by every delete before it removes the record's index entries (issue #11818): pins the page like {@link #pinForDelete()},
-   * so a commit landing from now on is refused at commit, and refuses with a retryable conflict a delete of a record whose content a
-   * concurrent commit changed since it was read. The index entries a delete removes are computed from the content it holds: from the
-   * content read, they were the old key's, and the entry of the key committed in between was left pointing to the deleted record.
-   * Deleting on the reloaded content instead is not safe either: the content may be that of another record that took the RID of one
-   * deleted concurrently. A retry reads the record again and deletes what is there. A change of a vertex's edge-list heads alone
-   * does not count (see {@link #contentChangeOffset()}): the delete goes on with the reloaded heads, which name the edges it has to
-   * remove. A record whose content was never loaded is read now, so it holds the current content already.
-   */
-  public void prepareForDelete() {
-    final Binary readImage = buffer;
-    if (!pinForDelete() || readImage == null)
-      return;
-    final Binary current = buffer;
-    final int offset = contentChangeOffset();
-    final int length = readImage.size() - offset;
-    if (length == current.size() - offset && readImage.isSameRegionAs(offset, current, offset, length))
-      return;
-    // KEEP WHAT WAS READ: THE CALLER MAY CATCH THE CONFLICT AND KEEP USING THE RECORD
-    buffer = readImage;
-    throw new ConcurrentModificationException(
-        "Record " + rid + " was modified by a concurrent transaction after it was read in this transaction. Please retry the operation");
   }
 
   /**
@@ -414,12 +389,9 @@ public class ImmutableDocument extends BaseDocument {
 
   /**
    * Marks {@code mutable}, the record {@code modify()} is handing back, as built on a read that went stale (issue #8610),
-   * when the reload found the content changed since, and has its delete compare the content it holds with the stored one
-   * (issue #11818).
+   * when the reload found the content changed since.
    */
   protected <T extends MutableDocument> T markIfReadWentStale(final T mutable) {
-    if (buffer != null)
-      mutable.checkContentAtDelete(contentChangeOffset());
     if (readInTransaction <= STALE_READ) {
       if (readTransactionId(((DatabaseInternal) database).getTransaction().getBeginSequence()) == STALE_READ - readInTransaction)
         mutable.markBasedOnStaleRead();
@@ -646,10 +618,25 @@ public class ImmutableDocument extends BaseDocument {
         notFound);
   }
 
+  /** Whether the record wants to know that its lazily read content came from the transaction's own image of its page (#12320). */
+  protected boolean tracksReadsFromOwnImage() {
+    return false;
+  }
+
+  /** Called when the content read lazily came from the transaction's own image of its page, see {@link #tracksReadsFromOwnImage()}. */
+  protected void contentReadFromOwnImage() {
+    // nothing to do for a document
+  }
+
   /** The content of a record handed out without it, read now: see {@link #missingGraphRecord} for a record that is gone. */
   private Binary readContentOfLazyRecord() {
     try {
-      return database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      final TransactionContext tx = tracksReadsFromOwnImage() ? ((DatabaseInternal) database).getTransactionIfExists() : null;
+      final long ownImageReads = tx != null ? tx.getOwnImageReads() : 0L;
+      final Binary content = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      if (tx != null && tx.getOwnImageReads() != ownImageReads)
+        contentReadFromOwnImage();
+      return content;
     } catch (final RecordNotFoundException e) {
       throw missingGraphRecord((DatabaseInternal) database, rid, reachedAtCommit, e);
     }

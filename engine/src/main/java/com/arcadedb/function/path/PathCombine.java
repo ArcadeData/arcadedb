@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.path;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -90,7 +91,7 @@ public class PathCombine extends AbstractPathFunction {
     final TraversalPath firstPath = asPath(first);
     final TraversalPath secondPath = asPath(second);
     if (!firstPath.getEndVertex().getIdentity().equals(secondPath.getStartVertex().getIdentity()))
-      throw new CommandExecutionException("path.combine(): the paths do not connect, the first ends at "
+      throw new InvalidArgumentException("path.combine(): the paths do not connect, the first ends at "
           + firstPath.getEndVertex().getIdentity() + " and the second starts at " + secondPath.getStartVertex().getIdentity());
     return new TraversalPath(firstPath, secondPath);
   }
@@ -103,8 +104,8 @@ public class PathCombine extends AbstractPathFunction {
     return path;
   }
 
-  private static CommandExecutionException notAPath(final Object value) {
-    return new CommandExecutionException(
+  private static TypeMismatchException notAPath(final Object value) {
+    return new TypeMismatchException(
         "path.combine() expects paths, got " + (value == null ? "null" : value.getClass().getSimpleName()));
   }
 }

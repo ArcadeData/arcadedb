@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * same method the HTTP verb calls, rather than {@code UNIMPLEMENTED} for a verb the other transport
  * accepts. This fixture runs no HA at all, so the answers it drives are the refusals; the join itself
  * arrived with #7401 and is exercised against a live Raft cluster by
- * {@code Issue7401ConnectClusterJoinsPeerIT}.
+ * {@code ClusterRejoinMembershipIT}.
  * <p>
  * The pair is driven together throughout, as the issue asks: a test that called connect alone would
  * pass against a service that had lost disconnect.

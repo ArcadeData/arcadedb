@@ -19,9 +19,11 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.schema.Type;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
+import com.mongodb.MongoWriteException;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
@@ -33,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
  * Regression test for issue #8931: in production mode the MongoDB wire protocol answered a duplicated-key failure with
@@ -86,5 +89,23 @@ public class Issue8931MongoProductionConcealmentTest extends BaseMongoServerTest
     assertThat(thrown).isNotNull();
     assertThat(thrown.toString()).doesNotContain(SECRET);
     assertThat(collection.countDocuments()).isEqualTo(1);
+  }
+
+  /**
+   * Issue #11444: a value a declared constraint refuses is reported as a write error carrying the engine's text, which names the
+   * refused value: concealed in production mode, the code kept.
+   */
+  @Test
+  void aRefusedConstraintValueIsNotEchoedInProductionMode() {
+    final String secret = "too-long-value-11444";
+    getServerDatabase(0, getDatabaseName()).getSchema().getType("doc8931").createProperty("short", Type.STRING).setMax("3");
+
+    final MongoWriteException thrown = catchThrowableOfType(MongoWriteException.class,
+        () -> collection.insertOne(new Document("short", secret)));
+
+    assertThat(thrown).isNotNull();
+    assertThat(thrown.getError().getCode()).isEqualTo(121);
+    assertThat(thrown.toString()).doesNotContain(secret);
+    assertThat(collection.countDocuments()).isZero();
   }
 }

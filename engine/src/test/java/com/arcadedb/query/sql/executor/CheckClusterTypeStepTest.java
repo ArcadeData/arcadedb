@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 
@@ -57,7 +56,7 @@ class CheckClusterTypeStepTest {
       final CheckClusterTypeStep step = new CheckClusterTypeStep(CLUSTER_NAME, TestHelper.createRandomType(db).getName(), context);
 
       step.syncPull(context, 20);
-    })).isInstanceOf(CommandExecutionException.class);
+    })).isInstanceOf(SchemaException.class).hasMessageContaining("does not belong to the type");
   }
 
   /**

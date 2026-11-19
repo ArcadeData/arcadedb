@@ -18,10 +18,6 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
@@ -32,7 +28,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.IOException;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -68,9 +63,6 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   // #10955: set when the properties were loaded from stored content that did not fully decode, so the map lacks what could not be
   // read. Saving such a record would rewrite it without that data: the update is refused instead. Null when nothing was lost
   private   String              undecodableContent;
-  // #11818: for a record built by modify(), where the content a delete depends on starts in its buffer (past a vertex's edge-list
-  // heads); -1 for any other record, which a delete does not check
-  private   int                 deleteCheckOffset = -1;
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
@@ -135,60 +127,6 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    */
   public void clearBasedOnStaleRead() {
     basedOnStaleRead = false;
-  }
-
-  /** Called by {@code modify()}, which built this record from content read (issue #11818), see {@link #prepareForDelete()}. */
-  void checkContentAtDelete(final int contentChangeOffset) {
-    this.deleteCheckOffset = contentChangeOffset;
-  }
-
-  /**
-   * Called by every delete before it removes the record's index entries (issue #11818), as {@link ImmutableDocument#prepareForDelete()}
-   * is for a record read and deleted as it is: pins the record's page, so a commit landing from now on is refused at commit, and
-   * refuses with a retryable conflict the delete of a record built by {@code modify()} whose stored content a concurrent commit
-   * changed. The index entries a delete removes are computed from this record, so they were the ones of the content it holds and
-   * the entry of a key committed in between was left pointing to the deleted record.
-   * <p>
-   * The stored content is compared with the content this record holds: the one {@code modify()} built it from, the one a
-   * {@link #reload()} read, or the one a save of an earlier transaction wrote. A record this transaction saved deletes its own
-   * content.
-   */
-  public void prepareForDelete() {
-    final int offset = deleteCheckOffset;
-    final Binary held = buffer;
-    if (offset < 0 || held == null || rid == null || rid.getPosition() < 0)
-      return;
-    final TransactionContext transaction = database.getTransaction();
-    if (transaction.getRecordFromCache(rid) == this)
-      return;
-    final Binary current;
-    try {
-      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
-      transaction.getPageToModify(rid.getPageId(database), bucket.getPageSize(), false);
-      current = bucket.getRecord(rid);
-    } catch (final RecordNotFoundException e) {
-      // deleted concurrently: the delete that follows finds it gone and reports it as it always did (issue #8984)
-      return;
-    } catch (final IOException e) {
-      throw new DatabaseOperationException("Error on reading record " + rid + " to delete it", e);
-    }
-    if (sameContent(held, current, offset))
-      return;
-    // THE CONTENT HELD WAS READ THROUGH THE AFTER-READ LISTENERS, WHICH CAN HAND BACK OTHER CONTENT THAN THE STORED ONE (A
-    // DECRYPTION): READ THE CURRENT CONTENT THE SAME WAY, AS ImmutableDocument.checkForLazyLoading() DOES, BEFORE CALLING IT CHANGED
-    final Record fresh = database.getRecordFactory().newImmutableRecord(database, type, rid, current, null);
-    final Record listened = database.invokeAfterReadEvents(fresh);
-    // A RECORD A LISTENER FILTERS AWAY HAS NO CONTENT TO COMPARE, AS FOR ImmutableDocument.pinForDelete()
-    if (listened == null || listened != fresh && sameContent(held,
-        database.getSerializer().serializeForRead(database, listened).getNotReusable(), offset))
-      return;
-    throw new ConcurrentModificationException(
-        "Record " + rid + " was modified by a concurrent transaction after it was read in this transaction. Please retry the operation");
-  }
-
-  private static boolean sameContent(final Binary held, final Binary current, final int offset) {
-    final int length = held.size() - offset;
-    return length == current.size() - offset && held.isSameRegionAs(offset, current, offset, length);
   }
 
   /**
