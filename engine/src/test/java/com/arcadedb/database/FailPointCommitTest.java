@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
@@ -40,6 +41,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -230,15 +232,58 @@ class FailPointCommitTest extends TestHelper {
    * the point, which promises a record already on the WAL, is not reached on that path.
    */
   @Test
-  void aGroupCommitDoesNotReachTheAfterWalPoint() {
-    createAccounts();
-    database.setWALFlush(WALFile.FlushType.YES_NOMETADATA);
+  void aGroupCommitDoesNotReachTheAfterWalPoint() throws InterruptedException {
+    final boolean groupCommit = GlobalConfiguration.TX_WAL_GROUP_COMMIT.getValueAsBoolean();
+    try {
+      GlobalConfiguration.TX_WAL_GROUP_COMMIT.setValue(true);
+      createAccounts();
+      database.setWALFlush(WALFile.FlushType.YES_NOMETADATA);
 
-    FailPoints.arm(FailPoints.COMMIT_AFTER_WAL, FailPoints.THROW);
-    database.transaction(() -> database.newDocument("Account").set("id", ACCOUNTS).set("balance", 0).save());
-    FailPoints.disarmAll();
+      final AtomicInteger beforeWal = new AtomicInteger();
+      final AtomicInteger afterWal = new AtomicInteger();
+      FailPoints.arm(FailPoints.COMMIT_BEFORE_WAL, point -> beforeWal.incrementAndGet());
+      FailPoints.arm(FailPoints.COMMIT_AFTER_WAL, point -> {
+        afterWal.incrementAndGet();
+        FailPoints.THROW.run(point);
+      });
+      database.transaction(() -> database.newDocument("Account").set("id", ACCOUNTS).set("balance", 0).save());
+      FailPoints.disarmAll();
 
-    assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + 1);
+      assertThat(beforeWal.get()).as("commits that wrote their WAL record on the group commit path").isPositive();
+      assertThat(afterWal.get()).as("group commits reaching the after-WAL point").isZero();
+      assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + 1);
+
+      // control: without the group commit the same commit does reach the point. The setting is read when a thread's transaction
+      // context is created, so the commit runs on a thread of its own
+      GlobalConfiguration.TX_WAL_GROUP_COMMIT.setValue(false);
+      ((DatabaseInternal) database).getConfiguration().setValue(GlobalConfiguration.TX_WAL_GROUP_COMMIT, false);
+      FailPoints.arm(FailPoints.COMMIT_AFTER_WAL, point -> {
+        afterWal.incrementAndGet();
+        FailPoints.THROW.run(point);
+      });
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread control = new Thread(() -> {
+        try {
+          database.setWALFlush(WALFile.FlushType.YES_NOMETADATA);
+          database.transaction(() -> database.newDocument("Account").set("id", ACCOUNTS + 1).set("balance", 0).save());
+        } catch (final Throwable e) {
+          failure.set(e);
+        }
+      });
+      control.start();
+      control.join();
+      FailPoints.disarmAll();
+      assertThat(failure.get()).as("the commit that reached the after-WAL point").isNotNull();
+      assertThat(rootCause(failure.get())).isInstanceOf(FailPoints.FailPointException.class);
+      assertThat(afterWal.get()).as("commits reaching the after-WAL point without the group commit").isPositive();
+
+      // the failure past the WAL record fenced the database: reopening recovers the commit
+      database.close();
+      database = factory.open();
+      assertThat(count("SELECT count(@rid) AS c FROM Account")).isEqualTo(ACCOUNTS + 2);
+    } finally {
+      GlobalConfiguration.TX_WAL_GROUP_COMMIT.setValue(groupCommit);
+    }
   }
 
   /**
