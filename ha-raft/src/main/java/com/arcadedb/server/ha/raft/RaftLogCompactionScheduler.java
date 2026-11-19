@@ -43,7 +43,7 @@ import java.util.logging.Level;
  * wall-clock schedule. What it costs is forcing the data files written since the previous one
  * (issue #11258): the target does that on this thread before it asks for the snapshot, because the
  * snapshot itself runs on the apply thread, where every commit of the node waits for it (issue
- * #11989). Each tick asks the <b>local</b> Ratis server to create a snapshot; this runs on leader and
+ * #11989), and only when the tick is going to take one (see the creation gap below). Each tick asks the <b>local</b> Ratis server to create a snapshot; this runs on leader and
  * followers alike because every Ratis server purges its own log against its own snapshot index.
  * <p>
  * A tick carries a creation gap: Ratis completes the request without doing any work when fewer than

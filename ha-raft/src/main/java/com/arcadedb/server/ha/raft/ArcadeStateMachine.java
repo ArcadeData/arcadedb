@@ -2014,13 +2014,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Forces the data files of every open database ahead of a checkpoint, on the caller's thread (issue #11989).
    * {@link #takeSnapshot()} runs on the Ratis StateMachineUpdater, which is also the apply thread: everything it forces
-   * there holds every commit of the node until it is done, and after a compaction interval of writes that was up to 1.6 s.
+   * there holds every commit of the node until it is done, which after a compaction interval of writes can take seconds.
    * Forcing the files here first, from the thread that asks for the checkpoint, leaves {@link #takeSnapshot()} only what
    * was written in between: it still forces that, so the guarantee of the marker does not depend on this call. A failure
-   * is not reported here for the same reason, the checkpoint reports it.
+   * is not reported here for the same reason, the checkpoint reports it, and nothing thrown here may keep the caller from
+   * asking for the checkpoint.
+   * <p>
+   * Nothing is forced when Ratis is going to answer the request without a checkpoint, that is when fewer than
+   * {@code creationGap} entries were applied since the latest snapshot (the test of {@code RaftServerImpl.takeSnapshotAsync},
+   * on the same two indexes): a node below the gap pays no fsync for a tick that purges nothing. An entry applied between
+   * this test and Ratis's own can still take the checkpoint without the early pass; it then forces everything itself, as
+   * it did before.
+   *
+   * @param creationGap the gap the snapshot request carries; not positive means Ratis's configured one, which is not
+   *                    known here, so the files are forced
    */
-  void syncDataFilesAheadOfCheckpoint() {
-    syncDataFilesOfOpenDatabases(Level.FINE);
+  void syncDataFilesAheadOfCheckpoint(final long creationGap) {
+    if (creationGap > 0) {
+      final TermIndex applied = getLastAppliedTermIndex();
+      final var latest = storage.getLatestSnapshot();
+      if (applied == null || applied.getIndex() - (latest != null ? latest.getIndex() : 0L) < creationGap)
+        return;
+    }
+    try {
+      syncDataFilesOfOpenDatabases(Level.FINE);
+    } catch (final RuntimeException e) {
+      // A database closed or swapped by an install under this pass: the checkpoint forces what is open by then
+      LogManager.instance().log(this, Level.FINE, "Could not force the data files ahead of the checkpoint: %s", e.getMessage());
+    }
   }
 
   /**
