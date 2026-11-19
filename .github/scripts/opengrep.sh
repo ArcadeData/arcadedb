@@ -50,7 +50,7 @@ else
   bin="$cache_dir/opengrep"
   if [ ! -x "$bin" ]; then
     mkdir -p "$cache_dir"
-    curl -fsSL -o "$bin.tmp" "https://github.com/opengrep/opengrep/releases/download/v$OPENGREP_VERSION/$asset"
+    curl -fsSL --retry 3 --retry-delay 5 -o "$bin.tmp" "https://github.com/opengrep/opengrep/releases/download/v$OPENGREP_VERSION/$asset"
     if [ "$(uname -s)" = Darwin ]; then
       actual="$(shasum -a 256 "$bin.tmp" | cut -d' ' -f1)"
     else
@@ -80,6 +80,10 @@ case "$mode" in
     exit 0
     ;;
   test)
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "opengrep: 'test' needs jq on PATH to check every rule file has a self-test" >&2
+      exit 1
+    fi
     "$bin" test --config .opengrep/rules .opengrep/tests
     # opengrep 2.0.0 reports a rule file with no test file (MissingTest) and still exits 0: fail on it here
     missing="$("$bin" test --json --config .opengrep/rules .opengrep/tests 2>/dev/null | jq -r '.config_missing_tests[]')"
