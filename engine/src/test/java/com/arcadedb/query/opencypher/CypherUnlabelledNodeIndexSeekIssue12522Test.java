@@ -357,7 +357,7 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
       assertThat(plan)
           .as("a database with a multi-label node keeps the walk of the whole database\n%s", plan)
           .doesNotContain("[index:");
-      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("multi-1"))).isNotEmpty();
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("multi-1"))).containsExactly("multi-1");
     }
   }
 
@@ -426,6 +426,70 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
 
       assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(rid.toString())))
           .isEqualTo(uuidsOf(withoutIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(otherRid.toString())));
+    }
+  }
+
+  @Test
+  void aTextValueOnANumberKeyIsAnsweredByTheWalk() {
+    // the walk converts the text to the declared LONG of the property and finds the vertex: the index, keyed by
+    // numbers, must not be asked with the text and answer nothing instead
+    try (final Database database = open()) {
+      final String plan = profilePlan(database, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params("1"));
+
+      assertThat(plan)
+          .as("a text value on a number key is answered by the walk\n%s", plan)
+          .doesNotContain("[index:");
+      assertThat(uuidsOf(database, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params("1"))).containsExactly("numeric-1");
+    }
+  }
+
+  @Test
+  void aFloatingPointValueOnAnIntegralKeyIsAnsweredByTheWalk() {
+    // the walk compares a double with a LONG property by its double value, so 9007199254740992d matches the stored
+    // 9007199254740993, which the key lookup of 9007199254740992 would not find
+    try (final Database withIndex = open(DB_PATH, true); final Database withoutIndex = open(DB_PATH + "-noindex", false)) {
+      for (final Database database : List.of(withIndex, withoutIndex))
+        database.transaction(() -> database.command("opencypher", "CREATE (n:Numeric {id: $id, uuid: 'big-1'})",
+            Map.of("id", 9007199254740993L)));
+
+      final String plan = profilePlan(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(9007199254740992d));
+      assertThat(plan)
+          .as("a double on a LONG key is answered by the walk\n%s", plan)
+          .doesNotContain("Numeric[id]");
+
+      final List<String> walked = uuidsOf(withoutIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(9007199254740992d));
+      assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(9007199254740992d)))
+          .isEqualTo(walked);
+
+      // a long keeps the exact seek
+      final String longPlan = profilePlan(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(9007199254740993L));
+      assertThat(longPlan)
+          .as("a long on a LONG key is answered by the index\n%s", longPlan)
+          .contains("Numeric[id]");
+      assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(9007199254740993L)))
+          .containsExactly("big-1");
+    }
+  }
+
+  @Test
+  void aLimitSatisfiedByTheFirstTypeDoesNotSeekTheOthers() {
+    // the types are opened when the caller asks for their first row: a LIMIT a type answers with rows to spare does
+    // not seek the index of the types after it
+    try (final Database database = open()) {
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (n:Numeric {uuid: 'dup'})");
+        database.command("opencypher", "CREATE (n:Numeric {uuid: 'dup'})");
+        database.command("opencypher", "CREATE (o:Other {uuid: 'dup'})");
+      });
+
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid LIMIT 1", params("dup"));
+
+      assertThat(plan)
+          .as("the first type with rows answers the LIMIT\n%s", plan)
+          .contains("Numeric[uuid]")
+          .doesNotContain("Other[uuid]");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("dup")))
+          .containsExactly("dup", "dup", "dup");
     }
   }
 

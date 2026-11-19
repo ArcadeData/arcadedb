@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -768,17 +767,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-          // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONE BEFORE GIVES ITS READ-AHEAD BACK
-          if (openScan != null)
-            openScan.releaseReadAhead();
-          openScan = iter instanceof ScanPressureReporter reporter ? reporter : null;
-          // ONLY A PROFILED RUN KEEPS THE SCAN FOR THE PROFILE, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
-          if (context.isProfiling()) {
-            // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
-            if (scanIterator != null)
-              completedScansShrunkBatches.addAndGet(scanIterator.getBudgetShrunkBatches());
-            scanIterator = iter instanceof ScanPressureReporter reporter ? reporter : null;
-          }
+          trackScan(iter);
           return iter;
         }
         return Collections.emptyIterator();
@@ -815,12 +804,33 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // one: the index returns exactly the vertices of that type whose property equals the value, so the walk of the
     // types that have no such index is all that is left to do (issue #12522).
     final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult);
-    if (indexed != null)
+    if (indexed != null) {
+      // the walk of a type it opens holds a read-ahead the step gives back when it closes
+      trackScan(indexed);
       return indexed;
+    }
 
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
+  }
+
+  /**
+   * Keeps the scan the step reads from, so the step gives its read-ahead back when it closes or opens another one, and a
+   * profiled run reports whether the heap budget reduced it (#9404).
+   */
+  private void trackScan(final Iterator<Identifiable> iter) {
+    // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONE BEFORE GIVES ITS READ-AHEAD BACK
+    if (openScan != null)
+      openScan.releaseReadAhead();
+    openScan = iter instanceof ScanPressureReporter reporter ? reporter : null;
+    // ONLY A PROFILED RUN KEEPS THE SCAN FOR THE PROFILE, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
+    if (context.isProfiling()) {
+      // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
+      if (scanIterator != null)
+        completedScansShrunkBatches.addAndGet(scanIterator.getBudgetShrunkBatches());
+      scanIterator = iter instanceof ScanPressureReporter reporter ? reporter : null;
+    }
   }
 
   /**
@@ -1049,16 +1059,18 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     // The plan of every type, decided before anything is read: a type with an index of its own is answered by a
     // seek, a type whose ancestor has one is answered by that ancestor's seek, and a type with neither is walked.
+    // The coverage of the descendants is only planned here: a seek that fails when it is opened (a concurrent DDL
+    // took the index away) covers nothing, and its descendants are then answered on their own.
+    final List<DocumentType> ordered = parentsFirst(types);
     final Map<DocumentType, TypeIndex> plan = new LinkedHashMap<>();
-    final Set<DocumentType> answeredByAncestor = new LinkedHashSet<>();
+    final Set<DocumentType> plannedCoverage = new LinkedHashSet<>();
     boolean anySeek = false;
-    for (final DocumentType type : parentsFirst(types)) {
+    for (final DocumentType type : ordered) {
       final TypeIndex index = usableIndexOf(type, pinned);
       plan.put(type, index);
       if (index != null) {
         anySeek = true;
-        for (final DocumentType sub : descendantsOf(type))
-          answeredByAncestor.add(sub);
+        plannedCoverage.addAll(descendantsOf(type));
       }
     }
     if (!anySeek)
@@ -1067,41 +1079,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // A value the input row decides makes the candidates differ from row to row: the seek is made again for every
     // row and the candidates cannot be cached. The types that are walked would then be walked again for every row,
     // where they used to be walked once and cached: the walk of the whole database answers those instead.
-    if (rowDependent)
+    if (rowDependent) {
       for (final DocumentType type : types)
-        if (plan.get(type) == null && !answeredByAncestor.contains(type) && !isEmptyType(type))
+        if (plan.get(type) == null && !plannedCoverage.contains(type) && !isEmptyType(type))
           return null;
-
-    final List<Iterator<Identifiable>> parts = new ArrayList<>(types.size());
-    final List<String> indexNames = new ArrayList<>();
-
-    for (final DocumentType type : parentsFirst(types)) {
-      if (answeredByAncestor.contains(type))
-        continue; // an ancestor's seek already answered the vertices of this type
-
-      final TypeIndex index = plan.get(type);
-      Iterator<Identifiable> seek = null;
-      if (index != null) {
-        seek = seekByIndex(index, type, pinned, indexNames);
-        if (seek != null)
-          for (final DocumentType sub : descendantsOf(type))
-            answeredByAncestor.add(sub);
-      }
-
-      if (seek != null) {
-        parts.add(seek);
-        if (rowDependent)
-          candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
-      } else
-        parts.add(ownVerticesOf(type));
+      // the candidates of this row are not the candidates of the next one
+      candidatesDependOnTheRow = true;
     }
 
-    if (!indexNames.isEmpty())
-      usedIndexName = String.join(", ", indexNames);
-
-    if (parts.size() == 1)
-      return parts.getFirst();
-    return new ChainedCandidates(parts);
+    return new TypeCandidates(ordered, plan, pinned);
   }
 
   /**
@@ -1119,9 +1105,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
       if (indexProperties == null || indexProperties.isEmpty())
         continue; // not a key index (a FULL_TEXT index answers by token, issue #8439) or dropped meanwhile
-      final Type[] keyTypes = index.getKeyTypes();
+      final Type[] keyTypes = keyTypesOf(index);
       if (keyTypes == null || keyTypes.length < indexProperties.size())
-        continue; // an index that does not say what its key holds cannot be asked with a value
+        continue; // dropped meanwhile, or an index that does not say what its key holds: it cannot be asked with a value
       boolean usable = true;
       for (int i = 0; i < indexProperties.size(); i++) {
         final String property = indexProperties.get(i);
@@ -1146,6 +1132,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * for a string key. A value of another kind - the text of a RID against a number key - is answered by the walk and
    * not by the index (issue #11933).
    * <p>
+   * An integral key is keyed only by an integral number: the walk compares a floating point or decimal operand with
+   * an integral property by its double value, so 9007199254740992d matches a stored 9007199254740993, while the key
+   * lookup would ask for 9007199254740992 exactly. Such an operand is answered by the walk.
+   * <p>
    * The type of the key is the one of the index, not the one of the property: an index can stand on a property the
    * type does not declare (issue #11777), and the key it holds is what the lookup is made with.
    */
@@ -1156,9 +1146,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
       case INTEGER:
       case SHORT:
       case LONG:
+      case BYTE:
+        return value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte;
       case FLOAT:
       case DOUBLE:
-      case BYTE:
       case DECIMAL:
         return value instanceof Number;
       case STRING:
@@ -1167,6 +1158,18 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return value instanceof Boolean;
       default:
         return keyType.getDefaultJavaType().isInstance(value);
+    }
+  }
+
+  /**
+   * The types of the key of the index, or null when a concurrent DDL dropped or rebuilt the index after it was listed:
+   * the index then answers nothing, and another index or the walk answers the pattern.
+   */
+  static Type[] keyTypesOf(final TypeIndex index) {
+    try {
+      return index.getKeyTypes();
+    } catch (final IndexException e) {
+      return null;
     }
   }
 
@@ -1198,45 +1201,78 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   /**
-   * The vertices of the type itself, without the ones of its sub types: the walk of a type that has no index to
-   * answer the pattern.
+   * The candidates of the types, one type after the other, parents first: the seek of a type that has an index, the
+   * walk of the type's own vertices otherwise, and nothing for a type whose ancestor's seek already answered it.
    * <p>
-   * The walk is opened when the caller asks for the first row, the way the walk of the whole database opens the walk
-   * of a type when the one before it is done (Labels.ChainedTypeIterator): a statement that stops at the first row
-   * of the first type does not open the walk of the others.
+   * Each type is opened when the caller asks for its first row, the way the walk of the whole database opens the
+   * walk of a type when the one before it is done (Labels.ChainedTypeIterator): a statement that stops at the first
+   * row of the first type does not seek or walk the others. A seek covers the descendants of its type only once it
+   * has been made: one that fails (a concurrent DDL took the index away) is replaced by the walk of the type's own
+   * vertices, and its descendants are answered on their own. The parents come first, so the seek of an ancestor is
+   * always made before its descendants are reached.
    */
-  private Iterator<Identifiable> ownVerticesOf(final DocumentType type) {
-    return new LazyScan(context.getDatabase(), type.getName());
-  }
+  private final class TypeCandidates implements Iterator<Identifiable>, ScanPressureReporter {
+    private final List<DocumentType>             types;
+    private final Map<DocumentType, TypeIndex>   plan;
+    private final Map<String, Object>            pinned;
+    private final Set<DocumentType>              answeredByAncestor = new LinkedHashSet<>();
+    private final List<String>                   indexNames         = new ArrayList<>();
+    private       int                            next               = 0;
+    private       Iterator<Identifiable>         current            = Collections.emptyIterator();
+    private       long                           doneShrunkBatches  = 0;
 
-  /**
-   * The walk of a type, opened on the first row the caller asks for.
-   */
-  private static final class LazyScan implements Iterator<Identifiable> {
-    private final Database    database;
-    private final String      typeName;
-    private       Iterator<Identifiable> scan;
-
-    private LazyScan(final Database database, final String typeName) {
-      this.database = database;
-      this.typeName = typeName;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Iterator<Identifiable> scan() {
-      if (scan == null)
-        scan = (Iterator<Identifiable>) (Object) database.iterateType(typeName, false);
-      return scan;
+    private TypeCandidates(final List<DocumentType> types, final Map<DocumentType, TypeIndex> plan, final Map<String, Object> pinned) {
+      this.types = types;
+      this.plan = plan;
+      this.pinned = pinned;
     }
 
     @Override
     public boolean hasNext() {
-      return scan().hasNext();
+      while (!current.hasNext() && next < types.size()) {
+        if (current instanceof ScanPressureReporter done) {
+          doneShrunkBatches += done.getBudgetShrunkBatches();
+          done.releaseReadAhead();
+        }
+        current = open(types.get(next++));
+      }
+      return current.hasNext();
     }
 
     @Override
     public Identifiable next() {
-      return scan().next();
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return current.next();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Iterator<Identifiable> open(final DocumentType type) {
+      if (answeredByAncestor.contains(type))
+        return Collections.emptyIterator(); // an ancestor's seek already answered the vertices of this type
+
+      final TypeIndex index = plan.get(type);
+      if (index != null) {
+        final Iterator<Identifiable> seek = seekByIndex(index, type, pinned, indexNames);
+        if (seek != null) {
+          answeredByAncestor.addAll(descendantsOf(type));
+          usedIndexName = String.join(", ", indexNames);
+          return seek;
+        }
+      }
+      // the vertices of the type itself, without the ones of its sub types, which are answered on their own
+      return (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
+    }
+
+    @Override
+    public long getBudgetShrunkBatches() {
+      return doneShrunkBatches + (current instanceof ScanPressureReporter reporter ? reporter.getBudgetShrunkBatches() : 0);
+    }
+
+    @Override
+    public void releaseReadAhead() {
+      if (current instanceof ScanPressureReporter reporter)
+        reporter.releaseReadAhead();
     }
   }
 
@@ -1297,33 +1333,6 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
     }
     return descendants;
-  }
-
-  /**
-   * The candidates of the types, one after the other: the seek of a type and the walk of the type after it.
-   */
-  private static final class ChainedCandidates implements Iterator<Identifiable> {
-    private final List<Iterator<Identifiable>> parts;
-    private       int                next    = 0;
-    private       Iterator<Identifiable> current = Collections.emptyIterator();
-
-    private ChainedCandidates(final List<Iterator<Identifiable>> parts) {
-      this.parts = parts;
-    }
-
-    @Override
-    public boolean hasNext() {
-      while (!current.hasNext() && next < parts.size())
-        current = parts.get(next++);
-      return current.hasNext();
-    }
-
-    @Override
-    public Identifiable next() {
-      if (!hasNext())
-        throw new NoSuchElementException();
-      return current.next();
-    }
   }
 
   /**
