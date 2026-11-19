@@ -76,7 +76,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
    * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
    * have left them. Public only because the test that sets it is an HA integration test in another module
-   * ({@code Issue10673LateSampleRecordShippedBeforeTheSamplesIT}); nothing outside tests may set it, and a test that does clears it
+   * ({@code ContinuousAggregateLateSampleReplicationIT}); nothing outside tests may set it, and a test that does clears it
    * in a {@code finally}. Read once per append that committed: one volatile read.
    */
   public static volatile Runnable TEST_AFTER_APPEND_COMMIT_HOOK = null;

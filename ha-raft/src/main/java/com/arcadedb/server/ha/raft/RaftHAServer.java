@@ -93,6 +93,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -102,6 +103,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -379,6 +382,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   final Object                    applyNotifier         = new Object();
   RaftClusterManager        clusterManager;
   final Object                    recoveryLock          = new Object();
+  // Issue #11921: read-held by every commit published outside the log for its whole length (see runPublication), write-held
+  // by an in-place restart while it replaces the state machine. The publication takes the validation lock of the ledger of
+  // the state machine current when it starts, so it must not span the replacement of that ledger.
+  private final ReentrantReadWriteLock publicationGate   = new ReentrantReadWriteLock();
   volatile boolean                   shutdownRequested     = false;
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
@@ -2385,7 +2392,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Closes the current RaftClient and creates a new one with fresh gRPC channels.
+   * Replaces the current RaftClient with a new one with fresh gRPC channels, and closes the old one off the calling
+   * thread.
    * <p>
    * After a network partition, gRPC channels to partitioned peers enter TRANSIENT_FAILURE
    * with exponential backoff (up to ~120 s). Any Raft send on those channels fails with
@@ -2434,15 +2442,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       oldBroker.stop();
     }
 
-    if (oldClient != null) {
-      try {
-        oldClient.close();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
-      }
-    }
+    if (oldClient != null)
+      closeRetiredClient(oldClient);
 
     LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
+  }
+
+  /**
+   * Closes a client {@link #refreshRaftClient} has just replaced, on a thread of its own (issue #12142).
+   * <p>
+   * The refresh runs from {@code notifyLeaderChanged}, which Ratis calls inside {@code ServerState.setLeader} with the
+   * division's monitor held: from the synchronized {@code changeToLeader()} on a new leader, and from the synchronized
+   * block of {@code appendEntries} on a follower. Closing a Ratis gRPC client shuts each channel down gracefully and
+   * waits up to 3 s for the calls still in flight on it (then up to 2 s more after {@code shutdownNow}), and under load
+   * there always are some: group-commit appends and watches, the ReadIndex of a LINEARIZABLE follower read. Closed
+   * inline, that wait held the division for 3 s on every such leader change: the new leader sent no heartbeat and
+   * committed nothing, and a follower answered no append or vote.
+   * <p>
+   * Nothing changes for those calls: {@code RaftClientImpl.close()} marks the client closed before it shuts the
+   * channels down, so a caller still holding it sees it closed at once, and the calls in flight still either finish
+   * within the graceful window or are cancelled. Only the wait has left the Raft thread. A virtual thread, as the group
+   * committer's refresh callback uses: a retired client is rare (one per leader change) and the wait parks on the
+   * channel's {@code CountDownLatch}, which does not pin a carrier.
+   */
+  private void closeRetiredClient(final RaftClient retired) {
+    Thread.ofVirtual().name("arcadedb-raft-client-close").start(() -> {
+      try {
+        retired.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
+      }
+    });
   }
 
   /**
@@ -2495,6 +2525,67 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /**
+   * Runs a commit published outside the log (issue #11921) so that no in-place restart replaces the state machine while it
+   * runs: the publication and every validation it is ordered against then use one ledger. {@code publication} resolves the
+   * state machine itself, under the gate.
+   */
+  <T> T runPublication(final Callable<T> publication) throws Exception {
+    final Lock gate = publicationGate.readLock();
+    gate.lock();
+    try {
+      return publication.call();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Builds the state machine of an in-place restart once the publications in flight on the old one have returned (issue
+   * #11921), waiting up to {@code waitMs} ({@code arcadedb.ha.ratisCloseTimeoutMs} for {@link RatisInPlaceRestart}): one that
+   * is still running after that fails the restart, which counts toward {@code arcadedb.ha.ratisRestartMaxRetries} like a
+   * close that does not finish.
+   */
+  void replaceStateMachineBetweenPublications(final long waitMs) throws IOException, InterruptedException {
+    final Lock gate = publicationGate.writeLock();
+    lockPublicationGateForReplacement(gate, waitMs);
+    try {
+      this.stateMachine = createStateMachine();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Takes the publication gate for a state machine replacement, waiting up to {@code waitMs} ({@code 0} or less: no bound).
+   *
+   * @throws IOException          when a publication is still running after {@code waitMs}
+   * @throws InterruptedException when the wait is interrupted, with the thread's interrupt flag set again
+   */
+  static void lockPublicationGateForReplacement(final Lock gate, final long waitMs) throws IOException, InterruptedException {
+    final boolean locked;
+    try {
+      if (waitMs <= 0) {
+        gate.lockInterruptibly();
+        locked = true;
+      } else
+        locked = gate.tryLock(waitMs, TimeUnit.MILLISECONDS);
+    } catch (final InterruptedException e) {
+      // The throw cleared the flag, and restartRatis reads the flag to tell an abandoned restart from a failed one: without
+      // it an interrupted restart would count toward arcadedb.ha.ratisRestartMaxRetries
+      Thread.currentThread().interrupt();
+      throw e;
+    }
+    if (!locked)
+      throw new IOException("A commit published outside the Raft log was still running after " + waitMs
+          + "ms; not replacing the state machine under it (issue #11921)");
+  }
+
+  /** Whether {@code thread} waits at the publication gate (issue #11921), for tests that must observe the restart there. */
+  boolean isWaitingAtThePublicationGate(final Thread thread) {
+    return publicationGate.hasQueuedThread(thread);
   }
 
   /**
@@ -4243,11 +4334,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * schema-delta" sends them to the node that has not been upgraded.
    */
   public List<String> peersMissingCapability(final String capability) {
+    return peerCapabilities.peersMissing(otherConfiguredPeerIds(), capability);
+  }
+
+  /**
+   * {@link #peersMissingCapability} for a framed optional section of {@code TX_ENTRY}: a peer that answered with it and has
+   * only stopped answering since is not missing (issue #12122, see {@link PeerCapabilityRegistry#peersMissingFramedSection}).
+   */
+  List<String> peersMissingFramedSection(final String capability) {
+    return peerCapabilities.peersMissingFramedSection(otherConfiguredPeerIds(), capability);
+  }
+
+  private List<String> otherConfiguredPeerIds() {
     final List<String> peerIds = new ArrayList<>();
     for (final RaftPeer peer : configuredPeers())
       if (!peer.getId().equals(localPeerId))
         peerIds.add(peer.getId().toString());
-    return peerCapabilities.peersMissing(peerIds, capability);
+    return peerIds;
   }
 
   /**
@@ -4304,7 +4407,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   final TxPreparedAtCapabilityCache txPreparedAtCapability = new TxPreparedAtCapabilityCache(
-      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_PREPARED_AT_INDEX), System::currentTimeMillis, 1_000L);
+      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_PREPARED_AT_INDEX, true), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Cached for a
@@ -4316,7 +4419,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // The same short-lived, membership-aware verdict as the prepared-at one above, asked on every commit as well
   final TxPreparedAtCapabilityCache fullTextCorpusDeltaCapability = new TxPreparedAtCapabilityCache(
-      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS), System::currentTimeMillis, 1_000L);
+      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS, true), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-fulltext-corpus-deltas} section, so a transaction may carry the effect it had on
@@ -4328,7 +4431,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // Asked on every write of a float or double array, so the same short-lived, membership-aware verdict as the two above
   final TxPreparedAtCapabilityCache fixedWidthFloatArraysCapability = new TxPreparedAtCapabilityCache(
-      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS), System::currentTimeMillis, 1_000L);
+      () -> capabilityMonitor.allPeersSupportOnceAsked(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS, false), System::currentTimeMillis, 1_000L);
 
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
   public boolean isTxSchemaCheckEnabled() {
@@ -4374,6 +4477,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   Parameters raftParametersForTest() {
     return transport.raftParametersForTest();
+  }
+
+  /** Package-private test hook: the Raft properties {@code start()} publishes, which {@link #refreshRaftClient} builds from. */
+  void setRaftPropertiesForTest(final RaftProperties properties) {
+    this.raftProperties = properties;
   }
 
   PeerAddressAllowlistFilter allowlistFilterForTest() {

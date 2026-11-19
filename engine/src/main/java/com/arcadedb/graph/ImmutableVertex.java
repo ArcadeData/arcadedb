@@ -20,9 +20,11 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -45,8 +47,10 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   private static final int PROPERTIES_OFFSET =
       Binary.BYTE_SERIALIZED_SIZE + 2 * (Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE);
 
-  private RID outEdges;
-  private RID inEdges;
+  private RID     outEdges;
+  private RID     inEdges;
+  // #12320: the content was read from the transaction's own image of the vertex's page, see markReadFromOwnImage()
+  private boolean readFromOwnImage;
 
   public ImmutableVertex(final Database database, final DocumentType type, final RID rid, final Binary buffer) {
     super(database, type, rid, buffer);
@@ -134,13 +138,55 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Override
   public RID getOutEdgesHeadChunk() {
     checkForLazyLoading();
+    if (readFromOwnImage)
+      recordEdgeListHeadRead(true);
     return outEdges;
   }
 
   @Override
   public RID getInEdgesHeadChunk() {
     checkForLazyLoading();
+    if (readFromOwnImage)
+      recordEdgeListHeadRead(false);
     return inEdges;
+  }
+
+  @Override
+  public RID peekOutEdgesHeadChunk() {
+    checkForLazyLoading();
+    return outEdges;
+  }
+
+  @Override
+  public RID peekInEdgesHeadChunk() {
+    checkForLazyLoading();
+    return inEdges;
+  }
+
+  /**
+   * Marks the content as read from the transaction's own image of the vertex's page (#12320). Under {@code READ_COMMITTED} that
+   * image was taken at the transaction's first write to the page and misses what others committed there since, so a head a
+   * traversal reads off this vertex may be one a concurrent transaction moved: the read is recorded on the transaction, whose
+   * edge-list head merge refuses to commit a write of the vertex decided on it.
+   */
+  public void markReadFromOwnImage() {
+    readFromOwnImage = true;
+  }
+
+  @Override
+  protected boolean tracksReadsFromOwnImage() {
+    return true;
+  }
+
+  @Override
+  protected void contentReadFromOwnImage() {
+    readFromOwnImage = true;
+  }
+
+  private void recordEdgeListHeadRead(final boolean out) {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    if (tx != null)
+      tx.trackEdgeListHeadReadFromOwnImage(rid, out);
   }
 
   @Override
