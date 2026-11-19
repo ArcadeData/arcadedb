@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * address. The addresses here are declared with the object-form {@code grpc:} field: the case a heterogeneous deployment
  * needs, and the only one an in-process cluster can exercise honestly, since three nodes sharing localhost cannot share
  * a port. The derive-from-this-node's-port fallback used when nothing is declared is covered by
- * {@link Issue6183AmbiguousRoutingTest} for the derive itself and by {@link HaPeerAddressRoutingUndeclaredPortsIT} for
+ * {@link PeerEndpointIdentityTest.AmbiguousRoutingTable} for the derive itself and by {@link HaPeerAddressRoutingUndeclaredPortsIT} for
  * what a cluster of same-host peers ends up advertising, which is nothing (#6183).
  * <p>
  * Why these share a cluster: they only read the routing table.
