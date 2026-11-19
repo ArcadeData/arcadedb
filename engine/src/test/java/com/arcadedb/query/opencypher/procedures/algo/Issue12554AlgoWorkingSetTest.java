@@ -347,23 +347,33 @@ class Issue12554AlgoWorkingSetTest {
     final AlgoWCC procedure = new AlgoWCC();
 
     // 41 nodes cost 656 bytes and the row headers of the weighted adjacency 2624: 3280. The hub's row outgrows the 16 entries its buffers
-    // start with at its 17th, and the doubling to 32 entries (384 bytes) is more than the 120 bytes left
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 3400L);
-    final GraphData refused = procedure.loadGraphFromRecords(database, null, context());
-    assertThatThrownBy(() -> refused.weightedAdjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH, "w"))
+    // start with at its 17th, and the 16 entries the growth to 32 adds (192 bytes) are more than the 120 bytes left
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 3400L))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("the neighbour buffers of one node would need 384 bytes")
+        .hasMessageContaining("the neighbour buffers of one node would need 192 bytes")
         .hasMessageContaining("a row of more than 16 edge entries");
 
-    // Nothing is refused that fits
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024);
-    final GraphData accepted = procedure.loadGraphFromRecords(database, null, context());
-    final int[][] neighbors = accepted.weightedAdjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH,
-        "w").neighbors();
+    // The buffers reach 64 entries, 576 bytes more than they started with: 3856. The copy of the hub's row, 40 entries of 12 bytes, is
+    // refused before it is made when the 144 bytes left cannot hold it, and it is the row that is named, not the batch of entries
+    assertThatThrownBy(() -> weightedAdjacencyUnder(procedure, 4000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the weighted adjacency list would need 480 bytes")
+        .hasMessageContaining("a row of 40 edge entries");
+
+    // A budget that holds all of it accepts the call: 3856, and the 80 entries of the two ends of its 40 edges, 960 bytes, make 4816.
+    // The buffers are charged once, not again with the row they were copied into
+    final int[][] neighbors = weightedAdjacencyUnder(procedure, 4900L);
     int longest = 0;
     for (final int[] row : neighbors)
       longest = Math.max(longest, row.length);
     assertThat(longest).isEqualTo(40);
+  }
+
+  /** The weighted adjacency of the whole graph, with both directions, under the given working-memory budget. */
+  private int[][] weightedAdjacencyUnder(final AlgoWCC procedure, final long budget) {
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, budget);
+    final GraphData graph = procedure.loadGraphFromRecords(database, null, context());
+    return graph.weightedAdjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH, "w").neighbors();
   }
 
   /** The entries of a list are checkpointed too: a supernode's list is not one unabortable step. */

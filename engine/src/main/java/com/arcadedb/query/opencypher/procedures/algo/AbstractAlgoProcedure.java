@@ -2018,8 +2018,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * path it stands in for is worse than no fallback.
      */
     private class RecordRowReader {
-      private int[]    scratchNeighbors = new int[16];
-      private double[] scratchWeights   = new double[16];
+      /** Entries the buffers start with: a row of that many or fewer is priced by the entries the caller reserves for it. */
+      private static final int INITIAL_ROW_BUFFER = 16;
+
+      private int[]    scratchNeighbors = new int[INITIAL_ROW_BUFFER];
+      private double[] scratchWeights   = new double[INITIAL_ROW_BUFFER];
       private int      edgeStep;
 
       private NodeEdgeWeights readRow(final WorkGuard guard, final int i, final Vertex.DIRECTION dir,
@@ -2042,14 +2045,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             if (neighbor < 0)
               continue;
             if (degree == scratchNeighbors.length) {
-              // Priced before the arrays are allocated (issue #12554): a supernode row doubles them again and again while the old ones
-              // are still referenced, which the entries reserved once the row is read do not see. A reservation is never released, and
-              // the doublings add up to about twice the final length, which is what the old arrays, the new ones and the copy of
-              // the row held together at the peak
-              final long grown = 2L * degree;
-              memory.reserve(saturatingProduct(grown, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+              // Priced before the arrays are allocated (issue #12554): a supernode row doubles them again and again, which the entries
+              // reserved once the row is read do not see. The buffers stay for the rows that follow, so each growth is charged once, by
+              // the entries it adds: what is charged at the end is the length they reached, and the copy of the row is charged beside
+              // it by the entries the caller reserves, which is what the call holds together at the peak
+              final int newLength = (int) Math.min(2L * degree, Integer.MAX_VALUE - 8L);
+              memory.reserve(saturatingProduct(newLength - degree, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
                   "a row of more than " + degree + " edge entries");
-              final int newLength = (int) Math.min(grown, Integer.MAX_VALUE - 8L);
               scratchNeighbors = Arrays.copyOf(scratchNeighbors, newLength);
               scratchWeights = Arrays.copyOf(scratchWeights, newLength);
             }
@@ -2062,6 +2064,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             GhostEdgeReporter.reportSkipped(rnf);
           }
         }
+        // The copy of a long row is the largest allocation of the walk: it is refused before it is made when the budget cannot hold it.
+        // Nothing is reserved here, the caller reserves the entries of the row once it has it, so that they are not charged twice
+        if (degree > INITIAL_ROW_BUFFER && degree > memory.capacityFor(INT_BYTES + DOUBLE_BYTES))
+          memory.extendCapacity(degree, INT_BYTES + DOUBLE_BYTES, "the weighted adjacency list", "a row of " + degree + " edge entries");
         return new NodeEdgeWeights(Arrays.copyOf(scratchNeighbors, degree), Arrays.copyOf(scratchWeights, degree));
       }
     }

@@ -165,6 +165,9 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     });
   }
 
+  /** Entries the row buffers start with: a row of that many or fewer is priced by the batch of entries reserved with the rows. */
+  private static final int INITIAL_ROW_BUFFER = 16;
+
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir, final CommandContext context) {
     final GraphData graph = loadGraphFromRecords(db, null, context);
@@ -186,8 +189,8 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final int[][] adjNeighbors = new int[n][];
     final double[][] adjWeights = new double[n][];
     // One growable primitive buffer per column, reused across every node and copied out at its exact size
-    int[] nbrBuf = new int[16];
-    double[] wtBuf = new double[16];
+    int[] nbrBuf = new int[INITIAL_ROW_BUFFER];
+    double[] wtBuf = new double[INITIAL_ROW_BUFFER];
     long unpriced = 0;
     for (int i = 0; i < n; i++) {
       // A vertex deleted since the graph was loaded has no edges
@@ -207,12 +210,11 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
           if (!EdgeWeight.isWalkable(weight))
             continue;
           if (count == nbrBuf.length) {
-            // Priced before the buffers are allocated: a supernode doubles them again and again, and the doublings add up to about
-            // twice the final length, which the old buffers, the new ones and the copy of the row held together at the peak
-            final long grown = 2L * count;
-            memory.reserve(saturatingProduct(grown, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+            // Priced before the buffers are allocated: a supernode doubles them again and again. They stay for the rows that follow, so
+            // each growth is charged once, by the entries it adds, and the copy of a row is charged beside it with the batch below
+            final int newLength = (int) Math.min(2L * count, Integer.MAX_VALUE - 8L);
+            memory.reserve(saturatingProduct(newLength - count, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
                 "a row of more than " + count + " edge entries");
-            final int newLength = (int) Math.min(grown, Integer.MAX_VALUE - 8L);
             nbrBuf = Arrays.copyOf(nbrBuf, newLength);
             wtBuf = Arrays.copyOf(wtBuf, newLength);
           }
@@ -221,6 +223,9 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
           count++;
         }
       }
+      // The copy of a long row is refused before it is made when the budget cannot hold it; the batch below reserves it
+      if (count > INITIAL_ROW_BUFFER && count > memory.capacityFor(INT_BYTES + DOUBLE_BYTES))
+        memory.extendCapacity(count, INT_BYTES + DOUBLE_BYTES, "the weighted adjacency list", "a row of " + count + " edge entries");
       adjNeighbors[i] = Arrays.copyOf(nbrBuf, count);
       adjWeights[i] = Arrays.copyOf(wtBuf, count);
       unpriced += count;
