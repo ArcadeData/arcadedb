@@ -514,7 +514,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         final Edge boundRelationshipEdge;
         if (relationshipVariable != null
             && ((boundVariableNames != null && boundVariableNames.contains(relationshipVariable))
-                || lastResult.getPropertyNames().contains(relationshipVariable))
+                || lastResult.listsProperty(relationshipVariable))
             && lastResult.getProperty(relationshipVariable) instanceof Edge)
           boundRelationshipEdge = (Edge) lastResult.getProperty(relationshipVariable);
         else

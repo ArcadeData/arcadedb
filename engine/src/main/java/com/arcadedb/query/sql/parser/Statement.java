@@ -386,6 +386,16 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Whether this statement reports on the files of the node that runs it and writes nothing, so a replica of a cluster must run
+   * it itself rather than forward it to the leader: forwarded, it answers for the leader's files, and a replica whose own copy
+   * drifted is reported clean (issues #12347, #12348). Deliberately apart from {@link #isIdempotent()}, which also opens a
+   * statement to {@code query()} and to the read-only gates of the protocols. False by default.
+   */
+  public boolean inspectsTheLocalNode() {
+    return false;
+  }
+
+  /**
    * Returns the set of operation types executing this statement performs: its own ({@link #getOperationTypesItself()})
    * plus the writes of every statement nested in it (issue #9628). Never empty.
    */

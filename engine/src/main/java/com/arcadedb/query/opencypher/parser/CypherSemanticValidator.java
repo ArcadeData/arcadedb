@@ -68,6 +68,10 @@ public class CypherSemanticValidator {
     NODE, RELATIONSHIP, RELATIONSHIP_LIST, PATH, SCALAR
   }
 
+  /** What a query may conclude with, as Neo4j words it in "Query cannot conclude with X" (issue #12354). */
+  private static final String CONCLUSION_RULE =
+      "(must be a RETURN clause, a FINISH clause, an update clause, a unit subquery call, or a procedure call with no YIELD)";
+
   private final Map<String, VarType> varTypes = new HashMap<>();
 
   private CypherSemanticValidator() {
@@ -107,6 +111,9 @@ public class CypherSemanticValidator {
     ProjectionValidator.validateReturnStar(statement);
     FunctionArgumentValidator.validateFunctionArgumentTypes(statement);
     v.validateCallYieldConclusion(statement);
+    validateYieldedOutputs(statement);
+    validateConclusion(statement);
+    validateSubqueryBodyConclusions(statement);
     v.validateNestedStatements(statement);
   }
 
@@ -118,9 +125,14 @@ public class CypherSemanticValidator {
     validateUnionShape(unionStmt);
 
     for (final CypherStatement query : unionStmt.getQueries())
-      // A branch with no RETURN carries no columns to compare and is not a query this validates on its own.
+      // A branch with no RETURN carries no columns to compare and is not a query this validates on its own, but it still has to
+      // conclude as a query does (issue #12354)
       if (query.getReturnClause() != null)
         validate(query);
+      else {
+        validateConclusion(query);
+        validateSubqueryBodyConclusions(query);
+      }
   }
 
   /**
@@ -132,7 +144,10 @@ public class CypherSemanticValidator {
     for (final CypherStatement branch : conditional.getAllBranches()) {
       validate(branch);
       final ReturnClause returnClause = branch.getReturnClause();
-      final List<String> columns = returnClause != null ? returnClause.getItems() : List.of();
+      final List<String> columns = returnClause != null ? ReturnScope.returnedColumns(branch, returnClause) : List.of();
+      if (columns == null)
+        // the scope of a RETURN * is only known at run time: nothing to compare without running the branch
+        continue;
       if (firstColumns == null)
         firstColumns = columns;
       else if (!firstColumns.equals(columns))
@@ -162,13 +177,17 @@ public class CypherSemanticValidator {
       }
     }
 
-    // Check that all queries have the same return columns
+    // Check that all queries have the same return columns: the columns each one answers, with a star expanded to the variables
+    // in scope at its RETURN (issue #11775), not the texts of its items, which read RETURN * as a column named "*"
     List<String> firstColumns = null;
     for (final CypherStatement query : unionStmt.getQueries()) {
       final ReturnClause returnClause = query.getReturnClause();
       if (returnClause == null)
         continue;
-      final List<String> columns = returnClause.getItems();
+      final List<String> columns = ReturnScope.returnedColumns(query, returnClause);
+      if (columns == null)
+        // the scope of a RETURN * is only known at run time: nothing to compare without running the branch
+        continue;
       if (firstColumns == null)
         firstColumns = columns;
       else if (!firstColumns.equals(columns))
@@ -485,6 +504,117 @@ public class CypherSemanticValidator {
               + "side-effect-only statement");
   }
 
+  /**
+   * A {@code YIELD} names columns of the procedure's declared output (issue #11975). An undeclared name used to be bound to
+   * null on every row, so a misspelt column read as a procedure that answered nothing; Neo4j refuses it before the query
+   * runs with "Unknown procedure output". Only a procedure the registry resolves has a declared signature: a custom
+   * {@code DEFINE FUNCTION} or SQL function called through {@code CALL} has none and is not checked.
+   */
+  private static void validateYieldedOutputs(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null)
+      return;
+
+    for (final ClauseEntry entry : clauses) {
+      if (entry.getType() != ClauseEntry.ClauseType.CALL)
+        continue;
+      final CallClause callClause = entry.getTypedClause();
+      if (!callClause.hasYield() || callClause.isYieldAll())
+        continue;
+      final CypherProcedure procedure = callClause.resolveProcedure();
+      if (procedure == null)
+        continue;
+      final List<String> declared = procedure.getYieldFields();
+      if (declared == null || declared.isEmpty())
+        continue;
+      for (final CallClause.YieldItem item : callClause.getYieldItems())
+        if (!declared.contains(item.getFieldName()))
+          throw new CommandParsingException(
+              "Unknown procedure output: `" + item.getFieldName() + "`. " + callClause.getProcedureName() + "() yields " + declared);
+    }
+  }
+
+  // ================================================
+  // Phase 10c: Query Conclusion Validation
+  // ================================================
+
+  /**
+   * Rejects a query that concludes with a reading clause, mirroring Neo4j's {@code "Query cannot conclude with X"} compile-time
+   * error (issue #12354): the last clause of a query has to be a {@code RETURN}, a {@code FINISH}, an update clause, a unit
+   * {@code CALL { }} (one whose body returns nothing) or a procedure {@code CALL} (with a {@code YIELD} only when it is the whole
+   * statement, see {@link #validateCallYieldConclusion}). A {@code MATCH}, {@code OPTIONAL MATCH}, {@code UNWIND}, {@code WITH},
+   * {@code LOAD CSV} or a returning {@code CALL { }} used to be accepted and answered the variables in scope, a shape no other
+   * openCypher engine accepts, so a query missing its {@code RETURN} looked like it worked.
+   */
+  private static void validateConclusion(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty())
+      return;
+
+    final ClauseEntry last = clauses.getLast();
+    final String concluding = switch (last.getType()) {
+      case MATCH -> last.getClause() instanceof MatchClause match && match.isOptional() ? "OPTIONAL MATCH" : "MATCH";
+      case UNWIND -> "UNWIND";
+      case WITH -> "WITH";
+      case LOAD_CSV -> "LOAD CSV";
+      case SUBQUERY -> returnsRows(((SubqueryClause) last.getClause()).getInnerStatement()) ? "CALL" : null;
+      default -> null;
+    };
+    if (concluding != null)
+      throw new CommandParsingException("InvalidClauseComposition: Query cannot conclude with " + concluding + " " + CONCLUSION_RULE);
+  }
+
+  /**
+   * The body of a {@code CALL { }} is a query too, and concludes the same way: with a {@code RETURN} (a returning subquery) or an
+   * update clause (a unit subquery). The bodies of {@code EXISTS { }} and {@code COUNT { }} are not checked: they may end with a
+   * pattern.
+   */
+  private static void validateSubqueryBodyConclusions(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null)
+      return;
+    for (final ClauseEntry entry : clauses)
+      if (entry.getType() == ClauseEntry.ClauseType.SUBQUERY)
+        validateBodyConclusion(((SubqueryClause) entry.getClause()).getInnerStatement());
+  }
+
+  private static void validateBodyConclusion(final CypherStatement body) {
+    if (body == null)
+      return;
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        validateBodyConclusion(branch);
+      return;
+    }
+    if (body instanceof ConditionalStatement conditional) {
+      for (final CypherStatement branch : conditional.getAllBranches())
+        validateBodyConclusion(branch);
+      return;
+    }
+    validateConclusion(body);
+    // A UNION branch without RETURN is not walked by validateNestedStatements, so the CALL bodies nested in it are reached here
+    validateSubqueryBodyConclusions(body);
+  }
+
+  /** Whether a subquery body answers rows: it returns, in any of its branches. */
+  private static boolean returnsRows(final CypherStatement statement) {
+    if (statement == null)
+      return false;
+    if (statement instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (returnsRows(branch))
+          return true;
+      return false;
+    }
+    if (statement instanceof ConditionalStatement conditional) {
+      for (final CypherStatement branch : conditional.getAllBranches())
+        if (returnsRows(branch))
+          return true;
+      return false;
+    }
+    return statement.getReturnClause() != null;
+  }
+
   // ==================================================
   // Phase 11: Every phase above, applied to each body
   // ==================================================
@@ -562,6 +692,8 @@ public class CypherSemanticValidator {
     ProjectionValidator.validateExpressionAliases(body);
     ProjectionValidator.validateReturnStar(body);
     validateCallYieldConclusion(body);
+    validateYieldedOutputs(body);
+    validateSubqueryBodyConclusions(body);
   }
 
   /**

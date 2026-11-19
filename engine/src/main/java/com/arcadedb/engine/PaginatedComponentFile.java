@@ -364,8 +364,20 @@ public class PaginatedComponentFile extends ComponentFile {
   public void close() {
     channelLock.writeLock().lock();
     try {
-      LogManager.instance().log(this, Level.FINE, "Closing file %s (id=%d)...", null, filePath, fileId);
+      closeChannel();
+    } finally {
+      this.open = false;
+      channelLock.writeLock().unlock();
+    }
+  }
 
+  /**
+   * Releases the channel and the OS handle, and leaves {@link #open} alone. Called with the write lock held, by
+   * {@link #close()} and by {@link #rename(String)}, whose file stays logically open throughout.
+   */
+  private void closeChannel() {
+    LogManager.instance().log(this, Level.FINE, "Closing file %s (id=%d)...", null, filePath, fileId);
+    try {
       if (channel != null) {
         channel.close();
         channel = null;
@@ -375,12 +387,8 @@ public class PaginatedComponentFile extends ComponentFile {
         file.close();
         file = null;
       }
-
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing file %s (id=%d)", e, filePath, fileId);
-    } finally {
-      this.open = false;
-      channelLock.writeLock().unlock();
     }
   }
 
@@ -395,7 +403,10 @@ public class PaginatedComponentFile extends ComponentFile {
   public void rename(final String newFileName) throws IOException {
     channelLock.writeLock().lock();
     try {
-      close();
+      // NOT close(): THAT CLEARS `open`, WHICH THE PAGE FLUSH AND THE SNAPSHOT READ WITHOUT THIS LOCK. A PAGE FLUSHED WHILE THE
+      // NAME CHANGES WOULD THEN BE REPORTED AS WRITTEN TO A CLOSED FILE AND LOST, AND A SNAPSHOT WOULD LEAVE THE FILE OUT. KEPT
+      // OPEN, BOTH REACH THE CHANNEL LOCK AND WAIT HERE FOR THE NEW CHANNEL (ISSUE #12234)
+      closeChannel();
       LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
 
       final File newFile;
@@ -409,7 +420,13 @@ public class PaginatedComponentFile extends ComponentFile {
         raiseSyncState(SYNC_METADATA);
         open(newFile.getAbsolutePath(), mode);
       } catch (Exception e) {
-        open(filePath, mode);
+        try {
+          open(filePath, mode);
+        } catch (final IOException | RuntimeException reopen) {
+          // NEITHER NAME OPENS: THE FILE IS CLOSED NOW, AND SAYS SO
+          this.open = false;
+          e.addSuppressed(reopen);
+        }
         throw new IOException("Error renaming file " + filePath + " to " + newFile.getAbsolutePath(), e);
       }
     } finally {
