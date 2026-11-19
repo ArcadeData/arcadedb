@@ -44,6 +44,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code IllegalStateException} instead of answering false, so a single stored NaN made every range {@code has()} on the
  * property fail, and two maps whose values are not comparable compared as ordered. The deliberate date handling of the copy
  * (every date/time class compared by the instant it denotes) stays.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12018ComparabilityTest {
   private static final String DB_PATH = "./target/testgremlin-12018";
@@ -52,7 +54,7 @@ class Issue12018ComparabilityTest {
 
   @BeforeEach
   void setup() {
-    // A RUN THAT CRASHED BEFORE ITS TEARDOWN WOULD OTHERWISE LEAVE THE TYPE "P" BEHIND
+    // A run that crashed before its teardown would otherwise leave the type "P" behind
     FileUtils.deleteRecursively(new File(DB_PATH));
     graph = ArcadeGraph.open(DB_PATH);
     graph.getDatabase().getSchema().createVertexType("P");
@@ -99,9 +101,9 @@ class Issue12018ComparabilityTest {
     assertThat(g.inject(List.of(1, 2)).is(P.gte(List.of(1, "a"))).count().next()).isZero();
     assertThat(g.inject(Set.of(1, 2)).is(P.lt(Set.of("a", 1))).count().next()).isZero();
     assertThat(g.inject(Map.of("a", "x")).is(P.gt(Map.of("a", 1))).count().next()).isZero();
-    // THE KEYS DIFFER BUT THE VALUES ARE NOT COMPARABLE: NOT ORDERED EITHER (WAS lt = true)
+    // The keys differ but the values are not comparable: not ordered either (was lt = true)
     assertThat(g.inject(Map.of("a", "x")).is(P.lt(Map.of("b", 1))).count().next()).isZero();
-    // COMPARABLE CONTENTS STILL ORDER ELEMENT BY ELEMENT
+    // Comparable contents still order element by element
     assertThat(g.inject(List.of(1, 2)).is(P.lt(List.of(1, 3))).count().next()).isEqualTo(1L);
     assertThat(g.inject(Map.of("a", 1)).is(P.lt(Map.of("a", 2))).count().next()).isEqualTo(1L);
   }
@@ -147,7 +149,7 @@ class Issue12018ComparabilityTest {
     assertThat(GremlinValueComparator.comparable(List.of(1, 2), List.of(1L, 2.5))).isTrue();
     assertThat(GremlinValueComparator.comparable(Set.of(1), Set.of("a"))).isFalse();
     assertThat(GremlinValueComparator.comparable(Map.of("a", 1), Map.of("a", 2L))).isTrue();
-    // AN ARRAY IS A LIST, AS IN TINKERPOP: IT ORDERS AND IS EQUAL ELEMENT BY ELEMENT (WAS: COMPARED BY IDENTITY)
+    // An array is a list, as in TinkerPop: it orders and is equal element by element (was: compared by identity)
     assertThat(GremlinValueComparator.comparable(new int[] { 1, 2 }, List.of(1, 2))).isTrue();
     assertThat(GremlinValueComparator.COMPARABILITY.compare(new int[] { 1, 2 }, List.of(1, 3))).isNegative();
     assertThat(GremlinValueComparator.COMPARABILITY.equals(new int[] { 1, 2 }, List.of(1, 2))).isTrue();

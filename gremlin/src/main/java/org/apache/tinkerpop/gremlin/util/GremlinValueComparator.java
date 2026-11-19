@@ -56,6 +56,9 @@ import static org.apache.tinkerpop.gremlin.util.NumberHelper.eitherAreNaN;
  *   <li>{@code COMPARABILITY.equals()} answers false rather than raising if a comparator still raises;</li>
  *   <li>the contents of a {@code Set} or a {@code Map} with fewer than two elements are not copied and sorted to test them.</li>
  * </ul>
+ * As in TinkerPop, {@link #comparable} copies and sorts the contents of a {@code Set} or a {@code Map} to test them and the
+ * comparator sorts them again, so a large one pays two sorts.
+ * <p>
  * Keep it in step with TinkerPop's class when {@code gremlin.version} moves: {@link #comparable} decides whether
  * {@code lt/lte/gt/gte} answer false or raise (issue #12018).
  *
