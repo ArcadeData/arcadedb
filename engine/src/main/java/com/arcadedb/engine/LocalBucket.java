@@ -7923,7 +7923,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // Slot was consumed by another operation — fall through to create a new page
             nextPage = null;
           } else {
-            // #11925: the chunk is appended at the page's content end (see below), so its slot is declared with it
+            // #11925: newPosition is the page's content end (getFreeSpaceInPage sets newRecordPositionInPage to
+            // contentEndOffset of the last record, and the version check above refuses an analysis of a page changed
+            // since), so the chunk below is an append and its slot is declared with it
             final boolean previousPackedWrite = nextPage.beginPackedWrite();
             try {
               nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE, newPosition);
@@ -7964,7 +7966,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // #11925: the chunk starts at the page's content end (the allocator's newRecordPositionInPage, or the first byte
       // of a new page) and takes at most the free tail, which the statistics are told right after: an append, as the
-      // plain insert in createRecordInternal is, so it is declared hole-free like that one.
+      // plain insert in createRecordInternal is, so it is declared hole-free like that one. A last chunk shorter than the
+      // free tail leaves the rest of the tail free after it, which is still no hole: the page stays packed.
       final boolean previousPackedWrite = nextPage.beginPackedWrite();
       final int chunkMarkerSize;
       try {
