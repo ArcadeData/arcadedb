@@ -28,6 +28,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -102,12 +103,13 @@ class UnidirectionalEdgeTest {
       createSchema(false);
       final List<RID> tags = createTags();
       try (final GraphBatch batch = database.batch().build()) {
+        // a missing type is a schema refusal, a type of another kind a wrong argument (issue #11633)
         assertThatThrownBy(() -> batch.newEdge(tags.get(0), "NoSuchEdge", tags.get(1)))
-            .isInstanceOf(IllegalArgumentException.class)
+            .isInstanceOf(SchemaException.class)
             .hasMessageContaining("Edge type 'NoSuchEdge' not found");
         assertThatThrownBy(() -> batch.newEdge(tags.get(0), "Tag", tags.get(1)))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("Edge type 'Tag' not found");
+            .hasMessageContaining("Type 'Tag' is not an edge type");
       }
     }
 

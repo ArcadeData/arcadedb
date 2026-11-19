@@ -249,11 +249,12 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {
-    if (iValue == null) {
+    // an empty text names no field, and a lone quote is no quoted text: both used to fail with a
+    // StringIndexOutOfBoundsException, a server fault for the caller's argument (issue #12020)
+    if (iValue == null || iValue.isEmpty())
       return null;
-    }
 
-    if (iValue.charAt(0) == '\'' || iValue.charAt(0) == '"') {
+    if (iValue.length() > 1 && (iValue.charAt(0) == '\'' || iValue.charAt(0) == '"')) {
       // GET THE VALUE AS STRING
       return iValue.substring(1, iValue.length() - 1);
     }

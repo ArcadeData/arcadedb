@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
@@ -36,6 +37,7 @@ import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.LightEdgeRID;
+import com.arcadedb.graph.LocalAdjacency;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.RelationshipPattern;
@@ -50,6 +52,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.utility.HeapUsage;
+import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -62,6 +65,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.IntToDoubleFunction;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
@@ -771,6 +775,107 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Reduces every row of {@code adj} to its distinct neighbours, sorted, in place: a parallel edge, or an edge stored in both
+   * directions, leaves one entry, and a self-loop stays (a node is then among its own neighbours, as a neighbour set built from the
+   * raw row holds it). The rows must belong to the caller, as for {@link #toSimpleNeighbourSets}; a row with nothing to drop is not
+   * reallocated.
+   */
+  protected static void toDistinctNeighbours(final int[][] adj, final WorkGuard guard) {
+    for (int u = 0; u < adj.length; u++) {
+      guard.checkPeriodically(u);
+      final int[] row = adj[u];
+      Arrays.sort(row);
+      int write = 0;
+      for (int i = 0; i < row.length; i++)
+        if (i == 0 || row[i] != row[i - 1])
+          row[write++] = row[i];
+      if (write < row.length)
+        adj[u] = Arrays.copyOf(row, write);
+    }
+  }
+
+  /**
+   * The Batagelj-Zaversnik core decomposition, O(V + E) with a bucket sort: fills {@code core} with the core number of every node
+   * when it is not null, and returns the nodes in the order they were peeled, lowest current degree first. That order is a
+   * degeneracy ordering: each node has at most core-number-many neighbours peeled after it, which is what bounds the candidate sets
+   * of a clique search started from it (issue #12173). The degree of a node is the length of its row.
+   */
+  protected static int[] degeneracyOrder(final int[][] adj, final int[] core) {
+    return degeneracyOrder(adj, core, null);
+  }
+
+  /**
+   * {@link #degeneracyOrder(int[][], int[])} with its working arrays (three of the node count, two of the highest degree) reserved
+   * against {@code memory} before they are allocated, when it is not null. The returned order is one of them.
+   */
+  protected static int[] degeneracyOrder(final int[][] adj, final int[] core, final MemoryBudget memory) {
+    if (memory != null) {
+      int maxDegree = 0;
+      for (final int[] row : adj)
+        maxDegree = Math.max(maxDegree, row.length);
+      memory.reserve(saturatingProduct(saturatingSum(3L * adj.length, 2L * (maxDegree + 1)), INT_BYTES),
+          "the degeneracy order", adj.length + " nodes, highest degree " + maxDegree);
+    }
+    return peel(adj, core);
+  }
+
+  private static int[] peel(final int[][] adj, final int[] core) {
+    final int n = adj.length;
+    final int[] deg = new int[n];
+    int maxDeg = 0;
+    for (int i = 0; i < n; i++) {
+      deg[i] = adj[i].length;
+      if (deg[i] > maxDeg)
+        maxDeg = deg[i];
+    }
+
+    // Bucket sort: bin[d] = number of vertices with degree d (then start offset)
+    final int[] bin = new int[maxDeg + 1];
+    for (int i = 0; i < n; i++)
+      bin[deg[i]]++;
+    int start = 0;
+    for (int d = 0; d <= maxDeg; d++) {
+      final int cnt = bin[d];
+      bin[d] = start;
+      start += cnt;
+    }
+
+    // vert[p] = vertex at sorted position p; pos[v] = position of vertex v
+    final int[] vert = new int[n];
+    final int[] pos = new int[n];
+    final int[] binTmp = Arrays.copyOf(bin, bin.length);
+    for (int i = 0; i < n; i++) {
+      pos[i] = binTmp[deg[i]];
+      vert[pos[i]] = i;
+      binTmp[deg[i]]++;
+    }
+
+    for (int i = 0; i < n; i++) {
+      final int v = vert[i];
+      final int coreV = deg[v];
+      if (core != null)
+        core[v] = coreV;
+      for (final int u : adj[v]) {
+        if (deg[u] > coreV) {
+          final int du = deg[u];
+          final int pw = bin[du]; // first vertex in bucket du
+          final int pu = pos[u];
+          if (pu != pw) {
+            final int w = vert[pw];
+            vert[pu] = w;
+            vert[pw] = u;
+            pos[w] = pu;
+            pos[u] = pw;
+          }
+          bin[du]++;
+          deg[u]--;
+        }
+      }
+    }
+    return vert;
+  }
+
+  /**
    * Counts the triangles every node belongs to, over the sorted neighbour sets {@link #toSimpleNeighbourSets} builds.
    * <p>
    * The forward technique: a triangle {@code u < v < w} is found exactly once, from its lowest edge {@code (u, v)}, by
@@ -1175,6 +1280,294 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final String... edgeTypes) {
     final String[] types = edgeTypes != null ? edgeTypes : NO_EDGE_TYPES;
     return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, types);
+  }
+
+  /**
+   * Opens the {@link Neighbourhood} of a call that reads a few vertices and their neighbourhoods (issue #12176): over the Graph
+   * Analytical View that covers {@code relTypes} when there is one and it holds every vertex in {@code anchors}, otherwise over the
+   * records, read on demand. Never loads the whole graph.
+   *
+   * @param anchors the vertices the call starts from: a view built before one of them was created cannot answer for it, and the call
+   *                then reads the records, which can
+   */
+  protected Neighbourhood openNeighbourhood(final Database db, final String[] relTypes, final CommandContext context,
+      final RID... anchors) {
+    final MemoryBudget memory = newMemoryBudget(db);
+    final GraphTraversalProvider provider = findProvider(db, relTypes, context);
+    if (provider != null) {
+      final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(provider);
+      boolean holdsAnchors = true;
+      for (final RID anchor : anchors)
+        if (dense.getNodeId(anchor) < 0) {
+          holdsAnchors = false;
+          break;
+        }
+      if (holdsAnchors) {
+        if (context != null)
+          context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+        return new Neighbourhood(dense, null, relTypes, memory);
+      }
+    }
+    // Charged as the rows are read, before what they hold is allocated: a supernode's row is refused while it is being read
+    final LocalAdjacency local = new LocalAdjacency((DatabaseInternal) db, relTypes, incomingSideContext(db, context),
+        bytes -> memory.reserve(bytes, "the neighbourhood rows", "rows read on demand, " + bytes + " bytes more"));
+    return new Neighbourhood(null, local, relTypes, memory);
+  }
+
+  /**
+   * The neighbourhoods of the vertices a call actually reads, numbered as node ids, for the procedures that ask about one or two
+   * vertices and the vertices one or two hops away (issue #12176): a random walk, the link-prediction scores. Each row is read
+   * once, kept, and charged to the call's budget when it is read, so a call costs the rows it reads rather than the adjacency of
+   * the whole database.
+   * <p>
+   * Backed by a Graph Analytical View, a row is the view's row of the node; backed by the records, it is what the row of the same
+   * vertex in the whole-database adjacency holds (see {@link LocalAdjacency}), and node ids are handed out as vertices are met. Either
+   * way the ids mean nothing outside the call: an answer that lists several nodes orders them by RID, which both backings agree on.
+   */
+  protected static final class Neighbourhood {
+    // ONE ROW, ITS MAP ENTRY AND ITS NODE: WHAT A VIEW-BACKED ROW COSTS BESIDES ITS ENTRIES
+    private static final long ROW_BYTES = MATRIX_ROW_OVERHEAD_BYTES + 32L;
+
+    private final GraphTraversalProvider provider;
+    private final LocalAdjacency         local;
+    private final String[]               relTypes;
+    private final MemoryBudget           memory;
+    // THE ROWS READ FROM THE VIEW, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
+    @SuppressWarnings("unchecked")
+    private final Map<Integer, int[]>[]  viewRows = new Map[3];
+
+    private Neighbourhood(final GraphTraversalProvider provider, final LocalAdjacency local, final String[] relTypes,
+        final MemoryBudget memory) {
+      this.provider = provider;
+      this.local = local;
+      this.relTypes = relTypes;
+      this.memory = memory;
+    }
+
+    /** The budget this call is spending. */
+    public MemoryBudget memory() {
+      return memory;
+    }
+
+    /** Whether the rows come from a Graph Analytical View. */
+    public boolean isCSRBacked() {
+      return provider != null;
+    }
+
+    /** The node id of the vertex {@code rid}, -1 when the graph holds no such vertex. */
+    public int nodeOf(final RID rid) {
+      return provider != null ? provider.getNodeId(rid) : local.nodeOf(rid);
+    }
+
+    /** The RID of node {@code node}; null for a node of a view whose vertex went away. */
+    public RID ridOf(final int node) {
+      return provider != null ? provider.getRID(node) : local.ridOf(node);
+    }
+
+    /**
+     * The neighbours of {@code node} in {@code direction}, repetitions and self-loops included, as the row of the node in
+     * {@link GraphData#adjacency} lists them. The array is shared: do not modify it.
+     */
+    public int[] neighbors(final int node, final Vertex.DIRECTION direction) {
+      if (provider == null)
+        return local.row(node, direction);
+      Map<Integer, int[]> rows = viewRows[direction.ordinal()];
+      if (rows == null) {
+        rows = new HashMap<>();
+        viewRows[direction.ordinal()] = rows;
+      }
+      int[] row = rows.get(node);
+      if (row == null) {
+        row = provider.getNeighborIds(node, direction, relTypes);
+        memory.reserve(saturatingSum(ROW_BYTES, saturatingProduct(row.length, INT_BYTES)), "the neighbourhood rows",
+            "1 row of " + row.length + " entries");
+        rows.put(node, row);
+      }
+      return row;
+    }
+
+    /**
+     * Every vertex of the graph, for an answer that lists them all (a score threshold that admits a score of zero): the node ids of
+     * the view, or of the vertices read from the records, which numbers them all.
+     *
+     * @param vertices every vertex of the database, read only when the rows come from the records
+     */
+    public int[] allNodes(final Iterator<Vertex> vertices) {
+      if (provider != null) {
+        final int bound = provider.getNodeIdUpperBound();
+        memory.reserve(saturatingProduct(bound, INT_BYTES), "the node list", bound + " nodes");
+        int[] nodes = new int[bound];
+        int size = 0;
+        for (int i = 0; i < bound; i++)
+          if (provider.getRID(i) != null)
+            nodes[size++] = i;
+        return size == bound ? nodes : Arrays.copyOf(nodes, size);
+      }
+      int[] nodes = new int[64];
+      int size = 0;
+      while (vertices.hasNext()) {
+        final int node = nodeOf(vertices.next().getIdentity());
+        if (node < 0)
+          continue;
+        if (size == nodes.length)
+          nodes = Arrays.copyOf(nodes, size * 2);
+        nodes[size++] = node;
+      }
+      return Arrays.copyOf(nodes, size);
+    }
+  }
+
+  /**
+   * A count and a score per node, for the nodes a call reaches rather than for every node of the graph (issue #12176): slots are
+   * handed out as nodes are first touched, so the footprint follows the neighbourhood the call walks, and grows charged to the
+   * call's budget.
+   */
+  protected static final class NodeScores {
+    // A SLOT: ITS NODE, COUNT AND SCORE, AND ITS ENTRY IN THE NODE -> SLOT MAP
+    private static final long SLOT_BYTES = INT_BYTES + INT_BYTES + DOUBLE_BYTES + 2 * INT_BYTES;
+
+    private final IntIntHashMap slotOf = new IntIntHashMap();
+    private final MemoryBudget  memory;
+    private       int[]         nodes  = new int[16];
+    private       int[]         counts = new int[16];
+    private       double[]      scores = new double[16];
+    private       int           size;
+
+    public NodeScores(final MemoryBudget memory) {
+      this.memory = memory;
+    }
+
+    /** Adds {@code count} and {@code score} to the accumulators of {@code node}. */
+    public void add(final int node, final int count, final double score) {
+      int slot = slotOf.get(node, -1);
+      if (slot < 0) {
+        if (size == nodes.length) {
+          memory.reserve(saturatingProduct(size, SLOT_BYTES), "the neighbourhood scores", (size * 2) + " nodes");
+          nodes = Arrays.copyOf(nodes, size * 2);
+          counts = Arrays.copyOf(counts, size * 2);
+          scores = Arrays.copyOf(scores, size * 2);
+        }
+        slot = size++;
+        slotOf.put(node, slot);
+        nodes[slot] = node;
+      }
+      counts[slot] += count;
+      scores[slot] += score;
+    }
+
+    /** The slot of {@code node}, -1 when it was never touched. */
+    public int slotOf(final int node) {
+      return slotOf.get(node, -1);
+    }
+
+    public int size() {
+      return size;
+    }
+
+    public int node(final int slot) {
+      return nodes[slot];
+    }
+
+    public int count(final int slot) {
+      return counts[slot];
+    }
+
+    public double score(final int slot) {
+      return scores[slot];
+    }
+  }
+
+  /**
+   * The nodes whose row lists one of the distinct neighbours of {@code source}, each with how many entries of its row do and the sum
+   * of {@code weightOf(w)} over those entries (issue #12176): what a link-prediction score of the source against every other node
+   * needs, read from the two hops that can make it non-zero instead of from the row of every node of the graph. A node v lists w in
+   * its {@code direction} row exactly as often as w lists v in its row of the opposite direction, so the walk goes from each
+   * neighbour w of the source back along that row. The source itself is left out.
+   *
+   * @param weightOf the weight one entry naming the neighbour {@code w} adds to the score, given the node w
+   */
+  protected static NodeScores scoresThroughNeighbours(final Neighbourhood neighbourhood, final int source,
+      final Vertex.DIRECTION direction, final IntToDoubleFunction weightOf, final WorkGuard guard) {
+    final Vertex.DIRECTION back = switch (direction) {
+      case OUT -> Vertex.DIRECTION.IN;
+      case IN -> Vertex.DIRECTION.OUT;
+      default -> Vertex.DIRECTION.BOTH;
+    };
+    final NodeScores scores = new NodeScores(neighbourhood.memory());
+    final int[] distinct = neighbourhood.neighbors(source, direction).clone();
+    Arrays.sort(distinct);
+    int step = 0;
+    for (int i = 0; i < distinct.length; i++) {
+      final int w = distinct[i];
+      if (i > 0 && w == distinct[i - 1])
+        continue;
+      final double weight = weightOf.applyAsDouble(w);
+      for (final int v : neighbourhood.neighbors(w, back)) {
+        guard.checkPeriodically(step++);
+        if (v != source)
+          scores.add(v, 1, weight);
+      }
+    }
+    return scores;
+  }
+
+  /**
+   * The nodes a link-prediction answer lists, ordered by RID: the nodes {@code scores} touched, or every node of the graph but the
+   * source when {@code everyNode}, which a score threshold that admits a score of zero asks for (a node no walk reached then scores
+   * zero, and is listed all the same).
+   */
+  protected int[] candidateNodes(final Database db, final Neighbourhood neighbourhood, final NodeScores scores, final int source,
+      final boolean everyNode) {
+    if (!everyNode) {
+      final int[] touched = new int[scores.size()];
+      for (int s = 0; s < touched.length; s++)
+        touched[s] = scores.node(s);
+      return sortedByRid(neighbourhood, touched, touched.length);
+    }
+    final int[] all = neighbourhood.allNodes(getAllVertices(db, null));
+    int size = 0;
+    for (final int node : all)
+      if (node != source)
+        all[size++] = node;
+    return sortedByRid(neighbourhood, all, size);
+  }
+
+  /**
+   * Orders {@code nodes} by the RID of their vertex, leaving out a node whose vertex is gone: the order an answer listing several
+   * nodes of a {@link Neighbourhood} is given in, the same with and without a view (issue #12176).
+   */
+  protected static int[] sortedByRid(final Neighbourhood neighbourhood, final int[] nodes, final int size) {
+    // The live nodes and a merge buffer of the same size, both primitive: nothing boxed, and both priced before they are taken
+    neighbourhood.memory().reserve(saturatingProduct(2L * size, INT_BYTES), "the candidate ordering", size + " nodes");
+    int[] sorted = new int[size];
+    int live = 0;
+    for (int i = 0; i < size; i++)
+      if (neighbourhood.ridOf(nodes[i]) != null)
+        sorted[live++] = nodes[i];
+    if (live < size)
+      sorted = Arrays.copyOf(sorted, live);
+
+    // Bottom-up merge sort: stable, O(n log n), no recursion
+    int[] from = sorted;
+    int[] to = new int[live];
+    // In long: at a billion candidates, lo + 2 * width passes Integer.MAX_VALUE before the sort is over
+    for (long width = 1; width < live; width *= 2) {
+      for (long lo = 0; lo < live; lo += 2 * width) {
+        final int mid = (int) Math.min(lo + width, live);
+        final int hi = (int) Math.min(lo + 2 * width, live);
+        int i = (int) lo, j = mid, k = (int) lo;
+        while (i < mid && j < hi)
+          to[k++] = neighbourhood.ridOf(from[j]).compareTo(neighbourhood.ridOf(from[i])) < 0 ? from[j++] : from[i++];
+        while (i < mid)
+          to[k++] = from[i++];
+        while (j < hi)
+          to[k++] = from[j++];
+      }
+      final int[] swap = from;
+      from = to;
+      to = swap;
+    }
+    return from;
   }
 
   /**
