@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.antlr;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -190,7 +189,6 @@ import com.arcadedb.query.sql.parser.SetGlobalStatement;
 import com.arcadedb.query.sql.parser.Skip;
 import com.arcadedb.query.sql.parser.SleepStatement;
 import com.arcadedb.query.sql.parser.Statement;
-import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
@@ -8786,41 +8784,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return whereClause;
   }
 
-  private BooleanExpression createBooleanLiteral(final Boolean boolValue) {
-    // Create an anonymous BooleanExpression that returns the literal value
-    final boolean val = boolValue != null && boolValue;  // Convert to primitive to avoid closure issues
-    return new BooleanExpression() {
-      @Override
-      public Boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-        return val;
-      }
-
-      @Override
-      public Boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-        return val;
-      }
-
-      @Override
-      public void toString(final Map<String, Object> params, final StringBuilder builder) {
-        builder.append(val);
-      }
-
-      @Override
-      public BooleanExpression copy() {
-        return createBooleanLiteral(val);
-      }
-
-      @Override
-      public void extractSubQueries(final SubQueryCollector collector) {
-        // No subqueries in a boolean literal
-      }
-
-      @Override
-      public List<String> getMatchPatternInvolvedAliases() {
-        // No aliases involved in a boolean literal
-        return Collections.emptyList();
-      }
-    };
+  /**
+   * The boolean literal of a MATCH {@code where:} / {@code while:} filter: the shared {@link BooleanExpression#TRUE} and
+   * {@link BooleanExpression#FALSE} nodes a {@code WHERE true} / {@code WHERE false} builds too. Their {@code copy()} answers the
+   * node itself, so a copied statement is equal to its original and hashes the same (issue #12528: an anonymous node per literal
+   * kept {@code Object} identity, and its copy was never equal to it).
+   */
+  private static BooleanExpression createBooleanLiteral(final Boolean boolValue) {
+    return boolValue != null && boolValue ? BooleanExpression.TRUE : BooleanExpression.FALSE;
   }
 
   private static int parseCompactionThreshold(final String text) {

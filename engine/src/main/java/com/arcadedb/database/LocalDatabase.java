@@ -92,6 +92,7 @@ import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.index.vector.VectorDeltaPayloadLedger;
+import com.arcadedb.index.vector.VectorGraphBuildCacheLedger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -293,6 +294,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * {@code arcadedb.vectorIndex.deltaCacheMaxHeapPercent} bounds for all of them together (issue #12379).
    */
   private final      VectorDeltaPayloadLedger                  vectorDeltaPayloadLedger  = new VectorDeltaPayloadLedger();
+  /**
+   * The heap the caches of the graph builds running on this database's vector indexes plan on (issue #12544), charged to
+   * the search caches, to the other builds and to the delta payload budget.
+   */
+  private final      VectorGraphBuildCacheLedger               vectorGraphBuildCacheLedger = new VectorGraphBuildCacheLedger();
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
   // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
   // so nothing may ever wait for the async workers while holding it.
@@ -1414,6 +1420,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public VectorDeltaPayloadLedger getVectorDeltaPayloadLedger() {
     return vectorDeltaPayloadLedger;
+  }
+
+  /**
+   * The ledger the graph builds of this database's vector indexes charge their caches to while they run (issue #12544).
+   * Answered whatever the state of the database: a build gives its charge back when it ends, even while the database closes.
+   */
+  public VectorGraphBuildCacheLedger getVectorGraphBuildCacheLedger() {
+    return vectorGraphBuildCacheLedger;
   }
 
   /**
