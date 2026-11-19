@@ -84,22 +84,39 @@ public final class FailPoints {
   private static volatile boolean          active;
 
   static {
-    final String configured = System.getProperty("arcadedb.failPoints");
-    if (configured != null && !configured.isBlank())
-      for (final String entry : configured.split(",")) {
-        final String[] nameAndAction = entry.trim().split("=", 2);
-        final String action = nameAndAction.length > 1 ? nameAndAction[1].trim() : "throw";
-        arm(nameAndAction[0].trim(), switch (action) {
-          case "throw" -> THROW;
-          case "halt" -> HALT;
-          default -> throw new IllegalArgumentException("Unknown fail point action '" + action + "' in " + entry);
-        });
-      }
+    armFromProperty(System.getProperty("arcadedb.failPoints"));
     if (active)
       LogManager.instance().log(FailPoints.class, Level.WARNING,
           "Fail points armed from the system property 'arcadedb.failPoints': %s. The property is for tests only: an armed point "
               + "fails or ends the process when the engine reaches it. Remove it from the JVM options of any deployment",
           new TreeSet<>(ARMED.keySet()));
+  }
+
+  /**
+   * Arms the points listed in a {@code name[=throw|halt],...} value. A malformed entry (an empty name or an unknown action) is
+   * logged and skipped, so a typo in the JVM option cannot fail the class initialization and with it every write.
+   */
+  static void armFromProperty(final String configured) {
+    if (configured == null || configured.isBlank())
+      return;
+    for (final String entry : configured.split(",")) {
+      if (entry.isBlank())
+        continue;
+      final String[] nameAndAction = entry.trim().split("=", 2);
+      final String name = nameAndAction[0].trim();
+      final String actionName = nameAndAction.length > 1 ? nameAndAction[1].trim() : "throw";
+      final Action action = switch (actionName) {
+        case "throw" -> THROW;
+        case "halt" -> HALT;
+        default -> null;
+      };
+      if (name.isEmpty() || action == null) {
+        LogManager.instance().log(FailPoints.class, Level.WARNING,
+            "Ignoring malformed fail point entry '%s' in the system property 'arcadedb.failPoints'", entry);
+        continue;
+      }
+      arm(name, action);
+    }
   }
 
   private FailPoints() {
