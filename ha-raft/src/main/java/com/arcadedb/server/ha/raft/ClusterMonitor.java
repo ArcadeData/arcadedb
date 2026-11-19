@@ -587,7 +587,7 @@ public class ClusterMonitor {
    * State is mutated only from the single lag-monitor thread.
    * <p>
    * The log announces the reset as <i>triggering</i> (intent), not as a completed action: the handler
-   * ({@link RaftHAServer#resetPeerReplicationChannel}) owns and logs the concrete outcome, so a rare
+   * ({@link PeerChannelRecovery#resetPeerReplicationChannel}) owns and logs the concrete outcome, so a rare
    * no-op (e.g. a non-proxy RPC layer) is not over-reported here.
    */
   private void trackUnreachableForChannelReset(final String replicaId, final ReplicaState state,

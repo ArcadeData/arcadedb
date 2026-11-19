@@ -30,7 +30,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link RaftHAServer#selectChannelEscalationTarget} (issue #5346).
+ * Unit tests for {@link PeerChannelRecovery#selectChannelEscalationTarget} (issue #5346).
  * <p>
  * When the bounded replication-channel reset budget is exhausted for a wedged follower, the leader
  * escalates by transferring leadership to a healthy peer, which rebuilds the appender. The target
@@ -46,7 +46,7 @@ class RaftHAServerChannelEscalationTest {
   @Test
   void picksAHealthyPeerOtherThanTheWedgedFollower() {
     final List<RaftPeer> peers = List.of(peer("n0", 0), peer("n1", 0), peer("n2", 0));
-    final RaftPeer target = RaftHAServer.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
+    final RaftPeer target = PeerChannelRecovery.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
     assertThat(target).isNotNull();
     assertThat(target.getId().toString()).isEqualTo("n1");
   }
@@ -55,27 +55,27 @@ class RaftHAServerChannelEscalationTest {
   void neverPicksTheWedgedFollowerEvenWhenItIsTheOnlyOtherPeer() {
     // Two-node cluster whose single follower is the wedged one: there is nowhere safe to go.
     final List<RaftPeer> peers = List.of(peer("n0", 0), peer("n2", 0));
-    final RaftPeer target = RaftHAServer.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
+    final RaftPeer target = PeerChannelRecovery.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
     assertThat(target).isNull();
   }
 
   @Test
   void neverPicksThisNode() {
     final List<RaftPeer> peers = List.of(peer("n0", 0));
-    final RaftPeer target = RaftHAServer.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
+    final RaftPeer target = PeerChannelRecovery.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
     assertThat(target).isNull();
   }
 
   @Test
   void prefersTheHighestPriorityHealthyPeer() {
     final List<RaftPeer> peers = List.of(peer("n0", 5), peer("n1", 1), peer("n2", 0), peer("n3", 7));
-    final RaftPeer target = RaftHAServer.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
+    final RaftPeer target = PeerChannelRecovery.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", null);
     assertThat(target).isNotNull();
     assertThat(target.getId().toString()).isEqualTo("n3");
   }
 
   /**
-   * A lagging peer is skipped by {@link RaftHAServer#selectStepDownTargets}, so a cluster where every
+   * A lagging peer is skipped by {@link StepDownTargets#selectStepDownTargets}, so a cluster where every
    * remaining follower is behind yields no escalation target and the leader keeps the previous
    * operator-intervention behaviour instead of flapping leadership onto a peer that cannot serve.
    */
@@ -86,7 +86,7 @@ class RaftHAServerChannelEscalationTest {
     monitor.updateReplicaMatchIndex("n1", 0L, 0L); // lag 10000 > threshold 10
 
     final List<RaftPeer> peers = List.of(peer("n0", 0), peer("n1", 0), peer("n2", 0));
-    final RaftPeer target = RaftHAServer.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", monitor);
+    final RaftPeer target = PeerChannelRecovery.selectChannelEscalationTarget(peers, RaftPeerId.valueOf("n0"), "n2", monitor);
     assertThat(target).isNull();
   }
 
@@ -101,10 +101,10 @@ class RaftHAServerChannelEscalationTest {
     final Map<String, Long> escalations = new HashMap<>();
     final long t0 = 1_000_000L;
 
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0)).isTrue();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0)).isTrue();
     // Same peer, well inside the window: refused, so leadership is not bounced again.
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 60_000L)).isFalse();
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 29 * 60_000L)).isFalse();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0 + 60_000L)).isFalse();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0 + 29 * 60_000L)).isFalse();
   }
 
   @Test
@@ -112,10 +112,10 @@ class RaftHAServerChannelEscalationTest {
     final Map<String, Long> escalations = new HashMap<>();
     final long t0 = 1_000_000L;
 
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0)).isTrue();
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 31 * 60_000L)).isTrue();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0)).isTrue();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0 + 31 * 60_000L)).isTrue();
     // ...and the window restarts from the admitted escalation.
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 32 * 60_000L)).isFalse();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0 + 32 * 60_000L)).isFalse();
   }
 
   /**
@@ -132,12 +132,12 @@ class RaftHAServerChannelEscalationTest {
 
     // No eligible target: escalateWedgedPeerChannel returns before admitting, so nothing is recorded.
     final List<RaftPeer> onlyWedgedPeerLeft = List.of(peer("n0", 0), peer("n2", 0));
-    assertThat(RaftHAServer.selectChannelEscalationTarget(onlyWedgedPeerLeft, RaftPeerId.valueOf("n0"), "n2", null))
+    assertThat(PeerChannelRecovery.selectChannelEscalationTarget(onlyWedgedPeerLeft, RaftPeerId.valueOf("n0"), "n2", null))
         .isNull();
     assertThat(escalations).isEmpty();
 
     // A healthy peer rejoins moments later: the escalation is still admitted, not suppressed.
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0 + 1_000L)).isTrue();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0 + 1_000L)).isTrue();
   }
 
   @Test
@@ -145,9 +145,9 @@ class RaftHAServerChannelEscalationTest {
     final Map<String, Long> escalations = new HashMap<>();
     final long t0 = 1_000_000L;
 
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n2", t0)).isTrue();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n2", t0)).isTrue();
     // A different follower wedging at the same time is a distinct incident and must not be suppressed.
-    assertThat(RaftHAServer.admitChannelEscalation(escalations, "n3", t0)).isTrue();
+    assertThat(PeerChannelRecovery.admitChannelEscalation(escalations, "n3", t0)).isTrue();
   }
 
   @Test

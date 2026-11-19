@@ -41,7 +41,6 @@ public class SQLMethodAsInteger extends AbstractSQLMethod {
       final Object[] params) {
     if (value instanceof Number number)
       return number.intValue();
-    final String text = numericTextOrNull(value);
-    return text != null ? Integer.valueOf(text) : null;
+    return parseNumberOrNull(value, Integer::valueOf);
   }
 }
