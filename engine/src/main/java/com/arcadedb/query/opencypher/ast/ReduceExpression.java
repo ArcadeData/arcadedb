@@ -149,6 +149,15 @@ public class ReduceExpression implements Expression {
     return false;
   }
 
+  /**
+   * An aggregate nested in any part ({@code reduce(s = 0, x IN tail(collect(v)) | s + x)}) makes the reduce an aggregation
+   * too (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    return initialValue.containsAggregation() || listExpression.containsAggregation() || reduceExpression.containsAggregation();
+  }
+
   @Override
   public String getText() {
     return text;

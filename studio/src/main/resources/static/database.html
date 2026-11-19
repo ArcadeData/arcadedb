@@ -36,6 +36,11 @@
               <i class="fa fa-sync"></i>
             </button>
           </div>
+          <div class="sidebar-filter">
+            <input type="search" id="dbTypeFilter" class="sidebar-filter-input" placeholder="Filter types..." aria-label="Filter types by name"
+                   autocomplete="off" spellcheck="false" data-on-input="filterTypeSidebar" data-args='["dbTypeBadges"]'>
+            <div class="sidebar-filter-status" id="dbTypeFilterStatus" aria-live="polite"></div>
+          </div>
           <div id="dbTypeBadges">
             <div class="sidebar-empty">Loading...</div>
           </div>

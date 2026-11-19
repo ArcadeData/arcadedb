@@ -41,10 +41,19 @@ public class SQLFunctionVectorSparseCreate extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 2 || params.length > 3)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object indicesObj = params[0];
     final Object valuesObj = params[1];
