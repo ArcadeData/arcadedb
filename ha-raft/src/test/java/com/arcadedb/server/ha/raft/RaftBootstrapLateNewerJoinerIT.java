@@ -131,7 +131,7 @@ class RaftBootstrapLateNewerJoinerIT extends BaseRaftHATest {
     // path, not InstallSnapshot, to be the carrier of BOOTSTRAP_FINGERPRINT_ENTRY). Resolve the actual
     // storage location through the same helper the server uses, so this stays correct regardless of the
     // default layout (issue #5272).
-    final File raftStorage = RaftHAServer.resolveRaftStorageDir(
+    final File raftStorage = RaftStorageFiles.resolveRaftStorageDir(
         getServer(LATE_JOINER_INDEX).getConfiguration().getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY),
         getServer(LATE_JOINER_INDEX).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
         getServer(LATE_JOINER_INDEX).getRootPath(), peerIdForIndex(LATE_JOINER_INDEX));

@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -92,57 +91,8 @@ public class AlgoKCore extends AbstractAlgoProcedure {
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Batagelj-Zaversnik O(V+E) k-core algorithm with bucket sort
-    final int[] deg = new int[n];
-    int maxDeg = 0;
-    for (int i = 0; i < n; i++) {
-      deg[i] = adj[i].length;
-      if (deg[i] > maxDeg)
-        maxDeg = deg[i];
-    }
-
-    // Bucket sort: bin[d] = number of vertices with degree d (then start offset)
-    final int[] bin = new int[maxDeg + 1];
-    for (int i = 0; i < n; i++)
-      bin[deg[i]]++;
-    int start = 0;
-    for (int d = 0; d <= maxDeg; d++) {
-      final int cnt = bin[d];
-      bin[d] = start;
-      start += cnt;
-    }
-
-    // vert[p] = vertex at sorted position p; pos[v] = position of vertex v
-    final int[] vert = new int[n];
-    final int[] pos = new int[n];
-    final int[] binTmp = Arrays.copyOf(bin, bin.length);
-    for (int i = 0; i < n; i++) {
-      pos[i] = binTmp[deg[i]];
-      vert[pos[i]] = i;
-      binTmp[deg[i]]++;
-    }
-
-    // Core decomposition pass
     final int[] core = new int[n];
-    for (int i = 0; i < n; i++) {
-      final int v = vert[i];
-      core[v] = deg[v];
-      for (final int u : adj[v]) {
-        if (deg[u] > core[v]) {
-          final int du = deg[u];
-          final int pw = bin[du]; // first vertex in bucket du
-          final int pu = pos[u];
-          if (pu != pw) {
-            final int w = vert[pw];
-            vert[pu] = w;
-            vert[pw] = u;
-            pos[w] = pu;
-            pos[u] = pw;
-          }
-          bin[du]++;
-          deg[u]--;
-        }
-      }
-    }
+    degeneracyOrder(adj, core, graph.memory());
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();

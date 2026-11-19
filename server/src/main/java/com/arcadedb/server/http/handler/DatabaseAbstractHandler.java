@@ -305,9 +305,15 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     } finally {
       try {
-        // Clear read consistency context
-        if (haDbForRead != null)
+        if (haDbForRead != null) {
+          // A request that left the try through an exception skipped the emit above and is answered after this block, by
+          // handleRequest's error mapping: the response-commit listener would then read the bookmark with the writes this
+          // request forwarded to the leader already cleared below (issue #11740), so it is set here, while they are known
+          if (!exchange.isResponseStarted())
+            emitCommitIndexBookmarkIfAbsent(exchange, haDbForRead);
+          // Clear read consistency context
           haDbForRead.clearReadConsistencyContext();
+        }
 
         if (activeSession != null)
           // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
@@ -408,6 +414,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final DatabaseInternal database, final JSONObject payload, final AtomicReference<ExecutionResponse> response,
       final int retries) {
     database.transaction(() -> {
+      // Opened by this server around one request: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs (issue #11588)
+      database.getTransaction().setImplicit(true);
       // Each attempt forwards to the leader under the same request ids as the first, so a retried write is
       // deduplicated there against the attempt that may already have applied it (issue #8323).
       ForwardedRequestIdContext.restartOrdinals();

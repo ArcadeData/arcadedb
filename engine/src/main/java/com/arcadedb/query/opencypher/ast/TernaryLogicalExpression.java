@@ -145,12 +145,7 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private static Boolean toBoolean(final Object value) {
-    if (value == null)
-      return null;
-    if (value instanceof Boolean)
-      return (Boolean) value;
-    // Non-null, non-boolean values are truthy in Cypher
-    return true;
+    return BooleanCoercionExpression.toPredicate(value);
   }
 
   public Operator getOperator() {

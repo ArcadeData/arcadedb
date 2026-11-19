@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.TemporalMapFields;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -49,7 +50,6 @@ import java.time.Period;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -914,57 +914,40 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * Apply a map of adjustments to a truncated date.
-   * The map can contain: year, month, day, dayOfWeek, ordinalDay, dayOfQuarter.
+   * Apply a map of adjustments to a truncated date: every date field, the week, quarter and ordinal ones included, applied
+   * as a selection on the truncated value applies them ({@link TemporalMapFields}). Only the calendar fields and
+   * {@code dayOfWeek} used to apply, the rest were dropped (issue #12297).
    */
-  public static LocalDate applyDateMap(LocalDate date, final Map<String, Object> map) {
+  public static LocalDate applyDateMap(final LocalDate date, final Map<String, Object> map) {
     if (map == null || map.isEmpty())
       return date;
-    // Optimized: single map lookup instead of containsKey() + get()
-    Object value = map.get("year");
-    if (value != null)
-      date = date.withYear(TemporalUtil.toIntField("year", value));
-    value = map.get("month");
-    if (value != null)
-      date = date.withMonth(TemporalUtil.toIntField("month", value));
-    value = map.get("day");
-    if (value != null)
-      date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
-    value = map.get("dayOfWeek");
-    if (value != null)
-      date = date.with(WeekFields.ISO.dayOfWeek(), TemporalUtil.toIntField("dayOfWeek", value));
-    return date;
+    TemporalMapFields.checkAdjustmentKeys(map, true, false, false);
+    return TemporalMapFields.resolveDate(map, date, false);
   }
 
   /**
    * Apply a map of adjustments to a truncated time.
+   *
+   * @param zoned whether the truncated value has a zone, which the map's {@code timezone} then replaces
    */
-  public static LocalTime applyTimeMap(LocalTime time, final Map<String, Object> map) {
+  public static LocalTime applyTimeMap(final LocalTime time, final Map<String, Object> map, final boolean zoned) {
     if (map == null || map.isEmpty())
       return time;
-    // Optimized: single map lookup instead of containsKey() + get()
-    Object value = map.get("hour");
-    if (value != null)
-      time = time.withHour(TemporalUtil.toIntField("hour", value));
-    value = map.get("minute");
-    if (value != null)
-      time = time.withMinute(TemporalUtil.toIntField("minute", value));
-    value = map.get("second");
-    if (value != null)
-      time = time.withSecond(TemporalUtil.toIntField("second", value));
-    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano(), true));
-    return time;
+    TemporalMapFields.checkAdjustmentKeys(map, false, true, zoned);
+    return TemporalMapFields.adjustTruncatedTime(time, map);
   }
 
   /**
    * Apply a map of adjustments to a truncated local datetime.
+   *
+   * @param zoned whether the truncated value has a zone, which the map's {@code timezone} then replaces
    */
-  public static LocalDateTime applyDateTimeMap(LocalDateTime dt, final Map<String, Object> map) {
+  public static LocalDateTime applyDateTimeMap(final LocalDateTime dt, final Map<String, Object> map, final boolean zoned) {
     if (map == null || map.isEmpty())
       return dt;
-    final LocalDate date = applyDateMap(dt.toLocalDate(), map);
-    final LocalTime time = applyTimeMap(dt.toLocalTime(), map);
-    return LocalDateTime.of(date, time);
+    TemporalMapFields.checkAdjustmentKeys(map, true, true, zoned);
+    return LocalDateTime.of(TemporalMapFields.resolveDate(map, dt.toLocalDate(), false),
+        TemporalMapFields.adjustTruncatedTime(dt.toLocalTime(), map));
   }
 
 }
