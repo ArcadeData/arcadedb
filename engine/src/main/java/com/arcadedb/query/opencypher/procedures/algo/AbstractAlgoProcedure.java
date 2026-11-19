@@ -1060,9 +1060,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     int lastBucketId = -1;
     int lastBucketIdx = -1;
     // The slots of the array of the bucket being read, and the nodes it holds: the table doubles it when a bucket holds more than was
-    // counted
+    // counted. And the slots of every array the table holds, the unused ones of the buckets before included: what is on the heap
     int bucketCapacity = 0;
     int bucketLoaded = 0;
+    long allocatedSlots = 0;
     while (iter.hasNext()) {
       if (loaded >= maxVertices)
         maxVertices = memory.extendCapacity(loaded + 1L, LOADED_NODE_BYTES, "the loaded graph", "at least " + (loaded + 1) + " nodes");
@@ -1078,14 +1079,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         // takes whatever the number of buckets
         bucketCapacity = (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - loaded));
         bucketLoaded = 0;
+        allocatedSlots += bucketCapacity;
         lastBucketIdx = ids.registerBucket(lastBucketId, vertex.getTypeName(), bucketCapacity);
       } else if (bucketLoaded == bucketCapacity) {
         // The bucket holds more than its count said (a commit appended to it meanwhile): the table doubles its array, copying it while
-        // the old one is still held. What is on the heap then is the arrays of the buckets before, this one and its double, none of it
-        // reserved yet, and the call is refused before the copy when that does not fit
+        // the old one is still held. What is on the heap then is every array the table holds, the slots the buckets before did not use
+        // included, and the double of this one, none of it reserved yet, and the call is refused before the copy when that does not fit
         final long grown = 2L * bucketCapacity;
-        memory.checkRoom(saturatingProduct(saturatingSum(loaded, grown), LONG_BYTES), "the loaded graph",
+        memory.checkRoom(saturatingProduct(saturatingSum(allocatedSlots, grown), LONG_BYTES), "the loaded graph",
             "a bucket of more than " + bucketCapacity + " nodes");
+        allocatedSlots += grown - bucketCapacity;
         bucketCapacity = (int) Math.min(grown, MAX_LOADED_NODES);
       }
       ids.addNode(lastBucketIdx, rid.getPosition());
@@ -1093,6 +1096,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       loaded++;
     }
     memory.reserve(saturatingProduct(loaded, LOADED_NODE_BYTES), "the loaded graph", loaded + " nodes");
+    // compact() copies the nodes of each bucket into an array of its own while the arrays of the table are still held: the 16 bytes a node
+    // is priced at cover both when the arrays hold no more than the nodes, and the slots they hold beyond them are asked about here,
+    // reserving nothing
+    if (allocatedSlots > loaded)
+      memory.checkRoom(saturatingProduct(allocatedSlots - loaded, LONG_BYTES), "the loaded graph",
+          "a table of " + allocatedSlots + " slots for " + loaded + " nodes");
     ids.compact();
     return ids;
   }

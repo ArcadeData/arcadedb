@@ -586,9 +586,53 @@ class Issue12554AlgoWorkingSetTest {
         .hasMessageContaining("the loaded graph would need 768 bytes")
         .hasMessageContaining("a bucket of more than 32 nodes");
 
+    // 800 pass the doublings (the last 768) and hold the 640 bytes of the nodes, but the array of 64 slots the table ends with holds 24
+    // slots more than the nodes, which it still holds while compact() copies them: 640 and 192 more, 832
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 800L);
+    assertThatThrownBy(() -> procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the loaded graph would need 192 bytes")
+        .hasMessageContaining("a table of 64 slots for 40 nodes");
+
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
     final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
     assertThat(ids.size()).isEqualTo(40);
+    for (int i = 0; i < scanOrder.size(); i++)
+      assertThat(ids.getRID(database, i)).as("node %d", i).isEqualTo(scanOrder.get(i));
+  }
+
+  /** The slots a bucket did not use are on the heap while the next one is read: the doubling of the second is asked about with them. */
+  @Test
+  void theSlotsAnEarlierBucketDidNotUseAreCountedWhenALaterOneDoubles() {
+    database.getSchema().createVertexType("First", 1);
+    database.getSchema().createVertexType("Second", 1);
+    database.transaction(() -> {
+      for (int i = 0; i < 33; i++) {
+        database.newVertex("First").set("i", i).save();
+        database.newVertex("Second").set("i", i).save();
+      }
+    });
+    final List<RID> scanOrder = new ArrayList<>();
+    GraphEngine.getAllVertices(database, null).forEachRemaining(vertex -> scanOrder.add(vertex.getIdentity()));
+    // Both buckets are counted as 4 and hold 33: each doubles its array to 64 at its 33rd node
+    final AlgoWCC procedure = new AlgoWCC() {
+      @Override
+      long bucketCount(final Schema schema, final int bucketId) {
+        return 4L;
+      }
+    };
+
+    // The first bucket ends with an array of 64 slots, 31 of them unused. When the second doubles its 32 slots to 64 the table holds 96
+    // slots, and the new array makes 160: 1280 bytes. Counted by the nodes read (65 and the 64 slots) it was 1032 and passed
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1100L);
+    assertThatThrownBy(() -> procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the loaded graph would need 1280 bytes")
+        .hasMessageContaining("a bucket of more than 32 nodes");
+
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 2000L);
+    final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
+    assertThat(ids.size()).isEqualTo(66);
     for (int i = 0; i < scanOrder.size(); i++)
       assertThat(ids.getRID(database, i)).as("node %d", i).isEqualTo(scanOrder.get(i));
   }
