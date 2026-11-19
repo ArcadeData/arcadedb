@@ -34,9 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issue #12436: DDL statements that fail on a caller's mistake answered HTTP 500 "Internal error", and one of them crashed with a
- * raw {@code NullPointerException}. The HTTP API reference lists 4xx for a statement the server refuses to run and reserves 500
- * for a failure of the server itself. A refusal for what the database holds now (a bucket a type owns, records that break a
- * constraint) is the 409 that DROP TYPE of a type with records already answers (#11803); a bad value in the statement is a 400.
+ * raw {@code NullPointerException}. The HTTP API reference lists 400 for a statement the server refuses to run and reserves 500
+ * for a failure of the server itself. Every refusal here is a 400 with the message that names the problem, as the issue expects:
+ * a bad value in the statement, a bucket a type owns, and records or samples that break the constraint being declared, whether
+ * it is a missing MANDATORY/NOTNULL or a value over a MAX (which already answered 400).
  */
 class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest {
 
@@ -79,7 +80,8 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
 
     final Response response = command("CREATE PROPERTY T12436.m STRING (mandatory true)");
 
-    assertThat(response.status).as(response.body).isEqualTo(409);
+    assertThat(response.status).as(response.body).isEqualTo(400);
+    assertThat(response.body).as("the constraint is named for production mode").contains("Constraint violated (MANDATORY)");
     assertThat(response.body).contains("violates it").contains("Fix or delete the non-conforming records first");
     assertThat(command("SELECT FROM schema:types WHERE name = 'T12436'").body).as("the property is not created")
         .doesNotContain("\"name\":\"m\"");
@@ -91,7 +93,7 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
 
     final Response response = command("DROP BUCKET T12436_0");
 
-    assertThat(response.status).as(response.body).isEqualTo(409);
+    assertThat(response.status).as(response.body).isEqualTo(400);
     assertThat(response.body).contains("because used by type 'T12436'");
     assertThat(command("SELECT count(@rid) AS n FROM T12436").body).as("the records are still there").contains("\"n\":1");
   }
@@ -106,7 +108,7 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
     assertThat(response.status).as(response.body).isEqualTo(400);
   }
 
-  /** The same refusal on a TIMESERIES type: a value that breaks the bound is the caller's mistake (400), not a conflict (409). */
+  /** The same refusal on a TIMESERIES type: a value that breaks the bound is the caller's mistake (400). */
   @Test
   void aMaxTheStoredSamplesBreakIsAnswered400() throws Exception {
     for (final String sql : new String[] { "CREATE TIMESERIES TYPE M12436 TIMESTAMP ts TAGS (h STRING) FIELDS (v LONG) SHARDS 1",
@@ -117,6 +119,19 @@ class Issue12436DdlCallerMistakesAreClientErrorsTest extends BaseGraphServerTest
 
     assertThat(response.status).as(response.body).isEqualTo(400);
     assertThat(response.body).contains("violates it");
+  }
+
+  /** A MANDATORY the stored samples lack is the same 400 as the value bound above, and as the one over document records. */
+  @Test
+  void aMandatoryTheStoredSamplesLackIsAnswered400() throws Exception {
+    for (final String sql : new String[] { "CREATE TIMESERIES TYPE S12436 TIMESTAMP ts TAGS (h STRING) FIELDS (v LONG) SHARDS 1",
+        "INSERT INTO S12436 SET ts = 1000, h = 'a'" })
+      assertThat(command(sql).status).as(sql).isEqualTo(200);
+
+    final Response response = command("ALTER PROPERTY S12436.v MANDATORY true");
+
+    assertThat(response.status).as(response.body).isEqualTo(400);
+    assertThat(response.body).contains("violates it").contains("Constraint violated (MANDATORY)");
   }
 
   @Test

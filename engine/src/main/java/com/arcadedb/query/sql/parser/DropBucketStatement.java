@@ -21,7 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -86,8 +86,9 @@ public class DropBucketStatement extends DDLStatement {
     final int fileId = database.getSchema().getBucketByName(bucketName).getFileId();
 
     final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
+    // a bucket that belongs to a type is not one this statement drops: the caller's mistake, answered 400 (issue #12436)
     if (type != null)
-      throw new ObjectInUseException("Cannot drop bucket '" + bucketName + "' because used by type '" + type.getName() + "'");
+      throw new InvalidArgumentException("Cannot drop bucket '" + bucketName + "' because used by type '" + type.getName() + "'");
 
     // REMOVE CACHE OF COMMAND RESULTS IF ACTIVE
     database.getSchema().dropBucket(bucketName);

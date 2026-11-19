@@ -23,7 +23,6 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesColumnConstraints;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -69,8 +68,8 @@ public final class ExistingRecordsCheck {
       return;
     if (type instanceof LocalTimeSeriesType tsType) {
       for (final String propertyName : propertyNames)
-        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? "MANDATORY" : "NOTNULL", null, null, null,
-            mandatory ? "MANDATORY" : "NOTNULL");
+        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? ValidationException.Kind.MANDATORY :
+            ValidationException.Kind.NOT_NULL, null, null, null, mandatory ? "MANDATORY" : "NOTNULL");
       return;
     }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
@@ -81,7 +80,7 @@ public final class ExistingRecordsCheck {
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
             mandatory, notNull);
         if (unmet != null)
-          throw new ObjectInUseException("Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
+          throw storedDataRefusal(kindOf(unmet), "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
               "MANDATORY" :
               "NOTNULL") + ": record " + document.getIdentity() + " violates it, "
               + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName, unmet)
@@ -129,7 +128,7 @@ public final class ExistingRecordsCheck {
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
-        throw new ObjectInUseException(
+        throw storedDataRefusal(kindOf(unmet),
             createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
@@ -150,7 +149,8 @@ public final class ExistingRecordsCheck {
    * the constraint or the sample came first.
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
-      final boolean required, final String requiredBy, final String min, final String max, final String regexp, final String what) {
+      final boolean required, final ValidationException.Kind requiredBy, final String min, final String max, final String regexp,
+      final String what) {
     final TimeSeriesEngine engine = type.getEngine();
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (engine == null || property == null)
@@ -173,7 +173,7 @@ public final class ExistingRecordsCheck {
     final int index = column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP ? 0 : position + 1;
 
     final TimeSeriesColumnConstraints.ColumnCheck check = TimeSeriesColumnConstraints.columnCheck(db, column, property.getType(),
-        required, requiredBy, min, max, regexp);
+        required, !required ? null : requiredBy == ValidationException.Kind.MANDATORY ? "MANDATORY" : "NOTNULL", min, max, regexp);
     if (check == null)
       return;
 
@@ -203,13 +203,29 @@ public final class ExistingRecordsCheck {
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
           + "<value> ...], and insert them again if they are to be kept";
-      // Only a MANDATORY or NOTNULL that stored samples lack is the conflict with what the database holds (409). A value that breaks
-      // MIN, MAX or REGEXP is the caller's mistake (400): a CommandExecutionException carrying a ValidationException, as on a document
-      // type. The cause holds the whole message, because the protocols answer with the cause's
       if (required)
-        throw new ObjectInUseException(message);
+        throw storedDataRefusal(requiredBy, message);
+      // the column check answers its reason as one sentence, whichever of MIN, MAX and REGEXP the sample breaks, so this refusal
+      // names no kind (as SaveElementStep#refuseViolation, the write path of the same check)
       throw new CommandExecutionException(message, new ValidationException(message));
     }
+  }
+
+  /**
+   * The refusal of a constraint the stored data break (issue #12436): the caller's to resolve, so every protocol answers it as the
+   * validation error it is (HTTP 400, as the same refusal of a MIN, a MAX or a REGEXP already answered), and not as a server fault.
+   * It stays the {@link CommandExecutionException} it always was, so an embedded caller that catches one keeps catching it. The
+   * {@link ValidationException} under it carries the kind, which a protocol with a code for a violated constraint answers with
+   * (Postgres {@code 23502}), and the whole message: a protocol reports the message of the ValidationException it finds in the
+   * chain, so the record, the constraint and the remedy reach the caller.
+   */
+  private static CommandExecutionException storedDataRefusal(final ValidationException.Kind kind, final String message) {
+    return new CommandExecutionException(message, new ValidationException(kind, message));
+  }
+
+  private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
+    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
+        ValidationException.Kind.NOT_NULL;
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,
