@@ -427,6 +427,19 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * {@link #getPropertyNames()}'s answer for one name, without the set it builds (issue #12340). A row with content lists
+   * exactly its content keys - the element is not consulted once there is content, and {@link #removeProperty(String)} takes
+   * the key out of the content - so the answer is one map look-up. A row that only wraps an element, and a subclass, which may
+   * list its names its own way, answer through the name set.
+   */
+  @Override
+  public boolean listsProperty(final String name) {
+    if (getClass() == ResultInternal.class && content != null && !content.isEmpty())
+      return content.containsKey(name);
+    return getPropertyNames().contains(name);
+  }
+
+  /**
    * The value of the only property of a row that wraps no record (a sub-query row such as {@code SELECT k FROM U}), or
    * {@code absent} when the row wraps a record or does not hold exactly one property. It answers what
    * {@link #getPropertyNames()} followed by {@link #getProperty(String)} would, without building the name set: an
@@ -687,7 +700,8 @@ public class ResultInternal implements Result {
   @Override
   public Optional<RID> getIdentity() {
     if (element != null)
-      return Optional.of(element.getIdentity());
+      // a record not saved yet has no identity: @rid read while an INSERT builds it is null, like a row with no record (#11850)
+      return Optional.ofNullable(element.getIdentity());
 
     if (hasProperty(RID_PROPERTY)) {
       final Object rid = getProperty(RID_PROPERTY);

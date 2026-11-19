@@ -511,13 +511,14 @@ class MongoDBToSqlTranslatorParamsTest {
 
   @Test
   void projectionKindsAreValidated() {
-    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 1), "_id")).isTrue();
-    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 0), "_id")).isFalse();
-    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 1).append("_id", 0), "_id")).isTrue();
-    assertThat(MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 0).append("_id", 1), "_id")).isFalse();
-    assertThatThrownBy(() -> MongoDBToSqlTranslator.isInclusionProjection(new Document("a", 1).append("b", 0), "_id"))
-        .isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> MongoDBToSqlTranslator.isInclusionProjection(new Document("a", new Document("$slice", 1)), "_id"))
-        .isInstanceOf(IllegalArgumentException.class);
+    assertThat(new MongoProjection(new Document("a", 1)).isInclusion()).isTrue();
+    assertThat(new MongoProjection(new Document("a", 0)).isInclusion()).isFalse();
+    assertThat(new MongoProjection(new Document("a", 1).append("_id", 0)).isInclusion()).isTrue();
+    assertThat(new MongoProjection(new Document("a", 0).append("_id", 1)).isInclusion()).isFalse();
+    assertThatThrownBy(() -> new MongoProjection(new Document("a", 1).append("b", 0))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> new MongoProjection(new Document("a", new Document("$slice", 1)))).isInstanceOf(IllegalArgumentException.class);
+    // a path and one below it collide, in either order (issue #12072)
+    assertThatThrownBy(() -> new MongoProjection(new Document("a", 1).append("a.b", 1))).hasMessageContaining("Path collision at a.b");
+    assertThatThrownBy(() -> new MongoProjection(new Document("a.b", 0).append("a", 0))).hasMessageContaining("Path collision at a");
   }
 }

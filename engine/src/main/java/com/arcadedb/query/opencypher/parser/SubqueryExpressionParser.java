@@ -67,12 +67,25 @@ final class SubqueryExpressionParser {
     // If it's a pattern without MATCH, add MATCH prefix
     if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN true";
-    } else if (!subquery.toUpperCase(Locale.ROOT).contains("RETURN ")) {
+    } else if (!bodyReturns(parsedBody, subquery)) {
       // Full subquery without RETURN — add RETURN true
       subquery = subquery + " RETURN true";
     }
 
     return new ExistsExpression(subquery, text, parsedBody);
+  }
+
+  /**
+   * Whether the body of an EXISTS or COUNT ends with its own RETURN. Read from the parsed body, not from the text: the RETURN of
+   * a nested {@code CALL { }} is not the body's, and the text the body is run as must conclude with a RETURN (issue #12354).
+   */
+  private static boolean bodyReturns(final CypherStatement parsedBody, final String subquery) {
+    // A UNION body is run as one text, so a RETURN appended to it would land on the last branch only: the text check is kept
+    // for it, as for a body that did not parse into a statement. An EXISTS or COUNT UNION body without a RETURN in every branch
+    // is then refused by the conclusion check of the query it runs as, instead of answering a wrong count
+    if (parsedBody == null || parsedBody instanceof UnionStatement)
+      return subquery.toUpperCase(Locale.ROOT).contains("RETURN ");
+    return parsedBody.getReturnClause() != null;
   }
 
   /**
@@ -223,7 +236,7 @@ final class SubqueryExpressionParser {
     // Pattern-only form: wrap with MATCH and add RETURN 1 so the outer evaluator can count rows.
     if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
       subquery = "MATCH " + subquery + " RETURN 1";
-    } else if (!subquery.toUpperCase(Locale.ROOT).contains("RETURN ")) {
+    } else if (!bodyReturns(parsedBody, subquery)) {
       subquery = subquery + " RETURN 1";
     }
 

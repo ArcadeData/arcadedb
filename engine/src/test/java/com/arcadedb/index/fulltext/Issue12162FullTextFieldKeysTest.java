@@ -97,8 +97,18 @@ class Issue12162FullTextFieldKeysTest extends TestHelper {
     assertThat(search("Article", "Article[title,body]", "title\\:ja*").keySet()).containsExactly(4);
     assertThat(search("Article", "Article[title,body]", "title\\:j?va").keySet()).containsExactly(4);
     assertThat(search("Article", "Article[title,body]", "body:title\\:java").keySet()).containsExactly(4);
-    assertThat(search("Article", "Article[title,body]", "\"for title\\:java\"").keySet()).containsExactly(4);
+    // the phrase in the order the body holds it: phrases match by position since issue #12165
+    assertThat(search("Article", "Article[title,body]", "\"title\\:java for\"").keySet()).containsExactly(4);
+    assertThat(search("Article", "Article[title,body]", "\"for title\\:java\"").keySet()).isEmpty();
     assertThat(search("Article", "Article[title,body]", "title:\"title\\:java\"").keySet()).isEmpty();
+  }
+
+  @Test
+  void aFuzzyTermReadsTheEscapedTokenAsTheTokenItStandsFor() {
+    // the unqualified fuzzy walk measures an escaped key by the token it stands for, and never a field-prefixed key
+    assertThat(search("Article", "Article[title,body]", "title\\:jav~1").keySet()).containsExactly(4);
+    assertThat(search("Article", "Article[title,body]", "jav~1").keySet()).containsExactly(5);
+    assertThat(search("Article", "Article[title,body]", "title:jav~1").keySet()).containsExactly(5);
   }
 
   @Test

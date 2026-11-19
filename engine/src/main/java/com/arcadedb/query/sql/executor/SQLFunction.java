@@ -82,4 +82,25 @@ public interface SQLFunction extends RecordFunction {
   default boolean isDeterministic() {
     return false;
   }
+
+  /**
+   * Whether evaluating this function on a record sets the {@code $score} context variable to the score the record matched
+   * with (0 when it did not match), as the full-text functions do. A boolean condition that holds such a call combines the
+   * scores of its arms instead of letting the last one evaluated win (issues #11618, #11773).
+   * <p>
+   * Defaults to whether the function answers best first by that score, see {@link IndexableSQLFunction#answersByScore()};
+   * a function that sets {@code $score} without answering from an index ({@code SEARCH_INDEX_MORE}) says so itself.
+   */
+  default boolean setsScore() {
+    return this instanceof IndexableSQLFunction indexable && indexable.answersByScore();
+  }
+
+  /**
+   * Whether evaluating this function on a record also sets the {@code $similarity} context variable, the score normalized
+   * to 0..1 (0 when the record did not match), as the more-like-this functions do (issue #11773). Implies
+   * {@link #setsScore()}.
+   */
+  default boolean setsSimilarity() {
+    return false;
+  }
 }
