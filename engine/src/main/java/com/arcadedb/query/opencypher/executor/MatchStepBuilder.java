@@ -706,6 +706,41 @@ final class MatchStepBuilder {
   }
 
   /**
+   * {@link #isUniquelyKeyed(NodePattern)}, with one column of the index allowed to be keyed by an IN-list of the
+   * {@code WHERE} instead ({@link HopEdgeTrackingAnalyzer#whereInListKeys}): a seek of the node then finds one vertex per key
+   * (issue #11715).
+   */
+  boolean isUniquelyKeyed(final NodePattern node, final Map<String, Set<String>> inListKeys) {
+    final Set<String> listed = node.getVariable() != null ? inListKeys.getOrDefault(node.getVariable(), Set.of()) : Set.of();
+    if (listed.isEmpty())
+      return isUniquelyKeyed(node);
+    if (node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
+      return false;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(node.getLabels().getFirst()))
+      return false;
+    final Set<String> inline = node.hasProperties() ? node.getProperties().keySet() : Set.of();
+    for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys == null)
+        continue;
+      int listedOnly = 0;
+      boolean covered = true;
+      for (final String key : keys) {
+        if (inline.contains(key))
+          continue;
+        if (listed.contains(key))
+          ++listedOnly;
+        else
+          covered = false;
+      }
+      if (covered && listedOnly <= 1)
+        return true;
+    }
+    return false;
+  }
+
+  /**
    * A UNIQUE index of the one label of a node pattern whose every column the pattern's property map pins by an equality, or null
    * when there is none (issues #11699, #11594).
    */
