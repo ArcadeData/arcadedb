@@ -133,7 +133,12 @@ public final class VectorArgumentCache {
 
     /**
      * The converted form of this object, or null when it is not one the command keeps.
+     * <p>
+     * The object is compared by identity, not by {@code equals}: the query vector of a scan is the one object the statement
+     * carries as its parameter, and comparing a 1024-element list with {@code equals} on every row would cost what the
+     * cache saves. A vector that is not that same object is simply converted again.
      */
+    @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity on purpose: "is this the object I already converted?"
     private VectorUtils.PreparedVector get(final Object candidate, final Kind kind) {
       for (int i = 0; i < SLOTS; i++)
         if (sources[i] == candidate && kinds[i] == kind) {
