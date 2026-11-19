@@ -19,8 +19,8 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
@@ -161,6 +161,16 @@ public enum PostgresType {
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
   private static final long              POSTGRES_EPOCH_SECONDS      = 946684800L;
   private static final long              POSTGRES_EPOCH_DAYS         = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+
+  /**
+   * Renders a record, a row, a map or a path of a json column as the HTTP API does (issue #11958), vertex edge counts left out as
+   * {@code toJSON(true)} left them out. One instance serves every connection: it is configured here and never again, and a
+   * serialization keeps no state in the serializer (the date patterns and type hints it needs live in locals of each call).
+   */
+  private static final JsonSerializer JSON_DOCUMENT_SERIALIZER = JsonSerializer.createJsonSerializer()
+      .setIncludeVertexEdges(false)
+      .setUseCollectionSize(false)
+      .setUseCollectionSizeForEdges(false);
 
   /**
    * Parses an inbound json value. A list of documents is sent to the client as a json array (issue #5366), so
@@ -1055,8 +1065,6 @@ public enum PostgresType {
         appendQuoted(sb, new JSONArray(subCollection).toString());
       } else if (element.getClass().isArray()) {
         appendQuoted(sb, new JSONArray(convertPrimitiveArrayToCollection(element)).toString());
-      } else if (element instanceof Result) {
-        appendQuoted(sb, toJsonDocument(element).toString());
       } else if (element instanceof JSONObject json) {
         appendQuoted(sb, json.toString());
       } else if (isJsonDocument(element)) {
@@ -1102,6 +1110,7 @@ public enum PostgresType {
       case Result result -> toJsonDocument(result);
       case Record record -> toJsonDocument(record);
       case Map<?, ?> map -> toJsonDocument(map);
+      case TraversalPath path -> toJsonDocument(path);
       case Collection<?> nested -> serializeNestedAsJsonArray(nested);
       case Binary binary -> binary.getString();
       case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
@@ -1119,21 +1128,21 @@ public enum PostgresType {
    * A record, a row, a map or a path as the JSON the HTTP API sends for it (issue #11958). {@code toJSON()} and {@code new
    * JSONObject(map)} wrote a temporal as an epoch number whose unit depended on where it sat (a DATE was days in a record and
    * milliseconds in a map) and dropped the zone of a ZONED_DATETIME and the sub-millisecond digits of a DATETIME_NANOS inside a map.
-   * Vertex edge counts are left out, as {@code toJSON(true)} left them out.
+   * The date patterns are those of the database the value comes from (the record's, or the row's when it knows one; each node and
+   * relationship of a path uses its own); a value no database owns (a map literal, a row built without one) gets the defaults.
    */
   private static Object toJsonDocument(final Object value) {
+    // A record that is not a document (an edge segment, a stripe directory, the payload of an EXTERNAL property) is engine
+    // infrastructure the serializer has no form for: it would hand the record back and the column would carry its toString().
+    // Its own toJSON(true) stays the rendering, as before.
     if (value instanceof Record record && !(record instanceof Document))
       return record.toJSON(true);
     final Database database = switch (value) {
       case Document document -> document.getDatabase();
-      case Result result when result.isElement() -> result.toElement().getDatabase();
+      case Result result -> result.isElement() ? result.toElement().getDatabase() : result.getDatabase();
       default -> null;
     };
-    return JsonSerializer.createJsonSerializer()
-        .setIncludeVertexEdges(false)
-        .setUseCollectionSize(false)
-        .setUseCollectionSizeForEdges(false)
-        .serializeValue(database, value);
+    return JSON_DOCUMENT_SERIALIZER.serializeValue(database, value);
   }
 
   private JSONArray serializeNestedAsJsonArray(final Collection<?> collection) {

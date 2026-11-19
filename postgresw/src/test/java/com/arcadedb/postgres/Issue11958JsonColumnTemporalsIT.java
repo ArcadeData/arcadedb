@@ -18,6 +18,7 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue11958JsonColumnTemporalsIT extends PostgresWireProtocolTestBase {
 
   @BeforeEach
-  void createVertex() throws Exception {
+  void createGraph() throws Exception {
     try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement()) {
       statement.execute("CREATE VERTEX TYPE T11958 IF NOT EXISTS");
       statement.execute("CREATE PROPERTY T11958.da IF NOT EXISTS DATE");
@@ -47,6 +48,9 @@ class Issue11958JsonColumnTemporalsIT extends PostgresWireProtocolTestBase {
       statement.execute("CREATE PROPERTY T11958.zdt IF NOT EXISTS ZONED_DATETIME");
       statement.execute("INSERT INTO T11958 SET da = '2024-02-29', dt = '2024-02-29 13:14:15.123', "
           + "dtn = '2024-02-29 13:14:15.123456789', zdt = '2024-03-10T03:30-04:00[America/New_York]'");
+      statement.execute("CREATE EDGE TYPE E11958 IF NOT EXISTS");
+      statement.execute("CREATE PROPERTY E11958.da IF NOT EXISTS DATE");
+      statement.execute("CREATE EDGE E11958 FROM (SELECT FROM T11958) TO (SELECT FROM T11958) SET da = '2024-02-29'");
     }
   }
 
@@ -68,6 +72,56 @@ class Issue11958JsonColumnTemporalsIT extends PostgresWireProtocolTestBase {
       assertThat(rs.next()).isTrue();
       assertTemporals(new JSONObject(rs.getString("n")));
       assertTemporals(new JSONObject(rs.getString("props")));
+    }
+  }
+
+  @Test
+  void cypherPathCarriesTheTemporalTextOfItsNodesAndRelationships() throws Exception {
+    try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement();
+        final ResultSet rs = statement.executeQuery("{cypher}MATCH p = (:T11958)-[:E11958]->(:T11958) RETURN p")) {
+      assertThat(rs.next()).isTrue();
+      final JSONObject path = new JSONObject(rs.getString("p"));
+      assertThat(path.getString("_type")).isEqualTo("path");
+      assertThat(path.getInt("length")).isEqualTo(1);
+      assertTemporals(path.getJSONArray("nodes").getJSONObject(0));
+      assertTemporals(path.getJSONArray("nodes").getJSONObject(1));
+      final JSONObject relationship = path.getJSONArray("relationships").getJSONObject(0);
+      assertThat(relationship.get("da")).isEqualTo("2024-02-29");
+      assertThat(relationship.getString("@type")).isEqualTo("E11958");
+    }
+  }
+
+  @Test
+  void cypherListsOfNodesMapsAndPathsCarryTheTemporalText() throws Exception {
+    try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement();
+        final ResultSet rs = statement.executeQuery("{cypher}MATCH p = (n:T11958)-[:E11958]->(:T11958) "
+            + "RETURN collect(n) AS nodes, collect(properties(n)) AS props, collect(p) AS paths")) {
+      assertThat(rs.next()).isTrue();
+      assertTemporals(new JSONArray(rs.getString("nodes")).getJSONObject(0));
+      assertTemporals(new JSONArray(rs.getString("props")).getJSONObject(0));
+      assertTemporals(new JSONArray(rs.getString("paths")).getJSONObject(0).getJSONArray("nodes").getJSONObject(0));
+    }
+  }
+
+  @Test
+  void sqlMapInsideATextArrayCarriesTheTemporalText() throws Exception {
+    try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement();
+        final ResultSet rs = statement.executeQuery(
+            "SELECT ['text', {'da': da, 'dt': dt, 'dtn': dtn, 'zdt': zdt}] AS mixed FROM T11958")) {
+      assertThat(rs.next()).isTrue();
+      final Object[] elements = (Object[]) rs.getArray("mixed").getArray();
+      assertThat(elements).hasSize(2);
+      assertThat(elements[0]).isEqualTo("text");
+      assertTemporals(new JSONObject((String) elements[1]));
+    }
+  }
+
+  @Test
+  void sqlRowsOfASubqueryCarryTheTemporalText() throws Exception {
+    try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement();
+        final ResultSet rs = statement.executeQuery("SELECT (SELECT da, dt, dtn, zdt FROM T11958) AS rows")) {
+      assertThat(rs.next()).isTrue();
+      assertTemporals(new JSONArray(rs.getString("rows")).getJSONObject(0));
     }
   }
 
