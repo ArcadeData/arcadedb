@@ -1583,6 +1583,9 @@ final class CountStarShapeDetector {
    * and takes the two spellings apart instead.
    */
   static boolean hasPushDownRepresentableLabel(final NodePattern node) {
+    // A dynamic $(expr) label is only known per row: no push-down built on the static labels can stand for it (issue #11776)
+    if (node.hasDynamicLabels())
+      return false;
     return !node.hasLabels() || (node.getLabels().size() == 1 && !node.isLabelDisjunction());
   }
 

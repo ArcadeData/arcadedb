@@ -102,6 +102,16 @@ final class BooleanOperandValidator {
     }
   }
 
+  /**
+   * The operand check of a WHERE (or FILTER) condition, run on the condition as parsed, BEFORE the rewriters simplify it: the
+   * boolean simplifier folds {@code true OR x} into {@code true} and {@code x AND false} into {@code false}, at any depth, so
+   * checked after it {@code WHERE true OR (1 AND false)} lost the integer it had to refuse (issue #11760). The validation of the
+   * whole statement checks the simplified condition again, which finds nothing new.
+   */
+  static void validateConditionOperands(final BooleanExpression condition) {
+    checkBooleanOperandInBooleanExpression(condition);
+  }
+
   private static void checkBooleanOperandInBooleanExpression(final BooleanExpression boolExpr) {
     if (boolExpr == null)
       return;
@@ -128,34 +138,23 @@ final class BooleanOperandValidator {
     }
   }
 
+  /** Refuses an operand known not to be a BOOLEAN: a non-Boolean literal, a list or map literal, an arithmetic expression. */
   private static void checkOperandForBooleanContext(final Expression operand) {
-    if (operand == null)
-      return;
-
-    // Reject non-boolean literal values
-    if (operand instanceof LiteralExpression) {
-      final Object value = ((LiteralExpression) operand).getValue();
-      if (value != null && !(value instanceof Boolean))
-        throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + value.getClass().getSimpleName());
-    }
-    // Reject list expressions as boolean operands (e.g., [1,2] AND true)
-    else if (operand instanceof ListExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got List");
-      // Reject map expressions as boolean operands (e.g., {a: 1} AND true)
-    else if (operand instanceof MapExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Map");
-      // Reject arithmetic expressions (always return numbers)
-    else if (operand instanceof ArithmeticExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Number");
+    final String kind = BooleanCoercionExpression.nonBooleanKindOf(operand);
+    if (kind != null)
+      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + kind);
   }
 
+  /**
+   * An operand of AND, OR, XOR or NOT in a WHERE: comparisons, IN, IS NULL and the other predicate forms are Boolean by
+   * construction, so the only operand to look into is a value adapted to a predicate, which is held to the rule the RETURN
+   * operands follow. It used to check nothing, so {@code WHERE false AND 1} ran (the short-circuit never reached the integer)
+   * while {@code WHERE 1 AND false} failed: the answer depended on the operand order (issue #11760). Neo4j refuses both before
+   * running anything.
+   */
   private static void checkBooleanExprOperandValidity(final BooleanExpression operand) {
-    // For BooleanExpression operands in LogicalExpression, we need to unwrap
-    // to check for non-boolean literals. ComparisonExpression, InExpression, etc.
-    // always return boolean, so those are fine. But if the operand wraps an Expression,
-    // we need to check it.
-    // In practice, the ANTLR parser produces LogicalExpression with BooleanExpression operands
-    // that are typically ComparisonExpression, InExpression, etc. — these are inherently boolean.
-    // The invalid cases are more typically caught via TernaryLogicalExpression in RETURN context.
+    final String kind = BooleanCoercionExpression.nonBooleanKindOf(operand);
+    if (kind != null)
+      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + kind);
   }
 }

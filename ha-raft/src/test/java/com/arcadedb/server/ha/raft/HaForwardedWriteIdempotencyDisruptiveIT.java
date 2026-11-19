@@ -158,7 +158,7 @@ class HaForwardedWriteIdempotencyDisruptiveIT extends BaseRaftHATest {
     createTypeWithBaseline(leaderDb);
 
     // One-shot: the next TX_ENTRY is dispatched to Raft for real (so it commits), but the committing thread abandons the
-    // wait with the dispatched-timeout the production grace-expiry path raises (see Issue4790PhantomCommitOriginSkipIT).
+    // wait with the dispatched-timeout the production grace-expiry path raises (see PhantomCommitOriginSkipIT).
     final AtomicBoolean fired = new AtomicBoolean();
     RaftGroupCommitter.TEST_FORCE_DISPATCHED_TIMEOUT = entry -> {
       try {

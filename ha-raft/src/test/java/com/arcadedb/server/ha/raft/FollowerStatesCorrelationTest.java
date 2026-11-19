@@ -32,8 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * follower's match/next index to the wrong peer id when the leader's membership snapshot shifts between
  * the three independent Ratis reads (follower peer-id list, match-index array, next-index array).
  * <p>
- * The correlation logic is exercised directly via the pure {@link RaftHAServer#correlateFollowerStates}
- * and {@link RaftHAServer#degradedFollowerStates} helpers so the race is reproduced deterministically,
+ * The correlation logic is exercised directly via the pure {@link ReplicationStatistics#correlateFollowerStates}
+ * and {@link ReplicationStatistics#degradedFollowerStates} helpers so the race is reproduced deterministically,
  * without standing up a live cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -53,7 +53,7 @@ class FollowerStatesCorrelationTest {
     final long[] match = { 100, 200, 300 };
     final long[] next = { 101, 201, 301 };
 
-    final List<Map<String, Object>> states = RaftHAServer.correlateFollowerStates(peers, match, next, peers);
+    final List<Map<String, Object>> states = ReplicationStatistics.correlateFollowerStates(peers, match, next, peers);
 
     assertThat(states).isNotNull().hasSize(3);
     assertThat(states.get(0)).containsEntry("peerId", "a").containsEntry("matchIndex", 100L)
@@ -73,7 +73,7 @@ class FollowerStatesCorrelationTest {
     final long[] match = { 100, 300 };
     final long[] next = { 101, 301 };
 
-    assertThat(RaftHAServer.correlateFollowerStates(before, match, next, after)).isNull();
+    assertThat(ReplicationStatistics.correlateFollowerStates(before, match, next, after)).isNull();
   }
 
   @Test
@@ -85,7 +85,7 @@ class FollowerStatesCorrelationTest {
     final long[] match = { 100, 200, 300 };
     final long[] next = { 101, 201, 301 };
 
-    assertThat(RaftHAServer.correlateFollowerStates(before, match, next, after)).isNull();
+    assertThat(ReplicationStatistics.correlateFollowerStates(before, match, next, after)).isNull();
   }
 
   @Test
@@ -94,7 +94,7 @@ class FollowerStatesCorrelationTest {
     final long[] match = { 100, 200 };
     final long[] next = { 101 }; // next array grew/shrank independently
 
-    assertThat(RaftHAServer.correlateFollowerStates(peers, match, next, peers)).isNull();
+    assertThat(ReplicationStatistics.correlateFollowerStates(peers, match, next, peers)).isNull();
   }
 
   @Test
@@ -103,7 +103,7 @@ class FollowerStatesCorrelationTest {
     // downstream lag math treats the index as unknown instead of reading a misattributed value.
     final List<RaftProtos.ServerRpcProto> peers = List.of(follower("a", 10), follower("b", 20));
 
-    final List<Map<String, Object>> states = RaftHAServer.degradedFollowerStates(peers);
+    final List<Map<String, Object>> states = ReplicationStatistics.degradedFollowerStates(peers);
 
     assertThat(states).hasSize(2);
     assertThat(states.get(0)).containsEntry("peerId", "a").containsEntry("lastRpcElapsedMs", 10L)
