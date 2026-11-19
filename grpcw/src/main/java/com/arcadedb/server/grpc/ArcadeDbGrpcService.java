@@ -5592,9 +5592,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           mb.putEntries(Property.TYPE_PROPERTY, GrpcValue.newBuilder().setStringValue(element.getTypeName()).build());
       }
       try {
-        for (String k : res.getPropertyNames()) {
-          mb.putEntries(k, toGrpcValue(res.getProperty(k), pc));
-        }
+        // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+        for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(res).entrySet())
+          mb.putEntries(property.getKey(), toGrpcValue(property.getValue(), pc));
       } catch (Throwable ignore) {
       }
 
@@ -6330,24 +6330,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
     final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
-    for (String propertyName : projectedElement != null ? projectedElement.getPropertyNames() : result.getPropertyNames()) {
-      final Object value = projectedElement != null ? projectedElement.get(propertyName) : result.getProperty(propertyName);
-
-      if (debug)
-        LogManager.instance()
-            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-                propertyName, summarizeJava(value), value == null ? "null" : value.getClass().getName());
-
-      final GrpcValue gv = projectionConfig != null ?
-          toGrpcValue(value, projectionConfig) :
-          toGrpcValue(value);
-
-      if (debug)
-        LogManager.instance()
-            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
-
-      builder.putProperties(propertyName, gv);
-    }
+    if (projectedElement != null) {
+      // the element's own properties, read by name, not the row's alias column (issue #12196)
+      for (final String propertyName : projectedElement.getPropertyNames())
+        putResultProperty(builder, propertyName, projectedElement.get(propertyName), projectionConfig, debug);
+    } else
+      // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+      for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet())
+        putResultProperty(builder, property.getKey(), property.getValue(), projectionConfig, debug);
 
     // Ensure @rid and @type are always in the properties map when there's an element
     // This matches JsonSerializer behavior and works around client-side limitations
@@ -6385,6 +6375,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.getRid(), builder.getType(), builder.getPropertiesCount());
 
     return builder.build();
+  }
+
+  /** Puts one column of a row converted by {@link #convertResultToGrpcRecord}. */
+  private void putResultProperty(final GrpcRecord.Builder builder, final String propertyName, final Object value,
+      final ProjectionConfig projectionConfig, final boolean debug) {
+    if (debug)
+      LogManager.instance()
+          .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+              propertyName, summarizeJava(value), value == null ? "null" : value.getClass().getName());
+
+    final GrpcValue gv = projectionConfig != null ?
+        toGrpcValue(value, projectionConfig) :
+        toGrpcValue(value);
+
+    if (debug)
+      LogManager.instance()
+          .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+
+    builder.putProperties(propertyName, gv);
   }
 
   /**
