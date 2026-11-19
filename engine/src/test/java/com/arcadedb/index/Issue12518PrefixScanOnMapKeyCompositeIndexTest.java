@@ -50,7 +50,8 @@ class Issue12518PrefixScanOnMapKeyCompositeIndexTest extends TestHelper {
         database.command("sql", "CREATE PROPERTY " + type + ".scope STRING");
         database.command("sql", "CREATE PROPERTY " + type + ".attrs MAP");
         database.command("sql", "INSERT INTO " + type + " CONTENT {\"scope\":\"p\",\"attrs\":{}}");
-        database.command("sql", "INSERT INTO " + type + " CONTENT {\"scope\":\"p\",\"attrs\":{\"x\":1}}");
+        // two keys: the index holds this record twice, so an ordered walk of it would repeat the record
+        database.command("sql", "INSERT INTO " + type + " CONTENT {\"scope\":\"p\",\"attrs\":{\"x\":1,\"z\":3}}");
         // a record with no map at all, and one with a null map
         database.command("sql", "INSERT INTO " + type + " CONTENT {\"scope\":\"p\"}");
         database.command("sql", "INSERT INTO " + type + " CONTENT {\"scope\":\"p\",\"attrs\":null}");
