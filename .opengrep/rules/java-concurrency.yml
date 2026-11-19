@@ -68,10 +68,10 @@ rules:
       - pattern-not-inside: |
           if (!$L.tryLock()) { ... }
           try { ... } finally { ... $L.unlock(); ... }
-      # Every lock of an array taken in a loop, all released by the finally that follows
+      # Every lock of an array taken in a loop, all released by the finally that follows: the unlock names the same lock
       - pattern-not-inside: |
-          for (...) $X.lock();
-          try { ... } finally { ... $Y.unlock(); ... }
+          for (...) $L.lock();
+          try { ... } finally { ... $L.unlock(); ... }
       # A held flag the finally reads to know whether the body already released the lock
       - pattern-not-inside: |
           $L.lock();

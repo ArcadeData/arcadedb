@@ -6,6 +6,7 @@ import java.util.concurrent.locks.ReentrantLock;
 class ConcurrencyShapes {
   private final Lock          lock  = new ReentrantLock();
   private final Lock          other = new ReentrantLock();
+  private final Lock[]        locks = { new ReentrantLock(), new ReentrantLock() };
   private volatile int        counter;
   private volatile long       total;
   private          int        plain;
@@ -146,6 +147,29 @@ class ConcurrencyShapes {
     } finally {
       if (shared)
         lock.unlock();
+    }
+  }
+
+  void everyLockOfAnArrayReleased() {
+    for (int i = 0; i < locks.length; i++)
+      // ok: lock-not-released-in-finally
+      locks[i].lock();
+    try {
+      use(null);
+    } finally {
+      for (int i = 0; i < locks.length; i++)
+        locks[i].unlock();
+    }
+  }
+
+  void everyLockOfAnArrayTakenAnotherReleased() {
+    for (int i = 0; i < locks.length; i++)
+      // ruleid: lock-not-released-in-finally
+      locks[i].lock();
+    try {
+      use(null);
+    } finally {
+      other.unlock();
     }
   }
 
