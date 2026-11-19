@@ -20,6 +20,7 @@ package com.arcadedb.function.cypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -78,7 +79,7 @@ public class CypherFunctionLibraryDefinition implements FunctionLibraryDefinitio
   public CypherFunctionDefinition getFunction(final String functionName) {
     final CypherFunctionDefinition f = functions.get(functionName);
     if (f == null)
-      throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+      throw new UnknownFunctionException(functionName, "Function '" + functionName + "' not defined");
     return f;
   }
 

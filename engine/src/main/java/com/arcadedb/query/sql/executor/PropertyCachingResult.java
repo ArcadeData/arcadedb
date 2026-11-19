@@ -237,6 +237,11 @@ final class PropertyCachingResult implements Result {
   }
 
   @Override
+  public boolean listsProperty(final String name) {
+    return row.listsProperty(name);
+  }
+
+  @Override
   public Optional<RID> getIdentity() {
     return row.getIdentity();
   }

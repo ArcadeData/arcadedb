@@ -87,7 +87,11 @@ public class BooleanWrapperExpression implements Expression {
       accept(regex.getExpression(), action);
       accept(regex.getPattern(), action);
     }
-    case LabelCheckExpression label -> accept(label.getVariableExpression(), action);
+    case LabelCheckExpression label -> {
+      accept(label.getVariableExpression(), action);
+      for (final Expression dynamicLabel : label.getDynamicLabels())
+        accept(dynamicLabel, action);
+    }
     case BooleanCoercionExpression coercion -> accept(coercion.getExpression(), action);
     case IsTypedExpression typed -> accept(typed.getValueExpression(), action);
     case IsNormalizedExpression normalized -> accept(normalized.getValueExpression(), action);

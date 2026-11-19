@@ -98,7 +98,7 @@ public class AllReduceExpression implements Expression {
       final ResultInternal predicateResult = createIterationResult(result, item, accumulator);
       final Object predicateCheck = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(predicateExpression, predicateResult, context);
 
-      if (!Boolean.TRUE.equals(predicateCheck))
+      if (!Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(predicateCheck)))
         return false;
     }
 
@@ -158,6 +158,15 @@ public class AllReduceExpression implements Expression {
     if (predicateExpression.isAggregation())
       return true;
     return false;
+  }
+
+  /**
+   * An aggregate nested in any part makes the expression an aggregation too, as for {@link ReduceExpression} (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    return initialValue.containsAggregation() || listExpression.containsAggregation() || reduceExpression.containsAggregation()
+        || predicateExpression.containsAggregation();
   }
 
   @Override
