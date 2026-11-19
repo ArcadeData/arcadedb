@@ -324,6 +324,11 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     // the same fields asking for something are refused: "false" is only the default of a flag, an empty document only of some fields
     assertRefused(new Document("find", "c").append("tailable", true), BAD_VALUE, "tailable");
     assertRefused(new Document("find", "c").append("hint", false), BAD_VALUE, "hint");
+    // a number is a flag too, and a Decimal128 is not narrowed to a double to read it: 1E-6176 is not zero
+    assertRefused(new Document("find", "c").append("returnKey", 1), BAD_VALUE, "returnKey");
+    assertRefused(new Document("find", "c").append("returnKey", Decimal128.parse("1E-6176")), BAD_VALUE, "returnKey");
+    assertOk(new Document("find", "c").append("returnKey", Decimal128.parse("0.0")));
+    assertOk(new Document("create", "decimalFlags").append("autoIndexId", Decimal128.parse("1E-6176")).append("capped", Decimal128.parse("-0")));
     assertRefused(new Document("find", "c").append("collation", new Document()), BAD_VALUE, "collation");
     assertRefused(new Document("find", "c").append("collation", new Document("locale", "simple").append("strength", 1)), BAD_VALUE, "collation");
     assertRefused(new Document("create", "noIdIndex").append("autoIndexId", false), BAD_VALUE, "autoIndexId");

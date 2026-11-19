@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import de.bwaldvogel.mongo.backend.Utils;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
@@ -152,7 +153,7 @@ final class MongoCommandFields {
       case null -> true;
       case Boolean flag -> "autoIndexId".equals(field) ? flag : !flag && FALSE_IS_DEFAULT.contains(field);
       // mongod reads a number as a flag too
-      case Number flag -> "autoIndexId".equals(field) ? Utils.isTrue(flag) : !Utils.isTrue(flag) && FALSE_IS_DEFAULT.contains(field);
+      case Number flag -> "autoIndexId".equals(field) ? isSet(flag) : !isSet(flag) && FALSE_IS_DEFAULT.contains(field);
       case Document document when document.isEmpty() -> EMPTY_IS_DEFAULT.contains(field);
       case Document document -> "collation".equals(field) && document.size() == 1 && "simple".equals(document.get("locale"));
       case List<?> list -> list.isEmpty() && EMPTY_IS_DEFAULT.contains(field);
@@ -160,6 +161,14 @@ final class MongoCommandFields {
       case String text -> "validationLevel".equals(field) && "strict".equals(text) || "validationAction".equals(field) && "error".equals(text);
       default -> false;
     };
+  }
+
+  /**
+   * A number read as a flag: anything but zero sets it. A Decimal128 is compared as a decimal, since narrowed to a double one as
+   * small as 1E-6176 is zero, and a flag that is set would read as its default.
+   */
+  private static boolean isSet(final Number flag) {
+    return flag instanceof Decimal128 decimal ? decimal.compareTo(Decimal128.POSITIVE_ZERO) != 0 : Utils.isTrue(flag);
   }
 
   /** The contexts that have a table: read by the census that sends every field of each (issue #11778). */
