@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
@@ -28,9 +29,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -183,5 +186,40 @@ class Issue12191RemoteVertexPagingIT extends BaseGraphServerTest {
     assertThat(selfLoopEdges).isEqualTo(embedded[0]);
     assertThat(selfNeighbours).isEqualTo(embedded[1]);
     assertThat(total).isEqualTo(LEAVES + 2);
+  }
+
+  @Test
+  void lightweightEdgesArePagedWithoutRepeatingOrLosingAny() {
+    database.command("sql", "create vertex V12191 set name = 'lightHub'");
+    final Database embeddedDatabase = getServerDatabase(0, getDatabaseName());
+    final RID[] hubRid = new RID[1];
+    embeddedDatabase.transaction(() -> {
+      final MutableVertex lightHub = embeddedDatabase.query("sql", "select from V12191 where name = 'lightHub'").next().getVertex()
+          .get().modify();
+      hubRid[0] = lightHub.getIdentity();
+      for (int i = 0; i < 5; i++) {
+        final MutableVertex target = embeddedDatabase.newVertex("V12191").set("name", "lightLeaf").save();
+        lightHub.newLightEdge("E12191", target);
+        // a twin: a second lightweight edge with the same type and endpoints
+        if (i == 2)
+          lightHub.newLightEdge("E12191", target);
+      }
+      // and record-backed edges after them
+      for (int i = 0; i < 3; i++)
+        lightHub.newEdge("E12191", embeddedDatabase.newVertex("V12191").set("name", "recordLeaf").save());
+    });
+
+    final RemoteVertex remoteHub = new RemoteVertex(database.lookupByRID(hubRid[0]).asVertex(), database);
+    for (final int pageSize : new int[] { 1, 2, 4, 100 }) {
+      int edges = 0;
+      for (final Edge ignored : remoteHub.getEdgesPaged(Vertex.DIRECTION.OUT, pageSize))
+        ++edges;
+      final Map<String, Integer> neighbours = new HashMap<>();
+      for (final Vertex v : remoteHub.getVerticesPaged(Vertex.DIRECTION.OUT, pageSize))
+        neighbours.merge(v.getString("name"), 1, Integer::sum);
+
+      assertThat(edges).as("edges at page size %d", pageSize).isEqualTo(9);
+      assertThat(neighbours).as("neighbours at page size %d", pageSize).containsEntry("lightLeaf", 6).containsEntry("recordLeaf", 3);
+    }
   }
 }

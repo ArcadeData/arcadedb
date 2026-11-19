@@ -248,6 +248,46 @@ class RemoteVertexTest {
   }
 
   @Test
+  void getEdgesPagedSkipsTheLightweightEdgesReadSinceTheyShareOneRid() {
+    // every lightweight edge of a bucket prints as #3:-1, so the bound alone cannot advance past them
+    final ResultSet page1 = edgeResultSetOf(edgeResult(-1), edgeResult(-1));
+    final ResultSet page2 = edgeResultSetOf(edgeResult(-1), edgeResult(5));
+    final ResultSet page3 = edgeResultSetOf(edgeResult(6));
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(page1, page2, page3);
+
+    final List<Edge> collected = new ArrayList<>();
+    for (final Edge e : remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 2))
+      collected.add(e);
+
+    assertThat(collected).hasSize(5);
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries).hasSize(3);
+    assertThat(queries.get(1)).contains("WHERE @rid > #3:-1 ORDER BY @rid SKIP 2 LIMIT 2");
+    assertThat(queries.get(2)).contains("WHERE @rid > #3:5 ORDER BY @rid LIMIT 2");
+  }
+
+  @Test
+  void getEdgesPagedAccumulatesTheSkipAcrossPagesOfLightweightEdges() {
+    final ResultSet page1 = edgeResultSetOf(edgeResult(2), edgeResult(-1));
+    final ResultSet page2 = edgeResultSetOf(edgeResult(-1), edgeResult(-1));
+    final ResultSet page3 = edgeResultSetOf();
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(page1, page2, page3);
+
+    final List<Edge> collected = new ArrayList<>();
+    for (final Edge e : remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 2))
+      collected.add(e);
+
+    assertThat(collected).hasSize(4);
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries.get(1)).contains("WHERE @rid > #3:-1 ORDER BY @rid SKIP 1 LIMIT 2");
+    assertThat(queries.get(2)).contains("WHERE @rid > #3:-1 ORDER BY @rid SKIP 3 LIMIT 2");
+  }
+
+  @Test
   void getEdgesPagedBothReadsTheOutgoingThenTheIncomingEdges() {
     final ResultSet outEdges = edgeResultSetOf(edgeResult(1));
     final ResultSet inEdges = edgeResultSetOf(edgeResult(2));

@@ -272,6 +272,8 @@ public class RemoteVertex {
     private final String[]           edgeTypes;
     private       int                directionIndex = 0;
     private       RID                lastEdge       = null;
+    // edges after lastEdge already read: non-zero only when lastEdge is the bound of the lightweight edges of one bucket
+    private       int                skip           = 0;
     private       Iterator<T>        currentPage    = Collections.emptyIterator();
 
     private EdgePagesIterator(final Vertex.DIRECTION direction, final int pageSize, final String[] edgeTypes) {
@@ -292,17 +294,49 @@ public class RemoteVertex {
           return false;
 
         final Vertex.DIRECTION pageDirection = directions[directionIndex];
-        final List<Edge> edges = fetchEdgesAfter(pageDirection, edgeTypes, lastEdge, pageSize);
+        final List<Edge> edges = fetchEdgesAfter(pageDirection, edgeTypes, lastEdge, skip, pageSize);
         if (edges.size() < pageSize) {
           // the last page of this direction
           ++directionIndex;
           lastEdge = null;
+          skip = 0;
         } else
-          lastEdge = edges.getLast().getIdentity();
+          advanceCursor(edges);
 
         currentPage = elementsOf(pageDirection, edges).iterator();
       }
       return true;
+    }
+
+    /**
+     * Moves the cursor past a full page. A record-backed last edge is the bound itself. A lightweight one is not: every
+     * lightweight edge of a bucket prints as {@code #<bucket>:-1}, and the server orders them by endpoints, which the
+     * literal does not carry. So the bound becomes {@code #<bucket>:-1}, which sorts before every lightweight edge of the
+     * bucket and after every edge of a lower bucket, and the lightweight edges of the bucket read so far are skipped.
+     */
+    private void advanceCursor(final List<Edge> edges) {
+      final RID last = edges.getLast().getIdentity();
+      if (last.getPosition() >= 0) {
+        lastEdge = last;
+        skip = 0;
+        return;
+      }
+
+      final int bucketId = last.getBucketId();
+      int lightInBucket = 0;
+      for (final Edge edge : edges) {
+        final RID rid = edge.getIdentity();
+        if (rid.getPosition() < 0 && rid.getBucketId() == bucketId)
+          ++lightInBucket;
+      }
+
+      if (lastEdge != null && lastEdge.getPosition() < 0 && lastEdge.getBucketId() == bucketId)
+        // the page continued the lightweight edges of the same bucket
+        skip += lightInBucket;
+      else {
+        lastEdge = new RID(bucketId, -1L);
+        skip = lightInBucket;
+      }
     }
 
     @Override
@@ -314,13 +348,14 @@ public class RemoteVertex {
   }
 
   /**
-   * Up to {@code limit} edges of {@code direction} ({@code OUT} or {@code IN}) in RID order, the ones after {@code after}, or
-   * from the first one when it is null. The edge list carries no RID order the engine could seek on (it is newest first), so
-   * the server expands every edge and ORDER BY ... LIMIT keeps the smallest {@code limit} of the ones after the bound in a
-   * bounded heap rather than sorting them all.
+   * Up to {@code limit} edges of {@code direction} ({@code OUT} or {@code IN}) in RID order, the ones after {@code after}
+   * less the first {@code skip} of them, or from the first one when it is null. The edge list carries no RID order the
+   * engine could seek on (it is newest first), so the server expands every edge and ORDER BY ... LIMIT keeps the smallest
+   * {@code limit} of the ones after the bound in a bounded heap rather than sorting them all. {@code skip} is non-zero
+   * only past lightweight edges, which share one RID per bucket (see {@code advanceCursor}).
    */
   private List<Edge> fetchEdgesAfter(final Vertex.DIRECTION direction, final String[] types, final RID after,
-      final int limit) {
+      final int skip, final int limit) {
     final StringBuilder query = new StringBuilder("select from ( select expand( ")
         .append(direction == Vertex.DIRECTION.OUT ? "outE" : "inE").append("(");
     final Map<String, Object> params = new HashMap<>();
@@ -331,7 +366,10 @@ public class RemoteVertex {
     // RID#toString always prints the controlled "#<bucket>:<position>" form of two numbers, nothing a caller can shape
     if (after != null)
       query.append(" WHERE @rid > ").append(after);
-    query.append(" ORDER BY @rid LIMIT ").append(limit);
+    query.append(" ORDER BY @rid");
+    if (skip > 0)
+      query.append(" SKIP ").append(skip);
+    query.append(" LIMIT ").append(limit);
 
     final List<Edge> edges = new ArrayList<>(limit);
     try (final ResultSet rs = remoteDatabase.queryUncounted("sql", query.toString(), params)) {
