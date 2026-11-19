@@ -5417,6 +5417,11 @@ public class SelectExecutionPlanner {
         logSkippedIndex(idx, e);
         continue;
       }
+      // A BY ITEM/KEY/VALUE property holds one entry per element and none for an empty collection: walked in order, the index
+      // repeats the records with several elements and misses those with none, whichever of its properties is sorted on, and
+      // the null sub-plan below only adds the records whose properties are all null (issue #12518)
+      if (hasExpandedProperty(indexFields))
+        continue;
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }

@@ -108,6 +108,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private static final int          NOT_IMPLEMENTED                 = 238;
   private static final int          COMMAND_NOT_FOUND               = 59;
   private static final int          TYPE_MISMATCH                   = 14;
+  /** What mongod answers a command that lacks a field it requires. */
+  private static final int          MISSING_FIELD                   = 40414;
   private static final int          PATH_NOT_VIABLE                 = 28;
   private static final int          IMMUTABLE_FIELD                 = 66;
   private static final int          CONFLICTING_UPDATE_OPERATORS    = 40;
@@ -369,6 +371,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
       throws MongoServerException {
+    MongoCommandFields.check("aggregate", document);
     final String collectionName = document.get("aggregate").toString();
     // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
     // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
@@ -538,6 +541,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
+    // refused before anything is created: a capped, validated or collated collection would be an ordinary one (issue #11778)
+    MongoCommandFields.check("create", document);
     database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
   }
@@ -665,6 +670,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * documents than an int counts, and the reply carries it as {@code mongod} does, an int32 while it fits and an int64 past it.
    */
   private Document countCollection(final Document document) throws MongoServerException {
+    MongoCommandFields.check("count", document);
     final String collectionName = document.get("count").toString();
     final Document queryObject = documentField(document, "query");
     // read first: an invalid option is an error whether or not the collection exists
@@ -688,6 +694,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document find(final Document document) throws MongoServerException {
+    // a field this would not read is refused, not ignored: the answer would be the one of another command (issue #11778)
+    MongoCommandFields.check("find", document);
     final Document filter = documentField(document, "filter");
     final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
@@ -836,10 +844,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * {@code deleteMany} helpers). Each delete spec carries a filter {@code q} and a {@code limit}:
    * a limit of 1 deletes only the first match ({@code deleteOne}), 0 deletes all matches
    * ({@code deleteMany}). The records to delete are the ones the filter selects, as in find (see {@link MongoFilter}).
+   * <p>
+   * Every entry is checked before any runs, as {@code mongod} parses the command before it executes it (issue #11778): a field the
+   * plugin would ignore (a {@code collation}) and a {@code limit} that is neither 0 nor 1, which used to delete every match, refuse
+   * the whole command with nothing deleted.
    */
   private Document deleteDocuments(final Document document) {
+    MongoCommandFields.check("delete", document);
     final String collectionName = document.get("delete").toString();
     final List<Document> deletes = (List<Document>) document.get("deletes");
+    if (deletes != null)
+      for (final Object entry : deletes) {
+        final Document del = statementOf("delete", "deletes", entry);
+        MongoCommandFields.check("delete.deletes", del);
+        deletesOne(del);
+      }
 
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
@@ -857,8 +876,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         else
           for (final Document del : deletes) {
             final Document q = (Document) del.get("q");
-            final Number limit = (Number) del.get("limit");
-            final boolean single = limit != null && limit.intValue() == 1;
+            final boolean single = deletesOne(del);
 
             final MongoFilter filter = new MongoFilter(database, q, budget);
             if (filter.isEmpty()) {
@@ -889,6 +907,43 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
+   * Whether an entry of {@code delete} removes one document ({@code limit: 1}) or every match ({@code limit: 0}), the two values
+   * {@code mongod} has: any other one is refused as it refuses it, where it used to mean "every match" (issue #11778).
+   */
+  private static boolean deletesOne(final Document entry) {
+    final Object limit = entry.get("limit");
+    if (limit == null)
+      throw new MongoServerError(MISSING_FIELD, "Location" + MISSING_FIELD, "BSON field 'delete.deletes.limit' is missing but a required field");
+    if (!(limit instanceof Number number))
+      throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+          "BSON field 'delete.deletes.limit' is the wrong type '" + typeName(limit) + "', expected type 'number'");
+    final boolean none = isExactly(number, Decimal128.POSITIVE_ZERO, 0D);
+    if (!none && !isExactly(number, Decimal128.ONE, 1D))
+      throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
+          "The limit field in delete objects must be 0 or 1. Got " + limit);
+    return !none;
+  }
+
+  /**
+   * Whether a number of any BSON type is exactly {@code value}. A Decimal128 is compared as a decimal: narrowed to a double, one as
+   * small as 1E-6176 is 0, which would turn a refused limit into "delete every match".
+   */
+  private static boolean isExactly(final Number number, final Decimal128 decimalValue, final double value) {
+    if (number instanceof Decimal128 decimal)
+      // compareTo, not equals: 1.0 and 1 are the same number. NaN and the infinities compare as the doubles they are, equal to neither
+      return decimal.compareTo(decimalValue) == 0;
+    return number.doubleValue() == value;
+  }
+
+  /** A statement of a write command, which must be a document: {@code mongod} refuses anything else when it parses the command. */
+  private static Document statementOf(final String command, final String field, final Object statement) {
+    if (statement instanceof Document document)
+      return document;
+    throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+        "BSON field '" + command + "." + field + "' is the wrong type '" + typeName(statement) + "', expected type 'object'");
+  }
+
+  /**
    * Deletes the samples of a TIMESERIES type each entry names (issue #10464), see {@link MongoTimeSeriesWrites}. Every entry is
    * translated before any runs: the engine's delete is not part of the transaction, so an entry refused after another ran would
    * leave that one applied. A failure while an entry runs (an I/O error of the engine) still leaves the entries before it applied:
@@ -899,11 +954,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Map<String, Object>> statementParams = new ArrayList<>(deletes.size());
     for (final Document del : deletes) {
       final Document q = (Document) del.get("q");
-      final Number limit = (Number) del.get("limit");
       // an invalid filter is the error MongoDB answers first, whatever the collection
       new MongoFilter(database, q, budget);
       final Map<String, Object> params = new HashMap<>();
-      statements.add(MongoTimeSeriesWrites.deleteStatement(type, q, limit != null && limit.intValue() == 1, params));
+      statements.add(MongoTimeSeriesWrites.deleteStatement(type, q, deletesOne(del), params));
       statementParams.add(params);
     }
 
@@ -922,8 +976,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * nothing matched, a new document seeded from the filter's equalities and the update is inserted.
    */
   private Document updateDocuments(final Document document) {
+    MongoCommandFields.check("update", document);
     final String collectionName = document.get("update").toString();
     final List<Document> updates = (List<Document>) document.get("updates");
+    // every statement is checked before any runs, as mongod parses the command before it executes it: a field the plugin would
+    // ignore (a collation, a hint, array filters) refuses the whole command with nothing updated (issue #11778)
+    if (updates != null)
+      for (final Object entry : updates)
+        MongoCommandFields.check("update.updates", statementOf("update", "updates", entry));
     // MongoDB's default is an ordered update: it stops at the first refused statement
     final boolean ordered = document.get("ordered") == null || Utils.isTrue(document.get("ordered"));
 

@@ -862,7 +862,9 @@ final class CypherStepBuilder {
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()))
             || (EagerBarriers.subqueryBodyDetachDeletes(subqueryBody)
             && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
-            || eagerness.needsBarrierForPropertyWrites(subqueryBody)))
+            || eagerness.needsBarrierForPropertyWrites(subqueryBody)
+            // a body that writes what a MERGE before it matches on runs after the MERGE of every row (issue #12520)
+            || eagerness.needsBarrierAfterMerge(subqueryBody)))
           currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
