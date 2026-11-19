@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -51,6 +52,7 @@ class CypherVectorQueryRelationshipsTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Entity.id IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY Entity.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
       database.command("sql", "CREATE EDGE TYPE RELATES_TO IF NOT EXISTS");
+      database.command("sql", "CREATE EDGE TYPE OTHER IF NOT EXISTS");
       database.command("sql", "CREATE PROPERTY RELATES_TO.uuid IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY RELATES_TO.grp IF NOT EXISTS STRING");
       database.command("sql", "CREATE PROPERTY RELATES_TO.fact_embedding IF NOT EXISTS ARRAY_OF_FLOATS");
@@ -130,6 +132,77 @@ class CypherVectorQueryRelationshipsTest extends TestHelper {
         Map.of("v", vector(0))))
         .hasMessageContaining("node type 'Entity'")
         .hasMessageContaining("db.index.vector.queryNodes()");
+  }
+
+  /**
+   * The Cypher 25 {@code SEARCH} clause binds a relationship variable of its {@code MATCH}: the k nearest relationships of the
+   * index, each with its score, and the pattern's endpoints read off them. Until this the clause refused anything but a node
+   * variable, so a vector index over the facts of a graph could not be read the way the standard says to read one.
+   */
+  @Test
+  void theSearchClauseBindsARelationshipVariable() {
+    final List<Result> rows = query(
+        "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
+            + "SEARCH r IN (VECTOR INDEX $idx FOR $v LIMIT 5) SCORE AS s "
+            + "RETURN r.uuid AS uuid, s AS score, a.id AS source, b.id AS target ORDER BY s DESC",
+        Map.of("idx", "RELATES_TO[fact_embedding]", "v", vector(3)));
+
+    assertThat(rows).hasSize(5);
+    assertThat(rows.getFirst().<String>getProperty("uuid")).isEqualTo("e3");
+    assertThat(rows.getFirst().<Number>getProperty("score").doubleValue()).isEqualTo(1.0, Offset.offset(1e-5));
+    assertThat(rows).allSatisfy(row -> {
+      assertThat(row.<String>getProperty("source")).isEqualTo("a");
+      assertThat(row.<String>getProperty("target")).isEqualTo("b");
+    });
+    assertThat(new LinkedHashSet<>(uuids(rows))).as("rows %s must be distinct relationships", uuids(rows)).hasSize(5);
+  }
+
+  /** The search's own {@code WHERE} is tested by the index on each candidate, as it is for a node. */
+  @Test
+  void theSearchClauseWhereFiltersARelationshipVariableDuringTheSearch() {
+    final List<Result> rows = query(
+        "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
+            + "SEARCH r IN (VECTOR INDEX $idx FOR $v WHERE r.grp = 'g3' LIMIT 5) "
+            + "RETURN r.uuid AS uuid, r.grp AS grp",
+        Map.of("idx", "RELATES_TO[fact_embedding]", "v", vector(0)));
+
+    assertThat(rows).hasSize(EDGES / GROUPS);
+    assertThat(rows).allSatisfy(row -> assertThat(row.<String>getProperty("grp")).isEqualTo("g3"));
+  }
+
+  /**
+   * The search runs in front of the MATCH, so the relationships it binds are only candidates: the pattern still decides. An
+   * endpoint the relationship does not have, or a type it is not, leaves no row rather than a relationship the pattern
+   * excludes.
+   */
+  @Test
+  void theMatchPatternStillRestrictsTheRelationshipTheSearchBound() {
+    final Map<String, Object> params = Map.of("idx", "RELATES_TO[fact_embedding]", "v", vector(3));
+
+    // every relationship runs from a to b, so none starts at b
+    assertThat(query("MATCH (a:Entity {id: 'b'})-[r:RELATES_TO]->(b:Entity) "
+        + "SEARCH r IN (VECTOR INDEX $idx FOR $v LIMIT 5) RETURN r.uuid AS uuid", params)).isEmpty();
+    // and none is of another type, one the schema does declare, so it is the type test that refuses them
+    assertThat(query("MATCH (a:Entity)-[r:OTHER]->(b:Entity) "
+        + "SEARCH r IN (VECTOR INDEX $idx FOR $v LIMIT 5) RETURN r.uuid AS uuid", params)).isEmpty();
+  }
+
+  /** A variable that is neither a node nor a (single) relationship of the pattern is still refused. */
+  @Test
+  void theSearchClauseStillRefusesAVariableThePatternDoesNotBind() {
+    assertThatThrownBy(() -> query(
+        "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) SEARCH x IN (VECTOR INDEX $idx FOR $v LIMIT 5) RETURN r",
+        Map.of("idx", "RELATES_TO[fact_embedding]", "v", vector(3))))
+        .hasMessageContaining("must be a node or relationship variable");
+  }
+
+  /** A variable-length relationship binds a list of relationships, which one search cannot bind. */
+  @Test
+  void theSearchClauseRefusesAVariableLengthRelationship() {
+    assertThatThrownBy(() -> query(
+        "MATCH (a:Entity)-[r:RELATES_TO*1..2]->(b:Entity) SEARCH r IN (VECTOR INDEX $idx FOR $v LIMIT 5) RETURN r",
+        Map.of("idx", "RELATES_TO[fact_embedding]", "v", vector(3))))
+        .hasMessageContaining("must be a node or relationship variable");
   }
 
   private List<Result> query(final String cypher, final Map<String, Object> params) {

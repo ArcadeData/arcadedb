@@ -323,9 +323,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    * in front of it. Before this the clause was parsed and dropped: the {@code MATCH} answered every node of the label, and
    * a {@code SCORE AS} variable was undefined.
    * <p>
-   * The binding variable must be a node variable of the {@code MATCH}'s own pattern, as in Neo4j. An {@code OPTIONAL MATCH}
-   * with a {@code SEARCH} is refused rather than answered: the search runs in front of the {@code MATCH}, so an empty search
-   * would drop the row an {@code OPTIONAL MATCH} keeps.
+   * The binding variable must be a node or a relationship variable of the {@code MATCH}'s own pattern, as in Neo4j. An
+   * {@code OPTIONAL MATCH} with a {@code SEARCH} is refused rather than answered: the search runs in front of the
+   * {@code MATCH}, so an empty search would drop the row an {@code OPTIONAL MATCH} keeps.
    *
    * @param ctx   the {@code SEARCH} subclause
    * @param match the {@code MATCH} it belongs to, as {@link #visitMatchClause} built it
@@ -335,9 +335,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       throw new FeatureNotImplementedException("SEARCH is not supported in an OPTIONAL MATCH");
 
     final String variable = stripBackticks(ctx.variable().getText());
-    if (!isNodeVariableOf(match, variable))
+    if (!isNodeVariableOf(match, variable) && !isRelationshipVariableOf(match, variable))
       throw new CommandSemanticException(
-          "SEARCH: the binding variable '" + variable + "' must be a node variable of the pattern of its MATCH");
+          "SEARCH: the binding variable '" + variable + "' must be a node or relationship variable of the pattern of its MATCH");
 
     final Cypher25Parser.SymbolicNameOrStringParameterContext indexCtx = ctx.indexSpecificationClause()
         .symbolicNameOrStringParameter();
@@ -363,6 +363,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (final PathPattern path : match.getPathPatterns())
       for (final NodePattern node : path.getNodes())
         if (variable.equals(node.getVariable()))
+          return true;
+    return false;
+  }
+
+  /**
+   * Whether {@code variable} names a relationship of one of the {@code MATCH}'s path patterns, so that the vector index the
+   * search reads is one over a relationship type. A variable-length relationship is not one: there the variable is a list of
+   * relationships, which a vector search cannot bind.
+   */
+  private static boolean isRelationshipVariableOf(final MatchClause match, final String variable) {
+    for (final PathPattern path : match.getPathPatterns())
+      for (final RelationshipPattern relationship : path.getRelationships())
+        if (variable.equals(relationship.getVariable()) && !relationship.isVariableLength())
           return true;
     return false;
   }
