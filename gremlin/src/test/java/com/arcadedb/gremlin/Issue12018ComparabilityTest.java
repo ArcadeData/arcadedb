@@ -19,13 +19,16 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.util.detached.DetachedProperty;
 import org.apache.tinkerpop.gremlin.util.GremlinValueComparator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.Date;
@@ -43,11 +46,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (every date/time class compared by the instant it denotes) stays.
  */
 class Issue12018ComparabilityTest {
+  private static final String DB_PATH = "./target/testgremlin-12018";
+
   private ArcadeGraph graph;
 
   @BeforeEach
   void setup() {
-    graph = ArcadeGraph.open("./target/testgremlin-12018");
+    // A RUN THAT CRASHED BEFORE ITS TEARDOWN WOULD OTHERWISE LEAVE THE TYPE "P" BEHIND
+    FileUtils.deleteRecursively(new File(DB_PATH));
+    graph = ArcadeGraph.open(DB_PATH);
     graph.getDatabase().getSchema().createVertexType("P");
     graph.getDatabase().transaction(() -> {
       graph.getDatabase().newVertex("P").set("n", 1).set("x", 2.5).save();
@@ -60,6 +67,7 @@ class Issue12018ComparabilityTest {
   void teardown() {
     if (graph != null)
       graph.drop();
+    FileUtils.deleteRecursively(new File(DB_PATH));
   }
 
   @Test
@@ -109,14 +117,42 @@ class Issue12018ComparabilityTest {
     assertThat(GremlinValueComparator.comparable(local, offset)).isTrue();
   }
 
+  /**
+   * TinkerPop's {@code COMPARABILITY.equals()} answers false as soon as two hash codes differ, skipping only numbers, collections
+   * and maps. A Map.Entry, a Property or a Path mixes the hash codes of what it holds, so it told apart two equal dates of
+   * different classes (#3870) and {@code 1} from {@code 1.0}. ArcadeDB's copy has no such shortcut.
+   */
+  @Test
+  void eqOnCompositesFollowsTheContentsNotTheirHashCodes() {
+    final OffsetDateTime offset = OffsetDateTime.parse("2020-01-01T00:00:00Z");
+    final Date date = Date.from(offset.toInstant());
+    final LocalDateTime local = LocalDateTime.parse("2020-01-01T00:00:00");
+
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(Map.entry("d", date), Map.entry("d", local))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(Map.entry("d", offset), Map.entry("d", date))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(Map.entry("n", 1), Map.entry("n", 1.0))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new DetachedProperty<>("d", date), new DetachedProperty<>("d", local))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new DetachedProperty<>("n", 1), new DetachedProperty<>("n", 1.0))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(Map.entry("d", date), Map.entry("d", local.plusSeconds(1)))).isFalse();
+
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.inject(Map.of("d", date)).unfold().is(P.eq(Map.entry("d", local))).count().next()).isEqualTo(1L);
+    assertThat(g.inject(Map.of("d", date)).unfold().is(P.neq(Map.entry("d", local))).count().next()).isZero();
+  }
+
   @Test
   void comparableFollowsTinkerPop() {
     assertThat(GremlinValueComparator.comparable(Double.NaN, 1)).isFalse();
     assertThat(GremlinValueComparator.comparable(List.of(1, "a"), List.of(1, 2))).isFalse();
     assertThat(GremlinValueComparator.comparable(List.of(1, 2), List.of(1L, 2.5))).isTrue();
-    // AN ARRAY IS A LIST TO ORDER, AS IN TINKERPOP, BUT ITS HASH CODE TELLS IT APART FROM A LIST FOR eq, AS IN TINKERPOP
+    assertThat(GremlinValueComparator.comparable(Set.of(1), Set.of("a"))).isFalse();
+    assertThat(GremlinValueComparator.comparable(Map.of("a", 1), Map.of("a", 2L))).isTrue();
+    // AN ARRAY IS A LIST, AS IN TINKERPOP: IT ORDERS AND IS EQUAL ELEMENT BY ELEMENT (WAS: COMPARED BY IDENTITY)
     assertThat(GremlinValueComparator.comparable(new int[] { 1, 2 }, List.of(1, 2))).isTrue();
     assertThat(GremlinValueComparator.COMPARABILITY.compare(new int[] { 1, 2 }, List.of(1, 3))).isNegative();
-    assertThat(GremlinValueComparator.COMPARABILITY.equals(new int[] { 1, 2 }, List.of(1, 2))).isFalse();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new int[] { 1, 2 }, List.of(1, 2))).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new byte[] { 1, 2 }, new byte[] { 1, 2 })).isTrue();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new byte[] { 1, 2 }, new byte[] { 1, 3 })).isFalse();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(new int[] { 1, 2 }, List.of(1, 2, 3))).isFalse();
   }
 }

@@ -50,8 +50,11 @@ import static org.apache.tinkerpop.gremlin.util.NumberHelper.eitherAreNaN;
  *   types the engine stores and returns) is one {@link Type#Date} type, compared by the instant it denotes, where TinkerPop knows
  *   {@code OffsetDateTime} only (#3870);</li>
  *   <li>{@link Type#type} tests the common types first instead of walking the enum;</li>
- *   <li>the hash-code shortcut of {@code COMPARABILITY.equals()} skips dates too, which would otherwise tell two equal dates of
- *   different classes apart, and {@code equals()} answers false rather than raising if a comparator still raises.</li>
+ *   <li>{@code COMPARABILITY.equals()} has no hash-code shortcut: TinkerPop's skips numbers, collections and maps only, so it
+ *   tells apart two equal dates of different classes held in a {@code Map.Entry} or a {@code Property}, {@code 1} and {@code 1.0}
+ *   in a {@code Path}, and two arrays with the same contents. Here {@code eq} agrees with {@code compare() == 0} for them;</li>
+ *   <li>{@code COMPARABILITY.equals()} answers false rather than raising if a comparator still raises;</li>
+ *   <li>the contents of a {@code Set} or a {@code Map} with fewer than two elements are not copied and sorted to test them.</li>
  * </ul>
  * Keep it in step with TinkerPop's class when {@code gremlin.version} moves: {@link #comparable} decides whether
  * {@code lt/lte/gt/gte} answer false or raise (issue #12018).
@@ -134,10 +137,8 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
      */
     @Override
     public boolean equals(final Object f, final Object s) {
-      // numbers and collections with different hashcode can be equal, and so can two dates of different classes (#3870)
-      if (f != null && s != null && f.hashCode() != s.hashCode() && !(f instanceof Number) && !(f instanceof Collection)
-          && !(f instanceof Map) && !DateUtils.isDate(f))
-        return false;
+      // No hash-code shortcut as in TinkerPop: hash codes disagree with Comparability equality for numbers, dates of different
+      // classes (#3870) and arrays, also when they are held in a Map.Entry, a Property or a Path
 
       // shortcut a long, drawn out element by element comparison
       if (containersOfDifferentSize(f, s))
@@ -373,9 +374,9 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     else if (ft == Type.Path && st == Type.Path)
       return contentsComparable(((Path) f).iterator(), ((Path) s).iterator());
     else if (ft == Type.Set && st == Type.Set)
-      return contentsComparable(sorted((Set) f).iterator(), sorted((Set) s).iterator());
+      return contentsComparable(sortedIterator((Set) f), sortedIterator((Set) s));
     else if (ft == Type.Map && st == Type.Map)
-      return contentsComparable(sorted(((Map) f).entrySet()).iterator(), sorted(((Map) s).entrySet()).iterator());
+      return contentsComparable(sortedIterator(((Map) f).entrySet()), sortedIterator(((Map) s).entrySet()));
     else if (ft == Type.MapEntry && st == Type.MapEntry)
       return comparable(((Map.Entry) f).getKey(), ((Map.Entry) s).getKey()) && comparable(((Map.Entry) f).getValue(),
           ((Map.Entry) s).getValue());
@@ -389,10 +390,16 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     return ft == Type.Unknown && st == Type.Unknown ? naturallyComparable(f, s) : ft == st;
   }
 
-  private static List sorted(final Collection collection) {
+  /**
+   * Iterates the collection in Orderability order. One with fewer than two elements is already in order, so it is neither copied
+   * nor sorted.
+   */
+  private static Iterator sortedIterator(final Collection collection) {
+    if (collection.size() < 2)
+      return collection.iterator();
     final List list = new ArrayList(collection);
     Collections.sort(list, ORDERABILITY);
-    return list;
+    return list.iterator();
   }
 
   private static boolean contentsComparable(final Iterator fi, final Iterator si) {
