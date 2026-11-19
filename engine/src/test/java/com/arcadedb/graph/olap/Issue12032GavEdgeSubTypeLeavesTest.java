@@ -1,0 +1,351 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph.olap;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.graph.DenseNodeIdProvider;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.NeighborView;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression for #12032: a Graph Analytical View over an edge type {@code E0} kept the edges of a sub-type {@code E1} after
+ * {@code DROP TYPE E1 UNSAFE} or {@code ALTER TYPE E1 SUPERTYPE -E0}. It stayed READY with the old edge count, and a Cypher
+ * {@code count(*)} it answered still counted them: the renumbered neighbour views kept with the snapshot were held by the type
+ * name asked rather than by the slices it resolves to, and nothing told the view a slice it holds had left its types.
+ */
+class Issue12032GavEdgeSubTypeLeavesTest extends TestHelper {
+  private static final String COUNT       = "MATCH (a:V0)-[e:E0]->(b:V0) RETURN count(*) AS c";
+  private static final String SUM         = "MATCH (a:V0)-[e:E0]->(b:V0) RETURN sum(1) AS c";
+  private static final String CHAIN_COUNT = "MATCH (a:V)-[e:E0]->(b:V) RETURN count(*) AS c";
+  private static final String VIEW_HOP    = "GAVExpandAll";
+
+  /** DROP TYPE ... UNSAFE leaves the vertices' edge lists pointing at the dropped edges, by design. */
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    return false;
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "DROP TYPE E1 UNSAFE", "ALTER TYPE E1 SUPERTYPE -E0" })
+  void theCountAnsweredFromTheViewLeavesOutTheEdgesOfASubTypeThatLeft(final String change) {
+    final GraphAnalyticalView view = overlayWithHoles();
+    database.query("opencypher", "MATCH (a:W)-[e:E0]->(b:W) RETURN count(*) AS c").close();
+    assertThat(cypherPlan(COUNT)).contains(VIEW_HOP);
+    assertThat(count(COUNT)).isEqualTo(1L);
+
+    database.command("sql", change).close();
+
+    // count(@rid), not count(*): the record scan is the reference, count(*) reads a counter
+    assertThat(sqlCount("SELECT count(@rid) AS c FROM E0")).isZero();
+    assertThat(sumOfOnes(SUM)).isZero();
+    assertThat(count(COUNT)).isZero();
+
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.getEdgeCount()).isZero();
+    assertThat(count(COUNT)).isZero();
+  }
+
+  @Test
+  void aRenumberedViewKeptWithTheSnapshotFollowsTheSubTypesOfTheTypeAsked() {
+    final GraphAnalyticalView view = overlayWithHoles();
+    final GraphAnalyticalView.Pinned pinned = view.pinned();
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(pinned);
+    assertThat(dense).as("a deleted vertex leaves a hole: the ids are renumbered").isInstanceOf(DenseNodeIdProvider.class);
+    assertThat(entries(dense.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).isEqualTo(1);
+
+    // NO COMMIT: THE SNAPSHOT, AND THE RENUMBERING KEPT WITH IT, STAY
+    database.command("sql", "DROP TYPE E1 UNSAFE").close();
+    final GraphTraversalProvider again = DenseNodeIdProvider.wrap(pinned);
+    assertThat(again).isSameAs(dense);
+    assertThat(entries(pinned.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).isZero();
+    assertThat(entries(again.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).isZero();
+  }
+
+  /**
+   * What a renumbered view is kept on: the names resolve to the same slices before and after a type is detached and attached
+   * again, so resolving them twice cannot tell that a view was built across those two changes. The generation of the types can.
+   */
+  @Test
+  void theTypesGenerationMovesForATypeDetachedAndAttachedAgain() {
+    final GraphAnalyticalView view = overlayWithHoles();
+    final GraphAnalyticalView.Pinned pinned = view.pinned();
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(pinned);
+    assertThat(dense).isInstanceOf(DenseNodeIdProvider.class);
+    final long before = dense.getTypesGeneration();
+    assertThat(pinned.getTypesGeneration()).as("the renumbering answers what the view it wraps answers").isEqualTo(before);
+    assertThat(dense.resolveEdgeTypes("E0")).containsExactly("E0", "E1");
+
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE +E0").close();
+
+    assertThat(dense.resolveEdgeTypes("E0")).as("the same slices as before").containsExactly("E0", "E1");
+    assertThat(dense.getTypesGeneration()).as("and a type changed in between").isGreaterThan(before);
+  }
+
+  /**
+   * A renumbered view is built from a resolution of the names that the delegate repeats while it builds. A sub-type attached and
+   * detached again in that time leaves the names resolving to the same slices, and the view of the wider selection was kept under
+   * the narrower key. The changes are made from inside the build, by the delegate the renumbering is put in front of.
+   */
+  @Test
+  void aRenumberedViewBuiltAcrossATypeAttachedAndDetachedAgainIsNotKept() {
+    final GraphAnalyticalView view = overlayWithHoles();
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    final GraphTraversalProvider pinned = view.pinned();
+    final boolean[] armed = { true };
+    final GraphTraversalProvider delegate = (GraphTraversalProvider) Proxy.newProxyInstance(
+        GraphTraversalProvider.class.getClassLoader(), new Class<?>[] { GraphTraversalProvider.class }, (proxy, method, args) -> {
+          if ("pinned".equals(method.getName()))
+            return proxy;
+          final boolean building = armed[0] && "getNeighborView".equals(method.getName());
+          if (building) {
+            armed[0] = false;
+            database.command("sql", "ALTER TYPE E1 SUPERTYPE +E0").close();
+          }
+          try {
+            return method.invoke(pinned, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          } finally {
+            if (building)
+              database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+          }
+        });
+    final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(delegate);
+    assertThat(dense).as("a deleted vertex leaves a hole: the ids are renumbered").isInstanceOf(DenseNodeIdProvider.class);
+    assertThat(dense.resolveEdgeTypes("E0")).as("E1 is detached").containsExactly("E0");
+
+    // BUILT WHILE E1 IS ATTACHED, THEN DETACHED AGAIN BEFORE THE RENUMBERING DECIDES WHETHER TO KEEP IT
+    assertThat(entries(dense.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).as("the view built across the two changes").isEqualTo(1);
+
+    assertThat(dense.resolveEdgeTypes("E0")).as("E1 is detached again").containsExactly("E0");
+    assertThat(entries(dense.getNeighborView(Vertex.DIRECTION.OUT, "E0"))).as("a later request is not answered with E1's edge").isZero();
+  }
+
+  @ParameterizedTest
+  @CsvSource({ "DROP TYPE E1 UNSAFE, SYNCHRONOUS", "ALTER TYPE E1 SUPERTYPE -E0, SYNCHRONOUS", "DROP TYPE E1 UNSAFE, OFF",
+      "ALTER TYPE E1 SUPERTYPE -E0, OFF" })
+  void aViewHoldingTheEdgesOfASubTypeThatLeftIsNotServedUntilRebuilt(final String change, final String mode) {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr(mode);
+
+    final CountDownLatch gate = new CountDownLatch(1);
+    view.setBeforeBuildScanForTest(() -> {
+      try {
+        gate.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    try {
+      database.command("sql", change).close();
+      assertThat(view.isReady()).as("the CSR still holds E1's edges").isFalse();
+      final Result row = schemaRow();
+      assertThat(row.<String>getProperty("status")).as("not READY with E1's edges counted").isNotEqualTo("READY");
+      assertThat(cypherPlan(CHAIN_COUNT)).doesNotContain(VIEW_HOP);
+      assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
+    } finally {
+      gate.countDown();
+      view.setBeforeBuildScanForTest(null);
+    }
+
+    if ("OFF".equals(mode)) {
+      assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+      database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW G").close();
+    }
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.getEdgeCount()).isEqualTo(3);
+    assertThat(schemaRow().<Number>getProperty("edgeCount").intValue()).isEqualTo(3);
+    assertThat(cypherPlan(CHAIN_COUNT)).contains(VIEW_HOP);
+    assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
+    assertThat(sumOfOnes("MATCH (a:V)-[e:E0]->(b:V) RETURN sum(1) AS c")).isEqualTo(3L);
+  }
+
+  /**
+   * A DDL statement in an open transaction changes the types at once and saves the schema, which moves its version, at the commit:
+   * a verdict "every slice is still covered" taken before it must not be served until then.
+   */
+  @ParameterizedTest
+  @CsvSource({ "ALTER TYPE E1 SUPERTYPE -E0, 3", "DROP TYPE E1 UNSAFE, 3", "ALTER TYPE E1 NAME E1R, 6" })
+  void aChangeInsideAnOpenTransactionIsNotAnsweredFromTheVerdictOfBefore(final String change, final long edgesOfE0AndItsSubTypes) {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("SYNCHRONOUS");
+    assertThat(view.isReady()).as("every slice is covered: the verdict the change must not be answered from").isTrue();
+
+    database.begin();
+    try {
+      database.command("sql", change).close();
+      assertThat(view.isReady()).as("the CSR holds a slice named E1, which is no longer a type of the view").isFalse();
+      assertThat(count(CHAIN_COUNT)).isEqualTo(edgesOfE0AndItsSubTypes);
+    } finally {
+      database.commit();
+    }
+
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.getEdgeCount()).isEqualTo(edgesOfE0AndItsSubTypes);
+    assertThat(count(CHAIN_COUNT)).isEqualTo(edgesOfE0AndItsSubTypes);
+  }
+
+  /**
+   * The check that finds a slice left behind hands the change to the build executor, and a REBUILD of an OFF view can publish
+   * before that task runs: it must not mark the snapshot the rebuild published STALE, which would take a repaired view out of
+   * service until the next rebuild.
+   */
+  @Test
+  void aTypeChangeFoundBeforeARebuildDoesNotMarkTheRebuiltViewStale() {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("OFF");
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    // WHAT THE CHECK THAT FINDS E1'S SLICE HANDS TO THE TASK IT DISPATCHES, TAKEN BEFORE THE REBUILD
+    final BooleanSupplier stillNeeded = view.unlessRebuiltSinceNow();
+    assertThat(stillNeeded.getAsBoolean()).as("nothing has been rebuilt yet").isTrue();
+
+    database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW G").close();
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(stillNeeded.getAsBoolean()).as("a rebuild has published since").isFalse();
+
+    // THE TASK OF THE CHECK RUNS AFTER THE REBUILD
+    view.onTypeChange("a check made before the rebuild", stillNeeded);
+
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(view.isReady()).isTrue();
+    assertThat(count(CHAIN_COUNT)).isEqualTo(3L);
+  }
+
+  /**
+   * The task of the check is not decided afresh: a type that is attached again by the time it runs may have been written to while
+   * it was detached, and nobody of the view heard those edges, so the rebuild that takes them in is still due.
+   */
+  @Test
+  void aTypeChangeFoundIsStillActedOnWhenTheTypeIsAttachedAgainBeforeTheTaskRuns() {
+    final GraphAnalyticalView view = edgesOfASubTypeInTheBaseCsr("OFF");
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE -E0").close();
+    final BooleanSupplier stillNeeded = view.unlessRebuiltSinceNow();
+    write("CREATE EDGE E1 FROM (SELECT FROM V WHERE i = 0) TO (SELECT FROM V WHERE i = 3)");
+    database.command("sql", "ALTER TYPE E1 SUPERTYPE +E0").close();
+
+    view.onTypeChange("a check made while E1 was detached", stillNeeded);
+
+    assertThat(view.getStatus()).as("the view is not served as complete").isEqualTo(GraphAnalyticalView.Status.STALE);
+    database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW G").close();
+    Awaitility.await("the rebuild").atMost(30, TimeUnit.SECONDS).until(() -> view.awaitReady(1, TimeUnit.SECONDS) && view.isReady());
+    assertThat(view.getEdgeCount()).isEqualTo(7);
+    assertThat(count(CHAIN_COUNT)).isEqualTo(7L);
+  }
+
+  /** E0 and its sub-type E1, 3 edges each, in the base CSR of a view over E0 (the table 2 of the issue). */
+  private GraphAnalyticalView edgesOfASubTypeInTheBaseCsr(final String mode) {
+    database.command("sql", "CREATE VERTEX TYPE V").close();
+    database.command("sql", "CREATE EDGE TYPE E0").close();
+    database.command("sql", "CREATE EDGE TYPE E1 EXTENDS E0").close();
+    for (int i = 0; i < 4; i++)
+      write("INSERT INTO V SET i = " + i);
+    for (int i = 0; i < 3; i++) {
+      write("CREATE EDGE E0 FROM (SELECT FROM V WHERE i = " + i + ") TO (SELECT FROM V WHERE i = " + (i + 1) + ")");
+      write("CREATE EDGE E1 FROM (SELECT FROM V WHERE i = " + (i + 1) + ") TO (SELECT FROM V WHERE i = " + i + ")");
+    }
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW G VERTEX TYPES (V) EDGE TYPES (E0) UPDATE MODE " + mode).close();
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "G");
+    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.getEdgeCount()).isEqualTo(6);
+    return view;
+  }
+
+  /**
+   * The issue's minimized trace: an E1 edge only the overlay holds, and a vertex inserted and deleted, which leaves a hole in the
+   * view's ids so the count reads the renumbered views kept with the snapshot.
+   */
+  private GraphAnalyticalView overlayWithHoles() {
+    for (final String statement : new String[] { "CREATE VERTEX TYPE V0", "CREATE VERTEX TYPE V1 EXTENDS V0",
+        "CREATE VERTEX TYPE V3 EXTENDS V0", "CREATE VERTEX TYPE W", "CREATE EDGE TYPE E0", "CREATE EDGE TYPE E1 EXTENDS E0" })
+      database.command("sql", statement).close();
+    write("INSERT INTO V1 SET uid = 'a'");
+    write("INSERT INTO V0 SET uid = 'b'");
+    write("INSERT INTO W SET uid = 'w'");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW G0 VERTEX TYPES (V0, W) EDGE TYPES (E0) UPDATE MODE SYNCHRONOUS").close();
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "G0");
+    assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+    write("CREATE EDGE E1 FROM (SELECT FROM V1 WHERE uid = 'a') TO (SELECT FROM V0 WHERE uid = 'b')");
+    write("INSERT INTO V3 SET uid = 'c'");
+    write("DELETE VERTEX FROM V3 WHERE uid = 'c'");
+    return view;
+  }
+
+  /** One statement in its own transaction, committed before the next: what the view hears one commit at a time. */
+  private void write(final String statement) {
+    database.transaction(() -> database.command("sql", statement).close());
+  }
+
+  private static int entries(final NeighborView view) {
+    if (view == null)
+      return 0;
+    int entries = 0;
+    for (int v = 0; v < view.nodeCount(); v++)
+      entries += view.degree(v);
+    return entries;
+  }
+
+  private Result schemaRow() {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:graphAnalyticalViews")) {
+      return rs.next();
+    }
+  }
+
+  /** A {@code count(*)}: a number, zero included, never null. */
+  private long count(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      final Number n = rs.next().getProperty("c");
+      assertThat(n).as("count(*) answers a number: " + cypher).isNotNull();
+      return n.longValue();
+    }
+  }
+
+  /** A {@code sum(1)}, which is null over no row at all. */
+  private long sumOfOnes(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      final Number n = rs.next().getProperty("c");
+      return n == null ? 0L : n.longValue();
+    }
+  }
+
+  private long sqlCount(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  private String cypherPlan(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + cypher)) {
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
+    }
+  }
+}

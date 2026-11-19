@@ -26,10 +26,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -37,7 +35,14 @@ import java.util.stream.Stream;
  * <p>
  * Computes the k-truss decomposition of the graph. Each node is assigned the maximum k for
  * which it participates in a k-truss subgraph (a subgraph where every edge is supported by
- * at least k-2 triangles). Uses BitSet-based triangle counting for efficiency.
+ * at least k-2 triangles), over the simple undirected graph: the direction, the multiplicity of
+ * the edges and self-loops do not count. The decomposition peels the edges in support order over
+ * sorted neighbour sets, O(E^1.5) time and O(V + E) memory (issue #12173).
+ * </p>
+ * <p>
+ * The optional {@code k} (at least 2) selects the k-truss: only the nodes whose truss number is at least {@code k}, the nodes of
+ * the k-truss, are listed. Without it, or with {@code null}, every node is listed with its truss number, 0 for a node in no edge
+ * (issue #12303). The truss numbers are those of the full decomposition either way, so the filter costs nothing.
  * </p>
  * <p>
  * Example:
@@ -70,7 +75,7 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
 
   @Override
   public String getDescription() {
-    return "Computes k-truss decomposition assigning each vertex its maximum truss number";
+    return "Computes k-truss decomposition assigning each vertex its maximum truss number, only the vertices of the k-truss when k is passed";
   }
 
   @Override
@@ -83,123 +88,31 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
-    final int kParam = extractInt(optionalNumberArg(args, 1, "k", 3), "k");
+    // k selects the k-truss (issue #12303); without it every node is listed. Every edge is in the 2-truss, so a smaller k names no
+    // truss and is refused rather than read as "every node", which would include the nodes in no edge that no k-truss holds
+    final Number kArg = optionalNumberArg(args, 1, "k", null);
+    final int k = kArg != null ? extractInt(kArg, "k", 2) : 0;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
-
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // Trusses are defined on the simple undirected graph: sorted neighbour sets with no self-loop and no repeated neighbour, the
+    // representation algo.triangleCount reads (issue #10203). A self-loop no longer counts its own node as a common neighbour.
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    toSimpleNeighbourSets(adj, guard);
 
-    // Build neighbor BitSets for O(1) membership test: a nodeCount x nodeCount bit matrix, built before the
-    // peeling loop that carries the checkpoint. Reserved twice over the call because computeFullTrussDecomposition
-    // builds a second one below while this one is still alive, which is exactly what the running total is for
-    // (issue #6375).
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
-    final BitSet[] neighborSets = new BitSet[n];
+    final int[] nodeTruss = trussNumbers(graph.memory(), guard, adj);
+
+    final List<Result> results = new ArrayList<>(k > 0 ? 16 : n);
     for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
-    }
-
-    // Build canonical edge list (u < v only for undirected)
-    // Map each edge to an index
-    final Map<Long, Integer> edgeMap = new HashMap<>();
-    final List<int[]> edges = new ArrayList<>();
-    for (int u = 0; u < n; u++) {
-      for (final int v : adj[u]) {
-        if (u < v) {
-          final long key = ((long) u << 32) | (v & 0xFFFFFFFFL);
-          if (!edgeMap.containsKey(key)) {
-            edgeMap.put(key, edges.size());
-            edges.add(new int[]{u, v});
-          }
-        }
-      }
-    }
-
-    final int edgeCount = edges.size();
-    // support[e] = number of triangles edge e is part of
-    final int[] support = new int[edgeCount];
-    final boolean[] removed = new boolean[edgeCount];
-
-    // Compute initial support for each edge: a bit-set clone and intersection per edge, each O(nodeCount / 64),
-    // and all of it before the peeling loop that carries the checkpoint.
-    for (int e = 0; e < edgeCount; e++) {
-      guard.checkPeriodically(e);
-      final int u = edges.get(e)[0];
-      final int v = edges.get(e)[1];
-      // |N(u) ∩ N(v)| — use BitSet AND
-      final BitSet intersection = (BitSet) neighborSets[u].clone();
-      intersection.and(neighborSets[v]);
-      support[e] = intersection.cardinality();
-    }
-
-    // Track node truss numbers
-    final int[] trussNumber = new int[n];
-    // Initialize to max possible k (will be refined)
-
-    // Iterative edge removal for k-truss decomposition
-    // For each k from 3 up, remove edges with support < k-2
-    int currentK = 2;
-    boolean anyRemoved = true;
-    while (anyRemoved) {
-      // A full sweep of every edge per round, repeated until a round removes nothing, and each removal walks the
-      // common neighbourhood of the edge's endpoints. Sized by the graph and by k, with nothing to stop it from
-      // inside before issue #6302.
-      guard.check();
-      anyRemoved = false;
-      for (int e = 0; e < edgeCount; e++) {
-        guard.checkPeriodically(e);
-        if (!removed[e] && support[e] < currentK - 2) {
-          removed[e] = true;
-          anyRemoved = true;
-          final int u = edges.get(e)[0];
-          final int v = edges.get(e)[1];
-
-          // Update supports of edges sharing a triangle with (u,v)
-          // Common neighbors of u and v
-          final BitSet commonNeighbors = (BitSet) neighborSets[u].clone();
-          commonNeighbors.and(neighborSets[v]);
-
-          for (int w = commonNeighbors.nextSetBit(0); w >= 0; w = commonNeighbors.nextSetBit(w + 1)) {
-            // Decrement support of edge (u,w) and (v,w)
-            final int uw = u < w ? edgeIndex(edgeMap, u, w) : edgeIndex(edgeMap, w, u);
-            final int vw = v < w ? edgeIndex(edgeMap, v, w) : edgeIndex(edgeMap, w, v);
-            if (uw >= 0 && !removed[uw])
-              support[uw]--;
-            if (vw >= 0 && !removed[vw])
-              support[vw]--;
-          }
-
-          // Remove edge from adjacency BitSets
-          neighborSets[u].clear(v);
-          neighborSets[v].clear(u);
-        }
-      }
-
-      if (!anyRemoved && currentK <= kParam) {
-        currentK++;
-        anyRemoved = true; // force next iteration to check
-      }
-    }
-
-    // Assign truss numbers: nodes in remaining edges get at least kParam truss number
-    // For full decomposition, track max k where each node is still connected
-    // Re-run the full decomposition
-    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets of the truss decomposition",
-        n + " x " + n + " nodes");
-    final int[] nodeTruss = computeFullTrussDecomposition(guard, n, adj, neighborSets, edgeMap, edges, edgeCount);
-
-    final List<Result> results = new ArrayList<>(n);
-    for (int i = 0; i < n; i++) {
+      if (nodeTruss[i] < k)
+        continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("trussNumber", nodeTruss[i]);
@@ -208,94 +121,258 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     return results.stream();
   }
 
-  private int edgeIndex(final Map<Long, Integer> edgeMap, final int u, final int v) {
-    final long key = ((long) u << 32) | (v & 0xFFFFFFFFL);
-    final Integer idx = edgeMap.get(key);
-    return idx == null ? -1 : idx;
+  /**
+   * The truss number of every node: the largest truss number of its edges, 0 for a node with none (issue #12173).
+   * <p>
+   * The edge decomposition is the peeling of Wang and Cheng, the edge counterpart of the bin-sorted core decomposition: the edges are
+   * kept ordered by support (the triangles they close) in bins, the edge of least support is removed at a truss number of its support
+   * plus 2, and each triangle it closed lowers the support of its two other edges, down to the support being removed and no further.
+   * Supports come from one listing of the triangles over the sorted rows. O(E^1.5) time and O(V + E) memory, where the bit matrix
+   * this replaced cost O(V^2) memory and O(V / 64) per set operation whatever the degree.
+   */
+  private static int[] trussNumbers(final MemoryBudget memory, final WorkGuard guard, final int[][] adj) {
+    final int n = adj.length;
+    long totalArcs = 0;
+    for (final int[] row : adj)
+      totalArcs += row.length;
+    final int arcs = checkedEdgeCount(NAME, n, totalArcs);
+    final int[] offsets = new int[n + 1];
+    for (int u = 0; u < n; u++)
+      offsets[u + 1] = offsets[u] + adj[u].length;
+    final int m = arcs / 2;
+
+    // The edge of every arc; the two ends of every edge, its support, its slot and position in the bins (at most one bin per edge)
+    // and whether it is gone; the row offsets and the truss number of every node
+    memory.reserve(saturatingSum(saturatingSum(saturatingProduct(arcs, INT_BYTES), saturatingProduct(m, 6 * INT_BYTES + BOOLEAN_BYTES)),
+        saturatingProduct(n + 1L, 2 * INT_BYTES)), "the truss decomposition", n + " nodes, " + m + " edges");
+    final int[] arcEdge = new int[arcs];
+    final int[] edgeU = new int[m];
+    final int[] edgeV = new int[m];
+    int edges = 0;
+    for (int u = 0; u < n; u++) {
+      guard.checkPeriodically(u);
+      final int[] row = adj[u];
+      for (int k = -Arrays.binarySearch(row, u) - 1; k < row.length; k++) {
+        final int v = row[k];
+        edgeU[edges] = u;
+        edgeV[edges] = v;
+        arcEdge[offsets[u] + k] = edges;
+        arcEdge[offsets[v] + Arrays.binarySearch(adj[v], u)] = edges;
+        edges++;
+      }
+    }
+
+    final int[] support = triangleSupports(memory, guard, adj, offsets, arcEdge, m);
+    return new Peeling(adj, offsets, arcEdge, edgeU, edgeV, support).run(guard, n);
   }
 
-  private int[] computeFullTrussDecomposition(final WorkGuard guard, final int n, final int[][] adj,
-      final BitSet[] neighborSetsOrig, final Map<Long, Integer> edgeMap,
-      final List<int[]> edges, final int edgeCount) {
+  /**
+   * The triangles every edge closes, each triangle found once (Chiba and Nishizeki's degree ordering): every edge is oriented from
+   * the end of lower (degree, id) to the other, and a triangle is found from its lowest end u, as an out-neighbour w of u that is also
+   * an out-neighbour of another out-neighbour v of u. A node has at most O(sqrt(E)) out-neighbours of degree at least its own, so the
+   * listing is O(E^1.5) whatever the node numbering, where a walk of the rows past each neighbour scans a hub's row once per leaf.
+   */
+  private static int[] triangleSupports(final MemoryBudget memory, final WorkGuard guard, final int[][] adj, final int[] offsets,
+      final int[] arcEdge, final int m) {
+    final int n = adj.length;
+    int maxDegree = 0;
+    for (final int[] row : adj)
+      maxDegree = Math.max(maxDegree, row.length);
+    // The rank of every node, its out-arcs (offset, neighbour, edge), the marks of one node's out-neighbours, the degree buckets and
+    // the supports
+    memory.reserve(saturatingProduct(saturatingSum(saturatingSum(4L * n, 3L * m), maxDegree + 2L), INT_BYTES),
+        "the triangle listing", n + " nodes, " + m + " edges");
 
-    // Rebuild neighbor sets (fresh copy). A nodeCount x nodeCount bit matrix and an O(E) fill, both before the
-    // peeling loop below, so its checkpoint never reaches them.
-    final BitSet[] neighborSets = new BitSet[n];
-    for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
-      neighborSets[i] = new BitSet(n);
-      for (final int j : adj[i])
-        neighborSets[i].set(j);
+    // Rank by (degree, id): a counting sort over the degree, stable over the ids
+    final int[] bucket = new int[maxDegree + 2];
+    for (final int[] row : adj)
+      bucket[row.length + 1]++;
+    for (int d = 0; d <= maxDegree; d++)
+      bucket[d + 1] += bucket[d];
+    final int[] rank = new int[n];
+    for (int u = 0; u < n; u++)
+      rank[u] = bucket[adj[u].length]++;
+
+    // The out-arcs of every node: to the neighbours of higher rank, with the edge they stand for
+    final int[] outOffsets = new int[n + 1];
+    for (int u = 0; u < n; u++) {
+      int out = 0;
+      for (final int v : adj[u])
+        if (rank[v] > rank[u])
+          out++;
+      outOffsets[u + 1] = outOffsets[u] + out;
+    }
+    final int[] outNeighbour = new int[m];
+    final int[] outEdge = new int[m];
+    for (int u = 0; u < n; u++) {
+      int o = outOffsets[u];
+      final int[] row = adj[u];
+      for (int k = 0; k < row.length; k++)
+        if (rank[row[k]] > rank[u]) {
+          outNeighbour[o] = row[k];
+          outEdge[o++] = arcEdge[offsets[u] + k];
+        }
     }
 
-    final int[] support = new int[edgeCount];
-    final boolean[] removed = new boolean[edgeCount];
-    // edgeTruss[e] = the truss number assigned to edge e
-    final int[] edgeTruss = new int[edgeCount];
-
-    // Compute initial support: a bit-set clone and intersection per edge, each O(nodeCount / 64) - the most
-    // expensive single phase here on a large graph, and the last one that had no checkpoint.
-    for (int e = 0; e < edgeCount; e++) {
-      guard.checkPeriodically(e);
-      final int u = edges.get(e)[0];
-      final int v = edges.get(e)[1];
-      final BitSet inter = (BitSet) neighborSets[u].clone();
-      inter.and(neighborSets[v]);
-      support[e] = inter.cardinality();
-    }
-
-    int k = 2;
-    int removedCount = 0;
-    while (removedCount < edgeCount) {
-      boolean anyRemoved = true;
-      while (anyRemoved) {
-        guard.check();
-        anyRemoved = false;
-        for (int e = 0; e < edgeCount; e++) {
-          guard.checkPeriodically(e);
-          if (!removed[e] && support[e] < k - 2) {
-            removed[e] = true;
-            edgeTruss[e] = k - 1;
-            removedCount++;
-            anyRemoved = true;
-            final int u = edges.get(e)[0];
-            final int v = edges.get(e)[1];
-
-            final BitSet common = (BitSet) neighborSets[u].clone();
-            common.and(neighborSets[v]);
-            for (int w = common.nextSetBit(0); w >= 0; w = common.nextSetBit(w + 1)) {
-              final int uw = u < w ? edgeIndex(edgeMap, u, w) : edgeIndex(edgeMap, w, u);
-              final int vw = v < w ? edgeIndex(edgeMap, v, w) : edgeIndex(edgeMap, w, v);
-              if (uw >= 0 && !removed[uw])
-                support[uw]--;
-              if (vw >= 0 && !removed[vw])
-                support[vw]--;
-            }
-            neighborSets[u].clear(v);
-            neighborSets[v].clear(u);
+    final int[] support = new int[m];
+    // THE EDGE FROM THE CURRENT u TO EACH OF ITS OUT-NEIGHBOURS, -1 FOR ANY OTHER NODE
+    final int[] edgeFromU = new int[n];
+    Arrays.fill(edgeFromU, -1);
+    for (int u = 0; u < n; u++) {
+      guard.check();
+      for (int o = outOffsets[u]; o < outOffsets[u + 1]; o++)
+        edgeFromU[outNeighbour[o]] = outEdge[o];
+      for (int o = outOffsets[u]; o < outOffsets[u + 1]; o++) {
+        final int v = outNeighbour[o];
+        final int uv = outEdge[o];
+        for (int p = outOffsets[v]; p < outOffsets[v + 1]; p++) {
+          final int uw = edgeFromU[outNeighbour[p]];
+          if (uw >= 0) {
+            support[uv]++;
+            support[uw]++;
+            support[outEdge[p]]++;
           }
         }
       }
-      if (removedCount < edgeCount)
-        k++;
+      for (int o = outOffsets[u]; o < outOffsets[u + 1]; o++)
+        edgeFromU[outNeighbour[o]] = -1;
+    }
+    return support;
+  }
+
+  /**
+   * The bin-sorted peeling of the edges: the edges ordered by support in bins ({@code binStart[s]} is the first position of support
+   * s), the edge of least support removed at each step, and the support of the other two edges of each triangle it closed lowered in
+   * place, without a re-sort.
+   */
+  private static final class Peeling {
+    private final int[][]   adj;
+    private final int[]     offsets;
+    private final int[]     arcEdge;
+    private final int[]     edgeU;
+    private final int[]     edgeV;
+    private final int[]     support;
+    private final int[]     binStart;
+    private final int[]     order;
+    private final int[]     position;
+    private final boolean[] removed;
+
+    private Peeling(final int[][] adj, final int[] offsets, final int[] arcEdge, final int[] edgeU, final int[] edgeV,
+        final int[] support) {
+      this.adj = adj;
+      this.offsets = offsets;
+      this.arcEdge = arcEdge;
+      this.edgeU = edgeU;
+      this.edgeV = edgeV;
+      this.support = support;
+      final int m = support.length;
+      int maxSupport = 0;
+      for (int e = 0; e < m; e++)
+        if (support[e] > maxSupport)
+          maxSupport = support[e];
+      this.binStart = new int[maxSupport + 2];
+      for (int e = 0; e < m; e++)
+        binStart[support[e] + 1]++;
+      for (int s = 0; s <= maxSupport; s++)
+        binStart[s + 1] += binStart[s];
+      this.order = new int[m];
+      this.position = new int[m];
+      final int[] fill = Arrays.copyOf(binStart, maxSupport + 1);
+      for (int e = 0; e < m; e++) {
+        position[e] = fill[support[e]]++;
+        order[position[e]] = e;
+      }
+      this.removed = new boolean[m];
     }
 
-    // Assign each remaining edge (never removed) truss = k
-    for (int e = 0; e < edgeCount; e++) {
-      if (!removed[e])
-        edgeTruss[e] = k;
+    /** Peels every edge and returns the truss number of every node: the largest of its edges, 0 for a node with none. */
+    private int[] run(final WorkGuard guard, final int n) {
+      final int[] nodeTruss = new int[n];
+      for (int i = 0; i < order.length; i++) {
+        guard.checkPeriodically(i);
+        final int e = order[i];
+        final int s = support[e];
+        final int truss = s + 2;
+        removed[e] = true;
+        final int u = edgeU[e];
+        final int v = edgeV[e];
+        if (truss > nodeTruss[u])
+          nodeTruss[u] = truss;
+        if (truss > nodeTruss[v])
+          nodeTruss[v] = truss;
+
+        // Every triangle (u, v, w) still standing loses this edge: its other two edges lose one of support, down to s. A support of
+        // zero means no triangle is left (a support is never below the triangles still standing), so there is nothing to walk
+        if (s > 0)
+          lowerSupportOfTriangles(u, v, s);
+      }
+      return nodeTruss;
     }
 
-    // Node truss = max truss of any incident edge
-    final int[] nodeTruss = new int[n];
-    for (int e = 0; e < edgeCount; e++) {
-      final int u = edges.get(e)[0];
-      final int v = edges.get(e)[1];
-      if (edgeTruss[e] > nodeTruss[u])
-        nodeTruss[u] = edgeTruss[e];
-      if (edgeTruss[e] > nodeTruss[v])
-        nodeTruss[v] = edgeTruss[e];
+    /**
+     * Lowers the support of the two other edges of every triangle (u, v, w) whose edges are all still standing. The common neighbours
+     * are found by a binary search per entry of the shorter row when the other is much longer (a hub), and by a merge otherwise, so
+     * the work is bounded by the shorter row whatever the node numbering.
+     */
+    private void lowerSupportOfTriangles(final int u, final int v, final int floor) {
+      final int[] nu = adj[u];
+      final int[] nv = adj[v];
+      if ((long) nu.length * 8 < nv.length || (long) nv.length * 8 < nu.length) {
+        final boolean uShorter = nu.length <= nv.length;
+        final int[] shortRow = uShorter ? nu : nv;
+        final int[] longRow = uShorter ? nv : nu;
+        final int shortNode = uShorter ? u : v;
+        final int longNode = uShorter ? v : u;
+        for (int is = 0; is < shortRow.length; is++) {
+          final int il = Arrays.binarySearch(longRow, shortRow[is]);
+          if (il >= 0)
+            lowerSupportOfTriangle(arcEdge[offsets[shortNode] + is], arcEdge[offsets[longNode] + il], floor);
+        }
+        return;
+      }
+      int iu = 0;
+      int iv = 0;
+      while (iu < nu.length && iv < nv.length) {
+        final int a = nu[iu];
+        final int b = nv[iv];
+        if (a < b)
+          iu++;
+        else if (a > b)
+          iv++;
+        else {
+          lowerSupportOfTriangle(arcEdge[offsets[u] + iu], arcEdge[offsets[v] + iv], floor);
+          iu++;
+          iv++;
+        }
+      }
     }
-    return nodeTruss;
+
+    private void lowerSupportOfTriangle(final int first, final int second, final int floor) {
+      if (!removed[first] && !removed[second]) {
+        lowerSupport(first, floor);
+        lowerSupport(second, floor);
+      }
+    }
+
+    /**
+     * Lowers the support of edge {@code f} by one when it is above {@code floor}, moving it to the front of its bin and the bin's
+     * start past it, so the bins stay ordered without a re-sort.
+     */
+    private void lowerSupport(final int f, final int floor) {
+      final int s = support[f];
+      if (s <= floor)
+        return;
+      final int first = binStart[s];
+      final int g = order[first];
+      if (g != f) {
+        final int pf = position[f];
+        order[first] = f;
+        position[f] = first;
+        order[pf] = g;
+        position[g] = pf;
+      }
+      binStart[s]++;
+      support[f] = s - 1;
+    }
   }
 }

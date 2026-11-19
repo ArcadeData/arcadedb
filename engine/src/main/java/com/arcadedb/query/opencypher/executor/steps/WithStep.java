@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.HeapEstimator;
@@ -62,6 +63,8 @@ public class WithStep extends AbstractExecutionStep {
   private final WithClause withClause;
   private final ExpressionEvaluator evaluator;
   private final boolean skipLimitDeferred;
+  // THE WHERE FILTERS THE ROWS LEFT BY THE SKIP AND THE LIMIT (ISSUE #11762)
+  private final boolean whereAfterPaging;
   // SET BY THE PLANNER WHEN ANY WRITE PRECEDES THIS WITH (EVEN ONE AN EARLIER BARRIER COVERS, WHICH THEN DRAINS A SECOND TIME AT NO COST):
   // A LIMIT 0 THEN STILL DRAINS ITS INPUT, WHICH IS WHAT RUNS THE WRITES BEHIND IT
   private boolean drainOnZeroLimit;
@@ -78,6 +81,7 @@ public class WithStep extends AbstractExecutionStep {
     // Defer SKIP/LIMIT to downstream steps when ORDER BY is present,
     // so sorting happens before pagination
     this.skipLimitDeferred = withClause.getOrderByClause() != null;
+    this.whereAfterPaging = withClause.isWhereAfterPaging();
   }
 
   /** Makes a {@code LIMIT 0} drain its input, like {@code LimitStep} does, so the writes behind it run. */
@@ -192,19 +196,11 @@ public class WithStep extends AbstractExecutionStep {
             // Project the result
             final ResultInternal projectedResult = projectResult(inputResult);
 
-            // Apply WHERE clause filtering using a merged scope that contains
-            // both the pre-projection variables AND the projected aliases.
-            // In Cypher, WITH c WHERE r IS NULL can reference 'r' (pre-projection)
-            // and WITH a.name2 AS name WHERE name = 'B' can reference 'name' (projected).
-            if (withClause.getWhereClause() != null) {
-              final ResultInternal mergedScope = new ResultInternal();
-              for (final String prop : inputResult.getPropertyNames())
-                mergedScope.setProperty(prop, inputResult.getProperty(prop));
-              for (final String prop : projectedResult.getPropertyNames())
-                mergedScope.setProperty(prop, projectedResult.getProperty(prop));
-              if (!evaluateWhereClause(mergedScope))
-                continue;
-            }
+            // Apply WHERE clause filtering on the incoming scope merged with the projection. A WHERE after a SKIP or a
+            // LIMIT filters the paged rows instead (issue #11762): see below, or the steps the planner chains after the
+            // ORDER BY.
+            if (withClause.getWhereClause() != null && !whereAfterPaging && !passesWhere(inputResult, projectedResult))
+              continue;
 
             // Apply DISTINCT
             if (withClause.isDistinct()) {
@@ -223,7 +219,12 @@ public class WithStep extends AbstractExecutionStep {
                   .filter(name -> !InternalVariables.isInternal(name)).toList();
               if (distinctKeys == null)
                 distinctKeys = new GroupKeyValues.Builder(names.size() * 2);
-              final GroupKeyValues resultKey = distinctKeys.build(names, projectedResult::getProperty);
+              // A node a label write replaced is keyed by its original identity, so the rows projected before and after the
+              // write are one row (issue #10614)
+              final LabelReplacements replacements = LabelReplacements.existing(context);
+              final GroupKeyValues resultKey = replacements == null ?
+                  distinctKeys.build(names, projectedResult::getProperty) :
+                  distinctKeys.build(names, name -> replacements.distinctKey(projectedResult.getProperty(name)));
               if (!seenResults.add(resultKey))
                 continue;
               distinctLimit.add(seenResults.size(), resultKey.canonicalValues(), HeapEstimator.HASH_ENTRY_BYTES);
@@ -232,6 +233,13 @@ public class WithStep extends AbstractExecutionStep {
             // Apply SKIP (only when not deferred to downstream)
             if (skipVal != null && skipped < skipVal) {
               skipped++;
+              continue;
+            }
+
+            // The paging of a WITH without ORDER BY happens here, so does the WHERE that filters the paged rows: a row it refuses
+            // still counts against the LIMIT (issue #11762)
+            if (whereAfterPaging && !skipLimitDeferred && !passesWhere(inputResult, projectedResult)) {
+              returned++;
               continue;
             }
 
@@ -317,12 +325,18 @@ public class WithStep extends AbstractExecutionStep {
   }
 
   /**
-   * Evaluates WHERE clause predicate on the input result (before projection).
+   * Evaluates the WHERE predicate on a merged scope that holds both the pre-projection variables AND the projected aliases: in
+   * Cypher, {@code WITH c WHERE r IS NULL} can reference {@code r} (pre-projection) and {@code WITH a.name2 AS name WHERE
+   * name = 'B'} can reference {@code name} (projected).
    */
-  private boolean evaluateWhereClause(final Result inputResult) {
-    final BooleanExpression predicate =
-        withClause.getWhereClause().getConditionExpression();
-    return Boolean.TRUE.equals(predicate.evaluateTernary(inputResult, context));
+  private boolean passesWhere(final Result inputResult, final Result projectedResult) {
+    final ResultInternal mergedScope = new ResultInternal();
+    for (final String prop : inputResult.getPropertyNames())
+      mergedScope.setProperty(prop, inputResult.getProperty(prop));
+    for (final String prop : projectedResult.getPropertyNames())
+      mergedScope.setProperty(prop, projectedResult.getProperty(prop));
+    final BooleanExpression predicate = withClause.getWhereClause().getConditionExpression();
+    return Boolean.TRUE.equals(predicate.evaluateTernary(mergedScope, context));
   }
 
   @Override

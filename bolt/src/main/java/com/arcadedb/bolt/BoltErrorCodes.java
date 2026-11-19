@@ -73,6 +73,10 @@ public final class BoltErrorCodes {
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";
+  // A statement that runs only in an implicit (auto-commit) transaction, sent in an explicit or managed one: CALL { ... } IN
+  // TRANSACTIONS (ImplicitTransactionRequiredException). Neo4j's own code for it, a DatabaseError despite being the caller's
+  // context, kept as is so a driver that branches on it behaves the same against both servers (issue #12161)
+  public static final String TRANSACTION_START_FAILED_ERROR = "Neo.DatabaseError.Transaction.TransactionStartFailed";
 
   // Transient (retryable) errors. ArcadeDB's optimistic-concurrency conflicts (NeedRetryException:
   // ConcurrentModificationException / LockTimeoutException) map here so Neo4j drivers auto-retry a
