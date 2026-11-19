@@ -18,16 +18,19 @@
  */
 package com.arcadedb.function.node;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -35,9 +38,13 @@ import java.util.Set;
  * <p>
  * {@code relTypes} is APOC's relationship pattern ({@code 'KNOWS>|<LIKES'}, {@code '>'}, a blank one for every relationship):
  * the answer is the types the pattern names that the node has a relationship of, in the pattern's order. It used to be a
- * direction, so {@code apoc.node.relationship.types(n, 'KNOWS')} was refused as an unknown direction and
- * {@code (n, 'OUT')} answered every outgoing type (issue #12103). The direction is now the third argument, which APOC does not
- * have, restricting the alternatives that carry no direction marker.
+ * direction, so {@code apoc.node.relationship.types(n, 'KNOWS')} was refused as an unknown direction (issue #12103). The
+ * direction is now the third argument, which APOC does not have, restricting the alternatives that carry no direction marker.
+ * <p>
+ * A call written for the old signature still answers as it did: a second argument that is one of the direction words
+ * ({@code IN}, {@code INCOMING}, {@code OUT}, {@code OUTGOING}, {@code BOTH}, in any case), with no third argument, is read as
+ * the direction when the schema has no edge type of that exact name, so {@code (n, 'OUT')} is still every outgoing type. With
+ * such an edge type it is the pattern naming it, as in APOC.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -68,8 +75,9 @@ public class NodeRelationshipTypes extends AbstractNodeFunction {
     if (vertex == null)
       return Collections.emptyList();
 
-    final RelationshipPattern pattern = patternArgument(args, 1);
-    final Vertex.DIRECTION restriction = directionArgument(args, 2);
+    final boolean legacyDirection = isLegacyDirection(vertex.getDatabase(), args);
+    final RelationshipPattern pattern = patternArgument(args, legacyDirection ? args.length : 1);
+    final Vertex.DIRECTION restriction = legacyDirection ? parseDirection((String) args[1]) : directionArgument(args, 2);
     final Set<String> types = new LinkedHashSet<>();
     if (pattern.isEmpty())
       addTypes(context, vertex, restriction, types);
@@ -84,6 +92,19 @@ public class NodeRelationshipTypes extends AbstractNodeFunction {
           types.add(entry.type());
       }
     return new ArrayList<>(types);
+  }
+
+  /**
+   * Whether the second argument is the direction the function took there before #12103 rather than a pattern: a direction
+   * word, no third argument, and no edge type the pattern would name.
+   */
+  private static boolean isLegacyDirection(final Database database, final Object[] args) {
+    if (args.length < 2 || !(args[1] instanceof String text) || (args.length > 2 && args[2] != null))
+      return false;
+    return switch (text.toLowerCase(Locale.ROOT)) {
+      case "in", "incoming", "out", "outgoing", "both" -> !(database.getSchema().getTypeOrNull(text) instanceof EdgeType);
+      default -> false;
+    };
   }
 
   private static void addTypes(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,

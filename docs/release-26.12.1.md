@@ -39,6 +39,20 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
 **Who sees a different answer.** A `DELETE VERTEX FROM` aimed at documents or edges, which used to delete them: write
 `DELETE FROM` instead. `DELETE FROM` on a vertex type keeps removing the vertices with their edges, as before.
 
+### openCypher: the second argument of `node.relationship.types()` is APOC's relationship pattern (#12103)
+
+`node.relationship.types(node, [relTypes], [direction])` (and `apoc.node.relationship.types`) takes APOC's relationship
+pattern as its second argument, as APOC does: `(n, 'KNOWS>|<LIKES')` answers the types of that list the node has a
+relationship of, in the pattern's order. The second argument used to be the direction, which is now the third one,
+restricting the alternatives that carry no direction marker: `(n, null, 'IN')` is every incoming type.
+
+A call written for the old signature keeps its answer: a second argument that is a direction word (`IN`, `INCOMING`, `OUT`,
+`OUTGOING`, `BOTH`, in any case) with no third argument is still read as the direction.
+
+**Who sees a different answer.** A database with an edge type named exactly like that word (an edge type `OUT`): there
+`(n, 'OUT')` is the pattern naming that type, as in APOC, and answers `['OUT']` or `[]`. Write `(n, null, 'OUT')` for the
+direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an unknown direction and now answers.
+
 ## Fixes
 
 - **#12023** `vector.dotProduct`, `vector.l2Distance`, `vector.l1Distance` / `vector.manhattanDistance`, `vector.l1Norm`,
@@ -48,3 +62,11 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
   answers `NaN` or `Infinity`, and a long sum no longer stops growing at the float precision of its running total. The SIMD
   paths of the dot product (4096 components and more) and of the L2 distance are kept, and an answer they return non-finite is
   recomputed in double.
+- **#12103** The `node.*` functions and the `algo.*` path finders read APOC's relationship pattern syntax (`'KNOWS>|<LIKES'`,
+  `'>'`, `'<KNOWS'`, a blank one for every relationship), as `path.*` already did: `apoc.node.degree(n, 'KNOWS>')` answered 0,
+  and `apoc.algo.dijkstra(a, b, 'ROAD>', 'w')`, `apoc.algo.aStar` and `apoc.algo.allSimplePaths` refused `'ROAD>'` as a type
+  that does not exist. `node.degree.in` and `node.degree.out` read the pattern with their direction fixed (an alternative
+  marked the other way counts 0), and `node.degree` sums per alternative as APOC does. A pattern whose alternatives mix
+  directions is walked as written, each alternative in its own direction. The fifth argument of `algo.dijkstra` is APOC's
+  `defaultWeight` when it is a number (the weight of a relationship without the weight property), the direction ArcadeDB took
+  there before when it is a string, and refused otherwise.

@@ -100,8 +100,11 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     if (fifth instanceof Number number) {
       if (!Double.isNaN(number.doubleValue()))
         missingWeight = number.doubleValue();
-    } else if (fifth != null)
-      unmarked = parseDirection(extractString(fifth, "direction"));
+    } else if (fifth instanceof String direction)
+      unmarked = parseDirection(direction);
+    else if (fifth != null)
+      throw new IllegalArgumentException(getName() + "(): the fifth argument is the default weight (a number) or the direction (IN, OUT or "
+          + "BOTH), got " + fifth.getClass().getSimpleName());
 
     final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
