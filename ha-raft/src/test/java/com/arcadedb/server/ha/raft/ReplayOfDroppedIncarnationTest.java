@@ -63,7 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * path a replay takes, and models the restart with a second state machine over the same server and the same
  * {@code .raft/applied-index} file: Ratis hands it the entries again from the marker on.
  */
-class Issue11919ReplayOfDroppedIncarnationTest {
+class ReplayOfDroppedIncarnationTest {
   private static final String DB          = "db-incarnations";
   private static final long   TERM        = 3L;
   private static final long   FIRST       = 10L;
