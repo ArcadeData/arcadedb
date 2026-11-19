@@ -64,12 +64,29 @@ public class ForeachClause {
    * @return true when a DELETE clause appears anywhere in this FOREACH's body
    */
   public boolean containsDelete() {
+    return containsDelete(false);
+  }
+
+  /**
+   * True when this FOREACH's body contains a {@code DETACH DELETE}, directly or nested inside another FOREACH. It is the one
+   * delete that removes relationships besides the entity it names, so it can change the edge list of a node the MATCH feeding
+   * this FOREACH is still walking (issue #12254); a plain DELETE of a node refuses while the node has a relationship.
+   *
+   * @return true when a DETACH DELETE clause appears anywhere in this FOREACH's body
+   */
+  public boolean containsDetachDelete() {
+    return containsDelete(true);
+  }
+
+  private boolean containsDelete(final boolean detachOnly) {
     for (final ClauseEntry entry : innerClauses) {
-      if (entry.getType() == ClauseEntry.ClauseType.DELETE)
-        return true;
-      if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
+      if (entry.getType() == ClauseEntry.ClauseType.DELETE) {
+        final DeleteClause delete = entry.getTypedClause();
+        if (!detachOnly || delete.isDetach())
+          return true;
+      } else if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
         final ForeachClause nested = entry.getTypedClause();
-        if (nested.containsDelete())
+        if (nested.containsDelete(detachOnly))
           return true;
       }
     }

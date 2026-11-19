@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   such a chain into a left-associative binary tree exactly as deep as the term count, and that tree is
  *   then walked recursively by several independent passes - {@code ExpressionRewriter} (WHERE-clause
  *   normalization - fixed first, see below), {@code CypherExpressionWalker} and {@code
- *   CypherSemanticValidator#checkExpressionScope} (both reachable from <em>any</em> clause, not just WHERE)
+ *   VariableScopeValidator#checkExpressionScope} (both reachable from <em>any</em> clause, not just WHERE)
  *   were all confirmed to overflow independently, each on its own call stack shape.</li>
  * </ul>
  * {@link com.arcadedb.query.opencypher.parser.CypherExpressionDepthGuard}, the same {@code

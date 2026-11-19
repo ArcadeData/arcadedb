@@ -432,23 +432,23 @@ class CypherTemporalTest {
 
     @ParameterizedTest
     @ValueSource(strings = {
-        "time({hour: 12, millisecond: 5000})",
-        "time({hour: 12, millisecond: 4295})",
-        "time({hour: 12, millisecond: 2000})",
-        "time({hour: 12, microsecond: 5000000})",
-        "localtime({hour: 12, microsecond: 5000000})",
-        "localtime({hour: 12, nanosecond: 3000000000})",
-        "localdatetime({year: 2024, month: 1, day: 1, hour: 0, millisecond: 5000})",
-        "datetime({year: 2024, month: 1, day: 1, nanosecond: 3000000000})",
+        "time({hour: 12, minute: 0, second: 0, millisecond: 5000})",
+        "time({hour: 12, minute: 0, second: 0, millisecond: 4295})",
+        "time({hour: 12, minute: 0, second: 0, millisecond: 2000})",
+        "time({hour: 12, minute: 0, second: 0, microsecond: 5000000})",
+        "localtime({hour: 12, minute: 0, second: 0, microsecond: 5000000})",
+        "localtime({hour: 12, minute: 0, second: 0, nanosecond: 3000000000})",
+        "localdatetime({year: 2024, month: 1, day: 1, hour: 0, minute: 0, second: 0, millisecond: 5000})",
+        "datetime({year: 2024, month: 1, day: 1, hour: 0, minute: 0, second: 0, nanosecond: 3000000000})",
         "datetime.truncate('second', datetime({year: 2024, month: 1, day: 1}), {millisecond: 5000})",
         "localdatetime.truncate('second', localdatetime({year: 2024, month: 1, day: 1}), {microsecond: 5000000})",
         "time.truncate('second', time({hour: 12}), {millisecond: 5000})",
         "localtime.truncate('second', localtime({hour: 12}), {nanosecond: 3000000000})",
         // Neo4j's per-component ranges: a finer component cannot carry into a coarser one that is also given
-        "time({hour: 12, millisecond: 1, microsecond: 1000})",
-        "time({hour: 12, microsecond: 1, nanosecond: 1000})",
-        "time({hour: 12, millisecond: 1, nanosecond: 1000000})",
-        "time({hour: 12, millisecond: -1})",
+        "time({hour: 12, minute: 0, second: 0, millisecond: 1, microsecond: 1000})",
+        "time({hour: 12, minute: 0, second: 0, microsecond: 1, nanosecond: 1000})",
+        "time({hour: 12, minute: 0, second: 0, millisecond: 1, nanosecond: 1000000})",
+        "time({hour: 12, minute: 0, second: 0, millisecond: -1})",
         // The other components wrapped through intValue() the same way: 4294967308 = 2^32 + 12
         "time({hour: 4294967308})",
         "localtime({hour: 4294967308})",
@@ -464,12 +464,12 @@ class CypherTemporalTest {
 
     @Test
     void inRangeSubSecondFieldsStillCombine() {
-      assertThat(cypher("time({hour: 12, millisecond: 999})")).isEqualTo("12:00:00.999Z");
-      assertThat(cypher("time({hour: 12, millisecond: 645, microsecond: 876, nanosecond: 123})")).isEqualTo("12:00:00.645876123Z");
-      assertThat(cypher("localtime({hour: 12, microsecond: 999999})")).isEqualTo("12:00:00.999999");
-      assertThat(cypher("localtime({hour: 12, nanosecond: 999999999})")).isEqualTo("12:00:00.999999999");
-      assertThat(cypher("localtime({hour: 12, millisecond: 1, nanosecond: 999999})")).isEqualTo("12:00:00.001999999");
-      assertThat(cypher("datetime({year: 2024, month: 1, day: 1, microsecond: 5})")).isEqualTo("2024-01-01T00:00:00.000005Z");
+      assertThat(cypher("time({hour: 12, minute: 0, second: 0, millisecond: 999})")).isEqualTo("12:00:00.999Z");
+      assertThat(cypher("time({hour: 12, minute: 0, second: 0, millisecond: 645, microsecond: 876, nanosecond: 123})")).isEqualTo("12:00:00.645876123Z");
+      assertThat(cypher("localtime({hour: 12, minute: 0, second: 0, microsecond: 999999})")).isEqualTo("12:00:00.999999");
+      assertThat(cypher("localtime({hour: 12, minute: 0, second: 0, nanosecond: 999999999})")).isEqualTo("12:00:00.999999999");
+      assertThat(cypher("localtime({hour: 12, minute: 0, second: 0, millisecond: 1, nanosecond: 999999})")).isEqualTo("12:00:00.001999999");
+      assertThat(cypher("datetime({year: 2024, month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: 5})")).isEqualTo("2024-01-01T00:00:00.000005Z");
       // truncate keeps the portion the adjustment map does not name
       assertThat(cypher("localtime.truncate('millisecond', localtime('12:00:00.123456789'), {nanosecond: 2})"))
           .isEqualTo("12:00:00.123000002");
@@ -1273,13 +1273,16 @@ class CypherTemporalTest {
       assertThat(text("datetime({datetime: datetime('2024-01-01T12:30:45.123456789Z'), second: 1})")).isEqualTo("2024-01-01T12:30:01.123456789Z");
     }
 
-    /** The date fields are resolved together: applied one at a time, February 29 clamped to the 28th before the month moved. */
+    /**
+     * The date fields apply in order, each clamping the day as {@code java.time}'s {@code with()} does: February 29 is the 28th
+     * in 2023, before the month moves. Neo4j 5 answers exactly these values (issue #12297).
+     */
     @Test
-    void dateFieldOverridesAreResolvedTogether() {
-      assertThat(text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00:00Z");
-      assertThat(text("localdatetime({datetime: localdatetime('2024-02-29T12:00'), year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00:00");
-      assertThat(text("datetime({epochSeconds: 1709208000, year: 2023, month: 3})")).isEqualTo("2023-03-29T12:00:00Z");
-      assertThatThrownBy(() -> text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023})")).isNotNull();
+    void dateFieldOverridesApplyInOrderAsNeo4j() {
+      assertThat(text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023, month: 3})")).isEqualTo("2023-03-28T12:00:00Z");
+      assertThat(text("localdatetime({datetime: localdatetime('2024-02-29T12:00'), year: 2023, month: 3})")).isEqualTo("2023-03-28T12:00:00");
+      assertThat(text("datetime({epochSeconds: 1709208000, year: 2023, month: 3})")).isEqualTo("2023-03-28T12:00:00Z");
+      assertThat(text("datetime({datetime: datetime('2024-02-29T12:00Z'), year: 2023})")).isEqualTo("2023-02-28T12:00:00Z");
     }
 
     @Test

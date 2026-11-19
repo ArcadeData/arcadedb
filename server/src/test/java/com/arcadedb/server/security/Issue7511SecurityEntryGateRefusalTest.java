@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #7511, the half that lives above the HA plugin: what an operator-facing entry point does when the
  * cluster-capability interlock refuses to replicate a group or API-token change.
  * <p>
- * The interlock itself is pinned in {@code Issue7511SecurityEntryCapabilityGateTest}, in the module that owns it.
+ * The interlock itself is pinned in {@code [theTwoEntryTypesOfIssue7373HaveStableCapabilityTokens]}, in the module that owns it.
  * What is asserted here is everything that has to be true of the caller for the refusal to be SAFE rather than
  * merely loud: that the refusal reaches the transport unchanged (it is the exception both transports map to a
  * status), and that no entry point leaves half a change behind on the node that served the request. A mint that
