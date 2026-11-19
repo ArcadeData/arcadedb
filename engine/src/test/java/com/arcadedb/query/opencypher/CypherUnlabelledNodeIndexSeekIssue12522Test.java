@@ -21,8 +21,6 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -417,15 +415,20 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
   }
 
   @Test
-  void theTextOfARIDIsAnsweredByTheWalkAndNotByTheIndex() {
+  void theTextOfARIDOnANumberKeyIsAnsweredByTheWalkAndNotByTheIndex() {
+    // the text of a RID on a number key (issue #11933) is routed to the walk like any other text. The walk converts
+    // the operand to the declared LONG of the property, which a RID text does not convert to, so it answers no row:
+    // the empty rows alone cannot tell the walk from an index miss, the plan does.
+    // aTextValueOnANumberKeyIsAnsweredByTheWalk covers a text the conversion accepts.
     try (final Database withIndex = open(DB_PATH, true); final Database withoutIndex = open(DB_PATH + "-noindex", false)) {
-      // a numeric property and the text of a RID: the walk answers it by the id(), the index cannot key it
-      // (issue #11933)
-      final RID rid = ridOf(withIndex, "numeric-1");
-      final RID otherRid = ridOf(withoutIndex, "numeric-1");
+      final String plan = profilePlan(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params("#0:1"));
+      assertThat(plan)
+          .as("the text of a RID on a number key is answered by the walk\n%s", plan)
+          .doesNotContain("[index:");
 
-      assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(rid.toString())))
-          .isEqualTo(uuidsOf(withoutIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params(otherRid.toString())));
+      final List<String> walked = uuidsOf(withoutIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params("#0:1"));
+      assertThat(walked).isEmpty();
+      assertThat(uuidsOf(withIndex, "MATCH (n {id: $u}) RETURN n.uuid AS uuid", params("#0:1"))).isEqualTo(walked);
     }
   }
 
@@ -493,19 +496,24 @@ class CypherUnlabelledNodeIndexSeekIssue12522Test extends TestHelper {
     }
   }
 
-  private RID ridOf(final Database database, final String uuid) {
-    final RID[] rid = new RID[1];
-    database.transaction(() -> {
-      final ResultSet rs = database.command("opencypher", "MATCH (n {uuid: $u}) RETURN n AS n", params(uuid));
-      while (rs.hasNext()) {
-        final Object n = rs.next().getProperty("n");
-        if (n instanceof Result r)
-          rid[0] = r.getElement().map(Document::getIdentity).orElse(null);
-        else if (n instanceof Document d)
-          rid[0] = d.getIdentity();
-      }
-      rs.close();
-    });
-    return rid[0];
+  @Test
+  void aLimitTheFirstTypeAnswersWithItsOnlyRowDoesNotSeekTheOthers() {
+    // the first type holds exactly the one row the LIMIT asks for: returning that row must not open the next type to
+    // learn whether more rows follow
+    try (final Database database = open()) {
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (n:Numeric {uuid: 'one'})");
+        database.command("opencypher", "CREATE (o:Other {uuid: 'one'})");
+      });
+
+      final String plan = profilePlan(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid LIMIT 1", params("one"));
+
+      assertThat(plan)
+          .as("the only row of the first type answers the LIMIT\n%s", plan)
+          .contains("Numeric[uuid]")
+          .doesNotContain("Other[uuid]");
+      assertThat(uuidsOf(database, "MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", params("one")))
+          .containsExactly("one", "one");
+    }
   }
 }

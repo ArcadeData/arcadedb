@@ -473,9 +473,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
             }
           }
 
-          if (!iterator.hasNext()) {
+          // The loop left with a short batch only when the iterator ran out. A full batch does not ask the iterator
+          // whether more rows follow: that would open the next type of an unlabelled seek before a LIMIT the batch
+          // already answers has taken its rows, and the next fetch finds out instead.
+          if (buffer.size() < n)
             finished = true;
-          }
         }
       }
 
