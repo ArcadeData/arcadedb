@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EdgeDeletedTwiceRecordCountIssue12253Test extends TestHelper {
   private static final int OTHER_EDGES = 5;
 
-  /** @return the edge a->b, then a, then b */
+  /** @return the last of the {@code edgesFromA} edges a->b, then a, then b */
   private RID[] createGraph(final int edgesFromA) {
     database.getSchema().createVertexType("V");
     database.getSchema().createVertexType("P");
@@ -80,14 +80,7 @@ class EdgeDeletedTwiceRecordCountIssue12253Test extends TestHelper {
   @Test
   void cypherDeleteOfRelationshipAlreadyDetached() {
     createGraph(1);
-    final long[] relationshipsDeleted = { -1 };
-    database.transaction(() -> {
-      try (final ResultSet rs = database.command("opencypher", "MATCH (a:P)-[r]->(b) DETACH DELETE a DELETE r")) {
-        while (rs.hasNext())
-          rs.next();
-        relationshipsDeleted[0] = rs.getExecutionPlan().isPresent() ? -1 : -1;
-      }
-    });
+    database.transaction(() -> database.command("opencypher", "MATCH (a:P)-[r]->(b) DETACH DELETE a DELETE r"));
     assertCountsMatch(OTHER_EDGES);
   }
 
@@ -118,6 +111,18 @@ class EdgeDeletedTwiceRecordCountIssue12253Test extends TestHelper {
   }
 
   @Test
+  void lazyEdgeDeletedTwiceInOneTransaction() {
+    final RID[] rids = createGraph(1);
+    database.transaction(() -> {
+      final Edge first = rids[0].asEdge(false);
+      final Edge second = rids[0].asEdge(false);
+      first.delete();
+      assertThatThrownBy(second::delete).isInstanceOf(RecordNotFoundException.class);
+    });
+    assertCountsMatch(OTHER_EDGES);
+  }
+
+  @Test
   void loadedEdgeDeletedAfterItsVertex() {
     final RID[] rids = createGraph(1);
     database.transaction(() -> {
@@ -128,6 +133,8 @@ class EdgeDeletedTwiceRecordCountIssue12253Test extends TestHelper {
     assertCountsMatch(OTHER_EDGES);
   }
 
+  // The vertex and document cases below are controls: they pin the not-found a second delete already answered before #12253,
+  // which the fix leaves unchanged (it only adds the check for an edge record).
   @Test
   void loadedVertexDeletedTwiceInOneTransaction() {
     final RID[] rids = createGraph(1);
