@@ -917,11 +917,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!(limit instanceof Number number))
       throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
           "BSON field 'delete.deletes.limit' is the wrong type '" + typeName(limit) + "', expected type 'number'");
-    final double value = number.doubleValue();
-    if (value != 0D && value != 1D)
+    final boolean none = isExactly(number, Decimal128.POSITIVE_ZERO, 0D);
+    if (!none && !isExactly(number, Decimal128.ONE, 1D))
       throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
           "The limit field in delete objects must be 0 or 1. Got " + limit);
-    return value == 1D;
+    return !none;
+  }
+
+  /**
+   * Whether a number of any BSON type is exactly {@code value}. A Decimal128 is compared as a decimal: narrowed to a double, one as
+   * small as 1E-6176 is 0, which would turn a refused limit into "delete every match".
+   */
+  private static boolean isExactly(final Number number, final Decimal128 decimalValue, final double value) {
+    if (number instanceof Decimal128 decimal)
+      // compareTo, not equals: 1.0 and 1 are the same number. NaN and the infinities compare as the doubles they are, equal to neither
+      return decimal.compareTo(decimalValue) == 0;
+    return number.doubleValue() == value;
   }
 
   /** A statement of a write command, which must be a document: {@code mongod} refuses anything else when it parses the command. */

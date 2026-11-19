@@ -34,6 +34,7 @@ import com.mongodb.client.model.CreateCollectionOptions;
 import com.mongodb.client.model.DeleteOptions;
 import com.mongodb.client.model.UpdateOptions;
 import org.bson.Document;
+import org.bson.types.Decimal128;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -224,7 +225,16 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     assertRefusedWithCode(new Document("delete", "nosuch").append("deletes", List.of(new Document("q", new Document()).append("limit", 5))),
         FAILED_TO_PARSE);
 
+    // a Decimal128 is compared as a decimal: narrowed to a double, the first is 0 ("every match") and the second is 1
+    for (final String decimal : List.of("1E-6176", "1.0000000000000001", "-1E-6176", "NaN", "Infinity"))
+      assertRefusedWithCode(new Document("delete", "c").append("deletes",
+          List.of(new Document("q", new Document()).append("limit", Decimal128.parse(decimal)))), FAILED_TO_PARSE);
+
     assertThat(collection.countDocuments()).isEqualTo(2);
+    assertThat(mongoDatabase.runCommand(new Document("delete", "c").append("deletes",
+        List.of(new Document("q", new Document("_id", 99)).append("limit", Decimal128.parse("1.0")),
+            new Document("q", new Document("_id", 99)).append("limit", Decimal128.parse("0")),
+            new Document("q", new Document("_id", 99)).append("limit", Decimal128.parse("-0"))))).get("n")).isEqualTo(0);
 
     // 0 and 1, of any numeric type, are the two limits mongod has
     assertThat(mongoDatabase.runCommand(new Document("delete", "c").append("deletes", List.of(new Document("q", new Document()).append("limit", 1.0))))
@@ -309,7 +319,7 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     assertOk(new Document("delete", "c").append("deletes",
         List.of(new Document("q", new Document("_id", 99)).append("limit", 1).append("hint", new Document()))));
     assertOk(new Document("create", "defaults").append("capped", false).append("autoIndexId", true).append("validator", new Document())
-        .append("storageEngine", new Document()));
+        .append("storageEngine", new Document()).append("validationLevel", "strict").append("validationAction", "error"));
 
     // the same fields asking for something are refused: "false" is only the default of a flag, an empty document only of some fields
     assertRefused(new Document("find", "c").append("tailable", true), BAD_VALUE, "tailable");
@@ -317,6 +327,8 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     assertRefused(new Document("find", "c").append("collation", new Document()), BAD_VALUE, "collation");
     assertRefused(new Document("find", "c").append("collation", new Document("locale", "simple").append("strength", 1)), BAD_VALUE, "collation");
     assertRefused(new Document("create", "noIdIndex").append("autoIndexId", false), BAD_VALUE, "autoIndexId");
+    assertRefused(new Document("create", "off").append("validationLevel", "off"), BAD_VALUE, "validationLevel");
+    assertRefused(new Document("create", "strictAction").append("validationAction", "strict"), BAD_VALUE, "validationAction");
     assertRefused(new Document("aggregate", "c").append("pipeline", List.of()).append("cursor", new Document()).append("explain", true), BAD_VALUE,
         "explain");
   }
@@ -410,8 +422,8 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     values.put("size", 4096);
     values.put("storageEngine", new Document("wiredTiger", new Document()));
     values.put("validator", new Document("name", new Document("$type", "string")));
-    values.put("validationLevel", "strict");
-    values.put("validationAction", "error");
+    values.put("validationLevel", "moderate");
+    values.put("validationAction", "warn");
     values.put("indexOptionDefaults", new Document("storageEngine", new Document("wiredTiger", new Document())));
     values.put("viewOn", "c");
     values.put("pipeline", List.of(new Document("$match", new Document())));

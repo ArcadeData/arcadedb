@@ -144,7 +144,8 @@ final class MongoCommandFields {
   /**
    * Whether an unsupported field carries its default, which the plugin honours by doing nothing: a null, the {@code false} of a flag
    * that is off by default (the Java driver sends {@code capped: false} with every {@code create}), an empty {@code hint} or
-   * {@code let}, the {@code simple} collation, which is the binary comparison the plugin applies.
+   * {@code let}, the {@code simple} collation, which is the binary comparison the plugin applies, the {@code strict} and {@code error}
+   * a collection validates with when it is given no other.
    */
   private static boolean asksForNothing(final String field, final Object value) {
     return switch (value) {
@@ -155,6 +156,8 @@ final class MongoCommandFields {
       case Document document when document.isEmpty() -> EMPTY_IS_DEFAULT.contains(field);
       case Document document -> "collation".equals(field) && document.size() == 1 && "simple".equals(document.get("locale"));
       case List<?> list -> list.isEmpty() && EMPTY_IS_DEFAULT.contains(field);
+      // the defaults of a collection without a validator, which is the only kind created: the validator itself is refused
+      case String text -> "validationLevel".equals(field) && "strict".equals(text) || "validationAction".equals(field) && "error".equals(text);
       default -> false;
     };
   }
