@@ -19,12 +19,15 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #12256: {@code DELETE VERTEX FROM (SELECT expand(out()) FROM V WHERE k = 0)} failed with a 404
@@ -110,6 +113,52 @@ class DeleteSubqueryDuplicateRowsIssue12256Test extends TestHelper {
       }
     });
     assertThat(rows[0]).isEqualTo(2L);
+  }
+
+  /**
+   * The step is pulled once per batch of {@link AbstractExecutionStep#DEFAULT_FETCH_RECORDS_PER_PULL} rows: a neighbour named by
+   * rows in different batches is still deleted once, so the set of deleted records lives as long as the statement, not the pull.
+   * The ORDER BY reads every row before the first delete: without it, the delete of the neighbour takes the remaining parallel
+   * edges out of the expansion still being read, and the rows of the later batches never come.
+   */
+  @Test
+  void duplicatesStraddlingAPullBoundaryAreDeletedOnce() {
+    createGraph();
+    final int parallel = AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL * 2 + 50;
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM V WHERE k = 0")) {
+        final MutableVertex v0 = rs.next().getVertex().orElseThrow().modify();
+        try (final ResultSet targets = database.query("sql", "SELECT FROM V WHERE k = 1")) {
+          final MutableVertex v1 = targets.next().getVertex().orElseThrow().modify();
+          for (int i = 0; i < parallel; i++)
+            v0.newEdge("F", v1);
+        }
+      }
+    });
+    final String source = "(SELECT FROM (SELECT expand(out()) FROM V WHERE k = 0) ORDER BY k)";
+    assertThat(count("SELECT count(*) AS n FROM " + source)).isGreaterThan(AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL * 2L);
+    assertThat(deleted("DELETE VERTEX FROM " + source)).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS n FROM F")).isZero();
+    assertCheckDatabaseClean();
+  }
+
+  /** A projection carrying the @rid of a record deletes that record: one named twice is deleted once. */
+  @Test
+  void ridProjectionNamingOneRecordTwiceDeletesItOnce() {
+    createGraph();
+    assertThat(deleted("DELETE FROM (SELECT @rid FROM (SELECT expand(out()) FROM V WHERE k = 0))")).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(1L);
+    assertCheckDatabaseClean();
+  }
+
+  /** A row that is not a record and carries no @rid has nothing to delete: the statement is still refused, deleting nothing. */
+  @Test
+  void rowThatIsNotARecordIsStillRefused() {
+    createGraph();
+    assertThatThrownBy(() -> deleted("DELETE FROM (SELECT k FROM V WHERE k > 0)")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not a record");
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(3L);
   }
 
   /** Parallel lightweight edges share one RID and are still distinct edges: each row deletes one of them. */

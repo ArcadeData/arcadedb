@@ -45,6 +45,11 @@ public class DeleteStep extends AbstractExecutionStep {
   private final boolean    returnsRecords;
   // DELETE VERTEX (issue #11620): a record that is not a vertex is refused, before anything is deleted for it
   private final boolean    vertexOnly;
+  // THE RECORDS THIS STATEMENT DELETED (issue #12256). A FIELD, NOT A LOCAL OF syncPull: THE STEP IS PULLED ONCE PER BATCH, AND
+  // TWO ROWS NAMING ONE RECORD CAN FALL IN DIFFERENT BATCHES. THE PLAN IS BUILT PER EXECUTION, SO THE STEP LIVES AS LONG AS THE
+  // STATEMENT. ITS COST IS ONE PRIMITIVE ENTRY PER DELETED RECORD, WHICH THE TRANSACTION ALREADY PAYS FOR THE SAME RECORDS IN
+  // TransactionContext.deletedRecordsInTx (ALSO A RidHashSet), NEXT TO THE PAGE IMAGES IT HOLDS FOR THEM
+  private       RidHashSet deleted;
 
   public DeleteStep(final CommandContext context) {
     this(context, null, false, false);
@@ -69,8 +74,6 @@ public class DeleteStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();
     final DatabaseInternal database = context.getDatabase();
-    // THE RECORDS THIS STATEMENT DELETED (issue #12256)
-    final RidHashSet deleted = new RidHashSet();
     // deletes one row ahead of what it returns: only valid under a plan that drains every pull (see SkippingResultSet)
     return new SkippingResultSet(prevStep, context, nRecords) {
       @Override
@@ -79,7 +82,7 @@ public class DeleteStep extends AbstractExecutionStep {
         try {
           if (result.isElement()) {
             final Document record = result.getElement().get();
-            if (deletedByAnEarlierRow(deleted, record))
+            if (deletedByAnEarlierRow(record))
               return null;
             checkIsVertex(record);
             final Result answer = beforeImage(context, result);
@@ -89,7 +92,9 @@ public class DeleteStep extends AbstractExecutionStep {
           // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
           // (issue #10336)
           if (result.getProperty("@rid") instanceof Identifiable identifiable) {
-            if (deletedByAnEarlierRow(deleted, identifiable))
+            // checked before the load: the record an earlier row deleted no longer loads. A row whose @rid is not a record fails
+            // the statement below at the first row naming that identity, so no later row is ever skipped for it
+            if (deletedByAnEarlierRow(identifiable))
               return null;
             if (identifiable.getRecord() instanceof Record record) {
               checkIsVertex(record);
@@ -117,10 +122,17 @@ public class DeleteStep extends AbstractExecutionStep {
    * records its rows name, and a subquery can name one in several rows: {@code SELECT expand(out())} over two parallel edges
    * names their target twice. The second row used to fail the whole statement with a not-found that told the operator to repair
    * a consistent database (issue #12256). Parallel lightweight edges are left out: they share one RID and are distinct edges.
+   * <p>
+   * The record is noted before its delete runs, so a record a listener vetoed is not retried for a later row naming it: the
+   * veto stands for the whole statement, as the same listener would veto it again, and the skipped row is not counted either.
    */
-  private static boolean deletedByAnEarlierRow(final RidHashSet deleted, final Identifiable record) {
+  private boolean deletedByAnEarlierRow(final Identifiable record) {
     final RID rid = record.getIdentity();
-    return rid != null && rid.getPosition() >= 0 && !deleted.add(rid);
+    if (rid == null || rid.getPosition() < 0)
+      return false;
+    if (deleted == null)
+      deleted = new RidHashSet();
+    return !deleted.add(rid);
   }
 
   /**
