@@ -450,6 +450,11 @@ public class BinarySerializer {
       final Dictionary dictionary = database.getSchema().getDictionary();
       for (int i = 0; i < fieldNames.length; ++i)
         fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
+      // A wide filter (every property of a wide record but the few a projection excludes, issue #12558) is searched, not
+      // scanned, so the filter does not cost the number of properties times the number of names
+      final boolean searchFilter = fieldIds.length > 8;
+      if (searchFilter)
+        Arrays.sort(fieldIds);
 
       // RESOLVED ONCE PER RECORD, NOT PER PROPERTY (#9997): THE OWNER AND THE TYPE THAT DECIDES WHETHER ITS STRINGS ARE
       // CONVERTED (#8572) ARE THE SAME FOR EVERY PROPERTY OF THE RECORD
@@ -463,13 +468,19 @@ public class BinarySerializer {
         final int lastHeaderPosition = buffer.position();
 
         if (fieldIds.length > 0) {
-          boolean found = false;
-          // FILTER BY FIELD
-          for (final int f : fieldIds)
-            if (f == nameId) {
-              found = true;
-              break;
-            }
+          final boolean found;
+          if (searchFilter)
+            found = Arrays.binarySearch(fieldIds, nameId) >= 0;
+          else {
+            boolean scanned = false;
+            // FILTER BY FIELD
+            for (final int f : fieldIds)
+              if (f == nameId) {
+                scanned = true;
+                break;
+              }
+            found = scanned;
+          }
 
           if (!found)
             continue;
