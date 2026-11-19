@@ -38,14 +38,26 @@ public final class PromQLFunctions {
    * a series {@code rate()}/{@code increase()} cannot compute a rate for - fewer than two samples in the window - nor for one whose
    * last two samples {@code irate()} cannot divide by; every other range function answers any series the selector returned.
    * The window's samples are in timestamp order (see {@code evaluateMatrixSelector}).
+   * <p>
+   * This is the one statement of that rule: {@link #rate}, {@link #increase} and {@link #irate} ask it too, and answer
+   * {@link TimeSeriesNaN#ABSENT} - never a {@code 0} nobody measured - to a caller that did not.
    */
   public static boolean answers(final String function, final RangeSeries series) {
-    final List<double[]> values = series.values();
     return switch (function) {
-      case "rate", "increase" -> values.size() >= 2 && values.getLast()[0] > values.getFirst()[0];
-      case "irate" -> values.size() >= 2 && values.getLast()[0] > values.get(values.size() - 2)[0];
+      case "rate", "increase" -> hasSampledInterval(series.values());
+      case "irate" -> hasInstantInterval(series.values());
       default -> true;
     };
+  }
+
+  /** {@code rate()}/{@code increase()}: at least two samples, the first and the last at different times. */
+  private static boolean hasSampledInterval(final List<double[]> values) {
+    return values.size() >= 2 && values.getLast()[0] > values.getFirst()[0];
+  }
+
+  /** {@code irate()}: at least two samples, the last two at different times. */
+  private static boolean hasInstantInterval(final List<double[]> values) {
+    return values.size() >= 2 && values.getLast()[0] > values.get(values.size() - 2)[0];
   }
 
   /**
@@ -65,13 +77,11 @@ public final class PromQLFunctions {
    */
   public static double irate(final RangeSeries series) {
     final List<double[]> values = series.values();
-    if (values.size() < 2)
-      return 0.0;
+    if (!hasInstantInterval(values))
+      return TimeSeriesNaN.ABSENT;
     final double[] prev = values.get(values.size() - 2);
     final double[] last = values.getLast();
     final double durationSec = (last[0] - prev[0]) / 1000.0;
-    if (durationSec <= 0)
-      return 0.0;
     double diff = last[1] - prev[1];
     if (diff < 0)
       diff = last[1]; // counter reset
@@ -101,8 +111,8 @@ public final class PromQLFunctions {
    */
   private static double extrapolatedRate(final RangeSeries series, final boolean isRate) {
     final List<double[]> values = series.values();
-    if (values.size() < 2)
-      return 0.0;
+    if (!hasSampledInterval(values))
+      return TimeSeriesNaN.ABSENT;
 
     final double[] first = values.getFirst();
     final double[] last = values.getLast();
@@ -120,14 +130,12 @@ public final class PromQLFunctions {
     }
 
     final double sampledInterval = (last[0] - first[0]) / 1000.0;
-    if (sampledInterval <= 0)
-      return 0.0;
 
     final double rangeStartSec = series.rangeStartMs() / 1000.0;
     final double rangeEndSec = series.rangeEndMs() / 1000.0;
     final double rangeSec = rangeEndSec - rangeStartSec;
     if (rangeSec <= 0)
-      return 0.0;
+      return TimeSeriesNaN.ABSENT;
 
     double durationToStart = (first[0] / 1000.0) - rangeStartSec;
     final double durationToEnd = rangeEndSec - (last[0] / 1000.0);
