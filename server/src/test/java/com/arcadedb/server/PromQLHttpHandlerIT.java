@@ -471,6 +471,73 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void instantQueryOfARangeSelectorAnswersTheMatrixOfTheWindowSamples() throws Exception {
+    testEachServer(serverIndex -> {
+      // issue #11982: the evaluator answers a range vector, which the formatter had no branch for, so the endpoint answered
+      // {"status":"success","data":{}}. Prometheus answers the raw samples of the window as a matrix.
+      postPromWrite(serverIndex, new WriteRequest(List.of(
+          new TimeSeries(List.of(new Label("__name__", "prom_cnt_11982"), new Label("host", "a")),
+              List.of(new Sample(10.0, 1_700_000_000_000L), new Sample(40.0, 1_700_000_030_000L))),
+          new TimeSeries(List.of(new Label("__name__", "prom_cnt_11982"), new Label("host", "b")),
+              List.of(new Sample(5.0, 1_700_000_010_000L))))));
+
+      final JSONArray plain = matrixOf(
+          getPromQL(serverIndex, "query", "query=" + encode("prom_cnt_11982[1m]") + "&time=1700000040"));
+      assertThat(plain.length()).isEqualTo(2);
+      assertThat(valuesOfHost(plain, "a")).isEqualTo("1700000000=10 1700000030=40");
+      assertThat(valuesOfHost(plain, "b")).isEqualTo("1700000010=5");
+
+      // parenthesised: the same range vector
+      final JSONArray parenthesised = matrixOf(
+          getPromQL(serverIndex, "query", "query=" + encode("(prom_cnt_11982[1m])") + "&time=1700000040"));
+      assertThat(parenthesised.length()).isEqualTo(2);
+      assertThat(valuesOfHost(parenthesised, "a")).isEqualTo("1700000000=10 1700000030=40");
+      assertThat(valuesOfHost(parenthesised, "b")).isEqualTo("1700000010=5");
+
+      // matcher and offset: the window moves to (1700000000, 1700000030], left-open, and the samples keep their own timestamps
+      final JSONArray shifted = matrixOf(getPromQL(serverIndex, "query",
+          "query=" + encode("prom_cnt_11982{host=\"a\"}[30s] offset 10s") + "&time=1700000040"));
+      assertThat(shifted.length()).isEqualTo(1);
+      assertThat(valuesOfHost(shifted, "a")).isEqualTo("1700000030=40");
+
+      // a window holding no sample is an empty matrix, not an empty 'data'
+      final JSONArray empty = matrixOf(
+          getPromQL(serverIndex, "query", "query=" + encode("prom_cnt_11982[1m]") + "&time=1600000000"));
+      assertThat(empty.length()).isEqualTo(0);
+    });
+  }
+
+  private static JSONArray matrixOf(final JSONObject response) {
+    assertThat(response.getString("status")).isEqualTo("success");
+    final JSONObject data = response.getJSONObject("data");
+    assertThat(data.getString("resultType")).isEqualTo("matrix");
+    return data.getJSONArray("result");
+  }
+
+  /**
+   * The samples of the series of that host as {@code seconds=value} pairs; the series order is the scan's, so it is looked up.
+   */
+  private static String valuesOfHost(final JSONArray matrix, final String host) {
+    for (int i = 0; i < matrix.length(); i++) {
+      final JSONObject series = matrix.getJSONObject(i);
+      final JSONObject metric = series.getJSONObject("metric");
+      if (host.equals(metric.getString("host"))) {
+        assertThat(metric.getString("__name__")).isEqualTo("prom_cnt_11982");
+        final JSONArray values = series.getJSONArray("values");
+        final StringBuilder samples = new StringBuilder();
+        for (int v = 0; v < values.length(); v++) {
+          final JSONArray pair = values.getJSONArray(v);
+          if (v > 0)
+            samples.append(' ');
+          samples.append(pair.getLong(0)).append('=').append(pair.getString(1));
+        }
+        return samples.toString();
+      }
+    }
+    return null;
+  }
+
+  @Test
   void lookbackDeltaParameter() throws Exception {
     testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
