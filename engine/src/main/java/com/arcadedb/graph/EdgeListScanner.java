@@ -228,9 +228,14 @@ public final class EdgeListScanner {
   private boolean readSegment(final TransactionContext transaction, final int bucketId, final long position,
       final EntryVisitor visitor) {
     if (transaction.hasWrittenRecords()) {
-      final Record written = transaction.getWrittenRecord(new RID(bucketId, position));
-      if (written != null)
+      final RID rid = new RID(bucketId, position);
+      final Record written = transaction.getWrittenRecord(rid);
+      if (written != null) {
+        // #11769: a read of a chunk this transaction holds, as a read of it through the record cache is (#11590)
+        if (written instanceof EdgeSegment)
+          transaction.trackReadOfWrittenEdgeSegment(rid);
         return visitRecord(written, visitor);
+      }
     }
 
     if (database.getSchema().getBucketByIdIfExists(bucketId) instanceof LocalBucket bucket) {

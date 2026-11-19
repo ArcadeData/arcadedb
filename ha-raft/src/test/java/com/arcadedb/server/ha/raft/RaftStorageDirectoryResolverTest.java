@@ -26,7 +26,7 @@ import java.io.File;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link RaftHAServer#resolveRaftStorageDir(String, String, String, String)} covering
+ * Unit tests for {@link RaftStorageFiles#resolveRaftStorageDir(String, String, String, String)} covering
  * the default location fix from issue #5272: the Raft storage directory must default to a path
  * <b>under</b> the database directory so it is persisted together with the databases, instead of the
  * pre-#5272 default (the server root path, a sibling of the database directory that lands on
@@ -41,7 +41,7 @@ class RaftStorageDirectoryResolverTest {
     final File dbDir = new File(tmp, "databases");
     final File custom = new File(tmp, "custom-raft");
 
-    final File resolved = RaftHAServer.resolveRaftStorageDir(custom.getAbsolutePath(), dbDir.getAbsolutePath(),
+    final File resolved = RaftStorageFiles.resolveRaftStorageDir(custom.getAbsolutePath(), dbDir.getAbsolutePath(),
         tmp.getAbsolutePath(), PEER);
 
     assertThat(resolved).isEqualTo(new File(custom, "raft-storage-" + PEER));
@@ -52,7 +52,7 @@ class RaftStorageDirectoryResolverTest {
     final File dbDir = new File(tmp, "databases");
     final String rootPath = tmp.getAbsolutePath();
 
-    final File resolved = RaftHAServer.resolveRaftStorageDir("", dbDir.getAbsolutePath(), rootPath, PEER);
+    final File resolved = RaftStorageFiles.resolveRaftStorageDir("", dbDir.getAbsolutePath(), rootPath, PEER);
 
     // Must be under <databaseDirectory>/.raft-storage, NOT a sibling of the database directory.
     assertThat(resolved).isEqualTo(new File(new File(dbDir, ".raft-storage"), "raft-storage-" + PEER));
@@ -62,7 +62,7 @@ class RaftStorageDirectoryResolverTest {
 
   @Test
   void blankDatabaseDirectoryFallsBackToRootPath(@TempDir final File tmp) {
-    final File resolved = RaftHAServer.resolveRaftStorageDir("", "", tmp.getAbsolutePath(), PEER);
+    final File resolved = RaftStorageFiles.resolveRaftStorageDir("", "", tmp.getAbsolutePath(), PEER);
     assertThat(resolved).isEqualTo(new File(tmp, "raft-storage-" + PEER));
   }
 
@@ -76,7 +76,7 @@ class RaftStorageDirectoryResolverTest {
     final File legacy = new File(tmp, "raft-storage-" + PEER);
     assertThat(legacy.mkdirs()).isTrue();
 
-    final File resolved = RaftHAServer.resolveRaftStorageDir("", dbDir.getAbsolutePath(), rootPath, PEER);
+    final File resolved = RaftStorageFiles.resolveRaftStorageDir("", dbDir.getAbsolutePath(), rootPath, PEER);
 
     assertThat(resolved).isEqualTo(legacy);
   }
@@ -91,7 +91,7 @@ class RaftStorageDirectoryResolverTest {
     assertThat(legacy.mkdirs()).isTrue();
     assertThat(newDefault.mkdirs()).isTrue();
 
-    final File resolved = RaftHAServer.resolveRaftStorageDir("", dbDir.getAbsolutePath(), rootPath, PEER);
+    final File resolved = RaftStorageFiles.resolveRaftStorageDir("", dbDir.getAbsolutePath(), rootPath, PEER);
 
     assertThat(resolved).isEqualTo(newDefault);
   }

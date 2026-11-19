@@ -135,7 +135,7 @@ class CypherRefactorProceduresStaleVertexIssue7177Test {
     });
 
     database.command("opencypher",
-        "MATCH (t:Target) WITH t MATCH (s:Spoke) WITH collect(s) + [t] AS nodes "
+        "MATCH (t:Target) WITH t MATCH (s:Spoke) WITH t, collect(s) AS spokes WITH spokes + [t] AS nodes "
             + "CALL refactor.cloneNodesWithRelationships(nodes, {}) YIELD output RETURN output").close();
 
     assertThat(countOf("MATCH (:Spoke)-[r:LINK]->(:Target) RETURN count(r) AS c"))
@@ -187,7 +187,7 @@ class CypherRefactorProceduresStaleVertexIssue7177Test {
     });
 
     database.command("opencypher",
-        "MATCH (h:Hub) WITH h MATCH (s:Spoke) WITH [h] + collect(s) AS nodes "
+        "MATCH (h:Hub) WITH h MATCH (s:Spoke) WITH h, collect(s) AS spokes WITH [h] + spokes AS nodes "
             + "CALL refactor.mergeNodes(nodes, {properties: 'combine'}) YIELD node RETURN node").close();
 
     assertThat(countOf("MATCH (h:Hub)-[r:LINK]->(:Target) RETURN count(r) AS c"))

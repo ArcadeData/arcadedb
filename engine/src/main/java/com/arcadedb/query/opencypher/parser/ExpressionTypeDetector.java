@@ -63,17 +63,17 @@ class ExpressionTypeDetector {
     // EXISTS expression
     final Cypher25Parser.ExistsExpressionContext existsCtx = findSpanning(ctx, Cypher25Parser.ExistsExpressionContext.class);
     if (existsCtx != null)
-      return builder.parseExistsExpression(existsCtx);
+      return SubqueryExpressionParser.parseExistsExpression(existsCtx);
 
     // COLLECT { ... } subquery expression
     final Cypher25Parser.CollectExpressionContext collectCtx = findSpanning(ctx, Cypher25Parser.CollectExpressionContext.class);
     if (collectCtx != null)
-      return builder.parseCollectExpression(collectCtx);
+      return SubqueryExpressionParser.parseCollectExpression(collectCtx);
 
     // COUNT { ... } subquery expression
     final Cypher25Parser.CountExpressionContext countCtx = findSpanning(ctx, Cypher25Parser.CountExpressionContext.class);
     if (countCtx != null)
-      return builder.parseCountExpression(countCtx);
+      return SubqueryExpressionParser.parseCountExpression(countCtx);
 
     // CASE expressions (both forms)
     final Cypher25Parser.CaseExpressionContext caseCtx = findSpanning(ctx, Cypher25Parser.CaseExpressionContext.class);
@@ -89,7 +89,7 @@ class ExpressionTypeDetector {
     final Cypher25Parser.ShortestPathExpressionContext shortestPathCtx = findSpanning(ctx,
         Cypher25Parser.ShortestPathExpressionContext.class);
     if (shortestPathCtx != null)
-      return builder.parseShortestPathExpression(shortestPathCtx);
+      return builder.patterns.parseShortestPathExpression(shortestPathCtx);
 
     return null;
   }
@@ -171,18 +171,12 @@ class ExpressionTypeDetector {
    * Returns null if not a list predicate.
    */
   Expression tryParseListPredicates(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.ListItemsPredicateContext listPredCtx = builder.findListItemsPredicateRecursive(ctx);
-    if (listPredCtx != null) {
-      // Only return list predicate if it covers the entire expression.
-      // Otherwise, it's a sub-expression (e.g., none(...) = false) and should
-      // be handled by comparison/arithmetic parsing instead.
-      final String predText = listPredCtx.getText();
-      final String exprText = ctx.getText();
-      if (predText.length() >= exprText.length() - 2) // allow for whitespace
-        return builder.parseListItemsPredicate(listPredCtx);
-    }
-
-    return null;
+    // Only a list predicate whose parse-tree span covers the entire expression is the expression. Otherwise it is a
+    // sub-expression (none(...) = false) left to the comparison/arithmetic parsing. The length tolerance this used to
+    // compare texts with (len >= exprText.length() - 2) swallowed a trailing two-character operator such as "=a" or
+    // "<>b" and silently dropped it, the defect #5342 removed from the comprehensions (issue #12327).
+    final Cypher25Parser.ListItemsPredicateContext listPredCtx = findSpanning(ctx, Cypher25Parser.ListItemsPredicateContext.class);
+    return listPredCtx != null ? builder.parseListItemsPredicate(listPredCtx) : null;
   }
 
   /**
@@ -190,7 +184,7 @@ class ExpressionTypeDetector {
    * Returns null if not a top-level comparison.
    */
   Expression tryParseComparison(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.Expression8Context topExpr8 = builder.findTopLevelExpression8(ctx);
+    final Cypher25Parser.Expression8Context topExpr8 = ParseTreeSearch.findTopLevelExpression8(ctx);
     if (topExpr8 != null)
       return builder.parseComparisonFromExpression8(topExpr8);
 
@@ -202,7 +196,7 @@ class ExpressionTypeDetector {
    * Returns null if not a top-level string comparison.
    */
   Expression tryParseStringComparison(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.Expression7Context topExpr7 = builder.findTopLevelExpression7(ctx);
+    final Cypher25Parser.Expression7Context topExpr7 = ParseTreeSearch.findTopLevelExpression7(ctx);
     if (topExpr7 != null) {
       final Cypher25Parser.ComparisonExpression6Context comp = topExpr7.comparisonExpression6();
       if (comp instanceof Cypher25Parser.StringAndListComparisonContext)
@@ -227,17 +221,17 @@ class ExpressionTypeDetector {
    */
   Expression tryParseArithmetic(final Cypher25Parser.ExpressionContext ctx) {
     // Additive (+, -)
-    final Cypher25Parser.Expression6Context topArith6 = builder.findTopLevelExpression6(ctx);
+    final Cypher25Parser.Expression6Context topArith6 = ParseTreeSearch.findTopLevelExpression6(ctx);
     if (topArith6 != null)
       return builder.parseArithmeticExpression6(topArith6);
 
     // Multiplicative (*, /, %)
-    final Cypher25Parser.Expression5Context topArith5 = builder.findTopLevelExpression5(ctx);
+    final Cypher25Parser.Expression5Context topArith5 = ParseTreeSearch.findTopLevelExpression5(ctx);
     if (topArith5 != null)
       return builder.parseArithmeticExpression5(topArith5);
 
     // Exponentiation (^)
-    final Cypher25Parser.Expression4Context topArith4 = builder.findTopLevelExpression4(ctx);
+    final Cypher25Parser.Expression4Context topArith4 = ParseTreeSearch.findTopLevelExpression4(ctx);
     if (topArith4 != null)
       return builder.parseArithmeticExpression4(topArith4);
 
@@ -249,7 +243,7 @@ class ExpressionTypeDetector {
    * Returns null if not a top-level unary expression.
    */
   Expression tryParseUnary(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.Expression3Context topExpr3 = builder.findTopLevelExpression3(ctx);
+    final Cypher25Parser.Expression3Context topExpr3 = ParseTreeSearch.findTopLevelExpression3(ctx);
     if (topExpr3 != null)
       return builder.parseArithmeticExpression3(topExpr3);
 
@@ -261,7 +255,7 @@ class ExpressionTypeDetector {
    * Returns null if not a top-level postfix expression.
    */
   Expression tryParsePostfix(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.Expression2Context topExpr2 = builder.findTopLevelExpression2(ctx);
+    final Cypher25Parser.Expression2Context topExpr2 = ParseTreeSearch.findTopLevelExpression2(ctx);
     if (topExpr2 != null && !topExpr2.postFix().isEmpty())
       return builder.parseExpression2WithPostfix(topExpr2);
 
@@ -281,7 +275,7 @@ class ExpressionTypeDetector {
     // (same start and stop tokens) ensures we only unwrap a full-span wrapper, so cases like
     // (a) + (b) or (a) IS NULL - already handled by the arithmetic/comparison detectors above - are
     // left untouched.
-    final Cypher25Parser.ParenthesizedExpressionContext fullParenCtx = builder.findParenthesizedExpressionRecursive(ctx);
+    final Cypher25Parser.ParenthesizedExpressionContext fullParenCtx = ParseTreeSearch.findParenthesizedExpressionRecursive(ctx);
     if (fullParenCtx != null && fullParenCtx.getStart() == ctx.getStart() && fullParenCtx.getStop() == ctx.getStop())
       return builder.parseExpression(fullParenCtx.expression());
 
@@ -313,26 +307,24 @@ class ExpressionTypeDetector {
     // Otherwise, [date({...})] would be parsed as date() because findFunctionInvocationRecursive
     // finds the nested function call inside the list. For cases like tail([1,2,3]),
     // the function is at the top level and will be caught below.
-    final Cypher25Parser.ListLiteralContext listCtx = builder.findListLiteralRecursive(ctx);
-    if (listCtx != null) {
-      final String listText = listCtx.getText();
-      final String exprText = ctx.getText();
-      if (listText.length() >= exprText.length() - 2) // Top-level list (allow for whitespace)
-        return builder.parseListLiteral(listCtx);
-    }
+    // Top-level only when its span is the whole expression, by tokens rather than by a text-length tolerance (issue #12327)
+    final Cypher25Parser.ListLiteralContext fullListCtx = findSpanning(ctx, Cypher25Parser.ListLiteralContext.class);
+    if (fullListCtx != null)
+      return builder.parseListLiteral(fullListCtx);
+    final Cypher25Parser.ListLiteralContext listCtx = ParseTreeSearch.findListLiteralRecursive(ctx);
 
     // Function invocations
-    final Cypher25Parser.FunctionInvocationContext funcCtx = builder.findFunctionInvocationRecursive(ctx);
+    final Cypher25Parser.FunctionInvocationContext funcCtx = ParseTreeSearch.findFunctionInvocationRecursive(ctx);
     if (funcCtx != null)
       return builder.parseFunctionInvocation(funcCtx);
 
     // Map projections (before list fallback to avoid inner lists taking priority over maps)
-    final Cypher25Parser.MapProjectionContext mapProjCtx = builder.findMapProjectionRecursive(ctx);
+    final Cypher25Parser.MapProjectionContext mapProjCtx = ParseTreeSearch.findMapProjectionRecursive(ctx);
     if (mapProjCtx != null)
       return builder.parseMapProjection(mapProjCtx);
 
     // Map literals (before list fallback)
-    final Cypher25Parser.MapContext mapCtx = builder.findMapRecursive(ctx);
+    final Cypher25Parser.MapContext mapCtx = ParseTreeSearch.findMapRecursive(ctx);
     if (mapCtx != null)
       return builder.parseMapLiteralExpression(mapCtx);
 
@@ -341,7 +333,7 @@ class ExpressionTypeDetector {
       return builder.parseListLiteral(listCtx);
 
     // Parenthesized expressions
-    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = builder.findParenthesizedExpressionRecursive(ctx);
+    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = ParseTreeSearch.findParenthesizedExpressionRecursive(ctx);
     if (parenCtx != null)
       return builder.parseExpression(parenCtx.expression());
 
@@ -352,11 +344,11 @@ class ExpressionTypeDetector {
    * Fallback parsing for arithmetic expressions using recursive search.
    */
   Expression tryParseFallbackArithmetic(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.Expression6Context arith6Ctx = builder.findArithmeticExpression6Recursive(ctx);
+    final Cypher25Parser.Expression6Context arith6Ctx = ParseTreeSearch.findArithmeticExpression6Recursive(ctx);
     if (arith6Ctx != null)
       return builder.parseArithmeticExpression6(arith6Ctx);
 
-    final Cypher25Parser.Expression5Context arith5Ctx = builder.findArithmeticExpression5Recursive(ctx);
+    final Cypher25Parser.Expression5Context arith5Ctx = ParseTreeSearch.findArithmeticExpression5Recursive(ctx);
     if (arith5Ctx != null)
       return builder.parseArithmeticExpression5(arith5Ctx);
 
@@ -367,7 +359,7 @@ class ExpressionTypeDetector {
    * Fallback parsing for postfix expressions using recursive search.
    */
   Expression tryParseFallbackPostfix(final Cypher25Parser.ExpressionContext ctx) {
-    final Cypher25Parser.Expression2Context expr2Ctx = builder.findExpression2Recursive(ctx);
+    final Cypher25Parser.Expression2Context expr2Ctx = ParseTreeSearch.findExpression2Recursive(ctx);
     if (expr2Ctx != null && !expr2Ctx.postFix().isEmpty())
       return builder.parseExpression2WithPostfix(expr2Ctx);
 
