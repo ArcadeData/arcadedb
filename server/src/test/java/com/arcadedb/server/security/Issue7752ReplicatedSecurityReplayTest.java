@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Two real {@link ServerSecurity} instances stand for two nodes; node B's configuration directory is made read-only
  * while it applies an entry - the volume of the sub-case recorded on the issue, where neither the document nor the
  * record of its fingerprint can be written, and nothing can be removed either. The HA half - that no snapshot
- * checkpoint covers such an entry, so the restart does replay it - is {@code Issue7752SecurityDurabilityFloorTest} in
+ * checkpoint covers such an entry, so the restart does replay it - is {@code SecurityEntryApplyFailureTest} in
  * the {@code ha-raft} module; this class pins the half that lives here: that the failure is reported, that the files a
  * restart reads back are the ones the replay needs, and that the retry repairs them once the volume is writable again.
  *

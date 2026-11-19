@@ -153,7 +153,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
    * <p>
    * On a healthy cluster the assertion is that the fields exist and read "nothing in flight"; the
    * component-by-component behaviour, and the alert a quarantine raises, are pinned by
-   * {@code Issue7136LocalResyncStatusTest} without needing a live WAL gap.
+   * {@code ResyncRecoveryTest.LocalResyncStatus} without needing a live WAL gap.
    */
   @Test
   void everyNodePublishesItsOwnResyncStateAndPosition() throws Exception {

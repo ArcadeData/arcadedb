@@ -82,7 +82,31 @@ public class ArithmeticExpression implements Expression {
     this.left = left;
     this.operator = operator;
     this.right = right;
-    this.text = left.getText() + " " + operator.getSymbol() + " " + right.getText();
+    this.text = operandText(left, operator, false) + " " + operator.getSymbol() + " " + operandText(right, operator, true);
+  }
+
+  /**
+   * The text of an operand, in parentheses where printing it bare would read as another expression: the parser keeps the tree of
+   * {@code 2.0 * (1.0 - s)} but not its parentheses, and the text built from the tree read {@code 2.0 * 1.0 - s}, which is what
+   * EXPLAIN and PROFILE printed for it (issue #11820). A right operand of the same precedence is parenthesized too:
+   * {@code 10 - (4 - 1)}.
+   */
+  private static String operandText(final Expression operand, final Operator parent, final boolean rightSide) {
+    if (operand instanceof ArithmeticExpression child) {
+      final int childPrecedence = precedence(child.operator);
+      final int parentPrecedence = precedence(parent);
+      if (childPrecedence < parentPrecedence || (rightSide && childPrecedence == parentPrecedence))
+        return "(" + child.getText() + ")";
+    }
+    return operand.getText();
+  }
+
+  private static int precedence(final Operator operator) {
+    return switch (operator) {
+      case ADD, SUBTRACT, CONCAT -> 1;
+      case MULTIPLY, DIVIDE, MODULO -> 2;
+      case POWER -> 3;
+    };
   }
 
   public ArithmeticExpression(final Expression left, final Operator operator, final Expression right, final String text) {

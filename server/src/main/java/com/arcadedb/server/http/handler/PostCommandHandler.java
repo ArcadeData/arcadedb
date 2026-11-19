@@ -704,6 +704,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
         rows.add(source.next());
 
       final Optional<ExecutionPlan> plan = source.getExecutionPlan();
+      final int statementLimit = source.getStatementLimit();
       final Optional<QueryStatistics> stats = source.getStatistics();
       // Before the source is closed: the facets count the matches the drain above did not reach as well
       final FacetResults facets = source.getFacets();
@@ -711,6 +712,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
           return plan;
+        }
+
+        @Override
+        public int getStatementLimit() {
+          return statementLimit;
         }
       };
       stats.ifPresent(materialized::setStatistics);

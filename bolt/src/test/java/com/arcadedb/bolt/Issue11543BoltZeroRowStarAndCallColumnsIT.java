@@ -26,6 +26,7 @@ import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Record;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
@@ -78,12 +79,34 @@ public class Issue11543BoltZeroRowStarAndCallColumnsIT extends BaseBoltServerTes
       session.run("CREATE (:S {i: 1})-[:T]->(:S {i: 2})").consume();
 
       final Result empty = session.run("MATCH (a:S)-[r:T]->(b:S) WHERE a.i > 100 RETURN *");
-      assertThat(empty.keys()).containsExactly("a", "r", "b");
+      assertThat(empty.keys()).containsExactly("a", "b", "r");
       assertThat(empty.list()).isEmpty();
-      assertThat(session.run("MATCH (a:S)-[r:T]->(b:S) RETURN *").keys()).containsExactly("a", "r", "b");
+      assertThat(session.run("MATCH (a:S)-[r:T]->(b:S) RETURN *").keys()).containsExactly("a", "b", "r");
 
       assertThat(session.run("MATCH (a:S) WHERE a.i > 100 WITH a, a.i AS i RETURN *").keys()).containsExactly("a", "i");
       assertThat(session.run("UNWIND [] AS x RETURN *").keys()).containsExactly("x");
+    }
+  }
+
+  /**
+   * Issue #11557: the keys of a {@code RETURN *} are sorted by name, as Neo4j answers them, so a pattern the plan walks from
+   * its bound end ({@code z}, {@code r}, {@code b} written, {@code b}, {@code r}, {@code z} bound) announces the same order
+   * whether it answers rows or none.
+   */
+  @Test
+  void theKeysOfAReturnStarAreSortedByName() {
+    try (final Driver driver = driver(); final Session session = session(driver)) {
+      session.run("CREATE (:S {i: 1})-[:T]->(:S {i: 2})").consume();
+
+      final Result rows = session.run("MATCH (b:S {i: 2}) MATCH (z:S)-[r:T]->(b) RETURN *");
+      assertThat(rows.keys()).containsExactly("b", "r", "z");
+      final List<Record> records = rows.list();
+      assertThat(records).hasSize(1);
+      assertThat(records.getFirst().keys()).containsExactly("b", "r", "z");
+
+      final Result empty = session.run("MATCH (b:S {i: 2}) MATCH (z:S)-[r:T]->(b) WHERE z.i > 100 RETURN *");
+      assertThat(empty.keys()).containsExactly("b", "r", "z");
+      assertThat(empty.list()).isEmpty();
     }
   }
 

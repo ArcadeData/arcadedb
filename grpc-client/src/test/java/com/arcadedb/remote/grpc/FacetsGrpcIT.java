@@ -40,7 +40,6 @@ import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.grpc.QueryResult;
 import com.arcadedb.server.grpc.StreamQueryRequest;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
-import io.grpc.Status;
 import io.grpc.stub.BlockingClientCall;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,8 +58,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The facets of a FACETS query travel over every gRPC path: once on the unary responses, once on the terminal batch of a CURSOR or
- * MATERIALIZE_ALL stream (an empty terminal batch carries them when no row matched), and PAGED refuses the query.
+ * The facets of a FACETS query travel over every gRPC path: once on the unary responses, once on the terminal batch of a CURSOR,
+ * PAGED or MATERIALIZE_ALL stream (an empty terminal batch carries them when no row matched).
  */
 class FacetsGrpcIT extends BaseGrpcClientServerTest {
   private static final String TYPE        = ColumnarTestData.TYPE;
@@ -371,12 +370,15 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
   }
 
   @Test
-  void pagedIsRefused() {
-    assertThatThrownBy(() -> rawStream(QUERY, StreamQueryRequest.RetrievalMode.PAGED)).satisfies(e -> {
-      final Status status = Status.fromThrowable(e);
-      assertThat(status.getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
-      assertThat(status.getDescription()).isEqualTo("PAGED retrieval cannot carry FACETS: use CURSOR or MATERIALIZE_ALL");
-    });
+  void pagedCarriesFacets() throws Exception {
+    // PAGED used to re-run the query for every page and so refused FACETS; since issue #11800 it runs it once, as CURSOR does
+    final long rows = embeddedRowCount(QUERY);
+    assertOnlyTheTerminalBatchCarriesFacets(rawStream(QUERY, StreamQueryRequest.RetrievalMode.PAGED), rows);
+
+    try (final ResultSet rs = database.queryStream("sql", QUERY, getDefaultConfig(), BATCH, StreamQueryRequest.RetrievalMode.PAGED)) {
+      assertThat(rs.stream().count()).isEqualTo(rows);
+      assertSameFacets(rs.getFacets(), QUERY);
+    }
   }
 
   @Test

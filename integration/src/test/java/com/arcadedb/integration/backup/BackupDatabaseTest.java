@@ -46,6 +46,31 @@ class BackupDatabaseTest extends TestHelper {
     assertThat(result.<String>getProperty("backupFile")).isEqualTo("file://test-backup.zip");
   }
 
+  /**
+   * Issue #11781: a backup taken inside a transaction with pending changes rolled that transaction back first, losing its
+   * writes. The archive holds the committed database and the caller's transaction is left as it was.
+   */
+  @Test
+  void backupInsideATransactionKeepsIt() {
+    database.command("sql", "CREATE DOCUMENT TYPE BackupTx");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO BackupTx SET id = 1").close();
+      try (final ResultSet resultSet = database.command("sql", "backup database file://test-backup-tx.zip")) {
+        assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("OK");
+      }
+      assertThat(database.isTransactionActive()).isTrue();
+      database.command("sql", "INSERT INTO BackupTx SET id = 2").close();
+    });
+
+    database.command("sqlscript",
+        "BEGIN; INSERT INTO BackupTx SET id = 3; backup database file://test-backup-script.zip; INSERT INTO BackupTx SET id = 4; COMMIT;")
+        .close();
+
+    try (final ResultSet resultSet = database.query("sql", "SELECT count() AS c FROM BackupTx")) {
+      assertThat(resultSet.next().<Number>getProperty("c").longValue()).isEqualTo(4L);
+    }
+  }
+
   @Test
   void backupWithHttpUrlShouldFail() {
     assertThatThrownBy(() -> database.command("sql", "backup database http://example.com/backup.zip"))
