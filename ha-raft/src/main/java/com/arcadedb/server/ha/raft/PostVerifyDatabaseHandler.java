@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
@@ -568,9 +569,13 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     return new SealedImage(crc.getValue(), size);
   }
 
-  /** Records one file's checksum in both shapes the response carries: the flat map peers compare, and the detail list. */
-  private static void collectFileInfo(final JSONObject checksums, final JSONArray files, final String name, final long crc,
+  /**
+   * Records one file's checksum in both shapes the response carries: the flat map peers compare, and the detail list. A dictionary
+   * is recorded under the format label every build knows: two nodes holding the same bytes can disagree on it (issue #12234).
+   */
+  private static void collectFileInfo(final JSONObject checksums, final JSONArray files, final String fileName, final long crc,
       final long size) {
+    final String name = Dictionary.comparableFileName(fileName);
     checksums.put(name, crc);
 
     final JSONObject fileInfo = new JSONObject();

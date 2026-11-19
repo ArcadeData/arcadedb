@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code initEngine()} leaves null - the field this guard reads - without needing to corrupt a file and restart
  * the server around it. The engine-side arms of that state (a corrupt {@code .ts.sealed} at schema load, and the
  * recovery from it) are pinned by {@code TimeSeriesCheckDatabaseTest} and
- * {@code Issue6839TsSealedBlobRecoveryTest}.
+ * {@code SealedBlobRepairAndRefusalTest.EngineRepair}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
  * handler whose {@code execute()} throws - the same seam the production exception propagates through
  * (it is thrown from {@code database.commit()} inside the handler's execute path). The full
  * cluster-side path, including this 409 over a real wire, is covered end-to-end by
- * {@code Issue5064CommittedRemotelyContractIT} in the ha-raft module.
+ * {@code CommittedRemotelyContractIT} in the ha-raft module.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

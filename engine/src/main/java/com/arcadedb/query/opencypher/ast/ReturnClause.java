@@ -114,7 +114,8 @@ public class ReturnClause {
   /**
    * Check if any return item is NOT an aggregation function.
    * Used to detect implicit GROUP BY (when RETURN has both aggregations and non-aggregations).
-   * Note: This checks for items that don't contain any aggregation, including wrapped ones.
+   * Note: This checks for items that don't contain any aggregation, including wrapped ones, and for the variables an
+   * aggregating map projection groups by implicitly ({@link ImplicitGroupingKeys}): either way the projection groups.
    */
   public boolean hasNonAggregations() {
     for (final ReturnItem item : items) {
@@ -122,7 +123,8 @@ public class ReturnClause {
         return true;
       }
     }
-    return false;
+    // An aggregating map projection groups by its variable without projecting it (issue #12316)
+    return !ImplicitGroupingKeys.of(items).isEmpty();
   }
 
   /**

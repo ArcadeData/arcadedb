@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,7 +34,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression tests for #11576: on the non-optimized path a node pattern that binds only the leading properties of a
  * composite index, {@code (n:T {a: $x})} on {@code T(a, b)}, never used the index and scanned the whole type: the step
  * required every property of the index. A MATCH after a WITH, an OPTIONAL MATCH and {@code UNWIND $rows AS row MATCH ...}
- * all run there. The step now reads the range of the bound prefix, and its row filter checks the rest as before.
+ * all run there. The step now reads the range of the bound prefix, and its row filter checks the rest as before. A MERGE matches
+ * through a lookup of its own, which required the whole key as well: it reads the prefix too, whole and against one committed
+ * state, since an entry it missed would make it create a node that exists.
  */
 class CypherCompositeIndexPrefixSeekIssue11576Test extends TestHelper {
 
@@ -145,6 +148,125 @@ class CypherCompositeIndexPrefixSeekIssue11576Test extends TestHelper {
     }
   }
 
+  /** MERGE matches through its own node lookup, which required the whole key too and scanned the type for a prefix. */
+  @Test
+  void mergeSeeksTheBoundPrefix() {
+    final String query = "MERGE (n:T {a: $x}) RETURN n.b AS b ORDER BY b";
+    assertThat(values(query, Map.of("x", "k7"))).containsExactly(7, 57, 107, 157);
+    assertThat(profile(query, Map.of("x", "k7"))).contains("+ MERGE " + PREFIX_SEEK);
+    assertThat(countT()).isEqualTo(200L);
+    // under UNWIND every row seeks, and the vertex the first row created is found by the second through the transaction's own
+    // index changes, so one is created, not two
+    final String unwind = "UNWIND $xs AS x MERGE (n:T {a: x}) RETURN n.b AS b";
+    database.transaction(() -> assertThat(values(unwind, Map.of("xs", List.of("k3", "fresh", "fresh")))).hasSize(4));
+    assertThat(countT()).isEqualTo(201L);
+    assertThat(profile(unwind, Map.of("xs", List.of("k3")))).contains("+ MERGE " + PREFIX_SEEK);
+    // the whole key keeps the exact lookup
+    assertThat(profile("MERGE (n:T {a: $x, b: $y}) RETURN n.b AS b", Map.of("x", "k7", "y", 57))).contains("+ MERGE [index: T[a, b]]");
+    assertThat(countT()).isEqualTo(201L);
+  }
+
+  /** A deleted entry is not matched: the prefix read skips the tombstones, so MERGE creates exactly one node again. */
+  @Test
+  void mergeDoesNotMatchADeletedPrefix() {
+    database.transaction(() -> database.command("opencypher", "MATCH (n:T {a: 'k9'}) DELETE n"));
+    assertThat(countT()).isEqualTo(196L);
+    database.transaction(() -> assertThat(values("MERGE (n:T {a: $x}) RETURN n.b AS b", Map.of("x", "k9"))).isEmpty());
+    assertThat(countT()).isEqualTo(197L);
+    assertThat(values("MERGE (n:T {a: $x}) RETURN 1 AS b", Map.of("x", "k9"))).hasSize(1);
+    assertThat(countT()).isEqualTo(197L);
+  }
+
+  @Test
+  void mergeOnAHashIndexOrAnInheritedIndex() {
+    createUnbalancedTypes();
+    // a hash index answers a whole key only: the scan answers, with the same rows
+    final String hash = "MERGE (n:H {a: $x}) RETURN n.b AS b ORDER BY b";
+    assertThat(values(hash, Map.of("x", "k1"))).containsExactly(1, 5, 9, 13, 17);
+    assertThat(profile(hash, Map.of("x", "k1"))).doesNotContain("prefix:");
+    // an index declared on the supertype also holds the sibling's records, which MERGE must not match
+    final String inherited = "MERGE (n:C1 {a: $x}) RETURN n.b AS b ORDER BY b";
+    assertThat(values(inherited, Map.of("x", "k1"))).containsExactly(1, 5, 9, 13, 17);
+    assertThat(profile(inherited, Map.of("x", "k1"))).contains("[index: P[a, b], prefix: a]");
+    // a prefix over more entries than one consistent read holds is still read whole
+    assertThat(values("MERGE (n:W {a: $x}) RETURN n.b AS b", Map.of("x", "same"))).hasSize(600);
+    assertThat(values("MATCH (n:W) RETURN count(n) AS b", Map.of())).containsExactly(600);
+  }
+
+  /** A MERGE of a path whose new end is found through its index reads the prefix too. */
+  @Test
+  void mergeOfAPathSeeksTheBoundPrefix() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:K {id: 1})"));
+    final String query = "MATCH (k:K {id: 1}) MERGE (k)-[:R]->(n:T {a: $x}) RETURN n.b AS b ORDER BY b";
+    // no K-[:R]->T path yet: one is created, with a new T node
+    database.transaction(() -> assertThat(values(query.replace("n.b AS b", "1 AS b"), Map.of("x", "k7"))).containsExactly(1));
+    assertThat(countT()).isEqualTo(201L);
+    database.transaction(() -> database.command("opencypher", "MATCH (k:K), (n:T {a: 'k7', b: 57}) CREATE (k)-[:R]->(n)"));
+    assertThat(values(query, Map.of("x", "k7"))).containsExactly(57);
+    assertThat(countT()).isEqualTo(201L);
+  }
+
+  /**
+   * A range of an LSM index whose last keys were deleted in an earlier transaction ends on tombstones, where the cursor can
+   * answer null after an optimistic hasNext(): the seeks read past them rather than handing a null on as a record.
+   */
+  @Test
+  void aPrefixEndingOnDeletedKeysIsReadPastTheTombstones() {
+    database.transaction(() -> database.command("opencypher", "MATCH (n:T) WHERE n.a = 'k7' AND n.b > 100 DELETE n"));
+    database.transaction(() -> database.command("opencypher", "MATCH (n:T) WHERE n.a = 'k8' DELETE n"));
+    final String match = "WITH 1 AS one MATCH (n:T {a: $x}) RETURN n.b AS b ORDER BY b";
+    assertThat(values(match, Map.of("x", "k7"))).containsExactly(7, 57);
+    assertThat(values(match, Map.of("x", "k8"))).isEmpty();
+    assertThat(values("MATCH (n:T {a: $x}) RETURN n.b AS b ORDER BY b", Map.of("x", "k7"))).containsExactly(7, 57);
+    assertThat(values("MERGE (n:T {a: $x}) RETURN n.b AS b ORDER BY b", Map.of("x", "k7"))).containsExactly(7, 57);
+    assertThat(countT()).isEqualTo(194L);
+  }
+
+  /**
+   * A prefix range reaches a record only through its entries: an unbound column indexed BY ITEM gives a record one entry per
+   * element and none for an empty list. Read as a prefix, such an index misses records and repeats others, so MATCH would lose
+   * rows and MERGE create duplicates: the scan answers instead, on the ordered path, the optimizer's and MERGE. A null in an
+   * unbound column is no hole, even where null keys are skipped: only a key whose every column is null is (issue #8978).
+   */
+  @Test
+  void aPrefixThatMissesRecordsIsNotRead() {
+    database.command("sql", "CREATE VERTEX TYPE X");
+    database.command("sql", "CREATE PROPERTY X.a STRING");
+    database.command("sql", "CREATE PROPERTY X.tags LIST OF STRING");
+    database.command("sql", "CREATE INDEX ON X (a, tags BY ITEM) NOTUNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE S");
+    database.command("sql", "CREATE PROPERTY S.a STRING");
+    database.command("sql", "CREATE PROPERTY S.b INTEGER");
+    database.command("sql", "CREATE INDEX ON S (a, b) NOTUNIQUE NULL_STRATEGY SKIP");
+    database.transaction(() -> {
+      database.newVertex("X").set("a", "x").set("tags", List.of()).save();
+      database.newVertex("X").set("a", "x").set("tags", List.of("t1", "t2", "t3")).save();
+      database.newVertex("S").set("a", "s").save();
+      database.newVertex("S").set("a", "s").set("b", 1).save();
+    });
+    for (final String label : List.of("X", "S")) {
+      final boolean prefixRead = label.equals("S");
+      final Map<String, Object> params = Map.of("v", label.toLowerCase(Locale.ROOT));
+      final String ordered = "WITH 1 AS one MATCH (n:" + label + " {a: $v}) RETURN 1 AS b";
+      assertThat(values(ordered, params)).as(ordered).hasSize(2);
+      assertThat(profile(ordered, params).contains("prefix: a")).as(ordered).isEqualTo(prefixRead);
+      final String optimized = "MATCH (n:" + label + " {a: $v}) RETURN 1 AS b";
+      assertThat(values(optimized, params)).as(optimized).hasSize(2);
+      final String where = "MATCH (n:" + label + ") WHERE n.a = $v RETURN 1 AS b";
+      assertThat(values(where, params)).as(where).hasSize(2);
+      final String merge = "MERGE (n:" + label + " {a: $v}) RETURN 1 AS b";
+      database.transaction(() -> assertThat(values(merge, params)).as(merge).hasSize(2));
+      assertThat(profile(merge, params).contains("prefix: a")).as(merge).isEqualTo(prefixRead);
+      assertThat(values("MATCH (n:" + label + ") RETURN count(n) AS b", Map.of())).containsExactly(2);
+    }
+  }
+
+  private long countT() {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM T")) {
+      return ((Number) rs.next().getProperty("c")).longValue();
+    }
+  }
+
   @Test
   void theUnboundPropertiesAreStillFiltered() {
     final String query = "WITH 1 AS one MATCH (n:T {a: $x}) WHERE n.b > 100 RETURN n.b AS b ORDER BY b";
@@ -161,7 +283,7 @@ class CypherCompositeIndexPrefixSeekIssue11576Test extends TestHelper {
 
   private List<Integer> values(final String query, final Map<String, Object> params) {
     final List<Integer> out = new ArrayList<>();
-    try (final ResultSet rs = database.query("opencypher", query, params)) {
+    try (final ResultSet rs = run(query, params)) {
       while (rs.hasNext()) {
         final Number b = rs.next().getProperty("b");
         if (b != null)
@@ -171,8 +293,13 @@ class CypherCompositeIndexPrefixSeekIssue11576Test extends TestHelper {
     return out;
   }
 
+  /** A MERGE is a write, which only a command may run. */
+  private ResultSet run(final String query, final Map<String, Object> params) {
+    return query.contains("MERGE") ? database.command("opencypher", query, params) : database.query("opencypher", query, params);
+  }
+
   private String profile(final String query, final Map<String, Object> params) {
-    try (final ResultSet rs = database.query("opencypher", "PROFILE " + query, params)) {
+    try (final ResultSet rs = run("PROFILE " + query, params)) {
       while (rs.hasNext())
         rs.next();
       return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);

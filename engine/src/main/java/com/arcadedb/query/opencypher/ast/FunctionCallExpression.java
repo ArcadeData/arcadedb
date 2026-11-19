@@ -56,8 +56,11 @@ public class FunctionCallExpression implements Expression {
    */
   private transient volatile Boolean aggregation;
 
-  /** Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. */
-  private transient boolean arityValidated; // plain on purpose: the check is idempotent, so a racing second run is harmless
+  /**
+   * Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. Volatile because
+   * the workers of a parallel scan share the call (issue #11873); the check is idempotent, so a racing second run is harmless.
+   */
+  private transient volatile boolean arityValidated;
 
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
     this.originalFunctionName = functionName;

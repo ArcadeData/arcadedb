@@ -26,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -60,6 +61,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
@@ -88,6 +90,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * stand-alone SET step uses.
  */
 public class MergeStep extends AbstractExecutionStep {
+  /** The far end of a relationship a MERGE created together with it, in the key of {@link #registerMergedEdgeToCreatedNode}. */
+  private static final RID CREATED_END = new RID(-2, -2);
+  /**
+   * The far end of a relationship a MERGE created between two nodes that existed, in the key it marks for each of its ends and that
+   * {@link #registerMergedEdgeToCreatedNode} checks (issue #11660).
+   */
+  private static final RID EXISTING_END = TransactionContext.MERGED_EDGE_EXISTING_END;
+
   // Internal row flags, removed before a row leaves the step
   private static final String WAS_CREATED        = "  wasCreated";
   private static final String CREATE_SET_FOLDED  = "  createSetFolded";
@@ -101,6 +111,9 @@ public class MergeStep extends AbstractExecutionStep {
   // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
   private       boolean             createItemsResolved;
   private       List<SetClause.SetItem> createItems;
+  // Display-only: the index the last node lookup read, for the profile (issue #11576). Written per row by the one thread running
+  // the step, read by prettyPrint after it
+  private       String              usedIndexName;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -146,7 +159,11 @@ public class MergeStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        return buffer.get(bufferIndex++);
+        final Result result = buffer.get(bufferIndex++);
+        // A LATER row of the same batch may have replaced a record this row holds after this row was merged: served with
+        // the live records, not the deleted ones (issue #10614). Free while the statement replaced nothing
+        labelReplacements.redirect(result);
+        return result;
       }
 
       private void fetchMore(final int n) {
@@ -287,10 +304,11 @@ public class MergeStep extends AbstractExecutionStep {
           ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
         }
         // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+        // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
         if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
-          applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
+          applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
-          applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
+          applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
         // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
         if (absorbedSet != null && !createSetFolded)
           // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
@@ -1058,7 +1076,8 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private List<Result> createNewPath(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Vertex> vertices = new ArrayList<>();
-    // The nodes this MERGE creates: no other transaction can know them, so a relationship ending in one cannot be a duplicate
+    // The nodes this MERGE creates. No other transaction can know them, but a relationship from an existing node to one of them
+    // can still duplicate a concurrent MERGE's equivalent path from that node (issue #11660)
     final boolean[] createdHere = new boolean[pathPattern.getRelationshipCount() + 1];
 
     for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
@@ -1093,6 +1112,10 @@ public class MergeStep extends AbstractExecutionStep {
           ? vertices.get(i) : vertices.get(i + 1);
 
       final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult, !createdHere[i] && !createdHere[i + 1]);
+      if (createdHere[i] != createdHere[i + 1])
+        registerMergedEdgeToCreatedNode(edge, relPattern, createdHere[i + 1] ? vertices.get(i) : vertices.get(i + 1),
+            createdHere[i + 1] ? pathPattern.getNode(i + 1) : pathPattern.getNode(i), createdHere[i + 1] ? vertices.get(i + 1) : vertices.get(i),
+            createdHere[i + 1]);
       tracePathElement(trace, 2 * i + 1, edge);
       if (relPattern.getVariable() != null)
         baseResult.setProperty(relPattern.getVariable(), edge);
@@ -1101,6 +1124,45 @@ public class MergeStep extends AbstractExecutionStep {
     addPathBinding(baseResult, pathPattern, trace);
     baseResult.setProperty(WAS_CREATED, true);
     return List.of(baseResult);
+  }
+
+  /**
+   * Registers with the transaction a relationship this MERGE created between a node that existed and one it created (issue #11660).
+   * The existence check that did not find it read the edge list of the existing node, where a concurrent MERGE of the same pattern
+   * appends its own path, and two appends commute at commit. The key stands for every such path: the existing node, a placeholder
+   * for the created one, the type with its direction from the existing node, and what the relationship and the created node were
+   * matched by. So the commit refuses a transaction whose equivalent path another one committed meanwhile, and only that one: a MERGE
+   * looking for another far end is another key. It is refused as well when a concurrent MERGE committed a relationship of the type
+   * and direction from the same node to a node that existed, which may be one this pattern matches: that key is coarser, so such a
+   * commit can cost a retry the pattern did not need, never a duplicate path.
+   *
+   * @param anchor          the end that existed
+   * @param createdPattern  the pattern of the end this MERGE created
+   * @param created         that end
+   * @param anchorIsLeft    whether the existing end is the left node of the pattern
+   */
+  private void registerMergedEdgeToCreatedNode(final Edge edge, final RelationshipPattern relPattern, final Vertex anchor,
+      final NodePattern createdPattern, final Vertex created, final boolean anchorIsLeft) {
+    final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
+    if (tx == null)
+      return;
+    // Read back from the records: what was stored is what a later MATCH compares, whatever expressions produced it
+    final Map<String, Object> matchedBy = new HashMap<>();
+    if (relPattern.hasProperties())
+      for (final String key : relPattern.getProperties().keySet())
+        matchedBy.put("r." + key, edge.get(key));
+    if (createdPattern.hasLabels())
+      matchedBy.put("m:", created.getTypeName());
+    if (createdPattern.hasProperties())
+      for (final String key : createdPattern.getProperties().keySet())
+        matchedBy.put("m." + key, created.get(key));
+    final String direction = switch (relPattern.getDirection()) {
+      case OUT -> anchorIsLeft ? ">" : "<";
+      case IN -> anchorIsLeft ? "<" : ">";
+      default -> "-";
+    };
+    tx.addMergedEdge(anchor.getIdentity(), CREATED_END, edge.getTypeName() + direction, matchedBy);
+    tx.checkMergedEdge(anchor.getIdentity(), EXISTING_END, edge.getTypeName() + direction);
   }
 
   /**
@@ -1197,13 +1259,19 @@ public class MergeStep extends AbstractExecutionStep {
   /**
    * Tries to find and use an index for the evaluated property constraints.
    * Returns an iterator of matching identifiables, or null if no suitable index found.
-   * Applies leftmost-prefix matching for composite indexes.
+   * <p>
+   * An index whose every property is bound is looked up by its whole key, the longest such key winning. Otherwise the index of
+   * the longest bound leftmost prefix is read as the range of the keys starting with it (issue #11576): {@code MERGE (n:T {a: $x})}
+   * over an index on {@code T(a, b)} scanned the whole type for every row. Only an index that walks its keys in order answers a
+   * prefix, so a hash index still needs its whole key. Either read is whole and against one committed state, or the caller
+   * scans: an entry a read missed would make MERGE create a node that exists.
    */
   private Iterator<Identifiable> tryFindByIndex(final DocumentType type, final String label,
       final Map<String, Object> evaluatedProperties) {
     TypeIndex bestIndex = null;
     int bestMatchCount = 0;
-    List<String> bestMatchedProperties = null;
+    boolean bestWholeKey = false;
+    List<String> bestProperties = null;
 
     // Polymorphic: an index declared on a supertype is inherited by this type and is just as seekable from it
     // (issue #7021). The cursor it opens is filtered by label below, since it also carries the parent's own
@@ -1215,28 +1283,39 @@ public class MergeStep extends AbstractExecutionStep {
       if (indexProperties == null)
         continue; // a FULL_TEXT index answers by token, and misses a value with none: MERGE would duplicate it (#8439)
       int matchCount = 0;
-      final List<String> matchedProperties = new ArrayList<>();
+      while (matchCount < indexProperties.size() && evaluatedProperties.containsKey(indexProperties.get(matchCount)))
+        matchCount++; // leftmost prefix only
+      if (matchCount == 0)
+        continue;
 
-      for (final String indexProp : indexProperties) {
-        if (evaluatedProperties.containsKey(indexProp)) {
-          matchCount++;
-          matchedProperties.add(indexProp);
-        } else
-          break; // Leftmost prefix only
+      final boolean wholeKey = matchCount == indexProperties.size();
+      // a whole key beats any prefix, a UNIQUE one included: it is an exact lookup rather than a range
+      if (bestWholeKey && !wholeKey)
+        continue;
+      if (!wholeKey) {
+        try {
+          // a prefix that misses a record (an unbound column indexed BY ITEM, or a null one skipped) would make MERGE create it
+          // again, and one that reaches a record twice would match it twice
+          if (!index.supportsOrderedIterations() || !index.prefixReachesEveryRecord(matchCount))
+            continue;
+        } catch (final IndexException e) {
+          continue; // dropped or rebuilt since it was checked: not a candidate, the scan answers
+        }
       }
-
-      // Require full index match (all index properties covered) - lookupByKey needs exact match
-      if (matchCount > 0 && matchCount == indexProperties.size() && matchCount > bestMatchCount) {
-        bestMatchCount = matchCount;
+      if (bestIndex == null || (wholeKey && !bestWholeKey) || matchCount > bestMatchCount) {
         bestIndex = index;
-        bestMatchedProperties = matchedProperties;
+        bestMatchCount = matchCount;
+        bestWholeKey = wholeKey;
+        bestProperties = indexProperties;
       }
     }
 
-    if (bestIndex == null || bestMatchedProperties == null || bestMatchedProperties.isEmpty())
+    if (bestIndex == null)
       return null;
 
-    final String[] propertyNames = bestMatchedProperties.toArray(new String[0]);
+    // the names read while the index was chosen: read again, a DROP completed since would raise outside the guard below
+    final List<String> indexProperties = bestProperties;
+    final String[] propertyNames = indexProperties.subList(0, bestMatchCount).toArray(new String[0]);
     final Object[] propertyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
@@ -1246,11 +1325,16 @@ public class MergeStep extends AbstractExecutionStep {
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
       final Object stored = property != null ? InlineProperties.declaredValue(property, context.getDatabase(), value) : null;
       propertyValues[i] = stored != null ? stored : TemporalUtil.toIndexKey(value);
+      // a prefix holding a null reaches no record of an index that skips the keys whose every column is null
+      if (!bestWholeKey && propertyValues[i] == null)
+        return null;
     }
 
     final Iterator<Identifiable> cursor;
     try {
-      cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      cursor = bestWholeKey ?
+          context.getDatabase().lookupByKey(label, propertyNames, propertyValues) :
+          ConsistentKeyLookup.prefixForQuery(context.getDatabase(), bestIndex, propertyValues);
     } catch (final IndexException e) {
       // A concurrent DDL is creating, rebuilding or dropping the index: the lookup is read whole or not at all (#9811), and a
       // short one would make MERGE create a node that exists. Nothing was returned yet, so the caller scans the type instead
@@ -1261,6 +1345,8 @@ public class MergeStep extends AbstractExecutionStep {
         return null;
       throw e;
     }
+    usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", bestWholeKey ? propertyNames :
+        indexProperties.toArray(new String[0])) + "]" + (bestWholeKey ? "" : ", prefix: " + String.join(", ", propertyNames));
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
@@ -1558,8 +1644,10 @@ public class MergeStep extends AbstractExecutionStep {
     if (betweenExistingNodes) {
       // The match that did not find it read an edge list a concurrent MERGE may be appending the same relationship to (#11482)
       final TransactionContext tx = ((DatabaseInternal) context.getDatabase()).getTransactionIfExists();
-      if (tx != null)
-        tx.addMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+      if (tx != null) {
+        // Also marks the keys a MERGE from either end that creates its far node checks (#11660)
+        tx.addMergedEdgeBetweenExistingNodes(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+      }
     }
 
     final QueryStatistics stats = context.getStatistics();
@@ -1741,6 +1829,22 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
+   * Applies repeated ON CREATE / ON MATCH SET clauses in source order (issue #11691). Each is a SET of its own, so its
+   * values are evaluated after the previous one was applied; the shared map carries the read-your-writes reach across
+   * them, as it would across consecutive SET clauses.
+   */
+  private void applySetClauses(final List<SetClause> setClauses, final Result result, final LabelReplacements labelReplacements) {
+    if (setClauses.size() == 1) {
+      applySetClause(setClauses.getFirst(), result, labelReplacements);
+      return;
+    }
+    final Map<RID, MutableDocument> written = new HashMap<>();
+    for (final SetClause setClause : setClauses)
+      if (!setClause.isEmpty())
+        setApplier.apply(setClause, result, written, labelReplacements);
+  }
+
+  /**
    * Evaluates a simple expression for SET clauses.
    * Currently supports:
    * - String literals: 'Alice', "Bob"
@@ -1756,6 +1860,8 @@ public class MergeStep extends AbstractExecutionStep {
     final String ind = getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ MERGE");
+    if (usedIndexName != null)
+      builder.append(" [index: ").append(usedIndexName).append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
