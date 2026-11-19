@@ -23,8 +23,10 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * The page versions the Raft log has assigned but this node has not applied yet, per database (issue #6965).
@@ -81,6 +83,14 @@ final class PageVersionLedger {
 
   private final Map<String, DatabaseLedger> byDatabase = new ConcurrentHashMap<>();
 
+  /**
+   * The ledger whose validation lock the commit {@link #publishOutsideTheLog} runs on this thread takes before its version
+   * checks ({@link #lockForPublication}). Static because it holds the ledger itself, not a key: the lock taken is the one
+   * of the ledger the publication started on, whichever instance the hook is called on, so one per thread serves every
+   * instance, and {@link #publishOutsideTheLog} restores the enclosing value.
+   */
+  private static final ThreadLocal<DatabaseLedger> PUBLISHING = new ThreadLocal<>();
+
   /** Resolves the version of a page on this node, {@code 0} for a page that does not exist yet. */
   interface LocalVersions {
     int versionOf(int fileId, int pageNumber) throws IOException;
@@ -106,20 +116,41 @@ final class PageVersionLedger {
     private final int     version;
     private final EntryId entry;
     private final long    reservedAtMs;
+    /** {@link DatabaseLedger#publications} when the reservation was taken: a different value means the local copy may be past it. */
+    private final long    publications;
     private volatile boolean appended;
 
-    private Reservation(final int version, final EntryId entry, final long reservedAtMs) {
+    private Reservation(final int version, final EntryId entry, final long reservedAtMs, final long publications) {
       this.version = version;
       this.entry = entry;
       this.reservedAtMs = reservedAtMs;
+      this.publications = publications;
     }
   }
 
-  /** The reservations of one database; validation is a check-then-act, so it runs under the instance's monitor. */
+  /** The reservations of one database; validation is a check-then-act, so it runs under the instance's lock. */
   private static final class DatabaseLedger {
+    private final String                               name;
     private final ConcurrentHashMap<Long, Reservation> pages    = new ConcurrentHashMap<>();
-    /** Bumped on every release: tells a validation whether a local copy read outside the monitor may have moved. */
+    /** Bumped on every release: tells a validation whether a local copy read outside the lock may have moved. */
     private final AtomicLong                           releases = new AtomicLong();
+    /**
+     * Bumped by every commit published outside the log (issue #11921), under the lock. A reservation is the last version
+     * the log assigned to its page only as long as nothing else moves the local copy: such a commit does, and it may
+     * run between the apply of an entry publishing its page and that apply releasing the reservation, when the
+     * reserved version is already the local one. A validation that finds a reservation older than the last such
+     * commit therefore reads the local copy too, see {@link #validateAndReserve}.
+     */
+    private final AtomicLong                           publications = new AtomicLong();
+    /**
+     * The validation lock. Not a monitor: the commit {@link #publishOutsideTheLog} runs takes it in its middle, after its
+     * file locks ({@link #lockForPublication}, issue #11921), and it is released once the commit returns.
+     */
+    private final ReentrantLock                        lock     = new ReentrantLock();
+
+    private DatabaseLedger(final String name) {
+      this.name = name;
+    }
   }
 
   static long pageKey(final int fileId, final int pageNumber) {
@@ -135,7 +166,7 @@ final class PageVersionLedger {
    */
   void validateAndReserve(final String databaseName, final Pages pages, final EntryId entry, final LocalVersions local)
       throws IOException {
-    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, k -> new DatabaseLedger());
+    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, DatabaseLedger::new);
     final long now = System.currentTimeMillis();
 
     // The local version of a page is a cache lookup at best and a disk read at worst: it is read OUTSIDE the ledger
@@ -149,8 +180,10 @@ final class PageVersionLedger {
       localVersions[i] = ledger.pages.containsKey(pageKey(pages.fileIds()[i], pages.pageNumbers()[i])) ? -1 :
           local.versionOf(pages.fileIds()[i], pages.pageNumbers()[i]);
 
-    synchronized (ledger) {
+    ledger.lock.lock();
+    try {
       final boolean earlyReadsValid = ledger.releases.get() == releasesBefore;
+      final long publications = ledger.publications.get();
       // Validate everything first: an entry is refused as a whole, so no page of a refused entry may stay reserved.
       for (int i = 0; i < pages.count(); i++) {
         final int fileId = pages.fileIds()[i];
@@ -167,6 +200,11 @@ final class PageVersionLedger {
         else if (reserved.entry.equals(entry))
           // The same request, retried by Ratis: it is validated against the base it reserved from.
           expected = reserved.version - 1;
+        else if (reserved.publications != publications)
+          // Issue #11921: a commit was published outside the log since this reservation was taken. If it ran after the
+          // apply of the reserving entry published the page and before that apply released the reservation, the page
+          // is one version past the reserved one, and that version is the commit's: the local copy says so.
+          expected = Math.max(reserved.version, local.versionOf(fileId, pageNumber));
         else
           expected = reserved.version;
 
@@ -175,8 +213,79 @@ final class PageVersionLedger {
       }
 
       for (int i = 0; i < pages.count(); i++)
-        ledger.pages.put(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]), new Reservation(pages.versions()[i], entry, now));
+        ledger.pages.put(pageKey(pages.fileIds()[i], pages.pageNumbers()[i]),
+            new Reservation(pages.versions()[i], entry, now, publications));
+    } finally {
+      ledger.lock.unlock();
     }
+  }
+
+  /**
+   * Runs a commit that publishes its pages on this node before any log entry carries them (issue #11921): the commits
+   * of a schema or compaction session ({@code RaftReplicatedDatabase.commit}, schema-commit arm), whose WAL rides the
+   * session's {@code SCHEMA_ENTRY} later. Such a commit checks its versions against the local copy and the reservations,
+   * then moves the local copy forward without an apply, so on its own it is not ordered against {@link #validateAndReserve}:
+   * an entry of another node validated between its check and its publication reserved the version it then published,
+   * and one that read the local copy before the publication trusted that read, since only an apply moves
+   * {@code releases}. Both put two different changes at one version in the log, which the followers splice.
+   * <p>
+   * Run under the database's validation lock, the check and the publication are one step for every validation: an
+   * entry reserved before it is seen by the check (a retryable conflict for the commit), and one validated after it reads
+   * the published version, because {@code releases} is bumped on the way out.
+   * <p>
+   * The lock is taken by {@link #lockForPublication}, which the commit's first phase calls once it holds its file locks
+   * and before it reads the version of its first page, not here. Taken before the file locks, the commit would wait for
+   * a file lock with the lock held, while an ordinary commit of this leader holds that file lock from its phase 1 until
+   * its own entry, validated under the lock, is appended: each would wait for the other until the file-lock timeout.
+   * Every version check and the publication still run under the lock, which is what the ordering needs; a commit with
+   * no page to check publishes no page.
+   * <p>
+   * The lock therefore also covers the commit's second phase, the local page writes of that one commit (not of the whole
+   * session): validations of other nodes' entries on this database wait for it, which is the price of the ordering.
+   */
+  <T> T publishOutsideTheLog(final String databaseName, final Callable<T> commit) throws Exception {
+    final DatabaseLedger ledger = byDatabase.computeIfAbsent(databaseName, DatabaseLedger::new);
+    final DatabaseLedger enclosing = PUBLISHING.get();
+    final boolean heldBefore = ledger.lock.isHeldByCurrentThread();
+    PUBLISHING.set(ledger);
+    try {
+      return commit.call();
+    } finally {
+      if (enclosing != null)
+        PUBLISHING.set(enclosing);
+      else
+        PUBLISHING.remove();
+      ledger.releases.incrementAndGet();
+      if (!heldBefore && ledger.lock.isHeldByCurrentThread()) {
+        // A commit that took the lock checked pages and may have published them: the reservations taken before it no
+        // longer bound the local copy, see DatabaseLedger.publications
+        ledger.publications.incrementAndGet();
+        ledger.lock.unlock();
+      }
+    }
+  }
+
+  /**
+   * Takes the validation lock of the database for the commit {@link #publishOutsideTheLog} runs on this thread, and does
+   * nothing for any other commit (one thread-local read). Called through the engine's
+   * {@link com.arcadedb.engine.PageVersionReservations#beforeVersionChecks()}, so with the commit's file locks held and
+   * before the local version of any of its pages is read: a version read before the lock could be one an entry validated,
+   * appended and applied in between has moved, and the check would pass on it.
+   * <p>
+   * The lock is the one of the ledger the publication started on. A ledger this instance no longer holds for the database
+   * (dropped or installed under the publication, see {@link #clear}) orders nothing any more: the commit is refused as a
+   * retryable conflict rather than left to check and publish without the lock.
+   */
+  void lockForPublication(final String databaseName) {
+    final DatabaseLedger publishing = PUBLISHING.get();
+    if (publishing == null || !publishing.name.equals(databaseName) || publishing.lock.isHeldByCurrentThread())
+      return;
+    // noopengrep: lock-not-released-in-finally - held for the commit, publishOutsideTheLog releases it on the way out
+    publishing.lock.lock();
+    if (byDatabase.get(databaseName) != publishing)
+      // publishOutsideTheLog releases the lock on the way out
+      throw new ConcurrentModificationException("The page versions of database '" + databaseName
+          + "' were reset while a commit published outside the Raft log was running. Please retry the operation");
   }
 
   /**
@@ -194,7 +303,8 @@ final class PageVersionLedger {
     // Under the same monitor as validateAndReserve: the ownership check and the confirmation must be atomic with the
     // stale-replacement a concurrent validation can perform, or a confirmation could mark a reservation the map has
     // just replaced and let both entries append.
-    synchronized (ledger) {
+    ledger.lock.lock();
+    try {
       // All or nothing: a reservation marked appended is exempt from the stale sweep, so marking some pages of an
       // entry that is then refused would leave them fenced for good. Check every page first, mark only then.
       for (int i = 0; i < pages.count(); i++) {
@@ -205,6 +315,8 @@ final class PageVersionLedger {
       for (int i = 0; i < pages.count(); i++)
         ledger.pages.get(pageKey(pages.fileIds()[i], pages.pageNumbers()[i])).appended = true;
       return true;
+    } finally {
+      ledger.lock.unlock();
     }
   }
 
@@ -316,17 +428,38 @@ final class PageVersionLedger {
     return ledger != null ? ledger.pages.size() : 0;
   }
 
+  /** The validation lock of the database, {@code null} before anything created its ledger: for tests that hold or watch it. */
+  ReentrantLock validationLockForTesting(final String databaseName) {
+    final DatabaseLedger ledger = byDatabase.get(databaseName);
+    return ledger != null ? ledger.lock : null;
+  }
+
   void clear(final String databaseName) {
     byDatabase.remove(databaseName);
   }
 
+  /**
+   * Drops every reservation, on a leadership change. Each ledger is emptied in place under its lock rather than removed
+   * (issue #11921): a commit {@link #publishOutsideTheLog} runs may hold, or be about to take, the lock of the ledger it
+   * started on, and a validation after the clear must wait for that same lock, not for the free one of a new ledger. The
+   * wait is one validation or one published commit. {@code releases} is bumped too, so a validation that read a local
+   * version before the clear does not trust that read.
+   */
   void clearAll() {
-    byDatabase.clear();
+    for (final DatabaseLedger ledger : byDatabase.values()) {
+      ledger.lock.lock();
+      try {
+        ledger.pages.clear();
+        ledger.releases.incrementAndGet();
+      } finally {
+        ledger.lock.unlock();
+      }
+    }
   }
 
   /**
    * Decodes the page headers of a replicated WAL transaction without materializing the deltas. Same layout as
-   * {@link ArcadeStateMachine#deserializeWalTransaction(byte[])}: txId, timestamp, page count, segment size, then per
+   * {@link CommittedEntryDecoding#deserializeWalTransaction(byte[])}: txId, timestamp, page count, segment size, then per
    * page the file id, page number, delta range, target version, page size and the delta bytes.
    *
    * @throws ReplicationException when the bytes do not describe a well-formed transaction

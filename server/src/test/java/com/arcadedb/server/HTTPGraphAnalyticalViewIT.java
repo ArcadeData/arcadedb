@@ -215,4 +215,36 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
       command(serverIndex, "DROP TYPE Employee UNSAFE");
     });
   }
+
+  /** Issue #11438: the whole life of a view managed from Cypher over HTTP, with no SQL. */
+  @Test
+  void manageGraphAnalyticalViewWithCypherProceduresViaHttp() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex, "CREATE VERTEX TYPE CypherCity");
+      command(serverIndex, "CREATE EDGE TYPE CYPHER_ROAD");
+
+      final JSONObject created = executeCommand(serverIndex, "cypher",
+          "CALL db.analyticalView.create('cypherRoads', ['CypherCity'], ['CYPHER_ROAD'], {updateMode: 'SYNCHRONOUS'})");
+      final JSONObject createdRow = created.getJSONObject("result").getJSONArray("records").getJSONObject(0);
+      assertThat(createdRow.getString("name")).isEqualTo("cypherRoads");
+      assertThat(createdRow.getBoolean("created")).isTrue();
+
+      final JSONArray listed = executeCommand(serverIndex, "cypher", "CALL db.analyticalView.list()")
+          .getJSONObject("result").getJSONArray("records");
+      assertThat(listed.length()).isEqualTo(1);
+      assertThat(listed.getJSONObject(0).getString("name")).isEqualTo("cypherRoads");
+      assertThat(listed.getJSONObject(0).getString("updateMode")).isEqualTo("SYNCHRONOUS");
+
+      final JSONObject rebuilt = executeCommand(serverIndex, "cypher", "CALL db.analyticalView.rebuild('cypherRoads')");
+      assertThat(rebuilt.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("status")).isEqualTo("READY");
+
+      final JSONObject dropped = executeCommand(serverIndex, "cypher", "CALL db.analyticalView.drop('cypherRoads')");
+      assertThat(dropped.getJSONObject("result").getJSONArray("records").getJSONObject(0).getBoolean("dropped")).isTrue();
+      assertThat(executeCommand(serverIndex, "cypher", "CALL db.analyticalView.list()")
+          .getJSONObject("result").getJSONArray("records").length()).isEqualTo(0);
+
+      command(serverIndex, "DROP TYPE CYPHER_ROAD UNSAFE");
+      command(serverIndex, "DROP TYPE CypherCity UNSAFE");
+    });
+  }
 }

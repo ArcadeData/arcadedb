@@ -162,6 +162,33 @@ public final class HybridSearch {
     if (expandArgs != null)
       validateExpand(expandArgs);
     validateWeights(args);
+    validateFullTextLeg(args);
+  }
+
+  /**
+   * The shape of the full-text leg, read only when the search runs ({@link #runFullTextLeg}): both members are text, and given
+   * together or not at all. A member of another JSON shape reached {@code getString} there, after the database resolved, and
+   * raised a {@code JSONException} no protocol surface answers as the caller's mistake (issue #11622).
+   */
+  private static void validateFullTextLeg(final JSONObject args) {
+    final boolean hasIndex = !textMember(args, "fulltextIndexName").isBlank();
+    final boolean hasQuery = !textMember(args, "fulltextQuery").isBlank();
+    // Half a leg is always a mistake, and silently dropping it would return a plausible-looking result
+    // set that quietly ignored what the caller asked for.
+    if (hasIndex != hasQuery)
+      throw new IllegalArgumentException(
+          "'fulltextIndexName' and 'fulltextQuery' must be supplied together. Give both to add the full-text leg, "
+              + "or neither to search without it.");
+  }
+
+  /** The text of an optional string member, empty when it is absent or null. */
+  private static String textMember(final JSONObject args, final String name) {
+    final Object value = args.opt(name);
+    if (value == null)
+      return "";
+    if (!(value instanceof String text))
+      throw new IllegalArgumentException("'" + name + "' must be a string");
+    return text;
   }
 
   /**
@@ -314,6 +341,14 @@ public final class HybridSearch {
     if (!EXPAND_DIRECTIONS.contains(direction))
       throw new IllegalArgumentException(
           "expand.direction must be one of " + String.join(", ", EXPAND_DIRECTIONS) + ", got '" + direction + "'");
+
+    // read with getJSONArray when the search runs, after the database resolved: a member of another shape raised a JSONException
+    // there, which no protocol surface answers as the caller's mistake (issue #11622). The names are checked here too, as far as
+    // that needs no schema
+    final Object edgeTypes = expandArgs.opt("edgeTypes");
+    if (edgeTypes != null && !(edgeTypes instanceof JSONArray))
+      throw new IllegalArgumentException("expand.edgeTypes must be an array of edge type names");
+    edgeTypeNames((JSONArray) edgeTypes);
   }
 
   /**
@@ -462,6 +497,16 @@ public final class HybridSearch {
    * caller to notice.
    */
   static List<String> validatedEdgeTypes(final Database database, final JSONArray requested) {
+    final List<String> names = edgeTypeNames(requested);
+    for (final String name : names)
+      // a type the caller may not read is answered as one that does not exist (issue #11197)
+      if (!(database.getSchema().getTypeOrNull(name) instanceof final EdgeType edgeType) || !SecurityHelper.isReadable(database, edgeType))
+        throw new SchemaException("Edge type '" + name + "' does not exist. " + describeAvailableEdgeTypes(database));
+    return names;
+  }
+
+  /** The names of {@code expand.edgeTypes}, checked as far as that needs no schema: non-blank text an SQL literal can hold. */
+  private static List<String> edgeTypeNames(final JSONArray requested) {
     if (requested == null || requested.length() == 0)
       return List.of();
 
@@ -473,10 +518,6 @@ public final class HybridSearch {
       if (name.indexOf('\'') >= 0 || name.indexOf('`') >= 0 || name.indexOf('\\') >= 0)
         throw new IllegalArgumentException(
             "expand.edgeTypes entry '" + name + "' contains a quote or backslash, which is not supported");
-      // a type the caller may not read is answered as one that does not exist (issue #11197)
-      if (!(database.getSchema().getTypeOrNull(name) instanceof final EdgeType edgeType) || !SecurityHelper.isReadable(database, edgeType))
-        throw new IllegalArgumentException("Edge type '" + name + "' does not exist. "
-            + describeAvailableEdgeTypes(database));
       names.add(name);
     }
     return names;
@@ -564,22 +605,19 @@ public final class HybridSearch {
     final boolean hasIndex = indexName != null && !indexName.isBlank();
     final boolean hasQuery = queryText != null && !queryText.isBlank();
 
-    if (!hasIndex && !hasQuery)
+    // the shape of the leg, half a leg included, was checked by validateArguments, which search() runs first
+    if (!hasIndex || !hasQuery)
       return new FullTextLeg(List.of(), null);
-    // Half a leg is always a mistake, and silently dropping it would return a plausible-looking result
-    // set that quietly ignored what the caller asked for.
-    if (hasIndex != hasQuery)
-      throw new IllegalArgumentException(
-          "'fulltextIndexName' and 'fulltextQuery' must be supplied together. Give both to add the full-text leg, "
-              + "or neither to search without it.");
 
     // a name that is a full-text index over several types designates the per-type indexes it spans (issue #11137)
     final List<TypeIndex> typeIndexes;
     try {
       typeIndexes = FullTextSearch.resolveFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
-      throw new IllegalArgumentException("Full-text index '" + indexName + "' does not exist. Available full-text "
-          + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
+      // still a schema refusal, with the indexes the caller can pick from (issue #11633: it was re-wrapped as a generic one);
+      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal
+      throw new SchemaException("Full-text index '" + indexName + "' does not exist. Available full-text "
+          + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database));
     } catch (final CommandExecutionException e) {
       throw new IllegalArgumentException("Index '" + indexName + "' is not a full-text index. Available full-text "
           + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);

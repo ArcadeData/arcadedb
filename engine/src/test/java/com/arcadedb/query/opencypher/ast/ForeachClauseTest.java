@@ -69,4 +69,30 @@ class ForeachClauseTest {
     final ForeachClause foreach = new ForeachClause("x", null, List.of());
     assertThat(foreach.containsDelete()).isFalse();
   }
+
+  /** Issue #12254: only a DETACH DELETE removes relationships besides the entity it names. */
+  @Test
+  void detachDeleteIsToldFromAPlainDelete() {
+    final ForeachClause detach = new ForeachClause("x", null,
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.DELETE, new DeleteClause(List.of("n"), true), 0)));
+    final ForeachClause plain = new ForeachClause("x", null,
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.DELETE, new DeleteClause(List.of("n"), false), 0)));
+    assertThat(detach.containsDetachDelete()).isTrue();
+    assertThat(plain.containsDelete()).isTrue();
+    assertThat(plain.containsDetachDelete()).isFalse();
+  }
+
+  @Test
+  void detachDeleteIsFoundInANestedForeach() {
+    final ForeachClause inner = new ForeachClause("y", null,
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.DELETE, new DeleteClause(List.of("n"), true), 0)));
+    final ForeachClause outer = new ForeachClause("x", null,
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, inner, 0)));
+    assertThat(outer.containsDetachDelete()).isTrue();
+    final ForeachClause plainInner = new ForeachClause("y", null,
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.DELETE, new DeleteClause(List.of("n"), false), 0)));
+    final ForeachClause plainOuter = new ForeachClause("x", null,
+        List.of(new ClauseEntry(ClauseEntry.ClauseType.FOREACH, plainInner, 0)));
+    assertThat(plainOuter.containsDetachDelete()).isFalse();
+  }
 }

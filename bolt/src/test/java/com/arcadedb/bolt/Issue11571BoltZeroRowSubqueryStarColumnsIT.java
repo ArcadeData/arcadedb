@@ -78,10 +78,10 @@ public class Issue11571BoltZeroRowSubqueryStarColumnsIT extends BaseBoltServerTe
       session.run("CREATE (:S {i: 1})-[:T]->(:S {i: 2})").consume();
 
       final Result empty = session.run("MATCH (a:S {i: 1}) CALL (a) { MATCH (a)-[r:T]->(b:S) WHERE b.i > 100 RETURN * } RETURN *");
-      assertThat(empty.keys()).containsExactly("a", "r", "b");
+      assertThat(empty.keys()).containsExactly("a", "b", "r");
       assertThat(empty.list()).isEmpty();
       assertThat(session.run("MATCH (a:S {i: 1}) CALL (a) { MATCH (a)-[r:T]->(b:S) RETURN * } RETURN *").keys())
-          .containsExactly("a", "r", "b");
+          .containsExactly("a", "b", "r");
     }
   }
 

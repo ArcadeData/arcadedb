@@ -18,16 +18,19 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
 
 import java.util.List;
 
@@ -82,7 +85,7 @@ public class UpsertStep extends AbstractExecutionStep {
       return upstream;
 
     final InternalResultSet result = new InternalResultSet();
-    result.add(createNewRecord(commandTarget, initialFilter));
+    result.add(createNewRecord());
     return result;
   }
 
@@ -90,22 +93,62 @@ public class UpsertStep extends AbstractExecutionStep {
     return step.index.isUnique() && step.isFullKeyEquality();
   }
 
-  private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
-    final DatabaseInternal database = context.getDatabase();
-    final DocumentType type;
+  /**
+   * An edge always needs its FROM and TO endpoints, which an UPSERT has no way to give, so the record it would create is an edge
+   * with no endpoints, one the engine cannot read back (#12418). Called while the statement is planned, so it is refused before
+   * anything is looked up or written, whatever the edge type's indexes are, and EXPLAIN refuses it as well.
+   */
+  static void refuseEdgeType(final FromClause commandTarget, final CommandContext context) {
+    final DocumentType type = targetType(commandTarget, context);
+    if (type instanceof EdgeType)
+      throw new CommandSQLParsingException("UPSERT is not available on the edge type '" + type.getName()
+          + "': an edge always requires FROM and TO endpoints. Use CREATE EDGE ... IF NOT EXISTS to create an edge only when none"
+          + " matches yet");
+  }
 
-    if (commandTarget.getItem().getBucket() != null) {
+  /**
+   * Resolves the target as the read side of the statement does: a type, a bucket by id or by name, and either of the two names
+   * given as an input parameter ({@code UPDATE :type}, {@code UPDATE bucket::name}).
+   *
+   * @return the type the statement targets, or null when the target is not one type (a subquery, a RID, a bucket of no type) or
+   * names nothing the schema knows: reporting that is left to the step that reads the target
+   */
+  static DocumentType targetType(final FromClause commandTarget, final CommandContext context) {
+    final FromItem item = commandTarget.getItem();
+    if (item == null)
+      return null;
+
+    final Schema schema = context.getDatabase().getSchema();
+    final Bucket bucket = item.getBucket();
+    if (bucket != null) {
       // TARGET = BUCKET
-      if (commandTarget.getItem().getBucket().getBucketNumber() != null) {
-        // BUCKET ID
-        type = database.getSchema().getTypeByBucketId(commandTarget.getItem().getBucket().getBucketNumber());
-      } else {
-        // BUCKET NAME
-        type = database.getSchema().getTypeByBucketName(commandTarget.getItem().getBucket().getBucketName());
-      }
-    } else if (commandTarget.getItem().getIdentifier() != null) {
-      type = database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
-    } else
+      if (bucket.getBucketNumber() != null)
+        return schema.getTypeByBucketId(bucket.getBucketNumber());
+
+      Object bucketName = bucket.getBucketName();
+      if (bucketName == null && bucket.getInputParam() != null)
+        bucketName = bucket.getInputParam().getValue(context.getInputParameters());
+      return bucketName != null && schema.existsBucket(bucketName.toString()) ?
+          schema.getTypeByBucketName(bucketName.toString()) :
+          null;
+    }
+
+    if (item.getIdentifier() != null)
+      return schema.getTypeOrNull(item.getIdentifier().getStringValue());
+
+    if (item.getInputParam() != null) {
+      final Object value = item.getInputParam().getValue(context.getInputParameters());
+      if (value instanceof DocumentType type)
+        return type;
+      if (value instanceof String name)
+        return schema.getTypeOrNull(name);
+    }
+    return null;
+  }
+
+  private Result createNewRecord() {
+    final DocumentType type = targetType(commandTarget, context);
+    if (type == null)
       throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
 
     final MutableDocument doc = (MutableDocument) context.getDatabase().getRecordFactory()

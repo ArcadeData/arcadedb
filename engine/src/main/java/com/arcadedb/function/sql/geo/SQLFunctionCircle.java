@@ -39,10 +39,19 @@ public class SQLFunctionCircle extends SQLFunctionAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params.length != 3)
-      throw new IllegalArgumentException("circle() requires 3 parameters: circle(<center-x>, <center-y>, <distance>)");
+    checkArity(params);
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
     return spatialContext.getShapeFactory()

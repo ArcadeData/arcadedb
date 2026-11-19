@@ -270,8 +270,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // threads may both build it; either array is right
     volatile String[] allEdgeTypeSlices;
     // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
-    // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
+    // renumbering depends on nothing but the snapshot, and the views it translates are held by the slices a request resolves to
+    // (issue #12032). Two threads may both build it; either is right
     volatile SoftReference<GraphTraversalProvider> denseIds;
+    // Whether every edge slice of this snapshot is of a type the filter still covers, for one schema version (issues #12032,
+    // #12039): see holdsOnlyCoveredEdgeTypes()
+    final AtomicReference<SliceCoverage> sliceCoverage = new AtomicReference<>();
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
@@ -383,6 +387,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
+  // Whether a snapshot's edge slices are all of types the filter still covers, for one schema version and one types-change serial
+  // (issues #12032, #12039). The serial moves the moment a type changes, the version only when the schema is saved: for a DDL
+  // statement in an open transaction that is its commit, and until then a verdict keyed on the version alone is served as it was
+  private record SliceCoverage(long schemaVersion, long typesSerial, boolean allCovered) {
+    boolean isCurrent(final long version, final long serial) {
+      return schemaVersion == version && typesSerial == serial;
+    }
+  }
+
   // The edge types that existed when the listeners were armed (issue #10214). A transaction already open then may have created
   // edges of one of them that no listener heard, and committed after any scan since: only a scan that materialized such a type
   // proves the CSR holds it. A type created later has every edge heard
@@ -1114,7 +1127,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
-        GraphAnalyticalViewRegistry.unregister(database, name);
+        GraphAnalyticalViewRegistry.unregister(database, name, this);
     }
     invalidateGraphStatisticsCache();
   }
@@ -1365,7 +1378,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final boolean holds = isScanned(snap.nodeMapping, name) || hasNoCommittedRecord(type);
     if (joined.verdicts().putIfAbsent(name, holds) == null && !holds)
-      dispatchJoinedTypeRebuild(true, name);
+      dispatchTypeChangeRebuild("vertex type '" + name + "' joined the view's types with records its CSR does not hold", null);
     return holds;
   }
 
@@ -1384,19 +1397,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Hands {@link #onTypeJoinedWithRecords} to the build executor: the coverage check that found the type is asked on the query
-   * path, which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the type is already not
-   * claimed.
+   * Hands {@link #onTypeChange} to the build executor: the coverage check that found the change is asked on the query path,
+   * which must neither wait for this instance's monitor nor start a rebuild itself. Until it runs, the view already answers as
+   * the check found.
    *
-   * @param vertexType whether the type is a vertex type, or an edge type
+   * @param change      what happened to the view's types, for the log
+   * @param stillNeeded asked under the monitor when the task runs: whether no rebuild has published since the check (see
+   *                    {@link #unlessRebuiltSince}), or null when the task is due whatever happened. A build that published in
+   *                    between has read the types as they are
    */
-  private void dispatchJoinedTypeRebuild(final boolean vertexType, final String typeName) {
+  private void dispatchTypeChangeRebuild(final String change, final BooleanSupplier stillNeeded) {
     inFlightTasks.incrementAndGet();
     try {
       getExecutor().execute(() -> {
         try {
           if (!shutDown)
-            onTypeJoinedWithRecords(vertexType, typeName);
+            onTypeChange(change, stillNeeded);
         } finally {
           taskCompleted();
           DatabaseContext.INSTANCE.removeCurrentThreadContexts();
@@ -1409,14 +1425,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * A type holding records no scan read joined the listed family: see {@link #holdsJoinedVertexType} and
-   * {@link #holdsJoinedEdgeTypes}.
+   * The view's CSR no longer matches its types: a type holding records no scan read joined the listed family (see
+   * {@link #holdsJoinedVertexType} and {@link #holdsJoinedEdgeTypes}), or an edge type its CSR holds left it (see
+   * {@link #holdsOnlyCoveredEdgeTypes}).
    */
-  private synchronized void onTypeJoinedWithRecords(final boolean vertexType, final String typeName) {
-    LogManager.instance().log(this, Level.INFO,
-        "GraphAnalyticalView '%s': %s type '%s' joined the view's types with records its CSR does not hold; %s", name,
-        vertexType ? "vertex" : "edge",
-        typeName, updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
+  synchronized void onTypeChange(final String change, final BooleanSupplier stillNeeded) {
+    // A rebuild (a REBUILD of an OFF view, or one that ran for another reason) may have published since the check that found the
+    // change, having read the types as they are: marking the snapshot it published STALE would put out of service a view that was
+    // just repaired
+    if (stillNeeded != null && !stillNeeded.getAsBoolean())
+      return;
+    LogManager.instance().log(this, Level.INFO, "GraphAnalyticalView '%s': %s; %s", name, change,
+        updateMode == UpdateMode.OFF ? "marking it STALE" : "rebuilding");
     if (updateMode == UpdateMode.OFF) {
       status = Status.STALE;
       return;
@@ -1572,7 +1592,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     // Two threads missing the cache at once compute the same verdict; only the one that publishes it dispatches the rebuild
     if (joinedEdgeCoverage.compareAndSet(cached, new JoinedEdgeCoverage(snap.csrPerType, version, unheld == null)) && unheld != null)
-      dispatchJoinedTypeRebuild(false, unheld);
+      dispatchTypeChangeRebuild("edge type '" + unheld + "' joined the view's types with records its CSR does not hold", null);
     return unheld == null;
   }
 
@@ -1594,6 +1614,86 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return false;
     final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     return written == null || written.lastWrite.get() <= snap.uncoveredWritesMark;
+  }
+
+  /**
+   * Whether every edge slice the snapshot holds, in its base or in its overlay, is of a type the filter still covers (issues
+   * #12032, #12039). A type leaves the filter while the snapshot keeps its slice under its old name: dropped (a sub-type of a
+   * listed type is not refused), detached from the listed type ({@code SUPERTYPE -}), or renamed (the definition names only the
+   * listed types, so a sub-type's slice keeps the name it was scanned with). No commit follows such a change to replace the
+   * snapshot, and its slice went on answering the hops and the counts that read every slice, and the view's edge count. The view
+   * is not served until it has rebuilt (OFF: it turns STALE). Decided once per snapshot, schema version and types-change serial
+   * (the serial is what moves for a DDL statement inside an open transaction, whose schema save waits for the commit); the
+   * decision that finds a slice left behind dispatches the rebuild.
+   * <p>
+   * Known limit (issue #12507): a slice is looked up by its NAME, so a name that resolves to another type after two DDL
+   * statements with no read of the view between them (a type dropped and created again, a rename swap) is not seen, nor is a type
+   * detached, written to and attached again.
+   */
+  private boolean holdsOnlyCoveredEdgeTypes() {
+    final Snapshot snap = snapshot;
+    if (snap == null)
+      return true;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    // Both read BEFORE the slices are looked at: a type that changes while they are, moves one of them past the pair the verdict
+    // is stored with, and the next call decides again
+    final long version = schema.getVersion();
+    final long serial = schema.getTypesChangeSerial();
+    final SliceCoverage cached = snap.sliceCoverage.get();
+    if (cached != null && cached.isCurrent(version, serial))
+      return cached.allCovered();
+
+    // The slices of the base, then the ones only the overlay holds: no merged set is built per decision (a snapshot a commit
+    // replaces is decided again)
+    String left = firstLeftEdgeSlice(snap.csrPerType.keySet());
+    if (left == null && snap.overlay != null)
+      left = firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes());
+    // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
+    if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
+      dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
+          + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)",
+          unlessRebuiltSince(snap));
+    return left == null;
+  }
+
+  /**
+   * What a task dispatched about {@code snap} asks under the monitor: whether the view still holds the CSR that {@code snap} was
+   * decided for. A commit replaces the snapshot and keeps the CSR, so the change is still there to be taken in; a build that
+   * published has read the types as they are, and any slice it holds is decided again, on its own snapshot. The change is not
+   * decided afresh: a type detached, written to and attached again before the task runs would hold its slice, and the rebuild
+   * that takes in the edges it was written while detached would be dropped.
+   */
+  private BooleanSupplier unlessRebuiltSince(final Snapshot snap) {
+    final Map<String, CSRAdjacencyIndex> base = snap.csrPerType;
+    return () -> {
+      final Snapshot current = snapshot;
+      return current != null && current.csrPerType == base;
+    };
+  }
+
+  /** {@link #unlessRebuiltSince} for the snapshot the view holds now, for the tests that play the task of an earlier check. */
+  BooleanSupplier unlessRebuiltSinceNow() {
+    final Snapshot snap = snapshot;
+    return snap == null ? () -> false : unlessRebuiltSince(snap);
+  }
+
+  /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */
+  private String firstLeftEdgeSlice(final Collection<String> slices) {
+    for (final String slice : slices) {
+      final DocumentType type = database.getSchema().getTypeOrNull(slice);
+      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type))
+        return slice;
+    }
+    return null;
+  }
+
+  /** Whether the snapshot is known to hold an edge slice its types no longer cover: see {@link #holdsOnlyCoveredEdgeTypes}. */
+  private boolean holdsLeftEdgeTypes(final Snapshot snap) {
+    final SliceCoverage verdict = snap != null ? snap.sliceCoverage.get() : null;
+    if (verdict == null || verdict.allCovered())
+      return false;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    return verdict.isCurrent(schema.getVersion(), schema.getTypesChangeSerial());
   }
 
   /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
@@ -1644,6 +1744,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     for (final String type : requested)
       resolved.addAll(Arrays.asList(expandEdgeType(type)));
     return resolved.toArray(new String[0]);
+  }
+
+  /** The types-change serial of the schema: what the expansions {@link #resolveEdgeTypes} answers are cached under. */
+  @Override
+  public long getTypesGeneration() {
+    return database.getSchema().getEmbedded().getTypesChangeSerial();
   }
 
   private String[] expandEdgeType(final String edgeType) {
@@ -2863,6 +2969,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     @Override
+    public long getTypesGeneration() {
+      return view.getTypesGeneration();
+    }
+
+    @Override
     public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
       return view.getNeighborIdsOfSlice(snap, nodeId, direction, edgeType);
     }
@@ -3377,11 +3488,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * The view's status. An {@code ASYNCHRONOUS} view whose snapshot is READY but behind a commit not merged yet reports
-   * STALE (issue #10189).
+   * STALE (issue #10189), and so does a view whose snapshot was found holding the edges of a type it no longer covers, until
+   * the rebuild that finding started replaces it (issue #12032).
    */
   public Status getStatus() {
     final Status s = status;
-    return s == Status.READY && hasUnmergedAsyncChanges() ? Status.STALE : s;
+    return s == Status.READY && (hasUnmergedAsyncChanges() || holdsLeftEdgeTypes(snapshot)) ? Status.STALE : s;
   }
 
   /** Whether a committed change is not in the view yet: queued for the merge, or dropped by an overflow for a rebuild. */
@@ -3481,8 +3593,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Status s = getStatus();
     if (s != Status.READY && (s != Status.STALE || !isUseWhenStale()))
       return false;
-    // AN EDGE TYPE ATTACHED TO A LISTED ONE SINCE THE SCAN BRINGS EDGES THE CSR DOES NOT HAVE: NOT SERVED, EVEN STALE (#10214)
-    return holdsJoinedEdgeTypes();
+    // AN EDGE TYPE ATTACHED TO A LISTED ONE SINCE THE SCAN BRINGS EDGES THE CSR DOES NOT HAVE: NOT SERVED, EVEN STALE (#10214).
+    // NOR WHILE THE CSR HOLDS THE EDGES OF A TYPE DROPPED, RENAMED OR DETACHED FROM THE LISTED ONES SINCE (#12032, #12039)
+    return holdsJoinedEdgeTypes() && holdsOnlyCoveredEdgeTypes();
   }
 
   /**
@@ -4264,10 +4377,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * For a caller that reads the state of the view rather than using it, such as the {@code schema:graphAnalyticalViews} row
    * (issue #10575): a pending restore reports {@code status == READY} before a byte is read, with no snapshot behind it, and
    * nothing else would ever resolve it for a caller that only looks. Asking for the state is an explicit wait, like
-   * {@link #awaitReady}, so it dispatches what that dispatches.
+   * {@link #awaitReady}, so it dispatches what that dispatches. For the same reason it checks the edge types the snapshot holds
+   * against the schema, which a query asks first otherwise: a READY view holding the edges of a type it no longer covers reads
+   * STALE, with the rebuild started, rather than READY with those edges counted (issue #12032).
    */
   public void startPendingRestore() {
     triggerDeferredDiskRestoreIfPending();
+    if (status == Status.READY)
+      holdsOnlyCoveredEdgeTypes();
   }
 
   /**

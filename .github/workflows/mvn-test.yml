@@ -111,6 +111,8 @@ jobs:
       # silently: nothing breaks, they just stop refusing what they were written to refuse.
       - name: Check issue workflow scripts
         run: ./.github/scripts/tests/test-issue-workflow-scripts.js
+      - name: Check PR workflow scripts
+        run: ./.github/scripts/tests/test-pr-workflow-scripts.js
       # The opengrep binary is 160 MB; cached by version so the lint job does not download it every run.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -228,6 +230,8 @@ jobs:
           - shard: ha-raft
             modules: ha-raft
             fork-count: 1
+          # bench takes part with its unit tests only: its *IT classes start containers of a published image and
+          # stay out of every lane (skipITs is on here, and the integration lanes leave bench out)
           - shard: modules
             modules: '!engine,!ha-raft,!e2e,!load-tests'
             fork-count: 2
@@ -422,7 +426,7 @@ jobs:
       # `benchmark` stays out everywhere on purpose, and `vector` belongs to the engine, which
       # .github/scripts/tests/test-ci-scripts.sh enforces.
       - name: Run Slow Unit Tests of the other modules with Coverage
-        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '!engine,!e2e,!load-tests' -Dgroups=slow -DexcludedGroups=vector,benchmark -Dsurefire.includes=**/*Test.java
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '!engine,!e2e,!load-tests,!bench' -Dgroups=slow -DexcludedGroups=vector,benchmark -Dsurefire.includes=**/*Test.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -718,7 +722,7 @@ jobs:
           # 2 Failsafe JVMs, each in a working directory of its own (see fork-count in the unit-tests job): gRpcW,
           # Server and Gremlin IT hold ~15 of this shard's ~18 min of tests
           - shard: rest
-            modules: '!e2e,!load-tests,!e2e-ha,!ha-raft,!integration,!postgresw,!bolt'
+            modules: '!e2e,!load-tests,!bench,!e2e-ha,!ha-raft,!integration,!postgresw,!bolt'
             extra-args: -Pfork-isolation -Dfailsafe.forkCount=2
     permissions:
       contents: read

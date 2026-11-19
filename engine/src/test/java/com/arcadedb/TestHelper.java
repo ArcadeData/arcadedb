@@ -181,6 +181,11 @@ public abstract class TestHelper {
     if (database.isTransactionActive())
       database.commit();
 
+    // A test that left nested transactions open: CHECK DATABASE used to roll them back as a side effect, and no longer touches
+    // the caller's transaction (issue #11781), so the teardown ends them itself before the drop
+    while (database != null && database.isOpen() && database.isTransactionActive())
+      database.rollback();
+
     if (database != null && database.isOpen()) {
       if (isCheckingDatabaseIntegrity())
         checkDatabaseIntegrity();
