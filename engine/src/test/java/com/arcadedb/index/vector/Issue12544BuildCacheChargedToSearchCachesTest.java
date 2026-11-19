@@ -19,11 +19,16 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Arrays;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -99,6 +104,42 @@ class Issue12544BuildCacheChargedToSearchCachesTest extends TestHelper {
         .isZero();
     assertThat(searched.affordableSearchCacheEntries(1, bytesPerEntry, available, false))
         .as("and the search cache gets back the budget it had before the build").isEqualTo(withNoBuild);
+  }
+
+  /**
+   * A schema reload publishes a successor for every index, and the build of the predecessor may still be running and holding
+   * its cache: a walk over the schema's indexes no longer finds that build, the database's ledger still does (code review on
+   * PR #12555).
+   */
+  @Test
+  void aBuildOfAnIndexASchemaReloadReplacedIsStillCharged() {
+    final LSMVectorIndex[] buckets = createBucketIndexes("Doc", null);
+    final LSMVectorIndex building = buckets[0];
+    fill(building, VECTORS);
+    final String siblingName = buckets[1].getName();
+    final long buildPlan = VECTORS * VectorHeapBudget.bytesPerCachedVector(DIMENSIONS);
+
+    final AtomicBoolean observed = new AtomicBoolean();
+    final AtomicLong plannedAfterReload = new AtomicLong(-1L);
+    final AtomicBoolean predecessorStillListed = new AtomicBoolean(true);
+    building.buildVectorGraphNow((phase, processed, total, accesses) -> {
+      if (observed.getAndSet(true))
+        return;
+      try {
+        ((LocalSchema) database.getSchema().getEmbedded()).load(ComponentFile.MODE.READ_WRITE, true);
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+      final LSMVectorIndex successor = (LSMVectorIndex) database.getSchema().getIndexByName(siblingName);
+      predecessorStillListed.set(Arrays.stream(database.getSchema().getIndexes()).anyMatch(index -> index == building));
+      plannedAfterReload.set(successor.graphBuildCachesPlannedBytes(true));
+    });
+
+    assertThat(observed.get()).as("precondition: the build reported progress while its cache was alive").isTrue();
+    assertThat(predecessorStillListed.get()).as("precondition: the reload replaced the index being built").isFalse();
+    assertThat(plannedAfterReload.get()).as("the replaced index's running build is still charged").isEqualTo(buildPlan);
+    assertThat(((LSMVectorIndex) database.getSchema().getIndexByName(siblingName)).graphBuildCachesPlannedBytes(true))
+        .as("and released when it ends").isZero();
   }
 
   @Test

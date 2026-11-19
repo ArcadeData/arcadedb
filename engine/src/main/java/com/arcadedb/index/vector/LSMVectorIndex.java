@@ -461,8 +461,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // The heap the cache of the graph build running on this index plans on, 0 when none runs (issue #12544): the float build
   // cache, or the quantized rows and the small float cache next to them. The cache is local to the build and preloaded in
   // place, and the available-heap reading does not show it before a collection of the old generation, so the search caches
-  // and the other builds of the database are charged this figure instead. Set once the cache is sized, cleared when the
-  // build ends, whether it succeeded or not.
+  // and the other builds of the database are charged this figure instead, through the database's
+  // VectorGraphBuildCacheLedger. Set and charged once the cache is sized, released when the build ends, whether it
+  // succeeded or not. One build runs at a time on an index (graphBuildLock).
   private volatile long    graphBuildCachePlannedBytes = 0L;
   // Whether a refusal of a search-decided build has been logged since a build last got through the heap gate: one
   // WARNING per streak (issue #11497), since every query that reaches the missing graph is refused the same way while the
@@ -3549,7 +3550,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst, buildCacheCapacityCap);
         } finally {
           // The build cache was local to the build, so it is garbage now, whether the build succeeded or not (issue #12544)
-          graphBuildCachePlannedBytes = 0L;
+          releaseGraphBuildCacheCharge();
           releaseCompactionFileLock();
         }
       }
@@ -3957,7 +3958,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         quantizedBuildStore = QuantizedBuildVectors.create(metadata.quantizationType, metadata.dimensions, quantizedCapacity);
       // Published before the preload below fills the cache, so a search cache sized or grown on another index of the database
       // from now on is charged what this build is about to take (issue #12544)
-      graphBuildCachePlannedBytes = graphBuildCachePlannedBytes(graphBuildCacheSize, quantizedCapacity, expectedSize);
+      chargeGraphBuildCache(graphBuildCachePlannedBytes(graphBuildCacheSize, quantizedCapacity, expectedSize));
       // Reused by every candidate that does not end up in the store, and for the reconstruction that checks one
       final byte[] validationRow = quantizedBuildStore != null ?
           new byte[QuantizedBuildVectors.rowBytes(metadata.quantizationType, metadata.dimensions)] : null;
@@ -8142,6 +8143,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
           + SMALL_BUILD_CACHE_SIZE * bytesPerVector;
     final int capacity = floatCacheCapacity <= 0 ? ArcadePageVectorValues.DEFAULT_CACHE_SIZE : floatCacheCapacity;
     return Math.min(capacity, Math.max(0, expectedSize)) * bytesPerVector;
+  }
+
+  /** The ledger the graph builds of this index's database charge their caches to (issue #12544). */
+  private VectorGraphBuildCacheLedger graphBuildCacheLedger() {
+    // Not through getSchema(), which refuses a closed or fenced database: a build that ends while the database closes still
+    // gives its charge back
+    return ((LocalDatabase) mutable.getDatabase().getEmbedded()).getVectorGraphBuildCacheLedger();
+  }
+
+  /** Charges the cache of the build running on this index to the database's ledger, until {@link #releaseGraphBuildCacheCharge()}. */
+  private void chargeGraphBuildCache(final long plannedBytes) {
+    // A build that charged already (none does today) gives that back first, so the ledger never holds more than one charge
+    // per index
+    releaseGraphBuildCacheCharge();
+    graphBuildCachePlannedBytes = plannedBytes;
+    graphBuildCacheLedger().charge(plannedBytes);
+  }
+
+  /** Gives back what the build of this index charged, once: called when the build ends, whether it succeeded or not. */
+  private void releaseGraphBuildCacheCharge() {
+    final long charged = graphBuildCachePlannedBytes;
+    if (charged == 0L)
+      return;
+    graphBuildCachePlannedBytes = 0L;
+    graphBuildCacheLedger().release(charged);
   }
 
   /**
@@ -14954,10 +14980,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final BinaryCodeCache codes = owner.searchBinaryCodes;
       if (codes != null && (owner != this || !sizingCodes))
         othersPlan += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
-      // A graph build running on any index of the database, this one included: its cache is preloaded as soon as it is
-      // sized, before any collection can show it in the available-heap reading (issue #12544)
-      othersPlan += owner.graphBuildCachePlannedBytes;
     }
+    // The graph builds running on any index of the database, this one included: a build's cache is preloaded as soon as it
+    // is sized, before any collection can show it in the available-heap reading (issue #12544). Read from the database's
+    // ledger rather than from the indexes walked above, which no longer list an index a schema reload has replaced while its
+    // build still runs
+    othersPlan += graphBuildCachesPlannedBytes(true);
     final long budget = VectorHeapBudget.budgetBytes(heapPercent, availableHeap);
     if (othersPlan == 0L)
       return Math.max(MIN_SEARCH_CACHE_SIZE, budget / bytesPerEntry);
@@ -14996,7 +15024,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * The heap the caches of the graph builds running on the database's vector indexes plan on (issue #12544), see
-   * {@link #graphBuildCachePlannedBytes(int, int, int)}.
+   * {@link #graphBuildCachePlannedBytes(int, int, int)}: the database's {@link VectorGraphBuildCacheLedger}, which still
+   * counts the build of an index a schema reload has replaced.
    *
    * @param includingThis whether the build of this index is charged too: never when this index is the one sizing a build, since
    *                      a build must not charge itself
@@ -15004,11 +15033,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the bytes, 0 when no build runs
    */
   long graphBuildCachesPlannedBytes(final boolean includingThis) {
-    long planned = 0L;
-    for (final Index index : getDatabase().getSchema().getIndexes())
-      if (index instanceof LSMVectorIndex owner && (includingThis || owner != this))
-        planned += owner.graphBuildCachePlannedBytes;
-    return planned;
+    final long all = graphBuildCacheLedger().bytes();
+    return includingThis ? all : Math.max(0L, all - graphBuildCachePlannedBytes);
   }
 
   /**
