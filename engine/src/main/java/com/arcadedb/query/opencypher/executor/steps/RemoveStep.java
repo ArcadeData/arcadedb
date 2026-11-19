@@ -22,6 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -29,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -56,6 +59,8 @@ import java.util.NoSuchElementException;
 public class RemoveStep extends AbstractExecutionStep {
   private final RemoveClause removeClause;
   private final ExpressionEvaluator evaluator;
+  // Lines up the records the row's lists and maps hold with what the clause removed (issue #11754), across rows
+  private final HeldCollectionRefresher heldCollections = new HeldCollectionRefresher();
 
   public RemoveStep(final RemoveClause removeClause, final CommandContext context, final CypherFunctionFactory functionFactory) {
     super(context);
@@ -170,39 +175,65 @@ public class RemoveStep extends AbstractExecutionStep {
     // from the property value the clause is about to remove, not from the hole it leaves. This mirrors the
     // phase-1/phase-2 split SetClauseApplier already performs (issue #5190).
     final List<RemoveClause.RemoveItem> items = removeClause.getItems();
-    // Allocated only for a clause that actually names a label: the overwhelmingly common REMOVE is
-    // property-only, and this runs once per row.
-    Object[] labels = null;
+    // Allocated only for a clause that actually names a label or an expression target: the overwhelmingly common
+    // REMOVE is property-only on a variable, and this runs once per row. WHICH record an expression target names
+    // ("REMOVE (head(ns)).s") is a read too, answered from the pre-clause state like a label is (issue #11754).
+    Object[] phase1 = null;
     for (int i = 0; i < items.size(); i++) {
       final RemoveClause.RemoveItem item = items.get(i);
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS) {
-        if (labels == null)
-          labels = new Object[items.size()];
-        labels[i] = resolveLabels(item, result);
+        if (phase1 == null)
+          phase1 = new Object[items.size()];
+        phase1[i] = resolveLabels(item, result);
+      } else if (item.getTargetExpression() != null) {
+        if (phase1 == null)
+          phase1 = new Object[items.size()];
+        phase1[i] = resolveTarget(item, result);
       }
     }
 
     // Phase 2: apply in source order, each label removal working off its phase-1 list.
     for (int i = 0; i < items.size(); i++) {
       final RemoveClause.RemoveItem item = items.get(i);
-      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
-        removeProperty(item, result);
-      else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
-        removeLabels(item, result, replacements, asLabelList(labels[i]));
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY) {
+        if (item.getTargetExpression() == null)
+          removeProperty(item, result, result.getProperty(item.getVariable()));
+        else
+          // A label removal earlier in this clause replaced the vertex the target named: follow it to the live record
+          removeProperty(item, result,
+              phase1[i] instanceof Vertex vertex ? replacements.resolve(vertex) : phase1[i]);
+      } else if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
+        removeLabels(item, result, replacements, asLabelList(phase1[i]));
     }
+
+    // A node the row holds in a list or a map follows the removal too, once per row, as it does a SET (issue #11754)
+    heldCollections.refresh(result);
+    replacements.redirect(result);
+  }
+
+  /**
+   * The record an expression target names: {@code REMOVE (head(ns)).s}, {@code REMOVE (CASE WHEN ... THEN n END).s}. Null is
+   * a no-op, as it is for SET; a deleted entity and a value that is neither a node nor a relationship are refused before any
+   * item of the clause is written, as SET refuses them (#5795, #11693).
+   */
+  private Object resolveTarget(final RemoveClause.RemoveItem item, final Result result) {
+    final Object target = evaluator.evaluate(item.getTargetExpression(), result, context);
+    DeletedEntityMarker.checkNotDeleted(target);
+    if (target != null && !(target instanceof Document))
+      throw new TypeMismatchException("TypeError: Type mismatch: expected Node or Relationship but was "
+          + CypherFunctionHelper.cypherTypeName(target));
+    return target;
   }
 
   /**
    * Removes a property from a document.
    *
-   * @param item   the remove item specifying variable and property
-   * @param result the result containing the variable
+   * @param item   the remove item specifying the property
+   * @param result the row being processed
+   * @param obj    the record the item removes the property from: what its variable binds, or what its target named
    */
-  private void removeProperty(final RemoveClause.RemoveItem item, final Result result) {
+  private void removeProperty(final RemoveClause.RemoveItem item, final Result result, final Object obj) {
     final String variable = item.getVariable();
-
-    // Get the object from the result
-    final Object obj = result.getProperty(variable);
     // #5795: reject a property removal targeting a node deleted earlier in the same query
     // instead of silently no-op'ing (which let the preceding DELETE commit while the REMOVE
     // vanished).
@@ -247,9 +278,11 @@ public class RemoveStep extends AbstractExecutionStep {
 
     if (propertyExisted)
       context.getStatistics().addPropertiesSet(1);
+    heldCollections.written(mutableDoc);
 
     // Update the result with the modified document
-    ((ResultInternal) result).setProperty(variable, mutableDoc);
+    if (variable != null)
+      ((ResultInternal) result).setProperty(variable, mutableDoc);
     // ...and with it every other alias of the same node, so all of them observe the removal - one binding per node
     // per row is what Cypher promises, and it is what SET has always delivered (issue #6328).
     RowAliases.propagateUpdate(result, doc, mutableDoc);
