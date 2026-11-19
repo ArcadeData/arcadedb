@@ -42,7 +42,7 @@ class Issue11981RateExtrapolationOrderTest extends TestHelper {
       database.command("sql", "INSERT INTO cnt SET ts = 1700000201492, host = 'c', value = 8.106");
     });
 
-    // sampled interval 1.492 s, increase 3.996, zero point 1.535 s before the first sample, window start 389 s before it:
+    // sampled interval 1.492 s, increase 3.996, zero point 1.535 s before the first sample, window start 200 s before it:
     // (1.492 + 0.746 + 0.746) / 1.492 * 3.996 = 7.992, where the old order answered (1.492 + 1.535 + 0.746) / 1.492 * 3.996 = 10.104
     assertThat(value("increase(cnt[10m])", 1_700_000_600_000L)).isCloseTo(7.992, within(1e-9));
     assertThat(value("rate(cnt[10m])", 1_700_000_600_000L)).isCloseTo(7.992 / 600, within(1e-12));

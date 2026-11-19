@@ -76,7 +76,8 @@ public final class PromQLFunctions {
 
   /**
    * Shared extrapolation logic for {@code rate()} and {@code increase()}, faithfully porting
-   * Prometheus' {@code extrapolatedRate}. The counter-reset-corrected total increase is scaled so it
+   * Prometheus' {@code extrapolatedRate} as it is since Prometheus 2.51 (prometheus/prometheus#13725, checked against
+   * v3.5.0 {@code promql/functions.go}). The counter-reset-corrected total increase is scaled so it
    * covers the full requested matrix window, with boundary handling that avoids over-extrapolating
    * beyond the available samples and prevents extrapolating a counter below zero.
    *
