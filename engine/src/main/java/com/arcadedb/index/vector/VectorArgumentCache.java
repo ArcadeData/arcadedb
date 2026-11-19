@@ -20,6 +20,8 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Arrays;
+
 /**
  * The float[] form of a vector argument, computed once per command instead of once per row.
  * <p>
@@ -50,7 +52,7 @@ public final class VectorArgumentCache {
 
   /**
    * How many converted forms are kept. A scan asks for the query vector and the record's own vector on every row, so two
-   * of them are in flight at any time; the room for one more lets a second constant vector stay too.
+   * of them are in flight at any time; the room for two more lets a second constant vector stay too.
    */
   private static final int SLOTS = 4;
 
@@ -103,10 +105,12 @@ public final class VectorArgumentCache {
     }
 
     final VectorUtils.PreparedVector converted = convertNow(vector, kind);
-    if (entries != null)
-      entries.put(vector, kind, converted);
-    else
-      context.setCachedValue(CACHE_KEY, new Entries(vector, kind, converted));
+    // Entries are never changed once published: a parallel scan's worker reads the ones its parent context holds while it
+    // keeps what it converts in its own, so growing means a new Entries that replaces the old one in this context only
+    final Slot slot = new Slot(vector, kind, converted);
+    final Entries grown = entries == null ? new Entries(new Slot[] { slot }) : entries.with(slot);
+    if (grown != null)
+      context.setCachedValue(CACHE_KEY, grown);
     return converted;
   }
 
@@ -116,19 +120,22 @@ public final class VectorArgumentCache {
   }
 
   /**
-   * The converted forms the command keeps.
+   * One vector the command has converted: the object it was handed, how it was converted and the result.
+   */
+  private record Slot(Object source, Kind kind, VectorUtils.PreparedVector prepared) {
+  }
+
+  /**
+   * The converted forms the command keeps: an immutable list of at most {@link #SLOTS}, so that no thread can see one half
+   * written and no entry is replaced under a reader. The room is not reused: a vector met after it ran out is converted every
+   * time, as it was before the cache. The first call of a scan prepares the query vector together with the first record's own
+   * vector, so the query vector is always among those kept.
    */
   private static final class Entries {
-    private final Object[]                 sources = new Object[SLOTS];
-    private final Kind[]                   kinds   = new Kind[SLOTS];
-    private final VectorUtils.PreparedVector[] prepared = new VectorUtils.PreparedVector[SLOTS];
-    private final int[]                    hits    = new int[SLOTS];
+    private final Slot[] slots;
 
-    private Entries(final Object source, final Kind kind, final VectorUtils.PreparedVector vector) {
-      sources[0] = source;
-      kinds[0] = kind;
-      prepared[0] = vector;
-      hits[0] = 1;
+    private Entries(final Slot[] slots) {
+      this.slots = slots;
     }
 
     /**
@@ -140,36 +147,21 @@ public final class VectorArgumentCache {
      */
     @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity on purpose: "is this the object I already converted?"
     private VectorUtils.PreparedVector get(final Object candidate, final Kind kind) {
-      for (int i = 0; i < SLOTS; i++)
-        if (sources[i] == candidate && kinds[i] == kind) {
-          hits[i]++;
-          return prepared[i];
-        }
+      for (final Slot slot : slots)
+        if (slot.source() == candidate && slot.kind() == kind)
+          return slot.prepared();
       return null;
     }
 
     /**
-     * The converted form of this object, kept for the rest of the command unless the room runs out.
+     * These entries and one more, or null when the room has run out.
      */
-    private void put(final Object source, final Kind kind, final VectorUtils.PreparedVector vector) {
-      for (int i = 0; i < SLOTS; i++)
-        if (sources[i] == null) {
-          sources[i] = source;
-          kinds[i] = kind;
-          prepared[i] = vector;
-          hits[i] = 1;
-          return;
-        }
-      // The room is full: the entry that answered least goes, and this one takes its place. The query vector of a scan
-      // answers on every row, so it is never the one that goes.
-      int victim = 0;
-      for (int i = 1; i < SLOTS; i++)
-        if (hits[i] < hits[victim])
-          victim = i;
-      sources[victim] = source;
-      kinds[victim] = kind;
-      prepared[victim] = vector;
-      hits[victim] = 1;
+    private Entries with(final Slot slot) {
+      if (slots.length >= SLOTS)
+        return null;
+      final Slot[] grown = Arrays.copyOf(slots, slots.length + 1);
+      grown[slots.length] = slot;
+      return new Entries(grown);
     }
   }
 }
