@@ -83,7 +83,9 @@ final class TimeSeriesLabelGuard {
         final String[] edgeLabels = vertexStep.getEdgeLabels();
         if (edgeLabels != null)
           for (final String edgeLabel : edgeLabels)
-            checkName(schema, edgeLabel);
+            // a null label names no type, so no time series either: the step matches nothing (issue #11886)
+            if (edgeLabel != null)
+              checkName(schema, edgeLabel);
       }
     }
   }

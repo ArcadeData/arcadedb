@@ -436,10 +436,13 @@ class BucketChunkChainTest {
       assertThat((Long) after.get("orphanedChunks")).as(after.toString()).isZero();
 
       // The fabricated chunk took the slot of a document, and the delete went through the bucket, both behind the record
-      // counter's back: the stale counter is the one thing left to repair, and nothing else is found.
+      // counter's back: the stale counter is the one thing left to repair, and nothing else is found. A read-only walk above
+      // already dropped it (issue #12347), so the FIX that follows finds nothing at all.
+      assertThat((Long) stats.get("staleRecordCountersFixed") + (Long) after.get("staleRecordCountersFixed"))
+          .as(stats + " / " + after).isEqualTo(1L);
       final Result fixed = checkDatabaseRow(true);
-      assertThat(numberProperty(fixed, "staleRecordCountersFixed")).as(fixed.toJSON().toString()).isEqualTo(1L);
-      assertThat(numberProperty(fixed, "totalErrors")).as(fixed.toJSON().toString()).isEqualTo(1L);
+      assertThat(numberProperty(fixed, "staleRecordCounters")).as(fixed.toJSON().toString()).isZero();
+      assertThat(numberProperty(fixed, "totalErrors")).as(fixed.toJSON().toString()).isZero();
       final Result clean = checkDatabaseRow(false);
       assertThat(numberProperty(clean, "totalErrors")).as(clean.toJSON().toString()).isZero();
     }

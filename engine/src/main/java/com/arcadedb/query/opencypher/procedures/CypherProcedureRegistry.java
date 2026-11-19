@@ -20,6 +20,10 @@ package com.arcadedb.query.opencypher.procedures;
 
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewCreate;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewDrop;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewList;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewRebuild;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryNodes;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryRelationships;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
@@ -405,6 +409,10 @@ public final class CypherProcedureRegistry {
     register(new DbPropertyKeys());
     register(new DbSchemaVisualization("db.schema"));
     register(new DbSchemaVisualization("db.schema.visualization"));
+    register(new DbAnalyticalViewCreate());
+    register(new DbAnalyticalViewList());
+    register(new DbAnalyticalViewRebuild());
+    register(new DbAnalyticalViewDrop());
   }
 
   private static void registerMetaProcedures() {

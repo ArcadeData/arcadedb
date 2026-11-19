@@ -41,7 +41,9 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdge;
@@ -170,12 +172,25 @@ public class BinarySerializer {
   }
 
   /**
+   * Whether the database is labelled so that no build which cannot decode the fixed-width form opens it (issue #12234). False
+   * keeps the varint form. True by default: a serializer that is not a database's own has no files to label. The database sets
+   * it when it opens and when its configuration changes, so writing an array costs one more volatile read and never a rename.
+   */
+  private volatile boolean fixedWidthFloatArraysFenced = true;
+
+  /** Tells the serializer whether its database carries the rollback fence of {@link #fixedWidthFloatArraysFenced}. */
+  public void setFixedWidthFloatArraysFenced(final boolean fenced) {
+    this.fixedWidthFloatArraysFenced = fenced;
+  }
+
+  /**
    * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
-   * array when {@link #fixedWidthFloatArrays} allows it, {@code type} itself otherwise. Only the record's own type bytes go
-   * through here; an index key is written under its declared type, so an index page never changes form.
+   * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFenced} is set, {@code type} itself
+   * otherwise. Only the record's own type bytes go through here; an index key is written under its declared type, so an index
+   * page never changes form.
    */
   private byte storageTypeOf(final byte type) {
-    if (!fixedWidthFloatArraysEnabled)
+    if (!fixedWidthFloatArraysEnabled || !fixedWidthFloatArraysFenced)
       return type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
       return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
@@ -293,7 +308,7 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    final RID outEdges = vertex.getOutEdgesHeadChunk();
+    final RID outEdges = vertex.peekOutEdgesHeadChunk();
     if (outEdges != null) {
       header.putInt(outEdges.getBucketId());
       header.putLong(outEdges.getPosition());
@@ -302,7 +317,7 @@ public class BinarySerializer {
       header.putLong(-1);
     }
 
-    final RID inEdges = vertex.getInEdgesHeadChunk();
+    final RID inEdges = vertex.peekInEdgesHeadChunk();
     if (inEdges != null) {
       header.putInt(inEdges.getBucketId());
       header.putLong(inEdges.getPosition());
@@ -322,6 +337,16 @@ public class BinarySerializer {
   }
 
   public Binary serializeEdge(final DatabaseInternal database, final Edge edge, final boolean readOnly) {
+    // AN ENDPOINT THAT IS NULL IS NOT WRITTEN AT ALL (serializeValue SKIPS A NULL), SO THE RECORD WOULD START WITH ITS PROPERTIES
+    // WHERE THE TWO VERTEX POINTERS ARE READ BACK: AN EDGE POINTING AT ARBITRARY RECORDS THAT CANNOT BE DECODED AGAIN (#12418)
+    final RID out = edge.getOut();
+    final RID in = edge.getIn();
+    if (out == null || in == null)
+      throw new SerializationException(
+          "Cannot serialize the edge " + edge.getIdentity() + " of type '" + edge.getTypeName() + "' without its " + (out == null ?
+              "@out" :
+              "@in") + " vertex: an edge is created between two vertices (Vertex.newEdge() or CREATE EDGE)");
+
     Binary header = ((BaseRecord) edge).getBuffer();
 
     final DatabaseContext.DatabaseContextTL context = database.getContext();
@@ -339,8 +364,8 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getOut());
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn());
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, out);
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, in);
 
     if (serializeProperties)
       return serializeProperties(database, edge, header, context.getTemporaryBuffer2(), readOnly);
@@ -725,6 +750,22 @@ public class BinarySerializer {
     }
   }
 
+  /**
+   * Refuses a link to a position in a bucket that is no record (issue #11850). The only way to get one is a record that holds
+   * itself while it is being created ({@code INSERT INTO D SET me = @this}, {@code doc.set("me", doc)} before its first save):
+   * it is serialized under the provisional identity the bucket gives it ({@code #<bucket>:-1}) before its position exists, so
+   * the stored link pointed nowhere. Its RID exists once it is saved, so the link is written by an update of it. A RID with no
+   * bucket ({@code #-1:-1}, the null link of an edge segment) and a bare RID (an edge list's entries) are written as they are.
+   */
+  private static void checkLinkTarget(final Object value, final RID rid) {
+    // only a record OBJECT held by a property: the graph engine writes the RIDs of its edge lists as RIDs, the provisional one
+    // of an edge being created included, and resolves them itself
+    if (value instanceof Document && rid.getBucketId() > -1 && rid.getPosition() < 0)
+      throw new ValidationException(
+          "Cannot store a link to record " + rid + ": the record is being created and has no position yet. A record cannot hold "
+              + "a link to itself before it is saved: save it first, then set the link with an update");
+  }
+
   public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
     serializeValue(database, serialized, type, value, true);
   }
@@ -838,6 +879,12 @@ public class BinarySerializer {
       }
       break;
     }
+    case BinaryTypes.TYPE_LOCAL_DATETIME: {
+      final LocalDateTime dateTime = (LocalDateTime) value;
+      content.putNumber(dateTime.toEpochSecond(ZoneOffset.UTC));
+      content.putUnsignedNumber(dateTime.getNano());
+      break;
+    }
     case BinaryTypes.TYPE_DURATION: {
       final CypherDuration duration = (CypherDuration) value;
       content.putNumber(duration.getMonths());
@@ -854,12 +901,14 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_COMPRESSED_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
+      checkLinkTarget(value, rid);
       serialized.putNumber(rid.getBucketId());
       serialized.putNumber(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_RID: {
       final RID rid = ((Identifiable) value).getIdentity();
+      checkLinkTarget(value, rid);
       serialized.putInt(rid.getBucketId());
       serialized.putLong(rid.getPosition());
       break;
@@ -987,7 +1036,7 @@ public class BinarySerializer {
       final Document document = (Document) value;
       final long schemaId = database.getSchema().getDictionary().getIdByName(document.getTypeName(), false);
       if (schemaId == -1)
-        throw new IllegalArgumentException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
+        throw new SchemaException("Cannot find type '" + document.getTypeName() + "' declared in embedded document");
       content.putUnsignedNumber(schemaId);
 
       final Binary header = new Binary(8192);
@@ -1197,6 +1246,11 @@ public class BinarySerializer {
           ZoneOffset.ofTotalSeconds((int) content.getNumber()) :
           ZoneId.of(content.getString());
       value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSecond, nano), zone);
+      break;
+    }
+    case BinaryTypes.TYPE_LOCAL_DATETIME: {
+      final long epochSecond = content.getNumber();
+      value = LocalDateTime.ofEpochSecond(epochSecond, (int) content.getUnsignedNumber(), ZoneOffset.UTC);
       break;
     }
     case BinaryTypes.TYPE_DURATION: {

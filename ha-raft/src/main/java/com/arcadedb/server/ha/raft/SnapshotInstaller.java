@@ -152,7 +152,7 @@ public final class SnapshotInstaller {
    * The directories the snapshot install keeps in a database directory: the staging, the retained backup and the
    * orphans. With {@link #SNAPSHOT_MACHINERY_FILES} this is every entry the swap leaves in place (issue #9446), so a new
    * {@code SNAPSHOT_*_DIR} must be listed here: an entry missing from both sets is treated as database data, backed up
-   * by the swap and cleared by a rollback. {@code Issue9446SnapshotPrefixedBucketTest} fails when one is not.
+   * by the swap and cleared by a rollback. {@code SnapshotSwapCrashRecoveryTest} fails when one is not.
    */
   private static final Set<String> SNAPSHOT_MACHINERY_DIRS = Set.of(SNAPSHOT_NEW_DIR, SNAPSHOT_BACKUP_DIR, SNAPSHOT_ORPHANS_DIR);
 

@@ -70,9 +70,17 @@ public interface HAReplicatedDatabase {
 
   /**
    * Returns the last applied Raft index, or -1 if not available.
-   * Used to set the commit index bookmark header in write responses.
    */
   default long getLastAppliedIndex() {
     return -1;
+  }
+
+  /**
+   * The read-your-writes bookmark for the response to the request served on this thread: the {@code X-ArcadeDB-Commit-Index}
+   * a read waits for to see what the request wrote. The last applied index, unless the request forwarded a write to the
+   * leader that this node has not applied yet (issue #11740).
+   */
+  default long getCommitIndexBookmark() {
+    return getLastAppliedIndex();
   }
 }

@@ -57,14 +57,19 @@ public class MultiMatchPathItem extends MatchPathItem {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    traversalToString(params, builder);
+    if (filter != null) {
+      filter.toString(params, builder);
+    }
+  }
+
+  @Override
+  public void traversalToString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(".(");
     for (final MatchPathItem item : items) {
       item.toString(params, builder);
     }
     builder.append(")");
-    if (filter != null) {
-      filter.toString(params, builder);
-    }
   }
 
   protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
