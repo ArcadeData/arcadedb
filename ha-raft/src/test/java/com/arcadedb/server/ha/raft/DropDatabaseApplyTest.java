@@ -124,7 +124,7 @@ class DropDatabaseApplyTest {
     }
 
     private static void applyDrop(final ArcadeStateMachine sm) {
-      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
+      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
     }
 
     private Future<?> applyDropOnApplyThread(final ArcadeStateMachine sm) {
@@ -374,7 +374,7 @@ class DropDatabaseApplyTest {
     }
 
     private static void applyDrop(final ArcadeStateMachine sm, final String name) {
-      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(name)));
+      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(name)), 1L);
     }
 
     private BackupCoordinator coordinator() {
@@ -457,6 +457,50 @@ class DropDatabaseApplyTest {
       assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark stays while the files do").isTrue();
       assertThat(server.isDatabaseOfServer(DB_NAME)).isTrue();
       assertThat(coordinator().isInProgress(DB_NAME)).as("the failed apply must release the slot it took").isFalse();
+    }
+
+    /**
+     * Review of #11739: the failed drop quarantines the database, and the targeted resync the quarantine triggers asks a
+     * leader that dropped it, which answers 404. That answer lifts the quarantine, so the entry needs a hold of its own: the
+     * checkpoint stays below it until a drop of the name completes, or Ratis would purge the one entry that removes the files.
+     */
+    @Test
+    void aDropThatLeftItsFilesStaysReplayableAfterTheLeaderAnswersItDoesNotHoldTheDatabase() throws Exception {
+      assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+      assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+      final ArcadeStateMachine sm = start();
+      deleter.close();
+      deleter = new DeferredDatabaseDeleter() {
+        @Override
+        Path rename(final Path directory) {
+          return null;
+        }
+      };
+      sm.setDeferredDatabaseDeleter(deleter);
+      new ServerControlPlane(server).closeDatabase(DB_NAME);
+
+      final long dropIndex = 42L;
+      final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databaseDirectory);
+      Files.setPosixFilePermissions(databaseDirectory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+      try {
+        assertThatThrownBy(() -> sm.applyWithRetry(dropIndex, DB_NAME,
+            () -> sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), dropIndex)))
+            .isInstanceOf(ReplicationException.class);
+      } finally {
+        Files.setPosixFilePermissions(databaseDirectory, original);
+      }
+      assertThat(sm.isDatabaseDiverged(DB_NAME)).as("precondition: the failed drop quarantines the database").isTrue();
+
+      // The targeted resync's answer from a leader that dropped the database
+      sm.resync.reportDatabaseTheLeaderDoesNotHold(DB_NAME, true, new LeaderDoesNotHoldDatabaseException("404"));
+      assertThat(sm.isDatabaseDiverged(DB_NAME)).as("the 404 lifts the quarantine").isFalse();
+      assertThat(sm.lowestHeldEntry()).as("takeSnapshot() still checkpoints below the drop").isEqualTo(dropIndex);
+
+      // The filesystem recovers, and the drop of the name completes (as the replay after a restart does it)
+      applyDrop(sm, DB_NAME);
+      assertThat(Files.exists(databaseDirectory)).isFalse();
+      assertThat(sm.lowestHeldEntry()).as("the completed drop releases the hold").isEqualTo(Long.MAX_VALUE);
     }
 
     /**

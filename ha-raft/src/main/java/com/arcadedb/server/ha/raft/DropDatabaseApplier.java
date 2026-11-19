@@ -61,8 +61,25 @@ final class DropDatabaseApplier {
     this.sm = sm;
   }
 
+  /**
+   * Applies the DROP_DATABASE entry at {@code index}. A drop whose files the filesystem would not remove, or would not say
+   * whether it removed, fails with an {@link UncheckedIOException}, which quarantines the database; the entry is also held
+   * for the replay until a drop of the name completes (see {@link #holdUnfinishedDrop}).
+   */
   // @VisibleForTesting
-  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+    final String databaseName = decoded.databaseName();
+    try {
+      applyDrop(decoded);
+    } catch (final UncheckedIOException e) {
+      holdUnfinishedDrop(databaseName, index, e);
+      throw e;
+    }
+    // The name has no files left: an earlier drop of it that left them is done too
+    sm.applyRetry.releaseHeldEntry(unfinishedDropKey(databaseName));
+  }
+
+  private void applyDrop(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
     // Whatever the database's pages were reserved at, the pages are going away: evict its ledger here so the
     // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
@@ -222,10 +239,30 @@ final class DropDatabaseApplier {
   }
 
   /**
+   * Keeps the entry of a drop that left the database's files on disk replayable until the drop completes (review of #11739).
+   * The failure quarantines the database too, which keeps {@code takeSnapshot()} from checkpointing past the entry, but the
+   * quarantine does not last: the targeted resync it triggers asks the leader, a leader that dropped the database answers 404,
+   * and {@link SnapshotResync#reportDatabaseTheLeaderDoesNotHold} lifts the quarantine on that answer. The next checkpoint
+   * would then let Ratis purge the one entry that removes the files, and a restart would not replay it. The hold stands until
+   * a drop of the name completes, a restart replays the entry or a Raft install covers it. Raised before the failure leaves
+   * the apply, so no later entry moves the applied index past it first.
+   */
+  private void holdUnfinishedDrop(final String databaseName, final long index, final UncheckedIOException failure) {
+    final long lowest = sm.applyRetry.heldEntryFloors.merge(unfinishedDropKey(databaseName), index, Math::min);
+    LogManager.instance().log(sm, lowest == index ? Level.SEVERE : Level.FINE,
+        "Raft entry at index %d drops database '%s', whose files are still on disk: no snapshot checkpoint will cover it until "
+            + "a drop of the name completes, so a restart replays it (%s)", index, databaseName, failure.getMessage());
+  }
+
+  static String unfinishedDropKey(final String databaseName) {
+    return "drop:" + databaseName;
+  }
+
+  /**
    * Fails the apply when the inline deletion {@code stageForDeletion} fell back to left {@code directory} behind (review of
    * #11739): {@code FileUtils.deleteRecursively} logs what it could not delete and returns. Thrown before the close mark is
-   * cleared, the database stays unavailable, and a plain runtime exception takes the {@code handleUnexpectedApplyError} path
-   * (see {@link #closedDatabaseDirectory}), which keeps the entry replayable until the filesystem is repaired.
+   * cleared, the database stays unavailable, a plain runtime exception takes the {@code handleUnexpectedApplyError} path
+   * (see {@link #closedDatabaseDirectory}), and {@link #holdUnfinishedDrop} keeps the entry replayable until the drop completes.
    *
    * @throws UncheckedIOException when the directory is still there, or the filesystem cannot say whether it is
    */

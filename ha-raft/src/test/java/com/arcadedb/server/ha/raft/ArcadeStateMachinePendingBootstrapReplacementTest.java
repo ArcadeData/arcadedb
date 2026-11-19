@@ -278,7 +278,7 @@ class ArcadeStateMachinePendingBootstrapReplacementTest {
   void droppingTheDatabaseSettlesThePendingReplacement() throws Exception {
     applyMismatchedBaseline();
 
-    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
 
     assertThat(sm.getPendingBootstrapReplacements()).isEmpty();
     assertThat(sm.isBootstrapInstallInFlight(DB_NAME)).isFalse();
@@ -516,7 +516,7 @@ class ArcadeStateMachinePendingBootstrapReplacementTest {
   void droppingTheDatabaseClearsThePersistedReplacement() throws Exception {
     applyMismatchedBaseline();
 
-    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
 
     restart();
     assertThat(sm.getPendingBootstrapReplacements()).isEmpty();

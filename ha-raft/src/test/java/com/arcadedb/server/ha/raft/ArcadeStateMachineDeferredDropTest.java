@@ -98,7 +98,7 @@ class ArcadeStateMachineDeferredDropTest {
   }
 
   private void applyDrop(final ArcadeStateMachine sm) {
-    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
   }
 
   private Path findStagingDirectory() throws Exception {
