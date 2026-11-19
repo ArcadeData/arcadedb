@@ -119,7 +119,9 @@ class FilteredSearchIndexTopKTest extends TestHelper {
     // a search nested in another call runs on every row the filter evaluates and sets $score as a bare one does
     for (final String filter : new String[] { "ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), false) = true",
         "(SEARCH_INDEX('Doc[body]', 'w2 w5') = true) = true", "SEARCH_FIELDS(['body'], 'w2 w5') = true",
-        "ifnull(SEARCH_FIELDS(['body'], 'w2 w5'), false) = true" }) {
+        "ifnull(SEARCH_FIELDS(['body'], 'w2 w5'), false) = true",
+        // eval() runs a condition the planner cannot see, and a search in it sets $score too
+        "eval(\"SEARCH_INDEX('Doc[body]', 'w2 w5') = true\") = true" }) {
       final String sql = SCORED + " AND " + filter + " ORDER BY $score DESC";
       final List<Row> all = rows(sql, "w0 w1");
       assertThat(all).as(filter).isNotEmpty();

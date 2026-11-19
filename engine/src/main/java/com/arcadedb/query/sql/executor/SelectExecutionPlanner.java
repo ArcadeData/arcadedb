@@ -111,6 +111,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.math.SQLFunctionEval;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
@@ -5087,7 +5088,7 @@ public class SelectExecutionPlanner {
   /**
    * Whether evaluating {@code condition} on a row may set {@code $score}: a call that sets it anywhere in the condition, not only
    * at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), a call the engine does not ship, whose
-   * behaviour it cannot know, or a nested statement.
+   * behaviour it cannot know, {@code eval()}, whose condition is parsed only at run time, or a nested statement.
    */
   private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
     if (condition.setsScore(context))
@@ -5099,8 +5100,11 @@ public class SelectExecutionPlanner {
         return SqlAstInspector.isBuiltInMethod(call);
       if (!(node instanceof FunctionCall call))
         return true;
-      if (call.getName() == null || !DefaultSQLFunctionFactory.getInstance()
-          .isBuiltIn(call.getName().getStringValue().toLowerCase(Locale.ENGLISH)))
+      if (call.getName() == null)
+        return false;
+      final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
+      // eval() runs a condition parsed at run time, which may hold a search that sets $score
+      if (!DefaultSQLFunctionFactory.getInstance().isBuiltIn(name) || SQLFunctionEval.NAME.equals(name))
         return false;
       try {
         final SQLFunction function = call.getSQLFunction(context);
