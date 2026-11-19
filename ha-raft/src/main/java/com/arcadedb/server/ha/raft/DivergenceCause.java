@@ -80,11 +80,13 @@ public enum DivergenceCause {
 
   /**
    * A UNIQUE index of this node's copy was left out when the database opened, for a file with no header page that a power
-   * loss emptied or a half-arrived compaction left (issue #11258). The index enforces nothing here, and nothing local can
-   * tell the two cases apart, so the node must not serve the database until a copy from the cluster replaces it.
+   * loss emptied or a half-arrived compaction left (issue #11258), or is served without the compacted sub-index its header
+   * names, which the load could not find (issue #12348). The index enforces nothing here, or only on part of the keys, and
+   * nothing local can tell how it got there, so the node must not serve the database until a copy from the cluster replaces it.
+   * The persisted name is kept as it is: a quarantine written by an older node reads back the same.
    */
-  UNAVAILABLE_UNIQUE_INDEX("a unique index of this node's own copy that could not be loaded for a missing header page, so "
-      + "its constraint is not enforced here", true),
+  UNAVAILABLE_UNIQUE_INDEX("a unique index of this node's own copy that could not be loaded whole (a missing header page or "
+      + "compacted sub-index), so its constraint is not enforced here", true),
 
   /**
    * The schema dictionary of this node's copy was found without any committed page while the schema declares types (issue

@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * path that cannot be read.
  * <p>
  * The PEM contents are irrelevant here; only the plumbing and the validation are under test, so ordinary
- * files stand in for certificates. {@link Issue3890RaftMtlsIT} covers the handshake itself with a real CA.
+ * files stand in for certificates. {@link RaftMtlsIT} covers the handshake itself with a real CA.
  */
 class RaftGrpcTlsConfigTest {
 

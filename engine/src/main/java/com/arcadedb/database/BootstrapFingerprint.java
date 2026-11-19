@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
@@ -46,7 +47,7 @@ import java.util.logging.Level;
  * visited in canonical (lexicographic by name) order so the result is reproducible across pods.
  * For each included file the digest absorbs:
  * <ol>
- *   <li>the file name (UTF-8) length-prefixed,</li>
+ *   <li>the file name (UTF-8) length-prefixed, a dictionary's as {@link Dictionary#comparableFileName(String)} gives it,</li>
  *   <li>the file size as a big-endian long,</li>
  *   <li>the streamed file content.</li>
  * </ol>
@@ -166,7 +167,9 @@ public final class BootstrapFingerprint {
   }
 
   private static void absorbFile(final MessageDigest md, final File f) {
-    final byte[] nameBytes = f.getName().getBytes(StandardCharsets.UTF_8);
+    // THE DICTIONARY'S FORMAT LABEL IS GIVEN PER NODE TO A FILE WHOSE BYTES DO NOT CHANGE (ISSUE #12234): HASHED AS IT IS, TWO PEERS
+    // STAGED FROM THE SAME FILES WOULD READ AS MISMATCHED AS SOON AS ONE OF THEM HAD OPENED ITS COPY
+    final byte[] nameBytes = Dictionary.comparableFileName(f.getName()).getBytes(StandardCharsets.UTF_8);
     md.update(longToBytes(nameBytes.length));
     md.update(nameBytes);
     md.update(longToBytes(f.length()));

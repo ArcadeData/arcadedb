@@ -78,23 +78,26 @@ class CheckDatabaseCounterTest extends TestHelper {
     assertThat(bucket().count()).isEqualTo(RECORDS);
   }
 
-  // #8040
+  // #8040, #12347
   @Test
-  void aReadOnlyCheckReportsAnOverReportingCounterAndLeavesItAlone() {
+  void aReadOnlyCheckReportsAnOverReportingCounterAndDropsIt() {
     // What a double-folded INSERT delta leaves behind on a cleanly-restarted HA node.
     bucket().setCachedRecordCount(RECORDS + 4);
 
     final Result row = check(false);
 
     assertThat((Long) row.getProperty("staleRecordCounters")).as("%s", row.toJSON()).isEqualTo(1L);
-    assertThat((Long) row.getProperty("staleRecordCountersFixed")).isEqualTo(0L);
+    assertThat((Long) row.getProperty("staleRecordCountersFixed")).isEqualTo(1L);
     assertThat((Long) row.getProperty("totalErrors")).isGreaterThanOrEqualTo(1L);
     assertThat((Collection<String>) row.getProperty("warnings")).as("%s", row.toJSON())
         .anyMatch(w -> w.contains(bucket().getName()) && w.contains("over-reports by 4")
-            && w.contains("CHECK DATABASE FIX"));
+            && w.contains("the counter is recomputed"));
 
-    // Read-only means read-only: the counter, and the wrong count(*) it serves, are still there.
-    assertThat(bucket().getCachedRecordCount()).isEqualTo(RECORDS + 4L);
+    // #12347: the counter is a cache of this node alone, which a replica of a cluster could not repair otherwise (a FIX goes to
+    // the leader, a restart reloads it): a read-only check drops what it proved wrong, and the next count(*) recounts
+    assertThat(bucket().getCachedRecordCount()).isNotEqualTo(RECORDS + 4L);
+    assertThat(bucket().count()).isEqualTo(RECORDS);
+    assertThat(bucket().getCachedRecordCount()).isEqualTo((long) RECORDS);
   }
 
   /**
@@ -117,7 +120,9 @@ class CheckDatabaseCounterTest extends TestHelper {
       assertThat((Long) row.getProperty("totalWarnings")).as("%s", row.toJSON()).isEqualTo(1L);
     }
 
-    // And it goes through the cap: a run allowed to retain none retains none, and still counts it.
+    // And it goes through the cap: a run allowed to retain none retains none, and still counts it. Drifted again, the run above
+    // dropped the counter it proved wrong (issue #12347)
+    bucket().setCachedRecordCount(RECORDS + 4);
     final Map<String, Object> capped = new DatabaseChecker(database).setVerboseLevel(0).setMaxWarnings(0).check();
 
     assertThat((Collection<String>) capped.get("warnings")).as("%s", capped).isEmpty();

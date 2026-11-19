@@ -40,7 +40,7 @@ class DeserializeWalTransactionCorruptionTest {
     // changesFrom=100, changesTo=48 -> deltaSize = 48 - 100 + 1 = -51 (the exact value reported in issue #4420)
     final byte[] entry = buildSinglePageEntry(100, 48);
 
-    assertThatThrownBy(() -> ArcadeStateMachine.deserializeWalTransaction(entry))
+    assertThatThrownBy(() -> CommittedEntryDecoding.deserializeWalTransaction(entry))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("invalid delta range");
   }
@@ -50,7 +50,7 @@ class DeserializeWalTransactionCorruptionTest {
     // A delta claiming far more bytes than the entry actually contains is corruption too.
     final byte[] entry = buildSinglePageEntry(0, 1_000_000);
 
-    assertThatThrownBy(() -> ArcadeStateMachine.deserializeWalTransaction(entry))
+    assertThatThrownBy(() -> CommittedEntryDecoding.deserializeWalTransaction(entry))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("invalid delta range");
   }
@@ -63,13 +63,13 @@ class DeserializeWalTransactionCorruptionTest {
     buf.putInt(-7);   // pageCount (corrupted)
     buf.putInt(0);    // segmentSize
 
-    assertThatThrownBy(() -> ArcadeStateMachine.deserializeWalTransaction(buf.array()))
+    assertThatThrownBy(() -> CommittedEntryDecoding.deserializeWalTransaction(buf.array()))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("invalid page count");
   }
 
   /**
-   * Builds a one-page WAL transaction entry in the format read by {@code ArcadeStateMachine.deserializeWalTransaction}:
+   * Builds a one-page WAL transaction entry in the format read by {@code CommittedEntryDecoding.deserializeWalTransaction}:
    * txId(long), timestamp(long), pageCount(int), segmentSize(int), then per page fileId, pageNumber, changesFrom,
    * changesTo, version, contentSize (6 ints). No delta bytes are appended (the corrupted range is rejected first).
    */

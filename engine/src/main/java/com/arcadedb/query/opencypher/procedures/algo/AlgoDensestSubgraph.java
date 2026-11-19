@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -94,74 +93,141 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Charikar's greedy peeling
-    final int[] deg = new int[n];
-    int totalEdges = 0;
-    for (int i = 0; i < n; i++) {
-      deg[i] = adj[i].length;
-      totalEdges += deg[i];
-    }
-    totalEdges /= 2;
+    int maxDegree = 0;
+    for (final int[] row : adj)
+      maxDegree = Math.max(maxDegree, row.length);
+    // degree, position and peel order per node, one bucket start per degree, and the removed flags
+    graph.memory().reserve(saturatingSum(saturatingProduct(3L * n + maxDegree + 1, INT_BYTES), saturatingProduct(n, BOOLEAN_BYTES)),
+        "the peeling buckets", n + " nodes, maximum degree " + maxDegree);
 
-    final boolean[] removed = new boolean[n];
-    // bestSubgraph: snapshot of non-removed nodes at best density
-    final boolean[] bestSubgraph = new boolean[n];
-    Arrays.fill(bestSubgraph, true); // initially all nodes are in
-    double bestDensity = n > 0 ? (double) totalEdges / n : 0.0;
-    int remaining = n;
+    final Peeling peeling = peel(adj, guard);
 
-    while (remaining > 1) {
-      // One vertex peeled per round, chosen by a linear scan and snapshotted by another: O(V²) before the edge
-      // work, with the graph alone sizing it (issue #6302).
-      guard.check();
-      final double density = (double) totalEdges / remaining;
-      if (density > bestDensity) {
-        bestDensity = density;
-        // Snapshot current non-removed set
-        for (int i = 0; i < n; i++)
-          bestSubgraph[i] = !removed[i];
-      }
-
-      // Find minimum-degree non-removed vertex (linear scan)
-      int minDeg = Integer.MAX_VALUE;
-      int minV = -1;
-      for (int i = 0; i < n; i++) {
-        if (!removed[i] && deg[i] < minDeg) {
-          minDeg = deg[i];
-          minV = i;
-        }
-      }
-      if (minV == -1)
-        break;
-
-      removed[minV] = true;
-      remaining--;
-      for (final int u : adj[minV]) {
-        if (!removed[u]) {
-          deg[u]--;
-          totalEdges--;
-        }
-      }
-    }
-
-    // Check the last remaining singleton
-    if (remaining == 1) {
-      final double density = totalEdges > 0 ? (double) totalEdges / remaining : 0.0;
-      if (density > bestDensity) {
-        bestDensity = density;
-        for (int i = 0; i < n; i++)
-          bestSubgraph[i] = !removed[i];
-      }
-    }
-
-    final double finalDensity = bestDensity;
+    final boolean[] inDenseSubgraph = new boolean[n];
+    for (int k = peeling.bestPeeled(); k < n; k++)
+      inDenseSubgraph[peeling.order()[k]] = true;
+    final double finalDensity = peeling.density();
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", graph.getRID(i));
-      r.setProperty("inDenseSubgraph", bestSubgraph[i]);
+      r.setProperty("inDenseSubgraph", inDenseSubgraph[i]);
       r.setProperty("density", finalDensity);
       return (Result) r;
     });
+  }
+
+  /**
+   * The outcome of a greedy peeling: the nodes in the order they were peeled (the last one is the node left alone at the
+   * end), and the densest of the nested subgraphs the peeling went through, which is {@code order[bestPeeled..]}.
+   */
+  record Peeling(int[] order, int bestPeeled, double density) {
+  }
+
+  /**
+   * Charikar's greedy peeling over an undirected adjacency ({@code BOTH} rows, so every edge is listed once in the row
+   * of each of its ends and a self-loop twice in its node's own row): peel a node of minimum degree in what is left,
+   * one at a time, and keep the densest subgraph met on the way, density being edges over nodes.
+   * <p>
+   * O(V + E) (issue #12168): the nodes not peeled yet sit in one array, bucketed by their current degree in ascending
+   * order (the bucket arrays of Batagelj and Zaversnik, the layout {@code algo.kcore} peels with), so the node to peel
+   * next is always the first one after the peeled prefix and the prefix itself is the peel order. Removing an edge
+   * moves its other end to the bucket one degree lower with a single swap. Unlike the k-core peeling a degree can drop
+   * below the one being peeled, so the bucket under the lowest one in use is opened on demand ({@code floor}). The best
+   * subgraph is a suffix of the peel order, so it is recorded as a position instead of copied on every improvement.
+   * <p>
+   * Among nodes of equal degree the bucket order decides, which is deterministic for a given adjacency. Any choice
+   * keeps Charikar's guarantee (half the optimal density); the lowest-index rule of the former linear scan was never
+   * stable across backings anyway, since a Graph Analytical View numbers the nodes differently from the records.
+   * <p>
+   * The edge count is kept as twice itself (adjacency entries) so a self-loop leaves with its node: the former count
+   * never subtracted it, and every subgraph left after peeling a node with a self-loop was reported denser than it was.
+   */
+  static Peeling peel(final int[][] adj, final WorkGuard guard) {
+    final int n = adj.length;
+    final int[] degree = new int[n];
+    long entries = 0; // twice the edges among the nodes not peeled yet
+    int maxDegree = 0;
+    for (int i = 0; i < n; i++) {
+      degree[i] = adj[i].length;
+      entries += degree[i];
+      maxDegree = Math.max(maxDegree, degree[i]);
+    }
+
+    // order[0 .. peeled) is the peel order; order[peeled .. n) the nodes left, bucketed by ascending degree, bucket d
+    // starting at bucketStart[d]
+    final int[] bucketStart = new int[maxDegree + 1];
+    for (int i = 0; i < n; i++)
+      bucketStart[degree[i]]++;
+    for (int d = 0, start = 0; d <= maxDegree; d++) {
+      final int count = bucketStart[d];
+      bucketStart[d] = start;
+      start += count;
+    }
+    final int[] order = new int[n];
+    final int[] position = new int[n];
+    for (int i = 0; i < n; i++) {
+      position[i] = bucketStart[degree[i]]++;
+      order[position[i]] = i;
+    }
+    for (int d = maxDegree; d > 0; d--)
+      bucketStart[d] = bucketStart[d - 1];
+    if (n > 0)
+      bucketStart[0] = 0;
+
+    final boolean[] removed = new boolean[n];
+    double bestDensity = n > 0 ? entries / (2.0 * n) : 0.0;
+    int bestPeeled = 0;
+    // The lowest degree whose bucket start is current: the buckets below it are empty and their starts stale
+    int floor = 0;
+
+    for (int peeled = 0; peeled < n - 1; peeled++) {
+      guard.checkPeriodically(peeled);
+      final double density = entries / (2.0 * (n - peeled));
+      if (density > bestDensity) {
+        bestDensity = density;
+        bestPeeled = peeled;
+      }
+
+      // The first node left has the minimum degree, and is the first of its bucket
+      final int v = order[peeled];
+      final int d = degree[v];
+      bucketStart[d]++;
+      floor = d;
+      removed[v] = true;
+
+      int selfEntries = 0;
+      for (final int u : adj[v]) {
+        if (u == v) {
+          selfEntries++;
+          continue;
+        }
+        if (removed[u])
+          continue;
+        final int du = degree[u];
+        if (du == floor) {
+          bucketStart[du - 1] = bucketStart[du];
+          floor = du - 1;
+        }
+        // Swap u with the first node of its bucket, then shrink the bucket from the front: u is now the last of du - 1
+        final int first = bucketStart[du];
+        final int pu = position[u];
+        final int w = order[first];
+        order[pu] = w;
+        position[w] = pu;
+        order[first] = u;
+        position[u] = first;
+        bucketStart[du]++;
+        degree[u] = du - 1;
+      }
+      // v's own entries towards the nodes left (itself included) and their mirrors in the other rows
+      entries -= 2L * d - selfEntries;
+    }
+
+    // The node left alone counts only through its self-loops
+    if (n > 1 && entries / 2.0 > bestDensity) {
+      bestDensity = entries / 2.0;
+      bestPeeled = n - 1;
+    }
+    return new Peeling(order, bestPeeled, bestDensity);
   }
 }

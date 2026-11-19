@@ -689,9 +689,10 @@ class CypherQueryPlanningTest {
       assertThat(column("MATCH (e:FourBuckets) WHERE e.grp = 5 RETURN count(*) AS n", Map.of())).hasSize(1);
     }
 
+    /** A built-in scalar function runs in the workers since #11873; a SQL function stays on the calling thread. */
     @Test
-    void aPredicateWithAFunctionStaysSequential() {
-      final String query = "MATCH (e:FourBuckets) WHERE toString(e.grp) = '5' RETURN e.id AS id";
+    void aPredicateWithASqlFunctionStaysSequential() {
+      final String query = "MATCH (e:FourBuckets) WHERE sql.abs(e.grp) = 5 RETURN e.id AS id";
       assertThat(profile(query)).doesNotContain("[parallel]");
       assertThat(column(query, Map.of())).isNotEmpty().isEqualTo(sequential(query, Map.of()));
     }

@@ -26,6 +26,7 @@ import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
@@ -127,6 +128,7 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.WeakHashMap;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
@@ -144,6 +146,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -209,6 +212,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Floor for the automatically sized search cache (issue #5412). At 768 dimensions this is ~25MB, small
   // enough to never matter and large enough that a small index is fully resident from the first query.
   private static final int MIN_SEARCH_CACHE_SIZE = 8_192;
+  // Taken by every search cache that grows, in every index (issue #12391): the budget its size is read from is shared by the
+  // caches of all the database's vector indexes, so it is read and taken in one step. Sizing is rare - a cache grows
+  // O(log n) times over its index's life - and searches on a cache that covers its range never take it.
+  private static final Object SEARCH_CACHE_SIZING_LOCK = new Object();
+  // How long a cache that could not grow for want of budget is not asked again (issue #12391). Every search of an index
+  // with no room would otherwise read the heap and walk the schema's indexes to be told the same thing, once per bucket
+  // index per query. A cache that is late to grow by this much has lost nothing: it only ever speeds a search up.
+  private static final long SEARCH_CACHE_DECLINE_NANOS = TimeUnit.SECONDS.toNanos(1);
 
   // DOT_PRODUCT is the fast path for cosine on already-normalized data, and JVector documents unit length as its
   // precondition. How many ordinals a rebuild samples to notice that the precondition is not met, and how far a
@@ -421,10 +432,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // read (or quantized page read) per hop even when repeating the very same query. Flat storage scored in place
   // (issue #11003): no object per vector, and a walk asks it for a similarity rather than for a vector.
   private volatile FlatVectorCache searchVectorCache;
-  private final    Object          searchVectorCacheLock = new Object();
   // The one-bit codes a BINARY index scores its searches on (issue #10968), keyed by vector id like searchVectorCache
   // and cleared, evicted and released wherever that one is. Null for every other quantization.
   private volatile BinaryCodeCache searchBinaryCodes;
+  // System.nanoTime() of the last time the vector cache / the BINARY codes were refused room by the shared budget, 0 for
+  // never (issue #12391). Read and written without a lock: a stale answer only delays or repeats a sizing decision.
+  private volatile long searchVectorCacheDeclinedAt;
+  private volatile long searchBinaryCodesDeclinedAt;
 
   // Index-scoped pool of JVector graph searchers, reused across queries (issue #5413). Allocating a searcher per
   // query made its scratch state (the growable candidate heap above all) the largest single source of garbage on
@@ -457,7 +471,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile long    lastRebuildDeferralMs  = 0L;
   // The on-heap graph whose persist committed and was certified by the manifest, i.e. the one graph for which
   // gf.loadGraph() reads back the very same ordinals. Reference identity is the whole check: a graph a later build
-  // published, or one whose persist failed, is simply not this object (issue #7260).
+  // published, or one whose persist failed, is simply not this object (issue #7260). Never set while another graph, or
+  // none, is resident: every assignment of graphIndex clears it, because this field alone keeps the whole on-heap graph
+  // reachable - its neighbour map and, through the diversity provider, the build's reader and vector cache (issue #12380).
   private volatile ImmutableGraphIndex persistedGraphSource;
   // Deferrals since a rebuild last got through: the WARNING is worth one line per streak, not one per attempt
   // (issue #7260), because the second line of a streak tells the operator nothing the first did not.
@@ -530,6 +546,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Run by a full rebuild between reading the live set from the pages and publishing it, so a test can commit in between
   private volatile Runnable afterLiveSetReadForTest;
+  // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
+  private volatile Runnable beforeOnDiskGraphSwapForTest;
 
   /**
    * How many entries of {@link #deltaVectors} are currently holding their payload, i.e. what the buffer costs the
@@ -544,11 +562,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private final IntHashSet replicatedPageSeenIds = new IntHashSet();
 
-  /** Cached answer of {@link #computeDeltaPayloadCapacity()}, and when it was last computed. */
-  private volatile int  deltaPayloadCapacity      = -1;
-  private volatile long deltaPayloadCapacityAtMs  = 0L;
+  /**
+   * What {@link #deltaResidentPayloads} costs the heap, as charged to the ledger the vector indexes of the database
+   * share (issue #12379). Moves with the counter, under the same write lock, until the index stops being the
+   * schema's: {@link #releaseBackgroundResources()} and {@link #onSuperseded()} close it.
+   */
+  private final VectorDeltaPayloadLedger.Account deltaPayloadAccount = new VectorDeltaPayloadLedger.Account();
 
-  /** How long a computed delta payload capacity is reused before the heap is measured again. */
+  /**
+   * The two terms a buffered payload is admitted against, and when they were computed.
+   *
+   * @param ownLimit    payloads this index may hold itself: an explicit {@code deltaCacheSize}, or
+   *                    {@link Integer#MAX_VALUE} when only the heap share bounds it
+   * @param sharedBytes heap the vector indexes of the database may hold in payloads together, or
+   *                    {@link VectorDeltaPayloadLedger#NO_SHARED_BUDGET} when the size is explicit
+   */
+  private record DeltaPayloadBudget(int ownLimit, long sharedBytes, long computedAtMs) {
+  }
+
+  /** Cached answer of {@link #computeDeltaPayloadBudget}. */
+  private volatile DeltaPayloadBudget deltaPayloadBudget;
+
+  /** How long a computed delta payload budget is reused before the heap is measured again. */
   private static final long DELTA_PAYLOAD_CAPACITY_TTL_MS = 1_000L;
 
   /**
@@ -2448,6 +2483,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         else if (productQuantized)
           adoptPQCodesFor(checkedCodes, rebuiltOrdinalToVectorId);
         this.graphIndex = loadedGraph;
+        // A graph read from the pages has no on-heap twin (issue #12380)
+        this.persistedGraphSource = null;
         this.graphUnreachableOrdinals = unreachableOrdinals;
         this.ordinalToVectorId = rebuiltOrdinalToVectorId;
         // Appended, never counted as mutations and never promoting graphState - see readUnreachableEntries().
@@ -2719,6 +2756,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (productQuantized)
         adoptPQCodesFor(checkedCodes, mapVectorIds);
       this.graphIndex = loadedGraph;
+      // A graph read from the pages has no on-heap twin (issue #12380)
+      this.persistedGraphSource = null;
       this.graphUnreachableOrdinals = unreachableOrdinals;
       this.ordinalToVectorId = mapVectorIds;
       queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
@@ -2951,6 +2990,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         else if (productQuantized)
           adoptPQCodesFor(checkedCodes, graphOrdinalToVectorId);
         this.graphIndex = loadedGraph;
+        // A graph read from the pages has no on-heap twin (issue #12380)
+        this.persistedGraphSource = null;
         this.graphUnreachableOrdinals = candidate.unreachableOrdinals();
         this.ordinalToVectorId = graphOrdinalToVectorId;
         queuedIntoDelta = appendToDeltaBuffer(gapEntries);
@@ -3422,8 +3463,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * rebuild cost about 1.7x what building the same corpus from nothing costs and what runs a large index out of
    * heap (issue #6503). Releasing first roughly halves the peak.
    * <p>
-   * <b>All three references have to go, not just {@link #graphIndex}.</b> {@link #searchVectorCache} is the
-   * obvious second one. The third is the searcher pool: a pooled searcher holds the {@code ImmutableGraphIndex}
+   * <b>All four references have to go, not just {@link #graphIndex}.</b> {@link #persistedGraphSource} is the same
+   * object again whenever the resident on-heap graph was persisted and certified, which is the ordinary state of an
+   * index without {@code storeVectorsInGraph} (issue #12380). {@link #searchVectorCache} is the
+   * obvious third one. The fourth is the searcher pool: a pooled searcher holds the {@code ImmutableGraphIndex}
    * it was pooled under, so a populated pool pins the old graph however many times {@code graphIndex} is nulled.
    * That is not hypothetical on the path this method exists for - {@code LocalDatabase.closeDurableParts()}
    * calls {@code index.flush()} BEFORE {@code index.releaseBackgroundResources()}, so on a database close the
@@ -3586,6 +3629,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         this.graphIndex = null;
+        // The fourth reference (issue #12380): a resident on-heap graph whose persist was certified is also held as the
+        // twin of its pages, and kept, that field pinned the whole graph for the build this release makes room for
+        this.persistedGraphSource = null;
         // Cleared with the graph, for the same reason (issue #7190): the ordinals describe the generation being
         // released, and a build that then fails would leave getStats() reporting them against no resident graph.
         // The set on disk is untouched, so a later load reads it back from the manifest.
@@ -4160,6 +4206,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           this.ordinalToVectorId = filteredVectorIds;
           this.graphIndex = null;
+          // No resident graph, so no twin of one either: kept, the field held the last on-heap graph of an index emptied
+          // of its vectors for the life of the index object (issue #12380)
+          this.persistedGraphSource = null;
           // Cleared with the graph it describes: this build published none, so the previous generation's orphans
           // describe nothing that is resident any more, and getStats() would otherwise report unreachable nodes for
           // an index that has no graph at all (issue #7190).
@@ -4725,9 +4774,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
             try {
               final OnDiskGraphIndex diskGraph = gf.loadGraph();
               if (diskGraph != null) {
+                final Runnable beforeSwap = beforeOnDiskGraphSwapForTest;
+                if (beforeSwap != null)
+                  beforeSwap.run();
                 lock.writeLock().lock();
                 try {
                   this.graphIndex = diskGraph;
+                  // The on-heap graph is no longer resident, so nothing can be demoted to this twin (issue #7260 compares
+                  // the resident graph against it): kept, the field held the whole build graph - its neighbour map, and
+                  // through the diversity provider the build's reader and vector cache - until the next build (issue #12380)
+                  this.persistedGraphSource = null;
+                  // A search between the publication above and this swap pooled a searcher on the on-heap graph, which
+                  // holds it as firmly as the field did (issue #12380): hand it back now, as the publication does for the
+                  // generation before it
+                  releasePooledSearchers();
                   if (deltaVectors.isEmpty())
                     this.graphState = GraphState.IMMUTABLE;
                 } finally {
@@ -4833,6 +4893,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error building graph from scratch", e);
       throw new IndexException("Error building graph from scratch", e);
+    } finally {
+      // The published graph keeps the build reader reachable through jvector's score provider (issue #11747): its vectors go
+      // now, after the persistence above read through it, rather than staying beside the search cache with the graph
+      if (vectors instanceof final ArcadePageVectorValues buildReader)
+        buildReader.releaseBuildVectors();
     }
   }
 
@@ -5001,6 +5066,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Test hook: behave as if the resident graph's persist never certified (issue #7260). */
   void forgetPersistedGraphSourceForTest() {
     persistedGraphSource = null;
+  }
+
+  /** Test hook: the on-heap graph the index keeps as the certified twin of its pages, if any (issue #12380). */
+  ImmutableGraphIndex persistedGraphSourceForTest() {
+    return persistedGraphSource;
   }
 
   private long getTxChunkSize() {
@@ -6506,10 +6576,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * build of 150,000 vectors at 768 dimensions against a few hundred MB of heap - without a heap that size. Nothing is
    * reclaimed from the page cache when {@code reclaimableCacheBytes} is 0.
    *
-   * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
+   * @param availableHeapReading  what {@link VectorHeapBudget#availableHeapBytes()} would have answered; the database's
+   *                              search caches' plan is taken off it ({@link #availableHeapNetOfSearchCaches(long)})
    * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
    */
-  int fitSearchBuildToHeap(final int nodes, final long availableHeap, final long reclaimableCacheBytes) {
+  int fitSearchBuildToHeap(final int nodes, final long availableHeapReading, final long reclaimableCacheBytes) {
+    // The search caches' plan is not heap the build may take (issue #12511), here as in computeGraphBuildCacheCapacity()
+    final long availableHeap = availableHeapNetOfSearchCaches(availableHeapReading);
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
     // The nodes test is defence in depth rather than a live branch: the only caller reaches this after its own scope
@@ -6667,13 +6740,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #admitOnlineRebuild()} against pinned heap figures, so a test can drive the 24 GB shape of issue #7260
    * without a 24 GB fixture. Nothing is reclaimed from the page cache when {@code reclaimableCacheBytes} is 0.
    *
-   * @param availableHeap         what {@link VectorHeapBudget#availableHeapBytes()} would have answered
+   * @param availableHeapReading  what {@link VectorHeapBudget#availableHeapBytes()} would have answered; the database's
+   *                              search caches' plan is taken off it ({@link #availableHeapNetOfSearchCaches(long)})
    * @param reclaimableCacheBytes what {@code PageManager.getReadCacheRAM()} would have answered
    * @param heapReadingCountsResident whether a tenured-pool collection ended after the resident graph was
    *                                  published, i.e. whether {@code availableHeap} can have counted it as live
    */
-  boolean admitOnlineRebuild(final long availableHeap, final long reclaimableCacheBytes,
+  boolean admitOnlineRebuild(final long availableHeapReading, final long reclaimableCacheBytes,
       final boolean heapReadingCountsResident) {
+    // The search caches' plan is not heap the rebuild may take (issue #12511), here as in computeGraphBuildCacheCapacity()
+    final long availableHeap = availableHeapNetOfSearchCaches(availableHeapReading);
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
     if (percent <= 0)
@@ -7477,7 +7553,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     assert lock.isWriteLockedByCurrentThread() : "queueDeltaEntry() without the write lock";
 
     DeltaVectorEntry queued = entry;
-    if (entry.vector != null && deltaResidentPayloads.get() >= deltaPayloadCapacity())
+    if (entry.vector != null && !admitDeltaPayload())
       // Re-wrapped rather than mutated, so the entry stays immutable and safe to publish to the lock-free readers
       // of the buffer. Allocated only on the over-budget path, where it replaces a `dimensions * 4` byte retention
       // with a 32-byte object - the trade is decisively in its favour exactly when it is made.
@@ -7485,7 +7561,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     deltaVectors.add(queued);
     if (queued.vector != null)
+      // Already charged to the ledger by admitDeltaPayload()
       deltaResidentPayloads.incrementAndGet();
+  }
+
+  /**
+   * Whether one more buffered payload may stay on the heap: this index is under its own limit, and the room is
+   * reserved in the ledger the vector indexes of the database share (issue #12379). Reserving, rather than comparing
+   * against a figure computed a moment ago, is what makes the heap share a bound on all of them together: the room
+   * that is left is handed out once, however many indexes are filling at the same time.
+   * <b>The caller must hold {@link #lock}'s write lock.</b>
+   */
+  private boolean admitDeltaPayload() {
+    final DeltaPayloadBudget budget = deltaPayloadBudget();
+    if (deltaResidentPayloads.get() >= budget.ownLimit)
+      return false;
+    return deltaPayloadAccount.tryCharge(deltaPayloadLedger(), VectorHeapBudget.bytesPerCachedVector(metadata.dimensions),
+        budget.sharedBytes);
+  }
+
+  /**
+   * Records that {@code payloads} buffered payloads were added (positive) or left (negative) without going through
+   * {@link #queueDeltaEntry}, and charges the shared ledger accordingly. Unconditional: an entry put back was
+   * admitted before, and one that left frees its room. <b>The caller must hold {@link #lock}'s write lock.</b>
+   */
+  private void deltaResidentPayloadsChanged(final int payloads) {
+    chargeDeltaResidentPayloads(deltaResidentPayloads.addAndGet(payloads));
   }
 
   /**
@@ -7499,55 +7600,102 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (e.vector != null)
         resident++;
     deltaResidentPayloads.set(resident);
+    chargeDeltaResidentPayloads(resident);
+  }
+
+  private void chargeDeltaResidentPayloads(final int resident) {
+    deltaPayloadAccount.set(deltaPayloadLedger(), resident * VectorHeapBudget.bytesPerCachedVector(metadata.dimensions));
+  }
+
+  /** The ledger the vector indexes of this index's database charge their buffered payloads to (issue #12379). */
+  private VectorDeltaPayloadLedger deltaPayloadLedger() {
+    // Not through getSchema(), which refuses a closed or fenced database: a rebuild that finishes while the database
+    // closes still recounts its buffer, and the statistics are read after the close
+    return ((LocalDatabase) mutable.getDatabase().getEmbedded()).getVectorDeltaPayloadLedger();
   }
 
   /**
-   * The number of buffered payloads the heap can afford, cached for {@value #DELTA_PAYLOAD_CAPACITY_TTL_MS} ms.
+   * The terms a buffered payload is admitted against, cached for {@value #DELTA_PAYLOAD_CAPACITY_TTL_MS} ms.
    * <p>
    * Re-measuring the heap on every insert is not affordable on a path that runs once per written record, and
-   * caching it forever is not correct either - the capacity has to fall when a rebuild starts holding the old
+   * caching it forever is not correct either - the budget has to fall when a rebuild starts holding the old
    * graph alongside the new one, which is precisely when the buffer must stop growing. A one-second window is
    * short next to how long it takes an ingest to fill a budget and long next to the cost of measuring it.
-   *
-   * @return the capacity, {@code 0} when nothing may be cached, {@link Integer#MAX_VALUE} when caching is unbounded
+   * <p>
+   * Only the BUDGET is cached. What the indexes already hold of it is read from the ledger at every admission, so the
+   * window delays noticing that the heap shrank and nothing else (issue #12379).
    */
-  private int deltaPayloadCapacity() {
+  private DeltaPayloadBudget deltaPayloadBudget() {
     final long now = System.currentTimeMillis();
-    final int cached = deltaPayloadCapacity;
-    if (cached >= 0 && now - deltaPayloadCapacityAtMs < DELTA_PAYLOAD_CAPACITY_TTL_MS)
+    final DeltaPayloadBudget cached = deltaPayloadBudget;
+    if (cached != null && now - cached.computedAtMs < DELTA_PAYLOAD_CAPACITY_TTL_MS)
       return cached;
 
-    final int computed = computeDeltaPayloadCapacity();
-    deltaPayloadCapacity = computed;
-    deltaPayloadCapacityAtMs = now;
+    final DeltaPayloadBudget computed = computeDeltaPayloadBudget(VectorHeapBudget.maxHeapBytes(),
+        VectorHeapBudget.availableHeapBytes(), now);
+    deltaPayloadBudget = computed;
     return computed;
   }
 
   /**
-   * Computes how many buffered vectors may keep their payload on the heap.
+   * Computes what bounds the payloads this index's delta buffer keeps on the heap.
    * <p>
    * An explicit {@code arcadedb.vectorIndex.deltaCacheSize} wins, with a negative value meaning "keep every
    * payload" - the behaviour before issue #7357, kept reachable because an index whose ingest is bounded by
-   * something else pays a page read per scored entry for a bound it does not need. Otherwise the budget is the
-   * configured share of the heap ceiling, capped at what is currently available, divided by what one cached
-   * vector of this arity costs: the same arithmetic and the same denominator
-   * {@link #computeGraphBuildCacheCapacity} uses.
+   * something else pays a page read per scored entry for a bound it does not need. An explicit size is a number of
+   * vectors PER INDEX, as it is documented, and no heap share applies to it. Otherwise the budget is the
+   * configured share of the heap ceiling, capped at what is currently available: the same arithmetic and the same
+   * denominator {@link #computeGraphBuildCacheCapacity} uses.
    * <p>
-   * Sharing the denominator is NOT a reservation, and nothing here should be read as one (PR #7360 review): this
-   * cache and the build cache each take their percent of the same {@code availableHeapBytes()} reading, so within
-   * one TTL window both can size themselves against heap the other is about to take. What makes it converge is
-   * that a payload kept here becomes live heap, which lowers the next reading for both. The percents are a margin
-   * against that lag, not a partition of the heap - which is why the default is a modest 10 and why the ceiling
-   * that matters is the one an operator sets when they know what else is running.
+   * Sharing the denominator with the build cache is NOT a reservation, and nothing here should be read as one (PR
+   * #7360 review): this cache and the build cache each take their percent of the same {@code availableHeapBytes()}
+   * reading, so within one TTL window both can size themselves against heap the other is about to take. What makes
+   * it converge is that a payload kept here becomes live heap, which lowers the next reading for both. The percents
+   * are a margin against that lag, not a partition of the heap - which is why the default is a modest 10 and why the
+   * ceiling that matters is the one an operator sets when they know what else is running.
+   * <p>
+   * <b>The heap share is the database's, not the index's (issue #12379).</b> A type has one vector index per bucket,
+   * so a schema with a few vector properties on bucketed types has dozens of them, and each one used to plan on the
+   * whole percent for itself: 66 indexes of a 3 GB heap could keep payloads worth several times the heap, and an
+   * ingest that outran the serialized rebuilds filled it. Among the vector indexes of one database it IS a
+   * reservation: each payload is admitted by {@link #admitDeltaPayload()} against the bytes they hold together
+   * ({@link VectorDeltaPayloadLedger}), so the percent bounds them all whatever their number. Two databases of one JVM
+   * still take their share each.
    *
-   * @return the capacity, never negative
+   * @param maxHeap       the heap ceiling to size against
+   * @param availableHeap the heap currently free, which caps the heap share
    */
-  private int computeDeltaPayloadCapacity() {
-    return computeDeltaPayloadCapacity(VectorHeapBudget.maxHeapBytes(), VectorHeapBudget.availableHeapBytes());
+  private DeltaPayloadBudget computeDeltaPayloadBudget(final long maxHeap, final long availableHeap, final long now) {
+    final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
+
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE);
+    if (configured < 0)
+      return new DeltaPayloadBudget(Integer.MAX_VALUE, VectorDeltaPayloadLedger.NO_SHARED_BUDGET, now);
+    if (configured > 0)
+      return new DeltaPayloadBudget(configured, VectorDeltaPayloadLedger.NO_SHARED_BUDGET, now);
+
+    final int heapPercent = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT);
+    if (heapPercent <= 0)
+      return new DeltaPayloadBudget(0, 0L, now);
+
+    return new DeltaPayloadBudget(Integer.MAX_VALUE, VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap, availableHeap),
+        now);
   }
 
   /**
-   * Same decision as {@link #computeDeltaPayloadCapacity()}, with the heap figures supplied so a test can pin the
+   * How many payloads this index's buffer may hold as things stand: its explicit size, or what it holds plus the
+   * room the vector indexes of the database have left in their shared heap budget (issue #12379). A reading for the
+   * statistics and for the budget of a transaction's overlay; a payload is admitted by {@link #admitDeltaPayload()},
+   * which reserves the room rather than comparing against this.
+   *
+   * @return the capacity, {@code 0} when nothing may be cached, {@link Integer#MAX_VALUE} when caching is unbounded
+   */
+  private int deltaPayloadCapacity() {
+    return deltaPayloadCapacity(deltaPayloadBudget());
+  }
+
+  /**
+   * Same answer as {@link #deltaPayloadCapacity()}, with the heap figures supplied so a test can pin the
    * auto-sizing branch instead of relying on whatever the live JVM happens to have free (PR #7360 review).
    * <p>
    * The auto-sized branch is what an installation that never touches either new setting gets, so it is the one
@@ -7562,21 +7710,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the capacity, never negative
    */
   int computeDeltaPayloadCapacity(final long maxHeap, final long availableHeap) {
-    final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
+    return deltaPayloadCapacity(computeDeltaPayloadBudget(maxHeap, availableHeap, 0L));
+  }
 
-    final int configured = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE);
-    if (configured < 0)
-      return Integer.MAX_VALUE;
-    if (configured > 0)
-      return configured;
+  /**
+   * Pins the heap figures the delta payload budget is sized against, until the index is closed, so a test can fill a
+   * budget of a few vectors through the write path instead of one sized by the JVM it happens to run in.
+   */
+  void pinDeltaPayloadHeapForTest(final long maxHeap, final long availableHeap) {
+    // Stamped at the end of time, so the cached answer never ages out
+    deltaPayloadBudget = computeDeltaPayloadBudget(maxHeap, availableHeap, Long.MAX_VALUE);
+  }
 
-    final int heapPercent = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT);
-    if (heapPercent <= 0)
-      return 0;
+  private int deltaPayloadCapacity(final DeltaPayloadBudget budget) {
+    if (budget.sharedBytes == VectorDeltaPayloadLedger.NO_SHARED_BUDGET)
+      return budget.ownLimit;
 
-    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap, availableHeap);
-    final long affordable = heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
-    return (int) Math.max(0L, Math.min(affordable, Integer.MAX_VALUE / 2));
+    // What the OTHER vector indexes of the database hold is charged first: the rest is this index's to fill
+    final long heldByOthers = Math.max(0L, deltaPayloadLedger().bytes() - deltaPayloadAccount.charged());
+    final long affordable = Math.max(0L, budget.sharedBytes - heldByOthers)
+        / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
+    return (int) Math.min(affordable, Math.min(budget.ownLimit, Integer.MAX_VALUE / 2));
   }
 
   /**
@@ -9112,7 +9266,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // A map translated by a renumbering compaction holds -1 for the vectors that are gone and is not sorted: it is resolved
     // through its lookup for as long as that graph is the resident one
     final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    // A member of another bucket has no vector in this sub-index (issue #11765)
+    final int bucketId = metadata.associatedBucketId;
     for (final RID rid : allowedRIDs) {
+      if (bucketId >= 0 && rid.getBucketId() != bucketId)
+        continue;
       for (final int vectorId : locations.getVectorIdsForRid(rid)) {
         final int ordinal =
             lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId);
@@ -9263,6 +9421,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
     return allowedRIDs.size() <= maxCandidates ? new PreFilterPlan(allowedRIDs, allowedRIDs) : null;
+  }
+
+  /**
+   * The allow-list this sub-index answers for (issue #11765): the members of {@code allowedRIDs} in its own bucket, or
+   * {@code allowedRIDs} itself. A type's vector index has one sub-index per bucket, and each is searched with the type's whole
+   * list, so the list's size overstated what one sub-index can answer with by the number of buckets the list is spread over:
+   * a filter selective in every bucket walked every graph instead of taking the pre-filter plan, came up short of the rows
+   * in the other buckets, and scanned every bucket after the walk.
+   * <p>
+   * Taken once per search, before the read lock, and the walk over the list checks {@code guard}: the list can be much
+   * longer than this bucket's share of it. A list with more members here than any plan of the search can use (the
+   * pre-filter plan's {@code selectivitySetting} share of the index, or the {@code rows} asked for) is kept as it is, so the
+   * copy stays that small. A predicate decides its members one candidate at a time and is kept as it is too.
+   */
+  private Set<RID> allowListShare(final Set<RID> allowedRIDs, final int rows, final GlobalConfiguration selectivitySetting,
+      final WorkGuard guard) {
+    final int bucketId = metadata.associatedBucketId;
+    if (bucketId < 0 || allowedRIDs == null || allowedRIDs.isEmpty() || allowedRIDs instanceof PredicateRidSet)
+      return allowedRIDs;
+    final float maxSelectivity = Math.max(0f, Math.min(1f, getDatabase().getConfiguration().getValueAsFloat(selectivitySetting)));
+    final int availableVectors = Math.min(ordinalToVectorId.length, vectorIndex().size());
+    final int cap = Math.max(rows, (int) (availableVectors * maxSelectivity));
+
+    final Set<RID> share = new HashSet<>();
+    int examined = 0;
+    for (final RID rid : allowedRIDs) {
+      guard.checkPeriodically(++examined);
+      if (rid.getBucketId() == bucketId) {
+        if (share.size() == cap)
+          return allowedRIDs;
+        share.add(rid);
+      }
+    }
+    return share.size() == allowedRIDs.size() ? allowedRIDs : share;
   }
 
   /**
@@ -9637,8 +9829,43 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return new DefaultSearchScoreProvider(walk, reranker);
   }
 
-  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
-      final Set<RID> allowedRIDs, final WorkGuard guard) {
+  /**
+   * Runs a search under the database read lock and this index's read lock, taken in that order (issue #11836).
+   * <p>
+   * A search reads the vectors it scores through the database ({@code readStoredVectorInPlace}, the record fallback of
+   * {@link ArcadePageVectorValues}), which takes the database read lock, while it holds this index's lock. Every writer of the
+   * index takes the two the other way round: a commit applies its index changes under the database read lock, and a schema
+   * change holds the database write lock. Taking the index lock first deadlocked a search with a DROP INDEX of its index (the
+   * drop held the database lock and waited for the index lock, the search the opposite), and with a schema change of any
+   * other type too: the database lock is fair, so a new reader waits behind a queued writer, the schema change waited for a
+   * commit to leave the database read lock, and the commit waited for the index lock the search held. Taken first, the
+   * database read lock is held for the whole search, so every read of the walk re-enters it and none of them waits.
+   * <p>
+   * Not around the graph build a search may wait for ({@code ensureGraphAvailable}, {@code rebuildGraphBeforeSearch}): a
+   * build reads through the database while it holds {@code graphBuildLock}, so a search waiting for that lock under the
+   * database read lock would deadlock with it behind a queued schema change.
+   *
+   * @param failure what a failure of the search is reported as
+   */
+  private <T> T underSearchLocks(final String failure, final Callable<T> search) {
+    return getDatabase().executeInReadLock(() -> {
+      lock.readLock().lock();
+      try {
+        return search.call();
+      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
+        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
+        throw e;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, failure, e);
+        throw new IndexException(failure, e);
+      } finally {
+        lock.readLock().unlock();
+      }
+    });
+  }
+
+  private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
+      final Set<RID> allowList, final WorkGuard guard) {
     // Track search metrics
     final long startTime = System.currentTimeMillis();
     metrics.incrementSearchOperations();
@@ -9646,8 +9873,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
+      if (requestedK < 0)
+        throw new IllegalArgumentException("k must be >= 0, got " + requestedK);
 
       if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
@@ -9665,7 +9892,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // reranking (NodeQueue.rerank), not an ArcadeDB exception. Short-circuit here, matching the
       // limit <= 0 behavior SQLFunctionVectorNeighbors already applies before ever calling in, and
       // skip the graph build/lock entirely since there is nothing left to search for.
-      if (k == 0)
+      if (requestedK == 0)
         return Collections.emptyList();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
@@ -9699,12 +9926,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Integer.MAX_VALUE, not a k one larger than the live count. Subtracting would cost a pass over the
       // superseded set on every search to tighten an allocation by a handful of entries, and an under-estimate
       // here would drop rows the caller asked for.
-      k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
-      boolean readLockHeld = false;
-      lock.readLock().lock();
-      readLockHeld = true;
-      try {
+      // The members of the allow-list in this bucket (issue #11765), taken before the read lock: a list with none answers here
+      // with nothing, where an empty one would be no filter at all
+      final Set<RID> allowedRIDs = allowListShare(allowList, k, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, guard);
+      if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
+        return Collections.emptyList();
+
+      return underSearchLocks("Error performing vector search", () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet — still return delta-only results if available, and the calling transaction's own
           // uncommitted rows are such results too (issue #7378): an empty index written to inside one transaction
@@ -9838,8 +10068,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
           expectedResults = Math.min(k, availableVectors);
         }
+        // A plain allow-list answers with no more rows than it holds (issue #11765). The search narrowed it to the members in
+        // this bucket (allowListShare), so a filter spread over a type's buckets no longer leaves every sub-index short of the
+        // rows that are in the other buckets, with a scan of every bucket after its walk and a WARNING about a healthy graph
+        final int requested = expectedResults;
+        if (allowedRIDs != null && !allowedRIDs.isEmpty() && !(allowedRIDs instanceof PredicateRidSet))
+          expectedResults = Math.min(expectedResults, allowedRIDs.size());
         if (results.size() < expectedResults) {
-          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
+          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs, requested);
           metrics.incrementBruteForceScans();
           bruteForceScan(scorer, k, allowedRIDs, results, ordinalMap, overlay, guard);
         }
@@ -9849,18 +10085,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 results.size(),
                 skippedOutOfBounds, skippedDeletedOrNull);
         return results;
-
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
-        throw new IndexException("Error performing vector search", e);
-      } finally {
-        if (readLockHeld) {
-          lock.readLock().unlock();
-        }
-      }
+      });
     } finally {
       // Track search latency
       final long elapsed = System.currentTimeMillis() - startTime;
@@ -9870,21 +10095,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * The log line of the issue #3722 shortfall fallback, before the scan that completes the answer. Issue #6502: see
-   * {@link #shortfallIsAllowListDriven}'s javadoc for why it is split.
+   * {@link #shortfallIsAllowListDriven}'s javadoc for why it is split. {@code requested} is the rows asked of this index
+   * before the allow-list's size capped them (issue #11765).
    */
   private void logShortfallCompletion(final int found, final int expectedResults, final int availableVectors,
-      final Set<RID> allowedRIDs) {
+      final Set<RID> allowedRIDs, final int requested) {
     if (allowedRIDs instanceof PredicateRidSet)
       LogManager.instance().log(this, Level.FINE, """
               Graph search returned only %d results (expected %d, available %d) for index %s - the allow-list is a \
               predicate the walk met too few matches of, so completing the answer with a brute-force scan is the \
               expected cost of a selective predicate, not a sign the graph needs rebuilding""", found, expectedResults,
           availableVectors, indexName);
-    else if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
+    else if (shortfallIsAllowListDriven(allowedRIDs, requested))
       LogManager.instance().log(this, Level.FINE, """
               Graph search returned only %d results (expected %d, available %d) for index %s - the RID \
-              allow-list has only %d entries, which is fewer than requested, so completing the answer with a \
-              brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""", found,
+              allow-list has only %d entries for this index, which is fewer than requested, so completing the answer \
+              with a brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""", found,
           expectedResults, availableVectors, indexName, allowedRIDs.size());
     else
       LogManager.instance().log(this, Level.WARNING, """
@@ -10175,7 +10401,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the group keys and the fill state of a walk it ran with widened caps.
    */
   private List<Pair<RID, Float>> groupedSearch(final float[] queryVector, final int limit, final int groupSize,
-      final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
+      final int efSearch, final Set<RID> allowList, final Function<RID, Object> groupKeyResolver,
       final Set<Object> onlyGroups, final float maxDistance, final GroupedCandidates candidates, final WorkGuard guard) {
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
@@ -10219,10 +10445,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       final int maxRows = (int) Math.min((long) limit * groupSize,
           Math.max(vectorIndex().size(), 0) + (long) deltaVectors.size() + pendingCount(overlay));
-      boolean readLockHeld = false;
-      lock.readLock().lock();
-      readLockHeld = true;
-      try {
+      // The members of the allow-list in this bucket (issue #11765); see searchNeighbors
+      final Set<RID> allowedRIDs = allowListShare(allowList, maxRows, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+          guard);
+      if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
+        return Collections.emptyList();
+      return underSearchLocks("Error performing grouped vector search", () -> {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         // Volatile read pinned for the whole query, taken under the read lock because writers mutate this list in
@@ -10447,17 +10675,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 deltaSnapshot.size(), state.outOfBounds, state.deletedOrNull, state.groupFull, state.unresolvedGroup,
                 state.duplicates);
         return results;
-
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing grouped vector search", e);
-        throw new IndexException("Error performing grouped vector search", e);
-      } finally {
-        if (readLockHeld)
-          lock.readLock().unlock();
-      }
+      });
     } finally {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
@@ -10959,8 +11177,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param rerankOversample candidates per requested neighbour to re-rank exactly; {@code 0} for the PQ scores alone, which
    *                        needs no record read. {@link #DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE} is a good start
    */
-  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k, final int efSearch,
-      final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+  public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, final int requestedK,
+      final int efSearch, final int rerankOversample, final Set<RID> allowList, final WorkGuard guard) {
     checkIsValid();
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
@@ -10973,7 +11191,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Fall back to exact search
       LogManager.instance().log(this, Level.FINE,
           "PQ not available for index %s, falling back to exact search", indexName);
-      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
+      return findNeighborsFromVector(queryVector, requestedK, efSearch, allowList, guard);
     }
 
     // Track search metrics. Both halves are recorded together in the finally below rather than the count here and
@@ -10988,8 +11206,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
+      if (requestedK < 0)
+        throw new IllegalArgumentException("k must be >= 0, got " + requestedK);
 
       if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
@@ -11000,7 +11218,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #6531 follow-up: see findNeighborsFromVector's matching short-circuit - k == 0 must not
       // reach GraphSearcher.search() with topK == 0, which NPEs inside JVector's reranking.
-      if (k == 0)
+      if (requestedK == 0)
         return Collections.emptyList();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
@@ -11020,10 +11238,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
       // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
-      k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
-      lock.readLock().lock();
-      try {
+      // The members of the allow-list in this bucket (issue #11765); see searchNeighbors. The setting is the one the pre-filter
+      // plan below is gated by
+      final Set<RID> allowedRIDs = allowListShare(allowList, k, rerank ?
+          GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY :
+          GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY, guard);
+      if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
+        return Collections.emptyList();
+
+      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet - still return delta-only results if available.
           //
@@ -11183,22 +11408,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return results;
         }
 
-        // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
-        // own: the exact search below is the search, and it keeps its own books.
-        handedOffToExactSearch = true;
+        // No answer: the guard refused the graph/PQ pair, and the exact search below answers instead
+        return null;
+      });
+      if (answered != null)
+        return answered;
 
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
-        throw e;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error performing PQ approximate search", e);
-        throw new IndexException("Error performing PQ approximate search", e);
-      } finally {
-        lock.readLock().unlock();
-      }
+      // The guard refused the graph/PQ pair. Nothing was searched, so this attempt is not an operation of its
+      // own: the exact search below is the search, and it keeps its own books.
+      handedOffToExactSearch = true;
 
       // Reached only when the guard above refused the graph/PQ pair - every other path returns from inside the
-      // block. Outside the read lock on purpose: this can rebuild, which takes the write lock.
+      // block. Outside the locks on purpose: this can rebuild, which takes the write lock.
       return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
     } finally {
       if (!handedOffToExactSearch) {
@@ -11270,9 +11491,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Issue #3679: rebuild graph if needed (sync for first build or small graphs, async for large graphs)
     rebuildGraphBeforeSearch(guard);
 
-    boolean readLockHeld = false;
-    lock.readLock().lock();
-    readLockHeld = true;
+    // Not under this index's lock: findNeighborsFromVector takes the database lock and then this one around its walk (issue
+    // #11836), and held across the call this lock would be held while the search takes the database lock and while it waits
+    // for a graph build. The emptiness check is the same unlocked read the clamp of every search makes.
     try {
       // Perform scored search via findNeighborsFromVector (includes delta scan)
       final List<RID> resultRIDs;
@@ -11342,10 +11563,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
       throw new IndexException("Error performing vector search", e);
-    } finally {
-      if (readLockHeld) {
-        lock.readLock().unlock();
-      }
     }
   }
 
@@ -11829,7 +12046,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return true;
     });
     if (releasedPayloads[0] > 0)
-      deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
+      deltaResidentPayloadsChanged(-releasedPayloads[0]);
   }
 
   /**
@@ -12388,9 +12605,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return typeIndex;
   }
 
+  /**
+   * The type that owns this index's bucket was renamed: the index now belongs to the new name. Only the name it reports moves; the
+   * data and graph files keep the names they have, as they do after a compaction, since the schema finds them by component name.
+   * Left on the old name, every reader resolving the index's type failed ({@code SELECT FROM schema:indexes}: "Type with name
+   * ... was not found"), or found an unrelated type created later under that name, until a reload (issue #12035).
+   */
   @Override
   public void updateTypeName(final String newTypeName) {
-    // Type name is immutable for vector indexes
+    metadata.typeName = newTypeName;
   }
 
   @Override
@@ -12862,6 +13085,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public synchronized void onSuperseded() {
     superseded = true;
     cancelInactivityRebuildTimer();
+    // The buffer goes with this instance once the queries still holding it are done, and its successor charges its
+    // own: left open, the payloads of every retired instance would be counted against the database for good (#12379)
+    deltaPayloadAccount.close();
   }
 
   /**
@@ -12876,6 +13102,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // guard and resurrect a fresh Timer.
     valid = false;
     cancelInactivityRebuildTimer();
+
+    // This instance is no longer the schema's (a close, a drop, a simulated crash): whatever its buffer still holds
+    // stops counting against the heap share the vector indexes of the database have together (issue #12379)
+    deltaPayloadAccount.close();
 
     // Shut down the dedicated graph build pool to cancel any in-progress build operations.
     // This interrupts ForkJoinPool workers inside jvector's GraphIndexBuilder.build(),
@@ -13991,6 +14221,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     afterLiveSetReadForTest = hook;
   }
 
+  void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
+    beforeOnDiskGraphSwapForTest = hook;
+  }
+
   /**
    * Whether any deferred materialisation on this instance ran while its thread held the index-wide write lock -
    * the stall the dedicated load lock exists to prevent (issue #6722). Must stay false on every path.
@@ -14203,7 +14437,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             return true;
           });
           if (releasedPayloads[0] > 0)
-            deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
+            deltaResidentPayloadsChanged(-releasedPayloads[0]);
         }
 
         if (inserted + removed > 0) {
@@ -14303,12 +14537,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * build would get (issue #7146), while sizing off the ceiling with no available-heap cap made an online rebuild
    * holding the old graph ask for the same amount whether that headroom existed or not (issue #6503). See
    * {@link VectorHeapBudget#buildCacheBudgetBytes(int)}.
+   * <p>
+   * <b>The search caches' plan is not available (issue #12511).</b> A search cache allocates its chunks on first use, so
+   * the room it planned on and has not filled yet is in the available-heap reading as free, and so is what it filled since
+   * the last collection of the old generation. The build cache used to take those bytes, the searches running next to the
+   * build then filled their caches into them, and a 2 GB heap ran out while a server built the graphs of a 768-dimension
+   * corpus. The whole capacity of the database's search caches is now taken off the available heap before the 90% cap
+   * applies ({@link #availableHeapNetOfSearchCaches(long)}), as {@link #affordableSearchCacheEntries} charges it among the
+   * search caches (issue #12391). The heap gates of a build ({@link #fitSearchBuildToHeap(int, long, long)},
+   * {@link #admitOnlineRebuild(long, long, boolean)}) take the same charge. The share of the ceiling is left as it is, so an
+   * embedded and a served build still agree (issue #7146).
    *
    * @param expectedSize number of vectors the build will walk
    *
    * @return the number of vectors to hold, always positive
    */
   int computeGraphBuildCacheCapacity(final int expectedSize) {
+    final int configured = getGraphBuildCacheSize();
+    if (configured > 0)
+      return configured;
+    return computeGraphBuildCacheCapacity(expectedSize, VectorHeapBudget.maxHeapBytes(), VectorHeapBudget.availableHeapBytes());
+  }
+
+  /**
+   * {@link #computeGraphBuildCacheCapacity(int)} against heap readings the caller supplies, so a test can pin them.
+   *
+   * @param maxHeap       the heap ceiling, as {@link VectorHeapBudget#maxHeapBytes()} reads it
+   * @param availableHeap the heap available now, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   */
+  int computeGraphBuildCacheCapacity(final int expectedSize, final long maxHeap, final long availableHeap) {
     final int configured = getGraphBuildCacheSize();
     if (configured > 0)
       return configured;
@@ -14323,7 +14580,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (heapPercent <= 0)
       return ArcadePageVectorValues.DEFAULT_CACHE_SIZE;
 
-    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent);
+    final long heapBudget = VectorHeapBudget.buildCacheBudgetBytes(heapPercent, maxHeap,
+        availableHeapNetOfSearchCaches(availableHeap));
     final long affordable = Math.max(ArcadePageVectorValues.DEFAULT_CACHE_SIZE,
         heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions));
     final long wanted = Math.max(1, expectedSize);
@@ -14339,22 +14597,37 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the shared cache, or {@code null} when caching is disabled by configuration
    */
   FlatVectorCache getSearchVectorCache() {
-    FlatVectorCache cache = searchVectorCache;
+    return getSearchVectorCache(VectorHeapBudget::availableHeapBytes);
+  }
+
+  /**
+   * {@link #getSearchVectorCache()} against the heap reading the caller supplies, so a test can pin it.
+   *
+   * @param availableHeap read only when the cache may grow, as {@link VectorHeapBudget#availableHeapBytes()}
+   */
+  FlatVectorCache getSearchVectorCache(final LongSupplier availableHeap) {
+    final FlatVectorCache cache = searchVectorCache;
     final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), FlatVectorCache.MAX_CAPACITY,
-        cache != null ? cache.capacity() : 0);
+        cache != null ? cache.capacity() : 0, false, availableHeap);
     if (wanted <= 0)
       return null;
 
     if (cache != null && cache.capacity() >= wanted)
       return cache;
 
-    synchronized (searchVectorCacheLock) {
-      cache = searchVectorCache;
-      if (cache == null || cache.capacity() < wanted) {
-        cache = new FlatVectorCache(metadata.dimensions, wanted);
-        searchVectorCache = cache;
-      }
-      return cache;
+    // Decided again under the lock every sizing takes (issue #12391): two indexes growing at once each read a budget the
+    // other was about to take, and both caches went past it
+    synchronized (SEARCH_CACHE_SIZING_LOCK) {
+      final FlatVectorCache current = searchVectorCache;
+      final int decided = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions),
+          FlatVectorCache.MAX_CAPACITY, current != null ? current.capacity() : 0, false, availableHeap);
+      if (decided <= 0)
+        return current;
+      if (current != null && current.capacity() >= decided)
+        return current;
+      final FlatVectorCache grown = new FlatVectorCache(metadata.dimensions, decided);
+      searchVectorCache = grown;
+      return grown;
     }
   }
 
@@ -14379,24 +14652,37 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * which case every search reads the codes it scores from the pages
    */
   BinaryCodeCache getSearchBinaryCodes() {
+    return getSearchBinaryCodes(VectorHeapBudget::availableHeapBytes);
+  }
+
+  /**
+   * {@link #getSearchBinaryCodes()} against the heap reading the caller supplies, so a test can pin it.
+   *
+   * @param availableHeap read only when the codes may grow, as {@link VectorHeapBudget#availableHeapBytes()}
+   */
+  BinaryCodeCache getSearchBinaryCodes(final LongSupplier availableHeap) {
     if (metadata.quantizationType != VectorQuantizationType.BINARY)
       return null;
-    BinaryCodeCache codes = searchBinaryCodes;
+    final BinaryCodeCache codes = searchBinaryCodes;
     final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
-        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0);
+        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0, true, availableHeap);
     if (wanted <= 0)
       return null;
 
     if (codes != null && codes.capacity() >= wanted)
       return codes;
 
-    synchronized (searchVectorCacheLock) {
-      codes = searchBinaryCodes;
-      if (codes == null || codes.capacity() < wanted) {
-        codes = new BinaryCodeCache(metadata.dimensions, wanted);
-        searchBinaryCodes = codes;
-      }
-      return codes;
+    synchronized (SEARCH_CACHE_SIZING_LOCK) {
+      final BinaryCodeCache current = searchBinaryCodes;
+      final int decided = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
+          BinaryCodeCache.maxCapacity(metadata.dimensions), current != null ? current.capacity() : 0, true, availableHeap);
+      if (decided <= 0)
+        return current;
+      if (current != null && current.capacity() >= decided)
+        return current;
+      final BinaryCodeCache grown = new BinaryCodeCache(metadata.dimensions, decided);
+      searchBinaryCodes = grown;
+      return grown;
     }
   }
 
@@ -14410,21 +14696,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * OOM. The cache only ever grows, so a reading taken while the heap is tight simply declines to grow it further rather than
    * shrinking what is already there.
    * <p>
+   * <b>The share is the database's, not the index's (issue #12391).</b> A type has one vector index per bucket, and each
+   * of them used to plan on the whole percent of what was free when it grew: 48 caches of a 3 GB heap held 2.1 GB and had
+   * planned on 3.4 GB, and the heap ran out. See {@link #affordableSearchCacheEntries(int, long, long, boolean)} for the
+   * rule. A cache grows only under one JVM-wide lock, where the budget is read again: sizing happens O(log n) times over an
+   * index's life, and two indexes deciding at once each took the room the other was about to.
+   * <p>
    * The corpus is the vector ID range rather than the live count: both caches are direct-mapped by id (issues #10968 and
    * #11003), so a capacity at least the range is what keeps every vector in a slot of its own, and a deleted id keeps its
    * place in the range. See {@link #searchCacheCapacity(long, long, int)} for the rule.
    * <p>
    * This runs on every search, and the heap reading polls every memory pool of the JVM. A cache that already has a slot for
-   * every vector id cannot grow, so it is answered without the reading.
+   * every vector id cannot grow, so it is answered without the reading, and so is one the budget refused less than a second
+   * ago (issue #12391): both the reading and the walk over the database's indexes are paid again only after that.
    *
    * @param bytesPerEntry   heap one entry costs
    * @param maxCapacity     the most entries the cache can hold: a capacity asked past it would never be reached, and the
    *                        cache rebuilt on every search for it
    * @param currentCapacity capacity of the cache the index holds, 0 for none
+   * @param sizingCodes     whether the cache sized is the BINARY codes rather than the vectors
    *
    * @return the number of entries to hold, or 0 when caching is disabled
    */
-  private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity) {
+  private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity,
+      final boolean sizingCodes, final LongSupplier availableHeap) {
     final int configured = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
     if (configured < 0)
@@ -14441,8 +14736,118 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (currentCapacity >= idRange)
       return currentCapacity;
 
-    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE, VectorHeapBudget.budgetBytes(heapPercent) / bytesPerEntry);
-    return searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
+    // Refused room a moment ago: the answer is the same until the budget moves, and moving it takes a collection or another
+    // index's cache going away. This is what an index left with no cache pays on every search, so it costs neither the
+    // heap reading nor the walk over the schema's indexes
+    final long declinedAt = sizingCodes ? searchBinaryCodesDeclinedAt : searchVectorCacheDeclinedAt;
+    if (declinedAt != 0L && System.nanoTime() - declinedAt < SEARCH_CACHE_DECLINE_NANOS)
+      return currentCapacity;
+
+    final long affordable = affordableSearchCacheEntries(heapPercent, bytesPerEntry, availableHeap.getAsLong(), sizingCodes);
+    final int capacity = searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
+    if (capacity <= currentCapacity) {
+      // A range the cache does not cover and no room to grow it: what the budget, or the most the cache can hold, allows
+      final long nanoTime = System.nanoTime();
+      // 0 is "never", and the clock has an arbitrary origin: it may read 0, or be negative
+      final long now = nanoTime != 0L ? nanoTime : 1L;
+      if (sizingCodes)
+        searchBinaryCodesDeclinedAt = now;
+      else
+        searchVectorCacheDeclinedAt = now;
+    }
+    return capacity;
+  }
+
+  /**
+   * How many entries one search cache of this index may plan on, given what every other search cache of the database's
+   * vector indexes already plans on (issue #12391), the other cache of this same index included: a BINARY index holds both
+   * the vectors and the codes.
+   * <p>
+   * The percent applies to the heap available now, and what the others plan on - their whole capacity, filled or not, since
+   * a cache fills up to it without asking again - is charged against it first. Together the caches therefore never plan on
+   * more than the percent, however many indexes the schema has. What the others already hold is NOT credited back to the
+   * available heap: the reading is the one of the last collection, and a cache filled since then is in neither it nor any
+   * other figure this method can trust, so a credit would count it twice. The filled part of the others' caches is thus
+   * charged twice instead - once as missing from the available heap, once in their plan - which errs toward smaller caches.
+   * <p>
+   * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
+   * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
+   * 25 MB each at 768 dimensions; past the first, an index gets what the shared budget leaves, and none when it leaves
+   * less than that many entries: its searches read the vectors from the pages.
+   * <p>
+   * The share is the database's, and only the database's: the walk sees the caches of this schema, while the heap reading is
+   * the JVM's. The caches of another database in the same JVM reach this budget only once they are filled and a collection
+   * has counted them in the reading, so each database may still plan on up to the percent.
+   *
+   * @param heapPercent   the share of the heap the search caches of the database may use together
+   * @param bytesPerEntry heap one entry of the cache sized costs
+   * @param availableHeap heap currently available, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   * @param sizingCodes   whether the cache sized is this index's BINARY codes rather than its vectors: only that one cache
+   *                      is left out of the charge, since it is the one being replaced
+   *
+   * @return the entries the cache may hold: at least {@code MIN_SEARCH_CACHE_SIZE}, or 0 when the budget leaves no useful
+   * cache after the caches the database already has
+   */
+  long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap,
+      final boolean sizingCodes) {
+    long othersPlan = 0L;
+    for (final Index index : getDatabase().getSchema().getIndexes()) {
+      if (!(index instanceof LSMVectorIndex owner))
+        continue;
+      final FlatVectorCache vectors = owner.searchVectorCache;
+      if (vectors != null && (owner != this || sizingCodes))
+        othersPlan += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
+      final BinaryCodeCache codes = owner.searchBinaryCodes;
+      if (codes != null && (owner != this || !sizingCodes))
+        othersPlan += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
+    }
+    final long budget = VectorHeapBudget.budgetBytes(heapPercent, availableHeap);
+    if (othersPlan == 0L)
+      return Math.max(MIN_SEARCH_CACHE_SIZE, budget / bytesPerEntry);
+
+    final long entries = Math.max(0L, budget - othersPlan) / bytesPerEntry;
+    // A few slots are no cache: direct-mapped by id, each id of a range far larger than them evicts the one it shares its slot
+    // with on every search, which costs a write per miss and saves next to no page read
+    return entries < MIN_SEARCH_CACHE_SIZE ? 0L : entries;
+  }
+
+  /**
+   * The heap the search caches of the database's vector indexes plan on, filled or not (issue #12511): the whole capacity
+   * of each vector cache and of each BINARY code cache, as {@link #affordableSearchCacheEntries} charges it.
+   * <p>
+   * What a cache already holds is charged too, although the available-heap reading may already count it as live. That
+   * reading is the one of the last collection of the old generation: a {@link FlatVectorCache} allocates its chunks on first
+   * use, and a chunk filled since that collection is in neither the reading nor any other figure this method can trust.
+   * Crediting it back would let a build take the bytes a search filled a moment earlier, so the filled part errs toward a
+   * smaller build cache instead.
+   *
+   * @return the bytes, 0 when the database has no search cache
+   */
+  long searchCachesPlannedBytes() {
+    long planned = 0L;
+    for (final Index index : getDatabase().getSchema().getIndexes())
+      if (index instanceof LSMVectorIndex owner) {
+        final FlatVectorCache vectors = owner.searchVectorCache;
+        if (vectors != null)
+          planned += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
+        final BinaryCodeCache codes = owner.searchBinaryCodes;
+        if (codes != null)
+          planned += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
+      }
+    return planned;
+  }
+
+  /**
+   * The available-heap reading less what the database's search caches plan on ({@link #searchCachesPlannedBytes()}): the
+   * heap a graph build and its cache may size themselves against without landing on bytes a search is about to fill
+   * (issue #12511).
+   *
+   * @param availableHeap the heap available now, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   *
+   * @return the bytes, never negative
+   */
+  long availableHeapNetOfSearchCaches(final long availableHeap) {
+    return Math.max(0L, availableHeap - searchCachesPlannedBytes());
   }
 
   /**
@@ -14460,8 +14865,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the range uncovered while the budget covers it.
    *
    * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SIZE}
-   * @param affordable      the entries the budget affords, at least {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache
-   *                        can hold
+   * @param affordable      the entries the budget affords, 0 when it affords none (issue #12391) and otherwise at least
+   *                        {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache can hold
    * @param currentCapacity capacity of the cache the index holds, 0 for none
    *
    * @return the number of entries to hold
