@@ -151,15 +151,37 @@ class Issue7507LeaderForwardTimeoutTest {
    * all, otherwise a long restore silently gets the 30 s budget.
    */
   @Test
-  void onlyRestoreAndImportAreClassifiedAsLongRunning() {
+  void onlyRestoreImportAndBackupAreClassifiedAsLongRunning() {
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("restore backup mybackup.zip")).isTrue();
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("restore database mydb")).isTrue();
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("import database file:///data.csv")).isTrue();
+    // Issue #12417: the leader answers a forwarded backup once the archive is written
+    assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("trigger backup mydb")).isTrue();
 
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("create database mydb")).isFalse();
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("drop database mydb")).isFalse();
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("create user { \"name\": \"bob\" }")).isFalse();
     assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("drop user bob")).isFalse();
+    assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("list backups mydb")).isFalse();
+    assertThat(PostServerCommandHandler.isLongRunningForwardedCommand("delete backup mydb mybackup.zip")).isFalse();
+  }
+
+  /**
+   * Issue #12417: the long deadline is only ever read for a command that forwards, so each long-running command
+   * must be in the forwarded set too, and the whole backup family has to be: {@code restore backup} reads the
+   * leader's backup directory, so the commands that write, list and delete archives act on the same one.
+   */
+  @Test
+  void theBackupFamilyIsForwardedToTheLeaderAsOne() {
+    for (final String command : new String[] { "trigger backup mydb", "list backups mydb", "delete backup mydb mybackup.zip",
+        "restore backup mydb mybackup.zip", "restore database mydb", "import database file:///data.csv", "create database mydb",
+        "drop database mydb", "create user { \"name\": \"bob\" }", "drop user bob" })
+      assertThat(PostServerCommandHandler.isForwardedToLeader(command)).as(command).isTrue();
+
+    // Each node keeps its own backup configuration and settings: those are answered where they are asked
+    for (final String command : new String[] { "get backup config", "set backup config", "get server events",
+        "set server setting arcadedb.x y", "close database mydb", "open database mydb" })
+      assertThat(PostServerCommandHandler.isForwardedToLeader(command)).as(command).isFalse();
   }
 
   /**
