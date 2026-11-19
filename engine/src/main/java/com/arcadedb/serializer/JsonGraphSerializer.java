@@ -66,6 +66,15 @@ public class JsonGraphSerializer extends JsonSerializer {
   }
 
   public JSONObject serializeGraphElement(final Document document, final JSONObject object) {
+    beginWriting(document);
+    try {
+      return serializeGraphElementContent(document, object);
+    } finally {
+      endWriting();
+    }
+  }
+
+  private JSONObject serializeGraphElementContent(final Document document, final JSONObject object) {
     final JSONObject properties;
 
     if (object.has("p")) {
@@ -92,12 +101,13 @@ public class JsonGraphSerializer extends JsonSerializer {
 
       if (value != null) {
         if (value instanceof Document document1)
-          value = serializeGraphElement(document1, new JSONObject());
+          // a record holding itself is written as its RID inside its own element (issue #11850)
+          value = isBeingWritten(document1) ? referenceTo(document1) : serializeGraphElement(document1, new JSONObject());
         else if (value instanceof Collection collection) {
           final List<Object> list = new ArrayList<>();
           for (Object o : collection) {
             if (o instanceof Document document1)
-              o = serializeGraphElement(document1, new JSONObject());
+              o = isBeingWritten(document1) ? referenceTo(document1) : serializeGraphElement(document1, new JSONObject());
             else
               // same as the scalar case below: a non-finite item would otherwise be rewritten to 0 by JSONArray.put(Number)
               o = NonFiniteNumbers.encode(o);

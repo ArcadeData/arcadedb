@@ -40,7 +40,6 @@ public class SQLMethodAsShort extends AbstractSQLMethod {
       final Object[] params) {
     if (value instanceof Number number)
       return number.shortValue();
-    final String text = numericTextOrNull(value);
-    return text != null ? Short.valueOf(text) : null;
+    return parseNumberOrNull(value, Short::valueOf);
   }
 }

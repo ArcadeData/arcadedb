@@ -70,7 +70,7 @@ class GraphViewPinCensusTest {
       "the planner: its plans are cached, so they hold the live view and the operators pin it when they run",
       "query/opencypher/optimizer/statistics/StatisticsProvider", "the planner's estimates: one count per lookup, read once",
       "query/sql/executor/MatchExecutionPlanner", "the SQL planner: MatchGAVFusedStep pins the view when it runs",
-      "query/opencypher/executor/CypherExecutionPlan$PairJoinStatistics#edges",
+      "query/opencypher/executor/CountStarShapeDetector$PairJoinStatistics#edges",
       "the planner's row estimate: one countAllEdges() per lookup",
       "graph/olap/ShortestPathFinder#find", "captures one snapshot of the view itself (currentSnapshot()) and reads only through it",
       "query/opencypher/procedures/algo/AbstractAlgoProcedure#findReadyProvider",
@@ -79,7 +79,7 @@ class GraphViewPinCensusTest {
   /** Operators and steps holding a view in a field without pinning it themselves, by class, with the reason. */
   private static final Map<String, String> UNPINNED_HOLDERS = new TreeMap<>(Map.of(
       "query/opencypher/executor/steps/GAVOneHopScanStep",
-      "built for one execution by CypherExecutionPlan.tryGAVOneHopScan(), with the statement's pin"));
+      "built for one execution by AggregationShortcutPlanner.tryGAVOneHopScan(), with the statement's pin"));
 
   @Test
   void everyLookupOfAViewIsPinned() throws Exception {

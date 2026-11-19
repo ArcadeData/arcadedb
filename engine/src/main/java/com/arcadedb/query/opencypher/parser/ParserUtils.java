@@ -21,8 +21,10 @@ package com.arcadedb.query.opencypher.parser;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.LabelPredicate;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -33,6 +35,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 /**
  * Utility methods for Cypher parser operations.
@@ -167,14 +170,19 @@ public class ParserUtils {
    * negation ({@code !A}), the wildcard ({@code %}) or a mix of {@code &} and {@code |} has no such description: read
    * through those two methods alone it lost the operator without an error, so {@code (n:!A)} matched the {@code A}
    * nodes (issue #8992). Every builder asks this first and evaluates the returned tree instead.
+   * <p>
+   * A dynamic {@code $any(expr)} has no such description either (it is a disjunction of what {@code expr} evaluates to, which
+   * a label list read as a conjunction lost, issue #12338), and a dynamic label under one of the operators above is a
+   * {@link LabelPredicate.Dynamic} operand of the tree, compiled with {@code parser} and evaluated per row (issue #12339:
+   * {@code [r:R&$('R')]} used to be refused).
    *
-   * @throws CommandParsingException when the expression combines a dynamic {@code $(...)} label with one of those
-   *                                 operators, which is not supported
+   * @param parser compiles the expression of a dynamic label
    */
-  public static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpressionContext ctx) {
+  public static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpressionContext ctx,
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
     if (ctx == null || isPlainLabelExpression(ctx))
       return null;
-    return buildLabelPredicate(ctx.labelExpression4(), ctx);
+    return buildLabelPredicate(ctx.labelExpression4(), parser);
   }
 
   /**
@@ -183,12 +191,13 @@ public class ParserUtils {
    * description in it either: it used to match both {@code R} and {@code S} relationships, while a relationship has
    * exactly one type and Neo4j matches none.
    */
-  public static LabelPredicate buildRelationshipTypePredicate(final Cypher25Parser.LabelExpressionContext ctx) {
+  public static LabelPredicate buildRelationshipTypePredicate(final Cypher25Parser.LabelExpressionContext ctx,
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
     if (ctx == null)
       return null;
     if (isPlainLabelExpression(ctx) && !hasOperator(ctx, Cypher25Parser.LabelExpression3Context.class))
       return null;
-    return buildLabelPredicate(ctx.labelExpression4(), ctx);
+    return buildLabelPredicate(ctx.labelExpression4(), parser);
   }
 
   /**
@@ -208,6 +217,56 @@ public class ParserUtils {
   public static LabelCheckExpression labelCheckOn(final String variable, final LabelPredicate predicate,
       final Cypher25Parser.LabelExpressionContext ctx) {
     return new LabelCheckExpression(new VariableExpression(variable), predicate, variable + ctx.getText());
+  }
+
+  /**
+   * Compiles the Cypher 25 dynamic {@code $(expression)} labels of a label expression, or returns {@code null} when it has
+   * none.
+   */
+  public static List<Expression> parseDynamicLabels(final Cypher25Parser.LabelExpressionContext ctx,
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
+    if (ctx == null)
+      return null;
+    final List<Cypher25Parser.ExpressionContext> contexts = collectDynamicLabelContexts(ctx);
+    if (contexts.isEmpty())
+      return null;
+    final List<Expression> out = new ArrayList<>(contexts.size());
+    for (final Cypher25Parser.ExpressionContext expressionCtx : contexts)
+      out.add(parser.apply(expressionCtx));
+    return out;
+  }
+
+  /**
+   * The predicate a READ pattern element carries for a label expression with Cypher 25 dynamic {@code $(expr)} labels:
+   * {@code (b:$(expr))}, {@code (b:A|$(expr))}, {@code [r:$(expr)]}. Every read consumer of a pattern evaluates the
+   * element's inline predicate - the clause WHERE it is hoisted into, the single and the variable-length hop, OPTIONAL
+   * MATCH, pattern comprehensions and predicates, {@code COUNT { }}, {@code EXISTS { }} - so the dynamic label is honoured
+   * by all of them instead of only by the steps that read {@code NodePattern.getDynamicLabels()} (issue #11776). For a
+   * relationship, the static types are kept in the check too, since the pattern's type filter is then dropped.
+   * <p>
+   * On the anchor of a MATCH the dynamic expression is evaluated twice per row, once to pick the label scan and once by
+   * this check, so a non-deterministic expression ({@code rand()}) can disagree with itself.
+   */
+  public static LabelCheckExpression dynamicLabelCheckOn(final String variable, final List<String> staticLabels,
+      final List<Expression> dynamicLabels, final Cypher25Parser.LabelExpressionContext ctx) {
+    final LabelCheckExpression.LabelOperator operator = isLabelDisjunction(ctx) ?
+        LabelCheckExpression.LabelOperator.OR :
+        LabelCheckExpression.LabelOperator.AND;
+    return new LabelCheckExpression(new VariableExpression(variable), staticLabels, dynamicLabels, operator,
+        variable + ctx.getText());
+  }
+
+  /**
+   * The static labels of a disjunction, as literal expressions, followed by its dynamic labels: the form a node pattern
+   * {@code (n:A|$(expr))} keeps, so the anchor scan still resolves every alternative and no consumer reads the static
+   * list alone as the filter (issue #11776).
+   */
+  public static List<Expression> staticLabelsFirst(final List<String> staticLabels, final List<Expression> dynamicLabels) {
+    final List<Expression> all = new ArrayList<>(staticLabels.size() + dynamicLabels.size());
+    for (final String label : staticLabels)
+      all.add(new LiteralExpression(label, label));
+    all.addAll(dynamicLabels);
+    return all;
   }
 
   /** ANDs a pattern element's label check (may be null) with its inline WHERE predicate (may be null). */
@@ -231,8 +290,9 @@ public class ParserUtils {
       return false;
     if (node instanceof Cypher25Parser.LabelExpression2Context le2 && !le2.EXCLAMATION_MARK().isEmpty())
       return false;
-    if (node instanceof Cypher25Parser.DynamicLabelContext)
-      return true;
+    if (node instanceof Cypher25Parser.DynamicLabelContext dynamic)
+      // $any(expr) is a disjunction of what expr evaluates to, which no flat label list says (issue #12338)
+      return dynamic.dynamicAnyAllExpression().ANY() == null;
     for (int i = 0; i < node.getChildCount(); i++)
       if (!isFreeOfNegationAndWildcard(node.getChild(i)))
         return false;
@@ -240,40 +300,41 @@ public class ParserUtils {
   }
 
   private static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpression4Context ctx,
-      final Cypher25Parser.LabelExpressionContext root) {
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
     final List<Cypher25Parser.LabelExpression3Context> operands = ctx.labelExpression3();
     if (operands.size() == 1)
-      return buildLabelPredicate(operands.getFirst(), root);
+      return buildLabelPredicate(operands.getFirst(), parser);
     final LabelPredicate[] out = new LabelPredicate[operands.size()];
     for (int i = 0; i < out.length; i++)
-      out[i] = buildLabelPredicate(operands.get(i), root);
+      out[i] = buildLabelPredicate(operands.get(i), parser);
     return new LabelPredicate.Or(out);
   }
 
   private static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpression3Context ctx,
-      final Cypher25Parser.LabelExpressionContext root) {
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
     final List<Cypher25Parser.LabelExpression2Context> operands = ctx.labelExpression2();
     if (operands.size() == 1)
-      return buildLabelPredicate(operands.getFirst(), root);
+      return buildLabelPredicate(operands.getFirst(), parser);
     final LabelPredicate[] out = new LabelPredicate[operands.size()];
     for (int i = 0; i < out.length; i++)
-      out[i] = buildLabelPredicate(operands.get(i), root);
+      out[i] = buildLabelPredicate(operands.get(i), parser);
     return new LabelPredicate.And(out);
   }
 
   private static LabelPredicate buildLabelPredicate(final Cypher25Parser.LabelExpression2Context ctx,
-      final Cypher25Parser.LabelExpressionContext root) {
+      final Function<Cypher25Parser.ExpressionContext, Expression> parser) {
     final Cypher25Parser.LabelExpression1Context inner = ctx.labelExpression1();
     LabelPredicate result;
     if (inner instanceof Cypher25Parser.ParenthesizedLabelExpressionContext parenthesized)
-      result = buildLabelPredicate(parenthesized.labelExpression4(), root);
+      result = buildLabelPredicate(parenthesized.labelExpression4(), parser);
     else if (inner instanceof Cypher25Parser.AnyLabelContext)
       result = LabelPredicate.AnyLabel.INSTANCE;
     else if (inner instanceof Cypher25Parser.LabelNameContext)
       result = new LabelPredicate.Name(stripBackticks(inner.getText()));
-    else
-      throw new CommandParsingException("UnexpectedSyntax: a dynamic label $(...) cannot be combined with '!', '%' or a"
-          + " mix of '&' and '|' in the label expression '" + root.getText() + "'");
+    else {
+      final Cypher25Parser.DynamicAnyAllExpressionContext dynamic = ((Cypher25Parser.DynamicLabelContext) inner).dynamicAnyAllExpression();
+      result = new LabelPredicate.Dynamic(parser.apply(dynamic.expression()), dynamic.ANY() != null);
+    }
     // '!!A' is A: only the parity of the marks matters.
     if ((ctx.EXCLAMATION_MARK().size() & 1) == 1)
       result = new LabelPredicate.Not(result);

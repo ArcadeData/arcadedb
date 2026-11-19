@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -113,7 +114,7 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
 
   @Test
   void aFailedBatchDoesNotRollBackTheCallersTransaction() {
-    database.transaction(() -> {
+    inServerOpenedTransaction(() -> {
       database.command("opencypher", "CREATE (:Pre {v: 1})");
       database.command("opencypher", BODY + "ON ERROR CONTINUE");
       assertThat(countLabel("Pre")).isEqualTo(1L);
@@ -185,7 +186,7 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
 
   @Test
   void aBodyFailureInsideACallerTransactionKeepsTheCallersWritesUnderContinue() {
-    database.transaction(() -> {
+    inServerOpenedTransaction(() -> {
       database.command("opencypher", "CREATE (:Pre {v: 1})");
       database.command("opencypher", FAILING_BODY + "ON ERROR CONTINUE");
       assertThat(countLabel("Pre")).isEqualTo(1L);
@@ -196,7 +197,7 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
 
   @Test
   void aBodyFailureInsideACallerTransactionKeepsTheCallersWritesUnderBreak() {
-    database.transaction(() -> {
+    inServerOpenedTransaction(() -> {
       database.command("opencypher", "CREATE (:Pre {v: 1})");
       database.command("opencypher", FAILING_BODY + "ON ERROR BREAK");
       assertThat(countLabel("Pre")).isEqualTo(1L);
@@ -233,6 +234,28 @@ class CypherCallInTransactionsOnErrorIssue11595Test extends TestHelper {
       assertThat(status.get("transactionId")).isNotNull();
       assertThat(status.get("errorMessage")).isNull();
     }
+  }
+
+  /**
+   * Since #11588 a transaction its caller owns refuses CALL { ... } IN TRANSACTIONS (#12386), so the one surrounding
+   * transaction the statement still runs in is the implicit one a server opens around a request: what the HTTP auto-commit
+   * wrapper does around every command it runs.
+   */
+  private void inServerOpenedTransaction(final Runnable body) {
+    database.transaction(() -> {
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+      body.run();
+    });
+  }
+
+  @Test
+  void aFailedBatchInsideATransactionTheCallerOwnsIsRefusedAndLeavesNothing() {
+    assertThatThrownBy(() -> database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Pre {v: 1})");
+      database.command("opencypher", BODY + "ON ERROR CONTINUE");
+    })).hasStackTraceContaining("can only be executed in an implicit transaction");
+    assertThat(countLabel("Pre")).isZero();
+    assertThat(countX()).isEqualTo(1L);
   }
 
   private long countX() {
