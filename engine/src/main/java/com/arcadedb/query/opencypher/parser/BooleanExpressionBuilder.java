@@ -454,7 +454,7 @@ final class BooleanExpressionBuilder {
       final Cypher25Parser.LabelExpressionContext labelExprCtx,
       final String text) {
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
-    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx, expressionBuilder::parseExpression);
     if (predicate != null)
       return new LabelCheckExpression(variableExpr, predicate, text);
     // Same extraction the node pattern uses, so `n:`Event Message`` in a WHERE resolves the very
@@ -466,7 +466,9 @@ final class BooleanExpressionBuilder {
         LabelCheckExpression.LabelOperator.OR :
         LabelCheckExpression.LabelOperator.AND;
 
-    return new LabelCheckExpression(variableExpr, labels, operator, text);
+    // The dynamic $(expr) labels are evaluated per row with the static ones; dropped, the check was always true (issue #11776)
+    return new LabelCheckExpression(variableExpr, labels,
+        ParserUtils.parseDynamicLabels(labelExprCtx, expressionBuilder::parseExpression), operator, text);
   }
 
   private Object parseValueString(final String value) {

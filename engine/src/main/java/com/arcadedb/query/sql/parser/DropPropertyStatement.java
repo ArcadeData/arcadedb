@@ -22,10 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -33,8 +30,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -81,43 +76,16 @@ public class DropPropertyStatement extends DDLStatement {
       }
       throw new SchemaException("Property '" + propertyName + "' not found on class " + typeName);
     }
-    final List<TypeIndex> indexes = sourceClass.getIndexesByProperties(propertyName.getStringValue());
-    if (!indexes.isEmpty()) {
-      if (force) {
-        // One statement: the indexes go together or not at all (issue #10589), not one after the other with a refusal from the second
-        // coming after the first was gone
-        final List<String> indexNames = new ArrayList<>(indexes.size());
-        for (final Index index : indexes)
-          indexNames.add(index.getName());
-        database.getSchema().getEmbedded().dropIndexes(indexNames);
-
-        for (final Index index : indexes) {
-          final ResultInternal result = new ResultInternal(database);
-          result.setProperty("operation", "cascade drop index");
-          result.setProperty("indexName", index.getName());
-          rs.add(result);
-        }
-      } else {
-        final StringBuilder indexNames = new StringBuilder();
-
-        boolean first = true;
-        for (final TypeIndex index : indexes) {
-          if (!first) {
-            indexNames.append(", ");
-          } else {
-            first = false;
-          }
-          indexNames.append(index.getName());
-        }
-
-        throw new ObjectInUseException(
-            "Property used in indexes (" + indexNames
-                + "). Please drop these indexes before removing property or use FORCE parameter.");
-      }
+    // The indexes on the property (the type's own and the ones a SUBTYPE declared on the inherited property), the refusals and the
+    // drops are ONE schema change of the type (issue #12034): a refusal of the property found after FORCE had dropped its indexes left
+    // the property in place and its UNIQUE index gone. Without FORCE an index on the property refuses with an ObjectInUseException
+    final LocalDocumentType type = database.getSchema().getEmbedded().getType(sourceClass.getName());
+    for (final String indexName : type.dropPropertyAndItsIndexes(propertyName.getStringValue(), force)) {
+      final ResultInternal result = new ResultInternal(database);
+      result.setProperty("operation", "cascade drop index");
+      result.setProperty("indexName", indexName);
+      rs.add(result);
     }
-
-    // REMOVE THE PROPERTY
-    sourceClass.dropProperty(propertyName.getStringValue());
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "drop property");

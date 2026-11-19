@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.OutsideCallerTransaction;
 import com.arcadedb.engine.BackupDirectoryResolver;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
@@ -84,11 +85,6 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
     result.setProperty("operation", "backup database");
     if (targetUrl != null)
       result.setProperty("target", targetUrl);
-
-    if (context.getDatabase().isTransactionActive() && context.getDatabase().getTransaction().hasChanges()) {
-      LogManager.instance().log(this, Level.SEVERE, "Found pending transaction. Rolling it back before the backup...");
-      context.getDatabase().rollback();
-    }
 
     // TAKE THE PER-DATABASE MAINTENANCE SLOT (issue #7443). BACKUP DATABASE reads the whole database off disk and
     // writes an archive, exactly as the server's own 'trigger backup' and the auto-backup schedule do, but being a
@@ -166,7 +162,10 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         }
 
         try {
-          final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+          // The archive holds the database as committed, never the caller's pending changes, so it is written outside the
+          // caller's transaction, which stays as it was (issue #11781): it used to be rolled back first, losing its writes
+          final String backupFile = OutsideCallerTransaction.call(context.getDatabase(), "BackupDatabase", false,
+              () -> (String) clazz.getMethod("backupDatabase").invoke(backup));
 
           // PRUNE THE DIRECTORY JUST WRITTEN INTO (issue #9844). The statement is the other on-demand entry point next to the
           // control plane's 'trigger backup', which prunes since #7472, and it wrote into the same directory without ever

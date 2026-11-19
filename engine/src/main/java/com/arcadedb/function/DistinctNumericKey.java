@@ -26,6 +26,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
 import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -47,8 +49,8 @@ import java.util.function.Function;
  * {@code Long.valueOf(1)} and {@code Double.valueOf(1.0)} as distinct, because Java's per-type
  * {@code equals()}/{@code hashCode()} never compares across boxed numeric types. See issue #5789.
  * A value that is an exact-integer Java numeric type ({@link Long}, {@link Integer}, {@link Short},
- * {@link Byte}) canonicalizes to its {@code long} value, which is always exact. Any other
- * {@link Number} (typically {@link Double}, {@link Float}, or {@link java.math.BigDecimal})
+ * {@link Byte}) canonicalizes to its {@code long} value, which is always exact. A {@link BigDecimal} or {@link BigInteger} is
+ * keyed exactly (see {@link #canonicalDecimal}). Any other {@link Number} (typically {@link Double} or {@link Float})
  * canonicalizes to the same {@code long} value when it represents a finite integer within the range
  * a {@code double} represents integers exactly (|value| &lt;= 2^53), so it lines up with the
  * exact-integer-type canonicalization above; otherwise it canonicalizes to its {@code double} value.
@@ -88,7 +90,9 @@ import java.util.function.Function;
  */
 public final class DistinctNumericKey {
   /** 2^53: the largest integer magnitude a double represents exactly. */
-  private static final long MAX_EXACT_DOUBLE_INTEGER = 1L << 53;
+  private static final long       MAX_EXACT_DOUBLE_INTEGER = 1L << 53;
+  private static final BigDecimal LONG_MIN                 = BigDecimal.valueOf(Long.MIN_VALUE);
+  private static final BigDecimal LONG_MAX                 = BigDecimal.valueOf(Long.MAX_VALUE);
 
   private DistinctNumericKey() {
   }
@@ -121,6 +125,12 @@ public final class DistinctNumericKey {
     // A float goes through its decimal form, as Cypher's = reads it (issue #7609): 0.1f and 0.1 are equal there, so they share a key
     if (value instanceof Float f)
       return canonicalDouble(Type.widenFloat(f));
+    // A DECIMAL is keyed exactly: narrowed to a double, 9007199254740993 and 9007199254740992 were one key, and set(), difference(),
+    // count(DISTINCT) merged two values = tells apart (issue #11772)
+    if (value instanceof BigDecimal bigDecimal)
+      return canonicalDecimal(bigDecimal);
+    if (value instanceof BigInteger bigInteger)
+      return canonicalDecimal(new BigDecimal(bigInteger));
     if (value instanceof Number number)
       return canonicalDouble(number.doubleValue());
 
@@ -177,6 +187,27 @@ public final class DistinctNumericKey {
     // Temporals last: they are the rarest group key, and what they cost is paid by the values that reach here
     final Object temporal = TemporalUtil.distinctKey(value);
     return temporal != null ? temporal : value;
+  }
+
+  /**
+   * The canonical form of a DECIMAL: the key of the double whose decimal form is that very number, so {@code 0.1} as a DECIMAL and
+   * as a DOUBLE, or {@code 2} as a DECIMAL and as an INTEGER, share a key; the {@code long} of an integer in the {@code long} range,
+   * as an INTEGER or a LONG keys; and otherwise the number itself with its trailing zeros stripped, so {@code 1.0} and {@code 1.00}
+   * share a key and two numbers that one double stands for do not (the rule {@link Type#normalizeNumberForKey} applies to SQL
+   * DISTINCT and GROUP BY).
+   */
+  private static Object canonicalDecimal(final BigDecimal value) {
+    // The common DECIMAL key, a whole number of up to 18 digits at scale 0, is its long with no stripping and no allocation but the box
+    if (value.scale() == 0 && value.precision() <= 18)
+      return value.longValueExact();
+    final BigDecimal stripped = value.signum() == 0 ? BigDecimal.ZERO : value.stripTrailingZeros();
+    if (stripped.scale() <= 0 && stripped.precision() - stripped.scale() <= 19 && stripped.compareTo(LONG_MIN) >= 0
+        && stripped.compareTo(LONG_MAX) <= 0)
+      return stripped.longValueExact();
+    final double d = stripped.doubleValue();
+    if (!Double.isInfinite(d) && BigDecimal.valueOf(d).compareTo(stripped) == 0)
+      return canonicalDouble(d);
+    return stripped;
   }
 
   /** The canonical form of a number held as a double, see the numeric rule of the class. */

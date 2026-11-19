@@ -18,11 +18,14 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.function.CypherBuiltinFunctions;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
@@ -35,11 +38,16 @@ import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 
+import java.util.Set;
+
 /**
  * Whether a Cypher predicate can be evaluated by the workers of a parallel scan (issue #8725): built only of the nodes
- * below, each of which reads the row and the command's parameters and nothing else. A function call, a subquery, a
- * pattern or a comprehension may keep state, call user code or need the rest of the pipeline, so a predicate with one
- * of them keeps the scan on the calling thread, as does any node this list does not know.
+ * below, each of which reads the row and the command's parameters and nothing else. A subquery, a pattern or a
+ * comprehension may need the rest of the pipeline, so a predicate with one of them keeps the scan on the calling thread, as
+ * does any node this list does not know. A function call joins the list when it calls one of the built-in scalar functions
+ * of {@link #PARALLEL_SAFE_FUNCTIONS} (issue #11873): a user-defined function, a SQL function, a function registered over
+ * a built-in name, an aggregate, or a function whose answer is not decided by its arguments alone keeps the scan
+ * sequential.
  * <p>
  * The workers share the one predicate instance, where a SQL scan gives each its own copy of the AST. A node joins the list
  * only if evaluating it is thread-safe: no mutable state, or state published through volatile immutable snapshots as
@@ -48,6 +56,40 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class ParallelSafeExpressions {
+  /**
+   * The built-in scalar functions the workers of a parallel scan may call (issue #11873): the answer is decided by the
+   * arguments alone, they read nothing but the arguments (the record a node argument is, never another record or the graph
+   * around it), write nothing, and their executors hold no mutable state, which {@code ParallelSafeExpressionsStateTest}
+   * checks for every name here. Each is a name {@link CypherBuiltinFunctions} lists, which the function factory resolves to
+   * an executor of its own as long as no function is registered over it ({@link #isParallelSafeFunction}).
+   * <p>
+   * Left out on purpose: {@code rand()}, {@code randomUUID()}, {@code timestamp()} and the temporal constructors, whose
+   * answer depends on when they run; {@code file()} and {@code linenumber()}, which read the LOAD CSV row context;
+   * {@code startNode()}, {@code endNode()} and the path functions, which load other records; the aggregates.
+   */
+  public static final Set<String> PARALLEL_SAFE_FUNCTIONS = Set.of(
+      // Math
+      "abs", "ceil", "ceiling", "floor", "round", "sign", "sqrt", "exp", "log", "ln", "log10", "isnan", "pi", "e",
+      "sin", "cos", "tan", "cot", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "coth", "degrees", "radians",
+      "haversin",
+      // String
+      "tolower", "toupper", "lower", "upper", "trim", "btrim", "ltrim", "rtrim", "replace", "substring", "left", "right",
+      "split", "reverse", "normalize", "isnormalized", "char_length", "character_length", "charlength", "char.length",
+      "character.length",
+      // Conversion
+      "tostring", "tointeger", "tofloat", "toboolean", "tostringornull", "tointegerornull", "tofloatornull",
+      "tobooleanornull", "tostringlist", "tointegerlist", "tofloatlist", "tobooleanlist",
+      // Lists and predicates
+      "size", "head", "last", "tail", "isempty", "exists",
+      // General
+      "coalesce", "nullif", "valuetype",
+      // The node itself
+      "id", "elementid", "labels", "keys", "properties",
+      // Vectors
+      "vector.similarity.cosine", "vector.similarity.euclidean", "vector.distance", "vector.distance.cosine",
+      "vector.distance.euclidean", "vector.distance.manhattan", "vector.norm", "vector.dimension.count",
+      "vector_dimension_count");
+
   private ParallelSafeExpressions() {
   }
 
@@ -73,8 +115,19 @@ public final class ParallelSafeExpressions {
       case StringMatchExpression s -> isParallelSafe(s.getExpression(), variable) && isParallelSafe(s.getPattern(), variable);
       case InExpression in -> isParallelSafe(in.getExpression(), variable) && allSafe(in.getList(), variable);
       case ListExpression list -> allSafe(list.getElements(), variable);
+      case FunctionCallExpression call -> isParallelSafeFunction(call) && allSafe(call.getArguments(), variable);
       default -> false;
     };
+  }
+
+  /**
+   * Whether a call is one of {@link #PARALLEL_SAFE_FUNCTIONS} and resolves to the built-in: the function factory asks the
+   * registry of namespaced functions before its own built-ins, so a function registered under the name would answer instead.
+   */
+  static boolean isParallelSafeFunction(final FunctionCallExpression call) {
+    final String name = call.getFunctionName();
+    return !call.isDistinct() && PARALLEL_SAFE_FUNCTIONS.contains(name) && CypherBuiltinFunctions.isBuiltin(name)
+        && CypherFunctionRegistry.get(name) == null;
   }
 
   private static boolean allSafe(final Iterable<?> expressions, final String variable) {
