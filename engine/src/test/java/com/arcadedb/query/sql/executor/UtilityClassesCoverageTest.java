@@ -222,7 +222,9 @@ class UtilityClassesCoverageTest {
   @Test
   void emptyResultGetPropertyNames() {
     final EmptyResult result = new EmptyResult();
-    assertThat(result.getPropertyNames()).isNull();
+    // an empty row lists no name; null broke every caller that walks the set (toJSON(), listsProperty())
+    assertThat(result.getPropertyNames()).isEmpty();
+    assertThat(result.listsProperty("any")).isFalse();
   }
 
   @Test

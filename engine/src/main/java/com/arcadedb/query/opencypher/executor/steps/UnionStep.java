@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.HeapEstimator;
@@ -185,6 +186,11 @@ public class UnionStep extends AbstractExecutionStep {
        * sharing one RID (issue #6488) collapse together.
        */
       private List<Object> buildResultKey(final Result result) {
+        // A node a later branch's label write replaced is keyed by its original identity, so the row of an earlier branch
+        // holding the original and the row of a later one holding the replacement are one row (issue #10614)
+        final LabelReplacements replacements = LabelReplacements.existing(context);
+        if (replacements != null)
+          return DistinctNumericKey.buildKey(result.getPropertyNames(), name -> replacements.distinctKey(result.getProperty(name)));
         return DistinctNumericKey.buildKey(result.getPropertyNames(), result::getProperty);
       }
 

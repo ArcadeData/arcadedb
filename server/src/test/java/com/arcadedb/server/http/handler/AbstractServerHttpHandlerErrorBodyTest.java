@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler.ErrorClassification;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler.ErrorLogKind;
@@ -92,7 +93,7 @@ class AbstractServerHttpHandlerErrorBodyTest {
   }
 
   @Test
-  void buildDetailChainTerminatesOnDeepCycle() {
+  void detailChainTerminatesOnDeepCycle() {
     // e -> a -> b -> a : the cycle closes back on an intermediate cause, not on the root or a direct
     // self-reference. The identity-based visited set must stop the walk instead of looping forever.
     final Throwable a = new RuntimeException("a-msg");
@@ -101,7 +102,7 @@ class AbstractServerHttpHandlerErrorBodyTest {
     a.initCause(b);
     b.initCause(a);
 
-    final String chain = AbstractServerHttpHandler.buildDetailChain(e);
+    final String chain = ErrorConcealment.detailChain(e);
 
     assertThat(chain).isEqualTo("e-msg -> a-msg -> b-msg");
   }
