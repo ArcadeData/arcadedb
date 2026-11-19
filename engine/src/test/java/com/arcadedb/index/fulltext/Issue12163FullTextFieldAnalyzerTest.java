@@ -145,6 +145,57 @@ class Issue12163FullTextFieldAnalyzerTest extends TestHelper {
     assertThat(search("title:run").keySet()).containsExactlyInAnyOrder(1, 3);
   }
 
+  @Test
+  void aPropertyValueReachesItsAnalyzerWhole() {
+    for (final String similarity : new String[] { "CLASSIC", "BM25" }) {
+      final String type = "Place" + similarity;
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".title STRING");
+        database.command("sql", "CREATE PROPERTY " + type + ".body STRING");
+        database.command("sql", "CREATE INDEX ON " + type + " (title, body) FULL_TEXT METADATA {\"similarity\": \"" + similarity
+            + "\", \"title_analyzer\": \"org.apache.lucene.analysis.core.KeywordAnalyzer\"}");
+        database.command("sql", "INSERT INTO " + type + " SET title = 'New York', body = 'big apple'");
+      });
+      // KeywordAnalyzer stored the title as the one token "New York": the value is looked up whole, not word by word
+      assertThat(database.query("sql", "SELECT FROM " + type + " WHERE title CONTAINSTEXT 'New York'").hasNext()).as(similarity)
+          .isTrue();
+      assertThat(database.query("sql", "SELECT FROM " + type + " WHERE title CONTAINSTEXT 'New'").hasNext()).as(similarity)
+          .isFalse();
+      // body keeps the analyzer of the index, which splits the value into words
+      assertThat(database.query("sql", "SELECT FROM " + type + " WHERE body CONTAINSTEXT 'apple'").hasNext()).as(similarity)
+          .isTrue();
+      assertThat(database.query("sql",
+          "SELECT FROM " + type + " WHERE title CONTAINSTEXT 'New York' AND body CONTAINSTEXT 'big apple'").hasNext()).as(
+          similarity).isTrue();
+    }
+  }
+
+  @Test
+  void aWildcardOnAPropertyWithoutAnAnalyzerOfItsOwnKeepsTheQueryAnalyzer() {
+    // a property named like the field the analyzers normalize under must not lend its analyzer to every other wildcard
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Note");
+      database.command("sql", "CREATE PROPERTY Note.k INTEGER");
+      database.command("sql", "CREATE PROPERTY Note.contents STRING");
+      database.command("sql", "CREATE PROPERTY Note.body STRING");
+      database.command("sql", "CREATE INDEX ON Note (contents, body) FULL_TEXT METADATA {"
+          + "\"analyzer\": \"org.apache.lucene.analysis.core.WhitespaceAnalyzer\", "
+          + "\"contents_analyzer\": \"org.apache.lucene.analysis.standard.StandardAnalyzer\"}");
+      database.command("sql", "INSERT INTO Note SET k = 1, contents = 'x', body = 'Foo'");
+    });
+    for (final String query : new String[] { "body:Fo*", "Fo*" }) {
+      final ResultSet rs = database.query("sql", "SELECT k FROM Note WHERE SEARCH_INDEX('Note[contents,body]', :q) = true",
+          Map.of("q", query));
+      assertThat(rs.hasNext()).as(query).isTrue();
+      assertThat(rs.next().<Integer>getProperty("k")).isEqualTo(1);
+    }
+    // the property with the analyzer of its own still folds its own wildcard
+    database.transaction(() -> database.command("sql", "INSERT INTO Note SET k = 2, contents = 'Bar', body = 'y'"));
+    assertThat(database.query("sql", "SELECT k FROM Note WHERE SEARCH_INDEX('Note[contents,body]', 'contents:BA*') = true")
+        .hasNext()).isTrue();
+  }
+
   private void createIndex(final String extraMetadata) {
     database.transaction(() -> database.command("sql",
         "CREATE INDEX ON Article (title, body) FULL_TEXT METADATA {\"analyzer\": "

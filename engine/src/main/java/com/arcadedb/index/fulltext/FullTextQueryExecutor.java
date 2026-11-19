@@ -1397,9 +1397,11 @@ public class FullTextQueryExecutor {
       return "";
     // Normalized under the one field name the write path tokenizes every property under (LSMTreeFullTextIndex.tokenize),
     // not under the query's qualifier: a field-aware analyzer folds by that name, and the stored tokens are what the
-    // pattern has to match. A clause qualified to a property with an analyzer of its own is folded by it (issue #12163).
+    // pattern has to match. A clause qualified to a property with an analyzer of its own is folded by it (issue #12163);
+    // every other clause by the plain query analyzer, never by the parser's per-field wrapper, which would pick the
+    // analyzer of a property that happens to be named like that internal field name.
     final Analyzer propertyAnalyzer = isUnqualified(field) ? null : index.getPropertyAnalyzer(storedField(field));
-    return (propertyAnalyzer != null ? propertyAnalyzer : analyzer).normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text)
+    return (propertyAnalyzer != null ? propertyAnalyzer : index.getAnalyzer()).normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text)
         .utf8ToString();
   }
 

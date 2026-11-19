@@ -284,10 +284,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * {@code WHERE title CONTAINSTEXT 'java' AND content CONTAINSTEXT 'zzz'} was answered by the first condition alone with
    * the second silently dropped, and a condition on a single property could not use the index at all.
    * <p>
-   * Each whitespace-separated part of the text is qualified individually, because that is the granularity
-   * {@link #parseQueryTerms} works at: qualifying only the head would leave every following word matching any property.
-   * The qualifier is the property's BASE name ({@code obj.hd}, not the index's {@code obj.hd by item}): the modified
-   * spelling carries spaces, which the whitespace split would tear apart before anything could recognise it.
+   * On a multi-property index each entry is a {@link PropertyValue}: the property's stored name and the whole value, which
+   * reaches the analyzer of that property as one unit, as {@link #put} analyzed the stored value. Splitting it on whitespace
+   * first turned {@code New York} under a {@code KeywordAnalyzer} into two lookups for tokens the index never stored (issue
+   * #12163).
    * <p>
    * A slot holding a {@code List} - two or more {@code CONTAINSTEXT} conditions claimed for the same property - expands
    * into one entry PER ELEMENT rather than one entry for the whole property, so {@code intersectPerProperty} ANDs them
@@ -326,37 +326,33 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (int i = 0; i < keys.length; i++) {
       if (keys[i] == null)
         continue;
-      final String baseField = Index.basePropertyName(propertyNames.get(i));
+      final String property = propertyNames.get(i);
       if (keys[i] instanceof Collection<?> values) {
         for (final Object value : values) {
           if (value == null)
             continue;
-          result.add(new Object[] { multiProperty ? qualifyEveryPart(value.toString(), baseField) : value.toString() });
+          result.add(new Object[] { multiProperty ? new PropertyValue(property, value.toString()) : value.toString() });
         }
       } else {
-        result.add(
-            new Object[] { multiProperty ? qualifyEveryPart(keys[i].toString(), baseField) : keys[i].toString() });
+        result.add(new Object[] { multiProperty ? new PropertyValue(property, keys[i].toString()) : keys[i].toString() });
       }
     }
     return result;
   }
 
   /**
-   * Prefixes every whitespace-separated part of {@code text} with {@code field:}, the form {@link #parseQueryTerms}
-   * recognises as a field qualifier. A part that already carries a colon keeps it as literal text: only the FIRST colon
-   * separates the qualifier, so {@code jira:1234} under field {@code title} becomes {@code title:jira:1234} and is
-   * analyzed as the two tokens the document really stored (issue #6382's rule, unchanged).
+   * One property's value of a positional key over a multi-property index (see {@link #splitPositionalKey}): looked up in that
+   * property's qualified postings, analyzed whole. A colon in the value is literal text, as in any value: {@code jira:1234}
+   * under {@code title} is analyzed into the tokens the document really stored (issue #6382's rule, unchanged).
+   *
+   * @param property the property's name as the index stores it, the prefix of its qualified postings
+   * @param value    the text to find in the property
    */
-  private static String qualifyEveryPart(final String text, final String field) {
-    final StringBuilder qualified = new StringBuilder(text.length() + 16);
-    for (final String part : text.split("\\s+")) {
-      if (part.isEmpty())
-        continue;
-      if (!qualified.isEmpty())
-        qualified.append(' ');
-      qualified.append(field).append(':').append(part);
+  record PropertyValue(String property, String value) {
+    @Override
+    public String toString() {
+      return property + ":" + value;
     }
-    return qualified.toString();
   }
 
   /**
@@ -445,8 +441,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
     // Parse query text to handle field-specific terms (field:term)
-    final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
-    final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
+    final List<QueryTerm> queryTerms = queryTerms(keys);
     // No command context on the direct path: the guard stops a terminated statement (issue #9894)
     final WorkGuard guard = WorkGuard.forCommandDeadline(null);
     int ticks = 0;
@@ -668,7 +663,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.FINE,
           "Full-text get() query '%s' contains a caret; the direct lookup path does not support Lucene syntax (caret/boolean/"
               + "phrase/wildcard) - use SEARCH_INDEX(...) for that.", null, queryText);
-    final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
+    final List<QueryTerm> queryTerms = queryTerms(keys);
 
     // Build the scoring tokens (stored-key form) with their field boost, then delegate to the shared scorer. No candidate set:
     // every matching document is scored.
@@ -1271,6 +1266,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       this.fieldName = fieldName;
       this.value = value;
     }
+  }
+
+  /** The terms of a direct-lookup key: a positional {@link PropertyValue} whole, a query text as {@link #parseQueryTerms} parses it. */
+  private List<QueryTerm> queryTerms(final Object[] keys) {
+    if (keys.length == 1 && keys[0] instanceof final PropertyValue propertyValue)
+      return List.of(new QueryTerm(propertyValue.property(), propertyValue.value()));
+    return parseQueryTerms(keys.length > 0 && keys[0] != null ? keys[0].toString() : "");
   }
 
   /**
