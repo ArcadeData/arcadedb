@@ -179,10 +179,6 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     }
   };
 
-  private static <T> T throwTypeError() {
-    throw new IllegalStateException();
-  }
-
   /**
    * Boolean, Date, String, UUID.
    */
@@ -336,6 +332,10 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     public int priority() {
       return ordinal();
     }
+  }
+
+  private static <T> T throwTypeError() {
+    throw new IllegalStateException();
   }
 
   /**
