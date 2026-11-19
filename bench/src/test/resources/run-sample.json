@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "runId": "2026-11-17T03-00-00Z-1e1ad51768-jvm",
+  "startedAt": "2026-11-17T03:00:00Z",
+  "finishedAt": "2026-11-17T03:40:00Z",
+  "trigger": "nightly",
+  "source": "bench",
+  "arcadedb": { "commit": "1e1ad51768", "branch": "main", "tag": null, "version": "26.12.1-SNAPSHOT",
+                "variant": "jvm", "image": "arcadedata/arcadedb:latest", "imageDigest": "sha256:abc", "revision": "1e1ad51768" },
+  "machine": { "id": "perf-01", "cpu": "i5-13500", "cores": 16, "memGb": 64, "os": "Ubuntu 24.04", "kernel": "6.8" },
+  "config": { "heap": "8g", "cpuLimit": 8, "memLimitGb": 16, "jvm": "21", "settings": { "a": 1 } },
+  "results": [
+    { "workload": "vector", "case": "knn-k10", "scale": "M", "params": { "dim": 768, "k": 10 },
+      "reps": 5, "warmup": 2,
+      "metrics": [ { "name": "throughput", "unit": "ops/s", "better": "higher", "median": 1234.5,
+                     "values": [1220.1, 1234.5, 1250.0, 1199.0, 1240.2] },
+                   { "name": "p99", "unit": "ms", "better": "lower", "median": 3.5, "values": [3.1, 3.5, 4.0, 3.2, 3.6] } ],
+      "status": "ok", "error": null },
+    { "workload": "graph", "case": "traverse", "scale": "M", "params": {},
+      "reps": 5, "warmup": 2, "metrics": [], "status": "timeout", "error": "exceeded 600s" }
+  ]
+}

@@ -75,10 +75,10 @@ class TakenNameRefusalCensusTest {
       Map.entry("schema/IndexBuilder#conflictWithExistingIndex", ANOTHER_DEFINITION),//
       Map.entry("schema/ManualIndexBuilder#conflictWithExistingManualIndex", ANOTHER_DEFINITION),//
       // A CYPHER VARIABLE BOUND TWICE, OR WITH TWO TYPES, IN ONE STATEMENT: A PARSE ERROR, NOT A SCHEMA OBJECT NAME
-      Map.entry("query/opencypher/parser/CypherSemanticValidator#checkCreateBinding", VARIABLE),//
-      Map.entry("query/opencypher/parser/CypherSemanticValidator#checkMergeBinding", VARIABLE),//
+      Map.entry("query/opencypher/parser/VariableBindingValidator#checkCreateBinding", VARIABLE),//
+      Map.entry("query/opencypher/parser/VariableBindingValidator#checkMergeBinding", VARIABLE),//
       Map.entry("query/opencypher/parser/CypherSemanticValidator#declareVar", VARIABLE),//
-      Map.entry("query/opencypher/parser/CypherSemanticValidator$FunctionArgumentChecks#checkUsedAs", VARIABLE),//
+      Map.entry("query/opencypher/parser/FunctionArgumentValidator$FunctionArgumentChecks#checkUsedAs", VARIABLE),//
       Map.entry("query/opencypher/procedures/db/VectorSearchClauseProcedure#execute", "SEARCH ... SCORE AS naming a variable an "
           + "earlier clause bound: a semantic error of the statement, not a schema object name"),//
       // A TIMESERIES TYPE RENAMED OR CREATED ONTO A SEALED FILE LEFT IN THE DIRECTORY: A FILE NO SCHEMA OBJECT HOLDS (#10796, #10925)

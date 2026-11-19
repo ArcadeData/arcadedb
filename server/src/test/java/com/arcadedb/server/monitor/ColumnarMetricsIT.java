@@ -248,6 +248,44 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void aDroppedIndexLosesItsSeriesWithoutAReopen() throws Exception {
+    // issue #11640: the series of a dropped COLUMNAR index went only at the next reopen of the database
+    createAssetWithColumnarIndex(50);
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.command("sql", "CREATE DOCUMENT TYPE Gadget BUCKETS 1");
+    db.command("sql", "CREATE PROPERTY Gadget.model STRING");
+    db.command("sql", "CREATE PROPERTY Gadget.color STRING");
+    db.transaction(() -> {
+      for (int i = 0; i < 20; i++)
+        db.newDocument("Gadget").set("model", "m" + i % 3).set("color", "c" + i % 2).save();
+    });
+    db.command("sql", "CREATE INDEX ON Gadget (model) COLUMNAR");
+    db.command("sql", "CREATE INDEX ON Gadget (color) COLUMNAR");
+    awaitProjection();
+    eventually(() -> {
+      assertThat(meter("arcadedb.columnar.dictionary.size", "type", "Gadget", "property", "model")).isNotNull();
+      assertThat(meter("arcadedb.columnar.dictionary.size", "type", "Gadget", "property", "color")).isNotNull();
+      assertThat(meter("arcadedb.columnar.apply.pages", "type", "Gadget")).isNotNull();
+    });
+
+    // one of the two indexes of the type: its property series go, the type keeps its own
+    db.command("sql", "DROP INDEX `" + db.getSchema().getType("Gadget").getIndexesByProperties("color").getFirst().getName() + "`");
+    eventually(() -> {
+      assertThat(meter("arcadedb.columnar.dictionary.size", "type", "Gadget", "property", "color")).isNull();
+      assertThat(meter("arcadedb.columnar.conversion.failures", "type", "Gadget", "property", "color")).isNull();
+    });
+    assertThat(meter("arcadedb.columnar.dictionary.size", "type", "Gadget", "property", "model")).isNotNull();
+    assertThat(meter("arcadedb.columnar.apply.pages", "type", "Gadget")).isNotNull();
+
+    // the last index of the type: every series tagged with the type goes, the other type's stay
+    db.command("sql", "DROP INDEX `" + db.getSchema().getType("Gadget").getIndexesByProperties("model").getFirst().getName() + "`");
+    eventually(() -> assertThat(metersOfDatabase().stream().filter(m -> "Gadget".equals(m.getId().getTag("type")))).isEmpty());
+    assertThat(meter("arcadedb.columnar.apply.pages", "type", "Asset")).isNotNull();
+    assertThat(meter("arcadedb.columnar.dictionary.size", "type", "Asset", "property", "brand")).isNotNull();
+    assertThat(rebuildsMeter("create")).isNotNull();
+  }
+
   // -------------------------------------------------------------------------------------------------------------------- helpers
 
   private void eventually(final ThrowingRunnable assertions) {

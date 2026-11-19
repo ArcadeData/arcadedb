@@ -40,9 +40,19 @@ public class SQLFunctionVectorSubtract extends SQLFunctionVectorAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    validateParameterCount(params, 2);
+    checkArity(params);
 
     final Object a = params[0];
     final Object b = params[1];

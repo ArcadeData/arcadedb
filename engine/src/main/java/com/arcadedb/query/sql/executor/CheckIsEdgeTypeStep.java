@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
@@ -67,7 +66,7 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
         found = true;
 
       if (!found)
-        throw new CommandExecutionException("Type ' '" + this.targetClass + "' is not an Edge type");
+        throw new SchemaException("Type '" + this.targetClass + "' is not an edge type");
 
       return new InternalResultSet();
     } finally {

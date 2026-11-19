@@ -22,10 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
-import com.arcadedb.utility.FileUtils;
 
 import com.arcadedb.utility.RidHashSet;
 
@@ -46,11 +44,7 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] iParameters, final Iterable<Identifiable> iPossibleResults, final CommandContext context) {
-    final String[] labels;
-    if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
-    else
-      labels = null;
+    final String[] labels = SQLFunctionMove.edgeTypeLabels(iParameters);
 
     final RidHashSet possibleRIDs = buildRIDSet(iPossibleResults);
 

@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.NumberUtils;
@@ -65,7 +66,7 @@ public class Limit extends SimpleNode {
       if (paramValue instanceof Number number)
         return NumberUtils.saturateToInt(number);
       else
-        throw new CommandExecutionException("Invalid value for LIMIT: " + paramValue);
+        throw new TypeMismatchException("Invalid value for LIMIT: " + paramValue + ". LIMIT takes a number");
     }
 
     if (expression != null) {
@@ -73,7 +74,7 @@ public class Limit extends SimpleNode {
       if (exprValue instanceof Number number)
         return NumberUtils.saturateToInt(number);
       else
-        throw new CommandExecutionException("Invalid value for LIMIT: " + exprValue);
+        throw new TypeMismatchException("Invalid value for LIMIT: " + exprValue + ". LIMIT takes a number");
     }
 
     throw new CommandExecutionException("No value for LIMIT");

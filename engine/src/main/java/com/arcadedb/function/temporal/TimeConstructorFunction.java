@@ -26,12 +26,14 @@ import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.DateTimeException;
 import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.Map;
 
 /**
@@ -67,6 +69,9 @@ public class TimeConstructorFunction implements StatelessFunction {
       final String str = (String) args[0];
       try {
         return CypherTime.parse(str);
+      } catch (final TemporalUtil.InvalidTemporalTextException e) {
+        // The text is a time that contradicts itself (issue #12298): no timezone reading of it applies
+        throw new CommandSemanticException("time() " + e.getMessage());
       } catch (final Exception e) {
         try {
           return new CypherTime(CypherFunctionHelper.getStatementTime(context, ZoneId.of(str)).toOffsetDateTime().toOffsetTime());
@@ -77,14 +82,22 @@ public class TimeConstructorFunction implements StatelessFunction {
         }
       }
     }
-    if (args[0] instanceof Map)
+    if (args[0] instanceof Map) {
+      final Map<String, Object> map = (Map<String, Object>) args[0];
+      // A map holding only a timezone is the current time in that zone (issue #12297): it used to read as a map
+      // with no year, which defaulted to January 1 of the current year
       try {
-        return CypherTime.fromMap((Map<String, Object>) args[0]);
+        if (map.size() == 1 && map.containsKey("timezone") && map.get("timezone") != null) {
+          final ZonedDateTime now = CypherFunctionHelper.getStatementTime(context, TemporalUtil.parseZone(map.get("timezone").toString()));
+          return new CypherTime(now.toOffsetDateTime().toOffsetTime());
+        }
+        return CypherTime.fromMap(map);
       } catch (final DateTimeException | IllegalArgumentException e) {
         // A field outside its range (month 13, week 54 of any year, February 30, nanosecond 10^9) is the caller's error, not an
         // internal one. TemporalUtil range-checks the sub-second fields with an IllegalArgumentException (#11655)
         throw new CommandSemanticException("time() " + e.getMessage());
       }
+    }
     if (args[0] instanceof CypherTime)
       return args[0];
     if (args[0] instanceof CypherDateTime)
