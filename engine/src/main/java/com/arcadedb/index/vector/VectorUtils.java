@@ -617,14 +617,20 @@ public final class VectorUtils {
    * than of the call.
    */
   public static final class PreparedVector {
-    private final float[] values;
-    private final boolean  zero;
-    private final boolean  scorableNorm;
+    private static final byte UNKNOWN = 0;
+    private static final byte SCORABLE = 1;
+    private static final byte NOT_SCORABLE = 2;
 
-    private PreparedVector(final float[] values, final boolean zero, final boolean scorableNorm) {
+    private final float[]          values;
+    private final boolean          zero;
+    // Both are worked out on first use and are the same on every thread that works them out, so a race is only repeated
+    // work. volatile so that a thread that sees the vector also sees all of it
+    private volatile VectorFloat<?> simd;
+    private volatile byte          scorableNorm = UNKNOWN;
+
+    private PreparedVector(final float[] values, final boolean zero) {
       this.values = values;
       this.zero = zero;
-      this.scorableNorm = scorableNorm;
     }
 
     /**
@@ -642,10 +648,43 @@ public final class VectorUtils {
     }
 
     /**
-     * Whether the float cosine can score the vector: a squared norm that does not overflow or underflow a float.
+     * Whether the float cosine can score the vector: a squared norm that does not overflow or underflow a float (issue
+     * #11635). The norm is the one JVector's cosine sums, as it sums it, so the test and the cosine cannot disagree about
+     * a vector at the edge of the range; it is summed over the SIMD form, in one vectorised pass instead of a dependent chain
+     * of scalar additions per element, which is what this cost per record before.
      */
     public boolean hasScorableNorm() {
-      return scorableNorm;
+      byte state = scorableNorm;
+      if (state == UNKNOWN) {
+        state = zero || computeScorableNorm() ? SCORABLE : NOT_SCORABLE;
+        scorableNorm = state;
+      }
+      return state == SCORABLE;
+    }
+
+    private boolean computeScorableNorm() {
+      try {
+        final VectorFloat<?> form = simd();
+        final float norm = io.github.jbellis.jvector.vector.VectorUtil.dotProduct(form, form);
+        return norm >= 0x1p-63f && norm <= 0x1p63f;
+      } catch (final Exception | AssertionError e) {
+        // The scalar sum, as the cosine falls back to it. JVector asserts its answer is finite, so under -ea the overflow
+        // this test exists to find is an AssertionError instead of the Infinity it is otherwise
+        return hasCosineScorableNorm(values);
+      }
+    }
+
+    /**
+     * The JVector form of the vector, made once: the cosine reads it on every call, and a scan scores one query vector against
+     * every record, so copying it into JVector's vector type per call was repeated work.
+     */
+    private VectorFloat<?> simd() {
+      VectorFloat<?> form = simd;
+      if (form == null) {
+        form = VectorApiSupport.jvectorProvider().getVectorTypeSupport().createFloatVector(values);
+        simd = form;
+      }
+      return form;
     }
   }
 
@@ -664,9 +703,9 @@ public final class VectorUtils {
     // consistent 0.0f sentinel (distance 1.0 for the 1 - score callers). isZeroVector short-circuits
     // on the first non-zero element, so this is O(1) for the common non-degenerate case.
     final boolean zero = isZeroVector(values);
-    // The float cosine cannot score a vector too small or too large: the double one below can (issue #11635)
-    final boolean scorableNorm = zero || hasCosineScorableNorm(values);
-    return new PreparedVector(values, zero, scorableNorm);
+    // The float cosine cannot score a vector too small or too large (issue #11635): whether it can is worked out when the
+    // cosine first asks, not here, so a vector that is never scored does not pay for it
+    return new PreparedVector(values, zero);
   }
 
   /**
@@ -699,10 +738,7 @@ public final class VectorUtils {
     if (!v1.hasScorableNorm() || !v2.hasScorableNorm())
       return scalarCosineSimilarity(v1.values(), v2.values());
     try {
-      final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
-      final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1.values());
-      final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2.values());
-      return cosine(jv1, jv2);
+      return cosine(v1.simd(), v2.simd());
     } catch (final Exception e) {
       // Fallback to scalar implementation
       return scalarCosineSimilarity(v1.values(), v2.values());
