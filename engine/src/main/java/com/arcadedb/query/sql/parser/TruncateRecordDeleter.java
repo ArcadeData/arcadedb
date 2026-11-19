@@ -137,11 +137,11 @@ final class TruncateRecordDeleter {
 
   /**
    * Whether the slot of {@code rid} still holds a record, read through the current transaction and bypassing its record cache,
-   * which may still hold the instance the scan found.
+   * which may still hold the instance the scan found. A bucket that is not an engine bucket, or that is gone, cannot say the
+   * slot is free: it answers "present", so the failure is surfaced instead of being read as a concurrent delete.
    */
   private static boolean isPresent(final Database db, final RID rid) {
-    final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketByIdIfExists(rid.getBucketId());
-    return bucket != null && bucket.isRecordPresent(rid);
+    return !(db.getSchema().getBucketByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket) || bucket.isRecordPresent(rid);
   }
 
   /**
