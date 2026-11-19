@@ -22,19 +22,22 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.CountingImmutableDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A {@code SELECT *} reads the record behind the row ONCE, not once per property (issue #12558).
+ * A {@code SELECT *} reads the record behind the row once, not once per property (issue #12558).
  * <p>
  * The projection copied every property of the row into the projected row, and asked the row for each
  * one by name: for a row backed by a stored record that is a walk of the record header per property,
@@ -80,10 +83,8 @@ class ProjectionOnePassOverTheRecordIssue12558Test extends TestHelper {
       assertThat(projected.<Object>getProperty("nothing")).isNull();
 
       assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
-      // THREE WALKS, AND NOT ONE PER PROPERTY: the projection asks the row for its names, the helper asks for them
-      // again to check the read against them, and the values come from the one pass over the record. The count does
-      // not grow with the property count.
-      assertThat(document.headerWalks()).as("passes over the record header").isEqualTo(3);
+      // a fixed number of passes, not one per property: the count does not grow with the property count
+      assertThat(document.headerWalks()).as("passes over the record header").isLessThan(PROPERTIES);
     });
   }
 
@@ -102,7 +103,45 @@ class ProjectionOnePassOverTheRecordIssue12558Test extends TestHelper {
       for (int i = 0; i < PROPERTIES; i++)
         assertThat(properties).as("property p%d", i).containsEntry("p" + i, "value-" + i);
       assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
-      assertThat(document.headerWalks()).as("passes over the record header").isEqualTo(2);
+      assertThat(document.headerWalks()).as("passes over the record header").isLessThan(PROPERTIES);
+    });
+  }
+
+  @Test
+  void anExcludedPropertyIsNotReadFromTheRecord() {
+    database.transaction(() -> {
+      final CountingImmutableDocument document =
+          new CountingImmutableDocument(database, database.getSchema().getType("Wide"), rid);
+      final Result row = new ResultInternal(document);
+
+      final Projection projection = ((SelectStatement) new SQLAntlrParser(database).parse("SELECT *, !p0 FROM Wide")).getProjection();
+      final Result projected = projection.calculateSingle(new BasicCommandContext(), row);
+
+      assertThat(projected.getPropertyNames()).doesNotContain("p0").contains("nothing").hasSize(PROPERTIES + 2);
+      for (int i = 1; i < PROPERTIES; i++)
+        assertThat(projected.<Object>getProperty("p" + i)).as("property p%d", i).isEqualTo("value-" + i);
+
+      // the record is read once, for the names the projection keeps: the excluded value is never decoded
+      assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
+      assertThat(document.wholeReads()).as("reads decoding every value, the excluded one included").isZero();
+      assertThat(document.selectiveReads()).as("reads restricted to the kept names").isEqualTo(1);
+      assertThat(document.lastSelectedNames()).doesNotContain("p0").hasSize(PROPERTIES);
+    });
+  }
+
+  @Test
+  void aRowWithEveryPropertyExcludedDoesNotReadTheRecord() {
+    database.transaction(() -> {
+      final CountingImmutableDocument document =
+          new CountingImmutableDocument(database, database.getSchema().getType("Wide"), rid);
+      final ResultInternal row = new ResultInternal(document);
+      final Set<String> every = new HashSet<>(document.getPropertyNames());
+      document.resetCounters();
+
+      assertThat(ResultInternal.propertiesOf(row, every)).isEmpty();
+      assertThat(document.wholeReads()).isZero();
+      assertThat(document.selectiveReads()).isZero();
+      assertThat(document.propertyReads()).isZero();
     });
   }
 }

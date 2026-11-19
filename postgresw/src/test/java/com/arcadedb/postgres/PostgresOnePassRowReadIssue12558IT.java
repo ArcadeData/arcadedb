@@ -29,15 +29,8 @@ import java.util.Properties;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The Postgres wire protocol reads a row's columns in ONE pass over its record (#12558).
- * <p>
- * The DataRow writer and the {@code COPY ... TO STDOUT} writer asked the row for every column, and for a
- * row backed by a stored record that is a walk of the record header per column, so a record of P columns
- * cost P walks and the time per row grew with P squared. The HTTP and gRPC serializers had the same shape
- * and were fixed with {@link ResultInternal#propertiesOf(com.arcadedb.query.sql.executor.Result)}.
- * <p>
- * The row over the wire must also keep every column, a null one included, with its value. The header
- * walks themselves are counted by {@code ResultInternalPropertiesOfTest}, which owns the record.
+ * A functional check of the one-pass row read over the Postgres wire (#12558): a wide row keeps every column, a null one
+ * included, with its value. The header walks themselves are counted by {@code PostgresOnePassRowReadIssue12558Test}.
  */
 class PostgresOnePassRowReadIssue12558IT extends PostgresWireProtocolTestBase {
 
@@ -46,21 +39,20 @@ class PostgresOnePassRowReadIssue12558IT extends PostgresWireProtocolTestBase {
   @Test
   void aWideRowIsReadOnceOverTheRecordAndKeepsEveryColumn() throws Exception {
     try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement()) {
-      statement.execute("CREATE DOCUMENT TYPE Issue11738Wide IF NOT EXISTS");
-      final StringBuilder insert = new StringBuilder("INSERT INTO Issue11738Wide SET nothing = null");
+      statement.execute("CREATE DOCUMENT TYPE Issue12558Wide IF NOT EXISTS");
+      final StringBuilder insert = new StringBuilder("INSERT INTO Issue12558Wide SET nothing = null");
       for (int i = 0; i < PROPERTIES; i++)
         insert.append(", p").append(i).append(" = 'value-").append(i).append('\'');
       statement.execute(insert.toString());
 
       // the row over the wire
-      try (final ResultSet rs = statement.executeQuery("SELECT * FROM Issue11738Wide")) {
+      try (final ResultSet rs = statement.executeQuery("SELECT * FROM Issue12558Wide")) {
         assertThat(rs.next()).isTrue();
         for (int i = 0; i < PROPERTIES; i++)
           assertThat(rs.getString("p" + i)).as("column p%d", i).isEqualTo("value-" + i);
         assertThat(rs.getObject("nothing")).as("a null column").isNull();
       }
     }
-
   }
 
   private Connection openJdbcConnection() throws Exception {

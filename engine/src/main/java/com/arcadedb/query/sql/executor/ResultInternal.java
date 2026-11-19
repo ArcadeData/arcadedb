@@ -134,29 +134,61 @@ public class ResultInternal implements Result {
    * @return a map the caller may keep, in the order {@code getPropertyNames()} lists the names
    */
   public static Map<String, Object> propertiesOf(final Result row) {
-    // EXACT CLASS ONLY, AS IN copyBindings(): A SUBCLASS MAY OVERRIDE getPropertyNames() OR getProperty() AND ANSWER A NAME
-    // DIFFERENTLY FROM THE content AND element FIELDS toPropertyMap() READS, SO ITS ROWS KEEP THE READ BY NAME
+    return propertiesOf(row, Collections.emptySet());
+  }
+
+  /**
+   * {@link #propertiesOf(Result)} without the names in {@code excluded}, which are not read at all: a {@code SELECT *, !payload}
+   * projection must not decode the payload it drops (issue #12558). A record row the statement narrowed (by {@code excluded},
+   * by a removed property or by the exclusions an earlier projection recorded) is read once for the names it still lists, so
+   * a dropped value is never decoded, and a row with no name left is not read at all.
+   */
+  public static Map<String, Object> propertiesOf(final Result row, final Set<String> excluded) {
+    // Exact class only, as in copyBindings(): a subclass may override getPropertyNames() or getProperty() and answer a name
+    // differently from the content and element fields toPropertyMap() reads, so its rows keep the read by name
     if (row.getClass() != ResultInternal.class) {
       final Set<String> names = row.getPropertyNames();
       final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
       for (final String name : names)
-        properties.put(name, row.getProperty(name));
+        if (!excluded.contains(name))
+          properties.put(name, row.getProperty(name));
       return properties;
     }
 
     final ResultInternal plain = (ResultInternal) row;
-    final Map<String, Object> read = plain.toPropertyMap(false);
-    // A PROJECTION ROW (content PRESENT) OR A ROW WITHOUT A RECORD: ITS NAMES ARE EXACTLY THE content KEYS toPropertyMap()
-    // WALKED, IN THAT ORDER, SO ITS MAP IS THE ANSWER
+    // A projection row (content present) or a row without a record: its names are exactly the content keys toPropertyMap()
+    // walks, in that order, and its values are already in memory, so its map is the answer
     if (plain.element == null || (plain.content != null && !plain.content.isEmpty()))
+      return plain.toPropertyMap(false);
+
+    // The names getPropertyNames() lists, minus the caller's exclusions, noting whether any stored name was dropped
+    final Set<String> names = new LinkedHashSet<>();
+    boolean narrowed = false;
+    for (final String name : plain.element.getPropertyNames())
+      if ((plain.tombstones != null && plain.tombstones.contains(name)) || plain.isExcludedFromElement(name) || excluded.contains(name))
+        narrowed = true;
+      else
+        names.add(name);
+
+    if (narrowed) {
+      if (names.isEmpty())
+        return new LinkedHashMap<>();
+      if (plain.element instanceof ImmutableDocument stored) {
+        final Map<String, Object> read = stored.propertiesAsMap(names.toArray(new String[0]));
+        final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+        for (final String name : names)
+          properties.put(name, toPropertyValue(read.get(name)));
+        return properties;
+      }
+    }
+
+    final Map<String, Object> read = plain.toPropertyMap(false);
+    if (!narrowed && sameNamesInOrder(names, read))
       return read;
 
-    final Set<String> names = plain.getPropertyNames();
-    if (sameNamesInOrder(names, read))
-      return read;
-
-    // A DAMAGED RECORD: THE SINGLE READ LEFT OUT A VALUE THAT DOES NOT DECODE AND LOGGED IT. A READ BY NAME WOULD DECODE THE
-    // SAME BYTES, FAIL THE SAME WAY, LOG THE SAME PROPERTY A SECOND TIME AND ANSWER null, SO THE NAME TAKES null DIRECTLY
+    // A damaged record, or a narrowed record whose values are already in memory: a value missing from the single read did not
+    // decode and was logged. A read by name would decode the same bytes, fail the same way, log it a second time and answer
+    // null, so the name takes null directly
     final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
     for (final String name : names)
       properties.put(name, read.get(name));

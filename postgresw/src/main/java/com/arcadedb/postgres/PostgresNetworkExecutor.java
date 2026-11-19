@@ -1992,10 +1992,9 @@ public class PostgresNetworkExecutor extends Thread {
         atLeastOneElement = true;
       }
 
-      // THE ROW'S PROPERTIES ARE READ ONCE, NOT ONCE PER COLUMN: A COLUMN'S VALUE IS ASKED OF THE ROW, AND A ROW BACKED BY A
-      // STORED RECORD ANSWERS A NAME BY WALKING THE RECORD HEADER FROM ITS FIRST BYTE UNTIL IT MEETS THE NAME, SO A ROW OF
-      // P COLUMNS COST P WALKS OF THE SAME RECORD. THE COLUMNS ARE TYPED FROM EVERY ROW (issue #9009), SO THE WALK WAS PAID
-      // ONCE PER ROW PER COLUMN (#12558).
+      // The row's properties are read once, not once per column: a row backed by a stored record answers a name by walking
+      // the record header from its first byte until it meets the name, so a row of P columns cost P walks of the same record.
+      // The columns are typed from every row (issue #9009), so the walk was paid once per row per column (#12558).
       final Map<String, Object> rowProperties = ResultInternal.propertiesOf(row);
 
       for (final String p : columnNamesOf(row)) {
@@ -3112,16 +3111,8 @@ public class PostgresNetworkExecutor extends Thread {
    * The value a row carries for a column: the property of that name, or for the metadata columns ({@code @rid},
    * {@code @type}, {@code @cat}, {@code @in}, {@code @out}) what the row's element answers. Shared by the
    * {@code DataRow} writer and by {@code COPY ... TO STDOUT} (issue #7188), so the two encode the same value for
-   * the same column.
-   */
-  private static Object columnValue(final Result row, final String propertyName) {
-    return columnValue(row, propertyName, ResultInternal.propertiesOf(row));
-  }
-
-  /**
-   * The value a row carries for a column, with the row's properties already read: the columns of a row are read
-   * ONCE, not once per column. Asking the record for every column walked the record header once per column, so a
-   * record of P columns cost P walks and the time per row grew with P squared (#12558).
+   * the same column. The row's properties are read once by the caller, not once per column: asking the record for every
+   * column walked the record header once per column, so the time per row grew with P squared (#12558).
    */
   static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
     // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers

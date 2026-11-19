@@ -194,15 +194,15 @@ public class Projection extends SimpleNode {
         // element's names back over the top of it, until #5613 removed that union and left the filter exposed.
         // Do not reinstate it here: hiding a property from a projection but not from the record that backs it is
         // not a security boundary, it only makes the two spellings of "give me everything" return different rows.
-        // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #12558): asking the row for each name in
+        // One pass over the record behind the row, not one per property (issue #12558): asking the row for each name in
         // turn reads a row backed by a stored record once per property, since ImmutableDocument.get(name) walks the record
         // header from its first byte until it meets the name - so a row of P properties cost P walks of the same record,
-        // and the time per row grew with P squared. The row's properties are read once here instead.
-        final Map<String, Object> recordProperties = ResultInternal.propertiesOf(record);
-        for (final String alias : record.getPropertyNames()) {
+        // and the time per row grew with P squared. The row's properties are read once here, an excluded one not at all.
+        for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(record, excludedAliases).entrySet()) {
+          final String alias = property.getKey();
           if (excludedAliases.contains(alias))
             continue;
-          Object value = item.convert(recordProperties.get(alias));
+          Object value = item.convert(property.getValue());
           if (item.nestedProjection != null) {
             value = item.nestedProjection.apply(item.expression, value, context);
           }
