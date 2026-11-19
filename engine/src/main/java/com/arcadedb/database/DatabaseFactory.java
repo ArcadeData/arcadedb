@@ -49,8 +49,8 @@ public class DatabaseFactory implements AutoCloseable {
    * instance closed (issue #12025), keyed by path, valued by the {@link LocalDatabase#getInstanceSequence() sequence} of the
    * newest instance that put them there. See {@link #getDatabasesClosedWithPagesLeftToRecovery()}.
    */
-  private static final ConcurrentHashMap<Path, Long>                              PAGES_LEFT_TO_RECOVERY = new ConcurrentHashMap<>();
-  private final        ContextConfiguration                                      contextConfiguration = new ContextConfiguration();
+  private static final ConcurrentHashMap<Path, Long>                               PAGES_LEFT_TO_RECOVERY = new ConcurrentHashMap<>();
+  private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new ConcurrentHashMap<>();
 

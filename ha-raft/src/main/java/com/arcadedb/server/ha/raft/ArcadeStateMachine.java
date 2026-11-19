@@ -203,6 +203,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // before it refuses (issue #11258). A refused checkpoint only keeps the log one interval longer, so the bound protects
   // the apply thread, not the data
   static final long              SNAPSHOT_DATA_FLUSH_WAIT_MS = 5_000L;
+  // How often a checkpoint refused for a database closed with its pages left to the recovery says so at WARNING (#12025)
+  private static final long                  PAGES_LEFT_TO_RECOVERY_REMINDER_MS = 300_000L;
+  // When it last did; Long.MIN_VALUE / 2 so the first refusal always does. Only the checkpoint reads and writes it
+  private volatile long                      pagesLeftToRecoveryReminderMs      = Long.MIN_VALUE / 2;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
   private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
@@ -1982,9 +1986,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // an instance the pass skipped as closed is always listed here.
     final List<String> leftToRecovery = databasesClosedWithPagesLeftToRecovery();
     if (!leftToRecovery.isEmpty()) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Skipping snapshot checkpoint at index %d: database(s) %s closed without making their pages durable, so the log must "
-              + "stay replayable until they are reopened and forced (issue #12025)", currentIndex, leftToRecovery);
+      // At WARNING at most every five minutes, as the held-entry reminder: the Ratis auto-trigger retries a refused
+      // checkpoint as entries keep arriving, and the condition lasts until the database is reopened or dropped
+      final long now = System.currentTimeMillis();
+      final boolean remind = now - pagesLeftToRecoveryReminderMs >= PAGES_LEFT_TO_RECOVERY_REMINDER_MS;
+      if (remind)
+        pagesLeftToRecoveryReminderMs = now;
+      final String message = "Skipping snapshot checkpoint at index %d: database(s) %s closed without making their pages "
+          + "durable, so the log must stay replayable until they are reopened and forced (issue #12025)";
+      if (remind)
+        LogManager.instance().log(this, Level.WARNING, message, currentIndex, leftToRecovery);
+      else
+        HALog.log(this, HALog.BASIC, message, currentIndex, leftToRecovery);
       return RaftLog.INVALID_LOG_INDEX;
     }
 
