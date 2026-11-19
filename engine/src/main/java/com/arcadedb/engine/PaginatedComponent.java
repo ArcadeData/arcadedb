@@ -163,7 +163,39 @@ public abstract class PaginatedComponent extends Component {
               + "appended to this file",
           null, name, file.getFilePath(), fileSize, pageSize, tailBytes, pageCount.get());
 
+    // The file lags a commit until the flush thread writes the page, so a component built on a live database (a full schema
+    // reload builds one on every file) also counts the committed pages the flush pipeline still holds past the end of the file
+    // (issue #12101). Counted from the file alone, the mutable file of an LSM index created just before the reload had no page,
+    // was taken for the header-less leftover of a compaction (#10046) and left out of the schema, and its index with it.
+    pageCount.set(withPagesAwaitingFlush(pageCount.get()));
+
     reservedPageCounter.set(pageCount.get());
+  }
+
+  /**
+   * {@code pagesOnDisk} raised by the committed pages that follow them in the flush pipeline (queued, deferred by a suspension,
+   * being written, or failed to write), probed one by one up to the first page the pipeline does not hold. The file is read
+   * again afterwards: a page leaves the pipeline only once its write reached the file, so a page written during the probe is
+   * counted by the second read. That read can land past pages the pipeline still holds (the flush wrote the first of several
+   * between the two), so the probe resumes from where the file now ends, until neither the pipeline nor the file moves: the
+   * count is then exact, with one probe and one file read when nothing was pending, which is the common case. A page number
+   * reserved by a transaction that did not commit leaves a gap the probe stops at; the pages past it are counted as they were
+   * before, from the file once written and, on a schema reload, from the instance this one replaces at publication
+   * ({@link #carryOverFrom(PaginatedComponent)}).
+   * <p>
+   * Goes through {@link PageManager#INSTANCE} and not through {@code database.getPageManager()}, which refuses a database that is
+   * not open (yet) or is fenced: a component is built by the schema load that opens the database.
+   */
+  private int withPagesAwaitingFlush(final int pagesOnDisk) throws IOException {
+    int pages = pagesOnDisk;
+    int probedFrom;
+    do {
+      probedFrom = pages;
+      while (PageManager.INSTANCE.getPendingVersionOfPage(new PageId(database, fileId, pages)) >= 0)
+        ++pages;
+      pages = Math.max(pages, (int) (file.getSize() / pageSize));
+    } while (pages > probedFrom);
+    return pages;
   }
 
   public void rename(final String newComponentName) throws IOException {
@@ -251,6 +283,24 @@ public abstract class PaginatedComponent extends Component {
         return txPageCounter;
     }
     return pageCount.get();
+  }
+
+  /**
+   * How many pages a READ in the calling thread's transaction may find: the committed ones, and the ones the transaction allocated
+   * past them. {@link #getTotalPages()} answers with the transaction's own counter once it allocated a page, and that counter stops
+   * at the last page the transaction allocated, while other transactions commit pages past it (page numbers are reserved for each
+   * transaction from one shared counter). A read bounded by it stopped short of their records (issue #11787). Allocation keeps
+   * asking {@link #getTotalPages()}.
+   */
+  public int getReadablePageCount() {
+    final int committed = pageCount.get();
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      final Integer txPageCounter = tx.getPageCounter(fileId);
+      if (txPageCounter != null && txPageCounter > committed)
+        return txPageCounter;
+    }
+    return committed;
   }
 
   /**

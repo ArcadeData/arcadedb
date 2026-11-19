@@ -194,6 +194,15 @@ public class MutablePage extends BasePage implements TrackableContent {
     return this;
   }
 
+  /**
+   * A new page with a copy of this one's bytes, version and content size, and none of its modification bookkeeping: what
+   * {@link ImmutablePage#modify()} builds from an immutable page (#12225).
+   */
+  public MutablePage copy() {
+    final byte[] array = content.getByteBuffer().array();
+    return new MutablePage(pageId, size, Arrays.copyOf(array, array.length), version, content.size());
+  }
+
   /** Saves the bookkeeping this page keeps about its own modifications into {@code target}, for {@link PageUndoLog}. */
   void captureState(final State target) {
     System.arraycopy(modifiedRanges, 0, target.modifiedRanges, 0, modifiedRanges.length);

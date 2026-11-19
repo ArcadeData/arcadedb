@@ -195,6 +195,20 @@ class Issue9772MCPMalformedArgumentsInProductionTest extends BaseGraphServerTest
   }
 
   @Test
+  void hybridSearchWithAFullTextLegThatIsNotTextIsAnsweredInFull() throws Exception {
+    // issue #11622: the full-text leg was read only when the search ran, by the raw accessor, after the database resolved
+    assertRefused("hybrid_search", new JSONObject().put("database", getDatabaseName()).put("vectorIndexName", "Doc[embedding]")
+        .put("queryVector", new JSONArray().put(1.0f)).put("fulltextIndexName", new JSONObject()).put("fulltextQuery", "a"),
+        "'fulltextIndexName' must be a string");
+    assertRefused("hybrid_search", new JSONObject().put("database", getDatabaseName()).put("vectorIndexName", "Doc[embedding]")
+        .put("queryVector", new JSONArray().put(1.0f)).put("fulltextIndexName", "Doc[text]").put("fulltextQuery", 7),
+        "'fulltextQuery' must be a string");
+    // half a leg is refused before the database is resolved too
+    assertRefused("hybrid_search", new JSONObject().put("database", getDatabaseName()).put("vectorIndexName", "Doc[embedding]")
+        .put("queryVector", new JSONArray().put(1.0f)).put("fulltextQuery", "a"), "must be supplied together");
+  }
+
+  @Test
   void sampleRecordsWithANonNumericLimitIsAnsweredInFull() throws Exception {
     assertRefused("sample_records", new JSONObject().put("database", getDatabaseName()).put("limit", "abc"), "'limit'");
   }
@@ -210,6 +224,22 @@ class Issue9772MCPMalformedArgumentsInProductionTest extends BaseGraphServerTest
         .put("types", new JSONArray().put((Object) null)), "'types'");
     assertRefused("sample_records", new JSONObject().put("database", getDatabaseName())
         .put("types", new JSONArray().put(new JSONObject())), "'types'");
+    // a number or a boolean is no name either, though the raw accessor answered it as text (issue #11622)
+    assertRefused("sample_records", new JSONObject().put("database", getDatabaseName())
+        .put("types", new JSONArray().put(1)), "'types' must contain only non-blank type names");
+    assertRefused("sample_records", new JSONObject().put("database", getDatabaseName())
+        .put("types", new JSONArray().put(true)), "'types' must contain only non-blank type names");
+    assertRefused("sample_records", new JSONObject().put("database", getDatabaseName())
+        .put("types", new JSONArray().put(" ")), "'types' must contain only non-blank type names");
+  }
+
+  @Test
+  void fullTextSearchWithPropertiesThatAreNumbersOrNullIsAnsweredInFull() throws Exception {
+    // issue #11622: the elements of the array are read through MCPToolUtils.optionalStringArray, never with the raw accessor
+    assertRefused("full_text_search", new JSONObject().put("database", getDatabaseName()).put("typeName", "Person")
+        .put("queryText", "a").put("properties", new JSONArray().put(1)), "'properties' must contain only property names");
+    assertRefused("full_text_search", new JSONObject().put("database", getDatabaseName()).put("typeName", "Person")
+        .put("queryText", "a").put("properties", new JSONArray().put((Object) null)), "'properties' must contain only property names");
   }
 
   @Test

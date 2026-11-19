@@ -21,6 +21,9 @@ package com.arcadedb.server;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.log.LogManager;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -112,6 +115,27 @@ public final class ErrorConcealment {
       return "unknown error";
     final String message = cause.getMessage();
     return message != null && !message.isBlank() ? message : cause.getClass().getSimpleName();
+  }
+
+  /**
+   * An exception and its cause chain as a single line ({@code msg -> cause -> cause...}): the {@code detail} of an HTTP error
+   * answer, and the text of a Bolt FAILURE (issue #11973), so both surfaces say the same thing about the same failure. Stops at a
+   * cause already seen, compared by identity, so a cyclic chain ends and two distinct causes that are {@code equals} are both
+   * written.
+   */
+  public static String detailChain(final Throwable e) {
+    final StringBuilder buffer = new StringBuilder();
+    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    visited.add(e);
+    Throwable current = e.getCause();
+    while (current != null && visited.add(current)) {
+      buffer.append(" -> ");
+      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
+      current = current.getCause();
+    }
+    return buffer.toString();
   }
 
   /**
