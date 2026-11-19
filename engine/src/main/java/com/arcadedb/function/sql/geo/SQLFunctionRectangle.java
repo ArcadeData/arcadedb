@@ -40,11 +40,19 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 4;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params.length != 4)
-      throw new IllegalArgumentException(
-          "rectangle() requires 4 parameters: rectangle(<top-x>, <top-y>, <bottom-x>, <bottom-y>)");
+    checkArity(params);
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
     final Point topLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));

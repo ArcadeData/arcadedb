@@ -36,7 +36,7 @@ class SnapshotSwapRecoveryTest {
 
   /**
    * The fixtures stand in for a snapshot with placeholder files no engine can open, so recovery is told every snapshot
-   * opens: what it does with one that does not is the subject of {@link Issue8950RollForwardProvesTheSnapshotOpensTest}.
+   * opens: what it does with one that does not is the subject of {@link SnapshotRollForwardTest.InstallVerifiesInstalledFiles.RollForwardProvesTheSnapshotOpens}.
    */
   @BeforeEach
   void snapshotsOpenForIssue8950() {
