@@ -208,8 +208,14 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
           if (!EdgeWeight.isWalkable(weight))
             continue;
           if (count == nbrBuf.length) {
-            nbrBuf = Arrays.copyOf(nbrBuf, count << 1);
-            wtBuf = Arrays.copyOf(wtBuf, count << 1);
+            // Priced before the buffers are allocated: a supernode doubles them again and again, and the doublings add up to about
+            // twice the final length, which the old buffers, the new ones and the copy of the row held together at the peak
+            final long grown = 2L * count;
+            memory.reserve(saturatingProduct(grown, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+                "a row of more than " + count + " edge entries");
+            final int newLength = (int) Math.min(grown, Integer.MAX_VALUE - 8L);
+            nbrBuf = Arrays.copyOf(nbrBuf, newLength);
+            wtBuf = Arrays.copyOf(wtBuf, newLength);
           }
           nbrBuf[count] = nbrIdx;
           wtBuf[count] = weight;
@@ -219,7 +225,10 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
       adjNeighbors[i] = Arrays.copyOf(nbrBuf, count);
       adjWeights[i] = Arrays.copyOf(wtBuf, count);
       unpriced += count;
-      if (unpriced >= ADJACENCY_CHECKPOINT_ENTRIES / 3 || (i & 1023) == 1023) {
+      // The batch is capped by what the budget has left, recomputed after every reservation, as weightedAdjacency does: a fixed batch
+      // could be allocated past a budget that is nearly spent before it is refused
+      final long checkpoint = Math.min(ADJACENCY_CHECKPOINT_ENTRIES / 3, memory.capacityFor(INT_BYTES + DOUBLE_BYTES));
+      if (unpriced >= checkpoint || (i & 1023) == 1023) {
         memory.reserve(saturatingProduct(unpriced, INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list", unpriced + " edge entries");
         unpriced = 0;
       }

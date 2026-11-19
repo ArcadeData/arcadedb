@@ -92,6 +92,12 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
   private static final Set<String> CONFIG_KEYS = Set.of("maxIterations", "direction", "tieBreakProperty", "seedProperty",
       "fixedSeeds");
 
+  /**
+   * Heap the ranking by a tie-break property costs a node: the loaded value and its reference, the boxed index the sort orders, the
+   * key it compares and the rank itself. The property's own payload is on top of this and is not estimated, as the record's is not.
+   */
+  private static final long TIE_BREAK_NODE_BYTES = 48L;
+
   @Override
   public String getName() {
     return NAME;
@@ -152,7 +158,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       final int n = gav.getNodeCount();
       if (n == 0)
         return Stream.empty();
-      final Labelling labelling = initialLabelling(n,
+      final Labelling labelling = initialLabelling(newMemoryBudget(db), n,
           property -> i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(property), tieBreakProperty,
           seedProperty, fixedSeeds);
       // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
@@ -169,7 +175,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       return Stream.empty();
     // A vertex read when its property is asked for, which is the only thing a record is needed for here; one deleted since the graph was
     // loaded has none (issue #12554)
-    final Labelling labelling = initialLabelling(n, property -> i -> {
+    final Labelling labelling = initialLabelling(graph.memory(), n, property -> i -> {
       final Vertex vertex = graph.getVertex(i);
       return vertex != null ? vertex.get(property) : null;
     }, tieBreakProperty, seedProperty, fixedSeeds);
@@ -202,9 +208,24 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
    * convention of Neo4j GDS. Equal values share one label id, so every seed of a class pulls the same way. The label ids are
    * ordered by value, so a tie goes to the smallest value; with a tie-break property they are ordered instead by the
    * smallest tie-break rank among the nodes that start on them, which for an unseeded node is its own rank, as before.
+   * <p>
+   * What it allocates is priced against the call's budget before it is allocated, for the option the call asked for: the ranking only
+   * with a tie-break property, the seed buffers only with a seed property (issue #12554).
    */
-  private Labelling initialLabelling(final int n, final Function<String, IntFunction<Object>> reader, final String tieBreakProperty,
-      final String seedProperty, final boolean fixedSeeds) {
+  private Labelling initialLabelling(final MemoryBudget memory, final int n, final Function<String, IntFunction<Object>> reader,
+      final String tieBreakProperty, final String seedProperty, final boolean fixedSeeds) {
+    if (tieBreakProperty != null)
+      memory.reserve(saturatingProduct(n, TIE_BREAK_NODE_BYTES), "the tie-break ranking", n + " nodes");
+    // The starting labels and what each means, and the two vectors the propagation swaps between; a seed adds the value of every node,
+    // its flag and the sorted copy of the values, and a seed with a tie-break property the arrays that put the label ids in rank order
+    long perNode = 3L * INT_BYTES + LONG_BYTES;
+    if (seedProperty != null) {
+      perNode += 2L * LONG_BYTES + BOOLEAN_BYTES;
+      if (tieBreakProperty != null)
+        perNode += 3L * INT_BYTES + LONG_BYTES;
+    }
+    memory.reserve(saturatingProduct(n, perNode), "the label vectors", n + " nodes");
+
     final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n, reader.apply(tieBreakProperty), tieBreakProperty) : null;
 
     if (seedProperty == null) {

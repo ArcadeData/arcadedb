@@ -1047,9 +1047,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final RID rid = vertex.getIdentity();
       if (rid.getBucketId() != lastBucketId) {
         lastBucketId = rid.getBucketId();
-        // Sized from what the bucket holds, within what the budget allows: the table is not grown by doubling and copied while it fills
+        // Sized from what the bucket holds, within what the budget allows: the table is not grown by doubling and copied while it fills,
+        // and a bucket with a few vertices holds an array of a few slots, so the 16 bytes a node is priced at cover what the table
+        // takes whatever the number of buckets
         lastBucketIdx = ids.registerBucket(lastBucketId, vertex.getTypeName(),
-            (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 64L), Math.max(64L, maxVertices - loaded)));
+            (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - loaded)));
       }
       ids.addNode(lastBucketIdx, rid.getPosition());
       loaded++;
@@ -2040,8 +2042,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             if (neighbor < 0)
               continue;
             if (degree == scratchNeighbors.length) {
-              scratchNeighbors = Arrays.copyOf(scratchNeighbors, degree * 2);
-              scratchWeights = Arrays.copyOf(scratchWeights, degree * 2);
+              // Priced before the arrays are allocated (issue #12554): a supernode row doubles them again and again while the old ones
+              // are still referenced, which the entries reserved once the row is read do not see. A reservation is never released, and
+              // the doublings add up to about twice the final length, which is what the old arrays, the new ones and the copy of
+              // the row held together at the peak
+              final long grown = 2L * degree;
+              memory.reserve(saturatingProduct(grown, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+                  "a row of more than " + degree + " edge entries");
+              final int newLength = (int) Math.min(grown, Integer.MAX_VALUE - 8L);
+              scratchNeighbors = Arrays.copyOf(scratchNeighbors, newLength);
+              scratchWeights = Arrays.copyOf(scratchWeights, newLength);
             }
             final Object weight = edge.get(weightProperty);
             scratchNeighbors[degree] = neighbor;

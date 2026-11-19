@@ -3641,12 +3641,13 @@ public class GraphEngine {
    * @param vertices      the vertices, numbered by the mapping
    * @param database      the database the vertices are in
    * @param entryCount    notified with the total number of neighbour entries about to be allocated; may be null
-   * @param rowCheckpoint called with the number of the row about to be walked, in each of the two passes, so that the caller can abort a
-   *                      long build (an exception it throws aborts the build); may be null
+   * @param checkpoint    called with a counter that advances by one for every row about to be walked and every entry read, in each of the
+   *                      two passes, so that the caller can abort a long build, a supernode's list included (an exception it throws
+   *                      aborts the build): {@code WorkGuard::checkPeriodically} fits it; may be null
    */
   public static int[][] buildAdjacencyList(final NodeIdMapping vertices, final Database database, final Vertex.DIRECTION dir,
-      final String[] relTypes, final LongConsumer entryCount, final IntConsumer rowCheckpoint) {
-    return AdjacencyListBuilder.build(vertices, (DatabaseInternal) database, dir, relTypes, entryCount, rowCheckpoint);
+      final String[] relTypes, final LongConsumer entryCount, final IntConsumer checkpoint) {
+    return AdjacencyListBuilder.build(vertices, (DatabaseInternal) database, dir, relTypes, entryCount, checkpoint);
   }
 
   protected RID moveToType(final Vertex vertex, final String typeName) {

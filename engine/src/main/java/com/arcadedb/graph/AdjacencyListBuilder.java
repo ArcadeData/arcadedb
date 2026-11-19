@@ -69,8 +69,10 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
   private final NodeIdMapping    targets;
   // null WHEN THE ROW OF A VERTEX IS ITS ID IN targets
   private final int[]            rowOfTarget;
-  // CALLED WITH THE ROW ABOUT TO BE WALKED, SO A CALLER CAN ABORT THE BUILD: null FOR NONE
-  private final IntConsumer      rowCheckpoint;
+  // CALLED WITH A COUNTER THAT ADVANCES BY ONE PER ROW WALKED AND PER ENTRY READ, SO A CALLER CAN ABORT THE BUILD, EVEN INSIDE A SUPERNODE'S
+  // LIST: null FOR NONE
+  private final IntConsumer      checkpoint;
+  private       int              steps;
   // THE EDGE BUCKET WHOSE READ PERMISSION WAS ASKED LAST: ENTRIES COME IN RUNS OF ONE BUCKET
   private       int              lastReadableEdgeBucketId = -1;
 
@@ -157,13 +159,13 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
   }
 
   private AdjacencyListBuilder(final DatabaseInternal database, final NodeIdMapping targets, final int[] rowOfTarget,
-      final Rows rows, final IntConsumer rowCheckpoint) {
+      final Rows rows, final IntConsumer checkpoint) {
     this.database = database;
     this.scanner = new EdgeListScanner(database);
     this.targets = targets;
     this.rowOfTarget = rowOfTarget;
     this.rows = rows;
-    this.rowCheckpoint = rowCheckpoint;
+    this.checkpoint = checkpoint;
   }
 
   /**
@@ -199,13 +201,13 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
    * @see GraphEngine#buildAdjacencyList(NodeIdMapping, Database, Vertex.DIRECTION, String[], LongConsumer, IntConsumer)
    */
   static int[][] build(final NodeIdMapping vertices, final DatabaseInternal database, final Vertex.DIRECTION dir,
-      final String[] relTypes, final LongConsumer entryCount, final IntConsumer rowCheckpoint) {
+      final String[] relTypes, final LongConsumer entryCount, final IntConsumer checkpoint) {
     if (vertices.size() == 0) {
       if (entryCount != null)
         entryCount.accept(0L);
       return new int[0][];
     }
-    return build(new AdjacencyListBuilder(database, vertices, null, new MappedRows(vertices), rowCheckpoint), database, dir, relTypes,
+    return build(new AdjacencyListBuilder(database, vertices, null, new MappedRows(vertices), checkpoint), database, dir, relTypes,
         entryCount);
   }
 
@@ -262,8 +264,8 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
     try {
       final int count = rows.size();
       for (int i = 0; i < count; i++) {
-        if (rowCheckpoint != null)
-          rowCheckpoint.accept(i);
+        if (checkpoint != null)
+          checkpoint.accept(steps++);
         row = i;
         if (!transposed) {
           walk(dir == Vertex.DIRECTION.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT, typed, typeMask, false, true, false);
@@ -302,6 +304,9 @@ final class AdjacencyListBuilder implements EdgeListScanner.EntryVisitor {
 
   @Override
   public void visit(final int edgeBucketId, final long edgePosition, final int vertexBucketId, final long vertexPosition) {
+    // Per entry too: one supernode's list can hold millions of them, and a checkpoint per row would leave all of it unabortable
+    if (checkpoint != null)
+      checkpoint.accept(steps++);
     if (filtered && !filter.matches(edgeBucketId))
       return;
     if (edgePosition >= 0 && edgeBucketId != lastReadableEdgeBucketId) {

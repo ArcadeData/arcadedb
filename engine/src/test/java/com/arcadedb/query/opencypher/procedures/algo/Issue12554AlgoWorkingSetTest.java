@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -212,6 +213,8 @@ class Issue12554AlgoWorkingSetTest {
   void aLoadedGraphNumbersItsNodesInScanOrder() {
     final VertexType first = database.getSchema().createVertexType("First", 3);
     final VertexType second = database.getSchema().createVertexType("Second", 2);
+    // Many buckets for few vertices: each bucket holds an array of the size of what it holds, not a fixed minimum
+    final VertexType tiny = database.getSchema().createVertexType("Tiny", 30);
     database.getSchema().createEdgeType("LINK");
     final List<RID> scanOrder = new ArrayList<>();
     database.transaction(() -> {
@@ -219,12 +222,14 @@ class Issue12554AlgoWorkingSetTest {
         database.newVertex(first.getName()).set("i", i).save();
       for (int i = 0; i < 30; i++)
         database.newVertex(second.getName()).set("i", i).save();
+      for (int i = 0; i < 7; i++)
+        database.newVertex(tiny.getName()).set("i", i).save();
     });
     GraphEngine.getAllVertices(database, null).forEachRemaining(vertex -> scanOrder.add(vertex.getIdentity()));
 
     final GraphData graph = new AlgoWCC().loadGraphFromRecords(database, null, context());
 
-    assertThat(graph.nodeCount).isEqualTo(70);
+    assertThat(graph.nodeCount).isEqualTo(77);
     for (int i = 0; i < scanOrder.size(); i++) {
       assertThat(graph.getRID(i)).as("node %d", i).isEqualTo(scanOrder.get(i));
       assertThat(graph.indexOf(scanOrder.get(i))).as("index of %s", scanOrder.get(i)).isEqualTo(i);
@@ -293,6 +298,61 @@ class Issue12554AlgoWorkingSetTest {
             throw new IllegalStateException("aborted at row 7");
         })).isInstanceOf(IllegalStateException.class).hasMessage("aborted at row 7");
     assertThat(checkpoints).containsExactly(0, 1, 2, 3, 4, 5, 6, 7);
+  }
+
+  /**
+   * An edge-list entry whose edge record is gone (a ghost) is followed by the adjacency of a graph loaded from the records, as the Graph
+   * Analytical View build and every other fallback adjacency follow it (issue #11104): the call neither throws nor skips the neighbour.
+   */
+  @Test
+  void aGhostEdgeEntryIsFollowedNotSkipped() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    final RID[] rids = new RID[3];
+    final RID[] ghost = new RID[1];
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        rids[i] = database.newVertex("Node").set("i", i).save().getIdentity();
+      ghost[0] = rids[0].asVertex().modify().newEdge("LINK", rids[1]).save().getIdentity();
+      rids[1].asVertex().modify().newEdge("LINK", rids[2]).save();
+    });
+    // Only the edge record goes, the entry in the edge lists of its two ends stays
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, ghost[0]));
+
+    final GraphData graph = new AlgoWCC().loadGraphFromRecords(database, null, context());
+    final int[][] adjacency = graph.adjacency(Vertex.DIRECTION.OUT);
+
+    assertThat(adjacency[graph.indexOf(rids[0])]).containsExactly(graph.indexOf(rids[1]));
+    assertThat(adjacency[graph.indexOf(rids[1])]).containsExactly(graph.indexOf(rids[2]));
+    try (final Stream<Result> pageRank = new AlgoPageRank().execute(new Object[0], null, context())) {
+      assertThat(pageRank.count()).isEqualTo(3);
+    }
+    try (final Stream<Result> wcc = new AlgoWCC().execute(new Object[0], null, context())) {
+      assertThat(wcc.map(row -> row.<Integer>getProperty("componentId")).distinct().count()).isEqualTo(1);
+    }
+  }
+
+  /** The entries of a list are checkpointed too: a supernode's list is not one unabortable step. */
+  @Test
+  void theEntriesOfASupernodeAreCheckpointedToo() {
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("Node").set("i", -1).save();
+      for (int i = 0; i < 30; i++)
+        hub.newEdge("LINK", database.newVertex("Node").set("i", i).save()).save();
+    });
+    final AlgoWCC procedure = new AlgoWCC();
+    final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
+    final int[] last = new int[1];
+
+    // 31 rows alone count 31 steps: past step 40 the build is inside the list of the hub
+    assertThatThrownBy(() -> GraphEngine.buildAdjacencyList(ids, database, Vertex.DIRECTION.OUT, null, null, step -> {
+      last[0] = step;
+      if (step == 40)
+        throw new IllegalStateException("aborted at step 40");
+    })).isInstanceOf(IllegalStateException.class).hasMessage("aborted at step 40");
+    assertThat(last[0]).isEqualTo(40);
   }
 
   /** The adjacency of a graph loaded from the records is one of the graph-driven loops of a call: the command deadline stops it. */
