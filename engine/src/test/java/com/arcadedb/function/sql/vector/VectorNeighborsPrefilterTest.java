@@ -654,7 +654,9 @@ class VectorNeighborsPrefilterTest {
           database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
           try {
             final Set<RID> tested = new HashSet<>(rids(neighbors(options, params, 400)));
-            assertThat(planned).as("%s IN %s (%s)", c[0], value, value.getClass().getSimpleName()).isEqualTo(tested);
+            // the kinds of the items are in the message: the string "3" and the integer 3 print alike
+            assertThat(planned).as("%s IN %s (%s of %s)", c[0], value, value.getClass().getSimpleName(),
+                asList.stream().map(v -> v.getClass().getSimpleName()).toList()).isEqualTo(tested);
           } finally {
             database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
                 GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
