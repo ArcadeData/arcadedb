@@ -51,7 +51,7 @@ import java.util.Set;
  * result heap, and expands its neighbours either way. A JVector upgrade that started pruning the neighbours of a
  * rejected node would silently make the vectors behind a deleted region unreachable again - the same bug this class
  * exists to fix, with the filter now causing it. If you are upgrading JVector, check that first;
- * {@code Issue5558DeletedRegionSearchTest} is what will tell you.
+ * {@code VectorSearchCorrectnessTest.DeletedRegionSearch} is what will tell you.
  * <p>
  * <b>Cost.</b> This runs on every search, not only on the RID-restricted ones that used to need a filter, so it is
  * worth knowing what it costs an index with no deletions at all. JVector calls {@code acceptOrds.get()} once per
@@ -100,7 +100,7 @@ public class LiveVectorBitsFilter implements Bits {
   /**
    * What a candidate the walk considers costs against a candidate the pre-filter plan scores (issue #10921): the walk loads
    * the candidate's record to test it and scores its neighbours, the plan reads one vector. Measured by
-   * Issue10921WherePrefilterBenchmark on 100,000 vectors of 128 dimensions: about 3.8 us against 0.45 us.
+   * VectorWherePrefilterBenchmark on 100,000 vectors of 128 dimensions: about 3.8 us against 0.45 us.
    */
   static final int WALK_TO_PLAN_COST_RATIO = 8;
 

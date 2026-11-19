@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -43,6 +44,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * timeout budget, and only assumes "no local data" for a peer once the budget is exhausted - logging
  * exactly what it assumed. These tests pin the retry/backoff/deadline logic deterministically with an
  * injected probe (no real HTTP).
+ * <p>
+ * Also pins that a probe answered by another node is not counted as the state of the peer that was asked (#8548).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -51,6 +54,7 @@ class BootstrapProbeRetryTest {
   private static final RaftPeerId A = RaftPeerId.valueOf("nodeA");
   private static final RaftPeerId B = RaftPeerId.valueOf("nodeB");
   private static final RaftPeerId C = RaftPeerId.valueOf("nodeC");
+  private static final RaftPeerId ASKED = RaftPeerId.valueOf("localhost_31485");
 
   private static Map<String, PeerState> data(final RaftPeerId peer, final long lastTxId) {
     return Map.of("db", new PeerState(peer, "db", "fp-" + peer, lastTxId));
@@ -196,5 +200,89 @@ class BootstrapProbeRetryTest {
     assertThat(BootstrapElection.isRetryableProbeStatus(200)).isFalse();
     assertThat(BootstrapElection.isRetryableProbeStatus(400)).isFalse();
     assertThat(BootstrapElection.isRetryableProbeStatus(404)).isFalse();
+  }
+
+  private static String answerFrom(final String peerId, final long lastTxId) {
+    return """
+        {"peerId":"%s","databases":[{"name":"graph","fingerprint":"ffff","lastTxId":%d}]}""".formatted(peerId, lastTxId);
+  }
+
+  // Regression for #8548: a probe answered by another node is not counted as the asked peer state
+  /**
+   * Issue #8548: a bootstrap-state probe answered by a node other than the one it was sent to must not be counted as
+   * that peer's state.
+   * <p>
+   * The election files every answer under the id of the peer it meant to ask. When the address it dialled belongs to
+   * another node - a stale or shifted {@code http} port in {@code arcadedb.ha.serverList}, another cluster's server on
+   * the same host - the answering node's {@code lastTxId} and fingerprint were elected from as if they were that peer's.
+   * In {@code RaftBootstrapLeadershipTransferIT} that picked a peer holding {@code lastTxId=100} over the one holding
+   * 500, and on the reporter's run left two nodes with different copies of the schema. The answer names the node that
+   * wrote it ({@code peerId}, present since the endpoint was introduced), so the probe can refuse it.
+   */
+  @Test
+  void theAnswerOfThePeerThatWasAskedIsItsState() {
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200,
+        answerFrom("localhost_31485", 500L), Set.of("graph"));
+
+    assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.OK);
+    assertThat(outcome.states().get("graph").peerId()).isEqualTo(ASKED);
+    assertThat(outcome.states().get("graph").lastTxId()).isEqualTo(500L);
+  }
+
+  // Regression for #8548: a probe answered by another node is not counted as the asked peer state
+  @Test
+  void anAnswerWrittenByAnotherPeerIsNotFiledUnderTheAskedOne() {
+    // The defect: the stranger's lastTxId=100 was recorded as the asked peer's, and the election chose from it.
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200,
+        answerFrom("localhost_24110", 100L), Set.of("graph"));
+
+    assertThat(outcome.result())
+        .as("the dialled address does not identify the peer; the answer cannot become right by asking it again")
+        .isEqualTo(BootstrapElection.ProbeResult.FATAL);
+    assertThat(outcome.states()).isNull();
+    assertThat(outcome.detail()).contains("localhost_24110").contains("localhost_31485");
+  }
+
+  // Regression for #8548: a probe answered by another node is not counted as the asked peer state
+  @Test
+  void anAnswerThatNamesNoPeerIsNotFiledUnderTheAskedOne() {
+    // Every build that serves /bootstrap-state has named itself in the answer, so one that does not is not a peer.
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200,
+        """
+            {"databases":[{"name":"graph","fingerprint":"ffff","lastTxId":100}]}""", Set.of("graph"));
+
+    assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.FATAL);
+    assertThat(outcome.states()).isNull();
+  }
+
+  // Regression for #8548: a probe answered by another node is not counted as the asked peer state
+  @Test
+  void theStatusIsStillJudgedBeforeTheBody() {
+    // The extraction must keep the existing status rules: a transient status is retried, a definitive one is not.
+    assertThat(BootstrapElection.probeOutcomeOf(ASKED, 503, "", Set.of("graph")).result())
+        .isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
+    assertThat(BootstrapElection.probeOutcomeOf(ASKED, 404, "", Set.of("graph")).result())
+        .isEqualTo(BootstrapElection.ProbeResult.FATAL);
+  }
+
+  // Regression for #8548: a probe answered by another node is not counted as the asked peer state
+  @Test
+  void anAnswerFromTheAskedPeerWithoutADatabaseListIsRetriedAsMalformed() {
+    // The identity check passes; the missing list is then the same malformed answer it was before this change.
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200,
+        """
+            {"peerId":"localhost_31485"}""", Set.of("graph"));
+
+    assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
+    assertThat(outcome.detail()).startsWith(BootstrapElection.MALFORMED_ANSWER);
+  }
+
+  // Regression for #8548: a probe answered by another node is not counted as the asked peer state
+  @Test
+  void aMalformedAnswerIsStillRetried() {
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200, "not json", Set.of("graph"));
+    assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
+    // queryPeer keeps this case at WARNING by its prefix, where a transient status is logged at INFO.
+    assertThat(outcome.detail()).startsWith(BootstrapElection.MALFORMED_ANSWER);
   }
 }

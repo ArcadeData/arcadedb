@@ -27,6 +27,7 @@ import com.arcadedb.engine.MergedEdgeRegistry;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
@@ -41,6 +42,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.UnidirectionalEdgeChanges;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
@@ -210,6 +212,14 @@ public class TransactionContext implements Transaction {
   // check addUpdatedRecord would have refused them with is made by the commit instead, under the lock, against the newest
   // committed image: the write is merged onto it when it changed only edge-list heads, refused otherwise.
   private       RidHashSet                            staleEdgeListWrites;
+  // #12472: records written to their page at once (the asynchronous executor) rather than deferred to the commit
+  private       RidHashSet                            immediateWrites;
+  // #12320: the vertices whose outgoing / incoming edge-list head a traversal read off a vertex loaded from this transaction's
+  // own image of its page, see trackEdgeListHeadReadFromOwnImage()
+  private       RidHashSet                            outHeadsReadFromOwnImage;
+  private       RidHashSet                            inHeadsReadFromOwnImage;
+  // #12320: how many reads were served from this transaction's own image of a page, so a reader can tell whether its read was one
+  private       long                                  ownImageReads;
   // #11498: per vertex RID, the committed image the commit merged the transaction's edge-list heads onto. It is the
   // pre-image the slot merge checks that vertex's slot against, instead of the older one the transaction pinned.
   private       Map<RID, byte[]>                     mergedEdgeListBases;
@@ -227,6 +237,23 @@ public class TransactionContext implements Transaction {
   // while EVERY modification this transaction made to it is a tracked append; the first non-append write to it
   // (edge removal, new-chunk allocation, bulk addAll) poisons its page so it can never be rebased.
   private       Map<RID, EdgeAppendBuffer>           edgeAppendsBySegment;
+  // #11590: the reads an edge append makes for itself (the vertex's head pointer, the chunk it appends to) while it runs, see
+  // beginEdgeAppend. They are recorded on their page when the outermost append ends, except a read of a chunk the append then
+  // wrote in place: that one is the append's own, and the edge-append merge replays it onto whatever the chunk holds at commit.
+  private       int                                  edgeAppendDepth;
+  private       MutablePage[]                        deferredReadPages;
+  private       int[]                                deferredReadSlots;
+  private       int                                  deferredReads;
+  // reads of chunks served from the objects this transaction queued for them
+  private       RID[]                                deferredChunkReadRIDs;
+  private       int                                  deferredChunkReads;
+  // #11590: the chunks the window's appends wrote in place, a set by identity (a chunk is a record): a batch (addAll) that writes
+  // thousands of chunks of one list looks each one up in constant time. Kept empty across windows so one append allocates nothing,
+  // dropped instead when a batch grew it past CHUNKS_APPENDED_IN_WINDOW_KEPT, as wiping its table would cost every later window
+  private       RidHashSet                           chunksAppendedInWindow;
+  private static final int                           CHUNKS_APPENDED_IN_WINDOW_KEPT = 8;
+  // #11590: whether the reads recorded on the pages of the appended chunks were folded into their EdgeAppendBuffer (once per commit)
+  private       boolean                              appendedChunkReadsFolded;
   // Poisoned edge-list pages, keyed by a packed (fileId, pageNumber) long so poisoning and the hot-path skip
   // check allocate nothing (no PageId objects).
   private       LongHashSet                          edgeAppendPoisonedPages;
@@ -328,6 +355,9 @@ public class TransactionContext implements Transaction {
   // Group commit (arcadedb.txWalGroupCommit): raised by commit() around its 2nd phase, the only path that waits for the
   // deferred flush. The ticket is what that flush owes this transaction, 0 when nothing is owed
   private       boolean                              deferWALSync;
+  // Set by publishReplicatedCommittedPages for the length of the publication: the replication log is what makes the commit
+  // durable, so its WAL record is written without a flush (issue #11746)
+  private       boolean                              replicatedPublication;
   private       long                                 deferredWALSyncTicket;
   private final boolean                              configuredGroupCommit;
   private       Boolean                              asyncFlush;
@@ -347,6 +377,11 @@ public class TransactionContext implements Transaction {
    * a database with a columnar mark target only. Null outside tests.
    */
   public static volatile Runnable                    afterFirstColumnarMarkForTesting;
+  /**
+   * Test seam (#11592): runs on the committing thread in phase 1, after the edge-list heads are merged and before the deferred writes
+   * and the page-version checks, so a test can apply a replicated entry in between. Null outside tests.
+   */
+  public static volatile Runnable                    afterEdgeListHeadMergeForTesting;
   // The pages of the commit as ColumnarIndexManager.packPage keys, sorted, and the page numbers of one file at a time: reused
   // across the commits of this context, grown when a commit has more pages than any before
   private       long[]                               columnarMarkKeys      = new long[0];
@@ -386,17 +421,25 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
-  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the stripes of the relationships it created by a
+  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the keys of the relationships it created by a
   // match-or-create: the ones its commit checks, and the ones it marks. Primitive arrays grown on demand, null until the first
   private       long                                 mergedEdgeEpoch;
-  private       int[]                                mergedEdgeChecked;
+  private       long[]                               mergedEdgeChecked;
   private       int                                  mergedEdgeCheckedCount;
-  private       int[]                                mergedEdgeMarked;
+  private       long[]                               mergedEdgeMarked;
   private       int                                  mergedEdgeMarkedCount;
-  // #11482: the stripes are reserved in the registry, so they have to be marked committed or released when the transaction ends
+  // #11482: the keys are reserved in the registry, so they have to be marked committed or released when the transaction ends
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
+  // #11592: TransactionManager.getVertexDeleteSequence() when this transaction began. A vertex deleted by a commit after it may be
+  // one this transaction read alive, and its RID may hold a vertex created since
+  private       long                                 vertexDeleteEpoch;
+  // #11592: TransactionManager.getVertexPageAppliesStarted() before a leader commit's first deleted-vertex check, and whether one
+  // of them passed. An apply takes no commit lock: one that starts after a check can still publish the page the commit then merges
+  // or rebases onto, so a commit that a vertex-page apply overlapped is refused once phase 1 read every page it builds on
+  private       long                                 vertexPageAppliesAtChecks;
+  private       boolean                              vertexDeleteChecked;
   // #10588: TransactionManager.getIndexRegistrationSequence() when this transaction began. An index bound to a type after it owes
   // this transaction's writes to the buckets it covers an entry each, made up at the commit
   private       long                                 indexRegistrationSequenceAtBegin;
@@ -411,6 +454,10 @@ public class TransactionContext implements Transaction {
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
   private       long                                 beginSequence         = -1;
+  // ISSUE #11713: THE COMMITS PUBLISHED WHEN THIS TRANSACTION BEGAN, SEE getPublishedCommitsAtBegin(), AND HOW MANY OF THE ONES
+  // PUBLISHED SINCE WERE TRANSACTIONS NESTED IN IT, SEE getNestedPublications()
+  private       long                                 publishedCommitsAtBegin = -1;
+  private       long                                 nestedPublications;
   /**
    * The position of the replication log the node had applied when this transaction began, or {@code -1} when none was
    * recorded (issue #8686). Stamped by the replicated database AFTER {@link #begin}, which clears it, so a transaction
@@ -490,6 +537,8 @@ public class TransactionContext implements Transaction {
   private       Map<String, Object>                  attachments                 = null;
   // #10040: the client opened this transaction and ends it with its own COMMIT/ROLLBACK, see setClientManaged()
   private       boolean                              clientManaged               = false;
+  // #11588: a server opened this transaction around one request, as its auto-commit, see setImplicit()
+  private       boolean                              implicit                    = false;
 
   // #5279: above this many tracked insert reservations the parallel arrays are dropped instead of being reused, so a
   // one-off bulk insert does not keep its (per-record) tracking arrays alive on a long-lived transaction context.
@@ -538,7 +587,10 @@ public class TransactionContext implements Transaction {
       unidirectionalEdgeChanges.transactionEnded();
     beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     indexRegistrationSequenceAtBegin = database.getTransactionManager().getIndexRegistrationSequence();
+    publishedCommitsAtBegin = database.getTransactionManager().getPublishedCommits();
+    nestedPublications = 0;
     mergedEdgeEpoch = database.getTransactionManager().getMergedEdges().getSequence();
+    vertexDeleteEpoch = database.getTransactionManager().getVertexDeleteSequence();
     bucketFirstWriteSequences = null;
     lastNotedBucket = -1;
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
@@ -670,6 +722,11 @@ public class TransactionContext implements Transaction {
     return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
+  /** True while the transaction holds the file locks a {@code LOCK TYPE} / {@code LOCK BUCKET} took, until its commit or rollback. */
+  public boolean holdsExplicitLocks() {
+    return explicitLockedFiles != null;
+  }
+
   public LocalTransactionExplicitLock lock() {
     if (explicitLock == null)
       explicitLock = new LocalTransactionExplicitLock(this);
@@ -720,11 +777,54 @@ public class TransactionContext implements Transaction {
     return !modifiedRecordsCache.isEmpty() || (updatedRecords != null && !updatedRecords.isEmpty());
   }
 
+  /**
+   * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
+   * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
+   * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred
+   * update leaves the slot alone until the commit, so a slot that differs from the image is never its doing, whatever the record
+   * caches hold. Records nothing in the running statement: it answers a question and hands out no record.
+   */
+  public boolean isSlotWrittenInTransaction(final RID rid) {
+    if (immediateWrites != null && immediateWrites.contains(rid))
+      return true;
+    return isCreatedInTransaction(rid);
+  }
+
+  /**
+   * Remembers a record written to its page at once inside this transaction (the asynchronous executor), see
+   * {@link #isSlotWrittenInTransaction(RID)}. The writes of the commit itself (the flush of the deferred updates, the merges) are
+   * not remembered: they run after every delete of the transaction.
+   */
+  public void trackImmediateWrite(final RID rid) {
+    if (status != STATUS.BEGUN)
+      return;
+    if (immediateWrites == null)
+      immediateWrites = new RidHashSet();
+    immediateWrites.add(rid);
+  }
+
+  /**
+   * Adds to {@code target} the identity of every record this transaction wrote or deleted and has not committed yet: once it
+   * commits, a copy of one of those records read before is a version behind, and updating that copy in a later transaction is
+   * refused as a concurrent modification (issue #12324). Costs one pass over the written and deleted records.
+   */
+  public void collectWrittenRecordIds(final RidHashSet target) {
+    for (final RID rid : modifiedRecordsCache.keySet())
+      target.add(rid);
+    if (updatedRecords != null)
+      for (final RID rid : updatedRecords.keySet())
+        target.add(rid);
+    deletedRecordsInTx.forEach(target::add);
+  }
+
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
     if (rec != null) {
       if (statement != null)
         statement.recordObtained(rid, rec, updatedRecords != null && updatedRecords.get(rid) == rec);
+      // #11590: a chunk this transaction wrote is read from the object it queued, not from a page, after the write
+      if (rec instanceof EdgeSegment)
+        trackReadOfWrittenChunk(rid);
       return rec;
     }
     rec = immutableRecordsCache.get(rid);
@@ -733,6 +833,8 @@ public class TransactionContext implements Transaction {
       rec = updatedRecords.get(rid);
       if (rec != null && statement != null)
         statement.recordObtained(rid, rec, true);
+      if (rec instanceof EdgeSegment)
+        trackReadOfWrittenChunk(rid);
     }
     return rec;
   }
@@ -1515,6 +1617,23 @@ public class TransactionContext implements Transaction {
     this.clientManaged = clientManaged;
   }
 
+  /**
+   * Whether a server opened this transaction around one request on the client's behalf, as its auto-commit: the HTTP
+   * command handler, the gRPC auto-wrap, the MCP tools, the implicit block of a Postgres pipeline. Neo4j calls it an
+   * implicit transaction. Every other transaction belongs to its caller, an embedded {@code begin()} or
+   * {@code transaction()} included, and is not one: a {@code CALL { ... } IN TRANSACTIONS} commits its batches on their
+   * own and is refused there, since the caller's rollback could not undo them (issue #11588). A transaction the client
+   * later declares its own ({@link #isClientManaged()}) stops being implicit. Released by {@link #reset()}.
+   */
+  public boolean isImplicit() {
+    return implicit && !clientManaged;
+  }
+
+  /** Declares this transaction opened by a server around one request. See {@link #isImplicit()}. */
+  public void setImplicit(final boolean implicit) {
+    this.implicit = implicit;
+  }
+
   public boolean hasCallbackKey(final String key) {
     return registeredCallbackKeys != null && registeredCallbackKeys.contains(key);
   }
@@ -1674,6 +1793,34 @@ public class TransactionContext implements Transaction {
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING, "Error abandoning the commit order of a post-commit callback: %s", e, e.getMessage());
         }
+  }
+
+  /**
+   * The commits published when this transaction began ({@link com.arcadedb.engine.TransactionManager#getPublishedCommits()}). A
+   * record this transaction reached through the graph and finds gone when it reads it was deleted by a concurrent commit if a
+   * commit was published since, and was already missing otherwise (issue #11713, see {@link DatabaseInternal#lookupThroughGraph}).
+   */
+  public long getPublishedCommitsAtBegin() {
+    return publishedCommitsAtBegin;
+  }
+
+  /**
+   * How many of the commits published since this transaction began were transactions nested in it, on its own thread: a name the
+   * dictionary registers for a record this transaction saves is one. They are not concurrent with it, and a record it reached
+   * through the graph and finds gone is not a conflict because of them (issue #11713).
+   */
+  public long getNestedPublications() {
+    return nestedPublications;
+  }
+
+  /** Counts this commit's publication in every transaction it is nested in, see {@link #getNestedPublications()}. */
+  private void countPublicationInEnclosingTransactions() {
+    final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (current == null || current.transactions.size() < 2)
+      return;
+    for (final TransactionContext enclosing : current.transactions)
+      if (enclosing != this && enclosing.isActive())
+        ++enclosing.nestedPublications;
   }
 
   /**
@@ -2024,7 +2171,7 @@ public class TransactionContext implements Transaction {
         // below into a hard failure on this read path instead (code review on #6013). The cast is safe
         // because PaginatedComponent is the only direct subclass of Component in the codebase.
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
+        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
         if (!isNewPage)
           // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
           immutablePages.put(pageId, (ImmutablePage) page);
@@ -2194,11 +2341,18 @@ public class TransactionContext implements Transaction {
     private long[] vertexPosition = new long[8];
     private int    size;
     // #11498: the vertex whose edge list the segment belongs to, and the direction of that list, so the commit can put the
-    // appends in a new chunk of that list when a concurrent transaction filled the segment. Null when not known (a striped
-    // super-node chunk, or appends told apart from different lists).
+    // appends in a new chunk of that list when a concurrent transaction filled the segment. #11591: also set for a striped
+    // super-node chunk, so the commit can check the segment is still in that list before replaying onto it (the overflow
+    // leaves a striped list alone: its head is a stripe directory). Null when not known (appends told apart from different
+    // lists), which refuses the replay.
     private RID     owner;
     private boolean ownerOut;
     private boolean ownerUnknown;
+    // #11590: the application read the chunk (a traversal, a count, a uniqueness check), not only the append: folded at commit from
+    // the reads recorded on its page (see foldReadsOfAppendedChunks). The chunk the transaction holds is its own append on top of
+    // the chunk as it was then: the commit takes the appends onto the committed chunk only if nobody else changed it meanwhile, and
+    // does not take a head of its list moved by somebody else.
+    private boolean readByApplication;
 
     void setOwner(final RID vertex, final boolean out) {
       if (ownerUnknown)
@@ -2260,6 +2414,9 @@ public class TransactionContext implements Transaction {
   public void trackEdgeAppend(final RID segmentRID, final RID edgeRID, final RID vertexRID, final RID owner, final boolean out) {
     if (!edgeAppendMerge)
       return;
+
+    // #11590: the read this append made of the chunk is its own, also on a poisoned page, where the slot merge replays it
+    noteChunkAppendedInWindow(segmentRID);
 
     // Skip pages already poisoned (a brand-new chunk - e.g. a just-created source vertex's edge list - poisons
     // its own page at createRecord). Those can never be rebased, so tracking them would only waste a buffer.
@@ -2493,7 +2650,8 @@ public class TransactionContext implements Transaction {
     // transaction wrote there was declared replayable by THIS merge. A writer that forgot to poison the page (or
     // never knew the merge exists) leaves at least one undeclared byte behind and is refused here - a retry instead
     // of a silently lost write. See reportCoverageDecline for the counter and the log.
-    return hasReplayableEdgeAppends(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE);
+    return hasReplayableEdgeAppends(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_EDGE_APPEND_MERGE)
+        && areReadsFromOwnImageCurrent(page, false);
   }
 
   /**
@@ -2524,6 +2682,13 @@ public class TransactionContext implements Transaction {
       if (edgeSegmentPageKey(segmentRID) != pageKey)
         continue;
 
+      // #11592: the vertex these appends were made for can have been deleted since the transaction began, and the vertex now at
+      // its RID be a new one whose first chunk reuses the RID of this one: replayed in place, the appends would give the new
+      // vertex these relationships
+      final RID appendsOwner = entry.getValue().owner;
+      if (appendsOwner != null)
+        refuseVertexDeletedSinceBegin(appendsOwner, true);
+
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
       // MULTI-PAGE / INDIRECTED CHUNK: the rebase re-derives ONE page, but a record whose content continues on
@@ -2538,8 +2703,8 @@ public class TransactionContext implements Transaction {
             "Edge-append rebase not possible: chunk " + segmentRID + " spans multiple pages. Please retry the operation");
 
       // Load the chunk fresh from the (now current) page, bypassing the tx record cache which still holds the
-      // stale, already-appended instance. A concurrently-vanished chunk (RecordNotFoundException) cannot happen
-      // under the held commit lock; if it ever did, fall back to a full retry rather than aborting the tx.
+      // stale, already-appended instance. A chunk freed meanwhile and not reused falls back to a full retry rather than
+      // aborting the tx.
       final MutableEdgeSegment segment;
       try {
         segment = new MutableEdgeSegment(database, segmentRID, bucket.getRecord(segmentRID).copyOfContent());
@@ -2548,8 +2713,16 @@ public class TransactionContext implements Transaction {
             "Edge-append rebase not possible: chunk " + segmentRID + " no longer exists. Please retry the operation");
       }
 
-      final int committedSize = segment.getRecordSize();
       final EdgeAppendBuffer buffer = entry.getValue();
+      // #11591: the slot may hold another chunk by now. Freeing a chunk (its vertex deleted, or the chunk emptied and unlinked)
+      // and reusing the slot for another list's chunk both commit before this lock is taken, and the newcomer can even hold
+      // the same bytes. Replaying onto it put this transaction's edge in the list of an unrelated vertex, pointing at a
+      // deleted one: only the list the chunk is linked from tells the two apart.
+      if (!isInCommittedEdgeList(buffer.owner, buffer.ownerOut, segmentRID))
+        throw new ConcurrentModificationException("Edge-append rebase not possible: chunk " + segmentRID
+            + " is no longer in the edge list it was appended to (its vertex was deleted or the chunk removed). Please retry the operation");
+
+      final int committedSize = segment.getRecordSize();
       for (int i = 0; i < buffer.size; ++i)
         // #11498: a chunk the concurrent appends filled grows by what this transaction's appends need, as long as its page
         // has room (below): refusing them sent the whole transaction to a retry, the second most common conflict of
@@ -2590,6 +2763,70 @@ public class TransactionContext implements Transaction {
     // - before the move the increment ran first and a failed compress still counted.
     database.getPageManager().incrementEdgeAppendMerges();
     return rebased;
+  }
+
+  /**
+   * Issue #11591: whether the committed edge list of {@code owner}, in direction OUT ({@code out}) or IN, still links the chunk
+   * {@code segmentRID}. Once this commit holds the lock of the chunk's file the answer cannot change before it publishes:
+   * freeing the chunk writes that file.
+   * <p>
+   * Every chunk this transaction appended to was a head of the list when it did, and a concurrent transaction only puts chunks
+   * in front of it, so the walk goes from the head(s) one hop at a time: a classic list from its head, a striped one from the
+   * head of every chain of its directory, one hop per chain in turn. A chunk still in the list is met within a few hops; only one
+   * that left it walks the whole list, on the way to a retry.
+   */
+  private boolean isInCommittedEdgeList(final RID owner, final boolean out, final RID segmentRID) {
+    if (owner == null)
+      return false;
+    final Binary ownerContent = committedRecord(owner);
+    if (ownerContent == null || ownerContent.size() < VERTEX_HEADS_END || ownerContent.getByte(0) != Vertex.RECORD_TYPE)
+      return false;
+    final RID head = edgeListHeadAt(ownerContent.toByteArray(), out ? VERTEX_OUT_HEAD_OFFSET : VERTEX_IN_HEAD_OFFSET);
+    if (head == null)
+      return false;
+    if (head.equals(segmentRID))
+      return true;
+
+    final List<RID> chains = new ArrayList<>();
+    final Binary headContent = committedRecord(head);
+    if (headContent != null && headContent.size() > 0 && headContent.getByte(0) == StripeDirectory.RECORD_TYPE) {
+      final StripeDirectory directory = new StripeDirectory(database, head, headContent.copyOfContent());
+      for (int generation = 0; generation < directory.getGenerationCount(); generation++)
+        for (int slot = 0; slot < directory.getStripes(generation); slot++) {
+          final RID stripeHead = directory.getHead(generation, slot);
+          if (stripeHead != null)
+            chains.add(stripeHead);
+        }
+    } else
+      chains.add(head);
+
+    // a chunk met twice is a cycle: its chain ends there
+    final RidHashSet visited = new RidHashSet();
+    while (!chains.isEmpty())
+      for (int i = chains.size() - 1; i >= 0; i--) {
+        final RID current = chains.get(i);
+        if (current.equals(segmentRID))
+          return true;
+        final Binary content = visited.add(current) ? committedRecord(current) : null;
+        final RID previous = content != null && content.size() >= MutableEdgeSegment.CONTENT_START_POSITION
+            && content.getByte(0) == EdgeSegment.RECORD_TYPE ?
+            new MutableEdgeSegment(database, current, content.copyOfContent()).getPreviousRID() :
+            null;
+        if (previous != null)
+          chains.set(i, previous);
+        else {
+          // the last one was walked this round already
+          chains.set(i, chains.getLast());
+          chains.removeLast();
+        }
+      }
+    return false;
+  }
+
+  /** The record at {@code rid} on the committed pages, ignoring this transaction's own images, or null when none is there. */
+  private Binary committedRecord(final RID rid) {
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
+    return bucket != null ? bucket.getRecordFromCommittedPage(rid) : null;
   }
 
   /**
@@ -2846,7 +3083,7 @@ public class TransactionContext implements Transaction {
       insertReservationBuckets[i] = null;
       try {
         if (insertReservationSlots[i] == NEW_PAGE_RESERVATION)
-          bucket.releaseNewPage(insertReservationPages[i]);
+          bucket.releaseNewPage(insertReservationPages[i], this);
         else
           bucket.releaseInsertSlot(insertReservationPages[i], insertReservationSlots[i]);
       } catch (final Exception e) {
@@ -2886,7 +3123,7 @@ public class TransactionContext implements Transaction {
     if (buffer.isDeleted(slot) && !buffer.isInserted(slot)) {
       // DELETE followed by an INSERT on the SAME slot within one transaction. LocalBucket.getFreeSpaceInPage never
       // hands back a slot this transaction has just freed (guarded by
-      // Issue5279ConcurrentInsertTest.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
+      // ConcurrentRecordWriteTest.ConcurrentInsert.deletedSlotsAreRecycledByTheNextInsert), so this cannot happen today - but
       // replaying it as a plain insert would skip the pre-image check the delete relies on, so if that allocation
       // policy ever changes the page must fall back to a normal retry instead of silently mis-merging.
       poisonSlotRebasePage(fileId, pageNumber);
@@ -2898,6 +3135,33 @@ public class TransactionContext implements Transaction {
     final byte[] prev = buffer.trackInsert(slot);
     if (prev != null)
       accountTrackedBytes(-prev.length);
+  }
+
+  /**
+   * Records that a slot this transaction INSERTED (and tracked as such) now holds the HEAD chunk of a record that outgrew
+   * the page, its chain written on other pages (issue #11788: insert a row, then set its large property, in one
+   * transaction). The slot stays an insert, with no committed pre-image to check: the replay writes the head chunk,
+   * read back from the page this transaction wrote, into the same free slot of the newer committed page.
+   * <p>
+   * Anything but a slot tracked as a plain insert poisons the page, and so does every later write that gives the slot
+   * another shape (a collapse back to a plain record, a delete): {@link #trackRebasableUpdate} and
+   * {@link #trackRebasableDelete} refuse a kind that differs from the one recorded here.
+   */
+  public void trackRebasableInsertSpilledToChunk(final int fileId, final int pageNumber, final int slot) {
+    if (!slotMerge)
+      return;
+    final long key = packPageKey(fileId, pageNumber);
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return;
+    final SlotRebaseBuffer buffer = slotRebaseByPage != null ? slotRebaseByPage.get(key) : null;
+    if (buffer == null || !buffer.isInserted(slot) || buffer.isDeleted(slot) || buffer.kindOf(slot) != SLOT_KIND_RECORD) {
+      poisonSlotRebasePage(fileId, pageNumber);
+      return;
+    }
+    final byte[] prev = buffer.trackInsert(slot);
+    if (prev != null)
+      accountTrackedBytes(-prev.length);
+    buffer.trackKind(slot, SLOT_KIND_FIRST_CHUNK);
   }
 
   /**
@@ -3084,7 +3348,413 @@ public class TransactionContext implements Transaction {
   private boolean isRebasableSlotPage(final MutablePage page) {
     // #5596: same coverage proof as the edge-append merge - the page is re-derived from the tracked slot writes
     // alone, so any byte written outside a slot-merge declaration disqualifies it.
-    return hasReplayableSlotWrites(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE);
+    return hasReplayableSlotWrites(page.getPageId()) && page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE)
+        && areReadsFromOwnImageCurrent(page, true);
+  }
+
+  /**
+   * Whether every read this transaction served from its own image of {@code page} still holds on the committed page (#11590).
+   * Under {@code READ_COMMITTED} that image was taken at the transaction's first write to the page and misses what others
+   * committed there since, while the merges replay the transaction's writes onto the newer page and check only the slots it
+   * wrote: a decision taken on a slot of the image that changed meanwhile, or on the image as a whole, would be committed too.
+   * A slot the merge replays is not compared (the slot merge checks the pre-image of a slot it replays, the edge-append merge
+   * re-applies appends that commute); every other slot read must hold the same record on both pages, or none on either. Runs on
+   * the conflict path only, under the commit lock.
+   *
+   * @param bySlotMerge true for the slot merge, whose replayed slots are the ones it tracked, false for the edge-append merge,
+   *                    whose replayed slots are the edge-list segments this transaction appended to
+   */
+  private boolean areReadsFromOwnImageCurrent(final MutablePage page, final boolean bySlotMerge) {
+    final boolean wholePage = page.isWholePageRead();
+    if (!wholePage && page.nextSlotRead(0) < 0 && (bySlotMerge || !hasAppendedChunkReadOn(page.getPageId())))
+      return true;
+
+    final PageId pageId = page.getPageId();
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
+    if (bucket == null)
+      return false;
+    final SlotRebaseBuffer buffer = bySlotMerge ? slotRebaseByPage.get(packPageKey(pageId.getFileId(), pageId.getPageNumber())) : null;
+    try {
+      final ImmutablePage committed = committedPage(pageId, bucket.getPageSize());
+      if (committed == null)
+        return false;
+      // a scan of the page read every slot of it, the ones it did not find included
+      final int scanned = wholePage ? Math.max(bucket.getSlotCountInPage(page), bucket.getSlotCountInPage(committed)) : 0;
+      for (int slot = 0; slot < scanned; slot++)
+        if (!isReplayedSlot(bucket, pageId, buffer, slot) && !isReadSlotCurrent(bucket, page, committed, slot))
+          return false;
+      for (int slot = page.nextSlotRead(scanned); slot >= 0; slot = page.nextSlotRead(slot + 1))
+        if (!isReplayedSlot(bucket, pageId, buffer, slot) && !isReadSlotCurrent(bucket, page, committed, slot))
+          return false;
+      return bySlotMerge || areAppendedChunksReadCurrent(bucket, page, committed);
+    } catch (final IOException e) {
+      // a page that cannot be read cannot vouch for the reads: the conflict stands and the transaction retries
+      return false;
+    }
+  }
+
+  /** Whether the merge replays {@code slot}: tracked by {@code buffer} for the slot merge, an appended segment otherwise. */
+  private boolean isReplayedSlot(final LocalBucket bucket, final PageId pageId, final SlotRebaseBuffer buffer, final int slot) {
+    if (buffer != null)
+      return buffer.isTracked(slot);
+    return edgeAppendsBySegment != null && edgeAppendsBySegment.containsKey(recordAt(bucket, pageId, slot));
+  }
+
+  private static RID recordAt(final LocalBucket bucket, final PageId pageId, final int slot) {
+    return new RID(pageId.getFileId(), (long) pageId.getPageNumber() * bucket.getMaxRecordsInPage() + slot);
+  }
+
+  /** Whether the application read a chunk on {@code pageId} that this transaction appended to (#11590). */
+  private boolean hasAppendedChunkReadOn(final PageId pageId) {
+    if (edgeAppendsBySegment == null)
+      return false;
+    foldReadsOfAppendedChunks();
+    final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet())
+      if (entry.getValue().readByApplication && edgeSegmentPageKey(entry.getKey()) == pageKey)
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether every chunk on {@code image} that this transaction appended to, and the application read, holds on {@code committed}
+   * what it held when this transaction read it (#11590): the chunk this transaction holds is its appends on top of the chunk as it
+   * read it, so replaying the same appends onto the committed chunk gives it back byte for byte only when nobody else changed the
+   * chunk meanwhile. The edge-append merge would take any other change, and the read missed it.
+   */
+  private boolean areAppendedChunksReadCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed) {
+    final PageId pageId = image.getPageId();
+    final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet()) {
+      final EdgeAppendBuffer appends = entry.getValue();
+      final RID chunk = entry.getKey();
+      if (!appends.readByApplication || edgeSegmentPageKey(chunk) != pageKey)
+        continue;
+      final int slot = (int) (chunk.getPosition() % bucket.getMaxRecordsInPage());
+      final byte[] read = bucket.readPlainRecordBody(image, slot);
+      final byte[] current = bucket.readPlainRecordBody(committed, slot);
+      if (read == null || current == null || read.length != current.length)
+        return false;
+      final MutableEdgeSegment replayed = new MutableEdgeSegment(database, chunk, new Binary(current));
+      for (int i = 0; i < appends.size; ++i)
+        if (!replayed.add(new RID(appends.edgeBucket[i], appends.edgePosition[i]),
+            new RID(appends.vertexBucket[i], appends.vertexPosition[i])))
+          return false;
+      if (!Arrays.equals(replayed.getContent().toByteArray(), read))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Folds the reads recorded on the pages of the chunks this transaction appended to into their {@link EdgeAppendBuffer} (#11590),
+   * once per commit and before any merge drops a page: such a read was the application's, an append records none of its own
+   * there (see {@link #beginEdgeAppend()}), and the merges of the chunk's page and of its vertex's page both need to know it.
+   */
+  private void foldReadsOfAppendedChunks() {
+    if (appendedChunkReadsFolded || edgeAppendsBySegment == null || modifiedPages == null)
+      return;
+    appendedChunkReadsFolded = true;
+    for (final Map.Entry<RID, EdgeAppendBuffer> entry : edgeAppendsBySegment.entrySet()) {
+      final EdgeAppendBuffer appends = entry.getValue();
+      if (appends.readByApplication)
+        continue;
+      final RID chunk = entry.getKey();
+      final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(chunk.getBucketId(), false);
+      if (bucket == null)
+        continue;
+      final int maxRecordsInPage = bucket.getMaxRecordsInPage();
+      final MutablePage image = modifiedPages.get(new PageId(database, chunk.getBucketId(), (int) (chunk.getPosition() / maxRecordsInPage)));
+      if (image != null && (image.isWholePageRead() || image.isSlotRead((int) (chunk.getPosition() % maxRecordsInPage))))
+        appends.readByApplication = true;
+    }
+  }
+
+  /**
+   * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
+   * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
+   * only in the heads of its edge lists is still the one read when this transaction appended to each list whose head moved: the
+   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list it
+   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current), and
+   * so is a moved head of a list whose chunk the application read: a walk of that list started from the head it read, and missed
+   * the chunk the other transaction put in front of it.
+   */
+  private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
+      final int slot) {
+    final byte[] read = bucket.readPlainRecordBody(image, slot);
+    final byte[] current = bucket.readPlainRecordBody(committed, slot);
+    if (read == null || current == null)
+      return read == null && current == null && bucket.isSlotFree(image, slot) && bucket.isSlotFree(committed, slot);
+    if (Arrays.equals(read, current))
+      return true;
+
+    if (edgeAppendsBySegment == null || read.length != current.length || read.length < VERTEX_HEADS_END
+        || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
+        || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
+      return false;
+
+    final boolean outMoved = !Arrays.equals(read, VERTEX_OUT_HEAD_OFFSET, VERTEX_IN_HEAD_OFFSET, current, VERTEX_OUT_HEAD_OFFSET,
+        VERTEX_IN_HEAD_OFFSET);
+    final boolean inMoved = !Arrays.equals(read, VERTEX_IN_HEAD_OFFSET, VERTEX_HEADS_END, current, VERTEX_IN_HEAD_OFFSET,
+        VERTEX_HEADS_END);
+    final RID vertex = recordAt(bucket, image.getPageId(), slot);
+    foldReadsOfAppendedChunks();
+    boolean outAppended = false;
+    boolean inAppended = false;
+    boolean outRead = false;
+    boolean inRead = false;
+    for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
+      if (vertex.equals(appends.owner)) {
+        if (appends.ownerOut) {
+          outAppended = true;
+          outRead |= appends.readByApplication;
+        } else {
+          inAppended = true;
+          inRead |= appends.readByApplication;
+        }
+      }
+    return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
+  }
+
+  /**
+   * Records that a record read was served from {@code page} at slot {@code slot}, so a commit-time merge of the page can tell a
+   * decision taken on the transaction's own image of it (#11590). Under {@code READ_COMMITTED} a page this transaction holds
+   * modified is that image, taken at its first write: it misses what others committed to the page since, and the merges must
+   * not replay this transaction's writes onto the newer page when they may rest on such a read. Only a page the transaction
+   * holds modified is recorded, while it runs: nothing is allocated for any other read.
+   */
+  public void trackReadFromPage(final BasePage page, final int slot) {
+    if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage()) {
+      ++ownImageReads;
+      if (edgeAppendDepth > 0)
+        deferRead(mutable, slot);
+      else if (slot < 0)
+        mutable.markWholePageRead();
+      else
+        mutable.markSlotRead(slot);
+    }
+  }
+
+  /**
+   * How many record reads this transaction served from its own image of a page so far (#12320): a reader compares the value
+   * before and after a read to tell whether the record it built rests on that image, which misses what others committed to the
+   * page after this transaction's first write to it.
+   */
+  public long getOwnImageReads() {
+    return ownImageReads;
+  }
+
+  /**
+   * Records that a traversal read the head of the outgoing ({@code out}) or incoming edge list of {@code vertex} off a vertex
+   * loaded from this transaction's own image of its page (#12320). The head is the one of that image: when the transaction then
+   * writes the vertex and a concurrent transaction moved that head meanwhile, the edge-list head merge refuses the commit, as it
+   * does for a head read off the vertex the transaction queued ({@code MutableVertex.isEdgeListHeadRead}). Nothing is recorded
+   * where no read is served from the transaction's own image, or by an edge append.
+   */
+  public void trackEdgeListHeadReadFromOwnImage(final RID vertex, final boolean out) {
+    if (vertex == null || edgeAppendDepth > 0 || !isTrackingReadsFromOwnImage())
+      return;
+    if (out) {
+      if (outHeadsReadFromOwnImage == null)
+        outHeadsReadFromOwnImage = new RidHashSet();
+      outHeadsReadFromOwnImage.add(vertex);
+    } else {
+      if (inHeadsReadFromOwnImage == null)
+        inHeadsReadFromOwnImage = new RidHashSet();
+      inHeadsReadFromOwnImage.add(vertex);
+    }
+  }
+
+  /**
+   * Whether a head of {@code vertex} that a traversal read off this transaction's own image of its page (#12320) differs from
+   * the head on {@code committedImage}: a commit must not write the vertex from that image under a decision taken on the head
+   * it replaced. A read image that is no plain vertex record answers true, which keeps the conflict.
+   */
+  private boolean isOwnImageHeadReadStale(final LocalBucket bucket, final RID vertex, final byte[] committedImage) {
+    final boolean outRead = outHeadsReadFromOwnImage != null && outHeadsReadFromOwnImage.contains(vertex);
+    final boolean inRead = inHeadsReadFromOwnImage != null && inHeadsReadFromOwnImage.contains(vertex);
+    if (!outRead && !inRead)
+      return false;
+    final MutablePage image = ownPageImageOf(bucket, vertex);
+    final byte[] read = image != null ? bucket.readPlainRecordBody(image, (int) (vertex.getPosition() % bucket.getMaxRecordsInPage())) : null;
+    if (read == null || read.length < VERTEX_HEADS_END || read[0] != Vertex.RECORD_TYPE)
+      return true;
+    return (outRead && !Objects.equals(edgeListHeadAt(read, VERTEX_OUT_HEAD_OFFSET), edgeListHeadAt(committedImage, VERTEX_OUT_HEAD_OFFSET)))
+        || (inRead && !Objects.equals(edgeListHeadAt(read, VERTEX_IN_HEAD_OFFSET), edgeListHeadAt(committedImage, VERTEX_IN_HEAD_OFFSET)));
+  }
+
+  /** Whether a traversal read a head of {@code vertex} off a vertex loaded from this transaction's own image of its page. */
+  private boolean isEdgeListHeadRead(final MutableVertex vertex, final boolean out) {
+    if (vertex.isEdgeListHeadRead(out))
+      return true;
+    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
+    return read != null && read.contains(vertex.getIdentity());
+  }
+
+  /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
+  public boolean trackScanOfPage(final BasePage page) {
+    final long ownImageReadsBefore = ownImageReads;
+    trackReadFromPage(page, -1);
+    // #12320: whether the scan reads the page from the transaction's own image, which the records built from it carry
+    return ownImageReads != ownImageReadsBefore;
+  }
+
+  /**
+   * The transaction's own image of {@code pageId} when it holds one and records the reads of it (#11590), null otherwise. For a
+   * reader that keeps a page across calls, a bucket scan between two batches: the transaction may have written the page meanwhile,
+   * and what the reader reads on is then as stale as that image.
+   */
+  public MutablePage getOwnImageForTracking(final PageId pageId) {
+    return modifiedPages != null && isTrackingReadsFromOwnImage() ? modifiedPages.get(pageId) : null;
+  }
+
+  /**
+   * Opens the window of an edge append (#11590), closed by {@link #endEdgeAppend()} in a {@code finally}; nested windows count. The
+   * append reads the vertex's head pointer and the chunk it appends to, and those reads are not decisions of the application: the
+   * edge-append merge replays the append onto whatever the chunk holds at commit. They are kept apart while the append runs, and
+   * when the outermost window closes every one is recorded except a read of a chunk an append of this window then wrote in place,
+   * so a read recorded on an appended chunk is always the application's. Only those: a listener the append's own loads fire that
+   * reads another chunk, one this transaction appended to earlier, is recorded as the application's read it is.
+   */
+  public void beginEdgeAppend() {
+    ++edgeAppendDepth;
+  }
+
+  /**
+   * Suspends the edge-append window while a record listener runs (#11590), returning the depth to hand back to
+   * {@link #resumeEdgeAppend(int)} in a {@code finally}. A listener the append's own loads and saves fire is the application: what it
+   * reads, the chunk being appended to included, is recorded as a read of the application, as it is outside any append. An append
+   * the listener makes opens a window of its own and, closing it, records the reads the suspended window deferred so far: that only
+   * gives up the edge-append merge, never a read.
+   */
+  public int suspendEdgeAppend() {
+    final int depth = edgeAppendDepth;
+    edgeAppendDepth = 0;
+    return depth;
+  }
+
+  /** Gives back the window {@link #suspendEdgeAppend()} suspended (#11590). */
+  public void resumeEdgeAppend(final int depth) {
+    edgeAppendDepth = depth;
+  }
+
+  /** Closes the window {@link #beginEdgeAppend()} opened (#11590). */
+  public void endEdgeAppend() {
+    if (--edgeAppendDepth > 0)
+      return;
+    edgeAppendDepth = 0;
+    for (int i = 0; i < deferredReads; ++i) {
+      final MutablePage page = deferredReadPages[i];
+      final int slot = deferredReadSlots[i];
+      deferredReadPages[i] = null;
+      if (slot < 0)
+        page.markWholePageRead();
+      else if (!isChunkAppendedInWindow(page.getPageId(), slot))
+        page.markSlotRead(slot);
+    }
+    deferredReads = 0;
+    for (int i = 0; i < deferredChunkReads; ++i) {
+      final RID chunk = deferredChunkReadRIDs[i];
+      deferredChunkReadRIDs[i] = null;
+      if (!isAppendedInWindow(chunk))
+        markChunkRead(chunk);
+    }
+    deferredChunkReads = 0;
+    if (chunksAppendedInWindow != null && chunksAppendedInWindow.size() > CHUNKS_APPENDED_IN_WINDOW_KEPT)
+      chunksAppendedInWindow = null;
+    else if (chunksAppendedInWindow != null)
+      chunksAppendedInWindow.clear();
+  }
+
+  private void resetEdgeAppendReads() {
+    edgeAppendDepth = 0;
+    deferredReadPages = null;
+    deferredReadSlots = null;
+    deferredReads = 0;
+    deferredChunkReadRIDs = null;
+    deferredChunkReads = 0;
+    chunksAppendedInWindow = null;
+    appendedChunkReadsFolded = false;
+  }
+
+  /**
+   * Records, while an edge-append window is open, that an append of it wrote {@code chunk} in place (#11590): the window's read of
+   * that chunk was the append's own. Called for each append tracked for the edge-append merge, and by a batch of appends that writes
+   * its chunks as rewrites, which the slot merge replays the same way.
+   */
+  public void noteChunkAppendedInWindow(final RID chunk) {
+    if (edgeAppendDepth == 0)
+      return;
+    if (chunksAppendedInWindow == null)
+      chunksAppendedInWindow = new RidHashSet(16);
+    chunksAppendedInWindow.add(chunk);
+  }
+
+  private boolean isAppendedInWindow(final RID chunk) {
+    return chunksAppendedInWindow != null && chunksAppendedInWindow.contains(chunk);
+  }
+
+  private boolean isChunkAppendedInWindow(final PageId pageId, final int slot) {
+    if (chunksAppendedInWindow == null || chunksAppendedInWindow.isEmpty())
+      return false;
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(pageId.getFileId(), false);
+    return bucket != null && isAppendedInWindow(recordAt(bucket, pageId, slot));
+  }
+
+  private void deferRead(final MutablePage page, final int slot) {
+    if (deferredReadPages == null) {
+      deferredReadPages = new MutablePage[8];
+      deferredReadSlots = new int[8];
+    } else if (deferredReads == deferredReadPages.length) {
+      deferredReadPages = Arrays.copyOf(deferredReadPages, deferredReads << 1);
+      deferredReadSlots = Arrays.copyOf(deferredReadSlots, deferredReads << 1);
+    }
+    deferredReadPages[deferredReads] = page;
+    deferredReadSlots[deferredReads++] = slot;
+  }
+
+  /**
+   * Records a read of edge-list chunk {@code rid} that a reader served from {@link #getWrittenRecord(RID)}, the object this
+   * transaction queued for it, as {@link #getRecordFromCache(RID)} records one (#11590, #11769): an adjacency scan of the list.
+   */
+  public void trackReadOfWrittenEdgeSegment(final RID rid) {
+    trackReadOfWrittenChunk(rid);
+  }
+
+  /**
+   * Records a read of edge-list chunk {@code rid} served from the object this transaction queued for it (#11590): the chunk it
+   * holds is its own writes on top of the chunk as it read it, and the commit-time merges replay those writes onto the committed
+   * chunk. Recorded on the chunk's slot of the page the transaction holds, as a read from that page is; deferred inside an
+   * edge-append window like the window's page reads.
+   */
+  private void trackReadOfWrittenChunk(final RID rid) {
+    if (!isTrackingReadsFromOwnImage())
+      return;
+    if (edgeAppendDepth == 0) {
+      markChunkRead(rid);
+      return;
+    }
+    if (deferredChunkReadRIDs == null)
+      deferredChunkReadRIDs = new RID[4];
+    else if (deferredChunkReads == deferredChunkReadRIDs.length)
+      deferredChunkReadRIDs = Arrays.copyOf(deferredChunkReadRIDs, deferredChunkReads << 1);
+    deferredChunkReadRIDs[deferredChunkReads++] = rid;
+  }
+
+  private void markChunkRead(final RID rid) {
+    // #11769: on a page this transaction created too, where it puts the first chunk of a list, or a chunk in front of a full one:
+    // the edge-list head merge asks whether the application read such a chunk
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
+    final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
+    if (image != null)
+      image.markSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage()));
+  }
+
+  private boolean isTrackingReadsFromOwnImage() {
+    // REPEATABLE_READ reads every page as it stood at the transaction's first access, which its own image is. The commit's own
+    // reads (COMMIT_1ST_PHASE) run under the commit lock and decide nothing a merge could replay.
+    return status == STATUS.BEGUN && isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED && (slotMerge
+        || edgeAppendMerge);
   }
 
   /**
@@ -3186,7 +3856,10 @@ public class TransactionContext implements Transaction {
       final boolean insertedHere = buffer.isInserted(slot);
       final byte[] finalBody;
       if (buffer.isFinalImageOnPage(slot)) {
-        finalBody = bucket.readPlainRecordBody(ownPage, slot);
+        // #11788: an insert that outgrew the page left a chunk head in its slot
+        finalBody = buffer.kindOf(slot) == SLOT_KIND_FIRST_CHUNK ?
+            bucket.readHeadChunkImage(ownPage, slot) :
+            bucket.readPlainRecordBody(ownPage, slot);
         if (finalBody == null)
           // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
           // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
@@ -3208,9 +3881,11 @@ public class TransactionContext implements Transaction {
       }
 
       final byte[] baseBody = insertedHere ? null : buffer.baseBodyOf(slot);
+      // #11590: appends replayed onto a chunk somebody else appended to meanwhile, only when the application did not read the chunk
+      // this transaction holds, which misses those entries
       if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot))//
-          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD || !replayEdgeAppendsOnSlot(bucket, committed, slot, baseBody,
-          finalBody)))
+          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD || ownPage.isWholePageRead() || ownPage.isSlotRead(slot)
+          || !replayEdgeAppendsOnSlot(bucket, committed, slot, baseBody, finalBody)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
     }
@@ -3443,6 +4118,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
+    resetEdgeAppendReads();
     edgeAppendPoisonedPages = null;
     deletedEdgeSegments = null;
     slotRebaseByPage = null;
@@ -3718,9 +4394,13 @@ public class TransactionContext implements Transaction {
 
       // #11498: BEFORE the deferred writes below, so a vertex whose edge-list head a concurrent transaction moved is written as
       // the merge of the two, and a write that cannot be merged fails here rather than after the work that follows
+      vertexPageAppliesAtChecks = database.getTransactionManager().getVertexPageAppliesStarted();
       if (updatedRecords != null) {
         overflowFilledEdgeChunks(isLeader);
         mergeEdgeListHeads(isLeader);
+        final Runnable afterMerge = afterEdgeListHeadMergeForTesting;
+        if (afterMerge != null)
+          afterMerge.run();
       }
 
       // Process updatedRecords AFTER acquiring locks
@@ -3787,6 +4467,15 @@ public class TransactionContext implements Transaction {
 
       reserveMergedEdges();
 
+      // #11921: every file lock of this commit is held from here on and no page version has been read yet, which is where an
+      // ordering authority (the Raft leader's page-version ledger) that must see the checks below and the publication as one
+      // step takes its own lock. One volatile read on a standalone database, nothing on a replica.
+      if (isLeader && database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          reservations.beforeVersionChecks();
+      }
+
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
       final PageManager pageManager = database.getPageManager();
@@ -3817,6 +4506,11 @@ public class TransactionContext implements Transaction {
           it.remove();
           continue;
         }
+
+        if (p.isReadAtAnOlderVersion())
+          // #11590: a scan kept this page from before a commit that this transaction's image of it holds, see BucketIterator
+          throw new ConcurrentModificationException("A scan of page " + p.getPageId()
+              + " read it as it was before a concurrent commit to it that this transaction then wrote on top of. Please retry the operation");
 
         try {
           pageManager.checkPageVersion(p, false);
@@ -3873,6 +4567,10 @@ public class TransactionContext implements Transaction {
             pages.add(p);
           }
         }
+
+      // #11592: after every read of a committed page above. An apply marks its pages, then counts itself, then publishes: one whose
+      // page a merge or rebase above started from either was marked when the vertex was checked, or moved the count since
+      refuseVertexPageApplyDuringChecks();
 
       Binary result = null;
 
@@ -3994,6 +4692,25 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * Publishes the pages of a commit the replication log has already made durable, on the node that originated it (the HA leader
+   * applying its own entry, issue #11746). The WAL record is written as {@link #publishCommittedPages} writes it, but never
+   * flushed, whatever {@code arcadedb.txWalFlush} says: the entry is in the Raft log a majority flushed before it committed, a
+   * restart replays every entry past the last snapshot marker from that log (with the same page deltas and the same page-version
+   * rule this WAL's recovery would apply), and the snapshot that moves the marker forces the data files first. That is how every
+   * other node applies the same entry, with no WAL record at all. Forcing it here added nothing to that, and put one flush per
+   * commit on the single thread that applies the entries of every database of the node, which halved the commit rate of a
+   * cluster with {@code txWalFlush} 1 against the same cluster with 0.
+   */
+  public void publishReplicatedCommittedPages(final TransactionPhase1 changes) {
+    replicatedPublication = true;
+    try {
+      publishCommittedPages(changes);
+    } finally {
+      replicatedPublication = false;
+    }
+  }
+
   private void publishCommittedPagesInternal(final TransactionPhase1 changes) {
     try {
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
@@ -4030,7 +4747,7 @@ public class TransactionContext implements Transaction {
 
       if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
-        final WALFile.FlushType walFlush = getWALFlush();
+        final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
         if (deferWALSync && walFlush != WALFile.FlushType.NO)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
@@ -4079,11 +4796,18 @@ public class TransactionContext implements Transaction {
       // inserted them twice. Raised by the page manager once its waits for flush capacity are over, right before the first page
       // is handed over: a wait that fails or is interrupted has published nothing, and is still rolled back. Both publication
       // paths below pass it: the columnar one writes its first mark before, so a refused NOWAL marker is still rolled back
-      if (columnar == null) {
-        database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
-        raisePageCounts();
-      } else
-        publishPagesWithColumnarMarks(columnar, columnarProjected, changes, pagesToPublish);
+      // #11713: AROUND THE PUBLICATION, SO A READER CAN TELL A RECORD THIS COMMIT DELETED FROM ONE THAT WAS ALREADY MISSING
+      database.getTransactionManager().commitPublishing();
+      try {
+        if (columnar == null) {
+          database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
+          raisePageCounts();
+        } else
+          publishPagesWithColumnarMarks(columnar, columnarProjected, changes, pagesToPublish);
+      } finally {
+        database.getTransactionManager().commitPublished();
+        countPublicationInEnclosingTransactions();
+      }
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
@@ -4099,6 +4823,11 @@ public class TransactionContext implements Transaction {
         mergedEdgesReserved = false;
         database.getTransactionManager().getMergedEdges().committed(mergedEdgeMarked, mergedEdgeMarkedCount);
       }
+
+      // #11592: AFTER the deletes are published and while the vertices' files are still locked, so a transaction that began before
+      // this bump and writes one of them is refused by mergeEdgeListHeads, and one that began after it cannot have read them alive
+      if (!deletedRecordsInTx.isEmpty())
+        database.getTransactionManager().recordsDeleted(deletedRecordsInTx);
 
       // UPDATE RECORD COUNT
       // #10618: this runs after publishPages and outside the lock a page snapshot takes, so for a moment a reader
@@ -4674,6 +5403,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
+    resetEdgeAppendReads();
     edgeAppendPoisonedPages = null;
     deletedEdgeSegments = null;
     slotRebaseByPage = null;
@@ -4697,7 +5427,11 @@ public class TransactionContext implements Transaction {
     lightEdgeEntryChanges = null;
     newRecordRIDs = null;
     staleEdgeListWrites = null;
+    immediateWrites = null;
+    outHeadsReadFromOwnImage = null;
+    inHeadsReadFromOwnImage = null;
     mergedEdgeListBases = null;
+    vertexDeleteChecked = false;
     edgeListHeadMergeRefused = false;
     newRecords.clear();
     // Reached only with callbacks left when the transaction ends without running them (a failed commit, a rollback past the
@@ -4714,6 +5448,7 @@ public class TransactionContext implements Transaction {
     afterCompletionOwner = null;
     attachments = null;
     clientManaged = false;
+    implicit = false;
     commitLockTimeout = null;
     useWALOverride = null;
     appendOnlyInserts = false;
@@ -5002,6 +5737,9 @@ public class TransactionContext implements Transaction {
     });
   }
 
+  /** Placeholder far end of the keys {@link #addMergedEdgeBetweenExistingNodes} marks and a far-end-creating MERGE checks (issue #11660). */
+  public static final RID MERGED_EDGE_EXISTING_END = new RID(-2, -3);
+
   /**
    * Remembers a relationship this transaction created because a match-or-create did not find it (issue #11482): a Cypher
    * {@code MERGE}, {@code merge.relationship}, SQL {@code CREATE EDGE ... IF NOT EXISTS}. Nothing a page version sees protects the
@@ -5018,17 +5756,54 @@ public class TransactionContext implements Transaction {
     // Outside a transaction the read was not covered by the epoch its begin takes, and nothing would commit the relationship anyway
     if (from == null || to == null || !isActive())
       return;
-    final int own = MergedEdgeRegistry.stripeOf(from, to, type, matchedBy);
+    final long own = MergedEdgeRegistry.keyOf(from, to, type, matchedBy);
     mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, own);
     mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, own);
     if (matchedBy != null && !matchedBy.isEmpty())
       // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
-      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
-  private static int[] append(int[] array, final int index, final int value) {
+  /**
+   * A key of the {@link MergedEdgeRegistry} the commit of this transaction checks without marking it (issue #11660): a relationship
+   * this transaction created that a concurrent one may have committed under a coarser key, see {@link #markMergedEdge}. Only together
+   * with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   */
+  public void checkMergedEdge(final RID from, final RID to, final String type) {
+    if (from == null || to == null || !isActive())
+      return;
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
+  }
+
+  /**
+   * A key of the {@link MergedEdgeRegistry} the commit of this transaction marks without checking it (issue #11660): another
+   * statement's relationship would also find what this transaction created, and checks this key, while two transactions marking it
+   * do not refuse each other. Only together with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   */
+  public void markMergedEdge(final RID from, final RID to, final String type) {
+    if (from == null || to == null || !isActive())
+      return;
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
+  }
+
+  /**
+   * Remembers a relationship a match-or-create created between two vertices that both existed (issue #11660): {@link #addMergedEdge}
+   * plus the keys of each end that a concurrent MERGE creating its far node checks ({@link #checkMergedEdge} against
+   * {@link #MERGED_EDGE_EXISTING_END}), so every statement that does this marks the same four keys.
+   */
+  public void addMergedEdgeBetweenExistingNodes(final RID from, final RID to, final String type, final Map<String, ?> matchedBy) {
+    if (from == null || to == null || !isActive())
+      return;
+    addMergedEdge(from, to, type, matchedBy);
+    markMergedEdge(from, MERGED_EDGE_EXISTING_END, type + ">");
+    markMergedEdge(from, MERGED_EDGE_EXISTING_END, type + "-");
+    markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "<");
+    markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
+  }
+
+  private static long[] append(long[] array, final int index, final long value) {
     if (array == null)
-      array = new int[4];
+      array = new long[4];
     else if (index == array.length)
       array = Arrays.copyOf(array, index * 2);
     array[index] = value;
@@ -5088,6 +5863,14 @@ public class TransactionContext implements Transaction {
       final int slot = (int) (rid.getPosition() % maxRecordsInPage);
       final PageId pageId = new PageId(database, bucket.getFileId(), pageNumber);
 
+      // #11592: the vertex was deleted by a commit after this transaction began, and a vertex created since can hold its RID. No
+      // image tells the two apart (a vertex created with the same properties has the same bytes), so neither the heads of the
+      // one this transaction read nor its write go onto the vertex there now: refused, as with the slot merge off. Before the
+      // version check: a transaction that pins the page only after the new vertex was committed finds the version it pinned
+      // current, and a read of identical bytes is not marked stale. Two volatile reads when no vertex was ever deleted. A vertex
+      // this transaction created on a RID freed since it began is its own and keeps its relationships
+      refuseVertexDeletedSinceBegin(rid, isLeader);
+
       final MutablePage pinned = modifiedPages.get(pageId);
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
         // the common case: nobody committed the page since this transaction pinned it. Answered from the version alone
@@ -5130,6 +5913,32 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * #11592: refuses the commit when the vertex at {@code rid} may have been deleted, and its RID taken by a new vertex, since this
+   * transaction began, unless the vertex there is one this transaction created. A leader commit notes that a check passed, for
+   * {@link #refuseVertexPageApplyDuringChecks}: a follower's commit cannot rebase onto a page an apply moved, its version check
+   * refuses it.
+   */
+  private void refuseVertexDeletedSinceBegin(final RID rid, final boolean isLeader) {
+    if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch)) {
+      if (!isCreatedInTransaction(rid))
+        throw new ConcurrentModificationException(
+            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
+    } else if (isLeader)
+      vertexDeleteChecked = true;
+  }
+
+  /**
+   * #11592: refuses a leader commit whose deleted-vertex checks a replicated apply reaching a vertex bucket started after: the apply
+   * can have published a page the merge or a rebase started from after the check of a vertex on it. One volatile read; applies run
+   * on a leader only while it catches up after a promotion and on the reconcile path of a failed publication.
+   */
+  private void refuseVertexPageApplyDuringChecks() {
+    if (vertexDeleteChecked && database.getTransactionManager().getVertexPageAppliesStarted() != vertexPageAppliesAtChecks)
+      throw new ConcurrentModificationException(
+          "A replicated transaction wrote vertex pages while this transaction was committing. Please retry the operation");
+  }
+
+  /**
    * Issue #11498: puts the edges this transaction appended to a chunk that a concurrent transaction filled meanwhile in a new chunk
    * at the head of the same edge list, under the commit lock and before the deferred writes. The edge-append merge replays such
    * appends onto the committed chunk, growing it inside its page when the page has room ({@link #growEdgeSegmentOnPage}); a
@@ -5156,6 +5965,10 @@ public class TransactionContext implements Transaction {
       final EdgeAppendBuffer appends = entry.getValue();
       final RID segmentRID = entry.getKey();
       if (appends.owner == null || appends.size == 0 || !(updatedRecords.get(segmentRID) instanceof MutableEdgeSegment queued))
+        continue;
+      // #11590: the application read this chunk, which missed the appends that filled it: the conflict stands
+      foldReadsOfAppendedChunks();
+      if (appends.readByApplication)
         continue;
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
@@ -5212,9 +6025,13 @@ public class TransactionContext implements Transaction {
       if (ownerQueued instanceof MutableVertex queuedVertex) {
         if (queuedVertex.arePropertiesAssigned())
           continue;
-        previousHead = appends.ownerOut ? queuedVertex.getOutEdgesHeadChunk() : queuedVertex.getInEdgesHeadChunk();
+        previousHead = appends.ownerOut ? queuedVertex.peekOutEdgesHeadChunk() : queuedVertex.peekInEdgesHeadChunk();
       } else if (ownerQueued == null) {
         // not written by this transaction: written from its committed image, which the lock keeps as it is
+        // #11592: the vertex the transaction appended for can have been deleted since it began, and the vertex at its RID now be
+        // a new one, with a chunk of its own at the RID of the one appended to. Written from that image, the new head would give
+        // the new vertex these relationships; mergeEdgeListHeads skips an owner queued here, so it is refused here
+        refuseVertexDeletedSinceBegin(owner, isLeader);
         final int ownerMaxRecords = ownerBucket.getMaxRecordsInPage();
         final PageId ownerPageId = new PageId(database, ownerBucket.getFileId(), (int) (owner.getPosition() / ownerMaxRecords));
         final ImmutablePage ownerPage = committedPage(ownerPageId, ownerBucket.getPageSize());
@@ -5223,6 +6040,10 @@ public class TransactionContext implements Transaction {
             || !(database.getSchema().getTypeByBucketId(owner.getBucketId()) instanceof VertexType type))
           continue;
         ownerType = type;
+        // #12320: a head of the vertex a traversal read off this transaction's own image of its page, moved on the committed
+        // image: the vertex is written from that image here and skipped by mergeEdgeListHeads, so the read is checked now
+        if (isOwnImageHeadReadStale(ownerBucket, owner, ownerImage))
+          continue;
         previousHead = edgeListHeadAt(ownerImage, headOffset);
       } else
         continue;
@@ -5300,25 +6121,38 @@ public class TransactionContext implements Transaction {
           "Record " + vertex.getIdentity() + " was modified by a concurrent transaction. Please retry the operation");
 
     final byte[] merged = committed.clone();
-    mergeEdgeListHead(vertex, vertex.getOutEdgesHeadChunk(), base, committed, merged, VERTEX_OUT_HEAD_OFFSET);
-    mergeEdgeListHead(vertex, vertex.getInEdgesHeadChunk(), base, committed, merged, VERTEX_IN_HEAD_OFFSET);
+    mergeEdgeListHead(vertex, vertex.peekOutEdgesHeadChunk(), base, committed, merged, VERTEX_OUT_HEAD_OFFSET);
+    mergeEdgeListHead(vertex, vertex.peekInEdgesHeadChunk(), base, committed, merged, VERTEX_IN_HEAD_OFFSET);
     return merged;
   }
 
   private void mergeEdgeListHead(final MutableVertex vertex, final RID ownHead, final byte[] base, final byte[] committed,
       final byte[] merged, final int offset) throws IOException {
     final RID readHead = edgeListHeadAt(base, offset);
+    final RID committedHead = edgeListHeadAt(committed, offset);
+    // #12320: a traversal of the list read the head this transaction queued the vertex with, and a concurrent transaction moved it
+    // since: the walk missed what it put in front (a DELETE of every relationship, an existence check, a count), whether or not
+    // this transaction moved the head too. What it decided on that read must not be committed with the committed head kept
+    if (!Objects.equals(committedHead, readHead) && isEdgeListHeadRead(vertex, offset == VERTEX_OUT_HEAD_OFFSET))
+      throw new ConcurrentModificationException("Edge list of vertex " + vertex.getIdentity()
+          + " was read by this transaction before a concurrent transaction changed it. Please retry the operation");
+
     if (Objects.equals(ownHead, readHead))
       // this transaction did not move this head: the committed one stays
       return;
 
-    final RID committedHead = edgeListHeadAt(committed, offset);
     if (!Objects.equals(committedHead, readHead)) {
       // BOTH MOVED IT: the chunks this transaction put in front of the list go behind the committed head
       final MutableEdgeSegment firstPutInFront = firstChunkPutInFront(ownHead, readHead);
       if (firstPutInFront == null || (committedHead != null && !isClassicEdgeSegment(committedHead)))
         throw new ConcurrentModificationException(
             "Edge list head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction. Please retry the operation");
+      // #11769: a walk of the list as this transaction holds it starts on the chunks it put in front, and stops on the head it read:
+      // the application that read one of them missed the chunks the other transaction put in front, and what it decided on that
+      // read (a DELETE of every relationship, a count) must not be committed with them re-linked behind
+      if (isChunkPutInFrontRead(ownHead, firstPutInFront))
+        throw new ConcurrentModificationException("Edge list of vertex " + vertex.getIdentity()
+            + " was read by this transaction before a concurrent transaction changed it. Please retry the operation");
 
       firstPutInFront.setPrevious(committedHead != null ? committedHead : NO_PREVIOUS_SEGMENT);
       final RID segmentRID = firstPutInFront.getIdentity();
@@ -5352,6 +6186,44 @@ public class TransactionContext implements Transaction {
       current = previous;
     }
     return null;
+  }
+
+  /**
+   * Whether the application read one of the chunks this transaction put in front of an edge list, from {@code ownHead} down to
+   * {@code last} included (#11769): the chain {@link #firstChunkPutInFront} validated. The reads are the ones recorded on the
+   * chunks' slots of the pages this transaction holds (#11590), an edge append's own reads of a chunk it wrote excluded.
+   */
+  private boolean isChunkPutInFrontRead(final RID ownHead, final MutableEdgeSegment last) {
+    RID current = ownHead;
+    while (current != null) {
+      if (isRecordReadFromOwnImage(current))
+        return true;
+      if (current.equals(last.getIdentity()))
+        return false;
+      final MutableEdgeSegment segment = ownEdgeSegment(current);
+      if (segment == null)
+        return true;
+      current = segment.getPreviousRID();
+    }
+    return true;
+  }
+
+  /** Whether a read of record {@code rid} was recorded on the page this transaction holds for it, modified or created (#11590). */
+  private boolean isRecordReadFromOwnImage(final RID rid) {
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
+    final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
+    return image != null && (image.isWholePageRead() || image.isSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage())));
+  }
+
+  /** The page this transaction holds for record {@code rid} of {@code bucket}, modified or created, null when it holds none. */
+  private MutablePage ownPageImageOf(final LocalBucket bucket, final RID rid) {
+    if (rid.getPosition() < 0)
+      return null;
+    final PageId pageId = new PageId(database, rid.getBucketId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage()));
+    final MutablePage image = modifiedPages != null ? modifiedPages.get(pageId) : null;
+    if (image != null)
+      return image;
+    return newPages != null ? newPages.get(pageId) : null;
   }
 
   /**

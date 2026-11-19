@@ -18,6 +18,10 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.log.LogManager;
+
+import java.util.logging.Level;
+
 /**
  * Framework-agnostic hook the engine calls to open a tracing span around a query/command execution.
  * Lives in the engine (which has Micrometer only at test scope); the server registers a
@@ -42,10 +46,18 @@ public interface QueryTracer {
    */
   Span beginQuery(String protocol, String database, String language, String type, String query);
 
-  /** Handle for an open span. Closing it ends the span; closing is idempotent and never throws. */
+  /**
+   * Handle for an open span. Closing it ends the span; closing is idempotent and never throws. A failed execution reports its
+   * exception with {@link #error(Throwable)} BEFORE closing, so the exported span carries the error status and the exception
+   * (issue #11638): a span closed with no error is a success to every tracing backend.
+   */
   interface Span extends AutoCloseable {
     Span NO_OP = () -> {
     };
+
+    /** Marks the span failed with the exception the execution threw. Called before {@link #close()}; never throws. */
+    default void error(final Throwable error) {
+    }
 
     @Override
     void close();
@@ -72,7 +84,15 @@ public interface QueryTracer {
      */
     public static Span begin(final String database, final String language, final String type, final String query) {
       final QueryTracer tracer = current;
-      return tracer == NO_OP ? Span.NO_OP : tracer.beginQuery(ProtocolContext.get(), database, language, type, query);
+      if (tracer == NO_OP)
+        return Span.NO_OP;
+      try {
+        return tracer.beginQuery(ProtocolContext.get(), database, language, type, query);
+      } catch (final RuntimeException e) {
+        // the span is optional: a tracer failing to open one must never fail the query, whose callers open it outside their try
+        LogManager.instance().log(Holder.class, Level.WARNING, "Error opening query tracing span", e);
+        return Span.NO_OP;
+      }
     }
   }
 }

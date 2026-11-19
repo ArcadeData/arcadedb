@@ -90,14 +90,12 @@ class SourceTextTestsAreRecordedTest {
           TEST_SOURCES + "; the shared scan of plugin fixtures' ports, folded literals"),
       entry("grpcw/src/test/java/com/arcadedb/server/grpc/Issue7496GrpcHaItsAllocateTheirPortsTest.java",
           TEST_SOURCES + "; and ports are folded literals"),
-      entry("ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8203RaftFixturePortsTest.java", TEST_SOURCES + "; and ports are folded literals"),
-      entry("ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8222StandaloneRaftFixturePortsTest.java",
-          TEST_SOURCES + "; and ports are folded literals"),
+      entry("ha-raft/src/test/java/com/arcadedb/server/ha/raft/RaftFixturePortsTest.java", TEST_SOURCES + "; and ports are folded literals"),
       // SOURCE ONLY
       entry("grpcw/src/test/java/com/arcadedb/server/grpc/Issue7472EveryGrpcFailureIsConcealableTest.java", SOURCE_ONLY
           + ": an inlined static final String, and a throwable's message reaching a status is data flow; its call-site scan is "
           + "GrpcFailureConcealmentDecisionCensusTest"),
-      entry("engine/src/test/java/com/arcadedb/serializer/Issue7638DateColumnPrecisionTest.java",
+      entry("engine/src/test/java/com/arcadedb/serializer/JsonTemporalSerializationTest.java",
           SOURCE_ONLY + ": a division by an inlined constant, and a variable named timestamp")));
 
   @Test

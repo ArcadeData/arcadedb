@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -126,11 +127,13 @@ class Issue8161FollowerForwardBodyCapTest {
 
   /**
    * The discrimination has to be on WHY the forward failed, not on the fact that it did: a leader that drops the
-   * connection while a body UNDER the cap is being relayed is still a leader-side failure and keeps its 503.
+   * connection while a body UNDER the cap is being relayed is still a leader-side failure, not the 413 of the cap. Since
+   * issue #11899 that failure is answered 504 outcome unknown rather than 503: from this node a connection the leader
+   * closed cannot be told apart from one it closed after taking the load.
    */
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
-  void aLeaderThatDropsTheConnectionStillAnswers503() throws Exception {
+  void aLeaderThatDropsTheConnectionIsALeaderSideFailureNotTheCap() throws Exception {
     try (final FakeLeader leader = FakeLeader.dropping()) {
       final HttpServerExchange exchange = new HttpServerExchange(null);
       final PostBatchHandler.CountingInputStream body = new PostBatchHandler.CountingInputStream(exchange,
@@ -139,8 +142,9 @@ class Issue8161FollowerForwardBodyCapTest {
       final ExecutionResponse response = handler().forwardBatchToLeader(exchange, haPointingAt(leader.address()),
           "mydb", rootUser(), "application/x-ndjson", body, false);
 
-      assertThat(response.getCode()).isEqualTo(503);
-      assertThat(new JSONObject(response.getResponse()).getString("error", "")).startsWith("Error forwarding batch to leader");
+      assertThat(response.getCode()).isEqualTo(504);
+      assertThat(new JSONObject(response.getResponse()).getString("exception", ""))
+          .isEqualTo(TransactionOutcomeUnknownException.class.getName());
       assertThat(body.hasBodyFailed()).isFalse();
     }
   }

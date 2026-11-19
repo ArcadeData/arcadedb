@@ -19,6 +19,7 @@
 package com.arcadedb.function.util;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -93,6 +94,10 @@ public class UtilValidate extends AbstractUtilFunction {
       values = list.toArray();
     else if (params instanceof Object[] array && array.length > 0)
       values = array;
+    // A numeric list nested in a parameter arrives as a primitive array (long[], double[]): its values fill the placeholders
+    // as the list's would (issue #11582)
+    else if (MultiValue.isSequenceArray(params) && MultiValue.getSize(params) > 0)
+      values = MultiValue.getMultiValueAsList(params).toArray();
     else
       return text;
 

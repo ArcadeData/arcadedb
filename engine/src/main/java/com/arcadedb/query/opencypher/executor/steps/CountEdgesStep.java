@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
-import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -32,6 +31,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -51,11 +51,16 @@ import java.util.Map;
  * count, but the WITH aggregation boundary collapses them into one output row per group rather
  * than passing every input row through (issue #6629). This step therefore groups by the
  * pass-through key values and sums the per-row edge counts within each group.
+ * <p>
+ * A label on the counted node, {@code (x:Comment)}, is applied by counting only the edges whose far end carries it
+ * (issue #11583).
  */
 public final class CountEdgesStep extends AbstractExecutionStep {
   private final String boundVertexVariable;
   private final Vertex.DIRECTION direction;
   private final String[] edgeTypes;
+  // The label the counted end of each edge must carry, or null
+  private final String targetLabel;
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
@@ -64,12 +69,13 @@ public final class CountEdgesStep extends AbstractExecutionStep {
   private OperationHeapLimit heapLimit;
 
   public CountEdgesStep(final String boundVertexVariable, final Vertex.DIRECTION direction,
-      final String[] edgeTypes, final String countOutputAlias,
+      final String[] edgeTypes, final String targetLabel, final String countOutputAlias,
       final Map<String, String> passThroughAliases, final CommandContext context) {
     super(context);
     this.boundVertexVariable = boundVertexVariable;
     this.direction = direction;
     this.edgeTypes = edgeTypes;
+    this.targetLabel = targetLabel;
     this.countOutputAlias = countOutputAlias;
     this.passThroughAliases = passThroughAliases;
   }
@@ -80,6 +86,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
 
     // Try GAV provider for accelerated counting
     final Database db = context.getDatabase();
+    final Schema schema = db.getSchema();
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, edgeTypes);
 
     final String[] aliasOutputNames = passThroughAliases.keySet().toArray(new String[0]);
@@ -109,14 +116,12 @@ public final class CountEdgesStep extends AbstractExecutionStep {
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
           if (provider != null) {
-            // GAV/CSR path: O(1) count from offset arrays
+            // GAV/CSR path: O(1) count from offset arrays, or a pass over the neighbour ids for a label
             final int nodeId = provider.getNodeId(vertex.getIdentity());
-            count = nodeId >= 0 ? CSRCountUtils.hopDegree(provider, nodeId, direction, edgeTypes) :
-                IncomingEdgeLookup.countPatternEdges(context, vertex, direction, edgeTypes);
+            count = nodeId >= 0 ? CSRCountUtils.hopDegree(provider, schema, nodeId, direction, targetLabel, edgeTypes) :
+                CSRCountUtils.patternDegree(context, vertex, direction, targetLabel, edgeTypes);
           } else
-            // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625); an undirected
-            // self loop is one relationship (issue #8750)
-            count = IncomingEdgeLookup.countPatternEdges(context, vertex, direction, edgeTypes);
+            count = CSRCountUtils.patternDegree(context, vertex, direction, targetLabel, edgeTypes);
         } else
           count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
 
@@ -179,6 +184,8 @@ public final class CountEdgesStep extends AbstractExecutionStep {
       builder.append("]");
     }
     builder.append(" -> ").append(countOutputAlias).append(")");
+    if (targetLabel != null)
+      builder.append(" [target: ").append(targetLabel).append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)

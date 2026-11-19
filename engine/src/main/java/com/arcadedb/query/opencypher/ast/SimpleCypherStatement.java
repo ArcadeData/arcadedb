@@ -392,6 +392,28 @@ public class SimpleCypherStatement implements CypherStatement {
     return readOnly;
   }
 
+  /**
+   * A top-level {@code CALL} of a schema-changing procedure, or one inside a {@code CALL { ... }} subquery (issue #11438).
+   * Runs once per analysis of a cached statement, so it is not pre-computed.
+   */
+  @Override
+  public boolean hasSchemaProcedureCall() {
+    for (final CallClause call : callClauses) {
+      final CypherProcedure procedure = call.resolveProcedure();
+      if (procedure != null && procedure.isSchemaProcedure())
+        return true;
+    }
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() != ClauseEntry.ClauseType.SUBQUERY)
+        continue;
+      final SubqueryClause sub = entry.getTypedClause();
+      final CypherStatement inner = sub.getInnerStatement();
+      if (inner != null && inner.hasSchemaProcedureCall())
+        return true;
+    }
+    return false;
+  }
+
   @Override
   public List<MatchClause> getMatchClauses() {
     return matchClauses;

@@ -19,6 +19,7 @@
 package com.arcadedb.remote.grpc.utils;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
@@ -321,6 +322,15 @@ public class ProtoUtils {
     if (value instanceof RID rid) {
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
           .setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid")
+          .build());
+    }
+
+    // A record that has an identity (a persistent document, vertex or edge set as a value) is a link, as the embedded engine
+    // stores it. Before this branch it fell through every other one to the String.valueOf() fallback below and was stored as
+    // its toString(), "#1:0@Doc[name=target]" (issue #12197). A document without identity is an embedded one (next branch).
+    if (value instanceof Identifiable identifiable && identifiable.getIdentity() != null) {
+      return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
+          .setLinkValue(GrpcLink.newBuilder().setRid(identifiable.getIdentity().toString()).build()).setLogicalType("rid")
           .build());
     }
 

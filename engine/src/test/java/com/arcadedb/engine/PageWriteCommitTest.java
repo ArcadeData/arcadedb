@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * RE-RUNS the compression on the page it re-derived. A merge is forced on a page whose replayed write leaves a hole (a shrinking
  * update, and a delete), then the COMMITTED page is asserted to carry no hole at all.</li>
  * </ul>
- * The #5608 tests are DELIBERATELY NOT {@code @Tag("slow")}, for the reason {@code Issue5596MergeCoverageTest} spells out: the
+ * The #5608 tests are DELIBERATELY NOT {@code @Tag("slow")}, for the reason {@code ConcurrentEdgeWriteRegressionTest.MergeCoverage} spells out: the
  * tag keys on elapsed time, not on whether a test spawns a thread. Both methods drive the SMALLEST contention that reproduces -
  * one competitor, one commit each - and measure ~0.02s. They also belong on every build: a merge that stops re-compressing
  * costs a defrag, which no correctness assertion anywhere would catch. Re-measure before tagging them, rather than tagging them

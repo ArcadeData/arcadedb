@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
@@ -39,7 +38,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
-import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
@@ -57,9 +55,17 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
   private final       PageIdCache           pageIds             = new PageIdCache(this);
+  // how many single values the removals of this index read to decide whether to skip a repeated marker: lets a test pin that
+  // removing one (key, RID) does not read the other values of the key (#11935). A plain long on purpose: it is bumped on every
+  // removal, and only a single-threaded test reads it, so an increment lost to a concurrent removal costs nothing
+  private             long                  removeValuesRead    = 0;
 
   // Why the last onAfterLoad() of a schema load could not attach the sub-index, reported once the schema entries are read
   private String subIndexLoadError;
+  // Why the compacted sub-index the header names is not attached, null while it is (or the header names none). Unlike
+  // subIndexLoadError it is kept after it is logged: the index serves its mutable pages only while it is set, and CHECK DATABASE
+  // reports it as a corrupted index for as long as it is, so FIX rebuilds it (issue #12348)
+  private volatile String detachedSubIndex;
 
   /**
    * Called at creation time.
@@ -110,7 +116,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
     // A file with no page at all has no header to read, and reading page 0 anyway would invent a zeroed one - and cache
     // it - instead of failing (issue #10046). An HA follower holds such a file between the entry that creates a
-    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short.
+    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short. A header
+    // page committed and not flushed yet is counted (issue #12101, see PaginatedComponent), so it is not taken for one.
     if (getTotalPages() == 0)
       throw new MissingHeaderException("Index file '" + name + "' has no header page");
     onAfterLoad();
@@ -127,6 +134,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public void onAfterLoad() {
     // RELOAD THE PAGE. THIS CAN BE CALLED AT CREATION OF THE OBJECT (CONSTRUCTOR) OR IN A TX WHEN DATABASE STRUCTURE CHANGES
     subIndexLoadError = null;
+    detachedSubIndex = null;
+    int headerSubIndexFileId = 0;
     try {
       final BasePage currentPage = this.database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
 
@@ -138,6 +147,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       currentMutablePages = Math.max(1, getTotalPages());
 
       final int subIndexFileId = currentPage.readInt(pos);
+      headerSubIndexFileId = subIndexFileId;
 
       pos += INT_SERIALIZED_SIZE;
 
@@ -196,6 +206,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // in-memory instance - the sub-index file id is persisted only when page 0 of a NEW file is
       // created, so nothing on disk is rewritten here.
       subIndex = null;
+      detachedSubIndex = headerSubIndexFileId > 0 ?
+          "the compacted sub-index (file id " + headerSubIndexFileId + ") could not be loaded, so the entries it holds are not served: "
+              + e.getMessage() :
+          "the header page of the index could not be read: " + e.getMessage();
       // During a schema load the report waits for onAfterSchemaLoad(): this runs twice before the schema entries are read, so it
       // could neither name the index to rebuild nor tell a file the load is about to drop as a leftover no schema entry references
       // (LocalSchema.sweepOrphanBucketIndexFiles), which it reported as an index to rebuild under a name
@@ -326,6 +340,15 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return subIndex;
   }
 
+  /**
+   * Why the compacted sub-index the header of this file names is not attached, or null while it is (or the header names none).
+   * Set when the load could not resolve it ("File with id N was not found"): the index then answers from its mutable pages alone,
+   * a partial index that, when UNIQUE, cannot refuse a duplicate of a key only the lost sub-index held (issue #12348).
+   */
+  public String getDetachedSubIndex() {
+    return detachedSubIndex;
+  }
+
   public IndexCursor get(final Object[] keys, final int limit) throws IOException {
     checkForNulls(keys);
 
@@ -336,9 +359,26 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final Set<IndexCursorEntry> set = new HashSet<>();
 
     // NON COMPACTED INDEX, SEARCH IN ALL THE PAGES
-    searchInNonCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>(), new RidHashSet());
+    searchInNonCompactedIndex(convertedKeys, resultSetSink(keys, convertedKeys, limit, set));
 
     return new TempIndexCursor(set);
+  }
+
+  /**
+   * Every value of a key, decoded into primitives with the deletion markers applied (issue #12458): see
+   * {@link LSMTreeIndex#getPostings}.
+   */
+  public LSMTreeIndexPostings getPostings(final Object[] keys) throws IOException {
+    checkForNulls(keys);
+
+    final LSMTreeIndexPostings postings = new LSMTreeIndexPostings();
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
+    if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
+      return postings;
+
+    searchInNonCompactedIndex(convertedKeys, postingsSink(convertedKeys, postings));
+    postings.resolve();
+    return postings;
   }
 
   @Override
@@ -404,6 +444,14 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return currentMutablePages;
   }
 
+  /**
+   * How many single values the removals of this index read since it was opened (#11935): one per removal whose key's newest
+   * entry holds exactly one value. Package-private: for tests only, and exact only when the removals ran on one thread.
+   */
+  long getRemoveValuesReadForTesting() {
+    return removeValuesRead;
+  }
+
   protected MutablePage createNewPage() throws IOException {
     // NEW FILE, CREATE HEADER PAGE
     final int txPageCounter = getTotalPages();
@@ -434,9 +482,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return currentPage;
   }
 
-  private void searchInNonCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys,
-      final RidHashSet deletedRIDs) throws IOException {
+  private void searchInNonCompactedIndex(final Object[] convertedKeys, final KeyLookupSink sink) throws IOException {
     // SEARCH FROM THE LAST PAGE BACK
     final int totalPages = getTotalPages();
 
@@ -450,14 +496,13 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final Binary currentPageBuffer = new Binary(currentPage.slice());
 
-      if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-          removedKeys, deletedRIDs))
+      if (!sink.onPage(currentPage, currentPageBuffer, count))
         return;
     }
 
     if (subIndex != null)
       // CONTINUE ON THE SUB-INDEX
-      subIndex.searchInCompactedIndex(originalKeys, convertedKeys, limit, set, removedKeys, deletedRIDs);
+      subIndex.searchInCompactedIndex(convertedKeys, sink);
   }
 
   protected void internalPut(final Object[] keys, final RID[] rids) {
@@ -629,34 +674,30 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final RID removedRID = rid != null ? getRemovedRID(rid) : REMOVED_ENTRY_RID;
 
-      final LookupResult result = lookupInPage(pageNum, count, currentPageBuffer, convertedKeys, 1);
+      // #11935: the marker goes after the last entry of the key's run, and the only thing the run is read for is to skip a
+      // marker that would repeat the key's newest entry. Reading every value of the run for that (it used to) made each
+      // removal cost the key's multiplicity, and removing every record of a shared key quadratic. The newest entry is
+      // enough: a marker is always written as an entry of its own, so it is the newest entry exactly when nothing touched
+      // the key since. An older marker of the same RID is not looked for: a second marker is harmless, because every reader
+      // and the compaction apply markers as set operations in write order, and the skip was never exhaustive anyway (it
+      // only ever looked at the last page).
+      final LookupResult result = lookupInPage(pageNum, count, currentPageBuffer, convertedKeys, 0);
+      int keyIndex = result.keyIndex;
       if (result.found) {
-        boolean exit = false;
+        final int startIndexArray = getHeaderSize(pageNum);
+        final int lastOfRun = lastEntryOfRun(currentPageBuffer, startIndexArray, convertedKeys, count, result.keyIndex);
+        keyIndex = lastOfRun + 1;
 
-        for (int i = result.valueBeginPositions.length - 1; !exit && i > -1; --i) {
-          currentPageBuffer.position(result.valueBeginPositions[i]);
-
-          final Object[] values = readEntryValues(currentPageBuffer);
-
-          for (int v = values.length - 1; v > -1; --v) {
-            final RID currentRID = (RID) values[v];
-
-            if (rid != null) {
-              if (rid.equals(currentRID)) {
-                // FOUND
-                exit = true;
-                break;
-              } else if (removedRID.equals(currentRID))
-                // ALREADY DELETED
-                return;
-            }
-
-            if (currentRID.getBucketId() == REMOVED_ENTRY_RID.getBucketId()
-                && currentRID.getPosition() == REMOVED_ENTRY_RID.getPosition()) {
-              // ALREADY DELETED
-              return;
-            }
-          }
+        final int entryPosition = currentPageBuffer.getInt(startIndexArray + (lastOfRun * INT_SERIALIZED_SIZE));
+        currentPageBuffer.position(entryPosition);
+        currentPageBuffer.position(entryPosition + getSerializedKeySize(currentPageBuffer, convertedKeys.length));
+        final RID newest = readSoleEntryValue(currentPageBuffer);
+        if (newest != null) {
+          ++removeValuesRead;
+          if (newest.equals(removedRID) || (newest.getBucketId() == REMOVED_ENTRY_RID.getBucketId()
+              && newest.getPosition() == REMOVED_ENTRY_RID.getPosition()))
+            // ALREADY DELETED BY THE NEWEST ENTRY OF THE KEY
+            return;
         }
       }
 
@@ -667,7 +708,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       int keyValueFreePosition = getValuesFreePosition(currentPage);
 
-      int keyIndex = result.found ? result.keyIndex + 1 : result.keyIndex;
       boolean newPage = false;
 
       final boolean mutablePage = isMutable(currentPage);

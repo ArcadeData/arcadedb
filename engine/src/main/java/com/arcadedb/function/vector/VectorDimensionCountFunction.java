@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.vector;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -64,6 +64,6 @@ public class VectorDimensionCountFunction implements StatelessFunction {
       return (long) bytes.length;
     if (args[0] instanceof List)
       return (long) ((List<?>) args[0]).size();
-    throw new CommandExecutionException("vector_dimension_count() requires a vector argument");
+    throw new TypeMismatchException("vector_dimension_count() requires a vector argument");
   }
 }

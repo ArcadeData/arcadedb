@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 
@@ -55,6 +56,8 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
 
     if (quantiles.isEmpty()) { // set quantiles once
       for (int i = 1; i < params.length; ++i) {
+        if (params[i] == null)
+          throw new InvalidArgumentException(getName() + "() quantiles must not be null");
         this.quantiles.add(Double.parseDouble(params[i].toString()));
       }
     }

@@ -111,6 +111,10 @@ public class GraphEngine {
   private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
   private static final boolean[]        SKIP_SELF_LOOPS  = { true };
 
+  // THE ENTRIES THE EDGE LIST OF THE NEAR END OF A BOUND PAIR IS WALKED ALONE BEFORE THE FAR END IS LOOKED AT, SEE
+  // shorterFarEnd(): A SHORT LIST ANSWERS WITHOUT LOADING THE OTHER VERTEX OR ITS LIST (ISSUE #11699)
+  private static final int              BOUND_PAIR_HEAD_START = 64;
+
   // THE ENTRIES OF A VERTEX WITH NO EDGE LIST IN A DIRECTION
   private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
     @Override
@@ -530,7 +534,7 @@ public class GraphEngine {
     // the vertex FILE into the commit lock set of EVERY append and serialising all writers on a hot vertex
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
-    getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
+    appendToEdgeList(fromVertex, Vertex.DIRECTION.OUT, edge.getIdentity(), toVertex.getIdentity());
     if (edge instanceof LightEdge) {
       lightEdgeEntryAppended(fromVertex.getIdentity(), Vertex.DIRECTION.OUT, edge.getIdentity().getBucketId(), toVertex.getIdentity());
       // A lightweight edge is an entry in the edge lists of its two vertices and no record of its own: see DeferredExistenceChecks
@@ -636,7 +640,15 @@ public class GraphEngine {
       return edges;
 
     // No eager modify() - see connectOutgoingEdge.
-    getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    // #11590: inside the edge-append window, see appendToEdgeList
+    if (tx != null)
+      tx.beginEdgeAppend();
+    try {
+      getOrCreateEdgeList(sourceVertex, Vertex.DIRECTION.OUT).addAll(outEdgePairs);
+    } finally {
+      if (tx != null)
+        tx.endEdgeAppend();
+    }
 
     if (inEdgePairs != null)
       for (int i = 0; i < inEdgePairs.size(); ++i) {
@@ -652,7 +664,7 @@ public class GraphEngine {
     // No eager modify() - see connectOutgoingEdge. On a super-node target the eager MutableVertex would
     // serialise every concurrent append on the target vertex file's commit lock, which measured as THE
     // bottleneck (all writers queueing one replication round each) regardless of the edge-list layout.
-    getOrCreateEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN).add(edgeRID, fromVertexRID);
+    appendToEdgeList(asVertexInternal(toVertex), Vertex.DIRECTION.IN, edgeRID, fromVertexRID);
     // ONLY THE RID REACHES HERE: A LIGHTWEIGHT EDGE HAS NO RECORD, SO ITS RID CARRIES A NEGATIVE POSITION (see disconnectEndpoint)
     if (edgeRID.getPosition() < 0)
       lightEdgeEntryAppended(toVertex.getIdentity(), Vertex.DIRECTION.IN, edgeRID.getBucketId(), fromVertexRID);
@@ -748,12 +760,12 @@ public class GraphEngine {
 
     for (final Edge e : outEdgesToReconnect) {
       final MutableVertex vertex = e.getOutVertex().modify();
-      getOrCreateEdgeList(vertex, Vertex.DIRECTION.OUT).add(e.getIdentity(), e.getIn());
+      appendToEdgeList(vertex, Vertex.DIRECTION.OUT, e.getIdentity(), e.getIn());
     }
 
     for (final Edge e : inEdgesToReconnect) {
       final MutableVertex vertex = e.getInVertex().modify();
-      getOrCreateEdgeList(vertex, Vertex.DIRECTION.IN).add(e.getIdentity(), e.getOut());
+      appendToEdgeList(vertex, Vertex.DIRECTION.IN, e.getIdentity(), e.getOut());
     }
 
     relinkAll(lightOut, Vertex.DIRECTION.OUT);
@@ -951,7 +963,7 @@ public class GraphEngine {
    * lightweight entry appended by a transaction needs (see {@link #lightEdgeEntryAppended}).
    */
   void relinkEdgeListEntry(final Vertex vertex, final Vertex.DIRECTION direction, final RID edgeRID, final RID other) {
-    getOrCreateEdgeList(vertex.modify(), direction).add(edgeRID, other);
+    appendToEdgeList(vertex.modify(), direction, edgeRID, other);
     if (edgeRID.getPosition() < 0)
       lightEdgeEntryAppended(vertex.getIdentity(), direction, edgeRID.getBucketId(), other);
   }
@@ -1007,6 +1019,27 @@ public class GraphEngine {
   }
 
   /**
+   * Appends one entry to the edge list of {@code vertex} in {@code direction}, as {@code getOrCreateEdgeList(vertex,
+   * direction).add(edgeRID, otherRID)} does, inside the transaction's edge-append window (#11590): the reads the append makes for
+   * itself, the head pointer and the chunk it appends to, are not taken for reads of the application, which the commit-time merges
+   * validate. A blind append to a chunk another transaction appended to meanwhile still merges.
+   */
+  private void appendToEdgeList(final VertexInternal vertex, final Vertex.DIRECTION direction, final RID edgeRID,
+      final RID otherRID) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null) {
+      getOrCreateEdgeList(vertex, direction).add(edgeRID, otherRID);
+      return;
+    }
+    tx.beginEdgeAppend();
+    try {
+      getOrCreateEdgeList(vertex, direction).add(edgeRID, otherRID);
+    } finally {
+      tx.endEdgeAppend();
+    }
+  }
+
+  /**
    * Loads (or lazily creates) the edge list of a vertex for a WRITE operation, dispatching on the head record's
    * type: a classic {@link EdgeSegment} chain yields an {@link EdgeLinkedList}, a {@link StripeDirectory}
    * (super-node promoted vertex, #5156) yields a {@link StripedEdgeList}. The head page is anchored in the
@@ -1041,7 +1074,7 @@ public class GraphEngine {
       // vertex that no longer exists surfaces - one frame before the head-chunk lookup the catch below was written
       // for. A multi-page vertex body whose continuation chunk is not visible yet reaches here too, and that one IS
       // the publication window, so the two are separated by the RID the not-found names rather than by the site.
-      headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+      headRID = direction == Vertex.DIRECTION.OUT ? vertex.peekOutEdgesHeadChunk() : vertex.peekInEdgesHeadChunk();
     } catch (final RecordNotFoundException e) {
       if (vertexRID != null && vertexRID.equals(e.getRID()))
         throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
@@ -1110,7 +1143,7 @@ public class GraphEngine {
       // this list would be inventing a diagnosis, which is the whole thing #6586 is about not doing.
       throw e;
     }
-    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.peekOutEdgesHeadChunk() : mutable.peekInEdgesHeadChunk();
     if (reloadedHead != null)
       return getOrCreateEdgeList(mutable, direction);
 
@@ -1157,7 +1190,7 @@ public class GraphEngine {
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
-    RID inEdgesHeadChunk = toVertex.getInEdgesHeadChunk();
+    RID inEdgesHeadChunk = toVertex.peekInEdgesHeadChunk();
 
     EdgeSegment inChunk = null;
     if (inEdgesHeadChunk != null)
@@ -1184,7 +1217,7 @@ public class GraphEngine {
   }
 
   public EdgeSegment createOutEdgeChunk(final MutableVertex fromVertex) {
-    RID outEdgesHeadChunk = fromVertex.getOutEdgesHeadChunk();
+    RID outEdgesHeadChunk = fromVertex.peekOutEdgesHeadChunk();
 
     EdgeSegment outChunk = null;
     if (outEdgesHeadChunk != null)
@@ -1861,7 +1894,7 @@ public class GraphEngine {
    * failures and counts them for CHECK DATABASE.
    * <p>
    * That leaves one BOUNDARY, measured and pinned by
-   * {@code Issue5779MoveEdgeIndexCleanupTest.movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath}:
+   * {@code VertexDeleteRepairTest.MoveEdgeIndexCleanup.movingAnEdgeWithAnUnreadablePropertyIsBestEffortLikeTheDeletePath}:
    * corruption the reader TOLERATES - a bad length prefix on an inline value (#4420) surfaces as the property
    * being absent, not as an exception. Nothing here can then learn the key the index holds, so that entry outlives
    * the record. It is not a leak this method can close, and not one it introduces: {@code deleteRecordNoLock}
@@ -2840,7 +2873,15 @@ public class GraphEngine {
    * a non-matching edge costs a pointer comparison instead of a record load and a property deserialization. The walk
    * itself is not free - the segment still yields an RID per entry, as it always did - but on a super-node dropping
    * the per-edge record load is the difference between the probe being unusable and being cheap.
-   *
+   * <p>
+   * Every edge joining two vertices sits in the edge list of both, so the pair is read off whichever end's list is the
+   * shorter (issue #11699): the walk costs O(min(degree(vertex), degree(target))) entries in the hop's direction rather
+   * than the degree of the end the caller named first, which on a super-node is the difference between a probe about
+   * one edge and a scan of hundreds of thousands. No list keeps a count, so the two lists are stepped in turn and the
+   * first one to run out is the shorter (see {@link #shorterFarEnd}). The edges returned are the same either way;
+   * read from the target's list they come in the order that list holds them. A self-loop and a hop over an edge type
+   * declared unidirectional, whose incoming side no vertex stores (issue #8625), are always read off {@code vertex}.
+   * <p>
    * Under {@link Vertex.DIRECTION#BOTH} a self-loop is returned twice, once from each list, exactly as
    * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} does. A caller that cares must de-duplicate by
    * edge identity, as the Cypher expansion does.
@@ -2863,34 +2904,143 @@ public class GraphEngine {
     // resolution belongs here.
     final VertexInternal source = getMostUpdatedVertex(vertex);
 
+    final VertexInternal farEnd = shorterFarEnd(source, direction, targetRID, edgeTypes);
+    if (farEnd != null)
+      return edgesConnectedTo(farEnd, mirror(direction), source.getIdentity(), edgeTypes, true);
+    return edgesConnectedTo(source, direction, targetRID, edgeTypes, false);
+  }
+
+  /**
+   * The edges of {@code owner}'s list(s) in {@code direction} that reach {@code neighbour}. Under
+   * {@link Vertex.DIRECTION#BOTH} the outgoing list is read first, or the incoming one when {@code incomingFirst}: a
+   * pair read off its far end then comes in the order its near end would have given it.
+   */
+  private Iterator<Edge> edgesConnectedTo(final VertexInternal owner, final Vertex.DIRECTION direction, final RID neighbour,
+      final String[] edgeTypes, final boolean incomingFirst) {
     switch (direction) {
       case BOTH: {
         // No countEntries override here, unlike the BOTH branch of getEdges: that one delegates to
         // EdgeLinkedList.count, which filters by edge type only. There is no neighbour-keyed count, so an
         // override could do nothing cheaper than the walk MultiIterator already falls back to.
         final MultiIterator<Edge> result = new MultiIterator<>();
-        final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
-        if (outEdges != null)
-          result.addIterator(outEdges.edgeIteratorConnectedTo(targetRID, edgeTypes));
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
-        if (inEdges != null)
-          result.addIterator(inEdges.edgeIteratorConnectedTo(targetRID, edgeTypes));
+        final EdgeLinkedList firstEdges = getEdgeHeadChunk(owner, incomingFirst ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
+        if (firstEdges != null)
+          result.addIterator(firstEdges.edgeIteratorConnectedTo(neighbour, edgeTypes));
+        final EdgeLinkedList secondEdges = getEdgeHeadChunk(owner, incomingFirst ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN);
+        if (secondEdges != null)
+          result.addIterator(secondEdges.edgeIteratorConnectedTo(neighbour, edgeTypes));
         return result;
       }
 
-      case OUT: {
-        final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
-        return outEdges != null ? outEdges.edgeIteratorConnectedTo(targetRID, edgeTypes) : Collections.emptyIterator();
-      }
-
+      case OUT:
       case IN: {
-        final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
-        return inEdges != null ? inEdges.edgeIteratorConnectedTo(targetRID, edgeTypes) : Collections.emptyIterator();
+        final EdgeLinkedList edges = getEdgeHeadChunk(owner, direction);
+        return edges != null ? edges.edgeIteratorConnectedTo(neighbour, edgeTypes) : Collections.emptyIterator();
       }
 
       default:
         throw new IllegalArgumentException("Invalid direction " + direction);
     }
+  }
+
+  /**
+   * The far end of a hop between two bound vertices when its edge list is the shorter of the two, so the edges joining
+   * them are read off it; null when they are read off {@code source}, as they always were (issue #11699).
+   * <p>
+   * No edge list keeps a count of its entries, and walking one to count it costs what the walk it would save costs. So
+   * the lists are stepped entry by entry in turn, the far one in the mirrored direction, and the first to run out is the
+   * shorter: the race costs at most twice the shorter list, plus {@link #BOUND_PAIR_HEAD_START} entries the near list
+   * walks alone first so that the common short list answers without loading the far vertex or its list at all. Every
+   * entry counts, whatever its type: the type filter of the walk that follows reads them all the same.
+   * <p>
+   * The far vertex is read again through the database rather than taken from the caller's handle: a handle loaded before
+   * another transaction appended to its list would hide the newest edges, and a MERGE deciding on that would create a
+   * second one (issues #6461, #7174). A far vertex that cannot be read leaves the walk on {@code source}, and so does a
+   * list of either end whose head, or the head of one of whose stripes, is present but cannot be loaded (a concurrent
+   * commit not yet fully published, see {@link #getEdgeHeadChunkForWrite}): read as empty or as short, it would win the
+   * race and hide the edges the unreadable part holds.
+   */
+  private VertexInternal shorterFarEnd(final VertexInternal source, final Vertex.DIRECTION direction, final RID targetRID,
+      final String[] edgeTypes) {
+    // A SELF-LOOP HAS ONE VERTEX TO READ IT OFF, AND A UNIDIRECTIONAL TYPE IS STORED ON ITS SOURCE ONLY (#8625)
+    if (targetRID == null || targetRID.equals(source.getIdentity())
+        || IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), edgeTypes))
+      return null;
+
+    final Iterator<RID> nearEntries = entriesOf(source, direction);
+    if (nearEntries == null)
+      return null;
+    for (int i = 0; i < BOUND_PAIR_HEAD_START; i++) {
+      if (!nearEntries.hasNext())
+        return null;
+      nearEntries.next();
+    }
+
+    final VertexInternal far;
+    try {
+      if (!(database.lookupByRID(targetRID, true) instanceof VertexInternal loaded))
+        return null;
+      far = loaded;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+
+    final Iterator<RID> farEntries = entriesOf(far, mirror(direction));
+    if (farEntries == null)
+      return null;
+    while (true) {
+      if (!nearEntries.hasNext())
+        return null;
+      nearEntries.next();
+      if (!farEntries.hasNext())
+        return far;
+      farEntries.next();
+    }
+  }
+
+  /**
+   * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list, or a
+   * stripe of one, whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
+   */
+  private Iterator<RID> entriesOf(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    if (direction != Vertex.DIRECTION.BOTH)
+      return entriesOfList(vertex, direction);
+    final Iterator<RID> outEntries = entriesOfList(vertex, Vertex.DIRECTION.OUT);
+    if (outEntries == null)
+      return null;
+    final Iterator<RID> inEntries = entriesOfList(vertex, Vertex.DIRECTION.IN);
+    if (inEntries == null)
+      return null;
+    final MultiIterator<RID> both = new MultiIterator<>();
+    both.addIterator(outEntries);
+    both.addIterator(inEntries);
+    return both;
+  }
+
+  /** {@link #entriesOf} in {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}. */
+  private Iterator<RID> entriesOfList(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    final EdgeLinkedList edges = getEdgeHeadChunk(vertex, direction);
+    if (edges != null)
+      return edges.wholeEntryRidIterator();
+    return hasNoEdgeList(vertex, direction) ? Collections.emptyIterator() : null;
+  }
+
+  /** Whether {@code vertex} names no head chunk in {@code direction}: false too when the vertex itself cannot be read. */
+  private static boolean hasNoEdgeList(final VertexInternal vertex, final Vertex.DIRECTION direction) {
+    try {
+      return (direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk()) == null;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  /** The direction the far end of a hop sees it in. */
+  private static Vertex.DIRECTION mirror(final Vertex.DIRECTION direction) {
+    return switch (direction) {
+      case OUT -> Vertex.DIRECTION.IN;
+      case IN -> Vertex.DIRECTION.OUT;
+      case BOTH -> Vertex.DIRECTION.BOTH;
+    };
   }
 
   /**
@@ -3333,8 +3483,8 @@ public class GraphEngine {
    * routes the collection of the vertex's OWN edges through here as well, so a delete can no longer remove the
    * record while its edges stay behind. Both are deliberate - succeeding in either case leaves a reference to a
    * record that is gone - and {@code force} is the single documented escape hatch from both. Pinned by
-   * {@code Issue5670EdgeDeleteDanglingBackRefTest.deletingAVertexWhoseNeighbourListIsUnreadableReportsAConflictRatherThanDanglingTheReference}
-   * and by {@code Issue5680VertexDeleteEdgeCollectionTest}.
+   * {@code EdgeDeleteRepairRegressionTest.EdgeDeleteDanglingBackRef.deletingAVertexWhoseNeighbourListIsUnreadableReportsAConflictRatherThanDanglingTheReference}
+   * and by {@code EdgeDeleteRepairRegressionTest.VertexDeleteEdgeCollection}.
    */
   public EdgeLinkedList getEdgeHeadChunkForWrite(final VertexInternal vertex, final Vertex.DIRECTION direction) {
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
@@ -3365,7 +3515,7 @@ public class GraphEngine {
       // message is the only place the missing CHUNK's RID appears - the text above names the vertex, not the chunk,
       // which is inside the record-not-found message - and the top-level message is what a log line and an HTTP
       // error body carry, while the cause chain surfaces only in a full trace or a development-mode detail field.
-      // Pinned by Issue5670EdgeDeleteDanglingBackRefTest, which asserts the head chunk's RID is in this message.
+      // Pinned by EdgeDeleteRepairRegressionTest.EdgeDeleteDanglingBackRef, which asserts the head chunk's RID is in this message.
       throw new ConcurrentModificationException(
           "Edge list " + direction + " of vertex " + vertexRID
               + " is not fully visible yet (concurrent commit in flight): " + e.getMessage(), e);

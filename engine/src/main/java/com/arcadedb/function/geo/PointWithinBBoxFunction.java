@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.geo;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -76,9 +77,9 @@ public class PointWithinBBoxFunction implements StatelessFunction {
         coordinates = geographic ? pair(map, "x", "y") : pair(map, "longitude", "latitude");
       if (coordinates != null)
         return coordinates;
-      throw new CommandExecutionException("Point must have x/y or longitude/latitude properties");
+      throw new InvalidArgumentException("Point must have x/y or longitude/latitude properties");
     }
-    throw new CommandExecutionException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
+    throw new TypeMismatchException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
   }
 
   private static double[] pair(final Map<?, ?> map, final String first, final String second) {

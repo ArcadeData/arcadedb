@@ -61,7 +61,7 @@ public class TypeColumnarIndexBuilder extends TypeIndexBuilder {
    */
   public TypeColumnarIndexBuilder withPersistedMetadata(final JSONObject json) {
     if (json != null)
-      columnarMetadata().fromJSON(json);
+      readPersistedDefinition(columnarMetadata(), json);
     return this;
   }
 

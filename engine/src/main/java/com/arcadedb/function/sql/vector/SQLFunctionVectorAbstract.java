@@ -64,7 +64,7 @@ import java.util.function.Function;
  * NULL one is refused as the caller's mistake. An empty vector answers what the function answers on a zero vector:
  * 0 for a norm or a distance, false for a predicate, an empty vector for an element-wise operation. Only a function that
  * has no value on it (cosine similarity, variance, standard deviation, sparsity, the quantizations: 0/0) refuses it.
- * {@code Issue11052VectorDegenerateArgumentsTest} checks the NULL rule over every registered {@code vector.*} function.
+ * {@code VectorNeighborsArgumentsTest.VectorDegenerateArguments} checks the NULL rule over every registered {@code vector.*} function.
  * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -205,20 +205,6 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (k < 0)
       throw new CommandSQLParsingException(getName() + " k must not be negative, got " + k);
     return k;
-  }
-
-  /**
-   * Validates that the number of parameters matches expected count.
-   *
-   * @param params        Actual parameters
-   * @param expectedCount Expected parameter count
-   *
-   * @throws CommandSQLParsingException if count doesn't match
-   */
-  protected void validateParameterCount(final Object[] params, final int expectedCount) {
-    if (params == null || params.length != expectedCount) {
-      throw new CommandSQLParsingException(getSyntax());
-    }
   }
 
   /**

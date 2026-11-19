@@ -33,7 +33,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #5047 (gRPC streaming & pagination correctness):
@@ -42,8 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       requested query {@code language} instead of silently running as SQL.</li>
  *   <li><b>STR-4</b> - {@code is_last_batch} must be reported {@code true} on exact-multiple totals in both
  *       CURSOR and PAGED retrieval modes.</li>
- *   <li><b>STR-3</b> - PAGED mode must reject queries whose parameters collide with the reserved
- *       {@code _skip}/{@code _limit} names instead of silently overwriting them.</li>
+ *   <li><b>STR-3</b> - PAGED mode must never overwrite a caller's {@code _skip}/{@code _limit} parameters. It used to
+ *       reserve the names and reject them; since issue #11800 it wraps nothing, so it binds them as the caller's.</li>
  *   <li><b>CON-3</b> - closing a partially-read stream must release resources and leave the connection
  *       usable (the stream is cancelled, not drained).</li>
  * </ul>
@@ -186,19 +185,21 @@ class Issue5047StreamingCorrectnessIT extends BaseGrpcClientServerTest {
   }
 
   @Test
-  @DisplayName("STR-3: PAGED mode rejects a query that reuses the reserved _skip/_limit parameter names")
-  void pagedMode_rejectsReservedParameterName() {
+  @DisplayName("STR-3: PAGED mode reserves no parameter name: a caller's _skip/_limit are its own")
+  void pagedMode_reservesNoParameterName() {
     insertRows(5);
 
-    // The caller binds a parameter literally named "_skip", which PAGED reserves for its SKIP wrapper. The
-    // server must reject the request instead of silently overwriting the caller's value.
-    assertThatThrownBy(() -> {
-      try (ResultSet rs = database.queryStreamBatched("sql", "SELECT FROM `" + TYPE + "` WHERE id >= :_skip",
-          Map.of("_skip", 0L), 10, StreamQueryRequest.RetrievalMode.PAGED)) {
-        while (rs.hasNext())
-          rs.next();
+    // PAGED used to wrap the query in SKIP :_skip LIMIT :_limit and had to refuse a caller binding those names. Since
+    // issue #11800 it runs the query once, as CURSOR does, so nothing is wrapped and the names are the caller's.
+    int total = 0;
+    try (ResultSet rs = database.queryStreamBatched("sql", "SELECT FROM `" + TYPE + "` WHERE id >= :_skip AND id < :_limit",
+        Map.of("_skip", 1L, "_limit", 4L), 10, StreamQueryRequest.RetrievalMode.PAGED)) {
+      while (rs.hasNext()) {
+        rs.next();
+        total++;
       }
-    }).hasMessageContaining("_skip").hasMessageContaining("_limit");
+    }
+    assertThat(total).isEqualTo(3);
   }
 
   @Test
