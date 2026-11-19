@@ -58,13 +58,15 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
   private static final List<String> PER_RECORD = List.of(//
       "alpha", "zeta", "alpha beta", "alpha beta gamma delta", "zeta epsilon delta gamma beta alpha", "+alpha +beta",
       "+alpha -gamma", "+zeta -alpha", "alpha^3 beta gamma^0.5", "+delta (alpha zeta)",
-      "alpha (+beta -zeta)", "alpha missingword", "content:alpha zeta");
+      "alpha (+beta -zeta)", "alpha missingword", "content:alpha zeta",
+      // a MUST_NOT clause beside SHOULD clauses excludes from its own group only (issue #12474)
+      "alpha -beta", "(zeta -beta) delta", "zeta -(beta -gamma)");
 
   /**
    * Queries the record alone does not decide: the complete search answers them, as before. A phrase of several terms needs the
    * positions of its terms, which the keys of the record's postings do not hold (issue #12165).
    */
-  private static final List<String> COMPLETE = List.of("alph*", "zet?", "alpha -beta", "-alpha", "alpah~", "missingword",
+  private static final List<String> COMPLETE = List.of("alph*", "zet?", "-alpha", "+alpha +(-beta)", "alpah~", "missingword",
       "\"alpha beta\"", "\"beta zeta\"");
 
   @ParameterizedTest
@@ -138,7 +140,7 @@ class Issue11683SearchIndexSmallTargetTest extends TestHelper {
       for (final String query : List.of("alpha beta", "zeta", "+gamma -alpha", "beta zeta delta^2"))
         assertScoredOnItsOwn(titleAndBody, query, fields, arts);
 
-    for (final String query : List.of("alph*", "zet?", "alpha -beta", "-alpha", "alpah~", "/al.*/", "\"alpha beta\""))
+    for (final String query : List.of("alph*", "zet?", "-alpha", "+alpha +(-beta)", "alpah~", "/al.*/", "\"alpha beta\""))
       assertThat(FullTextRecordScorer.prepare(content, query, null, WorkGuard.forCommandDeadline(null))).as(query).isNull();
   }
 

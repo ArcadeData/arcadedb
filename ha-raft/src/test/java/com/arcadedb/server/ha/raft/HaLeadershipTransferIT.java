@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * off, volatile Raft storage). The sources of #5276 and {@code RaftTransferLeadershipIT} carried no tag and the others
  * {@code @Tag("slow")} at class level, so the tag is per method here and every test stays in its lane. The quarantined
  * leader of #8483 runs on two servers with the health monitor on and stays in
- * {@code Issue8483QuarantinedLeaderHandsOffLeadershipIT}.
+ * {@code QuarantinedLeaderHandsOffLeadershipIT}.
  * <ul>
  * <li><b>#4809</b>: the no-target {@code transferLeadership(timeoutMs)} reported success whenever this node simply stopped
  * being the leader, conflating a real handoff with a leaderless window or an unrelated election. It now requires leadership
@@ -68,7 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the target, every time. The target could lose the election it was sent to win: when its acknowledgement completed the
  * majority for the leader's last data entry D, Ratis started the election with {@code lastEntry = D} and only then appended
  * the commit-index metadata entry D+1, which reached the other follower first, and both voters rejected a candidate one
- * entry short. How a failed transfer names the outcome is covered by {@link Issue8487TargetedTransferSettlesTest}.</li>
+ * entry short. How a failed transfer names the outcome is covered by {@link RaftClusterManagerLeadershipTransferTest}.</li>
  * <li><b>#8491</b>: a node replacing a database with the leader's copy (an operator resync) can become the leader, because
  * Raft elects on the log alone. As leader it cannot download the copy from itself and refuses every request on the
  * database meanwhile. It must report the condition and hand leadership to a peer; the install then completes.</li>

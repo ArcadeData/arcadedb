@@ -43,6 +43,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.FullTextPostingRID;
+import com.arcadedb.index.lsm.LSMTreeIndexPostings;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
@@ -779,6 +780,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   IndexCursor getPostings(final String storedKey) {
     return underlyingIndex.get(new String[] { storedKey });
+  }
+
+  /**
+   * The postings of an already-resolved stored key as primitive arrays sorted by RID, with their term frequency and document
+   * length: what {@link #getPostings} answers, without an object per posting (issue #12458). Package-private for the same reason.
+   */
+  LSMTreeIndexPostings readPostings(final String storedKey) {
+    return underlyingIndex.getPostings(new String[] { storedKey });
   }
 
   /**

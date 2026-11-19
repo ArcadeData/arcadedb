@@ -172,12 +172,25 @@ public class BinarySerializer {
   }
 
   /**
+   * Whether the database is labelled so that no build which cannot decode the fixed-width form opens it (issue #12234). False
+   * keeps the varint form. True by default: a serializer that is not a database's own has no files to label. The database sets
+   * it when it opens and when its configuration changes, so writing an array costs one more volatile read and never a rename.
+   */
+  private volatile boolean fixedWidthFloatArraysFenced = true;
+
+  /** Tells the serializer whether its database carries the rollback fence of {@link #fixedWidthFloatArraysFenced}. */
+  public void setFixedWidthFloatArraysFenced(final boolean fenced) {
+    this.fixedWidthFloatArraysFenced = fenced;
+  }
+
+  /**
    * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
-   * array when {@link #fixedWidthFloatArrays} allows it, {@code type} itself otherwise. Only the record's own type bytes go
-   * through here; an index key is written under its declared type, so an index page never changes form.
+   * array when {@link #fixedWidthFloatArrays} allows it and {@link #fixedWidthFloatArraysFenced} is set, {@code type} itself
+   * otherwise. Only the record's own type bytes go through here; an index key is written under its declared type, so an index
+   * page never changes form.
    */
   private byte storageTypeOf(final byte type) {
-    if (!fixedWidthFloatArraysEnabled)
+    if (!fixedWidthFloatArraysEnabled || !fixedWidthFloatArraysFenced)
       return type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
       return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
@@ -324,6 +337,16 @@ public class BinarySerializer {
   }
 
   public Binary serializeEdge(final DatabaseInternal database, final Edge edge, final boolean readOnly) {
+    // AN ENDPOINT THAT IS NULL IS NOT WRITTEN AT ALL (serializeValue SKIPS A NULL), SO THE RECORD WOULD START WITH ITS PROPERTIES
+    // WHERE THE TWO VERTEX POINTERS ARE READ BACK: AN EDGE POINTING AT ARBITRARY RECORDS THAT CANNOT BE DECODED AGAIN (#12418)
+    final RID out = edge.getOut();
+    final RID in = edge.getIn();
+    if (out == null || in == null)
+      throw new SerializationException(
+          "Cannot serialize the edge " + edge.getIdentity() + " of type '" + edge.getTypeName() + "' without its " + (out == null ?
+              "@out" :
+              "@in") + " vertex: an edge is created between two vertices (Vertex.newEdge() or CREATE EDGE)");
+
     Binary header = ((BaseRecord) edge).getBuffer();
 
     final DatabaseContext.DatabaseContextTL context = database.getContext();
@@ -341,8 +364,8 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getOut());
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn());
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, out);
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, in);
 
     if (serializeProperties)
       return serializeProperties(database, edge, header, context.getTemporaryBuffer2(), readOnly);

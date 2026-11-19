@@ -741,11 +741,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final TransactionContext tx = current.getLastTransaction();
         try {
           requireReplicationBuffer(tx);
-          final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+          // Issue #11921: this commit publishes its pages here before the session's entry carries them, so its check and its
+          // publication run as one step for the leader's validation of other nodes' entries, see publishOutsideTheLog
+          final FullTextCorpusDeltas[] corpusDeltasRead = new FullTextCorpusDeltas[1];
+          final TransactionContext.TransactionPhase1 phase1 = publishOutsideTheLog(() -> {
+            final TransactionContext.TransactionPhase1 checked = tx.commit1stPhase(true);
+            if (checked != null) {
+              // Read before the commit concludes: the accumulator is released with the transaction
+              corpusDeltasRead[0] = FullTextCorpusDeltas.peek(tx);
+              tx.commit2ndPhase(checked);
+            }
+            return checked;
+          });
           if (phase1 != null) {
-            // Read before the commit concludes: the accumulator is released with the transaction
-            final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
-            tx.commit2ndPhase(phase1);
+            final FullTextCorpusDeltas corpusDeltas = corpusDeltasRead[0];
             // This WAL ships inside the SCHEMA_ENTRY, which carries no corpus deltas (a TX_ENTRY would): a follower would keep
             // the token-length total of a document this transaction rewrote, and a document count cannot tell. The entry does
             // carry the schema, and with it the leader's counters, which hold the deltas now: a newer epoch makes a follower
@@ -1519,6 +1528,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private ArcadeStateMachine stateMachineOrNull() {
     final RaftHAServer raft = raftHAServer;
     return raft != null ? raft.getStateMachine() : null;
+  }
+
+  /**
+   * Runs a commit of a schema or compaction session, which publishes its pages on this leader before the session's entry
+   * carries them, as one step for the validation of other nodes' entries (issue #11921), see
+   * {@link PageVersionLedger#publishOutsideTheLog}. Without a state machine there is no validation to order it against.
+   */
+  private <T> T publishOutsideTheLog(final Callable<T> commit) throws Exception {
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    return stateMachine != null ? stateMachine.publishOutsideTheLog(proxied, commit) : commit.call();
   }
 
   /**

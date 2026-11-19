@@ -441,6 +441,10 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    // A branch of a write UNION shares the label replacements of the whole statement: a later branch's label write deletes
+    // the records the rows of an earlier branch hold, and the UNION redirects them with that map (issue #10614)
+    if (outerContext != null && !statement.isReadOnly() && LabelReplacements.existing(outerContext) != null)
+      LabelReplacements.inherit(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -503,6 +507,9 @@ public class CypherExecutionPlan {
           guard.check();
           materializedResults.add((ResultInternal) resultSet.next());
         }
+        // A row produced before a later row's label write still holds what that write deleted: answered with the live
+        // records instead (issue #10614)
+        LabelReplacements.redirectRows(context, materializedResults);
       } finally {
         // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
         // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
@@ -632,9 +639,14 @@ public class CypherExecutionPlan {
       // Each branch runs seeded with the row, one after the other and only as far as the consumer pulls: collecting every
       // branch first ran the whole body for a LIMIT the first branch could satisfy (issue #11082). The UNION de-duplicates
       // on the canonical keys of the statement-level UNION, under the same heap limit.
-      // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext, so it takes
-      // the non-union path below and does its own inherit under the same gate. A second copy here would be one more
-      // thing to keep in step with that gate (issue #6977).
+      // Each branch runs through this same method with the REAL outerContext, so it takes the non-union path below and
+      // does its own inherit (issue #6977). The UNION itself inherits the map too, under the same gate, only to key its rows:
+      // a replaced node held as the original by one branch and as the replacement by a later one is one row (issue #10614)
+      if (outerContext != null && !statement.isReadOnly()) {
+        LabelReplacements.inherit(ctx, outerContext);
+        // A write in the body of a CALL reaches the copies of lists and maps the outer clauses indexed (issue #11754)
+        HeldCollectionRefresher.inherit(ctx, outerContext);
+      }
       final UnionStep unionStep = new UnionStep(branchPlans, removeDuplicates,
           branchPlan -> branchPlan.executeWithSeedRow(seedRow, outerContext, batchSize), ctx);
       return unionStep.syncPull(ctx, batchSize);
@@ -654,6 +666,9 @@ public class CypherExecutionPlan {
       // deleted (issue #6977). Same gate as the statistics above - a read-only body performs no label write and
       // must not make the enclosing statement allocate a map for one.
       LabelReplacements.inherit(context, outerContext);
+      // ...and so does the refresher of the lists and maps the statement holds: a write in the body has to reach the copies
+      // the outer clauses indexed (issue #11754)
+      HeldCollectionRefresher.inherit(context, outerContext);
     }
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
@@ -916,13 +931,15 @@ public class CypherExecutionPlan {
 
     // Write UNION: materialize to force each branch's mutation steps to execute (mirroring the
     // non-union write path), then surface the summed per-branch statistics.
-    final ResultSet rs = unionStep.syncPull(context, 100);
+    shareLabelReplacementsWithBranches(context, outerContext);
     final List<Result> rows = new ArrayList<>();
-    try {
+    try (final ResultSet rs = unionStep.syncPull(context, 100)) {
       while (rs.hasNext())
         rows.add(rs.next());
+      // A row of an earlier branch still holds what a later branch's label write deleted (issue #10614)
+      LabelReplacements.redirectRows(context, rows);
     } finally {
-      rs.close();
+      LabelReplacements.endOfStatement(context);
     }
     final IteratorResultSet out = new IteratorResultSet(rows.iterator());
     // Always attach the accumulator for a write UNION, even when no branch actually mutated
@@ -930,6 +947,17 @@ public class CypherExecutionPlan {
     // mirroring the non-union write path above.
     out.setStatistics(unionStep.getAggregatedStatistics());
     return out;
+  }
+
+  /**
+   * Gives the context of a write UNION the label replacements every branch shares (the branches inherit them, see
+   * {@code executeStreaming}): the enclosing statement's when it has one, else a map of its own, which the UNION ends.
+   */
+  private static void shareLabelReplacementsWithBranches(final CommandContext unionContext, final CommandContext outerContext) {
+    if (LabelReplacements.existing(outerContext) != null)
+      LabelReplacements.inherit(unionContext, outerContext);
+    else
+      LabelReplacements.of(unionContext);
   }
 
   /**
@@ -1245,12 +1273,17 @@ public class CypherExecutionPlan {
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
       final UnionStep unionStep =
           new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+      if (!statement.isReadOnly())
+        shareLabelReplacementsWithBranches(context, null);
       try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
         while (resultSet.hasNext()) {
           final Result row = resultSet.next();
           if (keepRows)
             results.add(row);
         }
+        redirectProfiledRows(context, results);
+      } finally {
+        LabelReplacements.endOfStatement(context);
       }
     } else {
       // FAST PATH: Count-push-down (same logic as execute())
@@ -1271,6 +1304,7 @@ public class CypherExecutionPlan {
             if (keepRows)
               results.add(row);
           }
+          redirectProfiledRows(context, results);
         } finally {
           // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
           LabelReplacements.endOfStatement(context);
@@ -1288,6 +1322,20 @@ public class CypherExecutionPlan {
     if (!statement.isReadOnly())
       results.setStatistics(context.getStatistics());
     return results;
+  }
+
+  /**
+   * Points the rows a profiled write kept at the live records, as {@code execute()} answers them (issue #10614): a row produced
+   * before a later row's label write still holds what that write deleted. The rows are redirected in place, and only when the
+   * statement replaced something, so a profile without a label write pays one check.
+   */
+  private static void redirectProfiledRows(final CommandContext context, final InternalResultSet results) {
+    final LabelReplacements replacements = LabelReplacements.existing(context);
+    if (replacements == null || replacements.isEmpty())
+      return;
+    while (results.hasNext())
+      replacements.redirect(results.next());
+    results.reset();
   }
 
   /**

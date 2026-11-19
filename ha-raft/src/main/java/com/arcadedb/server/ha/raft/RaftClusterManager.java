@@ -156,7 +156,7 @@ class RaftClusterManager {
    * the probe, and anything calling these instead would bypass it.
    * <p>
    * They are kept because two tests exercise the membership change through them without standing up a
-   * server ({@code RaftAtomicMembershipTest}, {@code Issue7514UnreachablePeerRefusalTest}). A new
+   * server ({@code RaftAtomicMembershipTest}, {@code PeerDialSafetyTest.UnreachablePeerRefusal}). A new
    * production caller belongs on {@code RaftHAServer.addPeer}, not here.
    */
   void addPeer(final String peerId, final String address) {
