@@ -43,6 +43,7 @@ class NoSystemOutCensusTest {
 
   /** Whole classes whose purpose is a terminal or stdio, keyed as the class part of a call-site key. */
   private static final Map<String, String> CONSOLE_CLASSES = new TreeMap<>(Map.ofEntries(//
+      Map.entry("bench/BenchMain", "the benchmark harness CLI: usage, errors and results go to the terminal"),
       Map.entry("console/Console", "the interactive console"),
       Map.entry("log/DefaultLogger", "the logging layer's own console sink and its last-resort errors"),
       Map.entry("log/LogManager", "the logging layer's own console sink and its last-resort errors"),
