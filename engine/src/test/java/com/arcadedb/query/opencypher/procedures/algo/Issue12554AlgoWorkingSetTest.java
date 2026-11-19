@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.procedures.algo.AbstractAlgoProcedure.Graph
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.AfterEach;
@@ -554,6 +555,42 @@ class Issue12554AlgoWorkingSetTest {
         .isInstanceOf(TimeoutException.class)
         .hasMessageContaining("algo.test()");
     assertThat(graph.adjacency(WorkGuard.forDeadline("algo.test()", Long.MAX_VALUE), Vertex.DIRECTION.BOTH).length).isEqualTo(100);
+  }
+
+  /**
+   * A bucket that holds more than its count said makes the table double its array, copying it while the old one is held: the call is
+   * refused before the copy when it does not fit, and loads the same nodes in the same order when it does.
+   */
+  @Test
+  void aBucketHoldingMoreThanItsCountIsCheckedBeforeTheTableDoublesIt() {
+    database.getSchema().createVertexType("Node", 1);
+    database.transaction(() -> {
+      for (int i = 0; i < 40; i++)
+        database.newVertex("Node").set("i", i).save();
+    });
+    final List<RID> scanOrder = new ArrayList<>();
+    GraphEngine.getAllVertices(database, null).forEachRemaining(vertex -> scanOrder.add(vertex.getIdentity()));
+    // The count of the bucket is 4: its array starts with 4 slots and doubles at the 5th, 9th, 17th and 33rd node
+    final AlgoWCC procedure = new AlgoWCC() {
+      @Override
+      long bucketCount(final Schema schema, final int bucketId) {
+        return 4L;
+      }
+    };
+
+    // 40 nodes cost 640 bytes, which 700 hold. At the 33rd node the array of 32 slots doubles to 64 beside the 32 nodes of the table: 96 slots
+    // of 8 bytes, 768, which 700 do not. The doublings before it, 96, 192 and 384 bytes, fit
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
+    assertThatThrownBy(() -> procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the loaded graph would need 768 bytes")
+        .hasMessageContaining("a bucket of more than 32 nodes");
+
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
+    final NodeIdMapping ids = procedure.loadVertexIds(database, null, procedure.newMemoryBudget(database));
+    assertThat(ids.size()).isEqualTo(40);
+    for (int i = 0; i < scanOrder.size(); i++)
+      assertThat(ids.getRID(database, i)).as("node %d", i).isEqualTo(scanOrder.get(i));
   }
 
   /** A vertex deleted after the graph was loaded is no node any more: it reads as gone, and the adjacency skips it. */

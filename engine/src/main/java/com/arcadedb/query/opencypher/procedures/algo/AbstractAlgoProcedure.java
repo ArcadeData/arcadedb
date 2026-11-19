@@ -1059,6 +1059,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     long loaded = 0;
     int lastBucketId = -1;
     int lastBucketIdx = -1;
+    // The slots of the array of the bucket being read, and the nodes it holds: the table doubles it when a bucket holds more than was
+    // counted
+    int bucketCapacity = 0;
+    int bucketLoaded = 0;
     while (iter.hasNext()) {
       if (loaded >= maxVertices)
         maxVertices = memory.extendCapacity(loaded + 1L, LOADED_NODE_BYTES, "the loaded graph", "at least " + (loaded + 1) + " nodes");
@@ -1072,10 +1076,20 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         // Sized from what the bucket holds, within what the budget allows: the table is not grown by doubling and copied while it fills,
         // and a bucket with a few vertices holds an array of a few slots, so the 16 bytes a node is priced at cover what the table
         // takes whatever the number of buckets
-        lastBucketIdx = ids.registerBucket(lastBucketId, vertex.getTypeName(),
-            (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - loaded)));
+        bucketCapacity = (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - loaded));
+        bucketLoaded = 0;
+        lastBucketIdx = ids.registerBucket(lastBucketId, vertex.getTypeName(), bucketCapacity);
+      } else if (bucketLoaded == bucketCapacity) {
+        // The bucket holds more than its count said (a commit appended to it meanwhile): the table doubles its array, copying it while
+        // the old one is still held. What is on the heap then is the arrays of the buckets before, this one and its double, none of it
+        // reserved yet, and the call is refused before the copy when that does not fit
+        final long grown = 2L * bucketCapacity;
+        memory.checkRoom(saturatingProduct(saturatingSum(loaded, grown), LONG_BYTES), "the loaded graph",
+            "a bucket of more than " + bucketCapacity + " nodes");
+        bucketCapacity = (int) Math.min(grown, MAX_LOADED_NODES);
       }
       ids.addNode(lastBucketIdx, rid.getPosition());
+      bucketLoaded++;
       loaded++;
     }
     memory.reserve(saturatingProduct(loaded, LOADED_NODE_BYTES), "the loaded graph", loaded + " nodes");
@@ -1083,7 +1097,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return ids;
   }
 
-  private static long bucketCount(final Schema schema, final int bucketId) {
+  /**
+   * What a bucket holds, as a hint to size the table of the loaded graph by: a count that is stale only makes the table grow by doubling.
+   * A method of its own so that a test can say a count that is wrong.
+   */
+  long bucketCount(final Schema schema, final int bucketId) {
     final Bucket bucket = schema.getBucketByIdIfExists(bucketId);
     return bucket != null ? Math.min(bucket.count(), MAX_LOADED_NODES) : 0L;
   }
