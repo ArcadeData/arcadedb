@@ -34,9 +34,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #11742: Ratis applies its own metadata and configuration entries through
  * {@link ArcadeStateMachine#notifyTermIndexUpdated}, which moved the applied index without calling
- * {@link RaftHAServer#notifyApplied()}. The bookmark a write is answered with already counts the metadata entry Ratis appends
- * after it, so a follower read waiting for that bookmark was woken only by its next one-second recheck: a quiet cluster answered
- * every read-your-writes read a whole number of seconds after it started. As for #5846, the notification is checked directly.
+ * {@link RaftHAServer#notifyApplied()}. A bookmark now names the entry the state machine applied, which
+ * {@code applyTransaction} already notifies for; a wait whose target can still be a Ratis-only index (a bookmark answered by a
+ * node of an earlier version, the Ratis index standing in before the state machine has applied anything, a linearizable
+ * follower read's read index) was woken only by its next one-second recheck. As for #5846, the notification is checked
+ * directly.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -58,6 +58,7 @@ class RaftReplicatedDatabaseBookmarkTest {
 
   @AfterEach
   void tearDown() {
+    database.clearReadConsistencyContext();
     httpClient.close();
   }
 
@@ -90,5 +91,24 @@ class RaftReplicatedDatabaseBookmarkTest {
     stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 1);
 
     assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 1);
+  }
+
+  @Test
+  void aWriteAcknowledgedAboveTheCounterRaisesTheBookmarkToIt() {
+    // The cluster acknowledged the request's write at entry 11, but its local apply failed or outlasted the wait: the counter
+    // is still at 10 while Ratis has applied the metadata entry 12. The bookmark must still cover the write
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 2);
+
+    RaftReplicatedDatabase.recordRequestWrite(RATIS_APPLIED - 1);
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 1);
+
+    // A later apply moves the counter past it: the higher of the two is answered
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED + 3);
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED + 3);
+
+    // The end of the request forgets the write
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 2);
+    database.clearReadConsistencyContext();
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 2);
   }
 }

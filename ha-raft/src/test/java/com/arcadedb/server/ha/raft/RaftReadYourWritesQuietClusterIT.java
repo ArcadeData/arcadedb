@@ -85,7 +85,8 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
         .isEqualTo(200);
     waitForAllServers();
 
-    assertThat(post(leaderIndex, "/command/" + dbName, "INSERT INTO " + TYPE_NAME + " SET k = 1", null).statusCode()).isEqualTo(200);
+    final HttpResponse<String> insert = post(leaderIndex, "/command/" + dbName, "INSERT INTO " + TYPE_NAME + " SET k = 1", null);
+    assertThat(insert.statusCode()).isEqualTo(200);
     final long deadline = System.currentTimeMillis() + 10_000;
     while (leaderRaft.getLastAppliedIndex() <= leaderRaft.getStateMachine().readAppliedIndexCounter()
         && System.currentTimeMillis() < deadline)
@@ -95,6 +96,12 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
 
     final HttpResponse<String> leaderRead = post(leaderIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME, null);
     final String bookmark = leaderRead.headers().firstValue("X-ArcadeDB-Commit-Index").orElseThrow();
+    // The bookmark is the entry of the insert, which the insert answered with too, not the metadata entry Ratis applied after it.
+    // The timing below cannot tell them apart when the follower already has the metadata entry or a heartbeat lands in time
+    final long writeIndex = leaderRaft.getStateMachine().readAppliedIndexCounter();
+    assertThat(Long.parseLong(insert.headers().firstValue("X-ArcadeDB-Commit-Index").orElseThrow())).isEqualTo(writeIndex);
+    assertThat(Long.parseLong(bookmark)).as("the bookmark of a read after the write").isEqualTo(writeIndex)
+        .isLessThan(leaderRaft.getLastAppliedIndex());
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     final HttpResponse<String> read = post(followerIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME + " WHERE k = 1", bookmark);

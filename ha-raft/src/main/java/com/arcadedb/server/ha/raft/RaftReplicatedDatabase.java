@@ -539,11 +539,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
 
   /**
-   * The highest read-your-writes bookmark the leader answered with for the writes the request served on this thread forwarded
-   * to it (issue #11740), or {@code null} when it forwarded none. Cleared with the read-consistency context at the end of the
+   * The highest index a write of the request served on this thread is known to be committed at, or {@code null} when it wrote
+   * nothing: the bookmark the leader answered with for a write the request forwarded to it (issue #11740), and the index the
+   * cluster acknowledged a write committed here at (issue #11742). Cleared with the read-consistency context at the end of the
    * request.
    */
-  private static final ThreadLocal<Long> FORWARDED_WRITE_BOOKMARK = new ThreadLocal<>();
+  private static final ThreadLocal<Long> REQUEST_WRITE_BOOKMARK = new ThreadLocal<>();
 
   public static ReadConsistencyContext getReadConsistencyContext() {
     return READ_CONSISTENCY_CONTEXT.get();
@@ -571,7 +572,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void clearReadConsistencyContext() {
     READ_CONSISTENCY_CONTEXT.remove();
-    FORWARDED_WRITE_BOOKMARK.remove();
+    REQUEST_WRITE_BOOKMARK.remove();
   }
 
   /**
@@ -580,8 +581,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * appends after an entry to record that it committed, and a follower learns that this metadata entry is committed only with
    * the leader's next append: on a quiet cluster the next heartbeat, about 2.5 s later. A read that waited for a bookmark
    * pointing at it waited for that heartbeat rather than for the write, which a follower applies within milliseconds. A
-   * metadata entry carries no data, so leaving it out loses nothing a read could see. The Ratis index stands in while the
-   * state machine has applied nothing yet.
+   * metadata entry carries no data, so leaving it out loses nothing a read could see.
+   * <p>
+   * Two cases still answer an index that is not an entry this state machine applied: while it has applied nothing (its counter
+   * is -1) the Ratis applied index stands in, which may be a metadata entry; and after a restart or a snapshot install the
+   * counter starts at the snapshot marker, the last index the previous state machine applied, until the next entry moves it.
+   * Both are at or past every entry this node holds, so a read that waits for them never misses a write; it may only wait
+   * for one more entry than it needs.
    */
   @Override
   public long getLastAppliedIndex() {
@@ -594,17 +600,30 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /**
    * The index of the last entry this node's state machine applied (see {@link #getLastAppliedIndex()}, which leaves out the
-   * metadata entries Ratis appends on its own, issue #11742), raised to the leader's bookmark for a write the request
-   * forwarded (issue #11740). A write forwarded to the leader is applied here only when this node learns it was committed,
-   * and with a majority quorum the leader can commit it before this node has it: this node's own index then stands below the
-   * write, and a read that waits for it does not see the write, here or on any other node. The leader's bookmark is at or
-   * past the write.
+   * metadata entries Ratis appends on its own, issue #11742), raised to the highest index a write of this request is known to
+   * be committed at. That is the leader's bookmark for a write the request forwarded (issue #11740): with a majority quorum
+   * the leader can commit it before this node has it, so this node's own index can stand below the write. It is also the index
+   * the cluster acknowledged a write committed on this node at: the wait for the local apply of that entry gives up after its
+   * deadline, and an apply that failed or is still running leaves the counter below it. The maximum is taken, not the
+   * leader's bookmark alone: this node may have applied past it by the time the response is written.
    */
   @Override
   public long getCommitIndexBookmark() {
     final long applied = getLastAppliedIndex();
-    final Long forwarded = FORWARDED_WRITE_BOOKMARK.get();
-    return forwarded != null ? Math.max(applied, forwarded) : applied;
+    final Long written = REQUEST_WRITE_BOOKMARK.get();
+    return written != null ? Math.max(applied, written) : applied;
+  }
+
+  /**
+   * Raises the bookmark of the request served on this thread to {@code index}, an index a write of the request is committed
+   * at (issues #11740, #11742). Package-private for tests.
+   */
+  static void recordRequestWrite(final long index) {
+    if (index < 0)
+      return;
+    final Long previous = REQUEST_WRITE_BOOKMARK.get();
+    if (previous == null || previous < index)
+      REQUEST_WRITE_BOOKMARK.set(index);
   }
 
   private final ArcadeDBServer server;
@@ -1093,6 +1112,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void concludeCommittedEntry(final LocalCommit local, final boolean leader, final ArcadeStateMachine stateMachine,
       final ReplicationPayload payload, final long committedLogIndex, final boolean fallBackToCommitIndex) {
+    // The cluster acknowledged the write at this index: the response's bookmark covers it even when the local apply below
+    // fails or outlasts its wait (issue #11742)
+    if (committedLogIndex > 0)
+      recordRequestWrite(committedLogIndex);
     if (local != null && !stateMachine.withdrawLocalCommit(local)) {
       concludeLocalCommit(local, payload);
       return;
@@ -5520,10 +5543,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, leaderBookmark);
     } finally {
       // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
-      final long bookmark = leaderBookmark.get();
-      final Long previous = FORWARDED_WRITE_BOOKMARK.get();
-      if (bookmark >= 0 && (previous == null || previous < bookmark))
-        FORWARDED_WRITE_BOOKMARK.set(bookmark);
+      recordRequestWrite(leaderBookmark.get());
     }
   }
 
