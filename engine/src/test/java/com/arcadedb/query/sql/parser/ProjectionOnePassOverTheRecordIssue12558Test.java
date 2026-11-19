@@ -129,6 +129,32 @@ class ProjectionOnePassOverTheRecordIssue12558Test extends TestHelper {
     });
   }
 
+  /**
+   * A filter of more than 8 names is sorted and binary-searched by the serializer instead of scanned. The names come in
+   * any order and may include one the dictionary does not know: the answer is exactly the stored names asked for.
+   */
+  @Test
+  void aWideNameFilterWithAnUnknownNameReadsExactlyTheKnownNamesAskedFor() {
+    database.transaction(() -> {
+      final CountingImmutableDocument document =
+          new CountingImmutableDocument(database, database.getSchema().getType("Wide"), rid);
+
+      final String[] wide = { "p31", "neverStored", "p2", "p17", "nothing", "p39", "p0", "p8", "p25", "p11" };
+      final Map<String, Object> wideRead = document.propertiesAsMap(wide);
+      assertThat(wideRead).containsOnlyKeys("p31", "p2", "p17", "nothing", "p39", "p0", "p8", "p25", "p11");
+      for (final String name : wideRead.keySet())
+        if (!name.equals("nothing"))
+          assertThat(wideRead).containsEntry(name, "value-" + name.substring(1));
+      assertThat(wideRead.get("nothing")).isNull();
+      // the caller's array is not reordered by the sort the serializer applies to its own ids
+      assertThat(wide).containsExactly("p31", "neverStored", "p2", "p17", "nothing", "p39", "p0", "p8", "p25", "p11");
+
+      // the same names through the scanned branch (8 names or fewer) answer the same
+      final Map<String, Object> narrowRead = document.propertiesAsMap("p31", "neverStored", "p2", "p17");
+      assertThat(narrowRead).containsOnlyKeys("p31", "p2", "p17");
+    });
+  }
+
   @Test
   void aRowWithEveryPropertyExcludedDoesNotReadTheRecord() {
     database.transaction(() -> {

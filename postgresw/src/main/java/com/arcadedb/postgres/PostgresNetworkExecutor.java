@@ -3114,6 +3114,7 @@ public class PostgresNetworkExecutor extends Thread {
    * the same column. The row's properties are read once by the caller, not once per column: asking the record for every
    * column walked the record header once per column, so the time per row grew with P squared (#12558).
    */
+  // Package-private, not private, only so PostgresOnePassRowReadIssue12558Test can call it: visible for testing
   static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
     // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
     if (row.isElement() && isExcludedFromElement(row, propertyName))
@@ -3157,6 +3158,9 @@ public class PostgresNetworkExecutor extends Thread {
         Object v = propertyOf(row, propertyName, properties);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
+        // ...but only for a name the row does not list: a null the row wrote itself (a projection that set the column to
+        // null) is the row's answer and must not be replaced by the element's value. Before #12558 the fallback fired on
+        // any null, which answered such a column with the element's property instead.
         if (v == null && row.isElement() && !properties.containsKey(propertyName))
           v = row.getElement().get().get(propertyName);
         yield v;
