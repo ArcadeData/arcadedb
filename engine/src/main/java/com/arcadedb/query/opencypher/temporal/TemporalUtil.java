@@ -40,64 +40,46 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Utility methods for temporal parsing and operations.
  */
 public final class TemporalUtil {
 
-  // An offset follows the digits of a time and is not followed by more digits: a signed year of a date ('-0001-12-31',
-  // '+10000-01-01') is not one, and used to be rewritten into '-00:01-12-31', which no parser read (issue #10199)
-  private static final Pattern COMPACT_OFFSET = Pattern.compile(
-      "(?<=\\d)([+-])(\\d{2})(\\d{2})(?![:\\d])");
-
   private TemporalUtil() {
   }
 
   /**
-   * Normalize compact timezone offsets in a datetime string: +0200 → +02:00
-   * Also handles the case where the offset appears before a timezone name in brackets.
+   * Temporal text that has the shape of a value but contradicts itself - an offset the zone does not have at that time, a zone
+   * name on a time - so no other reading of it applies: a caller that falls back to another parser when one fails must not
+   * fall back on this (issue #12298).
    */
-  public static String normalizeOffsetInString(final String str) {
-    // Find timezone offset pattern: +HHMM or -HHMM (not followed by colon, not preceded by colon)
-    final Matcher m = COMPACT_OFFSET.matcher(str);
-    if (m.find()) {
-      final StringBuffer sb = new StringBuffer();
-      m.appendReplacement(sb, "$1$2:$3");
-      m.appendTail(sb);
-      return sb.toString();
+  public static final class InvalidTemporalTextException extends DateTimeException {
+    public InvalidTemporalTextException(final String message) {
+      super(message);
     }
-    return str;
   }
 
   /**
-   * Normalize a time string for OffsetTime.parse():
-   * - Add :00 seconds if only HH:MM
-   * - Normalize compact timezone offsets
+   * {@code parsed}, the datetime a lenient parser read from {@code text}, refused when the text states an offset its zone
+   * does not have there: {@code ZonedDateTime.parse} takes such an offset as a preference only and answers another instant
+   * or another local time than the text states (issue #12298). The openCypher parser refuses the same text itself; this
+   * covers the other parsers, which accept forms it does not (an offset with seconds, a space before the time).
    */
-  public static String normalizeTimeString(final String str) {
-    String result = str;
-    // Check if this is HH:MM format without seconds (followed by offset or end)
-    // Pattern: HH:MM followed by + or - or Z or end
-    if (result.matches("^\\d{2}:\\d{2}[+\\-Z].*$"))
-      result = result.substring(0, 5) + ":00" + result.substring(5);
-    else if (result.matches("^\\d{2}:\\d{2}$"))
-      result = result + ":00";
-
-    return normalizeOffsetInString(result);
-  }
-
-  /**
-   * Normalize a local time string:
-   * - Add :00 seconds if only HH:MM
-   */
-  public static String normalizeLocalTimeString(final String str) {
-    // If it's exactly HH:MM (5 chars, no offset), add seconds
-    if (str.matches("^\\d{2}:\\d{2}$"))
-      return str + ":00";
-    return str;
+  public static ZonedDateTime requireOffsetMatchesZone(final String text, final ZonedDateTime parsed) {
+    final int bracket = text.indexOf('[');
+    if (bracket < 0 || parsed.getZone() instanceof ZoneOffset)
+      return parsed;
+    final OffsetDateTime stated;
+    try {
+      stated = OffsetDateTime.parse(text.substring(0, bracket).trim().replace(' ', 'T'));
+    } catch (final DateTimeException e) {
+      // No offset stated: the zone alone decides
+      return parsed;
+    }
+    if (!stated.getOffset().equals(parsed.getOffset()) || !stated.toLocalDateTime().equals(parsed.toLocalDateTime()))
+      throw new InvalidTemporalTextException("Timezone and offset do not match: " + text);
+    return parsed;
   }
 
   /**
@@ -324,26 +306,14 @@ public final class TemporalUtil {
   }
 
   /**
-   * {@code base} with the date and time fields {@code map} gives in place of its own, all resolved together: applied one at
-   * a time, {@code withYear(2023)} on February 29 clamped the day to the 28th before {@code withMonth(3)} saw it, so
-   * {@code {year: 2023, month: 3}} answered March 28 instead of March 29. A millisecond, microsecond or nanosecond
-   * replaces the whole fraction of second (see {@link #computeNanos(Map, int)}).
+   * {@code base} with the date and time fields {@code map} gives in place of its own, applied in order as Neo4j applies them
+   * ({@link TemporalMapFields}): {@code {year: 2023, month: 3}} on February 29 is March 28, and the week, quarter and ordinal
+   * fields apply too, where they used to be dropped (issue #12297). A millisecond, microsecond or nanosecond replaces the
+   * whole fraction of second (see {@link #computeNanos(Map, int)}).
    */
   public static LocalDateTime withFieldOverrides(final LocalDateTime base, final Map<String, Object> map) {
-    final Object year = map.get("year");
-    final Object month = map.get("month");
-    final Object day = map.get("day");
-    final Object hour = map.get("hour");
-    final Object minute = map.get("minute");
-    final Object second = map.get("second");
-    final LocalDate date = year == null && month == null && day == null ?
-        base.toLocalDate() :
-        LocalDate.of(year != null ? toIntField("year", year) : base.getYear(), month != null ? toIntField("month", month) : base.getMonthValue(),
-            day != null ? toIntField("day", day) : base.getDayOfMonth());
-    final LocalTime time = LocalTime.of(hour != null ? toIntField("hour", hour) : base.getHour(),
-        minute != null ? toIntField("minute", minute) : base.getMinute(), second != null ? toIntField("second", second) : base.getSecond(),
-        computeNanos(map, base.getNano()));
-    return LocalDateTime.of(date, time);
+    return LocalDateTime.of(TemporalMapFields.resolveDate(map, base.toLocalDate(), false),
+        TemporalMapFields.resolveTime(map, base.toLocalTime()));
   }
 
   /**
@@ -375,9 +345,10 @@ public final class TemporalUtil {
    *                         {@link #computeNanos(Map, int)}
    */
   public static int computeNanos(final Map<String, Object> map, final int defaultNanos, final boolean keepCoarserUnits) {
-    final Object ms = map.get("millisecond");
-    final Object us = map.get("microsecond");
-    final Object ns = map.get("nanosecond");
+    // A field given as null is given, as 0 (issue #12297)
+    final Object ms = subSecondValue(map, "millisecond");
+    final Object us = subSecondValue(map, "microsecond");
+    final Object ns = subSecondValue(map, "nanosecond");
     if (ms == null && us == null && ns == null)
       return defaultNanos;
 
@@ -402,6 +373,11 @@ public final class TemporalUtil {
     return (int) nanos;
   }
 
+  private static Object subSecondValue(final Map<String, Object> map, final String name) {
+    final Object value = map.get(name);
+    return value == null && map.containsKey(name) ? 0L : value;
+  }
+
   private static long subSecondField(final String name, final Object value, final long limit) {
     final long v = toIntegralLong(name, value);
     if (v < 0 || v >= limit)
@@ -414,6 +390,10 @@ public final class TemporalUtil {
    * {@link Number#intValue()} wrap it into a different, in-range value (issue #8571: {@code hour: 4294967308} must not
    * become 12).
    */
+  public static long toLongField(final String name, final Object value) {
+    return toIntegralLong(name, value);
+  }
+
   public static int toIntField(final String name, final Object value) {
     final long v = toIntegralLong(name, value);
     if (v < Integer.MIN_VALUE || v > Integer.MAX_VALUE)
@@ -421,6 +401,11 @@ public final class TemporalUtil {
     return (int) v;
   }
 
+  /**
+   * A temporal field is a whole number: a fraction is refused, a whole float is read as the integer it holds, as every
+   * whole-number argument is (issue #10850). A value that is no number - a String such as {@code year: '2020'} - is refused
+   * as in Neo4j (issue #12297): it used to be parsed.
+   */
   private static long toIntegralLong(final String name, final Object value) {
     if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
       return ((Number) value).longValue();
@@ -438,11 +423,8 @@ public final class TemporalUtil {
         throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
       return (long) d;
     }
-    try {
-      return Long.parseLong(value.toString());
-    } catch (final NumberFormatException e) {
-      throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
-    }
+    throw new IllegalArgumentException(
+        name + " must be an integer value, but was " + (value == null ? "null" : "a " + value.getClass().getSimpleName()));
   }
 
   /**

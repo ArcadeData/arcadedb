@@ -80,6 +80,26 @@ public final class FullTextQuery {
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
     if (limit < 1 || limit > MAX_LIMIT)
       throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT + ", got " + limit);
+
+    // The members that address the index are read when the search runs, after the database resolved: a member of another JSON
+    // shape raised a JSONException there, which no protocol surface answers as the caller's mistake (issue #11622). Whether they
+    // name an index is the schema's to say, in search()
+    requireText(args, "indexName");
+    requireText(args, "typeName");
+    final Object properties = args.opt("properties");
+    if (properties != null) {
+      if (!(properties instanceof JSONArray names))
+        throw new IllegalArgumentException("'properties' must be an array of property names");
+      for (int i = 0; i < names.length(); i++)
+        if (!(names.get(i) instanceof String))
+          throw new IllegalArgumentException("'properties' must contain only property names");
+    }
+  }
+
+  private static void requireText(final JSONObject args, final String name) {
+    final Object value = args.opt(name);
+    if (value != null && !(value instanceof String))
+      throw new IllegalArgumentException("'" + name + "' must be a string");
   }
 
   /**
